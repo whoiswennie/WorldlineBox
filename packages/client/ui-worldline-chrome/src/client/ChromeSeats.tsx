@@ -209,4 +209,3 @@ export function RuntimeStatus({ loadToolchains }: RuntimeStatusProps) {
     <ToolchainBadge name="Git" status={snapshot?.git} failed={failed} />
   </div>
 }
-export function ProductStatus(_props: PropsRuntime<'worldline.status.right'>) { return <div className={css.product}><span>◇</span>世界线 <strong>v0.1.0</strong></div> }

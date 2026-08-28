@@ -19,9 +19,7 @@ These package-specific rules supplement the repo-wide [conventions](../AGENTS.md
 
 [Naming rules](../docs/cookbook/adding-a-package.md#name-the-role-that-exists):
 
-- All Harness and Worldline-specific packages use `@deepseek-ai/dsh-*` technical coordinates;
-  vendored framework packages retain their upstream `@deepseek-ai/*` coordinates. Product
-  identity remains Worldline regardless of the internal package coordinate.
+- All Harness and Worldline-specific packages use `@deepseek-ai/dsh-*` technical coordinates; vendored framework packages retain their upstream `@deepseek-ai/*` coordinates. Product identity remains Worldline regardless of the internal package coordinate.
 
 - **Package tsconfig:** extends `tsconfig.base.json` (Client: `tsconfig.base.client.json`), uses `rootDir: src`, `outDir: lib/types`, and references each workspace dependency plus `runtime-diagnostics/invariants`; registers in exactly one aggregate. Only `api/remotes` splits for generated contracts; ordinary two-entry Client plugins do not ([layout](../docs/development.md#typescript-project-layout)).
 - `src/types.ts` contains only types — no runtime code.

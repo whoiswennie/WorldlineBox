@@ -2,8 +2,7 @@
 
 Rules for `packages/client/*` (the browser side of the worldline web GUI) plus its build entry `apps/web`. They supplement the repo-wide [conventions](../../AGENTS.md#conventions) and the [package rules](../README.md). Before touching slots, component props, stores, or plugin structure, read the slot system standard (the definitive composition model) and the web client architecture note (loading chain, object layer, services).
 
-All inherited and Worldline-specific client packages use
-`@deepseek-ai/dsh-client-<name>` coordinates in the same client graph.
+All inherited and Worldline-specific client packages use `@deepseek-ai/dsh-client-<name>` coordinates in the same client graph.
 
 ## Slot and props discipline
 

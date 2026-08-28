@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { desktopStartupDataUrl, desktopStartupDocument } from '../src/startup-window.ts'
+import {
+  desktopStartupDataUrl,
+  desktopStartupDocument,
+  desktopStartupStageScript,
+} from '../src/startup-window.ts'
 
 describe('desktop startup window', () => {
   it('shows the product identity and a bounded startup status before the Host is ready', () => {
@@ -7,9 +11,24 @@ describe('desktop startup window', () => {
 
     expect(document).toContain('<title>世界线正在启动</title>')
     expect(document).toContain('src="data:image/png;base64,logo"')
-    expect(document).toContain('正在启动 Agent 与虚拟伙伴运行时')
+    expect(document).toContain('正在初始化桌面安全环境')
+    expect(document).toContain('id="startup-stage"')
+    expect(document).toContain('步骤 1 / 4')
     expect(document).toContain("default-src 'none'; img-src data:")
     expect(document).not.toContain('nodeIntegration')
+  })
+
+  it('updates the visible stage, detail, step, and progress through a bounded DOM script', () => {
+    const script = desktopStartupStageScript({
+      step: 3,
+      title: '启动 Agent 与插件运行时',
+      detail: '正在加载账户、插件和虚拟伙伴…',
+    })
+
+    expect(script).toContain("document.getElementById('startup-stage')")
+    expect(script).toContain('启动 Agent 与插件运行时')
+    expect(script).toContain('步骤 3 / 4')
+    expect(script).toContain('75%')
   })
 
   it('embeds the packaged logo without filesystem or network dependencies', () => {

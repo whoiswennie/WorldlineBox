@@ -117,11 +117,17 @@ if not defined APP_VERSION (
     goto :failed
 )
 set "INSTALLER_EXE=!DESKTOP_RELEASE!\WorldlineBox-Setup-!APP_VERSION!.exe"
-"%PROJECT_NODE%" "%CD%\scripts\build-custom-installer.mjs" --input "!DESKTOP_RELEASE!\win-unpacked" --output "!INSTALLER_EXE!"
+"%PROJECT_NODE%" "%CD%\scripts\build-custom-installer.mjs" --input "!DESKTOP_RELEASE!\win-unpacked" --output "!INSTALLER_EXE!" --version "!APP_VERSION!"
 if not "!ERRORLEVEL!"=="0" goto :failed
 if not exist "!INSTALLER_EXE!" (
     echo [ERROR] The custom WorldlineBox installer was not generated.
     echo   !INSTALLER_EXE!
+    goto :failed
+)
+"%PROJECT_NODE%" "%CD%\scripts\generate-update-manifest.mjs" --installer "!INSTALLER_EXE!" --output "%CD%\latest.yml" --version "!APP_VERSION!"
+if not "!ERRORLEVEL!"=="0" goto :failed
+if not exist "%CD%\latest.yml" (
+    echo [ERROR] The root update manifest was not generated.
     goto :failed
 )
 
@@ -129,6 +135,8 @@ echo.
 echo ==========================================
 echo Windows installer generated successfully:
 echo !INSTALLER_EXE!
+echo Update manifest generated successfully:
+echo %CD%\latest.yml
 echo ==========================================
 if "%BUILD_NO_PAUSE%"=="0" pause
 exit /b 0

@@ -25,7 +25,11 @@ namespace WorldlineBox.Installer
         {
             bool preview = HasArgument(args, "--preview");
             bool uninstall = HasArgument(args, "--uninstall") || HasArgument(args, "--uninstall-worker");
+            bool update = HasArgument(args, "--update");
             string installDirectory = ReadArgument(args, "--install-dir");
+
+            int waitPid;
+            if (int.TryParse(ReadArgument(args, "--wait-pid"), out waitPid)) WaitForProcessExit(waitPid);
 
             if (HasArgument(args, "--uninstall") && !HasArgument(args, "--uninstall-worker"))
             {
@@ -35,7 +39,7 @@ namespace WorldlineBox.Installer
 
             var application = new Application();
             application.ShutdownMode = ShutdownMode.OnMainWindowClose;
-            application.Run(new InstallerWindow(preview, uninstall, installDirectory));
+            application.Run(new InstallerWindow(preview, uninstall, update, installDirectory));
         }
 
         internal static bool HasArgument(string[] args, string name)
@@ -50,6 +54,17 @@ namespace WorldlineBox.Installer
             for (int index = 0; index + 1 < args.Length; index++)
                 if (string.Equals(args[index], name, StringComparison.OrdinalIgnoreCase)) return args[index + 1];
             return null;
+        }
+
+        private static void WaitForProcessExit(int processId)
+        {
+            if (processId <= 0 || processId == Process.GetCurrentProcess().Id) return;
+            try
+            {
+                using (Process process = Process.GetProcessById(processId)) process.WaitForExit(120000);
+            }
+            catch (ArgumentException) { }
+            catch (InvalidOperationException) { }
         }
 
         private static void RelaunchUninstallerFromTemp(string installDirectory)
@@ -69,6 +84,7 @@ namespace WorldlineBox.Installer
     internal sealed class InstallerWindow : Window
     {
         private const string ProductName = "世界线盒子";
+        private const string ProductVersion = "__WORLDLINE_VERSION__";
         private const string ApplicationExe = "WorldlineBox.exe";
         private const string FooterMagic = "WLBOX001";
         private static readonly Color Ink = Color.FromRgb(22, 43, 75);
@@ -79,6 +95,7 @@ namespace WorldlineBox.Installer
 
         private readonly bool preview;
         private readonly bool uninstall;
+        private readonly bool update;
         private readonly string requestedInstallDirectory;
         private Canvas canvas;
         private TextBox pathBox;
@@ -89,10 +106,11 @@ namespace WorldlineBox.Installer
         private TextBlock progressStatus;
         private bool busy;
 
-        internal InstallerWindow(bool preview, bool uninstall, string installDirectory)
+        internal InstallerWindow(bool preview, bool uninstall, bool update, string installDirectory)
         {
             this.preview = preview;
             this.uninstall = uninstall;
+            this.update = update;
             requestedInstallDirectory = installDirectory;
             Title = ProductName;
             Width = 680;
@@ -260,7 +278,8 @@ namespace WorldlineBox.Installer
         private void ShowInstallPage()
         {
             ResetPage();
-            AddHeading("自定义安装", "让世界线盒子落在你选择的位置");
+            AddHeading(update ? "更新世界线" : "自定义安装",
+                update ? "保留原安装位置与个人数据，完成版本替换" : "让世界线盒子落在你选择的位置");
             AddLogo(268, 92, 116);
 
             var card = AddCard(104, 226, 444, 153);
@@ -278,7 +297,8 @@ namespace WorldlineBox.Installer
             };
             pathBox = new TextBox
             {
-                Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WorldlineBox"),
+                Text = DefaultInstallDirectory(),
+                IsReadOnly = update,
                 BorderThickness = new Thickness(0),
                 Background = Brushes.Transparent,
                 Foreground = new SolidColorBrush(Ink),
@@ -290,6 +310,8 @@ namespace WorldlineBox.Installer
             Place(card, pathBorder, 18, 39, 322, 43);
 
             var browse = MakeButton("浏览", 74, 43, false);
+            browse.IsEnabled = !update;
+            browse.Opacity = update ? .45 : 1;
             browse.MouseLeftButtonUp += delegate { BrowseForFolder(); };
             Place(card, browse, 350, 39, 74, 43);
 
@@ -301,7 +323,7 @@ namespace WorldlineBox.Installer
             Place(card, desktopOption.Root, 18, 118, 190, 24);
             Place(card, startMenuOption.Root, 226, 118, 200, 24);
 
-            var installButton = MakePrimaryButton("立即安装", 260, 48);
+            var installButton = MakePrimaryButton(update ? "立即更新" : "立即安装", 260, 48);
             installButton.MouseLeftButtonUp += async delegate { await BeginInstallAsync(); };
             Place(canvas, installButton, 196, 404, 260, 48);
         }
@@ -571,7 +593,7 @@ namespace WorldlineBox.Installer
             using (RegistryKey key = Registry.LocalMachine.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\WorldlineBox"))
             {
                 key.SetValue("DisplayName", ProductName);
-                key.SetValue("DisplayVersion", "0.1.0");
+                key.SetValue("DisplayVersion", ProductVersion);
                 key.SetValue("Publisher", "世界线");
                 key.SetValue("DisplayIcon", Path.Combine(installDirectory, ApplicationExe));
                 key.SetValue("InstallLocation", installDirectory);

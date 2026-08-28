@@ -1,7 +1,8 @@
-import { join } from 'node:path'
+import { spawn } from 'node:child_process'
+import { dirname, join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import {
-  app, BrowserWindow, Menu, session as electronSession, webContents as electronWebContents,
+  app, BrowserWindow, ipcMain, Menu, session as electronSession, webContents as electronWebContents,
 } from 'electron'
 import type { Context } from '@deepseek-ai/cordis'
 import { withAuthBootstrapFragment } from '@deepseek-ai/dsh-local-auth'
@@ -21,7 +22,15 @@ import {
 import type {} from './desktop-services.ts'
 import type {} from './runtime-supervisor.ts'
 import type { RuntimeLaunchRecipe } from './runtime-supervisor.ts'
-import { desktopStartupDataUrl } from './startup-window.ts'
+import { desktopStartupDataUrl, desktopStartupStageScript } from './startup-window.ts'
+import {
+  UPDATE_CHECK_CHANNEL,
+  UPDATE_DOWNLOAD_CHANNEL,
+  UPDATE_GET_STATE_CHANNEL,
+  UPDATE_INSTALL_CHANNEL,
+  UPDATE_STATE_CHANGED_CHANNEL,
+} from './update-contract.ts'
+import { DesktopUpdateManager } from './update-manager.ts'
 import { WINDOWS_APP_ID, windowsAppDetails } from './windows-app-details.ts'
 
 const PRODUCT_NAME = '世界线'
@@ -43,6 +52,7 @@ let embeddedBrowser: EmbeddedBrowserBridge | undefined
 let embeddedBrowserEndpoint: { url: string; token: string } | undefined
 let runtimeBootstrapToken: string | undefined
 let quitting = false
+let updateManager: DesktopUpdateManager | undefined
 async function smoke(url: string): Promise<void> {
   const response = await fetch(url)
   const html = await response.text()
@@ -290,6 +300,99 @@ async function createStartupWindow(): Promise<BrowserWindow> {
   return startup
 }
 
+async function showStartupStage(
+  startup: BrowserWindow | undefined,
+  step: number,
+  title: string,
+  detail: string,
+): Promise<void> {
+  if (startup === undefined || startup.isDestroyed()) return
+  await startup.webContents.executeJavaScript(desktopStartupStageScript({ step, title, detail }))
+}
+
+function powershellLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`
+}
+
+function windowsCommandLineArgument(value: string): string {
+  if (!/[\s"]/u.test(value)) return value
+  return `"${value
+    .replace(/(\\*)"/gu, '$1$1\\"')
+    .replace(/(\\+)$/u, '$1$1')}"`
+}
+
+/** Ask Windows Shell for elevation, then let the installer wait for this process to close. */
+async function launchUpdateInstaller(installerPath: string): Promise<void> {
+  const arguments_ = [
+    '--update',
+    '--wait-pid', String(process.pid),
+    '--install-dir', dirname(process.execPath),
+  ]
+  const argumentLine = arguments_.map(windowsCommandLineArgument).join(' ')
+  const command = [
+    `$installer = Start-Process -FilePath ${powershellLiteral(installerPath)}`,
+    `-ArgumentList ${powershellLiteral(argumentLine)}`,
+    '-Verb RunAs -PassThru;',
+    'if ($null -eq $installer) { exit 1 }',
+  ].join(' ')
+  const encoded = Buffer.from(command, 'utf16le').toString('base64')
+  const powershell = join(
+    process.env.SystemRoot ?? 'C:\\Windows',
+    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+  )
+  await new Promise<void>((resolve, reject) => {
+    const helper = spawn(powershell, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+      '-EncodedCommand', encoded,
+    ], { windowsHide: true, stdio: 'ignore' })
+    helper.once('error', reject)
+    helper.once('exit', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`无法启动更新安装程序（PowerShell 退出码 ${String(code)}）。`))
+    })
+  })
+}
+
+function registerUpdater(): DesktopUpdateManager {
+  const updates = new DesktopUpdateManager({
+    currentVersion: app.getVersion(),
+    storageDirectory: join(app.getPath('userData'), 'updates'),
+    enabled: app.isPackaged
+      && process.platform === 'win32'
+      && !process.argv.includes(SMOKE_FLAG)
+      && !process.argv.includes(STARTUP_SMOKE_FLAG),
+    publish: (snapshot) => {
+      if (window !== undefined && !window.isDestroyed()) {
+        window.webContents.send(UPDATE_STATE_CHANGED_CHANNEL, snapshot)
+      }
+    },
+    launchInstaller: async (installerPath) => {
+      await launchUpdateInstaller(installerPath)
+      app.quit()
+    },
+  })
+  const trusted = (sender: Electron.WebContents): void => {
+    if (window?.webContents !== sender) throw new Error('Updater IPC rejected an unknown renderer.')
+  }
+  ipcMain.handle(UPDATE_GET_STATE_CHANNEL, (event) => {
+    trusted(event.sender)
+    return updates.snapshot
+  })
+  ipcMain.handle(UPDATE_CHECK_CHANNEL, (event) => {
+    trusted(event.sender)
+    return updates.check()
+  })
+  ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, (event) => {
+    trusted(event.sender)
+    return updates.download()
+  })
+  ipcMain.handle(UPDATE_INSTALL_CHANNEL, async (event) => {
+    trusted(event.sender)
+    await updates.install()
+  })
+  return updates
+}
+
 function configureRenderWebviewSession(): void {
   const preview = electronSession.fromPartition(RENDER_WEBVIEW_PARTITION)
   preview.setPermissionCheckHandler(() => false)
@@ -374,6 +477,7 @@ function startDesktop(): void {
     Menu.setApplicationMenu(null)
     configureRenderWebviewSession()
     desktop = await createDesktopContext()
+    updateManager = registerUpdater()
     const startupWindow = process.argv.includes(SMOKE_FLAG) ? undefined : await createStartupWindow()
     window = startupWindow
     if (process.argv.includes(STARTUP_SMOKE_FLAG)) {
@@ -386,10 +490,22 @@ function startDesktop(): void {
       app.exit(0)
       return
     }
+    await showStartupStage(
+      startupWindow,
+      2,
+      '启动内置浏览器服务',
+      '正在建立隔离的网页与预览环境…',
+    )
     embeddedBrowser = new EmbeddedBrowserBridge(() => window)
     embeddedBrowserEndpoint = await embeddedBrowser.start()
     const currentDesktop = desktop
     currentDesktop.desktopRuntimeSupervisor.configure(runtimeLaunchRecipe())
+    await showStartupStage(
+      startupWindow,
+      3,
+      '启动 Agent 与插件运行时',
+      '正在加载账户、插件和虚拟伙伴；首次启动可能需要更长时间…',
+    )
     const url = await currentDesktop.desktopRuntimeSupervisor.start()
     if (process.argv.includes(SMOKE_FLAG)) {
       await createWindow(url, false, runtimeBootstrapToken)
@@ -405,9 +521,16 @@ function startDesktop(): void {
       app.exit(0)
       return
     }
+    await showStartupStage(
+      startupWindow,
+      4,
+      '连接工作区界面',
+      '运行时已经就绪，正在渲染你的会话与工作区…',
+    )
     await createWindow(url, true, runtimeBootstrapToken)
     startupWindow?.close()
     desktop.desktopRuntimeBridge.publish({ stage: 'ready' })
+    void updateManager.initialize().then(() => updateManager?.check())
   }).catch(async (error: unknown) => {
     console.error('[desktop] startup failed:', error)
     desktop?.desktopRuntimeBridge.publish({

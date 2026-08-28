@@ -3,7 +3,9 @@ import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/c
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-browser/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-import { ClockTopbar, ProductStatus, RuntimeStatus, WorkspaceTopbar } from './ChromeSeats.tsx'
+import { ClockTopbar, RuntimeStatus, WorkspaceTopbar } from './ChromeSeats.tsx'
+import { ProductStatus, type ProductStatusInjected } from './DesktopUpdate.tsx'
+import { DesktopUpdateController } from './desktop-update-controller.ts'
 import { WorkspaceEditor, workspaceEditor } from './WorkspaceEditor.tsx'
 import { WorkspaceExplorer } from './WorkspaceExplorer.tsx'
 import { TerminalWorkbench } from './TerminalWorkbench.tsx'
@@ -24,6 +26,8 @@ async function valueOf<T>(promise: Promise<{
 
 export function apply(ctx: ClientContext): void {
   const connection = ctx.get('connection') as ConnectionHandle
+  const updates = new DesktopUpdateController()
+  ctx.effect(() => updates.start(), 'worldline desktop update bridge')
   ctx.effect(() => {
     workspaceEditor.configure(mutation => ctx.workspaces.mutateTree(mutation))
     return () => { workspaceEditor.configure(undefined) }
@@ -51,7 +55,15 @@ export function apply(ctx: ClientContext): void {
       },
     }),
   }, RuntimeStatus))
-  ctx.slots.inject('worldline.status.right', () => ctx.slots.register({ name: 'worldline.status.right', id: 'product', order: 0 }, ProductStatus))
+  ctx.slots.inject('worldline.status.right', () => ctx.slots.register({
+    name: 'worldline.status.right', id: 'product', order: 0,
+    inject: (): ProductStatusInjected => ({
+      hooks: { update: updates.store },
+      checkUpdate: () => updates.check(),
+      downloadUpdate: () => updates.download(),
+      installUpdate: () => updates.install(),
+    }),
+  }, ProductStatus))
   // The workspace explorer is product chrome, not an optional UI plugin. The
   // Host service behind this boundary only transports sandboxed filesystem IO.
   ctx.slots.inject('worldline.workspace.right', () => ctx.slots.register({

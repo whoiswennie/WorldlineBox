@@ -56,7 +56,9 @@
     "build": "node ../../scripts/run-task.mjs build-desktop",
     "smoke": "electron lib/main.mjs --desktop-smoke-test"
   },
-  "dependencies": {},
+  "dependencies": {
+    "js-yaml": "^4.2.0"
+  },
   "devDependencies": {
     "@deepseek-ai/dsh-app-boot": "workspace:^",
     "@deepseek-ai/dsh-atomic-write": "workspace:^",
@@ -66,6 +68,7 @@
     "@deepseek-ai/dsh-home-paths": "workspace:^",
     "@deepseek-ai/dsh-local-auth": "workspace:^",
     "@types/node": "^22.20.0",
+    "@types/js-yaml": "^4.0.9",
     "electron": "41.10.3",
     "typescript": "^5.9.3",
     "tsdown": "^0.22.2"
