@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "exceptions": {
+    "packages/boot/app-boot/src/profile.ts": {
+      "deprecated package scope": "One-way persisted profile migration; never used for module resolution."
+    },
+    "packages/boot/app-boot/tests/profile.spec.ts": {
+      "deprecated package scope": "Regression fixture proving the old coordinate is removed after migration."
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
+  },
+  "files": [
+    "src/contracts.ts",
+    "src/builtin-memes.ts",
+    "src/reference-tags.ts",
+    "src/reference-expression.ts",
+    "src/knowledge-vault.ts",
+    "src/reference-vault.ts",
+    "src/resource-awareness.ts",
+    "src/actor-runtime.ts",
+    "src/index.ts",
+    "src/invariant.ts"
+  ],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../core/agent" },
+    { "path": "../../core/session" },
+    { "path": "../../preset/agent-presets" },
+    { "path": "../../llm/llm" },
+    { "path": "../../core/system-prompt" },
+    { "path": "../../core/tools" },
+    { "path": "../../host/webserver" },
+    { "path": "../../runtime-diagnostics/invariants" },
+    { "path": "../../subagent/subagent" },
+    { "path": "../../skill/skill" },
+    { "path": "../../util/atomic-write" },
+    { "path": "../../util/home-paths" }
+  ]
+}

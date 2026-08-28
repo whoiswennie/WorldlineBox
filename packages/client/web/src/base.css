@@ -1,0 +1,67 @@
+/* Shell-owned mount defaults. Theme tokens arrive with the ui-theme client
+ * plugin before the loader roster activates. */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+:root {
+  --worldline-canvas: #fbfdff;
+  --worldline-surface: #ffffff;
+  --worldline-rail: #f7fbff;
+  --worldline-sidebar: #f9fcff;
+  --worldline-border: rgb(37 96 145 / 12%);
+  --worldline-ink: #243447;
+  --worldline-muted: #7d91a6;
+  --worldline-accent: #36a5e8;
+  --worldline-accent-soft: #e7f7ff;
+  --worldline-mint: #26c6ad;
+}
+
+body[data-ds-dark-theme] {
+  --worldline-canvas: #111820;
+  --worldline-surface: #151f29;
+  --worldline-rail: #121c25;
+  --worldline-sidebar: #14202a;
+  --worldline-border: rgb(159 205 236 / 14%);
+  --worldline-ink: #e6f2fa;
+  --worldline-muted: #8ba1b2;
+  --worldline-accent: #55b8f0;
+  --worldline-accent-soft: #193849;
+  --worldline-mint: #42d2bc;
+}
+
+body {
+  font-family: var(
+    --dsw-font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    'Helvetica Neue',
+    Helvetica,
+    Arial,
+    sans-serif
+  );
+  /* Grayscale antialiasing over subpixel rendering: WebKit/Blink and the
+     Firefox macOS equivalent; other engines ignore both lines. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--dsw-alias-label-primary, #0f1115);
+  background: var(--dsw-alias-bg-base, #fff);
+}
+
+/* Form controls don't inherit the body font (UA sheets pin their families —
+   Chrome buttons fall back to Arial, textareas to monospace), so the app
+   stack is re-applied to them explicitly, as upstream's global reset does. */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}

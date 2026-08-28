@@ -1,0 +1,8 @@
+- menu:
+  - menuitem "标准模式 世界线的完整 Agent 能力组合，包含工作区、终端、技能、计划、目标与工作流。":
+    - text: 标准模式 世界线的完整 Agent 能力组合，包含工作区、终端、技能、计划、目标与工作流。
+    - img
+  - menuitem "PTC 模式 具备标准模式的全部能力，并通过 Code Mode SDK 呈现工具，让模型用一个 TypeScript 程序组合多步操作。"
+  - menuitem "极简模式 仅提供持久 bash 与 str_replace_editor 的双工具编码 Agent。"
+  - menuitem "创造模式 用于创建自定义 Agent preset：具备标准模式的全部能力，并提供运行时检查、插件实验和 preset 创作指导。"
+  - menuitem "虚拟伙伴 多角色虚拟伙伴群聊；支持 @ 邀请与协调路由，每位伙伴按独立人设交流并了解用户公开资料。"

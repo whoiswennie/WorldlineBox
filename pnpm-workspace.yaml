@@ -1,0 +1,57 @@
+packages:
+  - vendor/*
+  - packages/*/*
+  # The Landlock launcher shares this lockfile with its Harness consumers while
+  # keeping native build and publication scripts under native/landlock-run.
+  - native/landlock-run
+  - native/landlock-run/packages/*
+  - apps/*
+  - website
+  # Runnable examples form one dependency-resolution root. They are not build targets.
+  - examples
+  # Dependency-only deploy root for the Python SDK runtime closure.
+  - python/sdk-runtime
+
+linkWorkspacePackages: true
+
+# Windows launchers run a frozen install explicitly. Disabling pnpm's implicit
+# pre-script repair prevents Corepack-launched pnpm from recursively looking for
+# a globally installed `pnpm.cmd` that may not exist.
+verifyDepsBeforeRun: false
+
+overrides:
+  '@deepseek-ai/cosmokit': 'link:vendor/cosmokit'
+  '@deepseek-ai/schemastery': 'link:vendor/schemastery'
+  es-toolkit: '1.50.0'
+
+peerDependencyRules:
+  allowedVersions:
+    typescript: '>=5 <7'
+
+allowBuilds:
+  '@google/genai': false
+  '@deepseek-ai/dsh-subprocess-local@file:packages/subprocess/subprocess-local': true
+  electron: true
+  electron-winstaller: false
+  esbuild: true
+  koffi: true
+  lefthook: true
+  node: true
+  node-pty: true
+  node-addon-require-builtin: false
+  protobufjs: false
+
+minimumReleaseAgeExclude:
+  - '@earendil-works/pi-ai@0.82.1'
+  - node-addon-native-custom-loader@0.1.4
+  - node-addon-require-builtin-darwin-arm64@0.1.4
+  - node-addon-require-builtin-darwin-x64@0.1.4
+  - node-addon-require-builtin-linux-arm64-gnu@0.1.4
+  - node-addon-require-builtin-linux-x64-gnu@0.1.4
+  - node-addon-require-builtin-win32-arm64-msvc@0.1.4
+  - node-addon-require-builtin-win32-ia32-msvc@0.1.4
+  - node-addon-require-builtin-win32-x64-msvc@0.1.4
+  - node-addon-require-builtin@0.1.4
+
+patchedDependencies:
+  node-pty@1.2.0-beta.15: patches/node-pty@1.2.0-beta.15.patch

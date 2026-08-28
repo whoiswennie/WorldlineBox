@@ -1,0 +1,25 @@
+{
+  "extends": "../../../tsconfig.base.client.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "tsBuildInfoFile": "lib/tsconfig.client.tsbuildinfo",
+    "resolveJsonModule": true
+  },
+  "include": [
+    "src/client/**/*.ts",
+    "src/client/**/*.tsx",
+    "src/client/**/*.json",
+    "src/css-modules.d.ts"
+  ],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../api/remotes/tsconfig.client.json" },
+    { "path": "../runtime" },
+    { "path": "../ui-conversation" },
+    { "path": "../ui-browser/tsconfig.client.json" },
+    { "path": "../ui-layout" },
+    { "path": "../ui-primitives" },
+    { "path": "../ui-slots" }
+  ]
+}

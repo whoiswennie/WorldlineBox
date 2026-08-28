@@ -1,0 +1,40 @@
+- dialog "系统设置 配置模型、Agent、插件与交互方式":
+  - img
+  - text: 系统设置 配置模型、Agent、插件与交互方式
+  - button "打开配置文件"
+  - navigation "设置分类":
+    - button "通用设置":
+      - img
+      - strong: 通用设置
+      - text: 界面外观与基础交互 ›
+    - button "模型":
+      - img
+      - strong: 模型
+      - text: API 与模型设置 ›
+    - button "插件":
+      - img
+      - strong: 插件
+      - text: 插件与扩展管理 ›
+    - button "Agent 预设":
+      - img
+      - strong: Agent 预设
+      - text: Agent 运行策略 ›
+    - paragraph: 所有设置会自动保存并即时生效
+  - heading "插件" [level=2]
+  - paragraph: 配置和查看本部署已安装的插件。
+  - tablist "插件视图":
+    - tab "插件配置" [selected]
+  - tabpanel "插件配置":
+    - list:
+      - listitem:
+        - 'button "展开设置: 终端"':
+          - text: 终端 限制 agent 运行的每一条命令。
+          - img
+      - listitem:
+        - 'button "展开设置: Agent 循环"':
+          - text: Agent 循环 Agent 如何派发工具调用。
+          - img
+      - listitem:
+        - 'button "展开设置: 网页搜索"':
+          - text: 网页搜索 DeepSeek 搜索提供方。
+          - img

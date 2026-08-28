@@ -1,0 +1,145 @@
+.assistantList { display: grid; gap: 18px; padding: 2px 0; }
+.assistantRow { display: flex; align-items: flex-start; gap: 10px; }
+.assistantAvatar, .userAvatar, .participantAvatar {
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: 0 0 0 1px var(--dsw-alias-border-l1);
+}
+.assistantAvatar { width: 38px; height: 38px; flex: 0 0 38px; }
+.assistantAvatar img, .userAvatar img, .participantAvatar img { width: 100%; height: 100%; object-fit: cover; }
+.unknownAvatar { display: grid; width: 100%; height: 100%; place-items: center; color: var(--dsw-alias-label-tertiary); font-weight: 700; }
+.assistantBody { min-width: 0; max-width: min(720px, calc(100% - 54px)); }
+.speaker { display: block; margin: 0 0 6px 2px; color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 650; }
+.assistantBubble {
+  padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 82%, #ec7eaa 18%);
+  border-radius: 5px 16px 16px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 92%, #fff0f6 8%);
+}
+.genericMemeReply { display: grid; gap: 10px; }
+.memeToolStatus { color: var(--dsw-alias-label-tertiary); font-size: 12px; }
+.memeToolError { color: #c43f4f; font-size: 12px; }
+.toolMemeBubble { padding: 8px; }
+.meme { width: fit-content; max-width: min(420px, 72vw); margin: 8px 0 2px; overflow: hidden; }
+.meme.toolMeme { margin: 0; }
+.meme img, .meme video, .meme canvas, .meme iframe {
+  display: block; width: auto; max-width: 100%; max-height: 240px; border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2); object-fit: contain;
+}
+.meme figcaption { margin-top: 4px; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.userMeme {
+  position: relative; width: 100%; max-width: none; margin: 0; overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 82%, #d98eae 18%);
+  border-radius: 14px; background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 94%, #fff0f6 6%);
+}
+.userMeme img, .userMeme video {
+  display: block; width: 100%; height: 100%; max-height: none; border-radius: 0; object-fit: contain;
+}
+.userMeme audio { display: block; width: min(300px, 100%); }
+.userMeme > a { display: block; padding: 13px 14px; color: var(--dsw-alias-state-business-primary); }
+.userMeme figcaption {
+  position: absolute; right: 7px; bottom: 7px; max-width: calc(100% - 14px); margin: 0; padding: 3px 7px;
+  overflow: hidden; border-radius: 999px; background: rgb(22 18 24 / 62%); color: #fff;
+  font-size: 10px; line-height: 15px; opacity: 0; text-overflow: ellipsis; white-space: nowrap;
+  transform: translateY(3px); transition: opacity 140ms ease, transform 140ms ease;
+}
+.userMeme:hover figcaption, .userMeme:focus-within figcaption { opacity: 1; transform: none; }
+.missingMeme {
+  display: grid; width: 100%; min-height: 112px; place-items: center; padding: 12px;
+  color: var(--dsw-alias-label-tertiary); font-size: 11px; text-align: center;
+}
+.richUserMessage {
+  display: grid; width: fit-content; max-width: min(520px, 100%); margin-left: auto; padding: 11px;
+  gap: 9px; border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 86%, #dea0b9 14%);
+  border-radius: 18px 7px 18px 18px;
+  background: color-mix(in srgb, var(--dsw-specific-bubble) 94%, #fff5f9 6%);
+  box-shadow: 0 4px 14px rgb(94 57 74 / 4%);
+}
+.richUserMessage[data-media-only='true'] { padding: 0; border: 0; background: transparent; box-shadow: none; }
+.richUserProse { min-width: 0; padding: 0 4px; font-size: 15px; line-height: 1.65; text-align: left; }
+.richUserProse :global(p) { margin: 0; }
+.referenceGrid {
+  display: grid; width: min(408px, 64vw); max-width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px; justify-self: end;
+}
+.referenceGrid[data-reference-count='1'] { width: min(238px, 64vw); grid-template-columns: minmax(0, 1fr); }
+.referenceGrid .userMeme { aspect-ratio: 1; }
+.referenceGrid[data-reference-count='1'] .userMeme { aspect-ratio: auto; max-height: min(300px, 44vh); }
+.referenceGrid[data-reference-count='1'] .userMeme img,
+.referenceGrid[data-reference-count='1'] .userMeme video { width: auto; max-width: 100%; max-height: min(300px, 44vh); margin-left: auto; }
+.userIdentity { display: flex; justify-content: flex-end; align-items: flex-start; gap: 10px; }
+.userContent { flex: 1 1 auto; min-width: 0; max-width: calc(100% - 48px); }
+.userName { display: block; margin: 0 2px 5px 0; color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 650; text-align: right; }
+.userAvatar { display: grid; width: 38px; height: 38px; flex: 0 0 38px; place-items: center; color: var(--dsw-alias-label-secondary); font-size: 13px; font-weight: 700; }
+.userFallback { width: 100%; min-width: 0; }
+.participantStrip { display: flex; align-items: center; gap: 7px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.participantFaces { display: flex; padding-left: 5px; }
+.participantNames { max-width: 220px; overflow: hidden; color: var(--dsw-alias-label-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.participantAvatar { width: 26px; height: 26px; margin-left: -5px; border: 2px solid var(--dsw-alias-bg-base); }
+.participantInitial {
+  display: grid; width: 100%; height: 100%; place-items: center;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-2) 82%, #f3dce8 18%);
+  color: var(--dsw-alias-label-secondary); font-size: 11px; font-weight: 700;
+}
+.manage { position: relative; }
+.manage summary { list-style: none; cursor: pointer; padding: 4px 8px; border-radius: 8px; }
+.manage summary::-webkit-details-marker { display: none; }
+.manage summary:hover { background: var(--dsw-alias-bg-layer-2); }
+.managePanel {
+  position: absolute; z-index: 30; top: calc(100% + 8px); left: 0; width: 280px; padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l1); border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1); box-shadow: 0 14px 40px rgb(0 0 0 / 16%);
+}
+.ownerRow, .memberRow { display: flex; align-items: center; gap: 9px; min-height: 38px; }
+.ownerRow { padding: 0 4px 9px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.ownerBadge { margin-left: auto; color: #d58a18; font-size: 11px; }
+.memberRow { width: 100%; padding: 5px 4px; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.memberRow:hover { border-radius: 9px; background: var(--dsw-alias-bg-layer-2); }
+.memberRow i { margin-left: auto; color: var(--dsw-alias-label-tertiary); font-style: normal; }
+.memberRow[data-joined='true'] i { color: #d34c7f; }
+.smallAvatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+.roomNotice {
+  width: fit-content; margin: 8px auto; padding: 5px 11px; border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-tertiary); font-size: 12px;
+}
+.narratorCard {
+  position: relative; width: min(700px, calc(100% - 64px)); margin: 14px auto;
+  padding: 12px 16px 13px 18px; overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 84%, #ca94b2 16%);
+  border-radius: 6px 16px 16px 6px;
+  background: linear-gradient(105deg,
+    color-mix(in srgb, var(--dsw-alias-bg-layer-1) 94%, #f8e9f1 6%),
+    color-mix(in srgb, var(--dsw-alias-bg-layer-1) 97%, #eee9f9 3%));
+  box-shadow: 0 6px 22px rgb(84 55 76 / 5%);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 14px; line-height: 1.8; text-align: left;
+}
+.narratorCard::before, .narratorCard::after {
+  position: absolute; content: ''; pointer-events: none;
+}
+.narratorCard::before {
+  inset: 0 auto 0 0; width: 3px;
+  background: linear-gradient(#d67ca3, #9f87c8);
+}
+.narratorCard::after {
+  top: -30px; right: -24px; width: 90px; height: 90px; border-radius: 50%;
+  background: radial-gradient(circle, rgb(218 151 184 / 14%), transparent 68%);
+}
+.narratorBody { min-width: 0; }
+.narratorName {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 5px;
+  color: color-mix(in srgb, var(--dsw-alias-label-secondary) 74%, #b65f87 26%);
+  font-size: 11px; font-weight: 650; letter-spacing: .12em;
+}
+.narratorName::before { content: '✦'; color: #cf759f; font-size: 10px; }
+
+@media (max-width: 560px) {
+  .richUserMessage { max-width: 100%; }
+  .referenceGrid { width: min(340px, 68vw); }
+  .referenceGrid[data-reference-count='1'] { width: min(220px, 68vw); }
+}
+
+@media (hover: none) {
+  .userMeme figcaption { display: none; }
+}

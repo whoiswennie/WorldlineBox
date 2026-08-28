@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling==1.30.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "worldline-fantasy-project-runtime-bin"
+version = "0.0.0.dev0"
+description = "Pinned Worldline runtime for the Python SDK"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Worldline" }]
+
+[project.urls]
+Homepage = "https://github.com/whoiswennie/WorldlineBox"
+Documentation = "https://github.com/whoiswennie/WorldlineBox/blob/main/python/sdk-runtime/README.md"
+Issues = "https://github.com/whoiswennie/WorldlineBox/issues"
+Source = "https://github.com/whoiswennie/WorldlineBox"
+
+# Include the injected executable and default config; exclude the dev-only node
+# closure from wheels and sdists.
+[tool.hatch.build]
+artifacts = ["src/deepseek_harness_runtime/runtime/worldline-jsonrpc-agent-*"]
+exclude = ["src/deepseek_harness_runtime/runtime/node"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deepseek_harness_runtime"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+
+[tool.hatch.build.targets.sdist.hooks.custom]

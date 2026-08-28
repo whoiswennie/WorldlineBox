@@ -1,0 +1,35 @@
+.root { display:flex; flex-direction:column; min-width:0; min-height:0; width:100%; height:100%; color:var(--worldline-ink); background:var(--worldline-canvas); }
+.root svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.pageTabs { display:flex; align-items:flex-end; flex:none; min-width:0; height:44px; padding:5px 10px 0; gap:5px; box-sizing:border-box; background:color-mix(in srgb,var(--worldline-sidebar) 86%,var(--worldline-surface)); border-bottom:1px solid var(--worldline-border); }
+.browserMark { display:grid; place-items:center; width:32px; height:34px; color:var(--worldline-accent); }
+.tabScroller { display:flex; align-items:flex-end; flex:1; min-width:0; gap:3px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
+.tabScroller::-webkit-scrollbar { display:none; }
+.pageTab { display:flex; align-items:center; flex:0 1 220px; min-width:112px; max-width:240px; height:34px; color:var(--worldline-muted); background:transparent; border:1px solid transparent; border-bottom:0; border-radius:9px 9px 0 0; }
+.pageTab[data-active] { color:var(--worldline-ink); background:var(--worldline-surface); border-color:var(--worldline-border); }
+.tabSelect { display:block; flex:1; min-width:0; height:100%; padding:0 4px 0 12px; color:inherit; background:transparent; border:0; cursor:pointer; text-align:left; }
+.tabSelect>span { display:block; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+.tabClose { display:grid; place-items:center; flex:none; width:26px; height:26px; margin-right:4px; padding:0; color:inherit; background:transparent; border:0; border-radius:5px; cursor:pointer; }
+.tabClose:hover { color:var(--worldline-ink); background:var(--worldline-border); }
+.tabClose svg { width:13px; height:13px; }
+.tabSelect:disabled,.tabClose:disabled { cursor:default; }
+.iconButton,.navigation>button { display:grid; place-items:center; flex:none; width:32px; height:32px; padding:0; color:var(--worldline-muted); background:transparent; border:0; border-radius:8px; cursor:pointer; }
+.iconButton:hover,.navigation>button:hover { color:var(--worldline-ink); background:var(--worldline-accent-soft); }
+.iconButton:disabled,.navigation>button:disabled { opacity:.4; cursor:default; }
+.navigation { display:flex; align-items:center; flex:none; height:48px; padding:0 12px; gap:4px; box-sizing:border-box; background:var(--worldline-surface); border-bottom:1px solid var(--worldline-border); }
+.navigation form { display:flex; align-items:center; flex:1; min-width:0; height:34px; margin-left:4px; padding:0 12px; gap:8px; background:var(--worldline-canvas); border:1px solid var(--worldline-border); border-radius:9px; }
+.navigation form:focus-within { border-color:var(--worldline-accent); box-shadow:0 0 0 2px var(--worldline-accent-soft); }
+.navigation form span { display:grid; place-items:center; color:var(--worldline-muted); }
+.navigation form span svg { width:14px; height:14px; }
+.navigation input { width:100%; min-width:0; color:var(--worldline-ink); background:transparent; border:0; outline:0; font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.surface { position:relative; flex:1; min-width:0; min-height:0; background:white; }
+.preview { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; object-position:center; color:transparent; background:white; opacity:0; outline:0; user-select:none; -webkit-user-drag:none; }
+.preview[data-ready] { opacity:1; }
+.preview:focus-visible { box-shadow:inset 0 0 0 2px var(--worldline-accent); }
+.empty { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--worldline-muted); text-align:center; }
+.empty>span { display:grid; place-items:center; width:64px; height:64px; margin-bottom:16px; color:var(--worldline-accent); background:var(--worldline-accent-soft); border:1px solid color-mix(in srgb,var(--worldline-accent) 25%,var(--worldline-border)); border-radius:18px; }
+.empty>span svg { width:30px; height:30px; }
+.empty strong { color:var(--worldline-ink); font-size:16px; }
+.empty p { max-width:430px; margin:8px 24px 0; font-size:12px; line-height:1.65; }
+.error { display:flex; align-items:center; justify-content:space-between; flex:none; min-height:36px; padding:0 14px; color:#b72f35; background:#fff1f2; border-bottom:1px solid #f4b8bc; font-size:11px; }
+.error button { color:inherit; background:transparent; border:0; text-decoration:underline; cursor:pointer; }
+@media (max-width:720px) { .pageTab { flex-basis:160px; } .browserMark { display:none; } }

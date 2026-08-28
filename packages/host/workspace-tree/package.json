@@ -1,0 +1,18 @@
+{
+  "name": "@deepseek-ai/dsh-host-workspace-tree",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/types/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/types/index.js" },
+    "./invariant": { "types": "./lib/types/invariant.d.ts", "default": "./lib/types/invariant.js" },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "lib/invariant.js", "lib/types/**/*.js", "lib/types/**/*.d.ts"],
+  "peerDependencies": { "@deepseek-ai/cordis": "workspace:^", "@deepseek-ai/dsh-invariants": "workspace:^" },
+  "devDependencies": { "@deepseek-ai/cordis": "workspace:^", "@deepseek-ai/dsh-invariants": "workspace:^" }
+}

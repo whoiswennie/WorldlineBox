@@ -1,0 +1,49 @@
+.root { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; color: #2b394d; background: #fff; font: 12px/1.5 ui-sans-serif, system-ui, sans-serif; }
+.root button,
+.root input { font: inherit; }
+.toolbar { display: flex; align-items: center; gap: 7px; min-height: 48px; padding: 7px 10px; background: #fff; border-bottom: 1px solid #e1e7f0; }
+.toolbar > button,
+.levels button { height: 30px; padding: 0 9px; color: #5d6a7e; background: #fff; border: 1px solid #d6dde8; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.toolbar > button:hover,
+.levels button:hover { color: #315fcb; border-color: #8aa7e8; background: #f4f7ff; }
+.levels { display: flex; gap: 4px; }
+.levels button { text-transform: uppercase; font: 700 10px/1 ui-monospace, monospace; opacity: .45; }
+.levels button[aria-pressed=true] { opacity: 1; }
+.levels button[data-level=error][aria-pressed=true] { color: #a32922; background: #fff1f0; border-color: #efc1bd; }
+.levels button[data-level=warn][aria-pressed=true] { color: #8a5a00; background: #fff8e6; border-color: #ead49a; }
+.levels button[data-level=info][aria-pressed=true] { color: #215ebc; background: #eef5ff; border-color: #bfd3f1; }
+.search { display: flex; align-items: center; gap: 7px; min-width: 170px; height: 30px; margin-right: auto; padding: 0 9px; color: #7b8798; background: #f7f9fc; border: 1px solid #dce3ed; border-radius: 7px; }
+.search input { width: 150px; min-width: 70px; color: #2b394d; background: transparent; border: 0; outline: 0; }
+.toolbar .recording { color: #a32922; background: #fff1f0; border-color: #efc1bd; }
+.recording i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; background: #d4433c; border-radius: 50%; box-shadow: 0 0 0 3px rgb(212 67 60 / 12%); }
+.status { display: flex; align-items: center; gap: 15px; min-height: 33px; padding: 6px 14px; color: #7b8798; background: #fff; border-bottom: 1px solid #e1e7f0; font-size: 11px; }
+.status b { color: #34445a; }
+.status strong { color: #966200; font-weight: 500; }
+.status button { min-width: 0; margin-left: auto; overflow: hidden; color: #4776e6; background: transparent; border: 0; cursor: pointer; text-overflow: ellipsis; white-space: nowrap; }
+.error { display: flex; justify-content: space-between; padding: 7px 13px; color: #9f2923; background: #fff1f0; border-bottom: 1px solid #f4c7c3; }
+.error button { color: inherit; background: transparent; border: 0; cursor: pointer; }
+.viewport { flex: 1 1 0; min-height: 0; overflow: auto; background: #fff; scrollbar-color: #c6cfdb transparent; scrollbar-width: thin; }
+.row { display: grid; grid-template-columns: 92px 49px minmax(100px, 180px) 1fr; align-items: center; gap: 10px; width: 100%; height: 30px; padding: 0 14px; color: #405069; text-align: left; background: transparent; border: 0; border-bottom: 1px solid #edf1f6; cursor: pointer; }
+.row:hover { background: #f2f6fc; }
+.row[aria-selected=true] { background: #eaf1ff; box-shadow: inset 3px 0 #4776e6; }
+.row time { color: #8a95a5; font: 11px/1 ui-monospace, monospace; }
+.badge { justify-self: start; padding: 2px 5px; border-radius: 4px; text-transform: uppercase; font: 700 9px/1.2 ui-monospace, monospace; }
+.row[data-level=error] .badge { color: #a32922; background: #ffebe9; }
+.row[data-level=warn] .badge { color: #8a5a00; background: #fff2cb; }
+.row[data-level=info] .badge { color: #215ebc; background: #e6f0ff; }
+.row[data-level=debug] .badge { color: #657286; background: #edf0f4; }
+.source { overflow: hidden; color: #596a82; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.message { overflow: hidden; color: #2e3c50; font: 12px/1.4 "Cascadia Code", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.empty { padding: 34px; color: #8a95a5; text-align: center; }
+.detail { flex: 0 0 auto; max-height: 34%; padding: 10px 14px 14px; overflow: auto; background: #fff; border-top: 1px solid #d9e1ec; box-shadow: 0 -5px 18px rgb(47 67 98 / 5%); }
+.detail > div { display: flex; align-items: center; gap: 10px; color: #7b8798; }
+.detail b { padding: 2px 6px; color: #536177; background: #edf0f4; border-radius: 4px; text-transform: uppercase; font-size: 9px; }
+.detail strong { color: #34445a; }
+.detail button { margin-left: auto; color: #4776e6; background: transparent; border: 0; cursor: pointer; }
+.detail button + button { margin-left: 0; }
+.detail pre { margin: 10px 0 0; color: #27364a; font: 12px/1.55 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 980px) {
+  .toolbar > button:nth-of-type(-n+2) { display: none; }
+  .status span:nth-of-type(n+2) { display: none; }
+  .row { grid-template-columns: 82px 45px 120px 1fr; }
+}

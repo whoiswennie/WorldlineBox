@@ -1,0 +1,103 @@
+.root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--worldline-ink);
+  background: var(--worldline-surface);
+  font-size: 13px;
+}
+
+.root button { color: inherit; font: inherit; }
+.root > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 17px 18px 15px; border-bottom: 1px solid var(--worldline-border); }
+.root > header > div:first-child { display: grid; min-width: 0; gap: 4px; }
+.root > header strong { font-size: 15px; }
+.root > header span { overflow: hidden; color: var(--worldline-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.root > header button,
+.toolbar button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; background: transparent; border: 0; border-radius: 7px; cursor: pointer; }
+.root > header button:hover,
+.toolbar button:hover { color: var(--worldline-accent); background: var(--worldline-accent-soft); }
+
+.toolbar { display: flex; align-items: center; justify-content: space-between; min-height: 42px; padding: 5px 10px 5px 16px; border-bottom: 1px solid var(--worldline-border); color: var(--worldline-muted); text-transform: uppercase; letter-spacing: .04em; }
+.toolbar > div { display: flex; }
+.toolbar button:disabled { opacity: .35; cursor: not-allowed; }
+.toolbar .clearWorkspace:not(:disabled) { color: #d92d20; }
+.toolbar .clearWorkspace:not(:disabled):hover { color: #b42318; background: #fff1f0; }
+
+.searchBar { display: flex; align-items: center; gap: 8px; margin: 9px 10px 3px; padding: 0 10px; color: var(--worldline-muted); background: color-mix(in srgb, var(--worldline-ink) 4%, transparent); border: 1px solid transparent; border-radius: 8px; }
+.searchBar:focus-within { color: var(--worldline-accent); background: var(--worldline-surface); border-color: var(--worldline-accent); box-shadow: 0 0 0 2px var(--worldline-accent-soft); }
+.searchBar input { width: 100%; min-width: 0; height: 34px; padding: 0; color: var(--worldline-ink); background: transparent; border: 0; outline: none; font: inherit; }
+.searchBar input::placeholder { color: var(--worldline-muted); }
+.searchBar input:disabled { cursor: not-allowed; }
+.searchBar button { display: grid; width: 20px; height: 20px; padding: 0; place-items: center; color: var(--worldline-muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
+.searchBar button:hover { color: var(--worldline-ink); background: var(--worldline-accent-soft); }
+
+/* The tree owns all remaining panel height, so its horizontal scrollbar stays
+   at the physical bottom of the resource manager instead of under the last row. */
+.treePane { min-height: 0; flex: 1 1 0; overflow: auto; padding: 7px 5px 18px; }
+.level { margin: 0; padding: 0; list-style: none; }
+.row { display: flex; align-items: center; gap: 7px; width: 100%; height: 30px; margin: 0; padding: 0 10px; overflow: hidden; background: transparent; border: 0; border-radius: 5px; text-align: left; white-space: nowrap; }
+.row { cursor: default; }
+.row:hover,
+.row[data-dragover=true] { background: color-mix(in srgb, var(--worldline-accent-soft) 78%, transparent); }
+.row:focus-visible { outline: 1px solid var(--worldline-accent); outline-offset: -1px; }
+.name { overflow: hidden; text-overflow: ellipsis; }
+.row > svg { flex: 0 0 auto; color: var(--worldline-muted); }
+.row > svg:nth-child(2) { color: #4b85e7; }
+.chevronSpace { width: 14px; flex: 0 0 14px; }
+.fileGlyph { display: inline-grid; place-items: center; width: 16px; height: 16px; flex: 0 0 16px; color: #8794a5; }
+.fileGlyph svg { display: block; }
+.fileGlyph[data-kind=image] { color: #9a69cf; }
+.fileGlyph[data-kind=audio] { color: #3ca58a; }
+.fileGlyph[data-kind=video] { color: #d27752; }
+.fileGlyph[data-kind=text] { color: #5b7fa3; }
+.fileGlyph[data-kind=code] { color: #4976c5; }
+.fileGlyph[data-kind=data] { color: #c58a32; }
+.fileGlyph[data-kind=archive] { color: #a66a3f; }
+.fileGlyph[data-kind=pdf] { color: #d04a48; }
+.fileGlyph[data-kind=document] { color: #3876c6; }
+.fileGlyph[data-kind=spreadsheet] { color: #2d925f; }
+.fileGlyph[data-kind=presentation] { color: #cf7136; }
+.searchResults { display: grid; align-content: start; }
+.searchResult { display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 7px 11px; color: inherit; background: transparent; border: 0; border-radius: 7px; text-align: left; cursor: pointer; }
+.searchResult:hover { background: color-mix(in srgb, var(--worldline-accent-soft) 78%, transparent); }
+.searchResult > span:last-child { display: grid; min-width: 0; gap: 2px; }
+.searchResult strong,
+.searchResult small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.searchResult strong { font-size: 12px; font-weight: 600; }
+.searchResult small { color: var(--worldline-muted); font-size: 10px; }
+.searchSummary { position: sticky; bottom: -18px; margin-top: 5px; padding: 8px 12px; color: var(--worldline-muted); background: color-mix(in srgb, var(--worldline-surface) 94%, transparent); border-top: 1px solid var(--worldline-border); font-size: 10px; backdrop-filter: blur(8px); }
+.note,
+.empty { padding: 14px 24px; color: var(--worldline-muted); line-height: 1.55; }
+.error,
+.errorBanner { color: #b42318; }
+.error { padding: 7px 18px; }
+.errorBanner { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 8px 14px; background: #fff2f0; border-bottom: 1px solid #ffd2cc; font-size: 11px; line-height: 1.45; }
+.errorBanner button { background: transparent; border: 0; cursor: pointer; }
+
+.menu { position: fixed; z-index: 1000; display: grid; width: 210px; padding: 6px; background: var(--worldline-surface); border: 1px solid var(--worldline-border); border-radius: 10px; box-shadow: 0 12px 38px rgba(24, 36, 50, .18); }
+.menu button { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 11px; background: transparent; border: 0; border-radius: 6px; text-align: left; cursor: pointer; }
+.menu button:hover { background: var(--worldline-accent-soft); }
+.menu hr { width: 100%; margin: 5px 0; border: 0; border-top: 1px solid var(--worldline-border); }
+.menu .danger { color: #d92d20; }
+
+.modalBackdrop { position: fixed; inset: 0; z-index: 1100; display: grid; place-items: center; background: rgba(17, 24, 39, .28); backdrop-filter: blur(2px); }
+.prompt { display: grid; gap: 16px; width: min(380px, calc(100vw - 36px)); padding: 22px; background: var(--worldline-surface); border: 1px solid var(--worldline-border); border-radius: 14px; box-shadow: 0 20px 60px rgba(17, 24, 39, .2); }
+.prompt strong { font-size: 16px; }
+.prompt input { height: 40px; padding: 0 12px; color: inherit; background: transparent; border: 1px solid var(--worldline-border); border-radius: 8px; outline: none; }
+.prompt input:focus { border-color: var(--worldline-accent); box-shadow: 0 0 0 3px var(--worldline-accent-soft); }
+.prompt > div { display: flex; justify-content: flex-end; gap: 8px; }
+.prompt button { min-width: 72px; padding: 8px 14px; background: transparent; border: 1px solid var(--worldline-border); border-radius: 8px; cursor: pointer; }
+.prompt button[type=submit] { color: white; background: var(--worldline-accent); border-color: var(--worldline-accent); }
+
+.confirmation { display: grid; grid-template-columns: 42px minmax(0,1fr); gap: 14px; width: min(430px,calc(100vw - 36px)); padding: 22px; background: var(--worldline-surface); border: 1px solid var(--worldline-border); border-radius: 14px; box-shadow: 0 20px 60px rgba(17,24,39,.2); }
+.confirmIcon { display: grid; width: 42px; height: 42px; place-items: center; color: #d92d20; background: #fff1f0; border-radius: 11px; }
+.confirmation strong { display: block; margin: 2px 0 7px; font-size: 16px; }
+.confirmation p { margin: 0; color: var(--worldline-muted); font-size: 12px; line-height: 1.65; }
+.confirmation footer { grid-column: 1/-1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 5px; }
+.confirmation button { min-width: 76px; padding: 8px 15px; background: transparent; border: 1px solid var(--worldline-border); border-radius: 8px; cursor: pointer; }
+.confirmation .confirmDanger { color: white; background: #d92d20; border-color: #d92d20; }

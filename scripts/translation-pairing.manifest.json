@@ -1,0 +1,13 @@
+{
+  "excluded": [
+    "docs/AGENTS.md",
+    "docs/capability-seams.md",
+    "docs/config-catalog.md",
+    "docs/cordis-api/inherited.md",
+    "docs/event-producer-consumer.md",
+    "docs/i18n/style-samples.md",
+    "docs/i18n/terminology.md",
+    "docs/i18n/translation-prompt.md",
+    "docs/persistence-catalog.md"
+  ]
+}

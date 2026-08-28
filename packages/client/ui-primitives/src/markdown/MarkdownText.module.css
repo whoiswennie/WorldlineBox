@@ -1,0 +1,448 @@
+/* Visual baseline: deepsuite `@deepseek/md` markdown.css, adapted to CSS
+   Modules. Cite pills, header anchors, and thinking-small variants are
+   intentionally absent (no matching DOM). Token names match that sheet. */
+
+.markdown {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font: var(--dsw-font-markdown-base);
+  color: var(--dsw-alias-label-primary);
+}
+
+.markdown strong {
+  font-weight: 600;
+}
+
+.markdown h1 {
+  font: var(--dsw-font-markdown-h1);
+  margin: 32px 0 16px;
+}
+
+.markdown h2 {
+  font: var(--dsw-font-markdown-h2);
+  margin: 32px 0 16px;
+}
+
+.markdown h3 {
+  font: var(--dsw-font-markdown-h3);
+  margin: 32px 0 16px;
+}
+
+.markdown h4 {
+  font: var(--dsw-font-markdown-h4);
+  margin: 16px 0;
+}
+
+.markdown :where(h5, h6) {
+  font: var(--dsw-font-markdown-base-strong);
+  margin: 16px 0;
+}
+
+.markdown :where(h1, h2, h3, h4, h5, h6) strong {
+  font-weight: inherit;
+}
+
+.markdown p {
+  margin: 16px 0;
+}
+
+/* Tighten h4–h6 against a following list (design: 8px gap). */
+.markdown :where(h4, h5, h6) + :where(ul, ol) {
+  margin-top: 8px;
+}
+
+.markdown :where(h4, h5, h6):has(+ :where(ul, ol)) {
+  margin-bottom: 8px;
+}
+
+.markdown a {
+  /* deepsuite markdown.css uses brand-text (blue in newDesign); this sheet
+     keeps design-platform brand-text as near-black, so links use the blue
+     business-primary alias instead. */
+  color: var(--dsw-alias-state-business-primary);
+  transition: box-shadow var(--ds-transition-duration) var(--ds-ease-in-out);
+  position: relative;
+  text-decoration: none;
+  /* Transparent hit-area padding; literal zero-alpha only (no painted color). */
+  border-left: 3px solid rgb(255 255 255 / 0);
+  border-right: 3px solid rgb(255 255 255 / 0);
+  border-top: 2px solid rgb(255 255 255 / 0);
+  border-bottom: 2px solid rgb(255 255 255 / 0);
+  margin-left: -3px;
+  margin-right: -3px;
+}
+
+.markdown a:hover,
+.markdown a:focus {
+  outline: none;
+  text-decoration: underline var(--dsw-alias-state-business-primary);
+}
+
+.markdown a:focus-visible {
+  box-shadow: 0 0 0 2px var(--dsw-alias-state-business-primary);
+}
+
+.markdown :where(ul, ol) {
+  margin: 16px 0;
+  padding-left: 18px;
+}
+
+.markdown li:not(:first-child) {
+  margin-top: 6px;
+}
+
+.markdown li > :where(ul, ol) {
+  margin-top: 4px;
+}
+
+.markdown li::marker {
+  line-height: 28px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Nested ol under ul/ol: markers inside (models sometimes emit this shape). */
+.markdown :where(ul, ol) ol {
+  list-style-position: inside;
+  padding-left: 0;
+}
+
+.markdown :where(ul, ol) ol li p {
+  display: inline;
+}
+
+.markdown li > p {
+  margin: 8px 0;
+}
+
+.markdown li > *:first-child {
+  margin-top: 0;
+}
+
+/* Keep list-nested code-block vertical margins (design: +4px vs other last children). */
+.markdown li > *:last-child:not(:global(.md-code-block)) {
+  margin-bottom: 0;
+}
+
+.markdown hr {
+  display: block;
+  border: none;
+  height: 1px;
+  margin: 32px 0;
+  background: var(--dsw-alias-border-l2);
+}
+
+.markdown blockquote {
+  border-left: 2px solid var(--dsw-alias-label-caption);
+  margin: 16px 0 0;
+  padding-left: 14px;
+}
+
+.markdown pre {
+  margin: 16px 0;
+  font-family: var(--ds-font-family-code);
+  overflow: auto;
+}
+
+.markdown :not(pre) > code {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  font: var(--dsw-font-markdown-code);
+  font-family: var(--ds-font-family-code);
+  font-size: 0.875em !important;
+  background-color: var(--dsw-alias-markdown-inline-code);
+  border-radius: 6px;
+  padding: 0 5px;
+}
+
+.markdown :where(h1, h2, h3, h4, h5, h6) code {
+  font: inherit;
+  font-family: var(--ds-font-family-code);
+}
+
+.markdown :global(.katex-display) {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.mermaidFigure,
+.mermaidStatus,
+.mermaidError {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 16px 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.mermaidFigure {
+  overflow: auto;
+  padding: 18px;
+}
+
+.mermaidSvg {
+  display: grid;
+  min-width: min-content;
+  padding: 8px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--dsw-static-neutral-00);
+}
+
+.mermaidSvg svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaidStatus {
+  padding: 24px;
+  color: var(--dsw-alias-label-secondary);
+  text-align: center;
+}
+
+.mermaidError {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.mermaidError > strong {
+  color: var(--dsw-alias-label-primary);
+}
+
+.mermaidError > span {
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-markdown-code);
+  white-space: pre-wrap;
+}
+
+.browserRenderFigure {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 16px 0;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.browserRenderHeader {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.browserRenderHeader > span {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.browserRenderHeader strong {
+  font: var(--dsw-font-markdown-base-strong);
+}
+
+.browserRenderHeader small {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.browserRenderHeader button {
+  flex: none;
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.browserRenderHeader button:hover,
+.browserRenderHeader button:focus-visible {
+  border-color: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-state-business-primary);
+  outline: none;
+}
+
+.browserRenderViewport {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 320px;
+  min-height: 160px;
+  max-height: 720px;
+  overflow: hidden;
+  resize: vertical;
+  background: var(--dsw-static-neutral-00);
+}
+
+.browserRenderGuest {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.browserRenderLoading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-base);
+  pointer-events: none;
+}
+
+.browserRenderError,
+.browserRenderUnavailable {
+  padding: 16px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.browserRenderError {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-state-error-primary);
+  font: var(--dsw-font-markdown-code);
+  white-space: pre-wrap;
+}
+
+.browserRenderSource {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.browserRenderSource > summary {
+  padding: 10px 12px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.browserRenderSource > :global(.md-code-block) {
+  margin: 0;
+  border-radius: 0;
+}
+
+.markdown input[type='checkbox'] {
+  margin: 0 8px 0 0;
+  accent-color: var(--dsw-alias-label-secondary);
+}
+
+.tableScroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/* Chromium keyboard-focuses scrollable containers by default; the ring uses
+   the sheet's link focus color. */
+.tableScroll:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-state-business-primary);
+}
+
+/* Many-column tables (the renderer's `md-table-wide` hook) keep their
+   natural width and scroll inside the wrapper; a hosting layout may widen
+   the wrapper through the hook (deepsuite chat TableWrapper parity). */
+.tableScroll table {
+  border-collapse: collapse;
+  width: max-content;
+  max-width: max-content;
+}
+
+/* Tables under four columns, and any table inside a blockquote, fill the
+   column instead: cells wrap down to their minimum readable width, and the
+   wrapper's scroll only remains for the below-floor case (deepsuite chat
+   parity: `.wrapper:not(:has(th:nth-child(4), td:nth-child(4)))`). */
+.tableFill table {
+  width: 100%;
+  max-width: none;
+}
+
+.tableScroll th {
+  text-align: start;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--dsw-alias-border-l3);
+  border-top: none;
+  font: var(--dsw-font-markdown-table-head);
+  max-width: 320px;
+  max-width: min(30vw, 320px);
+  min-width: 100px;
+}
+
+.tableScroll td {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  font: var(--dsw-font-markdown-table);
+  max-width: 320px;
+  max-width: min(30vw, 320px);
+  min-width: 100px;
+}
+
+.tableScroll th:first-child,
+.tableScroll td:first-child {
+  padding-left: 0;
+}
+
+.tableScroll td:last-child {
+  padding-right: 0;
+}
+
+.tableScroll table code {
+  font-size: 13px;
+}
+
+.markdown > *:first-child,
+.markdown p:first-child {
+  margin-top: 0 !important;
+}
+
+.markdown > *:last-child,
+.markdown p:last-child {
+  margin-bottom: 0 !important;
+}
+
+.imageAlt {
+  color: var(--dsw-alias-label-tertiary);
+  font-style: italic;
+}
+
+.image {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  margin: 0;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  object-fit: contain;
+}
+
+/* Inline file mention: the same link language this sheet gives anchors (and
+   thereby URL-promoted inline code) — link-blue at rest, underline only on
+   hover/focus. An underline at rest reads badly inside the code chip, where
+   it collides with monospace descenders and the pill background. */
+.fileMention {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--dsw-alias-state-business-primary);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.fileMention:hover,
+.fileMention:focus {
+  outline: none;
+  text-decoration: underline var(--dsw-alias-state-business-primary);
+  text-underline-offset: 3px;
+}

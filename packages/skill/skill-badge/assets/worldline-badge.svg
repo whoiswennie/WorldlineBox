@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="726" height="120" viewBox="0 0 726 120" role="img" aria-label="powered by Worldline">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#27225c" />
+      <stop offset="1" stop-color="#6557ff" />
+    </linearGradient>
+  </defs>
+  <rect width="726" height="120" rx="12" fill="url(#background)" />
+  <g transform="translate(66 60) rotate(45)" fill="none" stroke="#83ddff" stroke-width="8" stroke-linejoin="round">
+    <rect x="-23" y="-23" width="46" height="46" rx="2" />
+  </g>
+  <circle cx="66" cy="60" r="8" fill="#f6fbff" />
+  <text x="130" y="50" fill="#f6fbff" font-family="Segoe UI, Arial, sans-serif" font-size="20">powered by</text>
+  <text x="254" y="88" fill="#ffffff" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="600">Worldline</text>
+</svg>

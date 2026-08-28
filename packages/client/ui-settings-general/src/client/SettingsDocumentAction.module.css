@@ -1,0 +1,26 @@
+.action {
+  display: flex;
+  flex: none;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.action > button {
+  flex: none;
+  height: 30px;
+  padding-inline: 10px;
+  border-radius: 15px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.error {
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

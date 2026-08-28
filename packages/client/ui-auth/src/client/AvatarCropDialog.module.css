@@ -1,0 +1,30 @@
+.backdrop { position: fixed; inset: 0; z-index: 3000; display: grid; place-items: center; padding: 20px; background: rgb(15 23 42 / 48%); backdrop-filter: blur(5px); }
+.dialog { width: min(500px, 100%); overflow: hidden; color: var(--worldline-ink); background: var(--worldline-surface); border: 1px solid var(--worldline-border); border-radius: 20px; box-shadow: 0 30px 80px rgb(15 23 42 / 24%); }
+.dialog > header { display: flex; align-items: center; gap: 12px; padding: 17px 20px; border-bottom: 1px solid var(--worldline-border); }
+.dialog > header > div { flex: 1; min-width: 0; }
+.dialog h3, .dialog p { margin: 0; }
+.dialog h3 { font-size: 14px; line-height: 22px; }
+.dialog p { margin-top: 2px; color: var(--worldline-muted); font-size: 11px; line-height: 17px; }
+.headerIcon { display: grid; place-items: center; width: 36px; height: 36px; color: var(--worldline-accent); background: var(--worldline-accent-soft); border-radius: 11px; }
+.dialog svg { width: 16px; height: 16px; fill: none; stroke: currentcolor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.dialog button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 0 13px; color: var(--worldline-ink); font: inherit; font-size: 12px; background: var(--worldline-surface); border: 1px solid var(--worldline-border); border-radius: 10px; cursor: pointer; }
+.dialog > header > button { width: 36px; padding: 0; color: var(--worldline-muted); border-color: transparent; background: transparent; }
+.dialog button:hover { background: var(--worldline-canvas); }
+.body { padding: 20px; }
+.viewport { position: relative; width: min(360px, 100%); aspect-ratio: 1; margin: 0 auto; overflow: hidden; touch-action: none; cursor: grab; border-radius: 16px; background-color: var(--worldline-sidebar); background-image: linear-gradient(45deg, rgb(148 163 184 / 12%) 25%, transparent 25%), linear-gradient(-45deg, rgb(148 163 184 / 12%) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgb(148 163 184 / 12%) 75%), linear-gradient(-45deg, transparent 75%, rgb(148 163 184 / 12%) 75%); background-size: 20px 20px; }
+.viewport:active { cursor: grabbing; }
+.viewport img { position: absolute; top: 50%; left: 50%; max-width: none; user-select: none; pointer-events: none; transform-origin: center; }
+.safeArea { position: absolute; inset: 7%; border: 2px dashed rgb(255 255 255 / 90%); border-radius: 50%; box-shadow: 0 0 0 999px rgb(0 0 0 / 18%); pointer-events: none; }
+.horizontal, .vertical { position: absolute; pointer-events: none; }
+.horizontal { top: 50%; right: 0; left: 0; border-top: 1px solid rgb(255 255 255 / 32%); }
+.vertical { top: 0; bottom: 0; left: 50%; border-left: 1px solid rgb(255 255 255 / 32%); }
+.zoom { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+.zoom button { width: 34px; min-height: 34px; padding: 0; }
+.zoom input { flex: 1; min-width: 0; accent-color: var(--worldline-accent); }
+.zoom span { width: 42px; color: var(--worldline-muted); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
+.dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
+.dialog footer > div { display: flex; gap: 8px; }
+.dialog .reset { color: var(--worldline-muted); }
+.dialog .primary { color: white; background: var(--worldline-accent); border-color: var(--worldline-accent); }
+.dialog .primary:hover { filter: brightness(.96); background: var(--worldline-accent); }
+@media (max-width: 520px) { .body { padding: 16px; } .dialog footer { align-items: stretch; flex-direction: column; } .dialog footer > div { justify-content: flex-end; } }

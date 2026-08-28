@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../vendor/cordis" },
+    { "path": "../../vendor/timer" },
+    { "path": "../../packages/boot/app-boot" },
+    { "path": "../../packages/util/atomic-write" },
+    { "path": "../../packages/util/home-paths" },
+    { "path": "../../packages/auth/local-auth" }
+  ]
+}

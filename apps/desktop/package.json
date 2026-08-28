@@ -1,0 +1,73 @@
+{
+  "name": "worldline-box-desktop",
+  "description": "Worldline desktop application with supervised Cordis Host lifecycle",
+  "version": "0.1.0",
+  "author": "这就是天幻呀",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/main.mjs",
+  "build": {
+    "npmRebuild": false,
+    "electronDist": "../../node_modules/electron/dist",
+    "afterPack": "./scripts/after-pack.cjs",
+    "appId": "fantasy.worldline.desktop",
+    "productName": "世界线",
+    "electronLanguages": ["zh-CN"],
+    "directories": {
+      "output": "../../release/desktop"
+    },
+    "files": [
+      "lib/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "../../dist/runtime/package.json", "to": "runtime/package.json" },
+      { "from": "../../dist/runtime/config", "to": "runtime/config", "filter": ["**/*"] },
+      { "from": "../../dist/runtime/lib", "to": "runtime/lib", "filter": ["**/*"] },
+      { "from": "../../dist/runtime/node_modules", "to": "runtime/node_modules", "filter": ["**/*"] },
+      { "from": "../../resources/tools/ffmpeg/windows-x64", "to": "tools/ffmpeg/windows-x64", "filter": ["**/*"] },
+      { "from": "../../resources/tools/yt-dlp/windows-x64", "to": "tools/yt-dlp/windows-x64", "filter": ["**/*"] },
+      { "from": "../../resources/tools/README.md", "to": "tools/README.md" },
+      { "from": "../../THIRD_PARTY_NOTICES.md", "to": "THIRD_PARTY_NOTICES.md" },
+      { "from": "../../LICENSE", "to": "LICENSE" },
+      { "from": "../../build/icon.ico", "to": "app-icon.ico" },
+      { "from": "../../build/startup-logo.png", "to": "app-logo.png" }
+    ],
+    "icon": "../../build/icon.ico",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "../../build/icon.ico"
+    },
+    "win": {
+      "icon": "../../build/icon.ico",
+      "signAndEditExecutable": true
+    },
+    "linux": {
+      "icon": "../../build/icon.ico",
+      "target": "AppImage"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://gitee.com/whoiswennie/worldline-fantasy-updates/raw/master"
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/run-task.mjs build-desktop",
+    "smoke": "electron lib/main.mjs --desktop-smoke-test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@deepseek-ai/dsh-app-boot": "workspace:^",
+    "@deepseek-ai/dsh-atomic-write": "workspace:^",
+    "@deepseek-ai/dsh": "workspace:^",
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/cordis-plugin-timer": "workspace:^",
+    "@deepseek-ai/dsh-home-paths": "workspace:^",
+    "@deepseek-ai/dsh-local-auth": "workspace:^",
+    "@types/node": "^22.20.0",
+    "electron": "41.10.3",
+    "typescript": "^5.9.3",
+    "tsdown": "^0.22.2"
+  }
+}

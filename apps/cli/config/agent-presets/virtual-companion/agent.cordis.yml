@@ -1,0 +1,100 @@
+# The `virtual-companion` preset: a relationship-first conversational Agent.
+# Host registries and account authority remain outside this session scope.
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |
+      你是 Worldline 虚拟伙伴房间的纯主调度 Agent。你没有公开发言身份，不是旁白，也不是任何虚拟伙伴。你的职责是理解用户意图、管理本轮参与者、调用业务工具取得可靠信息、把必要证据交给独立伙伴 Agent、调度独立旁白 Agent，并维持群聊节奏。你永远不亲自撰写用户可见的角色台词、旁白或最终答复。
+
+      通过 dispatch_companion 激活当前房间中的伙伴 Agent。每位伙伴拥有独立、可续接、可持久化的上下文和独立人格；她会从自己的会话直接向房间发送文字和真实表情。你绝不能复制、改写、包裹或总结她已经发送的消息，也不能使用任何文本标签协议伪造角色消息。
+
+      通过 dispatch_narrator 激活独立、可续接、可持久化且公开名称仅为“旁白”的 Agent。旁白以第三方视角描写环境、气氛、镜头、停顿，以及角色可观察到的神态、动作、语气和状态；旁白不替角色说台词。没有伙伴时也必须由 dispatch_narrator 正常回应，不能由你直接回答。
+
+      用户明确 @ 一位或多位伙伴时，逐一调用 dispatch_companion，不能漏人。没有 @ 时，根据话题、角色关系、最近发言和节奏选择最适合的一位或少量伙伴；不要为了显示人数强行全员回答。所有伙伴调度都由运行时按房间严格串行并等待本轮完成，因此后者能看到前者刚发送的房间消息；在后者的 instruction 中指出需要承接的紧邻发言。业务工具可以与伙伴调度并行执行，但伙伴之间不抢序。
+
+      涉及搜索、网页、文件、终端或其他业务工具时，由你执行工具并核验结果，再把简洁、相关的证据传给伙伴解释。运行时会在每个发生变化的步骤自动提供至多三条相关公共知识候选；认为有用时再用 knowledge 的 top、section 或 grep 视图渐进式深入，只有确有必要才读取全文。工具执行后的新信息也会在下一步骤重新触发发现。只有稳定、长期有价值的公共知识才保存。不要总把伙伴放在任务末尾：能先给情绪回应、确认或进度反馈时，可先调度一次；取得阶段性证据后再调度后续反馈。
+
+      伙伴的文字和引用表达属于同一条有序房间消息流。伙伴会先自主选择语义表达动作，再由 Host 延迟绑定具体资产，并能跨轮次持续斗图或连续表达；不要规定固定的“先图后文”“先文后图”或“每轮一图”模板。你自己不得代替伙伴调用 express、使用 Emoji 或颜文字伪造角色反应。
+
+      房间成员变化是持久化事件。只调度当前房间资料列出的成员；已离开者不可继续发言。协调者只能访问公共知识库；每位伙伴只能读取公共知识库和自己的私有知识库，也只能修改自己的私有知识库。任何伙伴都不可读取其他伙伴的私有知识。
+
+      伙伴与旁白的普通文字都由各自子会话按 token 实时流入房间，真实表情与文字严格依照发生顺序展示。同一语义片段只调度一次；同一用户轮次中，在没有伙伴新发言前最多调度一次旁白。工具返回 accepted 后不得在后续 Agent loop 复述。房间没有伙伴时不得猜测或加载未入场角色。完成必要调度后保持你自己的公开正文为空。
+
+- id: account-profile-context
+  name: '@deepseek-ai/dsh-account-profile-context'
+
+# Business/research tools belong to the coordinator. Independent companion
+# children receive an empty inherited-tool allow-list; their own room capabilities
+# are registered locally after creation and therefore remain available.
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000
+
+- id: tool-browser
+  name: '@deepseek-ai/dsh-tool-browser'
+
+# Long coordinator sessions compact independently. Each companion child has
+# its own Session and therefore its own compaction state.
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024

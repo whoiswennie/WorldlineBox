@@ -1,0 +1,40 @@
+{
+  "extends": "../../../tsconfig.base.client.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "tsBuildInfoFile": "lib/tsconfig.client.tsbuildinfo"
+  },
+  "files": [
+    "src/contracts.ts",
+    "src/client/CompanionChat.tsx",
+    "src/client/CompanionExperience.tsx",
+    "src/client/CompanionMemePicker.tsx",
+    "src/client/RoomEvents.tsx",
+    "src/client/reference-source.ts",
+    "src/client/reference-client.ts",
+    "src/client/reference-renderer.tsx",
+    "src/client/store.ts",
+    "src/client/VirtualCompanionNavItem.tsx",
+    "src/client/KnowledgeVaultNavItem.tsx",
+    "src/client/KnowledgeVaultPage.tsx",
+    "src/client/VirtualCompanionPage.tsx",
+    "src/client/index.ts",
+    "src/client/locales.ts",
+    "src/css-modules.d.ts"
+  ],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../api/remotes/tsconfig.client.json" },
+    { "path": "../connection/tsconfig.client.json" },
+    { "path": "../locale" },
+    { "path": "../runtime" },
+    { "path": "../ui-auth/tsconfig.client.json" },
+    { "path": "../ui-conversation" },
+    { "path": "../ui-input-trigger" },
+    { "path": "../ui-layout" },
+    { "path": "../ui-primitives" },
+    { "path": "../ui-slots" },
+    { "path": "../ui-tool" }
+  ]
+}

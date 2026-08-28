@@ -1,0 +1,243 @@
+/* Sidebar column (figma 133:7629): vertical stack, padding 12/6, sidebar
+   fill + 1px right border painted by the layout column. Collapse is a
+   slide + crossfade, not a morph: the content holds its frozen expanded
+   layout (inline width set by the component) and fades in place (.fading)
+   while the sliding column (AppFrame grid tracks) clips it; the rail layout
+   (.collapsed) only applies after the fade settles, so nothing reflows
+   mid-slide. */
+
+.root {
+  --worldline-sidebar-inline-padding: 12px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0 var(--worldline-sidebar-inline-padding) 8px;
+  box-sizing: border-box;
+  background: var(--dsw-specific-sidebar-fill);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  /* The sidebar is elevated above the conversation surface, so a revealed
+     scrollbar uses the l2 pair. .quietBars hides it without changing layout. */
+  --worldline-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --worldline-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+/* Collapsed rail geometry: 36x36 controls centered in the narrow rail. */
+.root.collapsed {
+  padding: 18px 10px 6px;
+}
+
+/* Scrollbars in the column are a pointer affordance: the shell adds this
+   class whenever the pointer is not inside (SidebarRoot.tsx owns the linger),
+   and rebinding ui-theme's indirection pair to `transparent` takes the thumb
+   out of every scroll region nested under it — the workspace browser's
+   session list today. `transparent` rather than `display: none` on the bar:
+   the reservation (`scrollbar-gutter: stable` on the list) stays in force, so
+   revealing the thumb never reflows a row. Rebinding contract and the two
+   rendering paths it reaches: ui-theme's README. */
+.root.quietBars {
+  --worldline-scrollbar-thumb: transparent;
+  --worldline-scrollbar-thumb-hover: transparent;
+}
+
+/* Collapse phase 1: the whole frozen-width content fades out in place over
+   150ms; at settle the children unmount/snap to the rail layout. */
+.fading > * {
+  opacity: 0;
+  transition: opacity 150ms var(--ds-ease-in-out);
+}
+
+/* Wide-only content fades back in on expand remount. */
+.wide {
+  animation: wide-in 200ms var(--ds-ease-in-out);
+}
+
+@keyframes wide-in {
+  from { opacity: 0; }
+}
+
+/* At the 150ms rail settle, the upper controls enter from the former
+   rail right edge over the remaining 150ms of the AppFrame track transition.
+   The bottom-pinned settings seat shares their opacity timeline but stays
+   horizontally fixed. Only a live collapse gets .railIn; a cold collapsed
+   render stays static. */
+.railIn .iconButton,
+.railIn .regionArea {
+  animation: rail-in 150ms var(--ds-ease-in-out) backwards;
+}
+
+.railIn .footArea {
+  animation: rail-fade-in 150ms var(--ds-ease-in-out) backwards;
+}
+
+@keyframes rail-in {
+  from {
+    opacity: 0;
+    transform: translateX(49px);
+  }
+}
+
+@keyframes rail-fade-in {
+  from { opacity: 0; }
+}
+
+/* Logo row (figma pad (4,8,4,8)): expanded keeps the panel toggle at the
+   right edge; the rail gives every control the same base left anchor before
+   the shared entry translation is applied. */
+.logoRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 52px;
+  padding: 0 4px;
+  margin: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.collapsed .logoRow {
+  height: 36px;
+  padding: 0;
+  margin-bottom: 12px;
+  justify-content: flex-start;
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--worldline-ink);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+/* Mark and name are independent slots; the shell owns their shared baseline,
+   spacing, and height so either occupant can vary in width. */
+.brandIdentity {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  min-width: 0;
+}
+
+.brandMark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brandName {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 24px;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+  letter-spacing: 0.04em;
+}
+
+.fallbackBrandName {
+  font-size: 17px;
+  letter-spacing: 0px;
+  white-space: nowrap;
+}
+
+.iconButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.iconButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.collapsed .iconButton {
+  width: 36px;
+  height: 36px;
+}
+
+/* Rail icons ride the primary ink (figma rail spec); expanded keeps the
+   secondary icon-button ink. */
+.collapsed .iconButton {
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Region seat: always mounted so the foot never moves. Its trailing margin
+   cancels the wide shell inset so the nested scrollbar can sit at the sidebar
+   edge; the browser restores that inset inside its own rows. */
+.regionArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-left: -4px;
+  margin-right: calc(-1 * var(--worldline-sidebar-inline-padding));
+  padding-left: 4px;
+  overflow: hidden;
+}
+
+.collapsed .regionArea {
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 0;
+}
+
+/* Footer seats: additive actions stack above Settings. Each occupant owns its
+   button geometry and hover chrome. */
+.footArea {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.settingsArea,
+.footerActions {
+  flex: none;
+  min-width: 0;
+  width: 100%;
+}
+
+.footerActions {
+  display: flex;
+}
+
+.collapsed .footArea {
+  align-items: center;
+}
+
+.collapsed .settingsArea,
+.collapsed .footerActions {
+  display: flex;
+  justify-content: center;
+  width: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wide,
+  .fading > *,
+  .railIn .iconButton,
+  .railIn .footArea,
+  .railIn .regionArea {
+    transition: none;
+    animation: none;
+  }
+}

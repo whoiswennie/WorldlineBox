@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "lib/types", "types": ["node"] },
+  "include": ["src"],
+  "references": [
+    { "path": "../../identity/account-profile" },
+    { "path": "../../host/webserver" },
+    { "path": "../../util/home-paths" },
+    { "path": "../../runtime-diagnostics/invariants" },
+    { "path": "../../../vendor/cordis" }
+  ]
+}

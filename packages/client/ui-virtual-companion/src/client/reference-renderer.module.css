@@ -1,0 +1,88 @@
+.reference {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.reference[data-reference-mode='card'],
+.reference[data-reference-mode='preview'] {
+  width: 100%;
+  height: 100%;
+}
+
+/*
+ * Conversation references share one stable visual envelope. The envelope caps size but never
+ * crops or changes aspect ratio, so every current and future MIME renderer behaves predictably.
+ */
+.reference[data-reference-mode='conversation'] {
+  width: fit-content;
+  max-width: min(420px, 72vw);
+  max-height: min(320px, 48vh);
+  overflow: auto;
+}
+
+.reference > img,
+.reference > video,
+.reference > canvas,
+.reference > iframe {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.reference[data-reference-mode='conversation'] > img,
+.reference[data-reference-mode='conversation'] > video,
+.reference[data-reference-mode='conversation'] > canvas,
+.reference[data-reference-mode='conversation'] > iframe {
+  max-width: min(420px, 72vw);
+  max-height: min(320px, 48vh);
+  border-radius: 12px;
+}
+
+.reference[data-reference-mode='conversation'] > video {
+  background: #101114;
+}
+
+.reference > audio {
+  display: block;
+  width: min(360px, 68vw);
+  max-width: 100%;
+}
+
+.reference[data-reference-mode='conversation'] > pre,
+.reference[data-reference-mode='conversation'] > div {
+  box-sizing: border-box;
+  width: min(420px, 72vw);
+  max-width: 100%;
+  max-height: min(320px, 48vh);
+  overflow: auto;
+}
+
+.reference > pre {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.reference > a {
+  display: block;
+  box-sizing: border-box;
+  max-width: min(420px, 72vw);
+  padding: 10px 12px;
+}
+
+@media (max-width: 560px) {
+  .reference[data-reference-mode='conversation'],
+  .reference[data-reference-mode='conversation'] > img,
+  .reference[data-reference-mode='conversation'] > video,
+  .reference[data-reference-mode='conversation'] > canvas,
+  .reference[data-reference-mode='conversation'] > iframe,
+  .reference[data-reference-mode='conversation'] > pre,
+  .reference[data-reference-mode='conversation'] > div {
+    max-width: 82vw;
+    max-height: 42vh;
+  }
+}

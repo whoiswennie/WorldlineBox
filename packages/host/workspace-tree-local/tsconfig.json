@@ -1,0 +1,11 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "lib/types", "types": ["node"] },
+  "include": ["src"],
+  "references": [
+    { "path": "../workspace-tree" },
+    { "path": "../../runtime-diagnostics/invariants" },
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../../vendor/schemastery" }
+  ]
+}

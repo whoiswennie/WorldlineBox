@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "世界线",
+  "short_name": "世界线",
+  "start_url": "/",
+  "scope": "/",
+  "display": "fullscreen",
+  "icons": [
+    {
+      "src": "/worldline-icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
