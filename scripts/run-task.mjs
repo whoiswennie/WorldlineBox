@@ -41,6 +41,11 @@ switch (task) {
     buildDesktop()
     break
   case 'dev':
+    run('clean:type-orphans', cleanTypeOrphans)
+    run('build:types:host', tsc, ['-b', 'tsconfig.host.json'])
+    run('build:plugins:host', tsdown, ['--env.WORLDLINE_BUILD_FACE', 'host'])
+    run('build:types:client', tsc, ['-b', 'tsconfig.client.json'])
+    run('build:plugins:client', tsdown, ['--env.WORLDLINE_BUILD_FACE', 'client'])
     run('build:web', vite, ['build'], resolve(root, 'apps/web'))
     run('build:cli', tsc, ['-b', 'apps/cli'])
     buildDesktop()

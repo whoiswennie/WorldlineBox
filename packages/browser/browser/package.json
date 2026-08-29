@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-browser",
   "description": "Conversation-owned native browser control seam for Worldline",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

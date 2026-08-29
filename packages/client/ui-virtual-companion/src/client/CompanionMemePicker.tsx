@@ -1,4 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ReferenceAsset } from '../contracts.ts'
@@ -16,7 +18,11 @@ const MEME_PAGE_SIZE = 24
 /** QQ-style sticker picker: every choice is staged as a removable, serializable draft chip. */
 export function CompanionMemePicker({ input, stageMeme }: PickerProps) {
   const directory = useCompanionStore()
-  const detailsRef = useRef<HTMLDetailsElement | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const [open, setOpen] = useState(false)
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>()
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState('all')
   const [page, setPage] = useState(1)
@@ -30,15 +36,46 @@ export function CompanionMemePicker({ input, stageMeme }: PickerProps) {
   useEffect(() => { void companionStore.load() }, [])
   useEffect(() => { setPage(1) }, [query, scope])
   useEffect(() => {
+    if (!open) return
     const closeOutside = (event: PointerEvent): void => {
-      const details = detailsRef.current
-      if (details?.open === true && event.target instanceof Node && !details.contains(event.target)) {
-        details.open = false
-      }
+      if (!(event.target instanceof Node)) return
+      if (rootRef.current?.contains(event.target) === true || panelRef.current?.contains(event.target) === true) return
+      setOpen(false)
+    }
+    const closeWithEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false)
     }
     document.addEventListener('pointerdown', closeOutside)
-    return () => { document.removeEventListener('pointerdown', closeOutside) }
-  }, [])
+    document.addEventListener('keydown', closeWithEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeWithEscape)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const place = (): void => {
+      const trigger = triggerRef.current
+      if (trigger === null) return
+      const bounds = trigger.getBoundingClientRect()
+      const width = Math.min(560, Math.max(292, window.innerWidth - 28))
+      const left = Math.min(
+        Math.max(14, bounds.left),
+        Math.max(14, window.innerWidth - width - 14),
+      )
+      const bottom = Math.max(14, window.innerHeight - bounds.top + 12)
+      const height = Math.max(260, Math.min(560, bounds.top - 28))
+      setPanelStyle({ left, bottom, width, height })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open])
 
   useEffect(() => {
     const abort = new AbortController()
@@ -72,12 +109,17 @@ export function CompanionMemePicker({ input, stageMeme }: PickerProps) {
     }
   }
 
-  return <details className={css.picker} ref={detailsRef}>
-    <summary
+  return <div className={css.picker} ref={rootRef}>
+    <button
+      ref={triggerRef}
+      type="button"
+      className={css.trigger}
       aria-label="选择表情包"
       aria-disabled={locked}
+      aria-expanded={open}
+      aria-controls="companion-meme-picker-panel"
       title={locked ? '消息正在发送，请稍候' : '添加表情包到消息'}
-      onClick={(event) => { if (locked) event.preventDefault() }}
+      onClick={() => { if (!locked) setOpen(value => !value) }}
     >
       <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
         <path
@@ -91,8 +133,15 @@ export function CompanionMemePicker({ input, stageMeme }: PickerProps) {
         <circle cx="12.75" cy="8" r=".9" fill="currentColor" />
         <path d="M7.2 11.15c.7.83 1.63 1.25 2.8 1.25s2.1-.42 2.8-1.25" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       </svg>
-    </summary>
-    <div className={css.panel}>
+    </button>
+    {open && panelStyle !== undefined && createPortal(<div
+      ref={panelRef}
+      id="companion-meme-picker-panel"
+      className={css.panel}
+      style={panelStyle}
+      role="dialog"
+      aria-label="表情包选择器"
+    >
       <header>
         <strong>表情包</strong>
         <span>{memes.length} 张</span>
@@ -116,6 +165,7 @@ export function CompanionMemePicker({ input, stageMeme }: PickerProps) {
         {pageMemes.map(meme => <button
           type="button"
           role="option"
+          aria-label={meme.title}
           aria-selected="false"
           title={`${meme.title} · ${meme.tags.join(' · ')}`}
           onClick={() => { choose(meme) }}
@@ -134,6 +184,6 @@ export function CompanionMemePicker({ input, stageMeme }: PickerProps) {
           <button type="button" aria-label="下一页" disabled={currentPage === pageCount && nextCursor < 0} onClick={() => { void nextPage() }}>›</button>
         </nav> : null}
       </footer>
-    </div>
-  </details>
+    </div>, document.body)}
+  </div>
 }

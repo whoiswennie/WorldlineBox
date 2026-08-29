@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { AgentVaultService } from '@deepseek-ai/dsh-agent-vault'
+import type { AgentVaultService, VaultResource } from '@deepseek-ai/dsh-agent-vault'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
@@ -18,6 +18,7 @@ import {
 import {
   expressionQuery,
   expressionStyle,
+  rankExpressionCandidates,
   referenceConversationState,
 } from './reference-expression.ts'
 
@@ -71,10 +72,12 @@ function actorPersona(companion: VirtualCompanion): string {
     '',
     '每轮任务都会附带来自你自己 Agent Vault 的启用印象卡快照；只有显式 self_update 才能修改它。',
     '你的普通回答文字会由运行时实时、流式地送入房间；直接自然地写出要让用户看见的话，不要调用工具发送文字，也不要输出 XML 或角色标签。',
-    'express 是与自然语言同级的表达动作。你先决定赞同、安慰、调侃、反击、斗图等语义意图，再在希望它出现的准确位置调用 express；Host 会在那一刻晚绑定真实表情、图片、音频、视频、链接或未来类型。',
-    '你可以只使用 express、在文字前后使用、或在一轮中多次穿插；不要因为看见素材候选就发送，也不要用 Emoji、颜文字或文字假装真实素材。',
+    '引用资源与自然语言是同级的表达动作，包括图片、GIF、视频、音频、文本、外链和未来扩展的 MIME 类型，不等同于表情包。需要挑选时，先用 expression_search 取得至多 5 个候选，再按真实语境把一个或多个 asset_id 交给 express；候选只是反馈，不是命令。',
+    '检索时要从多个互补维度组织关键词：资源原名或别名、情绪与语气、动作与对象、适用场景、作品/角色/来源、媒体类型。不要只把名字机械拆词，也不要只搜抽象情绪；用户点名某个资源时，必须把名称原样放进 named_title。',
+    '在闲聊、撒娇、玩笑、安慰、庆祝或其他有明显情绪的时刻，像真实聊天一样主动穿插合适素材，不必等用户提醒；严肃任务中不要强行发送。不要先调用 resource_find 或扫描资源目录。',
+    '你可以选一个、多个、全部候选、重复近期用过的素材，或决定不发；近期记录只是帮助你判断，不是禁令。也可以在简单低风险语境直接让 express 自动选择。不要用 Emoji、颜文字或文字假装真实资源。',
     '若已经用真实表情完整表达，就不要再输出“已发送”“完成”等内部收尾；若还要说话，直接写自然台词。',
-    '先用 memory_recall / procedure_recall / resource_find 得到方向，再用 vault_read / memory_explore 渐进深入。短期记忆会立刻参与召回；不要全库扫描。你不能读取或修改其他伙伴的私有 Vault。',
+    '知识、记忆与能力问题先用 memory_recall / procedure_recall 得到方向，再用 vault_read / memory_explore 渐进深入；只有确实要了解某项资源元数据时才使用 resource_find。短期记忆会立刻参与召回；不要全库扫描。你不能读取或修改其他伙伴的私有 Vault。',
   ].join('\n')
 }
 
@@ -91,7 +94,10 @@ function narratorPersona(): string {
 
 function roomTranscript(directory: ActorDirectory, parent: Agent): string {
   const streamed = new Map<string, { label: string; text: string }>()
-  return parent.session.events.slice(-320).flatMap((event) => {
+  // A single model turn can produce hundreds of token/tool events. Keep enough
+  // raw history to retain several real conversational turns, then bound the
+  // semantic transcript below so retrieval context stays small.
+  return parent.session.events.slice(-5_000).flatMap((event) => {
     if (event.type === 'user/message') {
       const text = event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim()
       return text === '' ? [] : [`房主：${text}`]
@@ -125,7 +131,43 @@ function roomTranscript(directory: ActorDirectory, parent: Agent): string {
         : [`${current.label}：${current.text.trim()}`]
     }
     return []
-  }).slice(-80).join('\n')
+  }).slice(-80).join('\n').slice(-12_000)
+}
+
+const DIFFERENT_RESOURCE_CUE = /换(?:个|一(?:个|张)|张)|另(?:一个|一张)|别的|不同(?:的|一张|一个)|不要(?:这|刚才|上一)(?:张|个)?|别再发这/iu
+const EXPLICIT_REFERENCE_REQUEST_CUE = /(?:发|发送|播放|放一下|放一个|来一个|来一张|来一段|给我看|给我来|引用|分享)/iu
+
+function latestRoomUserText(parent: Agent): string {
+  for (let index = parent.session.events.length - 1; index >= 0; index -= 1) {
+    const event = parent.session.events[index]
+    if (event?.type !== 'user/message') continue
+    return event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim()
+  }
+  return ''
+}
+
+function normalizedReferenceName(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase('zh-CN').replace(/[\s\p{P}\p{S}]+/gu, '')
+}
+
+/**
+ * Resolve a resource explicitly named by the user against the bounded search/catalog candidates.
+ * This is a deterministic guardrail for direct requests, not a semantic selection policy: ordinary
+ * contextual use remains entirely under the companion Agent's control.
+ */
+function explicitlyNamedReference(
+  userText: string,
+  candidates: readonly VaultResource[],
+): VaultResource | undefined {
+  if (!EXPLICIT_REFERENCE_REQUEST_CUE.test(userText)) return undefined
+  const normalizedUserText = normalizedReferenceName(userText)
+  return [...new Map(candidates.map(candidate => [candidate.id, candidate])).values()]
+    .filter((candidate) => {
+      const title = normalizedReferenceName(candidate.title)
+      return title.length >= 2 && normalizedUserText.includes(title)
+    })
+    .sort((left, right) => normalizedReferenceName(right.title).length
+      - normalizedReferenceName(left.title).length)[0]
 }
 
 function actorPrompt(
@@ -158,7 +200,7 @@ function actorPrompt(
       `<reference-channel mode="${channel.mode}" exchange-depth="${String(channel.exchangeDepth)}"${channel.pendingReplyTo === undefined ? '' : ` pending-reply-to="${channel.pendingReplyTo}"`}>`,
       `recent-acts=${channel.recentActs.join(',') || 'none'}`,
       '</reference-channel>',
-      '请以你自己的真实角色反应参与当前对话。普通文字直接自然回答；想引用文本、图片、表情包、音视频或其他资源时，在那个位置使用 express。express 会按语义意图检索资源，不会预先注入完整标签或资源目录。你能看到谁说了什么；自然承接紧邻消息，不要复述整个历史。',
+      '请以你自己的真实角色反应参与当前对话。普通文字直接自然回答；闲聊中出现清晰情绪时可以主动使用引用资源。需要挑选或用户点名时，先用 expression_search 获取 5 个以内候选，再把你真正想用的一个或多个 asset_id 交给 express；简单语境也可让 express 自动选择。不要先用 resource_find，也不会预先注入完整目录。你能看到谁说了什么；自然承接紧邻消息，不要复述整个历史。',
     ].filter(Boolean).join('\n'),
   }]
 }
@@ -560,7 +602,16 @@ export class CompanionActorRuntime {
     if (binding.kind === 'narrator') return () => undefined
     const disposers: Array<() => unknown> = []
     disposers.push(this.directory.vaults.bindRuntimeAgent(actor.id, binding.companionId))
-    installAgentVaultTools(actor.ctx)
+    // The child Agent Context is a real Cordis scope. Installing the Vault
+    // package directly on it bypasses the package's inject declaration: the
+    // registrations appear, but their deferred execute closures are denied
+    // when they later read `ctx.agentVaults`. Own the installation with a
+    // dependency-declared Fiber so reads and disposal both follow Cordis.
+    const vaultTools = actor.ctx.inject(
+      ['agentVaults', 'tools', 'systemPrompt'],
+      (scope) => { installAgentVaultTools(scope) },
+    )
+    disposers.push(() => vaultTools.dispose())
     const parent = (): Agent => {
       const value = this.ctx.agents.get(SessionId(binding.roomSessionId))
       if (value === undefined) throw new Error('虚拟伙伴房间当前不可用')
@@ -570,6 +621,66 @@ export class CompanionActorRuntime {
         throw new Error('伙伴已离开房间，本次消息已丢弃')
       }
       return value
+    }
+    let lastReferenceSearch: { userText: string; candidates: VaultResource[] } | undefined
+    const discoverExpressions = async (target: Agent, intent: ReferenceIntent, limit = 5) => {
+      const companion = this.directory.companion(binding.companionId)
+      if (companion === undefined) throw new Error('伙伴资料不存在')
+      const state = referenceConversationState(target.session.events, expressionStyle(companion))
+      const transcript = roomTranscript(this.directory, target)
+      const userText = latestRoomUserText(target)
+      const query = intent.assetTitle ?? expressionQuery(intent, transcript)
+      const shouldSearchUserRequest = EXPLICIT_REFERENCE_REQUEST_CUE.test(userText)
+      const [own, shared, ownCatalog, sharedCatalog, userOwn, userShared] = await Promise.all([
+        this.directory.vaults.searchResources({ agentId: binding.companionId, query,
+          tags: intent.preferredTags ?? [], roles: ['expression'], limit: 12 }),
+        this.directory.vaults.searchResources({ agentId: 'public', query,
+          tags: intent.preferredTags ?? [], roles: ['expression'], limit: 12 }),
+        this.directory.vaults.searchResources({
+          agentId: binding.companionId, query: '', tags: [], roles: ['expression'], limit: 64,
+        }),
+        this.directory.vaults.searchResources({
+          agentId: 'public', query: '', tags: [], roles: ['expression'], limit: 64,
+        }),
+        shouldSearchUserRequest
+          ? this.directory.vaults.searchResources({
+            agentId: binding.companionId, query: userText, tags: [], roles: ['expression'], limit: 12,
+          })
+          : Promise.resolve({ items: [] as VaultResource[] }),
+        shouldSearchUserRequest
+          ? this.directory.vaults.searchResources({
+            agentId: 'public', query: userText, tags: [], roles: ['expression'], limit: 12,
+          })
+          : Promise.resolve({ items: [] as VaultResource[] }),
+      ])
+      const allCandidates = [
+        ...own.items, ...shared.items, ...userOwn.items, ...userShared.items,
+        ...ownCatalog.items, ...sharedCatalog.items,
+      ]
+      const namedCandidate = explicitlyNamedReference(userText, allCandidates)
+      const rankedIntent = namedCandidate === undefined
+        ? intent
+        : { ...intent, assetTitle: namedCandidate.title }
+      // "换一个" is an explicit constraint on this turn, not a global cooldown. Respect it only
+      // when another enabled candidate exists; ordinary conversation may freely repeat assets.
+      const wantsDifferent = DIFFERENT_RESOURCE_CUE.test(userText)
+      const filteredCandidates = wantsDifferent && allCandidates.some(
+        candidate => !state.recentAssetIds.includes(candidate.id),
+      )
+        ? allCandidates.filter(candidate => !state.recentAssetIds.includes(candidate.id))
+        : allCandidates
+      return {
+        state,
+        namedCandidate,
+        candidates: rankExpressionCandidates(
+          filteredCandidates,
+          rankedIntent,
+          state.recentAssetIds,
+          binding.companionId,
+          transcript.slice(-600),
+          limit,
+        ),
+      }
     }
     disposers.push(actor.ctx.tools.register(defineTool({
       name: 'inspect_room_member',
@@ -604,20 +715,67 @@ export class CompanionActorRuntime {
       },
     })))
     disposers.push(actor.ctx.tools.register(defineTool({
+      name: 'expression_search',
+      description: 'Return up to five private/public reference-resource candidates across images, GIFs, video, audio, text, links and extension MIME types. Search from complementary dimensions: exact title/alias, emotion/tone, action/object, use scene, work/character/source and media type. Do not mechanically split only the title. Recent use is disclosed but never forbidden.',
+      parameters: {
+        keywords: { type: 'array', required: true, items: { type: 'string' },
+          description: 'Two to twelve complementary natural-language keywords spanning meaning, mood, action, scene, source and media type; not a full sentence.' },
+        named_title: { type: 'string', description: 'The verbatim resource title or alias when the user names one. Preserve it as a whole; do not split or paraphrase it.' },
+      },
+      output: { schema: { type: 'object', additionalProperties: false, properties: {
+        candidates: { type: 'array', required: true, items: { type: 'object', additionalProperties: false,
+          properties: {
+            asset_id: { type: 'string', required: true }, title: { type: 'string', required: true },
+            scope: { type: 'string', required: true }, mime_type: { type: 'string', required: true },
+            tags: { type: 'array', required: true, items: { type: 'string' } },
+            recently_used: { type: 'boolean', required: true },
+            exact_match: { type: 'boolean', required: true },
+          } } },
+      } }, render: (_args, value) => [{ type: 'text', text: value.candidates.length === 0
+        ? 'No reference-resource candidates found.'
+        : `Reference-resource candidates: ${value.candidates.map(candidate =>
+          `${candidate.exact_match ? '[exact named match] ' : ''}${candidate.title} `
+          + `(${candidate.asset_id}; ${candidate.mime_type}; tags: ${candidate.tags.join('/')})`).join(', ')}` }] },
+      execute: async (args) => {
+        const target = parent()
+        const keywords = args.keywords.map(value => value.trim()).filter(Boolean).slice(0, 12)
+        const intent: ReferenceIntent = {
+          act: keywords.join(' '),
+          query: keywords.join(' '),
+          preferredTags: keywords,
+          ...(args.named_title === undefined ? {} : { assetTitle: args.named_title }),
+        }
+        const found = await discoverExpressions(target, intent, 5)
+        lastReferenceSearch = { userText: latestRoomUserText(target), candidates: found.candidates }
+        return { candidates: found.candidates.map(candidate => ({
+          asset_id: candidate.id,
+          title: candidate.title,
+          scope: candidate.agentId,
+          mime_type: candidate.mimeType,
+          tags: [...candidate.tags].slice(0, 12),
+          recently_used: found.state.recentAssetIds.includes(candidate.id),
+          exact_match: candidate.id === found.namedCandidate?.id
+            || (args.named_title !== undefined
+              && normalizedReferenceName(candidate.title) === normalizedReferenceName(args.named_title)),
+        })) }
+      },
+    })))
+    disposers.push(actor.ctx.tools.register(defineTool({
       name: 'express',
-      description: 'Express one semantic conversational act at this exact point in your utterance. The Host resolves a fresh non-repeating indexed asset only after you choose the act; this is an output modality, not knowledge retrieval.',
+      description: 'Send one or more chosen reference resources at this exact point as part of natural speech. Any indexed MIME type is allowed. Pass asset_ids returned by expression_search for full control, including multiple resources and deliberate repeats; omit them only for a quick automatic single choice. A resource explicitly named by the user takes precedence over a mismatched id.',
       parameters: {
         act: { type: 'string', required: true, description: 'A free semantic label describing what the resource should express.' },
+        asset_ids: { type: 'array', items: { type: 'string' }, description: 'One to five candidate ids selected from expression_search, in delivery order.' },
         role: { type: 'string', enum: ['replace-text', 'amplify-text', 'reply', 'illustrate'] },
         intensity: { type: 'integer', description: 'Expression strength from 1 to 3.' },
         target: { type: 'string', description: 'Who or what this expression addresses.' },
         reply_to: { type: 'string', description: 'Asset id being answered during a reference exchange.' },
-        query: { type: 'string', description: 'Optional concrete object or situation, never a preselected asset title.' },
+        query: { type: 'string', description: 'Optional concrete object or situation for quick automatic matching.' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Open resource tags chosen from the current catalog and combined freely.' },
       },
       output: { schema: { type: 'object', additionalProperties: false, properties: {
         sent: { type: 'boolean', required: true }, asset_id: { type: 'string', required: true }, title: { type: 'string', required: true }, act: { type: 'string', required: true },
-      } }, render: (_args, value) => [{ type: 'text', text: value.sent ? `Expression delivered: ${value.title}` : 'No suitable expression asset found; continue naturally.' }] },
+      } }, render: (_args, value) => [{ type: 'text', text: value.sent ? `Reference resource delivered: ${value.title}` : 'No suitable reference resource found; continue naturally.' }] },
       execute: async (args) => {
         const target = parent()
         const companion = this.directory.companion(binding.companionId)
@@ -637,42 +795,70 @@ export class CompanionActorRuntime {
           ...(args.query === undefined ? {} : { query: args.query }),
           ...(args.tags === undefined ? {} : { preferredTags: args.tags }),
         }
-        const query = expressionQuery(intent, roomTranscript(this.directory, target))
-        const [own, shared] = await Promise.all([
-          this.directory.vaults.searchResources({ agentId: binding.companionId, query,
-            tags: intent.preferredTags ?? [], roles: ['expression'], limit: 12 }),
-          this.directory.vaults.searchResources({ agentId: 'public', query,
-            tags: intent.preferredTags ?? [], roles: ['expression'], limit: 12 }),
-        ])
-        const selected = [...own.items, ...shared.items]
-          .find(item => !state.recentAssetIds.includes(item.id))
-        if (selected === undefined) {
+        const userText = latestRoomUserText(target)
+        const wantsDifferent = DIFFERENT_RESOURCE_CUE.test(userText)
+        let namedCandidate = lastReferenceSearch?.userText === userText
+          ? explicitlyNamedReference(userText, lastReferenceSearch.candidates)
+          : undefined
+        if (namedCandidate === undefined && EXPLICIT_REFERENCE_REQUEST_CUE.test(userText)) {
+          const namedSearch = await discoverExpressions(target, {
+            ...intent,
+            query: [userText, intent.query ?? ''].filter(Boolean).join(' '),
+          }, 5)
+          namedCandidate = namedSearch.namedCandidate
+        }
+        const modelRequestedIds = [...new Set(
+          (args.asset_ids ?? []).map(value => value.trim()).filter(Boolean),
+        )]
+        // A direct request such as “发一下孤高曼波” is a deterministic user constraint. It may
+        // override a model-selected sticker, while ordinary contextual selection stays free.
+        const requestedIds = (namedCandidate === undefined ? modelRequestedIds : [namedCandidate.id])
+          .filter(id => namedCandidate !== undefined
+            || !wantsDifferent || !state.recentAssetIds.includes(id))
+          .slice(0, 5)
+        const selected: VaultResource[] = []
+        if (requestedIds.length > 0) {
+          for (const id of requestedIds) {
+            let resource
+            try { resource = await this.directory.vaults.resource(binding.companionId, id) } catch {
+              try { resource = await this.directory.vaults.resource('public', id) } catch { continue }
+            }
+            if (resource.enabled && resource.roles.includes('expression')) selected.push(resource)
+          }
+        } else {
+          const found = await discoverExpressions(target, intent, 1)
+          const automatic = found.candidates[0]
+          if (automatic !== undefined) selected.push(automatic)
+        }
+        if (selected.length === 0) {
           return Promise.resolve({ sent: false, asset_id: '', title: '', act: intent.act })
         }
         const room = this.directory.room(binding.roomSessionId)
-        target.session.append('companion/expression-intent', {
-          version: 1,
-          companionId: binding.companionId,
-          actorSessionId: actor.id,
-          roomEpoch: room?.epoch ?? binding.epoch,
-          act: intent.act,
-          role,
-          intensity,
-          ...(intent.target === undefined ? {} : { target: intent.target }),
-          ...(intent.replyTo === undefined ? {} : { replyTo: intent.replyTo }),
-          assetId: selected.id,
-        })
-        target.session.append('companion/reference', {
-          version: 1, companionId: binding.companionId, actorSessionId: actor.id,
-          roomEpoch: room?.epoch ?? binding.epoch,
-          assetId: selected.id, title: selected.title,
-          mimeType: selected.mimeType, url: this.directory.resourceUrl(selected.agentId, selected.id),
-        })
+        for (const resource of selected) {
+          target.session.append('companion/expression-intent', {
+            version: 1,
+            companionId: binding.companionId,
+            actorSessionId: actor.id,
+            roomEpoch: room?.epoch ?? binding.epoch,
+            act: intent.act,
+            role,
+            intensity,
+            ...(intent.target === undefined ? {} : { target: intent.target }),
+            ...(intent.replyTo === undefined ? {} : { replyTo: intent.replyTo }),
+            assetId: resource.id,
+          })
+          target.session.append('companion/reference', {
+            version: 1, companionId: binding.companionId, actorSessionId: actor.id,
+            roomEpoch: room?.epoch ?? binding.epoch,
+            assetId: resource.id, title: resource.title,
+            mimeType: resource.mimeType, url: this.directory.resourceUrl(resource.agentId, resource.id),
+          })
+        }
         this.emitted.add(actor.id)
         return Promise.resolve({
           sent: true,
-          asset_id: selected.id,
-          title: selected.title,
+          asset_id: selected[0]?.id ?? '',
+          title: selected.map(resource => resource.title).join('、'),
           act: intent.act,
         })
       },

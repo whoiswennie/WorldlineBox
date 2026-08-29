@@ -56,6 +56,30 @@ const EMPTY_DRAFT: VirtualCompanionDraft = {
   persona: '', style: '', speakingStyle: '', behaviorLogic: '',
 }
 
+const SELF_MODULE_META: Readonly<Record<string, {
+  symbol: string
+  kicker: string
+  tone: 'rose' | 'sky' | 'violet' | 'mint' | 'amber'
+}>> = {
+  identity: { symbol: '✦', kicker: 'WHO I AM', tone: 'rose' },
+  appearance: { symbol: '◇', kicker: 'APPEARANCE', tone: 'sky' },
+  persona: { symbol: '♡', kicker: 'PERSONALITY', tone: 'violet' },
+  voice: { symbol: '♪', kicker: 'VOICE', tone: 'rose' },
+  worldview: { symbol: '◎', kicker: 'WORLDVIEW', tone: 'sky' },
+  interests: { symbol: '☆', kicker: 'INTERESTS', tone: 'amber' },
+  emotion: { symbol: '◌', kicker: 'MOOD', tone: 'rose' },
+  state: { symbol: '◈', kicker: 'NOW', tone: 'mint' },
+  relationships: { symbol: '∞', kicker: 'BONDS', tone: 'violet' },
+  'common-memory': { symbol: '⌁', kicker: 'FAMILIAR', tone: 'sky' },
+  capabilities: { symbol: '△', kicker: 'BOUNDARIES', tone: 'amber' },
+}
+
+const STABILITY_LABEL = {
+  core: '核心设定',
+  stable: '阶段印象',
+  dynamic: '近期状态',
+} as const
+
 function toDraft(companion: VirtualCompanion): VirtualCompanionDraft {
   const { name, handle, avatar, portrait, status, description, persona, style, speakingStyle, behaviorLogic } = companion
   return { name, handle, avatar, portrait, status, description, persona, style, speakingStyle, behaviorLogic }
@@ -255,9 +279,21 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
   }
   return <main className={css.page} aria-label={t('title')}>
     <aside className={css.friends}>
-      <header><div><h1>{t('title')}</h1><p>{t('intro')}</p></div>
-        <label className={css.addFriend} aria-label="导入角色包" title="导入角色包">⇧<input type="file" accept=".wlvault" hidden onChange={(event) => { void importCompanion(event) }} /></label>
-        <button type="button" className={css.addFriend} onClick={() => { setEditing('new') }} aria-label="新增伙伴">+</button></header>
+      <header>
+        <div><span className={css.sidebarKicker}>COMPANION DECK</span><h1>{t('title')}</h1><p>{t('intro')}</p></div>
+        <div className={css.companionActions}>
+          <label className={css.importCompanion} aria-label="导入角色包" title="导入角色包">
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M10 3.2v8.6m0-8.6L6.8 6.4M10 3.2l3.2 3.2M4 11.5v3.1a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-3.1" />
+            </svg>
+            <span><strong>导入角色</strong><small>.wlvault 角色包</small></span>
+            <input type="file" accept=".wlvault" hidden onChange={(event) => { void importCompanion(event) }} />
+          </label>
+          <button type="button" className={css.newCompanion} onClick={() => { setEditing('new') }} aria-label="新增伙伴">
+            <span aria-hidden="true">＋</span><strong>新建</strong>
+          </button>
+        </div>
+      </header>
       <label className={css.search}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.75" /><path d="m15 15 4.25 4.25" /></svg>
         <input value={query} onChange={(event) => { setQuery(event.currentTarget.value) }} placeholder={t('search')} />
@@ -274,37 +310,105 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
     {selected ? <section className={css.profile}>
       <div className={css.ambient} aria-hidden="true" />
       <div className={css.hero}>
-        <div className={css.portrait}><img src={selected.portrait || selected.avatar} alt={selected.name} /></div>
+        <div className={css.portrait}>
+          <span className={css.portraitHalo} aria-hidden="true" />
+          <img src={selected.portrait || selected.avatar} alt={selected.name} />
+          <span className={css.portraitCaption}><i />ONLINE · {selected.handle.split('·')[0]?.trim()}</span>
+        </div>
         <div className={css.identity}>
-          <div className={css.badges}>{selected.builtIn ? <span>{t('builtIn')}</span> : <span>自定义</span>}<span>{t('online')}</span></div>
-          <p className={css.eyebrow}>{selected.handle}</p><h2>{selected.name}</h2><p className={css.status}>“{selected.status}”</p>
+          <div className={css.badges}>
+            <span data-tone="identity">{selected.builtIn ? t('builtIn') : '自定义角色'}</span>
+            <span data-tone="online"><i />{t('online')}</span>
+            {policy?.fullyFrozen === true ? <span data-tone="frozen">只读保护</span> : null}
+          </div>
+          <p className={css.eyebrow}>{selected.handle}</p>
+          <h2>{selected.name}</h2>
+          <p className={css.status}>“{selected.status}”</p>
           <div className={css.profileActions}>
-            <button type="button" className={css.launch} disabled={busy || !hasWorkspace} onClick={() => { void start() }}>{busy ? t('launching') : `和${selected.name}聊天`}</button>
-            <button type="button" className={css.secondary} onClick={() => { setEditing(selected.id) }}>编辑资料</button>
-            <a className={css.secondary} href={`/api/virtual-companions/vault/export/${encodeURIComponent(selected.id)}`}>导出角色包</a>
-            <button type="button" className={css.secondary} aria-pressed={policy?.fullyFrozen === true}
-              onClick={() => { void toggleFreeze() }}>{policy?.fullyFrozen === true ? '解除知识冻结' : '冻结为只读'}</button>
-            {selected.builtIn
-              ? <button type="button" className={css.secondary} onClick={() => { setConfirmRestore(true) }}>恢复原版</button>
-              : <button type="button" className={css.danger} onClick={() => { setConfirmDelete(true) }}>删除</button>}
+            <button type="button" className={css.launch} disabled={busy || !hasWorkspace} onClick={() => { void start() }}>
+              <span aria-hidden="true">✦</span>{busy ? t('launching') : `和${selected.name}聊天`}
+            </button>
+            <button type="button" className={css.editProfile} onClick={() => { setEditing(selected.id) }}>
+              <span aria-hidden="true">✎</span>编辑资料
+            </button>
+            <details className={css.actionMenu}>
+              <summary aria-label="更多角色操作"><span aria-hidden="true">•••</span><b>更多</b></summary>
+              <div>
+                <a href={`/api/virtual-companions/vault/export/${encodeURIComponent(selected.id)}`}>
+                  <span aria-hidden="true">⇧</span><span><strong>导出角色包</strong><small>带走形象、记忆与资源</small></span>
+                </a>
+                <button type="button" aria-pressed={policy?.fullyFrozen === true} onClick={() => { void toggleFreeze() }}>
+                  <span aria-hidden="true">◇</span><span><strong>{policy?.fullyFrozen === true ? '解除知识冻结' : '冻结为只读'}</strong><small>{policy?.fullyFrozen === true ? '恢复 Agent 自治写入' : '保护当前角色与知识'}</small></span>
+                </button>
+                {selected.builtIn
+                  ? <button type="button" onClick={() => { setConfirmRestore(true) }}><span aria-hidden="true">↺</span><span><strong>恢复原版</strong><small>回到内置角色初始状态</small></span></button>
+                  : <button type="button" data-danger onClick={() => { setConfirmDelete(true) }}><span aria-hidden="true">×</span><span><strong>删除伙伴</strong><small>完整资料移入可恢复区</small></span></button>}
+              </div>
+            </details>
           </div>
           {!hasWorkspace ? <p className={css.hint}>{t('noWorkspace')}</p> : null}
           {error !== undefined ? <p className={css.error} role="alert">{error}</p> : null}
         </div>
       </div>
       <div className={css.details}>
-        <article><h3>伙伴资料</h3><p>{selected.description}</p></article>
-        <article><h3>Agent Vault 印象卡</h3><p>只注入已启用的结构化模块；普通记忆检索与印象卡严格分域。稳定模块按阶段更新，动态状态也保留修订记录。</p></article>
-        <div className={css.promptGrid}>
-          {(self?.modules ?? []).map((item, index) => <section className={css.promptCard} key={item.id}>
-            <h4>{String(index + 1).padStart(2, '0')} · {item.title}</h4>
-            <p>{item.summary || '尚未形成稳定印象。'}</p>
-            {item.details.length > 0 ? <p>{item.details.join('\n')}</p> : null}
-            <button type="button" className={css.secondary} aria-pressed={item.enabled}
-              onClick={() => { void toggleSelf(item) }}>{item.enabled ? '已启用 · 点击停用' : '已停用 · 点击启用'}</button>
-          </section>)}
+        <div className={css.overviewGrid}>
+          <article className={css.introCard}>
+            <span className={css.cardKicker}>PROFILE NOTE</span>
+            <h3>关于 {selected.name}</h3>
+            <p>{selected.description}</p>
+            <footer><span>角色资料</span><i aria-hidden="true">♡</i></footer>
+          </article>
+          <article className={css.cognitionCard}>
+            <span className={css.cardKicker}>COGNITIVE PULSE</span>
+            <h3>此刻的她</h3>
+            <div className={css.cognitionStats}>
+              <span><strong>{self?.modules.filter(item => item.enabled).length ?? 0}</strong><small>启用印象</small></span>
+              <span><strong>{self?.modules.filter(item => item.stability === 'dynamic').length ?? 0}</strong><small>近期状态</small></span>
+              <span><strong>{policy?.fullyFrozen === true ? '只读' : '成长中'}</strong><small>记忆状态</small></span>
+            </div>
+            <p>印象卡只负责她是谁、现在怎样；知识与普通记忆仍由专门的召回工具按需寻找。</p>
+          </article>
         </div>
-        <p className={css.privacy}>伙伴只读取公共 Vault 与自己的私有 Vault；不会读取其他伙伴的私有认知。记忆、能力、资源和印象卡统一打包迁移，冻结后 Agent 的所有写入均会被 Host 拒绝。</p>
+        <header className={css.impressionHeader}>
+          <div><span>IMPRESSION DECK</span><h3>角色印象</h3><p>这些片段共同塑造她在每次相遇中的语气、心境与边界。</p></div>
+          <span className={css.impressionCount}>{self?.modules.length ?? 0} 张印象卡</span>
+        </header>
+        <div className={css.promptGrid}>
+          {(self?.modules ?? []).map((item) => {
+            const meta = SELF_MODULE_META[item.id] ?? { symbol: '✦', kicker: 'IMPRESSION', tone: 'sky' as const }
+            return <section className={css.promptCard} data-tone={meta.tone} data-enabled={item.enabled || undefined} key={item.id}>
+              <header>
+                <span className={css.moduleIcon} aria-hidden="true">{meta.symbol}</span>
+                <span className={css.moduleTitle}><small>{meta.kicker}</small><h4>{item.title}</h4></span>
+                <button
+                  type="button"
+                  className={css.moduleSwitch}
+                  role="switch"
+                  aria-checked={item.enabled}
+                  aria-label={`${item.title}${item.enabled ? '已启用，点击停用' : '已停用，点击启用'}`}
+                  onClick={() => { void toggleSelf(item) }}
+                ><span /><b>{item.enabled ? '启用中' : '已停用'}</b></button>
+              </header>
+              <p className={css.moduleSummary}>{item.summary || '这部分印象还留着空白，等待未来慢慢形成。'}</p>
+              {item.details.length > 0
+                ? <ul>{item.details.slice(0, 4).map(detail => <li key={detail}>{detail}</li>)}</ul>
+                : null}
+              <footer>
+                <span>{STABILITY_LABEL[item.stability]}</span>
+                {item.locked
+                  ? <span>用户锁定</span>
+                  : item.autonomous ? <span>可阶段成长</span> : <span>需明确确认</span>}
+              </footer>
+            </section>
+          })}
+        </div>
+        <p className={css.privacy}>
+          <span aria-hidden="true">◇</span>
+          <span><strong>属于她自己的记忆边界</strong>
+            伙伴只读取公共 Vault 与自己的私有 Vault，不会触碰其他伙伴的私有认知。
+            角色包会统一携带形象、记忆、能力、资源和印象卡。
+          </span>
+        </p>
       </div>
     </section> : <section className={css.emptyProfile}>新增一位伙伴，开始你们的聊天。</section>}
     {editing !== undefined ? <CompanionEditor

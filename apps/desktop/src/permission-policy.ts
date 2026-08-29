@@ -2,6 +2,9 @@
 const APP_PERMISSIONS = new Set([
   'geolocation',
   'clipboard-read',
+  // Native <video> controls use the HTML Fullscreen API. Restrict the grant to
+  // the exact local renderer origin below; remote browser/webview pages remain denied.
+  'fullscreen',
   // Chromium classifies async image writes separately from writeText(). Keep
   // this grant on the exact local app origin; embedded remote pages remain
   // denied by desktopPermissionAllowed below.

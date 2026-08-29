@@ -6,6 +6,11 @@ interface BuiltInMeme {
   readonly content: string
   readonly asset: string
   readonly mimeType: string
+  readonly description?: string
+  readonly tags?: readonly string[]
+  readonly transcript?: string
+  readonly bytes?: number
+  readonly durationMs?: number
 }
 
 export const BUILT_IN_MEMES: readonly BuiltInMeme[] = [
@@ -100,4 +105,25 @@ export const BUILT_IN_MEMES: readonly BuiltInMeme[] = [
   { id: 'builtin-kaguya-047', scope: 'kaguya', title: '耶', content: '辉夜-耶', asset: '/worldline-experience/companion-memes/kaguya/047.gif', mimeType: 'image/gif' },
   { id: 'builtin-public-003', scope: 'public', title: '小南娘爱你', content: '小南娘爱你', asset: '/worldline-experience/companion-memes/public/003.jpg', mimeType: 'image/jpeg' },
   { id: 'builtin-public-004', scope: 'public', title: '小南娘比心', content: '小南娘比心', asset: '/worldline-experience/companion-memes/public/004.gif', mimeType: 'image/gif' },
+  {
+    id: 'builtin-public-005',
+    scope: 'public',
+    title: '孤高曼波',
+    content: '赛马娘诗歌剧孤高登山曼波，用于荒诞登场、一本正经整活、庆祝与压轴',
+    description: '诗歌剧“曼波”哼唱与《孤高之人》登山意象结合的赛马娘二创。适合荒诞登场、独自前进、一本正经整活、庆祝胜利或压轴收尾。',
+    tags: [
+      '孤高曼波', '曼波', '赛马娘', '闪耀优俊少女', '诗歌剧', '翻车鱼', '孤高之人',
+      '登山', 'La La La', '二创', '鬼畜', '整活', '荒诞', '庆祝', '登场', '压轴',
+      '视频', 'mp4',
+    ],
+    transcript: [
+      '语义：用孤高登山的严肃画面承载魔性曼波，形成一本正经又荒诞的反差笑点。',
+      '推荐：角色突然高调登场、独自完成难事、把小事说得史诗化、庆祝胜利、聊天压轴或对方主动提到曼波和赛马娘时使用。',
+      '避免：对方正在严肃求助、悲伤倾诉、表达不适，或当前任务要求克制和专业时使用；不要把“曼波”泛化成任何事物的代称。',
+    ].join('\n'),
+    asset: '/worldline-experience/companion-memes/public/005.mp4',
+    mimeType: 'video/mp4',
+    bytes: 5_629_565,
+    durationMs: 23_000,
+  },
 ]

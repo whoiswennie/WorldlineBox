@@ -63,8 +63,10 @@ describe('reference quick add', () => {
 
     const Page = KnowledgeVaultPage as ComponentType<{ activePage: string }>
     const view = render(<Page activePage="knowledge" />)
-    await waitFor(() => { expect(screen.getByRole('button', { name: '资源画廊' })).toBeTruthy() })
-    fireEvent.click(screen.getByRole('button', { name: '资源画廊' }))
+    await waitFor(() => { expect(screen.getByRole('tab', { name: /^资源画廊/u })).toBeTruthy() })
+    expect(screen.getByRole('tab', { name: /^知识文档/u }).querySelector('svg')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^资源画廊/u }).querySelector('svg')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: /^资源画廊/u }))
     await waitFor(() => { expect(screen.getByRole('button', { name: '新增引用' })).toBeTruthy() })
     expect(screen.getByRole('button', { name: '筛选栏' }).getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByPlaceholderText('搜索引用资料')).toBeTruthy()
@@ -138,8 +140,8 @@ describe('reference quick add', () => {
 
     const Page = KnowledgeVaultPage as ComponentType<{ activePage: string }>
     render(<Page activePage="knowledge" />)
-    await waitFor(() => { expect(screen.getByRole('button', { name: '资源画廊' })).toBeTruthy() })
-    fireEvent.click(screen.getByRole('button', { name: '资源画廊' }))
+    await waitFor(() => { expect(screen.getByRole('tab', { name: /^资源画廊/u })).toBeTruthy() })
+    fireEvent.click(screen.getByRole('tab', { name: /^资源画廊/u }))
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '禁用引用 可暂停视频' })).toBeTruthy()
     })

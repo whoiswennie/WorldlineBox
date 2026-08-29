@@ -34,6 +34,14 @@
   object-fit: contain;
 }
 
+/* Media controls must receive the pointer directly instead of allowing a
+ * surrounding message/card surface to turn the click into selection/drag. */
+.reference[data-reference-interactive='true'],
+.reference[data-reference-interactive='true'] > audio,
+.reference[data-reference-interactive='true'] > video {
+  pointer-events: auto;
+}
+
 .reference[data-reference-mode='conversation'] > img,
 .reference[data-reference-mode='conversation'] > video,
 .reference[data-reference-mode='conversation'] > canvas,
@@ -45,6 +53,20 @@
 
 .reference[data-reference-mode='conversation'] > video {
   background: #101114;
+}
+
+/* A fullscreen video is promoted to Chromium's top layer. Override every
+ * bounded card/conversation rule (including consumer CSS modules) so the
+ * native fullscreen button always produces a real viewport-sized player. */
+.reference > video:fullscreen,
+.reference > video:-webkit-full-screen {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  border-radius: 0 !important;
+  background: #000;
+  object-fit: contain;
 }
 
 .reference > audio {

@@ -14,6 +14,36 @@ export const DEFAULT_NETEASE_PLAYLIST: SavedNeteasePlaylist = {
   name: DEFAULT_NETEASE_PLAYLIST_NAME,
 }
 
+const AUTOPLAY_COOKIE_PREFIX = 'worldline_netease_autoplay_'
+const AUTOPLAY_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365 * 5
+
+function autoplayCookieName(): string {
+  const namespace = (globalThis as typeof globalThis & {
+    __WORLDLINE_STORAGE_NAMESPACE__?: unknown
+  }).__WORLDLINE_STORAGE_NAMESPACE__
+  const account = typeof namespace === 'string' && namespace !== '' ? namespace : 'shared'
+  return `${AUTOPLAY_COOKIE_PREFIX}${account.replace(/[^a-zA-Z0-9_-]/gu, '_')}`
+}
+
+/**
+ * Cookies are host-scoped rather than port-scoped. The desktop runtime uses a
+ * fresh loopback port after restart, so this small preference bridge preserves
+ * the user's explicit autoplay choice when localStorage moves to a new origin.
+ */
+export function persistedMusicAutoplayPreference(): boolean | undefined {
+  if (typeof document === 'undefined') return undefined
+  const prefix = `${autoplayCookieName()}=`
+  const value = document.cookie.split(';').map(part => part.trim())
+    .find(part => part.startsWith(prefix))?.slice(prefix.length)
+  return value === '1' ? true : value === '0' ? false : undefined
+}
+
+/** Persist an explicit autoplay choice across changing loopback ports. */
+export function persistMusicAutoplayPreference(enabled: boolean): void {
+  if (typeof document === 'undefined') return
+  document.cookie = `${autoplayCookieName()}=${enabled ? '1' : '0'}; Path=/; Max-Age=${AUTOPLAY_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`
+}
+
 export interface MusicPreferences {
   /** Whether the custom player starts after restoring its saved track and timestamp. */
   autoPlay: boolean
@@ -120,7 +150,7 @@ function saveCustomPlaylist(
 export function createMusicPreferenceStore(): MusicPreferenceStore {
   return defineStore({
     init: (): MusicPreferences => ({
-      autoPlay: false,
+      autoPlay: persistedMusicAutoplayPreference() ?? false,
       positionSeconds: 0,
       volume: 0.8,
       playbackMode: 'list',
@@ -131,6 +161,7 @@ export function createMusicPreferenceStore(): MusicPreferenceStore {
     actions: {
       setAutoPlay: (draft, enabled: boolean) => {
         draft.autoPlay = enabled
+        persistMusicAutoplayPreference(enabled)
       },
       selectTrack: (draft, trackId: string) => {
         draft.trackId = trackId

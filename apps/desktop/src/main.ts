@@ -178,6 +178,9 @@ async function createWindow(url: string, showOnReady = true, bootstrapToken?: st
       sandbox: true,
       webSecurity: true,
       webviewTag: true,
+      // HTML media fullscreen must resize the native BrowserWindow, not stay
+      // constrained inside the renderer's center column.
+      disableHtmlFullscreenWindowResize: false,
       preload: join(import.meta.dirname, 'preload.cjs'),
     },
   })

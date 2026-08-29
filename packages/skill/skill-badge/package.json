@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-skill-badge",
   "description": "Bundled worldline badge skill provider for Worldline",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publishConfig": {
     "access": "public"
   },

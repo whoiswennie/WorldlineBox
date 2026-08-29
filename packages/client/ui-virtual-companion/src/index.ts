@@ -637,11 +637,16 @@ export class VirtualCompanionDirectory {
     const seededAt = Date.now()
     for (const meme of BUILT_IN_MEMES.filter(item => scope === undefined || item.scope === scope)) {
       try { await this.vaults.resource(meme.scope, meme.id); continue } catch { /* seed missing built-in */ }
+      const mediaTags = meme.mimeType.startsWith('video/')
+        ? ['视频', meme.mimeType.slice('video/'.length)]
+        : ['表情包', '图片', meme.mimeType === 'image/gif' ? 'gif' : 'jpg']
       await this.vaults.importResource(meme.scope, { preferredId: meme.id, enabled: true,
-        roles: ['expression'], title: meme.title, description: meme.content,
-        tags: [...new Set(['表情包', '图片', meme.mimeType === 'image/gif' ? 'gif' : 'jpg', meme.scope,
-          ...meme.content.split(/[-—_\s，。！？、]+/u).filter(Boolean)])], originalTags: [], transcript: '',
-        mimeType: meme.mimeType, bytes: 0, externalUrl: meme.asset, builtIn: true, usageCount: 0,
+        roles: ['expression'], title: meme.title, description: meme.description ?? meme.content,
+        tags: [...new Set([...mediaTags, meme.scope, ...(meme.tags ?? []),
+          ...meme.content.split(/[-—_\s，。！？、]+/u).filter(Boolean)])], originalTags: [],
+        transcript: meme.transcript ?? '', mimeType: meme.mimeType, bytes: meme.bytes ?? 0,
+        ...(meme.durationMs === undefined ? {} : { durationMs: meme.durationMs }),
+        externalUrl: meme.asset, builtIn: true, usageCount: 0,
         createdAt: seededAt }, undefined, { actor: { type: 'system', id: 'built-in-seed' },
         reason: 'Install a missing bundled expression resource.' })
     }

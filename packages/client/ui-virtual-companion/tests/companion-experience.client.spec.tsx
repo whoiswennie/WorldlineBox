@@ -17,6 +17,10 @@ const companion = {
   portrait: '/yachiyo.png', status: '在线', description: '', persona: '', style: '',
   speakingStyle: '', behaviorLogic: '', builtIn: true, createdAt: 1, updatedAt: 1,
 }
+const iroha = {
+  ...companion,
+  id: 'iroha-tamaki', name: '酒寄彩叶', handle: 'IROHA', avatar: '/iroha.png', portrait: '/iroha.png',
+}
 
 function t(key: keyof typeof zh, params?: Record<string, unknown>): string {
   let value: string = zh[key]
@@ -119,5 +123,43 @@ describe('immersive companion experience', () => {
     expect(screen.getByRole('status').textContent).toContain('月见八千代正在读你的消息')
     act(() => { vi.advanceTimersByTime(14_000) })
     expect(screen.getByRole('status').textContent).toContain('月见八千代还在认真想着，没有走开')
+  })
+
+  it('maps a running child session back to its exact companion instead of the first room member', async () => {
+    const parentId = 'parent-room'
+    const childId = 'actor-yachiyo'
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      ok: true,
+      value: {
+        companions: [iroha, companion],
+        rooms: { [parentId]: {
+          sessionId: parentId,
+          participantIds: [iroha.id, companion.id],
+          actorSessionIds: { [iroha.id]: 'actor-iroha', [companion.id]: childId },
+          updatedAt: 1,
+        } },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))))
+    await companionStore.load(true)
+    const childSessions = <T,>(selector: (state: unknown) => T): T => selector({
+      current: childId,
+      currentAddress: { parentSessionId: parentId, childSessionId: childId },
+      byId: { [childId]: { agentPreset: 'virtual-companion' } },
+    })
+    const props = {
+      sessionId: childId,
+      session: { running: true, chat: { order: [], nodes: new Map() } },
+      useSessions: childSessions,
+      useStore: <T,>(selector: (state: { showProcess: boolean }) => T) => selector({ showProcess: false }),
+      useCompanionDirectory: <T,>(selector: (state: ReturnType<typeof companionStore.getSnapshot>) => T) =>
+        selector(companionStore.getSnapshot()),
+      loadDirectory: vi.fn(),
+      t,
+    } as unknown as ComponentProps<typeof CompanionWaitingStatus>
+
+    render(<CompanionWaitingStatus {...props} />)
+
+    expect(screen.getByRole('status').textContent).toContain('月见八千代正在读你的消息')
+    expect(screen.getByRole('status').textContent).not.toContain('酒寄彩叶')
   })
 })

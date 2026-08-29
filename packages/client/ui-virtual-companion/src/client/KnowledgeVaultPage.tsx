@@ -342,6 +342,39 @@ function MarkdownDocumentOutline() {
   </svg>
 }
 
+function KnowledgeBookOutline() {
+  return <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.65"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M4.25 5.5A2.25 2.25 0 0 1 6.5 3.25H11v15.5H6.5A2.25 2.25 0 0 0 4.25 21z" />
+    <path d="M19.75 5.5a2.25 2.25 0 0 0-2.25-2.25H13v15.5h4.5A2.25 2.25 0 0 1 19.75 21z" />
+    <path d="M6.75 7.25h2M15.25 7.25h2M6.75 10.25h2M15.25 10.25h2" />
+  </svg>
+}
+
+function ResourceGalleryOutline() {
+  return <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.65"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <rect x="3.25" y="4" width="17.5" height="16" rx="3" />
+    <circle cx="8.25" cy="9" r="1.5" />
+    <path d="m5.75 17 4.2-4.15 2.65 2.55 2.15-2.15L18.5 17" />
+    <path d="m16.25 7.25 2 1.25-2 1.25z" fill="currentColor" stroke="none" />
+  </svg>
+}
+
 function TreeBranch({
   scope,
   directory,
@@ -436,14 +469,12 @@ function KnowledgeWorkbench({
   scopeOption,
   showTree,
   showInfo,
-  setShowTree,
   setShowInfo,
 }: {
   scope: string
   scopeOption: KnowledgeScopeOption
   showTree: boolean
   showInfo: boolean
-  setShowTree: (visible: boolean) => void
   setShowInfo: (visible: boolean) => void
 }) {
   const [documents, setDocuments] = useState<OpenDocument[]>([])
@@ -451,6 +482,7 @@ function KnowledgeWorkbench({
   const [activePath, setActivePath] = useState<string>()
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<KnowledgeSearchResult[]>([])
+  const searchRevision = useRef(0)
   const [treeRevision, setTreeRevision] = useState(0)
   const [creating, setCreating] = useState(false)
   const [newPageTitle, setNewPageTitle] = useState('')
@@ -599,18 +631,27 @@ function KnowledgeWorkbench({
       setCreateError(reason instanceof Error ? reason.message : String(reason))
     }
   }
-  const search = async (): Promise<void> => {
-    if (query.trim() === '') {
+  useEffect(() => {
+    const normalized = query.trim()
+    const revision = ++searchRevision.current
+    if (normalized === '') {
       setSearchResults([])
       return
     }
-    const results = await post<KnowledgeSearchResult[]>('knowledge/search', {
-      scope,
-      query,
-      limit: 30,
-    })
-    setSearchResults(results)
-  }
+    setSearchResults([])
+    const timer = window.setTimeout(() => {
+      void post<KnowledgeSearchResult[]>('knowledge/search', {
+        scope,
+        query: normalized,
+        limit: 30,
+      }).then((results) => {
+        if (searchRevision.current === revision) setSearchResults(results)
+      }).catch(() => {
+        if (searchRevision.current === revision) setSearchResults([])
+      })
+    }, 140)
+    return () => { window.clearTimeout(timer) }
+  }, [query, scope])
   const useServerVersion = (path: string): void => {
     setDocuments(current =>
       current.map(item =>
@@ -679,34 +720,32 @@ function KnowledgeWorkbench({
     >
       {showTree && <aside className={css.filePane}>
         <div className={css.paneTitle}>
-          <strong>文件</strong>
-          <div>
-            <button
-              type="button"
-              onClick={() => {
-                setNewPageTitle('')
-                setCreateError('')
-                setCreating(true)
-              }}
-              title="新建 Markdown"
-            >
-              <IconPlusOutline16 />
-            </button>
-            <button
-              type="button"
-              aria-label="收起文件树"
-              onClick={() => { setShowTree(false) }}
-              title="收起文件树"
-            >
-              ×
-            </button>
+          <div className={css.paneIdentity}>
+            <span className={css.treeTitleIcon} aria-hidden="true"><IconFolderOpen16 /></span>
+            <span className={css.paneHeading}>
+              <small>KNOWLEDGE TREE</small>
+              <strong>知识目录</strong>
+            </span>
           </div>
+          <button
+            type="button"
+            className={css.createPageButton}
+            aria-label="新建知识页"
+            onClick={() => {
+              setNewPageTitle('')
+              setCreateError('')
+              setCreating(true)
+            }}
+            title="新建 Markdown"
+          >
+            <IconPlusOutline16 />
+            <span>新建页面</span>
+          </button>
         </div>
         <form
           className={css.vaultSearch}
           onSubmit={(event) => {
             event.preventDefault()
-            void search()
           }}
         >
           <IconSearchOutline16 />
@@ -719,8 +758,8 @@ function KnowledgeWorkbench({
           />
         </form>
         <div className={css.fileTree}>
-          {searchResults.length > 0 ? (
-            searchResults.map(result => (
+          {query.trim() !== '' ? (
+            searchResults.length > 0 ? searchResults.map(result => (
               <button
                 type="button"
                 key={result.path}
@@ -732,7 +771,7 @@ function KnowledgeWorkbench({
                 <strong>{result.title}</strong>
                 <span>{result.summary}</span>
               </button>
-            ))
+            )) : <p className={css.searchEmpty}>没有找到相关知识页</p>
           ) : (
             <TreeBranch
               scope={scope}
@@ -896,7 +935,10 @@ function KnowledgeWorkbench({
       </section>
       {showInfo && <aside className={css.infoPane}>
         <div className={css.paneTitle}>
-          <strong>页面信息</strong>
+          <span className={css.paneHeading}>
+            <small>PAGE DETAILS</small>
+            <strong>页面信息</strong>
+          </span>
           <button
             type="button"
             aria-label="收起页面信息"
@@ -907,33 +949,51 @@ function KnowledgeWorkbench({
           </button>
         </div>
         {active === undefined ? (
-          <p>打开页面后显示标题、标签、双链和来源。</p>
+          <div className={css.infoEmpty}>
+            <span aria-hidden="true">◇</span>
+            <strong>等待打开知识页</strong>
+            <p>选择一篇文档后，这里会整理它的标签、双链、来源与更新状态。</p>
+          </div>
         ) : (
           <div className={css.infoContent}>
-            <label>标签</label>
-            <div className={css.tagList}>
-              {active.document.tags.map(tag => (
-                <span key={tag}>#{tag}</span>
-              ))}
+            <section className={css.infoDocumentCard}>
+              <span className={css.infoDocumentIcon}><MarkdownDocumentOutline /></span>
+              <div><strong>{active.document.title}</strong><small>{active.document.path}</small></div>
+            </section>
+            <div className={css.infoStats}>
+              <span><strong>{active.document.totalLines}</strong><small>行内容</small></span>
+              <span><strong>{active.document.headings.length}</strong><small>级标题</small></span>
+              <span><strong>{active.document.links.length}</strong><small>条出链</small></span>
             </div>
-            <label>出链</label>
-            {active.document.links.map(link => (
-              <button
-                type="button"
-                key={link}
-                onClick={() => {
-                  void openDocument(link.endsWith('.md') ? link : `${link}.md`)
-                }}
-              >
-                [[{link}]]
-              </button>
-            ))}
-            <label>来源</label>
-            {active.document.sources.length === 0 ? (
-              <p>尚未声明来源</p>
-            ) : (
-              active.document.sources.map(source => <span key={source}>{source}</span>)
-            )}
+            <small className={css.infoUpdated}>最近更新 · {new Date(active.document.updatedAt).toLocaleString()}</small>
+            <section className={css.infoSection}>
+              <header><strong>标签</strong><small>{active.document.tags.length}</small></header>
+              {active.document.tags.length === 0 ? <p>还没有标签</p> : <div className={css.tagList}>
+                {active.document.tags.map(tag => <span key={tag}>#{tag}</span>)}
+              </div>}
+            </section>
+            <section className={css.infoSection}>
+              <header><strong>关联页面</strong><small>{active.document.links.length}</small></header>
+              {active.document.links.length === 0 ? <p>暂时没有 Wiki 双链</p> : <div className={css.infoLinks}>
+                {active.document.links.map(link => (
+                  <button
+                    type="button"
+                    key={link}
+                    onClick={() => {
+                      void openDocument(link.endsWith('.md') ? link : `${link}.md`)
+                    }}
+                  >
+                    <span aria-hidden="true">↗</span>[[{link}]]
+                  </button>
+                ))}
+              </div>}
+            </section>
+            <section className={css.infoSection}>
+              <header><strong>资料来源</strong><small>{active.document.sources.length}</small></header>
+              {active.document.sources.length === 0 ? <p>尚未声明来源</p> : <div className={css.infoSources}>
+                {active.document.sources.map(source => <span key={source}>{source}</span>)}
+              </div>}
+            </section>
           </div>
         )}
       </aside>}
@@ -1679,7 +1739,26 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
       <section className={css.main}>
         <header className={css.topbar}>
           <ScopeSwitcher options={scopes} value={scope} onChange={setScope} />
-          <div className={css.topbarActions}>
+          <nav className={css.vaultTabs} role="tablist" aria-label="知识库内容类型">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'knowledge'}
+              onClick={() => { setTab('knowledge') }}
+            >
+              <span><KnowledgeBookOutline /></span><span><strong>知识文档</strong><small>认知、记忆与方法</small></span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'references'}
+              onClick={() => { setTab('references') }}
+            >
+              <span><ResourceGalleryOutline /></span><span><strong>资源画廊</strong><small>图片、表情与音视频</small></span>
+            </button>
+          </nav>
+          <div className={css.viewControls}>
+            <small>视图</small>
             <div className={css.paneToggles}>
               {tab === 'knowledge' ? <>
                 <button
@@ -1704,26 +1783,6 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
                 筛选栏
               </button>}
             </div>
-            <nav>
-              <button
-                type="button"
-                aria-current={tab === 'knowledge'}
-                onClick={() => {
-                  setTab('knowledge')
-                }}
-              >
-                认知与记忆
-              </button>
-              <button
-                type="button"
-                aria-current={tab === 'references'}
-                onClick={() => {
-                  setTab('references')
-                }}
-              >
-                资源画廊
-              </button>
-            </nav>
           </div>
         </header>
         {tab === 'knowledge' ? (
@@ -1733,7 +1792,6 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
             scopeOption={selectedScope}
             showTree={showTree}
             showInfo={showInfo}
-            setShowTree={setShowTree}
             setShowInfo={setShowInfo}
           />
         ) : (

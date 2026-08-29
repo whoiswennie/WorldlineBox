@@ -1,11 +1,18 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createMusicPreferenceStore,
   resolveNeteasePlaylists,
 } from '../src/client/store.ts'
 
-beforeEach(() => { localStorage.clear() })
+beforeEach(() => {
+  localStorage.clear()
+  vi.unstubAllGlobals()
+  for (const cookie of document.cookie.split(';')) {
+    const name = cookie.split('=', 1)[0]?.trim()
+    if (name !== undefined && name !== '') document.cookie = `${name}=; Path=/; Max-Age=0`
+  }
+})
 
 describe('music preference store', () => {
   it('defaults autoplay off on first install', () => {
@@ -41,6 +48,23 @@ describe('music preference store', () => {
       playlistId: '123456',
       playlists: [{ id: '123456', name: '歌单 123456' }],
     })
+  })
+
+  it('keeps an explicit autoplay choice when the desktop loopback port changes', () => {
+    vi.stubGlobal('__WORLDLINE_STORAGE_NAMESPACE__', 'user-1')
+    const firstOrigin = createMusicPreferenceStore().create()
+    firstOrigin.actions.setAutoPlay(true)
+    expect(document.cookie).toContain('worldline_netease_autoplay_user-1=1')
+
+    // A fresh loopback origin cannot see the old origin's localStorage, while
+    // its host-scoped cookie remains available on 127.0.0.1.
+    localStorage.clear()
+    const nextOrigin = createMusicPreferenceStore().create()
+    expect(nextOrigin.store.getSnapshot().autoPlay).toBe(true)
+
+    nextOrigin.actions.setAutoPlay(false)
+    localStorage.clear()
+    expect(createMusicPreferenceStore().create().store.getSnapshot().autoPlay).toBe(false)
   })
 
   it('keeps the default immutable and persists named playlists with live selection', () => {

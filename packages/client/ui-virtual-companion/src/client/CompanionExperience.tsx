@@ -113,12 +113,25 @@ export function CompanionWaitingStatus({
   session, sessionId, useSessions, useStore, useCompanionDirectory, loadDirectory, t,
 }: StatusProps) {
   const enabled = useSessions(state => state.byId[sessionId]?.agentPreset === PRESET_ID)
+  const subagentAddress = useSessions(state => (
+    state.current === sessionId && state.currentAddress?.childSessionId === sessionId
+      ? state.currentAddress
+      : undefined
+  ))
   const showProcess = useStore(state => state.showProcess)
   const directory = useCompanionDirectory(state => state)
   const [waitStage, setWaitStage] = useState(0)
   const roomReply = currentRoomReply(session)
   const liveSpeaker = roomReply?.streaming === true ? roomReply : undefined
-  const companions = roomCompanions(directory, sessionId)
+  const roomSessionId = subagentAddress?.parentSessionId ?? sessionId
+  const room = directory.rooms[roomSessionId]
+  const actorCompanionId = subagentAddress === undefined
+    ? undefined
+    : Object.entries(room?.actorSessionIds ?? {})
+      .find(([, actorSessionId]) => actorSessionId === sessionId)?.[0]
+  const companions = actorCompanionId === undefined
+    ? roomCompanions(directory, roomSessionId)
+    : directory.companions.filter(item => item.id === actorCompanionId)
 
   useEffect(() => {
     if (!enabled || !session.running || showProcess || roomReply !== undefined) {

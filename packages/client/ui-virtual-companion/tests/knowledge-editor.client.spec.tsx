@@ -18,6 +18,54 @@ afterEach(() => {
 })
 
 describe('knowledge editor and file tree', () => {
+  it('searches while typing and restores the complete root tree when cleared', async () => {
+    const searchRequests: string[] = []
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input.href
+      if (url.endsWith('/api/virtual-companions')) {
+        return Promise.resolve(response({
+          companions: [{ id: 'kaguya', name: '辉夜', avatar: '/avatars/kaguya.png' }],
+          rooms: {},
+        }))
+      }
+      if (url.endsWith('/knowledge/tree')) {
+        return Promise.resolve(response([
+          { name: 'root.md', path: 'root.md', kind: 'document', size: 12 },
+          { name: 'memory', path: 'memory', kind: 'directory', children: 1 },
+        ]))
+      }
+      if (url.endsWith('/knowledge/search')) {
+        const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {
+          query?: string
+        }
+        searchRequests.push(body.query ?? '')
+        return Promise.resolve(response([{
+          scope: 'public', path: 'memory/moon.md', title: '月色记忆',
+          summary: '与月亮有关的回忆', tags: ['月'], revision: 'one', updatedAt: 1,
+        }]))
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }))
+
+    const Page = KnowledgeVaultPage as ComponentType<{ activePage: string }>
+    render(<Page activePage="knowledge" />)
+    expect(await screen.findByRole('button', { name: 'root.md' })).toBeTruthy()
+
+    const input = screen.getByPlaceholderText('搜索标题、标签与正文')
+    fireEvent.change(input, { target: { value: '月' } })
+    expect(await screen.findByText('月色记忆')).toBeTruthy()
+    expect(searchRequests).toEqual(['月'])
+    expect(screen.queryByRole('button', { name: 'root.md' })).toBeNull()
+
+    fireEvent.change(input, { target: { value: '' } })
+    expect(await screen.findByRole('button', { name: 'root.md' })).toBeTruthy()
+    expect(searchRequests).toEqual(['月'])
+  })
+
   it('uses resource-manager tree rows and opens Markdown in edit mode', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string'
@@ -77,7 +125,8 @@ describe('knowledge editor and file tree', () => {
     expect(screen.getByRole('button', { name: '页面信息' }).getAttribute('aria-pressed'))
       .toBe('false')
 
-    fireEvent.click(screen.getByRole('button', { name: '收起文件树' }))
+    expect(screen.queryByRole('button', { name: '收起文件树' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '文件树' }))
     expect(screen.queryByRole('button', { name: 'pages' })).toBeNull()
     expect(screen.getByRole('button', { name: '文件树' }).getAttribute('aria-pressed')).toBe('false')
 

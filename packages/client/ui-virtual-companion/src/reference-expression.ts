@@ -21,6 +21,116 @@ export interface ReferenceConversationState {
   readonly exchangeDepth: number
 }
 
+/** Small metadata surface used by the model-free expression ranker. */
+export interface ExpressionCandidate {
+  readonly id: string
+  readonly agentId: string
+  readonly title: string
+  readonly description: string
+  readonly tags: readonly string[]
+  readonly transcript: string
+  readonly mimeType: string
+  readonly usageCount: number
+}
+
+const SEMANTIC_CLUSTERS: readonly (readonly string[])[] = [
+  ['喜欢', '爱你', '爱心', '比心', '亲亲', '心动', '宠爱', '好喜欢', '眼冒爱心', 'affection', 'love'],
+  ['饿', '吃饭', '吃东西', '美食', '好吃', '大吃特吃', '喝奶茶', '吃薯片', '流口水', 'hungry', 'food'],
+  ['庆祝', '成功', '胜利', '开心', '好耶', '耶', '跳舞', '激动', 'celebrate', 'congratulations'],
+  ['难过', '伤心', '委屈', '哭', '泪眼', '大哭大闹', '安慰', 'sad', 'cry', 'comfort'],
+  ['疑惑', '不懂', '什么', '问号', '困惑', '惊讶', '惊到了', '我发现了什么', 'confused', 'surprised'],
+  ['拒绝', '不要', '不情愿', '生气', '好气', '嫌弃', '给你一拳', '大咩哟', 'reject', 'angry'],
+  ['撒娇', '卖萌', '可爱', '贴贴', '陪伴', '亲昵', 'cute', 'tease'],
+  ['道歉', '对不起', '抱歉', '投降', 'sorry', 'apologize'],
+  ['困', '睡觉', '困死了', '晚安', 'sleep', 'tired'],
+  ['唱歌', '音乐', '歌曲', '跳舞', '打音游', 'music', 'song'],
+]
+
+function normalizeExpressionText(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '')
+}
+
+function expressionTerms(value: string): Set<string> {
+  const normalized = normalizeExpressionText(value)
+  const terms = new Set<string>()
+  for (const segment of value.normalize('NFKC').toLocaleLowerCase().split(/[^\p{L}\p{N}]+/gu)) {
+    if (segment.length >= 2) terms.add(segment)
+    if (!/[\p{Script=Han}]/u.test(segment)) continue
+    for (let size = 2; size <= Math.min(4, segment.length); size += 1) {
+      for (let index = 0; index + size <= segment.length; index += 1) {
+        terms.add(segment.slice(index, index + size))
+      }
+    }
+  }
+  for (const cluster of SEMANTIC_CLUSTERS) {
+    if (!cluster.some(term => normalized.includes(normalizeExpressionText(term)))) continue
+    for (const term of cluster) terms.add(normalizeExpressionText(term))
+  }
+  return terms
+}
+
+function expressionScore(candidate: ExpressionCandidate, signal: string, preferredAgentId: string,
+  recentAssetIds: readonly string[]): number {
+  const title = normalizeExpressionText(candidate.title)
+  const tags = candidate.tags.map(normalizeExpressionText)
+  const body = normalizeExpressionText([
+    candidate.title, candidate.description, candidate.tags.join(' '), candidate.transcript,
+  ].join(' '))
+  const normalizedSignal = normalizeExpressionText(signal)
+  let score = candidate.agentId === preferredAgentId ? 2 : 0
+  // Recent use is context for the Agent, not a ban. A small penalty encourages variety while an
+  // exact or strongly relevant asset can still win and can always be explicitly selected again.
+  if (recentAssetIds.includes(candidate.id)) score -= 12
+  if (title !== '' && normalizedSignal.includes(title)) score += 80 + title.length * 4
+  for (const term of expressionTerms(signal)) {
+    if (term.length < 2 || !body.includes(term)) continue
+    score += 2 + Math.min(term.length, 8)
+    if (title.includes(term)) score += 8
+    if (tags.some(tag => tag.includes(term))) score += 4
+  }
+  return score
+}
+
+/**
+ * Rank a small expression shortlist without embeddings. Titles, tags and descriptions provide
+ * relevance while recent use remains a soft signal that never makes an asset unavailable.
+ */
+export function rankExpressionCandidates<Candidate extends ExpressionCandidate>(
+  candidates: readonly Candidate[],
+  intent: ReferenceIntent,
+  recentAssetIds: readonly string[],
+  preferredAgentId: string,
+  recentRoomText: string,
+  limit = 5,
+): Candidate[] {
+  const unique = [...new Map(candidates.map(candidate => [candidate.id, candidate])).values()]
+  const signal = [
+    intent.assetTitle ?? '', intent.act, intent.query ?? '', ...(intent.preferredTags ?? []),
+    intent.target ?? '', recentRoomText,
+  ].join(' ')
+  const exactTitle = normalizeExpressionText(intent.assetTitle ?? '')
+  return unique
+    .map((candidate, index) => ({ candidate, index,
+      score: expressionScore(candidate, signal, preferredAgentId, recentAssetIds)
+        + (exactTitle !== '' && normalizeExpressionText(candidate.title) === exactTitle ? 240 : 0) }))
+    .sort((left, right) => right.score - left.score
+      || left.candidate.usageCount - right.candidate.usageCount
+      || left.index - right.index)
+    .slice(0, Math.max(1, Math.min(10, limit)))
+    .map(item => item.candidate)
+}
+
+/** Select the leading automatic candidate when the Agent does not request a shortlist first. */
+export function selectExpressionCandidate<Candidate extends ExpressionCandidate>(
+  candidates: readonly Candidate[],
+  intent: ReferenceIntent,
+  recentAssetIds: readonly string[],
+  preferredAgentId: string,
+  recentRoomText: string,
+): Candidate | undefined {
+  return rankExpressionCandidates(candidates, intent, recentAssetIds, preferredAgentId, recentRoomText, 1)[0]
+}
+
 const DEFAULT_STYLE: ReferenceExpressionStyle = {
   spontaneity: 0.45,
   reciprocity: 0.72,
@@ -83,7 +193,25 @@ export function referenceConversationState(
   let latestCompanionReferenceSeq = -1
   const assetIds: string[] = []
   const acts: ReferenceAct[] = []
-  for (const event of events.slice(-160)) {
+  // Token/reasoning streams can contribute thousands of low-level events per turn. Walking only
+  // the last N raw events made a reference from the immediately preceding reply disappear. Scan
+  // backwards until the bounded semantic history is complete, with a generous raw safety cap.
+  const semanticEvents: SessionEvent[] = []
+  let references = 0
+  let intents = 0
+  let userMessages = 0
+  const lowerBound = Math.max(0, events.length - 20_000)
+  for (let index = events.length - 1; index >= lowerBound; index -= 1) {
+    const event = events[index]
+    if (event === undefined) continue
+    if (event.type === 'companion/reference') references += 1
+    else if (event.type === 'companion/expression-intent') intents += 1
+    else if (event.type === 'user/message') userMessages += 1
+    else continue
+    semanticEvents.push(event)
+    if (references >= style.repeatWindow && intents >= 8 && userMessages >= 12) break
+  }
+  for (const event of semanticEvents.reverse()) {
     const text = userText(event)
     if (text !== '') {
       if (EXCHANGE_CUE.test(text)) explicitExchangeSeq = event.seq
@@ -121,6 +249,7 @@ export function referenceConversationState(
  */
 export function expressionQuery(intent: ReferenceIntent, recentRoomText: string): string {
   return [
+    intent.assetTitle ?? '',
     intent.act,
     ...(intent.preferredTags ?? []),
     intent.role ?? 'amplify-text',

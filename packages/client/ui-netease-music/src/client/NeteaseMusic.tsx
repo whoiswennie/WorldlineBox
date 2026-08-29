@@ -7,9 +7,10 @@ import type {
   NeteaseTrackStream,
 } from '@deepseek-ai/dsh-api-remotes/client'
 import type { InjectFace, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
-import type { createMusicPreferenceStore } from './store.ts'
 import {
+  type createMusicPreferenceStore,
   DEFAULT_NETEASE_PLAYLIST_ID,
+  persistMusicAutoplayPreference,
   resolveNeteasePlaylists,
   type PlaybackMode,
 } from './store.ts'
@@ -122,6 +123,11 @@ export function NeteaseMusic({
   const [streamError, setStreamError] = useState<string>()
   const [playing, setPlaying] = useState(false)
   const [playWhenReady, setPlayWhenReady] = useState(autoPlay)
+  // Backfill the host-scoped bridge from an existing origin-local preference.
+  // This migrates users who enabled autoplay before the cross-port fix.
+  useEffect(() => {
+    persistMusicAutoplayPreference(autoPlay)
+  }, [autoPlay])
   const [currentTime, setCurrentTime] = useState(storedPosition)
   const [duration, setDuration] = useState(0)
   const [query, setQuery] = useState('')

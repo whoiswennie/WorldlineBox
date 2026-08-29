@@ -89,6 +89,7 @@ referenceRenderers.register({
   render: ({ resource, mode, onDuration }) => <video
     src={resource.url}
     controls
+    playsInline
     preload={mode === 'preview' ? 'metadata' : 'none'}
     onLoadedMetadata={(event) => { captureDuration(event, onDuration) }}
   />,
@@ -128,6 +129,9 @@ export function ReferenceContent({
       data-reference-renderer={definition.id}
       data-reference-mode={mode}
       data-reference-layout="bounded"
+      data-reference-interactive={definition.id === 'builtin:video' || definition.id === 'builtin:audio'
+        ? 'true'
+        : undefined}
     >
       {definition.render({ resource, mode, onDuration })}
     </div>

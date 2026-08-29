@@ -14,13 +14,17 @@ const companion: VirtualCompanion = {
 
 function toolScope(agentVaults?: unknown): { ctx: Agent['ctx']; tools: Map<string, ToolDefinition> } {
   const tools = new Map<string, ToolDefinition>()
-  return {
-    tools,
-    ctx: { tools: { register: (definition: ToolDefinition) => {
-      tools.set(definition.name, definition)
-      return () => { tools.delete(definition.name) }
-    } }, systemPrompt: { section: () => () => undefined }, agentVaults } as never,
-  }
+  const raw = { tools: { register: (definition: ToolDefinition) => {
+    tools.set(definition.name, definition)
+    return () => { tools.delete(definition.name) }
+  } }, systemPrompt: { section: () => () => undefined }, agentVaults }
+  const ctx = Object.assign(raw, {
+    inject: (_dependencies: string[], callback: (scope: Agent['ctx']) => void) => {
+      callback(raw as never)
+      return { dispose: () => undefined }
+    },
+  }) as unknown as Agent['ctx']
+  return { tools, ctx }
 }
 
 function fixture() {
@@ -51,14 +55,25 @@ function fixture() {
     searchResources: vi.fn(async ({ agentId }: { agentId: string }) => ({
       items: agentId === companion.id ? [resource] : [], nextCursor: -1,
     })),
+    resource: vi.fn(async (agentId: string, id: string) => {
+      if (agentId === companion.id && id === resource.id) return resource
+      throw new Error('not found')
+    }),
   }
   const parentScope = toolScope(vaults)
+  const parentEvents = [{
+    type: 'user/message', seq: 0, time: 1,
+    data: { content: [{ type: 'text', text: '你好' }] },
+  }] as unknown as SessionEvent[]
   const parent = {
     id: SessionId('room'), ctx: parentScope.ctx,
     session: {
       header: { agentPreset: 'virtual-companion' },
-      events: [{ type: 'user/message', data: { content: [{ type: 'text', text: '你好' }] } }],
-      append: (type: string, data: unknown) => { appended.push({ type, data }) },
+      events: parentEvents,
+      append: (type: string, data: unknown) => {
+        appended.push({ type, data })
+        parentEvents.push({ type, seq: parentEvents.length, time: Date.now(), data } as SessionEvent)
+      },
     },
   } as unknown as Agent
   interface StartSpec {
@@ -74,7 +89,9 @@ function fixture() {
   const deleteSession = vi.fn(async () => true)
   const directory = {
     vaults,
-    resourceUrl: vi.fn((_agentId: string, id: string) => id === 'video-1' ? '/video.mp4' : '/meme.gif'),
+    resourceUrl: vi.fn((_agentId: string, id: string) => id === 'video-1'
+      ? '/video.mp4'
+      : id === 'builtin-public-005' ? '/gudug-manbo.mp4' : '/meme.gif'),
     knowledge: {
       tree: vi.fn(() => []), search: vi.fn(() => []), read: vi.fn(), remember: vi.fn(), audit: vi.fn(() => ({})),
     },
@@ -127,6 +144,11 @@ function execution(agent: Agent) {
   return { agent, signal: new AbortController().signal } as never
 }
 
+function isCandidateResult(value: unknown): value is { candidates: unknown[] } {
+  return typeof value === 'object' && value !== null && 'candidates' in value
+    && Array.isArray(value.candidates)
+}
+
 function settle(runtime: CompanionActorRuntime, actorSessionId: string): void {
   runtime.handleSettled({
     runId: 'run', provider: 'fork', id: SessionId(actorSessionId), local: true,
@@ -156,14 +178,14 @@ describe('CompanionActorRuntime', () => {
     expect(firstSpec.provider).toBe('fork')
     expect(firstSpec.request.prompt[0]?.text).toContain('只扮演测试伙伴')
     expect(firstSpec.request.persona).not.toContain('月见八千代')
-    expect(firstSpec.request.persona).toContain('express 是与自然语言同级的表达动作')
+    expect(firstSpec.request.persona).toContain('expression_search')
     expect(firstSpec.request.persona).not.toContain('我想听歌')
     // Child-local companion tools are registered after creation and survive this restriction;
     // inherited coordinator/business tools are completely hidden.
     expect(firstSpec.request.toolFilter).toEqual({ allow: [] })
     expect(firstSpec.request.prompt[0]?.text).toContain('房主：你好')
     expect(firstSpec.request.prompt[0]?.text).toContain('<reference-channel mode="idle"')
-    expect(firstSpec.request.prompt[0]?.text).toContain('不会预先注入完整标签或资源目录')
+    expect(firstSpec.request.prompt[0]?.text).toContain('不会预先注入完整目录')
     expect(value.room.actorSessionIds?.[companion.id]).toBe(first.actor_session_id)
 
     const secondPending = dispatch.execute({
@@ -214,18 +236,24 @@ describe('CompanionActorRuntime', () => {
     runtime.install(actor)
 
     const express = actorScope.tools.get('express')
+    const resourceFind = actorScope.tools.get('resource_find')
     const inspectRoomMember = actorScope.tools.get('inspect_room_member')
     expect(express).toBeDefined()
+    expect(resourceFind).toBeDefined()
     expect(inspectRoomMember).toBeDefined()
     expect(actorScope.tools.has('companion_say')).toBe(false)
     expect(actorScope.tools.has('reference')).toBe(false)
     if (express === undefined) throw new Error('actor express tool not registered')
+    if (resourceFind === undefined) throw new Error('actor resource_find tool not registered')
     if (inspectRoomMember === undefined) throw new Error('room member inspection tool not registered')
     const inspected = await inspectRoomMember.execute({ companion_id: companion.id }, execution(actor))
     expect(inspected).toMatchObject({ found: true, name: companion.name })
     if (inspected === null || typeof inspected !== 'object') throw new Error('room member result is invalid')
     const appearance: unknown = Reflect.get(inspected, 'appearance')
     expect(appearance).toContain('/portrait.png')
+    await expect(resourceFind.execute({
+      query: '庆祝', tags: ['表情包'], roles: ['expression'],
+    }, execution(actor))).resolves.toContain('meme-1')
     const observe = (event: SessionEvent): void => {
       runtime.handleActorEvent({ id: actorId } as Session, event)
     }
@@ -302,6 +330,280 @@ describe('CompanionActorRuntime', () => {
       assetId: 'video-1', title: '孤高曼波',
       mimeType: 'video/mp4', url: '/video.mp4',
     })
+  })
+
+  it('returns a named public resource in the shortlist and sends the Agent-selected id', async () => {
+    const value = fixture()
+    const publicHeart = {
+      id: 'builtin-public-004', agentId: 'public', enabled: true, roles: ['expression'],
+      title: '小南娘比心', description: '小南娘用双手比心表达喜欢', tags: ['表情包', '比心', '喜欢'],
+      originalTags: [], transcript: '', mimeType: 'image/gif', bytes: 10, usageCount: 0,
+      builtIn: true, createdAt: 1, updatedAt: 1, revision: 'public-heart',
+      uri: 'vault://resources/records/builtin-public-004.yml',
+    }
+    value.directory.vaults.searchResources.mockImplementation(async ({ agentId }: { agentId: string }) => ({
+      items: agentId === 'public' ? [publicHeart] : [{
+        id: 'own-self', agentId: companion.id, enabled: true, roles: ['expression'], title: '是我哦',
+        description: '指向自己', tags: ['表情包'], originalTags: [], transcript: '',
+        mimeType: 'image/gif', bytes: 10, usageCount: 0, builtIn: true, createdAt: 1,
+        updatedAt: 1, revision: 'own-self', uri: 'vault://resources/records/own-self.yml',
+      }], nextCursor: -1,
+    }))
+    value.directory.vaults.resource.mockImplementation(async (agentId: string, id: string) => {
+      if (agentId === 'public' && id === publicHeart.id) return publicHeart
+      throw new Error('not found')
+    })
+    const actorId = SessionId('named-resource-actor')
+    await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
+    const actorScope = toolScope(value.directory.vaults)
+    const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
+    new CompanionActorRuntime(value.ctx, value.directory as never).install(actor)
+    const search = actorScope.tools.get('expression_search')
+    const express = actorScope.tools.get('express')
+    if (search === undefined || express === undefined) throw new Error('expression tools not registered')
+
+    const result = await search.execute({
+      keywords: ['小南娘', '比心', '喜欢'], named_title: '小南娘比心',
+    }, execution(actor))
+    if (!isCandidateResult(result)) throw new Error('candidate result is invalid')
+    expect(result.candidates[0]).toMatchObject({
+      asset_id: publicHeart.id, title: publicHeart.title,
+    })
+    await expect(express.execute({ act: '比心表达喜欢', asset_ids: [publicHeart.id] }, execution(actor)))
+      .resolves.toMatchObject({ sent: true, asset_id: publicHeart.id, title: publicHeart.title })
+    expect(value.appended.at(-1)?.data).toMatchObject({
+      assetId: publicHeart.id, title: publicHeart.title,
+    })
+  })
+
+  it('discovers and delivers the bundled public video through the same resource pipeline', async () => {
+    const value = fixture()
+    const video = {
+      id: 'builtin-public-005', agentId: 'public', enabled: true, roles: ['expression'],
+      title: '孤高曼波', description: '荒诞、魔性又有气势的曼波压轴视频',
+      tags: ['视频', '赛马娘', '曼波', '荒诞', '庆祝'], originalTags: [], transcript: '',
+      mimeType: 'video/mp4', bytes: 5_629_565, durationMs: 23_000, usageCount: 0,
+      builtIn: true, createdAt: 1, updatedAt: 1, revision: 'public-video',
+      uri: 'vault://resources/records/builtin-public-005.yml',
+    }
+    value.directory.vaults.searchResources.mockImplementation(async ({ agentId }: { agentId: string }) => ({
+      items: agentId === 'public' ? [video] : [], nextCursor: -1,
+    }))
+    value.directory.vaults.resource.mockImplementation(async (agentId: string, id: string) => {
+      if (agentId === 'public' && id === video.id) return video
+      throw new Error('not found')
+    })
+    const actorId = SessionId('public-video-actor')
+    await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
+    const actorScope = toolScope(value.directory.vaults)
+    const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
+    new CompanionActorRuntime(value.ctx, value.directory as never).install(actor)
+    const search = actorScope.tools.get('expression_search')
+    const express = actorScope.tools.get('express')
+    if (search === undefined || express === undefined) throw new Error('expression tools not registered')
+
+    const result = await search.execute({
+      keywords: ['荒诞', '赛马娘', '曼波', '压轴'], named_title: '孤高曼波',
+    }, execution(actor))
+    if (!isCandidateResult(result)) throw new Error('candidate result is invalid')
+    expect(result.candidates[0]).toMatchObject({
+      asset_id: video.id, title: video.title, mime_type: 'video/mp4', scope: 'public',
+    })
+
+    await expect(express.execute({
+      act: '用荒诞又有气势的曼波视频压轴', asset_ids: [video.id],
+    }, execution(actor))).resolves.toMatchObject({ sent: true, asset_id: video.id, title: video.title })
+    expect(value.appended.at(-1)?.data).toMatchObject({
+      assetId: video.id, title: video.title, mimeType: 'video/mp4', url: '/gudug-manbo.mp4',
+    })
+  })
+
+  it('honors a user-named video when the Agent omits named_title and selects a sticker', async () => {
+    const value = fixture()
+    const sticker = {
+      id: 'meme-1', agentId: companion.id, enabled: true, roles: ['expression'], title: '嫌弃',
+      description: '略显嫌弃的表情', tags: ['表情包', '嫌弃'], originalTags: [], transcript: '',
+      mimeType: 'image/gif', bytes: 10, usageCount: 0, builtIn: true, createdAt: 1,
+      updatedAt: 1, revision: 'sticker', uri: 'vault://resources/records/meme-1.yml',
+    }
+    const video = {
+      id: 'builtin-public-005', agentId: 'public', enabled: true, roles: ['expression'],
+      title: '孤高曼波', description: '赛马娘诗歌剧孤高登山曼波压轴视频',
+      tags: ['视频', '赛马娘', '曼波', '荒诞', '登山', '压轴'], originalTags: [],
+      transcript: '一本正经整活与孤高登山反差', mimeType: 'video/mp4', bytes: 5_629_565,
+      durationMs: 23_000, usageCount: 0, builtIn: true, createdAt: 1, updatedAt: 1,
+      revision: 'public-video', uri: 'vault://resources/records/builtin-public-005.yml',
+    }
+    value.directory.vaults.searchResources.mockImplementation(async ({ agentId }: { agentId: string }) => ({
+      items: agentId === 'public' ? [video] : [sticker], nextCursor: -1,
+    }))
+    value.directory.vaults.resource.mockImplementation(async (agentId: string, id: string) => {
+      if (agentId === 'public' && id === video.id) return video
+      if (agentId === companion.id && id === sticker.id) return sticker
+      throw new Error('not found')
+    })
+    ;(value.parent.session.events as SessionEvent[]).push({
+      type: 'user/message', seq: 99, time: 99,
+      data: { content: [{ type: 'text', text: '你发一下孤高曼波' }] },
+    } as SessionEvent)
+    const actorId = SessionId('runtime-named-video-actor')
+    await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
+    const actorScope = toolScope(value.directory.vaults)
+    const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
+    new CompanionActorRuntime(value.ctx, value.directory as never).install(actor)
+    const search = actorScope.tools.get('expression_search')
+    const express = actorScope.tools.get('express')
+    if (search === undefined || express === undefined) throw new Error('reference tools not registered')
+
+    const result = await search.execute({
+      keywords: ['孤高', '帅气', '独自', '神秘'],
+    }, execution(actor))
+    if (!isCandidateResult(result)) throw new Error('candidate result is invalid')
+    expect(result.candidates[0]).toMatchObject({
+      asset_id: video.id, title: video.title, mime_type: 'video/mp4', exact_match: true,
+    })
+    await expect(express.execute({
+      act: '独自跳出孤高帅气的曼波', asset_ids: [sticker.id],
+    }, execution(actor))).resolves.toMatchObject({
+      sent: true, asset_id: video.id, title: video.title,
+    })
+    expect(value.appended.at(-1)?.data).toMatchObject({
+      assetId: video.id, title: video.title, mimeType: 'video/mp4', url: '/gudug-manbo.mp4',
+    })
+  })
+
+  it('delivers mixed MIME reference resources through one natural-expression tool', async () => {
+    const value = fixture()
+    const resources = [
+      { id: 'image-1', title: '图片', mimeType: 'image/webp' },
+      { id: 'audio-1', title: '音乐', mimeType: 'audio/mpeg' },
+      { id: 'video-1', title: '视频', mimeType: 'video/mp4' },
+      { id: 'text-1', title: '台词', mimeType: 'text/markdown' },
+      { id: 'link-1', title: '外链', mimeType: '' },
+    ].map((resource, index) => ({
+      ...resource, agentId: 'public', enabled: true, roles: ['expression'], description: '',
+      tags: ['引用资源'], originalTags: [], transcript: '', bytes: 10, usageCount: 0,
+      builtIn: false, createdAt: 1, updatedAt: 1, revision: `mixed-${index}`,
+      uri: `vault://resources/records/${resource.id}.yml`,
+    }))
+    value.directory.vaults.resource.mockImplementation(async (agentId: string, id: string) => {
+      const resource = resources.find(item => agentId === 'public' && item.id === id)
+      if (resource !== undefined) return resource
+      throw new Error('not found')
+    })
+    const actorId = SessionId('mixed-reference-actor')
+    await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
+    const actorScope = toolScope(value.directory.vaults)
+    const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
+    new CompanionActorRuntime(value.ctx, value.directory as never).install(actor)
+    const express = actorScope.tools.get('express')
+    if (express === undefined) throw new Error('reference send tool not registered')
+
+    await expect(express.execute({
+      act: '用不同媒体自然表达', asset_ids: resources.map(resource => resource.id),
+    }, execution(actor))).resolves.toMatchObject({ sent: true })
+    expect(value.appended.filter(event => event.type === 'companion/reference')
+      .map(event => event.data))
+      .toEqual(resources.map<unknown>(resource => expect.objectContaining({
+        assetId: resource.id, title: resource.title, mimeType: resource.mimeType,
+        url: resource.id === 'video-1' ? '/video.mp4' : '/meme.gif',
+      })))
+  })
+
+  it('allows the Agent to send multiple selected assets and deliberately repeat them', async () => {
+    const value = fixture()
+    const second = {
+      id: 'meme-2', agentId: companion.id, enabled: true, roles: ['expression'], title: '再来一张',
+      description: '连续表达', tags: ['表情包'], originalTags: [], transcript: '', mimeType: 'image/gif',
+      bytes: 10, usageCount: 0, builtIn: false, createdAt: 1, updatedAt: 1,
+      revision: 'meme-2', uri: 'vault://resources/records/meme-2.yml',
+    }
+    value.directory.vaults.resource.mockImplementation(async (agentId: string, id: string) => {
+      const first = (await value.directory.vaults.searchResources({ agentId: companion.id })).items[0]
+      if (agentId === companion.id && id === 'meme-1' && first !== undefined) return first
+      if (agentId === companion.id && id === second.id) return second
+      throw new Error('not found')
+    })
+    const actorId = SessionId('multi-expression-actor')
+    await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
+    const actorScope = toolScope(value.directory.vaults)
+    const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
+    new CompanionActorRuntime(value.ctx, value.directory as never).install(actor)
+    const express = actorScope.tools.get('express')
+    if (express === undefined) throw new Error('express tool not registered')
+
+    for (let index = 0; index < 2; index += 1) {
+      await expect(express.execute({
+        act: '连续斗图', asset_ids: ['meme-1', second.id],
+      }, execution(actor))).resolves.toMatchObject({ sent: true, title: '开心、再来一张' })
+    }
+    expect(value.appended.filter(event => event.type === 'companion/reference')
+      .map(event => String(Reflect.get(event.data as object, 'assetId'))))
+      .toEqual(['meme-1', 'meme-2', 'meme-1', 'meme-2'])
+  })
+
+  it('changes only when the current user explicitly asks for a different resource', async () => {
+    const value = fixture()
+    const alternative = {
+      id: 'meme-2', agentId: companion.id, enabled: true, roles: ['expression'], title: '俏皮眨眼',
+      description: '俏皮地眨眼', tags: ['表情包', '俏皮', '眨眼'], originalTags: [], transcript: '',
+      mimeType: 'image/gif', bytes: 10, usageCount: 0, builtIn: false, createdAt: 1,
+      updatedAt: 1, revision: 'meme-2', uri: 'vault://resources/records/meme-2.yml',
+    }
+    const first = (await value.directory.vaults.searchResources({ agentId: companion.id })).items[0]
+    value.directory.vaults.searchResources.mockResolvedValue({
+      items: first === undefined ? [alternative] : [first, alternative], nextCursor: -1,
+    })
+    const actorId = SessionId('different-expression-actor')
+    await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
+    const actorScope = toolScope(value.directory.vaults)
+    const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
+    new CompanionActorRuntime(value.ctx, value.directory as never).install(actor)
+    const express = actorScope.tools.get('express')
+    const search = actorScope.tools.get('expression_search')
+    if (express === undefined || search === undefined) throw new Error('expression tools not registered')
+
+    await express.execute({ act: '比心', asset_ids: ['meme-1'] }, execution(actor))
+    ;(value.parent.session.events as SessionEvent[]).push({
+      type: 'user/message', seq: 99, time: 99,
+      data: { content: [{ type: 'text', text: '你换个表情，不要刚才那张' }] },
+    } as SessionEvent)
+    const shortlist = await search.execute({ keywords: ['俏皮', '眨眼'] }, execution(actor))
+    if (!isCandidateResult(shortlist)) throw new Error('candidate result is invalid')
+    expect(shortlist.candidates).toEqual([expect.objectContaining({ asset_id: alternative.id })])
+    await expect(express.execute({ act: '俏皮地眨眼' }, execution(actor)))
+      .resolves.toMatchObject({ sent: true, asset_id: alternative.id, title: alternative.title })
+    expect(value.appended.filter(event => event.type === 'companion/reference')
+      .map(event => String(Reflect.get(event.data as object, 'assetId'))))
+      .toEqual(['meme-1', 'meme-2'])
+  })
+
+  it('uses a bounded expression-only fallback when an emotional query has no lexical collision', async () => {
+    const value = fixture()
+    value.directory.vaults.searchResources.mockImplementation(async request => ({
+      items: request.agentId === companion.id && Reflect.get(request, 'query') === ''
+        ? [{ id: 'meme-fallback', agentId: companion.id, enabled: true,
+          roles: ['expression'], title: '喝奶茶', description: '可爱表情', tags: ['表情包'],
+          originalTags: [], transcript: '', mimeType: 'image/gif', bytes: 10, usageCount: 0,
+          builtIn: false, createdAt: 1, updatedAt: 1, revision: 'fallback-1',
+          uri: 'vault://resources/records/meme-fallback.yml' }]
+        : [],
+      nextCursor: -1,
+    }))
+    const actorId = SessionId('fallback-actor-session')
+    await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
+    const actorScope = toolScope(value.directory.vaults)
+    const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
+    const runtime = new CompanionActorRuntime(value.ctx, value.directory as never)
+    runtime.install(actor)
+    const express = actorScope.tools.get('express')
+    if (express === undefined) throw new Error('actor express tool not registered')
+
+    await expect(express.execute({ act: '撒娇', query: '可爱一点' }, execution(actor)))
+      .resolves.toMatchObject({ sent: true, asset_id: 'meme-fallback' })
+    expect(value.directory.vaults.searchResources).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: companion.id, query: '', roles: ['expression'], limit: 64,
+    }))
   })
 
   it('rolls back a reserved actor id when child creation fails', async () => {

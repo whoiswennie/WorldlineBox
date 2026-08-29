@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-bash-local",
   "description": "Local-subprocess implementation of the Worldline bash executor seam",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publishConfig": {
     "access": "public"
   },

@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-worldline-video",
   "description": "Worldline-native local and online video inspection tools and bundled agent skill",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publishConfig": {
     "access": "public"
   },

@@ -4,7 +4,7 @@ import { desktopPermissionAllowed } from '../src/permission-policy.ts'
 describe('desktop renderer permission policy', () => {
   const appOrigin = 'http://127.0.0.1:43123'
 
-  it.each(['geolocation', 'clipboard-read', 'clipboard-sanitized-write'])(
+  it.each(['geolocation', 'clipboard-read', 'clipboard-sanitized-write', 'fullscreen'])(
     'allows %s for the exact app origin',
     (permission) => {
       expect(desktopPermissionAllowed(permission, appOrigin, appOrigin)).toBe(true)

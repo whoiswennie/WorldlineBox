@@ -71,6 +71,8 @@ export type ReferenceExpressionRole = 'replace-text' | 'amplify-text' | 'reply' 
 /** Semantic expression chosen by an actor before the Host resolves any concrete asset. */
 export interface ReferenceIntent {
   readonly act: ReferenceAct
+  /** User-requested title used as the strongest shortlist signal when one is supplied. */
+  readonly assetTitle?: string
   readonly target?: string
   readonly intensity?: 1 | 2 | 3
   readonly role?: ReferenceExpressionRole

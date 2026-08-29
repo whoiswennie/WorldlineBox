@@ -9,8 +9,10 @@ const companionMemes = resolve(
   root,
   'dist/runtime/node_modules/@deepseek-ai/dsh-web-frontend/dist/worldline-experience/companion-memes',
 )
-const EXPECTED_COMPANION_MEME_FILES = 91
-const EXPECTED_COMPANION_MEME_BYTES = 57_416_936
+const sourceCompanionMemes = resolve(
+  root,
+  'apps/web/public/worldline-experience/companion-memes',
+)
 
 function assetStats(directory) {
   let files = 0
@@ -29,12 +31,12 @@ function assetStats(directory) {
   return { files, bytes }
 }
 
+const expectedMemes = assetStats(sourceCompanionMemes)
 const packagedMemes = assetStats(companionMemes)
-if (packagedMemes.files !== EXPECTED_COMPANION_MEME_FILES
-  || packagedMemes.bytes !== EXPECTED_COMPANION_MEME_BYTES) {
+if (packagedMemes.files !== expectedMemes.files || packagedMemes.bytes !== expectedMemes.bytes) {
   throw new Error(
-    `deployed companion memes are incomplete: expected ${EXPECTED_COMPANION_MEME_FILES} files / `
-      + `${EXPECTED_COMPANION_MEME_BYTES} bytes, received ${packagedMemes.files} files / ${packagedMemes.bytes} bytes`,
+    `deployed companion memes are incomplete: expected ${expectedMemes.files} files / `
+      + `${expectedMemes.bytes} bytes, received ${packagedMemes.files} files / ${packagedMemes.bytes} bytes`,
   )
 }
 const defaultStartupTimeoutMs = process.platform === 'win32' ? 180_000 : 60_000

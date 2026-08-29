@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-client-ui-virtual-companion",
   "description": "Virtual companions backed by portable Agent Vault cognition and resources",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publishConfig": {
     "access": "public"
   },
@@ -114,6 +114,7 @@
     "@deepseek-ai/dsh-tool-agent-vault": "workspace:^",
     "@testing-library/react": "^16.1.0",
     "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

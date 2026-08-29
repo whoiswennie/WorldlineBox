@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-skill-agent-vault",
   "description": "Progressively loaded Agent Vault learning and governance methodology",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "git+https://github.com/whoiswennie/WorldlineBox.git", "directory": "packages/agent-vault/skill-agent-vault" },
   "type": "module", "main": "lib/index.js", "types": "lib/types/index.d.ts",

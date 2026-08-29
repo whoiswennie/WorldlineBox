@@ -24,6 +24,8 @@ export {
   createMusicPreferenceStore,
   DEFAULT_NETEASE_PLAYLIST,
   DEFAULT_NETEASE_PLAYLIST_ID,
+  persistedMusicAutoplayPreference,
+  persistMusicAutoplayPreference,
   resolveNeteasePlaylists,
 } from './store.ts'
 export type { MusicPreferences, PlaybackMode, SavedNeteasePlaylist } from './store.ts'
