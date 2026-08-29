@@ -18,6 +18,31 @@ interface Archive { readonly format: 'worldline-agent-vault-package'; readonly v
 
 const digest = (data: Uint8Array): string => createHash('sha256').update(data).digest('hex')
 
+function archiveRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function parseArchive(value: unknown): Archive {
+  const record = archiveRecord(value)
+  if (record === undefined || record['format'] !== 'worldline-agent-vault-package'
+    || record['version'] !== 1 || typeof record['agentId'] !== 'string'
+    || typeof record['shareable'] !== 'boolean' || !Array.isArray(record['entries'])) {
+    throw new AgentVaultError('Agent Vault package format is unsupported.', 'IMPORT_REJECTED')
+  }
+  const entries: ArchiveEntry[] = record['entries'].map((value: unknown) => {
+    const entry = archiveRecord(value)
+    if (entry === undefined || typeof entry['path'] !== 'string' || typeof entry['bytes'] !== 'number'
+      || typeof entry['sha256'] !== 'string' || typeof entry['data'] !== 'string') {
+      throw new AgentVaultError('Agent Vault package entry is malformed.', 'IMPORT_REJECTED')
+    }
+    return { path: entry['path'], bytes: entry['bytes'], sha256: entry['sha256'], data: entry['data'] }
+  })
+  return { format: record['format'], version: record['version'], agentId: record['agentId'],
+    shareable: record['shareable'], entries }
+}
+
 async function writeBinaryAtomic(target: string, data: Uint8Array): Promise<void> {
   const temporary = `${target}.${process.pid}.${Date.now()}.tmp`
   await writeFile(temporary, data, { flag: 'wx', mode: 0o600 })
@@ -79,11 +104,8 @@ export async function unpack(packageFile: string,
   const encoded = await readFile(packageFile, 'utf8')
   const compressed = Buffer.from(encoded, 'base64')
   let archive: Archive
-  try { archive = JSON.parse((await unzip(compressed)).toString('utf8')) as Archive }
+  try { archive = parseArchive(JSON.parse((await unzip(compressed)).toString('utf8')) as unknown) }
   catch (error) { throw new AgentVaultError('Agent Vault package is malformed.', 'IMPORT_REJECTED', undefined, { cause: error }) }
-  if (archive.format !== 'worldline-agent-vault-package' || archive.version !== 1 || !Array.isArray(archive.entries)) {
-    throw new AgentVaultError('Agent Vault package format is unsupported.', 'IMPORT_REJECTED')
-  }
   if (archive.entries.length > MAX_FILES) throw new AgentVaultError('Agent Vault package has too many files.', 'IMPORT_REJECTED')
   let bytes = 0
   const seen = new Set<string>()

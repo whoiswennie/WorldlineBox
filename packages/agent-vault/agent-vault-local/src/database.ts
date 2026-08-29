@@ -30,6 +30,9 @@ const arrays = (value: unknown): string[] => {
   } catch { return [] }
 }
 
+const memoryStage = (value: unknown): MemoryStage | undefined =>
+  value === 'short' || value === 'medium' || value === 'long' ? value : undefined
+
 /** SQLite FTS5 projection that can always be rebuilt from Vault files. */
 export class VaultIndex {
   /** Open SQLite handle owned by this projection. */
@@ -187,7 +190,7 @@ export class VaultIndex {
           FROM document_fts JOIN documents d ON d.id=document_fts.id
           WHERE document_fts MATCH ? AND d.domain=? AND (? IS NULL OR d.stage=?)
           ORDER BY rank LIMIT ?
-        `).all(match, domain, stage ?? null, stage ?? null, limit) as Record<string, unknown>[]
+        `).all(match, domain, stage ?? null, stage ?? null, limit)
       } catch { rows = [] }
     }
     if (rows.length < limit) {
@@ -205,13 +208,16 @@ export class VaultIndex {
       const seen = new Set(rows.map(row => String(row['id'])))
       rows.push(...fallback.filter(row => !seen.has(String(row['id']))).slice(0, limit - rows.length))
     }
-    return rows.map(row => ({
-      id: String(row['id']), path: String(row['path']), domain: String(row['domain']) as AgentVaultDomain,
-      ...(row['stage'] === null || row['stage'] === undefined ? {} : { stage: String(row['stage']) as MemoryStage }),
-      title: String(row['title']), summary: String(row['summary']), tags: arrays(row['tags']),
-      aliases: arrays(row['aliases']), content: String(row['content']), revision: String(row['revision']),
-      updatedAt: Number(row['updated_at']), rank: Number(row['rank']),
-    }))
+    return rows.map((row) => {
+      const stageValue = memoryStage(row['stage'])
+      return {
+        id: String(row['id']), path: String(row['path']), domain: String(row['domain']) as AgentVaultDomain,
+        ...(stageValue === undefined ? {} : { stage: stageValue }),
+        title: String(row['title']), summary: String(row['summary']), tags: arrays(row['tags']),
+        aliases: arrays(row['aliases']), content: String(row['content']), revision: String(row['revision']),
+        updatedAt: Number(row['updated_at']), rank: Number(row['rank']),
+      }
+    })
   }
 
   /**
@@ -272,7 +278,7 @@ export class VaultIndex {
         rows = this.database.prepare(`SELECT r.record FROM resource_fts JOIN resources r ON r.id=resource_fts.id
           WHERE resource_fts MATCH ? AND (? IS NULL OR r.enabled=?) AND ${roleFilter}
           ORDER BY bm25(resource_fts,0,7,3,5,2,0),r.updated_at DESC LIMIT ?`)
-          .all(match, enabled, enabled, ...roles, scanLimit) as Record<string, unknown>[]
+          .all(match, enabled, enabled, ...roles, scanLimit)
       } catch { rows = [] }
     }
     if (rows.length === 0) {
@@ -281,7 +287,7 @@ export class VaultIndex {
         AND (?='' OR r.title LIKE ? ESCAPE '\\' OR r.tags LIKE ? ESCAPE '\\' OR r.description LIKE ? ESCAPE '\\')
         AND ${roleFilter} ORDER BY r.updated_at DESC LIMIT ?`)
         .all(enabled, enabled, query.trim(), pattern, pattern, pattern,
-          ...roles, scanLimit) as Record<string, unknown>[]
+          ...roles, scanLimit)
     }
     return rows.map(row => JSON.parse(String(row['record'])) as VaultResource)
       .filter(item => tags.every(tag => item.tags.includes(tag))

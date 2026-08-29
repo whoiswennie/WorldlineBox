@@ -867,7 +867,6 @@ export class VirtualCompanionDirectory {
           reason: 'User restored the built-in companion.' })
         await this.agentVaults.createAgent(id, original.name)
         const restored = this.data.companions[index]
-        if (restored === undefined) throw new CompanionRequestError('内置伙伴恢复失败', 500)
         await this.syncProfile(restored)
         await this.seedBuiltInKnowledge(id)
         await this.seedBuiltInReferences(id)

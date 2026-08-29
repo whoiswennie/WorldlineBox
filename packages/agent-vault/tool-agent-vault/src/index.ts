@@ -115,9 +115,9 @@ export function apply(ctx: Context): void {
     execute: async (args, exec) => {
       const origins = array(args.origins); const maxPages = Math.min(12, Math.max(1, integer(args.max_pages, 6)))
       const maxChars = Math.min(32_000, Math.max(1_000, integer(args.max_chars, 16_000)))
-      const ownOrigins = origins.filter(uri => !uri.startsWith('shared://')) as VaultUri[]
+      const ownOrigins = origins.filter((uri): uri is VaultUri => uri.startsWith('vault://'))
       const sharedOrigins = origins.filter(uri => uri.startsWith('shared://'))
-        .map(uri => `vault://${uri.slice('shared://'.length)}` as VaultUri)
+        .map((uri): VaultUri => `vault://${uri.slice('shared://'.length)}`)
       const [own, shared] = await Promise.all([
         ctx.agentVaults.explore(authorizedAgentId(ctx, runtimeAgentId(exec)), ownOrigins, maxPages, maxChars),
         sharedOrigins.length === 0 ? Promise.resolve([]) : ctx.agentVaults.explore('public', sharedOrigins, maxPages, maxChars),

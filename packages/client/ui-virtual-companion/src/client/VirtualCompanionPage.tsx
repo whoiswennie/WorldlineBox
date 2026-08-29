@@ -193,7 +193,7 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
       vaultPost<SelfSnapshotView>('vault/self', { scope: selectedId }),
       vaultPost<VaultPolicyView>('vault/policy', { scope: selectedId }),
     ]).then(([nextSelf, nextPolicy]) => { if (active) { setSelf(nextSelf); setPolicy(nextPolicy) } },
-      (reason) => { if (active) setError(reason instanceof Error ? reason.message : String(reason)) })
+      (reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : String(reason)) })
     return () => { active = false }
   }, [selectedId])
   const toggleSelf = async (item: SelfModuleView): Promise<void> => {

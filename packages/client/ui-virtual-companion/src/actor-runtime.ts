@@ -582,23 +582,25 @@ export class CompanionActorRuntime {
         appearance: { type: 'string', required: true },
       } }, render: (_args, value) => [{ type: 'text', text: value.found
         ? `Room member profile resolved: ${value.name}` : value.appearance }] },
-      execute: async (args) => {
-        const target = parent(); const id = String(args.companion_id)
-        if (id === 'owner') return { found: false, id, name: '房主', profile: '',
-          appearance: '当前运行时没有向伙伴开放房主头像；不要猜测房主外貌。' }
+      execute: (args) => {
+        const target = parent(); const id = args.companion_id
+        if (id === 'owner') return Promise.resolve({ found: false, id, name: '房主', profile: '',
+          appearance: '当前运行时没有向伙伴开放房主头像；不要猜测房主外貌。' })
         const room = this.directory.room(target.id)
         if (room === undefined || !room.participantIds.includes(id)) {
-          return { found: false, id, name: '', profile: '', appearance: '该伙伴不在当前房间。' }
+          return Promise.resolve({ found: false, id, name: '', profile: '', appearance: '该伙伴不在当前房间。' })
         }
         const member = this.directory.companion(id)
-        if (member === undefined) return { found: false, id, name: '', profile: '', appearance: '伙伴资料不存在。' }
+        if (member === undefined) {
+          return Promise.resolve({ found: false, id, name: '', profile: '', appearance: '伙伴资料不存在。' })
+        }
         const appearance = member.avatar === ''
           ? '尚未提供头像或形象图；不要自行补全外貌。'
           : member.avatar.startsWith('data:')
             ? '已提供可移植的内嵌头像；图像保存在该伙伴 Agent Vault 的 appearance 模块中。'
             : `头像与形象参考：${member.portrait || member.avatar}`
-        return { found: true, id, name: member.name,
-          profile: `${member.handle}；${member.description}`, appearance }
+        return Promise.resolve({ found: true, id, name: member.name,
+          profile: `${member.handle}；${member.description}`, appearance })
       },
     })))
     disposers.push(actor.ctx.tools.register(defineTool({

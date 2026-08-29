@@ -137,7 +137,7 @@ export class LocalAgentVaultService extends AgentVaultService {
     super(ctx)
     this.logger = ctx.logger
     this.root = resolve(resolveWorldlineHome(config.worldlineHome), 'agents', 'v1')
-    ctx.effect(() => () => this.close(), 'agent-vault-local: close indexes and watchers')
+    ctx.effect(() => () =>{  this.close() }, 'agent-vault-local: close indexes and watchers')
   }
 
   /** Release file watchers and derived index handles before a data root is moved or removed. */
@@ -198,17 +198,17 @@ export class LocalAgentVaultService extends AgentVaultService {
     if (this.watchers.has(agentId)) return
     try {
       const watcher = watch(root, { recursive: true }, (_event, filename) => {
-        const path = String(filename ?? '').replaceAll('\\', '/')
+        const path = (filename ?? '').replaceAll('\\', '/')
         if (path.startsWith('.system/') || path.startsWith('history/')) return
         if ((this.suppressWatchUntil.get(agentId) ?? 0) >= Date.now()) return
         const current = this.watchTimers.get(agentId)
         if (current !== undefined) clearTimeout(current)
         this.watchTimers.set(agentId, setTimeout(() => {
           this.watchTimers.delete(agentId)
-          void this.rebuildIndex(agentId).catch(error => this.logger.warn(error))
+          void this.rebuildIndex(agentId).catch((error: unknown) => { this.logger.warn(error) })
         }, 80))
       })
-      watcher.on('error', error => this.logger.warn(error))
+      watcher.on('error', (error) => { this.logger.warn(error) })
       this.watchers.set(agentId, watcher)
     } catch (error) { this.logger.warn(error) }
   }
@@ -246,7 +246,7 @@ export class LocalAgentVaultService extends AgentVaultService {
       return
     }
     if (selfLocked) throw new AgentVaultError('This self module is locked by the user.', 'USER_LOCKED')
-    const mode = policy.domains[domain] ?? policy.aiWriteMode
+    const mode = policy.domains[domain]
     if (mode !== 'autonomous') {
       throw new AgentVaultError(mode === 'proposal' ? 'This change requires user confirmation.' : 'This Vault domain is read-only.', 'DOMAIN_READONLY')
     }
@@ -333,16 +333,17 @@ export class LocalAgentVaultService extends AgentVaultService {
     const target = resolveInside(root, uri)
     await rejectSymlinkAncestors(root, target)
     const entries = await readdir(target, { withFileTypes: true })
-    const values = await Promise.all(entries.filter(entry => !entry.name.startsWith('.')).map(async (entry) => {
-      const path = join(target, entry.name)
-      const info = await stat(path)
-      const rel = relative(root, path).replaceAll('\\', '/')
-      const domain = domainFromRelative(rel)
-      const revision = entry.isFile() ? revisionOf(await readFile(path, 'utf8').catch(() => '')) : ''
-      return { uri: asVaultUri(rel), id: stableId(agentId, rel), domain,
-        kind: entry.isDirectory() ? 'directory' : rel.startsWith('resources/records/') ? 'resource' : 'document',
-        name: entry.name, bytes: info.size, revision, updatedAt: info.mtimeMs } as VaultEntry
-    }))
+    const values = await Promise.all(entries.filter(entry => !entry.name.startsWith('.'))
+      .map(async (entry): Promise<VaultEntry> => {
+        const path = join(target, entry.name)
+        const info = await stat(path)
+        const rel = relative(root, path).replaceAll('\\', '/')
+        const domain = domainFromRelative(rel)
+        const revision = entry.isFile() ? revisionOf(await readFile(path, 'utf8').catch(() => '')) : ''
+        return { uri: asVaultUri(rel), id: stableId(agentId, rel), domain,
+          kind: entry.isDirectory() ? 'directory' : rel.startsWith('resources/records/') ? 'resource' : 'document',
+          name: entry.name, bytes: info.size, revision, updatedAt: info.mtimeMs }
+      }))
     return values.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
       .slice(Math.max(0, cursor), Math.max(0, cursor) + Math.max(1, Math.min(500, limit)))
   }
@@ -434,7 +435,7 @@ export class LocalAgentVaultService extends AgentVaultService {
       .slice(0, Math.max(1, Math.min(100, limit))).map(async (entry) => {
         const path = join(historyRoot, entry.name); const info = await stat(path); const content = await readFile(path, 'utf8')
         return { uri, id: stableId(agentId, `${rel}:${entry.name}`), domain: domainFromRelative(rel),
-          kind: 'document', name: entry.name, bytes: info.size, revision: revisionOf(content), updatedAt: info.mtimeMs } as VaultEntry
+          kind: 'document', name: entry.name, bytes: info.size, revision: revisionOf(content), updatedAt: info.mtimeMs }
       }))
   }
 
@@ -689,7 +690,12 @@ export class LocalAgentVaultService extends AgentVaultService {
     let digest: string | undefined
     if (data !== undefined) {
       digest = sha256(data); const object = join(root, 'resources', 'objects', 'sha256', digest.slice(0, 2), digest)
-      if (!await exists(object)) { await mkdir(dirname(object), { recursive: true, mode: 0o700 }); await writeFile(object, data, { flag: 'wx', mode: 0o600 }).catch((error) => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }) }
+      if (!await exists(object)) {
+        await mkdir(dirname(object), { recursive: true, mode: 0o700 })
+        await writeFile(object, data, { flag: 'wx', mode: 0o600 }).catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+        })
+      }
     }
     return await this.persistResourceRecord(agentId, root, draft, digest, data?.byteLength ?? draft.bytes)
   }
@@ -725,11 +731,15 @@ export class LocalAgentVaultService extends AgentVaultService {
     const info = await stat(sourceFile)
     if (!info.isFile()) throw new AgentVaultError('Resource source is not a file.', 'INVALID_RESOURCE')
     const hash = createHash('sha256')
-    for await (const chunk of createReadStream(sourceFile)) hash.update(chunk)
+    for await (const value of createReadStream(sourceFile)) {
+      const chunk: unknown = value
+      if (!(chunk instanceof Uint8Array)) throw new AgentVaultError('Resource stream is invalid.', 'INVALID_RESOURCE')
+      hash.update(chunk)
+    }
     const digest = hash.digest('hex')
     const object = join(root, 'resources', 'objects', 'sha256', digest.slice(0, 2), digest)
     await mkdir(dirname(object), { recursive: true, mode: 0o700 })
-    await copyFile(sourceFile, object, constants.COPYFILE_EXCL).catch((error) => {
+    await copyFile(sourceFile, object, constants.COPYFILE_EXCL).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     })
     return await this.persistResourceRecord(agentId, root, { ...draft, bytes: info.size }, digest, info.size)
@@ -814,8 +824,15 @@ export class LocalAgentVaultService extends AgentVaultService {
     try {
       const report = await unpack(packageFile, staging); const id = validateAgentId(targetAgentId ?? report.agentId)
       const manifestPath = join(staging, 'manifest.yml')
-      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as AgentVaultManifest
-      if (manifest.format !== 'worldline-agent-vault' || manifest.formatVersion !== 1) throw new AgentVaultError('Package has no valid Agent Vault manifest.', 'IMPORT_REJECTED')
+      const candidate: unknown = JSON.parse(await readFile(manifestPath, 'utf8'))
+      if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+        throw new AgentVaultError('Package has no valid Agent Vault manifest.', 'IMPORT_REJECTED')
+      }
+      const manifest = candidate as Partial<AgentVaultManifest>
+      if (manifest.format !== 'worldline-agent-vault' || manifest.formatVersion !== 1
+        || manifest.agent === undefined || typeof manifest.agent.id !== 'string') {
+        throw new AgentVaultError('Package has no valid Agent Vault manifest.', 'IMPORT_REJECTED')
+      }
       const target = this.agentRoot(id); if (await exists(target)) throw new AgentVaultError('Import target already exists.', 'REVISION_CONFLICT')
       if (id !== manifest.agent.id) {
         await writeFileAtomic(manifestPath, json({ ...manifest, agent: { ...manifest.agent, id },

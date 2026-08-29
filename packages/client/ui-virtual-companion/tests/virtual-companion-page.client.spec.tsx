@@ -20,17 +20,19 @@ const self = { agentId: yachiyo.id, compiled: '', revision: 'self-1', modules: [
 const policy = { aiWriteMode: 'autonomous', domains: { self: 'proposal', memory: 'autonomous',
   procedure: 'proposal', resource: 'autonomous' }, userEditable: true, fullyFrozen: false } as const
 
-function apiFetch(): ReturnType<typeof vi.fn> {
+function apiFetch() {
   return vi.fn((input: string | URL | Request, init?: RequestInit) => {
-    const url = String(input)
+    const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input
     let value: unknown = { companions: [yachiyo], rooms: {} }
     if (url.endsWith('/vault/self')) value = self
     else if (url.endsWith('/vault/policy')) value = policy
     else if (url.endsWith('/vault/self/update')) {
-      const body = JSON.parse(String(init?.body)) as { module: typeof self.modules[number] }
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '') as {
+        module: typeof self.modules[number]
+      }
       value = body.module
     } else if (url.endsWith('/vault/policy/set')) {
-      const body = JSON.parse(String(init?.body)) as { policy: typeof policy }
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '') as { policy: typeof policy }
       value = body.policy
     }
     return Promise.resolve(new Response(JSON.stringify({ ok: true, value }), {
@@ -94,9 +96,9 @@ describe('VirtualCompanionPage', () => {
     await waitFor(() => { expect(screen.getByRole('button', { name: '已停用 · 点击启用' })).toBeTruthy() })
     fireEvent.click(screen.getByRole('button', { name: '冻结为只读' }))
     await waitFor(() => { expect(screen.getByRole('button', { name: '解除知识冻结' })).toBeTruthy() })
-    expect(fetch).toHaveBeenCalledWith('/api/virtual-companions/vault/policy/set', expect.objectContaining({
-      method: 'POST', body: expect.stringContaining('"fullyFrozen":true'),
-    }))
+    const policyCall = fetch.mock.calls.find(([url]) => url === '/api/virtual-companions/vault/policy/set')
+    expect(policyCall?.[1]?.method).toBe('POST')
+    expect(typeof policyCall?.[1]?.body === 'string' ? policyCall[1].body : '').toContain('"fullyFrozen":true')
   })
 
   it('restores a built-in companion through an in-app non-blocking confirmation dialog', async () => {

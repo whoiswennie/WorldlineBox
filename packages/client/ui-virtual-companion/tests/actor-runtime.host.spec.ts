@@ -221,9 +221,11 @@ describe('CompanionActorRuntime', () => {
     expect(actorScope.tools.has('reference')).toBe(false)
     if (express === undefined) throw new Error('actor express tool not registered')
     if (inspectRoomMember === undefined) throw new Error('room member inspection tool not registered')
-    await expect(inspectRoomMember.execute({ companion_id: companion.id }, execution(actor)))
-      .resolves.toMatchObject({ found: true, name: companion.name,
-        appearance: expect.stringContaining('/portrait.png') })
+    const inspected = await inspectRoomMember.execute({ companion_id: companion.id }, execution(actor))
+    expect(inspected).toMatchObject({ found: true, name: companion.name })
+    if (inspected === null || typeof inspected !== 'object') throw new Error('room member result is invalid')
+    const appearance: unknown = Reflect.get(inspected, 'appearance')
+    expect(appearance).toContain('/portrait.png')
     const observe = (event: SessionEvent): void => {
       runtime.handleActorEvent({ id: actorId } as Session, event)
     }

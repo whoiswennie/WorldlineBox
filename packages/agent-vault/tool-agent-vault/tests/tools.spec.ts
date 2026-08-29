@@ -33,13 +33,15 @@ describe('Agent Vault tools', () => {
       const recalled = await ctx.tools.execute({ signal, agent, callId: CallId('recall'), name: 'memory_recall',
         arguments: { query: '画漫画 分镜' } })
       expect(recalled.isError).toBe(false)
-      expect(String(recalled.value)).toContain('连环漫画经验')
+      expect(JSON.stringify(recalled.value)).toContain('连环漫画经验')
 
-      const memory = JSON.parse(String(remembered.value)) as { uri: string }
+      const memory = JSON.parse(typeof remembered.value === 'string'
+        ? remembered.value : JSON.stringify(remembered.value)) as { uri: string }
       const resolved = await ctx.tools.execute({ signal, agent, callId: CallId('resolve'),
         name: 'vault_resolve_path', arguments: { uri: memory.uri, mode: 'write', reason: 'external editor test' } })
       expect(resolved.isError).toBe(false)
-      const lease = JSON.parse(String(resolved.value)) as { path: string; leaseId: string }
+      const lease = JSON.parse(typeof resolved.value === 'string'
+        ? resolved.value : JSON.stringify(resolved.value)) as { path: string; leaseId: string }
       await writeFile(lease.path, `${await readFile(lease.path, 'utf8')}\n外部工具补充：保持角色服装一致。\n`, 'utf8')
       const reconciled = await ctx.tools.execute({ signal, agent, callId: CallId('reconcile'),
         name: 'vault_reconcile', arguments: { lease_id: lease.leaseId } })
