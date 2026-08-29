@@ -12,6 +12,33 @@ const yachiyo = {
   createdAt: 1, updatedAt: 1,
 } as const
 
+const self = { agentId: yachiyo.id, compiled: '', revision: 'self-1', modules: [{
+  id: 'emotion', title: '近期情绪', enabled: true, autonomous: true, locked: false,
+  stability: 'dynamic', summary: '平静而期待创作', details: ['最近完成了一次愉快的合作'],
+  updatedAt: 1, revision: 'emotion-1',
+}] } as const
+const policy = { aiWriteMode: 'autonomous', domains: { self: 'proposal', memory: 'autonomous',
+  procedure: 'proposal', resource: 'autonomous' }, userEditable: true, fullyFrozen: false } as const
+
+function apiFetch(): ReturnType<typeof vi.fn> {
+  return vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    let value: unknown = { companions: [yachiyo], rooms: {} }
+    if (url.endsWith('/vault/self')) value = self
+    else if (url.endsWith('/vault/policy')) value = policy
+    else if (url.endsWith('/vault/self/update')) {
+      const body = JSON.parse(String(init?.body)) as { module: typeof self.modules[number] }
+      value = body.module
+    } else if (url.endsWith('/vault/policy/set')) {
+      const body = JSON.parse(String(init?.body)) as { policy: typeof policy }
+      value = body.policy
+    }
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, value }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }))
+  })
+}
+
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 function props(overrides: Partial<VirtualCompanionPageProps> = {}): VirtualCompanionPageProps {
@@ -30,16 +57,15 @@ function props(overrides: Partial<VirtualCompanionPageProps> = {}): VirtualCompa
 
 describe('VirtualCompanionPage', () => {
   it('renders Yachiyo from the bundled portrait and launches her preset flow', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
-      ok: true, value: { companions: [yachiyo], rooms: {} },
-    }), { status: 200, headers: { 'content-type': 'application/json' } }))))
+    vi.stubGlobal('fetch', apiFetch())
     const launch = vi.fn(() => Promise.resolve())
     render(<VirtualCompanionPage {...props({ launch })} />)
 
     await waitFor(() => { expect(screen.getAllByText('月见八千代').length).toBeGreaterThan(0) })
     expect(screen.getByAltText('月见八千代').getAttribute('src'))
       .toBe('/worldline-experience/companion.png')
-    expect(screen.getByText(/密码或凭据永不注入/u)).toBeTruthy()
+    expect(screen.getByText(/不会读取其他伙伴的私有认知/u)).toBeTruthy()
+    await waitFor(() => { expect(screen.getByText('平静而期待创作')).toBeTruthy() })
     expect(screen.queryByText('查看官方角色资料')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: '和月见八千代聊天' }))
@@ -56,21 +82,25 @@ describe('VirtualCompanionPage', () => {
   })
 
   it('keeps knowledge management out of the profile card and removes the external profile link', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
-      ok: true, value: { companions: [yachiyo], rooms: {} },
-    }), { status: 200, headers: { 'content-type': 'application/json' } }))))
+    const fetch = apiFetch()
+    vi.stubGlobal('fetch', fetch)
     render(<VirtualCompanionPage {...props()} />)
 
     await waitFor(() => { expect(screen.getAllByText('月见八千代').length).toBeGreaterThan(0) })
-    expect(screen.getByText(/知识与引用资料统一在左侧“知识库”中维护/u)).toBeTruthy()
+    expect(screen.getByText(/记忆、能力、资源和印象卡统一打包迁移/u)).toBeTruthy()
     expect(screen.queryByText('查看官方角色资料')).toBeNull()
     expect(screen.queryByRole('button', { name: /公共记忆与知识库/u })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '已启用 · 点击停用' }))
+    await waitFor(() => { expect(screen.getByRole('button', { name: '已停用 · 点击启用' })).toBeTruthy() })
+    fireEvent.click(screen.getByRole('button', { name: '冻结为只读' }))
+    await waitFor(() => { expect(screen.getByRole('button', { name: '解除知识冻结' })).toBeTruthy() })
+    expect(fetch).toHaveBeenCalledWith('/api/virtual-companions/vault/policy/set', expect.objectContaining({
+      method: 'POST', body: expect.stringContaining('"fullyFrozen":true'),
+    }))
   })
 
   it('restores a built-in companion through an in-app non-blocking confirmation dialog', async () => {
-    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
-      ok: true, value: { companions: [yachiyo], rooms: {} },
-    }), { status: 200, headers: { 'content-type': 'application/json' } })))
+    const fetch = apiFetch()
     vi.stubGlobal('fetch', fetch)
     const blockingConfirm = vi.spyOn(window, 'confirm')
     render(<VirtualCompanionPage {...props()} />)
@@ -78,7 +108,7 @@ describe('VirtualCompanionPage', () => {
     await waitFor(() => { expect(screen.getAllByText('月见八千代').length).toBeGreaterThan(0) })
     fireEvent.click(screen.getByRole('button', { name: '恢复原版' }))
     const dialog = screen.getByRole('dialog', { name: '恢复内置伙伴原版' })
-    expect(within(dialog).getByText(/私有知识库和私有引用库全部恢复/u)).toBeTruthy()
+    expect(within(dialog).getByText(/私有 Agent Vault 全部恢复/u)).toBeTruthy()
     expect(blockingConfirm).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: '恢复原版' }))
 

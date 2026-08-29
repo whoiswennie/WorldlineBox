@@ -1,0 +1,31 @@
+{
+  "name": "@deepseek-ai/dsh-tool-agent-vault",
+  "description": "Domain-separated bounded Agent Vault tools",
+  "version": "0.1.0",
+  "publishConfig": { "access": "public" },
+  "repository": { "type": "git", "url": "git+https://github.com/whoiswennie/WorldlineBox.git", "directory": "packages/agent-vault/tool-agent-vault" },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    "./invariant": { "types": "./lib/types/invariant.d.ts", "default": "./lib/invariant.js" },
+    "./src/*": "./src/*", "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "lib/invariant.js", "lib/types/**/*.d.ts"],
+  "scripts": { "bundle": "tsdown" },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^", "@deepseek-ai/dsh-agent-vault": "workspace:^",
+    "@deepseek-ai/dsh-invariants": "workspace:^", "@deepseek-ai/dsh-system-prompt": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^"
+  },
+  "dependencies": { "@deepseek-ai/schemastery": "workspace:^" },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:^", "@deepseek-ai/dsh-agent": "workspace:^",
+    "@deepseek-ai/dsh-agent-vault": "workspace:^", "@deepseek-ai/dsh-agent-vault-local": "workspace:^",
+    "@deepseek-ai/dsh-invariants": "workspace:^", "@deepseek-ai/dsh-system-prompt": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^", "@deepseek-ai/dsh-llm": "workspace:^",
+    "@deepseek-ai/dsh-session": "workspace:^"
+  }
+}

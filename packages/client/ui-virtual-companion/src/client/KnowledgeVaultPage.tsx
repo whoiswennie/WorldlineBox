@@ -1257,7 +1257,7 @@ function ReferenceWorkbench({
     if (item === undefined) return
     setPendingDelete(undefined)
     try {
-      await post<{ removed: boolean }>('reference/delete', { id: item.id })
+      await post<{ removed: boolean }>('reference/delete', { scope, id: item.id })
       await load()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -1267,7 +1267,7 @@ function ReferenceWorkbench({
     setChangingEnabledId(item.id)
     setError('')
     try {
-      await post<ReferenceAsset>('reference/set-enabled', { id: item.id, enabled })
+      await post<ReferenceAsset>('reference/set-enabled', { scope, id: item.id, enabled })
       await Promise.all([load(), loadCatalog()])
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -1658,15 +1658,15 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
     () => [
       {
         id: 'public',
-        name: '公共知识库',
-        description: '所有伙伴共享的记忆空间',
+        name: '公共 Agent Vault',
+        description: '所有 Agent 共享的认知、能力与资源',
         avatar: '',
         sharedAvatars: list.map(companion => companion.avatar),
       },
       ...list.map(companion => ({
         id: companion.id,
         name: companion.name,
-        description: '伙伴专属知识与回忆',
+        description: '伙伴完整的自我、记忆、能力与资源',
         avatar: companion.avatar,
       })),
     ],
@@ -1712,7 +1712,7 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
                   setTab('knowledge')
                 }}
               >
-                知识文档
+                认知与记忆
               </button>
               <button
                 type="button"
@@ -1721,7 +1721,7 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
                   setTab('references')
                 }}
               >
-                引用库
+                资源画廊
               </button>
             </nav>
           </div>

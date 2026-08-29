@@ -12,6 +12,41 @@ export interface VirtualCompanionPageInjected {
   launch(companionId: string): Promise<void>
 }
 
+interface SelfModuleView {
+  id: string
+  title: string
+  enabled: boolean
+  autonomous: boolean
+  locked: boolean
+  stability: 'core' | 'stable' | 'dynamic'
+  summary: string
+  details: readonly string[]
+  updatedAt: number
+  revision: string
+}
+interface SelfSnapshotView {
+  agentId: string
+  modules: readonly SelfModuleView[]
+  compiled: string
+  revision: string
+}
+interface VaultPolicyView {
+  aiWriteMode: 'autonomous' | 'proposal' | 'readonly'
+  domains: Record<'self' | 'memory' | 'procedure' | 'resource', 'autonomous' | 'proposal' | 'readonly'>
+  userEditable: boolean
+  fullyFrozen: boolean
+}
+
+async function vaultPost<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(`/api/virtual-companions/${path}`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  const envelope = await response.json().catch(() => ({})) as { ok?: boolean; value?: T; error?: string }
+  if (!response.ok || envelope.ok !== true || envelope.value === undefined) {
+    throw new Error(envelope.error ?? `Agent Vault 请求失败（${String(response.status)}）`)
+  }
+  return envelope.value
+}
+
 export type VirtualCompanionPageProps = PropsRuntime<'worldline.main.page'>
   & PropsLocale<'virtualCompanion'>
   & InjectFace<VirtualCompanionPageInjected>
@@ -40,10 +75,6 @@ function imageFromFile(file: File): Promise<string> {
     reader.onerror = () => { reject(new Error('图片读取失败')) }
     reader.readAsDataURL(file)
   })
-}
-
-function PromptCard({ title, value }: { title: string; value: string }) {
-  return <section className={css.promptCard}><h4>{title}</h4><p>{value}</p></section>
 }
 
 function ConfirmDialog(props: {
@@ -140,6 +171,8 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
   const [error, setError] = useState<string>()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRestore, setConfirmRestore] = useState(false)
+  const [self, setSelf] = useState<SelfSnapshotView>()
+  const [policy, setPolicy] = useState<VaultPolicyView>()
   const hasWorkspace = useWorkspaces(state => state.items.length > 0)
   useEffect(() => { void companionStore.load() }, [])
   useEffect(() => {
@@ -153,6 +186,43 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
       || `${companion.name} ${companion.handle}`.toLocaleLowerCase('zh-CN').includes(key))
   }, [directory.companions, query])
   const selected = directory.companions.find(companion => companion.id === selectedId)
+  useEffect(() => {
+    if (selectedId === undefined) { setSelf(undefined); setPolicy(undefined); return }
+    let active = true
+    void Promise.all([
+      vaultPost<SelfSnapshotView>('vault/self', { scope: selectedId }),
+      vaultPost<VaultPolicyView>('vault/policy', { scope: selectedId }),
+    ]).then(([nextSelf, nextPolicy]) => { if (active) { setSelf(nextSelf); setPolicy(nextPolicy) } },
+      (reason) => { if (active) setError(reason instanceof Error ? reason.message : String(reason)) })
+    return () => { active = false }
+  }, [selectedId])
+  const toggleSelf = async (item: SelfModuleView): Promise<void> => {
+    if (selected === undefined) return
+    try {
+      const updated = await vaultPost<SelfModuleView>('vault/self/update', { scope: selected.id,
+        module: { ...item, enabled: !item.enabled }, reason: '用户在伙伴印象卡中切换模块。' })
+      setSelf(current => current === undefined ? current : { ...current,
+        modules: current.modules.map(value => value.id === updated.id ? updated : value) })
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
+  }
+  const toggleFreeze = async (): Promise<void> => {
+    if (selected === undefined || policy === undefined) return
+    try {
+      setPolicy(await vaultPost<VaultPolicyView>('vault/policy/set', { scope: selected.id,
+        policy: { ...policy, fullyFrozen: !policy.fullyFrozen } }))
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
+  }
+  const importCompanion = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.currentTarget.files?.[0]; if (file === undefined) return
+    setBusy(true); setError(undefined)
+    try {
+      const response = await fetch('/api/virtual-companions/vault/import', { method: 'POST', body: file })
+      const result = await response.json().catch(() => ({})) as { ok?: boolean; error?: string }
+      if (!response.ok || result.ok !== true) throw new Error(result.error ?? '角色包导入失败')
+      await companionStore.load()
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
+    finally { setBusy(false); event.currentTarget.value = '' }
+  }
   const editingCompanion = editing === undefined || editing === 'new'
     ? undefined
     : directory.companions.find(item => item.id === editing)
@@ -186,6 +256,7 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
   return <main className={css.page} aria-label={t('title')}>
     <aside className={css.friends}>
       <header><div><h1>{t('title')}</h1><p>{t('intro')}</p></div>
+        <label className={css.addFriend} aria-label="导入角色包" title="导入角色包">⇧<input type="file" accept=".wlvault" hidden onChange={(event) => { void importCompanion(event) }} /></label>
         <button type="button" className={css.addFriend} onClick={() => { setEditing('new') }} aria-label="新增伙伴">+</button></header>
       <label className={css.search}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.75" /><path d="m15 15 4.25 4.25" /></svg>
@@ -210,6 +281,9 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
           <div className={css.profileActions}>
             <button type="button" className={css.launch} disabled={busy || !hasWorkspace} onClick={() => { void start() }}>{busy ? t('launching') : `和${selected.name}聊天`}</button>
             <button type="button" className={css.secondary} onClick={() => { setEditing(selected.id) }}>编辑资料</button>
+            <a className={css.secondary} href={`/api/virtual-companions/vault/export/${encodeURIComponent(selected.id)}`}>导出角色包</a>
+            <button type="button" className={css.secondary} aria-pressed={policy?.fullyFrozen === true}
+              onClick={() => { void toggleFreeze() }}>{policy?.fullyFrozen === true ? '解除知识冻结' : '冻结为只读'}</button>
             {selected.builtIn
               ? <button type="button" className={css.secondary} onClick={() => { setConfirmRestore(true) }}>恢复原版</button>
               : <button type="button" className={css.danger} onClick={() => { setConfirmDelete(true) }}>删除</button>}
@@ -220,14 +294,17 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
       </div>
       <div className={css.details}>
         <article><h3>伙伴资料</h3><p>{selected.description}</p></article>
-        <article><h3>完整 Agent 人设提示词</h3><p>以下四部分只注入这位伙伴自己的独立 Agent，并与用户公开资料、当前房间记录共同构成她的上下文。</p></article>
+        <article><h3>Agent Vault 印象卡</h3><p>只注入已启用的结构化模块；普通记忆检索与印象卡严格分域。稳定模块按阶段更新，动态状态也保留修订记录。</p></article>
         <div className={css.promptGrid}>
-          <PromptCard title="01 · 核心身份" value={selected.persona} />
-          <PromptCard title="02 · 人设与性格" value={selected.style} />
-          <PromptCard title="03 · 说话语气" value={selected.speakingStyle} />
-          <PromptCard title="04 · 行为逻辑" value={selected.behaviorLogic} />
+          {(self?.modules ?? []).map((item, index) => <section className={css.promptCard} key={item.id}>
+            <h4>{String(index + 1).padStart(2, '0')} · {item.title}</h4>
+            <p>{item.summary || '尚未形成稳定印象。'}</p>
+            {item.details.length > 0 ? <p>{item.details.join('\n')}</p> : null}
+            <button type="button" className={css.secondary} aria-pressed={item.enabled}
+              onClick={() => { void toggleSelf(item) }}>{item.enabled ? '已启用 · 点击停用' : '已停用 · 点击启用'}</button>
+          </section>)}
         </div>
-        <p className={css.privacy}>伙伴会读取公共知识库与自己的私有知识库；不会读取其他伙伴的私有知识。知识与引用资料统一在左侧“知识库”中维护，密码或凭据永不注入。</p>
+        <p className={css.privacy}>伙伴只读取公共 Vault 与自己的私有 Vault；不会读取其他伙伴的私有认知。记忆、能力、资源和印象卡统一打包迁移，冻结后 Agent 的所有写入均会被 Host 拒绝。</p>
       </div>
     </section> : <section className={css.emptyProfile}>新增一位伙伴，开始你们的聊天。</section>}
     {editing !== undefined ? <CompanionEditor
@@ -236,7 +313,7 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
     /> : null}
     {confirmDelete && selected !== undefined && !selected.builtIn ? <ConfirmDialog
       title="删除伙伴"
-      description={`确定删除伙伴“${selected.name}”吗？她的私有记忆、知识和自定义表情也会一并移除。`}
+      description={`确定删除伙伴“${selected.name}”吗？她的完整 Agent Vault 会移入可恢复的回收区。`}
       confirmLabel="确认删除"
       tone="danger"
       busy={busy}
@@ -245,7 +322,7 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
     /> : null}
     {confirmRestore && selected !== undefined && selected.builtIn ? <ConfirmDialog
       title="恢复内置伙伴原版"
-      description={`将“${selected.name}”的人物资料、私有知识库和私有引用库全部恢复为当前版本的内置原版。用户编辑的设定、自定义知识和自定义引用会被移除，此操作不会使用阻塞弹窗。`}
+      description={`将“${selected.name}”的人物资料和私有 Agent Vault 全部恢复为当前版本的内置原版。现有版本会先移入可恢复的回收区，此操作不会使用阻塞弹窗。`}
       confirmLabel="恢复原版"
       tone="restore"
       busy={busy}

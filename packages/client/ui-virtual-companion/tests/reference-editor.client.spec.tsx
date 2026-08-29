@@ -63,8 +63,8 @@ describe('reference quick add', () => {
 
     const Page = KnowledgeVaultPage as ComponentType<{ activePage: string }>
     const view = render(<Page activePage="knowledge" />)
-    await waitFor(() => { expect(screen.getByRole('button', { name: '引用库' })).toBeTruthy() })
-    fireEvent.click(screen.getByRole('button', { name: '引用库' }))
+    await waitFor(() => { expect(screen.getByRole('button', { name: '资源画廊' })).toBeTruthy() })
+    fireEvent.click(screen.getByRole('button', { name: '资源画廊' }))
     await waitFor(() => { expect(screen.getByRole('button', { name: '新增引用' })).toBeTruthy() })
     expect(screen.getByRole('button', { name: '筛选栏' }).getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByPlaceholderText('搜索引用资料')).toBeTruthy()
@@ -138,8 +138,8 @@ describe('reference quick add', () => {
 
     const Page = KnowledgeVaultPage as ComponentType<{ activePage: string }>
     render(<Page activePage="knowledge" />)
-    await waitFor(() => { expect(screen.getByRole('button', { name: '引用库' })).toBeTruthy() })
-    fireEvent.click(screen.getByRole('button', { name: '引用库' }))
+    await waitFor(() => { expect(screen.getByRole('button', { name: '资源画廊' })).toBeTruthy() })
+    fireEvent.click(screen.getByRole('button', { name: '资源画廊' }))
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '禁用引用 可暂停视频' })).toBeTruthy()
     })
@@ -153,7 +153,7 @@ describe('reference quick add', () => {
     const toggle = requests.find(item => item.url.endsWith('/reference/set-enabled'))
     const toggleBody = toggle?.init?.body
     if (typeof toggleBody !== 'string') throw new Error('toggle body is missing')
-    expect(JSON.parse(toggleBody)).toEqual({ id: 'pause-me', enabled: false })
+    expect(JSON.parse(toggleBody)).toEqual({ scope: 'public', id: 'pause-me', enabled: false })
     const search = requests.find(item => item.url.endsWith('/reference/search'))
     const searchBody = search?.init?.body
     if (typeof searchBody !== 'string') throw new Error('search body is missing')

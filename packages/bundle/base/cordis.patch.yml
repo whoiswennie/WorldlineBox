@@ -106,6 +106,18 @@
     - id: attachment-local
       name: '@deepseek-ai/dsh-attachment-local'
 
+    # Every Agent may own one portable file-native Vault. SQLite is only a
+    # rebuildable lexical index; no embedding model or remote semantic API is
+    # involved in the default provider.
+    - id: agent-vault-local
+      name: '@deepseek-ai/dsh-agent-vault-local'
+
+    - id: skill-agent-vault
+      name: '@deepseek-ai/dsh-skill-agent-vault'
+
+    - id: tool-agent-vault
+      name: '@deepseek-ai/dsh-tool-agent-vault'
+
     # Full-text session search is opt-in. `openAt: never` keeps
     # ctx.sessionQuery mounted — exact reads, titles, and lineage traces
     # (session export, subagent-fork Workspace inheritance) stay available —

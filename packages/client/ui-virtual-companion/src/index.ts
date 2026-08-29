@@ -1,24 +1,27 @@
 /** Account-scoped virtual companion directory, room state, and Agent context. */
 import { randomUUID } from 'node:crypto'
-import { createReadStream } from 'node:fs'
-import { mkdir, readFile } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { mkdir, readFile, rm } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
+import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type {
+  AgentVaultService, RecallCard, SelfModule, VaultDocument, VaultEntry, VaultPolicy, VaultResource,
+} from '@deepseek-ai/dsh-agent-vault'
+import { AgentVaultError } from '@deepseek-ai/dsh-agent-vault'
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { worldlineHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-subagent'
-import type {} from '@deepseek-ai/dsh-skill'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
-  ReferenceIntent,
   VirtualCompanion,
   VirtualCompanionDraft,
   VirtualCompanionRoom,
@@ -28,10 +31,7 @@ import type {
 import { initialCompanionId } from './contracts.ts'
 import { BUILT_IN_MEMES } from './builtin-memes.ts'
 import { CompanionActorRuntime } from './actor-runtime.ts'
-import { KnowledgeConflictError, KnowledgeVault } from './knowledge-vault.ts'
-import { ReferenceVault } from './reference-vault.ts'
-import { expressionQuery } from './reference-expression.ts'
-import { installKnowledgeAwareness } from './resource-awareness.ts'
+import { migrateLegacyCompanions } from './agent-vault-migration.ts'
 
 export type {
   VirtualCompanion,
@@ -41,7 +41,7 @@ export type {
 } from './contracts.ts'
 
 export const name = 'virtual-companion-directory'
-export const inject = ['agents', 'subagents', 'webServer', 'systemPrompt', 'skills']
+export const inject = ['agents', 'agentVaults', 'subagents', 'webServer', 'systemPrompt']
 
 const API_PATH = '/api/virtual-companions'
 const PRESET_ID = 'virtual-companion'
@@ -224,6 +224,115 @@ function referenceDraft(value: unknown): ReferenceDraft {
   }
 }
 
+function vaultReference(value: VaultResource, url: string): import('./contracts.ts').ReferenceAsset {
+  return {
+    id: value.id, scope: value.agentId, enabled: value.enabled, title: value.title,
+    description: value.description, tags: value.tags, transcript: value.transcript,
+    mimeType: value.mimeType, bytes: value.bytes,
+    ...(value.durationMs === undefined ? {} : { durationMs: value.durationMs }),
+    source: value.sha256 === undefined
+      ? { type: 'link', url: value.externalUrl ?? url }
+      : { type: 'blob', hash: value.sha256 },
+    builtIn: value.builtIn, usageCount: value.usageCount,
+    ...(value.lastUsedAt === undefined ? {} : { lastUsedAt: value.lastUsedAt }),
+    createdAt: value.createdAt, updatedAt: value.updatedAt, url,
+  }
+}
+
+function knowledgeEntry(value: VaultEntry): import('./contracts.ts').KnowledgeTreeEntry {
+  return { name: value.name, path: value.uri.slice('vault://'.length),
+    kind: value.kind === 'directory' ? 'directory' : 'document', updatedAt: value.updatedAt,
+    size: value.bytes }
+}
+
+function knowledgeDocument(value: VaultDocument): import('./contracts.ts').KnowledgeDocument {
+  return { scope: '', path: value.uri.slice('vault://'.length), title: value.title,
+    summary: value.summary, tags: value.tags, revision: value.revision, updatedAt: value.updatedAt,
+    content: value.content, headings: value.headings, links: value.links, sources: value.sources,
+    totalLines: value.totalLines, view: value.view }
+}
+
+function knowledgeResult(scope: string, value: RecallCard): import('./contracts.ts').KnowledgeSearchResult {
+  return { scope, path: value.uri.slice(value.uri.indexOf('://') + 3), title: value.title,
+    summary: value.summary, tags: value.tags, revision: value.revision, updatedAt: value.updatedAt }
+}
+
+async function vaultDocuments(vaults: AgentVaultService, scope: string): Promise<readonly VaultDocument[]> {
+  const queue = ['memory', 'procedures']
+  const documents: VaultDocument[] = []
+  while (queue.length > 0) {
+    const path = queue.shift() ?? ''
+    let cursor = 0
+    for (;;) {
+      const entries = await vaults.list(scope, `vault://${path}`, cursor, 500)
+      for (const entry of entries) {
+        const child = entry.uri.slice('vault://'.length)
+        if (entry.kind === 'directory') queue.push(child)
+        else if (entry.kind === 'document' && child.endsWith('.md'))
+          documents.push(await vaults.read(scope, entry.uri, 'full'))
+      }
+      if (entries.length < 500) break
+      cursor += entries.length
+    }
+  }
+  return documents
+}
+
+const linkKey = (value: string): string => value.replace(/^vault:\/\//u, '').replace(/\.md$/iu, '')
+
+function findVaultTarget(keys: ReadonlySet<string>, target: string): string | undefined {
+  const normalized = linkKey(target)
+  if (keys.has(normalized)) return normalized
+  const leaf = basename(normalized)
+  return [...keys].find(key => basename(key) === leaf)
+}
+
+/**
+ * Find portable Wiki documents that link to a target inside one Agent Vault.
+ * @param vaults - Agent Vault service that owns the source-of-truth documents.
+ * @param scope - Agent identifier whose document tree is searched.
+ * @param target - Portable Wiki target or vault path to resolve.
+ * @returns Lightweight metadata for every document containing a matching link.
+ */
+export async function vaultBacklinks(vaults: AgentVaultService, scope: string, target: string): Promise<unknown[]> {
+  const documents = await vaultDocuments(vaults, scope)
+  const normalized = linkKey(target)
+  return documents.filter(document => document.links.some((link) => {
+    const candidate = linkKey(link)
+    return candidate === normalized || basename(candidate) === basename(normalized)
+  })).map(document => ({ scope, path: document.uri.slice('vault://'.length), title: document.title,
+    summary: document.summary, tags: document.tags, revision: document.revision, updatedAt: document.updatedAt }))
+}
+
+/**
+ * Audit links, provenance, and reachability without mutating an Agent Vault.
+ * @param vaults - Agent Vault service that owns the source-of-truth documents.
+ * @param scope - Agent identifier whose document tree is audited.
+ * @returns Broken links, unreferenced documents, and documents without source metadata.
+ */
+export async function auditVault(vaults: AgentVaultService, scope: string): Promise<{
+  brokenLinks: readonly { source: string; target: string }[]
+  orphaned: readonly string[]
+  missingSources: readonly string[]
+}> {
+  const documents = await vaultDocuments(vaults, scope)
+  const keys = new Set(documents.map(document => linkKey(document.uri.slice('vault://'.length))))
+  const linked = new Set<string>()
+  const brokenLinks: Array<{ source: string; target: string }> = []
+  const missingSources: string[] = []
+  for (const document of documents) {
+    const source = document.uri.slice('vault://'.length)
+    for (const raw of document.links) {
+      const found = findVaultTarget(keys, raw)
+      if (found === undefined) brokenLinks.push({ source, target: raw })
+      else linked.add(found)
+    }
+    if (!source.endsWith('/index.md') && document.sources.length === 0) missingSources.push(source)
+  }
+  return { brokenLinks, missingSources,
+    orphaned: [...keys].filter(path => !path.endsWith('/index') && !linked.has(path)).sort() }
+}
+
 function yachiyo(now = Date.now()): VirtualCompanion {
   return {
     id: YACHIYO_ID,
@@ -377,19 +486,34 @@ export class VirtualCompanionDirectory {
   private data = emptyDirectory()
   private mutation = Promise.resolve()
   private readonly requiredResponders = new WeakMap<Agent, RequiredResponders>()
-  readonly knowledge: KnowledgeVault
-  readonly references: ReferenceVault
   readonly ready: Promise<void>
+  private readonly agentVaults: AgentVaultService | undefined
 
   constructor(
     private readonly logger: Context['logger'],
     root?: string,
+    agentVaults?: AgentVaultService,
   ) {
     this.directory = root ?? worldlineHomePath('companions')
     this.file = join(this.directory, 'directory.json')
-    this.knowledge = new KnowledgeVault(join(this.directory, 'knowledge-vaults'))
-    this.references = new ReferenceVault(join(this.directory, 'reference-vault'))
+    this.agentVaults = agentVaults
     this.ready = this.initialize()
+  }
+
+  /** Return the configured Agent Vault service or fail when the plugin is unavailable. */
+  get vaults(): AgentVaultService {
+    if (this.agentVaults === undefined) throw new Error('Agent Vault service is unavailable')
+    return this.agentVaults
+  }
+
+  /**
+   * Build the stable local HTTP URL for a resource stored in an Agent Vault.
+   * @param agentId - Agent that owns the resource.
+   * @param resourceId - Resource identifier within that Agent Vault.
+   * @returns URL accepted by the virtual-companion resource endpoint.
+   */
+  resourceUrl(agentId: string, resourceId: string): string {
+    return `${API_PATH}/vault/resource/${encodeURIComponent(agentId)}/${encodeURIComponent(resourceId)}`
   }
 
   /**
@@ -432,43 +556,107 @@ export class VirtualCompanionDirectory {
       }
       this.data = emptyDirectory()
     }
-    await this.knowledge.initialize(this.data.companions.map(companion => companion.id))
-    await this.references.initialize()
-    await this.seedBuiltInReferences()
-    // Starter knowledge is installed once. Markdown remains user-owned afterward, so edits are
-    // never silently overwritten on restart; removing the page restores the starter next launch.
-    await this.seedBuiltInKnowledge()
+    if (this.agentVaults !== undefined) await migrateLegacyCompanions({
+      legacyRoot: this.directory,
+      backupRoot: join(this.directory, '..', 'agent-vault-backups'),
+      profiles: this.data.companions,
+      vaults: this.agentVaults,
+    })
+    if (this.agentVaults !== undefined) {
+      await this.seedBuiltInKnowledge()
+      await this.seedBuiltInReferences()
+    }
     await this.save()
+  }
+
+  private async syncProfile(profile: VirtualCompanion): Promise<void> {
+    if (this.agentVaults === undefined) return
+    const known = (await this.agentVaults.listAgents()).some(item => item.agent.id === profile.id)
+    if (!known) await this.agentVaults.createAgent(profile.id, profile.name)
+    const snapshot = await this.agentVaults.inspectSelf(profile.id)
+    const values: Readonly<Record<string, { summary: string; details: readonly string[] }>> = {
+      identity: { summary: `${profile.name}（${profile.handle}）`, details: [profile.description, profile.persona] },
+      appearance: { summary: profile.avatar === '' ? '尚未提供形象资料。' : '已登记角色形象。',
+        details: profile.avatar === '' ? [] : [`形象资源：${profile.avatar}`, `立绘资源：${profile.portrait || profile.avatar}`] },
+      persona: { summary: profile.style, details: [profile.persona, profile.behaviorLogic] },
+      voice: { summary: profile.speakingStyle, details: [] },
+      state: { summary: profile.status, details: [] },
+    }
+    for (const current of snapshot.modules) {
+      const next = values[current.id]; if (next === undefined) continue
+      await this.agentVaults.updateSelf(profile.id, { ...current, summary: next.summary,
+        details: next.details.filter(Boolean), updatedAt: Date.now() } satisfies SelfModule,
+      { actor: { type: 'user', id: 'companion-profile-editor' }, reason: 'User updated companion profile.',
+        expectedRevision: current.revision })
+    }
+  }
+
+  /**
+   * Read one agent's mutation and self-module policy.
+   * @param agentId - Agent whose policy is requested.
+   * @returns Current Agent Vault policy.
+   */
+  async vaultPolicy(agentId: string): Promise<VaultPolicy> { return await this.vaults.policy(agentId) }
+
+  /**
+   * Replace one agent's mutation and self-module policy through a user-authorized action.
+   * @param agentId - Agent whose policy is changed.
+   * @param policy - Complete replacement policy.
+   * @returns Persisted Agent Vault policy.
+   */
+  async setVaultPolicy(agentId: string, policy: VaultPolicy): Promise<VaultPolicy> {
+    if (!this.data.companions.some(item => item.id === agentId) && agentId !== 'public') {
+      throw new CompanionRequestError('Agent Vault 不存在', 404)
+    }
+    return await this.vaults.setPolicy(agentId, policy, {
+      actor: { type: 'user', id: 'vault-settings' }, reason: 'User changed Agent Vault policy.',
+    })
+  }
+
+  /**
+   * Materialize an imported Agent Vault's structured self modules as a companion card.
+   * @param agentId - Imported Agent Vault identifier.
+   * @returns Updated companion directory snapshot.
+   */
+  async registerImportedCompanion(agentId: string): Promise<VirtualCompanionSnapshot> {
+    return await this.exclusive(async () => {
+      if (agentId === 'public' || this.data.companions.some(item => item.id === agentId)) return this.snapshot()
+      const self = await this.vaults.inspectSelf(agentId); const get = (id: string) => self.modules.find(item => item.id === id)
+      const identity = get('identity'); const appearance = get('appearance'); const persona = get('persona')
+      const avatar = appearance?.details.find(item => item.startsWith('形象资源：'))?.slice('形象资源：'.length) ?? ''
+      const now = Date.now(); const name = identity?.summary.split('（', 1)[0]?.trim() || agentId
+      this.data.companions.push({ id: agentId, name, handle: identity?.summary ?? name,
+        avatar, portrait: avatar, status: get('state')?.summary ?? '', description: identity?.details[0] ?? '',
+        persona: identity?.details[1] ?? '', style: persona?.summary ?? '', speakingStyle: get('voice')?.summary ?? '',
+        behaviorLogic: persona?.details[1] ?? '', builtIn: false, createdAt: now, updatedAt: now })
+      await this.save(); return this.snapshot()
+    })
   }
 
   private async seedBuiltInReferences(scope?: string): Promise<void> {
     const seededAt = Date.now()
     for (const meme of BUILT_IN_MEMES.filter(item => scope === undefined || item.scope === scope)) {
-      await this.references.seed({
-        id: meme.id,
-        scope: meme.scope,
-        enabled: true,
-        title: meme.title,
-        description: meme.content,
-        tags: [...new Set([
-          '表情包', '图片', meme.mimeType === 'image/gif' ? 'gif' : 'jpg', meme.scope,
-          ...meme.content.split(/[-—_\s，。！？、]+/u).filter(Boolean),
-        ])],
-        transcript: '',
-        mimeType: meme.mimeType,
-        bytes: 0,
-        source: { type: 'builtin', url: meme.asset },
-        builtIn: true,
-        usageCount: 0,
-        createdAt: seededAt,
-        updatedAt: seededAt,
-      })
+      try { await this.vaults.resource(meme.scope, meme.id); continue } catch { /* seed missing built-in */ }
+      await this.vaults.importResource(meme.scope, { preferredId: meme.id, enabled: true,
+        roles: ['expression'], title: meme.title, description: meme.content,
+        tags: [...new Set(['表情包', '图片', meme.mimeType === 'image/gif' ? 'gif' : 'jpg', meme.scope,
+          ...meme.content.split(/[-—_\s，。！？、]+/u).filter(Boolean)])], originalTags: [], transcript: '',
+        mimeType: meme.mimeType, bytes: 0, externalUrl: meme.asset, builtIn: true, usageCount: 0,
+        createdAt: seededAt }, undefined, { actor: { type: 'system', id: 'built-in-seed' },
+        reason: 'Install a missing bundled expression resource.' })
     }
   }
 
   private async seedBuiltInKnowledge(scope?: string): Promise<void> {
     for (const page of BUILT_IN_KNOWLEDGE.filter(item => scope === undefined || item.scope === scope)) {
-      await this.knowledge.seed(page.scope, page.title, page.content, page.tags)
+      const known = await this.vaults.recall({ agentId: page.scope, domain: 'memory', query: page.title,
+        budget: { maxResults: 10, maxChars: 8_000, maxMillis: 200 } })
+      if (known.cards.some(card => card.title === page.title)) continue
+      const content = ['---', `title: ${JSON.stringify(page.title)}`, `tags: ${JSON.stringify(page.tags)}`,
+        `summary: ${JSON.stringify(page.content.slice(0, 320).replace(/\s+/gu, ' '))}`,
+        'sources: ["worldline://bundled-companion"]', '---', '', `# ${page.title}`, '', page.content, ''].join('\n')
+      await this.vaults.write(page.scope, `vault://memory/long/builtin/${page.key}.md`, content,
+        { actor: { type: 'system', id: 'built-in-seed' }, reason: 'Install missing bundled companion knowledge.' })
     }
   }
 
@@ -553,10 +741,7 @@ export class VirtualCompanionDirectory {
     return undefined
   }
 
-  close(): void {
-    this.knowledge.close()
-    this.references.close()
-  }
+  close(): void {}
 
   async bindActor(roomSessionId: string, companionId: string, childId: string): Promise<void> {
     await this.exclusive(async () => {
@@ -616,13 +801,15 @@ export class VirtualCompanionDirectory {
         throw new CompanionRequestError('已经存在同名伙伴')
       }
       const now = Date.now()
-      this.data.companions.push({
+      const created: VirtualCompanion = {
         ...input,
         id: randomUUID(),
         builtIn: false,
         createdAt: now,
         updatedAt: now,
-      })
+      }
+      await this.syncProfile(created)
+      this.data.companions.push(created)
       await this.save()
       return this.snapshot()
     })
@@ -643,11 +830,13 @@ export class VirtualCompanionDirectory {
       ) {
         throw new CompanionRequestError('已经存在同名伙伴')
       }
-      this.data.companions[index] = {
+      const updated: VirtualCompanion = {
         ...current,
         ...input,
         updatedAt: Date.now(),
       }
+      await this.syncProfile(updated)
+      this.data.companions[index] = updated
       await this.save()
       return this.snapshot()
     })
@@ -668,14 +857,20 @@ export class VirtualCompanionDirectory {
       const original = builtInCompanion(id, Date.now())
       if (original === undefined) throw new CompanionRequestError('内置伙伴原版定义不存在', 500)
 
-      await this.knowledge.resetScope(id)
-      await this.seedBuiltInKnowledge(id)
-      await this.references.resetScope(id)
-      await this.seedBuiltInReferences(id)
       this.data.companions[index] = {
         ...original,
         createdAt: current.createdAt,
         updatedAt: Date.now(),
+      }
+      if (this.agentVaults !== undefined) {
+        await this.agentVaults.removeAgent(id, { actor: { type: 'system', id: 'restore-built-in' },
+          reason: 'User restored the built-in companion.' })
+        await this.agentVaults.createAgent(id, original.name)
+        const restored = this.data.companions[index]
+        if (restored === undefined) throw new CompanionRequestError('内置伙伴恢复失败', 500)
+        await this.syncProfile(restored)
+        await this.seedBuiltInKnowledge(id)
+        await this.seedBuiltInReferences(id)
       }
       await this.save()
       return this.snapshot()
@@ -692,8 +887,9 @@ export class VirtualCompanionDirectory {
       this.pruneRooms()
       await this.save()
       if (typeof id === 'string') {
-        await this.knowledge.removeScope(id)
-        await this.references.removeScope(id)
+        if (this.agentVaults !== undefined) await this.agentVaults.removeAgent(id, {
+          actor: { type: 'user', id: 'companion-directory' }, reason: 'User deleted the companion.',
+        })
       }
       return this.snapshot()
     })
@@ -947,212 +1143,33 @@ export function installCompanionRoomPrompt(
   })
 }
 
-/** Install the public vault capability into one exact ordinary/coordinator Agent scope. */
-export function installLibraryRuntime(
-  directory: VirtualCompanionDirectory,
-  agent: Agent,
-): () => void {
-  const disposers: Array<() => unknown> = []
-  disposers.push(installKnowledgeAwareness(agent, {
-    knowledge: directory.knowledge,
-    scopes: ['public'],
-    ready: directory.ready,
-    onError: (error) => { directory.logWarning('knowledge awareness failed', error) },
-  }))
-  disposers.push(
-    agent.ctx.systemPrompt.context({
-      name: 'knowledge-vault:policy',
-      order: -8,
-      text: () =>
-        '公共知识库通过 knowledge 工具渐进式读取和维护。先 search/tree，再 top/section/grep，只有确有必要才 full。需要详细治理规则时加载 knowledge-use、knowledge-maintain 或 knowledge-govern 技能。普通 Agent 只能访问 public；权限由 Host 强制执行。',
-    }),
-  )
-  disposers.push(
-    agent.ctx.systemPrompt.context({
-      name: 'reference-vault:catalog',
-      order: -7,
-      text: () => {
-        const tags = directory.references.tagCatalog(['public'], 48)
-          .map(item => `${item.tag}(${String(item.count)})`).join('、')
-        return tags === ''
-          ? '公共引用库当前没有可用资源。'
-          : `公共引用库可用标签：${tags}。需要在回答中自然引用资源时调用 express；标签是开放组合，不存在固定资源类别。`
-      },
-    }),
-  )
-  disposers.push(
-    agent.ctx.tools.register(
-      defineTool({
-        name: 'knowledge',
-        description:
-          'Progressively search, inspect, read, write, or audit the public Markdown knowledge vault. Use search/tree before reading; prefer top/section/grep over full.',
-        parameters: {
-          action: {
-            type: 'string',
-            required: true,
-            enum: ['tree', 'search', 'read', 'write', 'audit'],
-          },
-          query: { type: 'string' },
-          path: { type: 'string' },
-          view: { type: 'string', enum: ['top', 'section', 'grep', 'full'] },
-          selector: { type: 'string' },
-          title: { type: 'string' },
-          content: { type: 'string' },
-          tags: { type: 'array', items: { type: 'string' } },
-          cursor: { type: 'integer' },
-          limit: { type: 'integer' },
-        },
-        output: {
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              result: { type: 'string', required: true },
-            },
-          },
-          render: (_args, value) => [{ type: 'text', text: value.result }],
-        },
-        async execute(args) {
-          const cursor = Math.max(0, args.cursor ?? 0)
-          const limit = Math.max(1, Math.min(50, args.limit ?? 12))
-          if (args.action === 'tree')
-            return {
-              result: JSON.stringify(
-                directory.knowledge.tree('public', args.path ?? '', cursor, limit),
-              ),
-            }
-          if (args.action === 'search')
-            return {
-              result: JSON.stringify(
-                directory.knowledge.search(['public'], args.query ?? '', cursor, limit),
-              ),
-            }
-          if (args.action === 'read')
-            return {
-              result: JSON.stringify(
-                await directory.knowledge.read(
-                  'public',
-                  args.path ?? '',
-                  args.view ?? 'top',
-                  args.selector ?? '',
-                ),
-              ),
-            }
-          if (args.action === 'audit')
-            return { result: JSON.stringify(directory.knowledge.audit('public')) }
-          const page = await directory.knowledge.remember(
-            'public',
-            args.title ?? '',
-            args.content ?? '',
-            args.tags ?? [],
-          )
-          return {
-            result: JSON.stringify({
-              scope: page.scope,
-              path: page.path,
-              revision: page.revision,
-              title: page.title,
-            }),
-          }
-        },
-      }),
-    ),
-  )
-  disposers.push(
-    agent.ctx.tools.register(
-      defineTool({
-        name: 'express',
-        description:
-          'Express one semantic conversational act at this exact point. The Host resolves a fresh public reference asset only after the act is chosen.',
-        parameters: {
-          act: {
-            type: 'string',
-            required: true,
-            description: 'A free semantic label describing what this reference should express.',
-          },
-          role: { type: 'string', enum: ['replace-text', 'amplify-text', 'reply', 'illustrate'] },
-          intensity: { type: 'integer', description: 'Expression strength from 1 to 3.' },
-          target: { type: 'string' },
-          reply_to: { type: 'string' },
-          query: { type: 'string', description: 'Optional concrete object or situation.' },
-          tags: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Open resource tags selected from the current catalog and combined freely.',
-          },
-        },
-        output: {
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              found: { type: 'boolean', required: true },
-              asset_id: { type: 'string', required: true },
-              title: { type: 'string', required: true },
-              url: { type: 'string', required: true },
-              mime_type: { type: 'string', required: true },
-              markup: { type: 'string', required: true },
-              act: { type: 'string', required: true },
-            },
-          },
-          presentationMeta: (_args, value) => value,
-          render: (_args, value) => [
-            {
-              type: 'text',
-              text: value.found
-                ? `Expression delivered automatically: ${value.title}. Do not repeat its markup in the response.`
-                : 'No suitable expression asset exists. Continue naturally without inventing one.',
-            },
-          ],
-        },
-        execute(args) {
-          const recent = agent.session.events.slice(-40).flatMap((event) => {
-            if (event.type !== 'user/message') return []
-            return event.data.content.flatMap(block => block.type === 'text' ? [block.text] : [])
-          }).join('\n')
-          const intent: ReferenceIntent = {
-            act: args.act,
-            role: args.role ?? 'amplify-text',
-            intensity: Math.max(1, Math.min(3, args.intensity ?? 1)) as 1 | 2 | 3,
-            ...(args.target === undefined ? {} : { target: args.target }),
-            ...(args.reply_to === undefined ? {} : { replyTo: args.reply_to }),
-            ...(args.query === undefined ? {} : { query: args.query }),
-            ...(args.tags === undefined ? {} : { preferredTags: args.tags }),
-          }
-          const selected = directory.references.react({
-            scopes: ['public'],
-            query: expressionQuery(intent, recent),
-            ...(intent.preferredTags === undefined ? {} : { tags: intent.preferredTags }),
-            limit: 1,
-          })
-          if (selected === undefined) {
-            return Promise.resolve({
-              found: false,
-              asset_id: '',
-              title: '',
-              url: '',
-              mime_type: '',
-              markup: '',
-              act: intent.act,
-            })
-          }
-          directory.references.markUsed(selected.id)
-          return Promise.resolve({
-            found: true,
-            asset_id: selected.id,
-            title: selected.title,
-            url: directory.references.url(selected),
-            mime_type: selected.mimeType,
-            markup: `<agent-reference asset-id="${selected.id}"/>`,
-            act: intent.act,
-          })
-        },
-      }),
-    ),
-  )
-  return () => {
-    for (const dispose of disposers.reverse()) dispose()
-  }
+/** Install the public Agent Vault into an ordinary/coordinator Agent scope. */
+export function installLibraryRuntime(directory: VirtualCompanionDirectory, agent: Agent): () => void {
+  const disposers: Array<() => unknown> = [directory.vaults.bindRuntimeAgent(agent.id, 'public')]
+  disposers.push(agent.ctx.systemPrompt.context({ name: 'agent-vault:public-policy', order: -8,
+    text: () => '你只能通过 Agent Vault 工具访问公共认知。先快速召回方向，再渐进读取；不要全量扫描，不要把普通知识检索写入 self。' }))
+  disposers.push(agent.ctx.tools.register(defineTool({
+    name: 'express', description: 'Resolve one public expression resource from a semantic intent without injecting the full catalog.',
+    parameters: { act: { type: 'string', required: true }, query: { type: 'string' },
+      tags: { type: 'array', items: { type: 'string' } } },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {
+      found: { type: 'boolean', required: true }, asset_id: { type: 'string', required: true },
+      title: { type: 'string', required: true }, url: { type: 'string', required: true },
+      mime_type: { type: 'string', required: true }, markup: { type: 'string', required: true },
+    } }, render: (_args, value) => [{ type: 'text', text: value.found
+      ? `Expression resource resolved: ${value.title}` : 'No suitable public resource found.' }] },
+    execute: async (args) => {
+      const page = await directory.vaults.searchResources({ agentId: 'public',
+        query: `${args.act} ${args.query ?? ''}`, tags: args.tags ?? [], roles: ['expression'], limit: 1 })
+      const selected = page.items[0]
+      return selected === undefined
+        ? { found: false, asset_id: '', title: '', url: '', mime_type: '', markup: '' }
+        : { found: true, asset_id: selected.id, title: selected.title,
+          url: directory.resourceUrl(selected.agentId, selected.id), mime_type: selected.mimeType,
+          markup: `<agent-reference asset-id="${selected.id}"/>` }
+    },
+  })))
+  return () => { for (const dispose of disposers.reverse()) dispose() }
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -1185,62 +1202,7 @@ function send(res: ServerResponse, status: number, value: unknown): void {
 
 /** Mount persistence, HTTP CRUD, mention invitations, and dynamic room context. */
 export function apply(ctx: Context): void {
-  ctx.effect(
-    () =>
-      ctx.skills.register({
-        name: 'knowledge-use',
-        source: 'bundled',
-        provider: 'worldline-knowledge',
-        description:
-          'Progressively find and read durable Worldline knowledge without loading entire vaults.',
-        content: `# Use Worldline knowledge
-
-- Access only the scopes granted by the Host. Never guess or request another companion's private scope.
-- Start with knowledge search or tree. Read the top view, a named section, or grep window before full text.
-- Follow wikilinks and sources only when they answer the current question. Respect the caller's context budget.
-- Cite the scope and path you actually read. State clearly when the vault does not support a claim.
-- The express tool is a separate output modality resolved only after the actor chooses a semantic act; never treat assets as knowledge candidates.`,
-      }),
-    'virtual-companion: knowledge-use skill',
-  )
-  ctx.effect(
-    () =>
-      ctx.skills.register({
-        name: 'knowledge-maintain',
-        source: 'bundled',
-        provider: 'worldline-knowledge',
-        description: 'Safely create and maintain durable public or own-private Markdown knowledge.',
-        content: `# Maintain Worldline knowledge
-
-- Store only durable facts, preferences, commitments, memories, or reusable syntheses. Keep transient chat out.
-- Search before writing. Update the canonical subject page instead of creating duplicates.
-- Use concise frontmatter: title, tags, summary, and sources. Connect durable subjects with [[wikilinks]].
-- Separate sourced facts, user statements, memories, and inferences. Never fabricate provenance.
-- Preserve user corrections. Put unresolved conflicts in talk/ and keep raw sources immutable.
-- Writes use revisions. If a conflict occurs, read the current page and merge deliberately; never blind-overwrite.
-- Never store passwords, tokens, private keys, or unrelated private information.`,
-      }),
-    'virtual-companion: knowledge-maintain skill',
-  )
-  ctx.effect(
-    () =>
-      ctx.skills.register({
-        name: 'knowledge-govern',
-        source: 'bundled',
-        provider: 'worldline-knowledge',
-        description:
-          'Audit and govern a Worldline vault for broken links, orphans, missing sources, and drift.',
-        content: `# Govern Worldline knowledge
-
-- Audit one authorized vault at a time. Never move content across private scopes.
-- Run deterministic checks first: broken links, orphan pages, missing sources, oversized pages, duplicate titles, and stale summaries.
-- Repair mechanical issues directly. Queue semantic merges and contradictory claims for deliberate review.
-- Prefer small reversible edits and preserve provenance. Do not create a second index or hidden source of truth.
-- Use the already configured Agent model only when semantic judgment is necessary; this skill requires no embedding model.`,
-      }),
-    'virtual-companion: knowledge-govern skill',
-  )
-  const directory = new VirtualCompanionDirectory(ctx.logger)
+  const directory = new VirtualCompanionDirectory(ctx.logger, undefined, ctx.agentVaults)
   const actors = new CompanionActorRuntime(ctx, directory)
   const pendingReferenceUploads = new Map<string, { draft: ReferenceDraft; expiresAt: number }>()
   const installed = new Map<
@@ -1261,7 +1223,6 @@ export function apply(ctx: Context): void {
     }
     current?.dispose()
     actors.dispose(agent)
-    const binding = directory.actorBinding(agent.id)
     const dispose =
       mode === 'companion'
         ? (() => {
@@ -1274,72 +1235,64 @@ export function apply(ctx: Context): void {
         })()
         : mode === 'ordinary'
           ? installLibraryRuntime(directory, agent)
-          : binding?.kind === 'companion'
-            ? installKnowledgeAwareness(agent, {
-              knowledge: directory.knowledge,
-              scopes: ['public', binding.companionId],
-              ready: directory.ready,
-              onError: (error) => {
-                directory.logWarning('actor knowledge awareness failed', error)
-              },
-            })
-            : () => {}
+          : () => {}
     installed.set(agent, { mode, dispose })
     actors.install(agent)
   }
   const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    let action = ''
+    let requestBody: Record<string, unknown> | undefined
     try {
       await directory.ready
       const pathname = new URL(req.url ?? '/', 'http://local').pathname
-      const action = pathname.slice(API_PATH.length).replace(/^\//u, '')
+      action = pathname.slice(API_PATH.length).replace(/^\//u, '')
       if (req.method === 'GET' && action === '') {
         send(res, 200, { ok: true, value: directory.snapshot() })
         return
       }
-      if (req.method === 'GET' && action.startsWith('reference/blob/')) {
-        const id = action.slice('reference/blob/'.length)
-        const blob = directory.references.blobInfo(id)
-        if (blob === undefined) throw new CompanionRequestError('引用媒体不存在', 404)
-        const range = /^bytes=(\d*)-(\d*)$/u.exec(req.headers.range ?? '')
-        let start = 0
-        let end = blob.bytes - 1
-        let status = 200
-        if (range !== null) {
-          if (range[1] === '' && range[2] !== '') {
-            const suffix = Number(range[2])
-            start = Number.isSafeInteger(suffix) && suffix > 0 ? Math.max(0, blob.bytes - suffix) : -1
-          } else {
-            start = Number(range[1])
-            end = range[2] === '' ? end : Number(range[2])
-          }
-          if (
-            !Number.isSafeInteger(start) ||
-            !Number.isSafeInteger(end) ||
-            start < 0 ||
-            end < start ||
-            start >= blob.bytes
-          ) {
-            res.writeHead(416, { 'content-range': `bytes */${blob.bytes}` })
-            res.end()
-            return
-          }
-          end = Math.min(end, blob.bytes - 1)
-          status = 206
+      if (req.method === 'GET' && action.startsWith('vault/resource/')) {
+        const [, , agentId = '', resourceId = ''] = action.split('/')
+        const content = await directory.vaults.resourceContent(decodeURIComponent(agentId), decodeURIComponent(resourceId))
+        if (content.type === 'external') {
+          res.writeHead(302, { location: content.url, 'cache-control': 'private, max-age=300' }); res.end(); return
         }
-        res.writeHead(status, {
-          'content-type': blob.mimeType,
-          'x-content-type-options': 'nosniff',
-          'content-length': String(end - start + 1),
-          'accept-ranges': 'bytes',
+        const range = /^bytes=(\d*)-(\d*)$/u.exec(req.headers.range ?? '')
+        let start = 0; let end = content.bytes - 1; let status = 200
+        if (range !== null) {
+          start = range[1] === '' ? Math.max(0, content.bytes - Number(range[2])) : Number(range[1])
+          end = range[2] === '' ? end : Number(range[2])
+          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start
+            || start >= content.bytes) { res.writeHead(416, { 'content-range': `bytes */${content.bytes}` }); res.end(); return }
+          end = Math.min(end, content.bytes - 1); status = 206
+        }
+        res.writeHead(status, { 'content-type': content.mimeType, 'x-content-type-options': 'nosniff',
+          'content-length': String(end - start + 1), 'accept-ranges': 'bytes',
           'cache-control': 'private, max-age=31536000, immutable',
-          ...(status === 206
-            ? { 'content-range': `bytes ${start}-${end}/${blob.bytes}` }
-            : {}),
-        })
-        await pipeline(createReadStream(blob.path, { start, end }), res)
+          ...(status === 206 ? { 'content-range': `bytes ${start}-${end}/${content.bytes}` } : {}) })
+        await pipeline(createReadStream(content.path, { start, end }), res); return
+      }
+      if (req.method === 'GET' && action.startsWith('vault/export/')) {
+        const agentId = decodeURIComponent(action.slice('vault/export/'.length)); const transfer = join(worldlineHomePath('transfers'), `${randomUUID()}.wlvault`)
+        await mkdir(worldlineHomePath('transfers'), { recursive: true })
+        await directory.vaults.exportAgent(agentId, transfer, false)
+        res.writeHead(200, { 'content-type': 'application/vnd.worldline.agent-vault',
+          'content-disposition': `attachment; filename="${agentId}.wlvault"`, 'cache-control': 'no-store' })
+        try { await pipeline(createReadStream(transfer), res) } finally { await rm(transfer, { force: true }) }
         return
       }
       if (req.method !== 'POST') throw new CompanionRequestError('请求方法不支持', 405)
+      if (action.startsWith('vault/import')) {
+        const targetId = new URL(req.url ?? '/', 'http://local').searchParams.get('agentId') ?? undefined
+        const transfer = join(worldlineHomePath('transfers'), `${randomUUID()}.wlvault`)
+        await mkdir(worldlineHomePath('transfers'), { recursive: true })
+        try {
+          await pipeline(req, createWriteStream(transfer, { flags: 'wx', mode: 0o600 }))
+          const report = await directory.vaults.importAgent(transfer, targetId)
+          await directory.registerImportedCompanion(report.agentId)
+          send(res, 200, { ok: true, value: report })
+        } finally { await rm(transfer, { force: true }) }
+        return
+      }
       if (action.startsWith('reference/upload/') && action !== 'reference/upload/prepare') {
         const uploadId = action.slice('reference/upload/'.length)
         const pending = pendingReferenceUploads.get(uploadId)
@@ -1351,17 +1304,56 @@ export function apply(ctx: Context): void {
         const expectedBytes = Number.isSafeInteger(contentLength) && contentLength >= 0
           ? contentLength
           : undefined
-        const value = await directory.references.createUploadStream(
-          { ...pending.draft, mimeType, asset: '' },
-          req as AsyncIterable<Uint8Array>,
-          mimeType,
-          expectedBytes,
-        )
-        send(res, 200, { ok: true, value: { ...value, url: directory.references.url(value) } })
+        if (expectedBytes !== undefined && expectedBytes > MAX_BODY_BYTES)
+          throw new CompanionRequestError('上传资源过大', 413)
+        const transfer = join(worldlineHomePath('transfers'), `${randomUUID()}.resource`)
+        await mkdir(worldlineHomePath('transfers'), { recursive: true })
+        let bytes = 0
+        const limiter = new Transform({ transform(chunk: Buffer, _encoding, callback) {
+          bytes += chunk.byteLength
+          callback(bytes > MAX_BODY_BYTES ? new CompanionRequestError('上传资源过大', 413) : null, chunk)
+        } })
+        try {
+          await pipeline(req, limiter, createWriteStream(transfer, { flags: 'wx', mode: 0o600 }))
+          if (expectedBytes !== undefined && expectedBytes !== bytes)
+            throw new CompanionRequestError('上传资源长度不完整')
+          const value = await directory.vaults.importResourceFromFile(pending.draft.scope, {
+            enabled: true, roles: ['expression'], title: pending.draft.title,
+            description: pending.draft.description, tags: pending.draft.tags,
+            originalTags: pending.draft.tags, transcript: pending.draft.transcript ?? '', mimeType,
+            bytes, ...(pending.draft.durationMs === undefined ? {} : { durationMs: pending.draft.durationMs }),
+            builtIn: false,
+          }, transfer, { actor: { type: 'user', id: 'vault-resource-editor' }, reason: 'User uploaded a resource.' })
+          send(res, 200, { ok: true, value: vaultReference(value, directory.resourceUrl(value.agentId, value.id)) })
+        } finally { await rm(transfer, { force: true }) }
         return
       }
       const body = await readBody(req)
+      requestBody = body
       const scope = typeof body.scope === 'string' ? body.scope : ''
+      if (action === 'vault/self') {
+        send(res, 200, { ok: true, value: await directory.vaults.inspectSelf(scope) }); return
+      }
+      if (action === 'vault/self/update') {
+        send(res, 200, { ok: true, value: await directory.vaults.updateSelf(scope, body.module as SelfModule,
+          { actor: { type: 'user', id: 'vault-ui' }, reason: stringValue(body.reason, 'User edited self module.'),
+            expectedRevision: stringValue((body.module as { revision?: unknown } | undefined)?.revision) }) }); return
+      }
+      if (action === 'vault/policy') {
+        send(res, 200, { ok: true, value: await directory.vaultPolicy(scope) }); return
+      }
+      if (action === 'vault/policy/set') {
+        send(res, 200, { ok: true, value: await directory.setVaultPolicy(scope, body.policy as VaultPolicy) }); return
+      }
+      if (action === 'vault/jobs') {
+        send(res, 200, { ok: true, value: await directory.vaults.consolidationJobs(scope) }); return
+      }
+      if (action === 'vault/consolidate') {
+        const source = body.source === 'medium' ? 'medium' : 'short'; const target = source === 'short' ? 'medium' : 'long'
+        const job = await directory.vaults.queueConsolidation(scope, source, target,
+          { actor: { type: 'user', id: 'vault-ui' }, reason: 'User requested bounded consolidation.' })
+        send(res, 200, { ok: true, value: await directory.vaults.runConsolidation(job.id, Number(body.limit ?? 50)) }); return
+      }
       if (action.startsWith('knowledge/') && !directory.ownsScope(scope))
         throw new CompanionRequestError('知识库范围不存在', 404)
       if (action === 'reference/upload/prepare') {
@@ -1380,96 +1372,90 @@ export function apply(ctx: Context): void {
         return
       }
       if (action === 'knowledge/tree') {
+        const path = stringValue(body.path)
+        const value = path === ''
+          ? ['self', 'memory', 'procedures'].map(name => ({ name, path: name, kind: 'directory' as const }))
+          : (await directory.vaults.list(scope, `vault://${path}`)).map(knowledgeEntry)
         send(res, 200, {
           ok: true,
-          value: directory.knowledge.tree(
-            scope,
-            typeof body.path === 'string' ? body.path : '',
-            Number(body.cursor ?? 0),
-            Number(body.limit ?? 200),
-          ),
+          value,
         })
         return
       }
       if (action === 'knowledge/search') {
+        const query = stringValue(body.query); const budget = { maxResults: Number(body.limit ?? 30), maxChars: 12_000, maxMillis: 150 }
+        const [memory, procedure] = await Promise.all([
+          directory.vaults.recall({ agentId: scope, domain: 'memory', query, budget }),
+          directory.vaults.recall({ agentId: scope, domain: 'procedure', query, budget }),
+        ])
         send(res, 200, {
           ok: true,
-          value: directory.knowledge.search(
-            [scope],
-            stringValue(body.query),
-            Number(body.cursor ?? 0),
-            Number(body.limit ?? 30),
-          ),
+          value: [...memory.cards, ...procedure.cards].sort((a, b) => b.score - a.score)
+            .slice(0, Number(body.limit ?? 30)).map(item => knowledgeResult(scope, item)),
         })
         return
       }
       if (action === 'knowledge/read') {
         send(res, 200, {
           ok: true,
-          value: await directory.knowledge.read(
-            scope,
-            stringValue(body.path),
+          value: knowledgeDocument(await directory.vaults.read(
+            scope, `vault://${stringValue(body.path)}`,
             body.view === 'top' || body.view === 'section' || body.view === 'grep'
               ? body.view
               : 'full',
             stringValue(body.selector),
-          ),
+          )),
         })
         return
       }
       if (action === 'knowledge/write') {
         send(res, 200, {
           ok: true,
-          value: await directory.knowledge.write(
-            scope,
-            stringValue(body.path),
-            stringValue(body.content),
-            typeof body.expectedRevision === 'string' ? body.expectedRevision : undefined,
-          ),
+          value: knowledgeDocument(await directory.vaults.write(scope, `vault://${stringValue(body.path)}`,
+            stringValue(body.content), { actor: { type: 'user', id: 'vault-editor' },
+              reason: 'User edited a Vault document.',
+              ...(typeof body.expectedRevision === 'string' ? { expectedRevision: body.expectedRevision } : {}) })),
         })
         return
       }
       if (action === 'knowledge/create') {
+        const title = stringValue(body.title).trim(); const slug = title.normalize('NFKC')
+          .replace(/[<>:"/\\|?*\u0000-\u001f]+/gu, '-').replace(/\s+/gu, '-').slice(0, 80) || randomUUID()
+        const content = ['---', `title: ${JSON.stringify(title)}`, 'tags: []', `summary: ${JSON.stringify(title)}`,
+          'sources: []', '---', '', `# ${title}`, ''].join('\n')
         send(res, 200, {
           ok: true,
-          value: await directory.knowledge.create(
-            scope,
-            stringValue(body.folder, 'pages'),
-            stringValue(body.title),
-          ),
+          value: knowledgeDocument(await directory.vaults.write(scope, `vault://memory/long/pages/${slug}.md`, content,
+            { actor: { type: 'user', id: 'vault-editor' }, reason: 'User created a Vault document.' })),
         })
         return
       }
       if (action === 'knowledge/move') {
         send(res, 200, {
           ok: true,
-          value: await directory.knowledge.move(
-            scope,
-            stringValue(body.source),
-            stringValue(body.target),
-            stringValue(body.expectedRevision),
-          ),
+          value: await directory.vaults.move(scope, `vault://${stringValue(body.source)}`,
+            `vault://${stringValue(body.target)}`, { actor: { type: 'user', id: 'vault-editor' },
+              reason: 'User moved a Vault document.', expectedRevision: stringValue(body.expectedRevision) }),
         })
         return
       }
       if (action === 'knowledge/trash') {
-        await directory.knowledge.trash(
-          scope,
-          stringValue(body.path),
-          stringValue(body.expectedRevision),
-        )
+        const source = stringValue(body.path); const first = source.split('/', 1)[0]
+        if (first === 'self') throw new CompanionRequestError('印象卡模块不能从文档工作台删除', 403)
+        const base = first === 'procedures' ? 'procedures/.trash' : 'memory/long/.trash'
+        await directory.vaults.move(scope, `vault://${source}`, `vault://${base}/${Date.now()}-${basename(source)}`,
+          { actor: { type: 'user', id: 'vault-editor' }, reason: 'User moved a document to recoverable trash.',
+            expectedRevision: stringValue(body.expectedRevision) })
         send(res, 200, { ok: true, value: { removed: true } })
         return
       }
       if (action === 'knowledge/backlinks') {
-        send(res, 200, {
-          ok: true,
-          value: directory.knowledge.backlinks(scope, stringValue(body.path)),
-        })
+        send(res, 200, { ok: true,
+          value: await vaultBacklinks(directory.vaults, scope, stringValue(body.path)) })
         return
       }
       if (action === 'knowledge/audit') {
-        send(res, 200, { ok: true, value: directory.knowledge.audit(scope) })
+        send(res, 200, { ok: true, value: await auditVault(directory.vaults, scope) })
         return
       }
       if (action === 'reference/tags') {
@@ -1478,10 +1464,17 @@ export function apply(ctx: Context): void {
           : []
         if (!scopes.every(scope => directory.ownsScope(scope)))
           throw new CompanionRequestError('引用库范围不存在', 404)
-        send(res, 200, {
-          ok: true,
-          value: directory.references.tagCatalog(scopes, 200, body.includeDisabled === true),
-        })
+        const counts = new Map<string, number>()
+        for (const agentId of scopes) {
+          let cursor = 0
+          for (;;) {
+            const page = await directory.vaults.searchResources({ agentId, query: '', includeDisabled: body.includeDisabled === true, cursor, limit: 100 })
+            for (const item of page.items) for (const tag of item.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+            if (page.nextCursor < 0) break; cursor = page.nextCursor
+          }
+        }
+        send(res, 200, { ok: true, value: [...counts].map(([tag, count]) => ({ tag, count }))
+          .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)).slice(0, 200) })
         return
       }
       if (action === 'reference/search') {
@@ -1490,67 +1483,74 @@ export function apply(ctx: Context): void {
             (value): value is string => typeof value === 'string' && directory.ownsScope(value),
           )
           : []
-        const page = directory.references.query({
-          scopes,
-          query: stringValue(body.query),
-          tags: Array.isArray(body.tags)
-            ? body.tags.filter((value): value is string => typeof value === 'string')
-            : [],
-          includeDisabled: body.includeDisabled === true,
-          ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
-          cursor: Number(body.cursor ?? 0),
-          limit: Number(body.limit ?? 30),
-        })
+        const pages = await Promise.all(scopes.map(agentId => directory.vaults.searchResources({
+          agentId, query: stringValue(body.query), tags: Array.isArray(body.tags)
+            ? body.tags.filter((value): value is string => typeof value === 'string') : [],
+          includeDisabled: body.includeDisabled === true, cursor: Number(body.cursor ?? 0), limit: Number(body.limit ?? 30),
+        })))
+        const items = pages.flatMap(page => page.items)
+          .filter(item => typeof body.enabled !== 'boolean' || item.enabled === body.enabled)
+          .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, Number(body.limit ?? 30))
         send(res, 200, {
           ok: true,
           value: {
-            ...page,
-            items: page.items.map(item => ({ ...item, url: directory.references.url(item) })),
+            items: items.map(item => vaultReference(item, directory.resourceUrl(item.agentId, item.id))),
+            nextCursor: pages.some(page => page.nextCursor >= 0) ? Number(body.cursor ?? 0) + items.length : -1,
           },
         })
         return
       }
       if (action === 'reference/get') {
-        const value = directory.references.get(stringValue(body.id))
-        if (value === undefined || !directory.ownsScope(value.scope))
-          throw new CompanionRequestError('引用不存在', 404)
-        send(res, 200, { ok: true, value: { ...value, url: directory.references.url(value) } })
+        let value: VaultResource | undefined
+        for (const agentId of ['public', ...directory.snapshot().companions.map(item => item.id)]) {
+          value = await directory.vaults.resource(agentId, stringValue(body.id)).catch(() => undefined)
+          if (value !== undefined) break
+        }
+        if (value === undefined) throw new CompanionRequestError('引用不存在', 404)
+        send(res, 200, { ok: true, value: vaultReference(value, directory.resourceUrl(value.agentId, value.id)) })
         return
       }
       if (action === 'reference/create') {
         const entry = referenceDraft(body.entry)
         if (!directory.ownsScope(entry.scope))
           throw new CompanionRequestError('引用库范围不存在', 404)
-        const value = await directory.references.create(entry)
-        send(res, 200, { ok: true, value: { ...value, url: directory.references.url(value) } })
+        const decoded = /^data:([^;,]+);base64,(.+)$/u.exec(entry.asset)
+        const value = await directory.vaults.importResource(entry.scope, { enabled: true, roles: ['expression'],
+          title: entry.title, description: entry.description, tags: entry.tags, originalTags: entry.tags,
+          transcript: entry.transcript ?? '', mimeType: entry.mimeType, bytes: decoded === null ? 0 : Buffer.byteLength(decoded[2] ?? '', 'base64'),
+          ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+          ...(decoded === null ? { externalUrl: entry.asset } : {}), builtIn: false },
+        decoded === null ? undefined : Buffer.from(decoded[2] ?? '', 'base64'),
+        { actor: { type: 'user', id: 'vault-resource-editor' }, reason: 'User created a resource.' })
+        send(res, 200, { ok: true, value: vaultReference(value, directory.resourceUrl(value.agentId, value.id)) })
         return
       }
       if (action === 'reference/update') {
         const entry = referenceDraft(body.entry)
         if (!directory.ownsScope(entry.scope))
           throw new CompanionRequestError('引用库范围不存在', 404)
-        const current = directory.references.get(stringValue(body.id))
-        if (current === undefined || !directory.ownsScope(current.scope))
-          throw new CompanionRequestError('引用不存在', 404)
-        const value = await directory.references.update(current.id, entry)
-        send(res, 200, { ok: true, value: { ...value, url: directory.references.url(value) } })
+        const current = await directory.vaults.resource(entry.scope, stringValue(body.id))
+        const value = await directory.vaults.updateResource(entry.scope, current.id, {
+          title: entry.title, description: entry.description, tags: entry.tags,
+          originalTags: entry.tags, transcript: entry.transcript ?? '', roles: ['expression'],
+          ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+        }, { actor: { type: 'user', id: 'vault-resource-editor' }, reason: 'User edited resource metadata.', expectedRevision: current.revision })
+        send(res, 200, { ok: true, value: vaultReference(value, directory.resourceUrl(value.agentId, value.id)) })
         return
       }
       if (action === 'reference/set-enabled') {
-        const current = directory.references.get(stringValue(body.id))
-        if (current === undefined || !directory.ownsScope(current.scope))
-          throw new CompanionRequestError('引用不存在', 404)
+        const current = await directory.vaults.resource(scope, stringValue(body.id))
         if (typeof body.enabled !== 'boolean')
           throw new CompanionRequestError('引用启用状态无效')
-        const value = await directory.references.setEnabled(current.id, body.enabled)
-        send(res, 200, { ok: true, value: { ...value, url: directory.references.url(value) } })
+        const value = await directory.vaults.setResourceEnabled(scope, current.id, body.enabled,
+          { actor: { type: 'user', id: 'vault-resource-editor' }, reason: 'User changed resource availability.', expectedRevision: current.revision })
+        send(res, 200, { ok: true, value: vaultReference(value, directory.resourceUrl(value.agentId, value.id)) })
         return
       }
       if (action === 'reference/delete') {
-        const current = directory.references.get(stringValue(body.id))
-        if (current === undefined || !directory.ownsScope(current.scope))
-          throw new CompanionRequestError('引用不存在', 404)
-        await directory.references.remove(current.id)
+        const current = await directory.vaults.resource(scope, stringValue(body.id))
+        await directory.vaults.removeResource(scope, current.id,
+          { actor: { type: 'user', id: 'vault-resource-editor' }, reason: 'User deleted a resource.', expectedRevision: current.revision })
         send(res, 200, { ok: true, value: { removed: true } })
         return
       }
@@ -1596,14 +1596,18 @@ export function apply(ctx: Context): void {
       const status =
         error instanceof CompanionRequestError
           ? error.status
-          : error instanceof KnowledgeConflictError
+          : error instanceof AgentVaultError && error.code === 'REVISION_CONFLICT'
             ? 409
             : 500
       if (status === 500) ctx.logger.warn(error)
+      const current = status === 409 && action === 'knowledge/write' && requestBody !== undefined
+        ? await directory.vaults.read(stringValue(requestBody.scope),
+          `vault://${stringValue(requestBody.path)}`, 'full').then(knowledgeDocument, () => undefined)
+        : undefined
       send(res, status, {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
-        ...(error instanceof KnowledgeConflictError ? { current: error.current } : {}),
+        ...(current === undefined ? {} : { current }),
       })
     }
   }

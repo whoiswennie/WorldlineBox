@@ -1,4 +1,4 @@
-/** Fast, extensible reference-media index, independent from progressive knowledge traversal. */
+/** One-shot reader for the pre-v1 reference store; production runtime uses Agent Vault resources. */
 import { createHash, randomUUID } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'

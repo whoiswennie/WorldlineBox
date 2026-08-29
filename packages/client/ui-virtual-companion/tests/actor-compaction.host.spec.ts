@@ -154,7 +154,19 @@ describe('virtual companion continuable child compaction', () => {
       updatedAt: 1,
     }
     const bindings = new Map<string, Binding>()
+    const vaults = {
+      bindRuntimeAgent: () => () => undefined,
+      resolveRuntimeAgent: () => companion.id,
+      inspectSelf: async () => ({ agentId: companion.id, modules: [], compiled: companion.persona,
+        revision: 'self-1' }),
+      searchResources: async () => ({ items: [], nextCursor: -1 }),
+    }
     const directory = {
+      vaults,
+      resourceUrl: () => '',
+      actorRooms: (companionId: string) => Object.entries(room.actorSessionIds)
+        .filter(([id]) => id === companionId)
+        .map(([, childId]) => ({ roomSessionId: room.sessionId, childId })),
       knowledge: {
         tree: () => [],
         search: () => [],

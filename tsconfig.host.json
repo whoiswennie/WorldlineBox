@@ -12,6 +12,18 @@
       "path": "./packages/acp/acp"
     },
     {
+      "path": "./packages/agent-vault/agent-vault"
+    },
+    {
+      "path": "./packages/agent-vault/agent-vault-local"
+    },
+    {
+      "path": "./packages/agent-vault/skill-agent-vault"
+    },
+    {
+      "path": "./packages/agent-vault/tool-agent-vault"
+    },
+    {
       "path": "./packages/api/gateway/tsconfig.host.json"
     },
     {

@@ -10,9 +10,8 @@
     "src/builtin-memes.ts",
     "src/reference-tags.ts",
     "src/reference-expression.ts",
-    "src/knowledge-vault.ts",
     "src/reference-vault.ts",
-    "src/resource-awareness.ts",
+    "src/agent-vault-migration.ts",
     "src/actor-runtime.ts",
     "src/index.ts",
     "src/invariant.ts"
@@ -20,6 +19,8 @@
   "references": [
     { "path": "../../../vendor/cordis" },
     { "path": "../../core/agent" },
+    { "path": "../../agent-vault/agent-vault" },
+    { "path": "../../agent-vault/tool-agent-vault" },
     { "path": "../../core/session" },
     { "path": "../../preset/agent-presets" },
     { "path": "../../llm/llm" },

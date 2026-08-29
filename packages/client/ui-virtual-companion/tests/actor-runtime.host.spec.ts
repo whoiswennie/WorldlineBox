@@ -12,14 +12,14 @@ const companion: VirtualCompanion = {
   speakingStyle: '简洁', behaviorLogic: '先理解再回应', builtIn: false, createdAt: 1, updatedAt: 1,
 }
 
-function toolScope(): { ctx: Agent['ctx']; tools: Map<string, ToolDefinition> } {
+function toolScope(agentVaults?: unknown): { ctx: Agent['ctx']; tools: Map<string, ToolDefinition> } {
   const tools = new Map<string, ToolDefinition>()
   return {
     tools,
     ctx: { tools: { register: (definition: ToolDefinition) => {
       tools.set(definition.name, definition)
       return () => { tools.delete(definition.name) }
-    } } } as never,
+    } }, systemPrompt: { section: () => () => undefined }, agentVaults } as never,
   }
 }
 
@@ -39,7 +39,20 @@ function fixture() {
     | { kind: 'narrator'; roomSessionId: string; epoch: number }
   const bindings = new Map<string, Binding>()
   const appended: Array<{ type: string; data: unknown }> = []
-  const parentScope = toolScope()
+  const resource = { id: 'meme-1', agentId: companion.id, enabled: true, roles: ['expression'],
+    title: '开心', description: '庆祝', tags: ['表情包', '庆祝'], originalTags: [], transcript: '',
+    mimeType: 'image/gif', bytes: 10, usageCount: 0, builtIn: false, createdAt: 1, updatedAt: 1,
+    revision: 'resource-1', uri: 'vault://resources/records/meme-1.yml' }
+  const vaults = {
+    bindRuntimeAgent: vi.fn(() => () => undefined),
+    inspectSelf: vi.fn(async () => ({ agentId: companion.id, modules: [], compiled: companion.persona,
+      revision: 'self-1' })),
+    resolveRuntimeAgent: vi.fn(() => companion.id),
+    searchResources: vi.fn(async ({ agentId }: { agentId: string }) => ({
+      items: agentId === companion.id ? [resource] : [], nextCursor: -1,
+    })),
+  }
+  const parentScope = toolScope(vaults)
   const parent = {
     id: SessionId('room'), ctx: parentScope.ctx,
     session: {
@@ -60,6 +73,8 @@ function fixture() {
   const drainContinuableChildren = vi.fn(async () => undefined)
   const deleteSession = vi.fn(async () => true)
   const directory = {
+    vaults,
+    resourceUrl: vi.fn((_agentId: string, id: string) => id === 'video-1' ? '/video.mp4' : '/meme.gif'),
     knowledge: {
       tree: vi.fn(() => []), search: vi.fn(() => []), read: vi.fn(), remember: vi.fn(), audit: vi.fn(() => ({})),
     },
@@ -139,7 +154,7 @@ describe('CompanionActorRuntime', () => {
     settle(runtime, firstSpec.childId)
     const first = await firstPending
     expect(firstSpec.provider).toBe('fork')
-    expect(firstSpec.request.persona).toContain('只扮演测试伙伴')
+    expect(firstSpec.request.prompt[0]?.text).toContain('只扮演测试伙伴')
     expect(firstSpec.request.persona).not.toContain('月见八千代')
     expect(firstSpec.request.persona).toContain('express 是与自然语言同级的表达动作')
     expect(firstSpec.request.persona).not.toContain('我想听歌')
@@ -148,7 +163,7 @@ describe('CompanionActorRuntime', () => {
     expect(firstSpec.request.toolFilter).toEqual({ allow: [] })
     expect(firstSpec.request.prompt[0]?.text).toContain('房主：你好')
     expect(firstSpec.request.prompt[0]?.text).toContain('<reference-channel mode="idle"')
-    expect(firstSpec.request.prompt[0]?.text).toContain('当前可用资源标签：表情包(3)、庆祝(1)')
+    expect(firstSpec.request.prompt[0]?.text).toContain('不会预先注入完整标签或资源目录')
     expect(value.room.actorSessionIds?.[companion.id]).toBe(first.actor_session_id)
 
     const secondPending = dispatch.execute({
@@ -193,16 +208,22 @@ describe('CompanionActorRuntime', () => {
     const value = fixture()
     const actorId = SessionId('actor-session')
     await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
-    const actorScope = toolScope()
+    const actorScope = toolScope(value.directory.vaults)
     const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
     const runtime = new CompanionActorRuntime(value.ctx, value.directory as never)
     runtime.install(actor)
 
     const express = actorScope.tools.get('express')
+    const inspectRoomMember = actorScope.tools.get('inspect_room_member')
     expect(express).toBeDefined()
+    expect(inspectRoomMember).toBeDefined()
     expect(actorScope.tools.has('companion_say')).toBe(false)
     expect(actorScope.tools.has('reference')).toBe(false)
     if (express === undefined) throw new Error('actor express tool not registered')
+    if (inspectRoomMember === undefined) throw new Error('room member inspection tool not registered')
+    await expect(inspectRoomMember.execute({ companion_id: companion.id }, execution(actor)))
+      .resolves.toMatchObject({ found: true, name: companion.name,
+        appearance: expect.stringContaining('/portrait.png') })
     const observe = (event: SessionEvent): void => {
       runtime.handleActorEvent({ id: actorId } as Session, event)
     }
@@ -216,12 +237,9 @@ describe('CompanionActorRuntime', () => {
       turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '先让我看看。' }] },
     } } as SessionEvent<'assistant/message'>)
     await express.execute({ act: 'celebrate', query: '发现有趣东西' }, execution(actor))
-    expect(value.directory.references.react).toHaveBeenCalledTimes(1)
-    const reaction = value.directory.references.react.mock.calls[0]?.[0]
-    if (reaction === undefined) throw new Error('reference reaction was not requested')
-    expect(reaction.scopes).toEqual(['public', companion.id])
-    expect(reaction.query).toContain('celebrate')
-    expect(reaction.excludeIds).toEqual([])
+    expect(value.directory.vaults.searchResources).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: companion.id, roles: ['expression'],
+    }))
     observe({ type: 'assistant/chunk', seq: 4, time: 4, data: {
       turn: 1, step: 2, chunk: { type: 'text-delta', index: 0, text: '找到了，就是这个。' },
     } })
@@ -252,13 +270,16 @@ describe('CompanionActorRuntime', () => {
 
   it('emits a late-bound video as a native room event at the actor call position', async () => {
     const value = fixture()
-    value.directory.references.react.mockReturnValueOnce({
-      id: 'video-1', title: '孤高曼波', mimeType: 'video/mp4',
-    })
-    value.directory.references.url.mockReturnValueOnce('/video.mp4')
+    value.directory.vaults.searchResources.mockImplementation(async ({ agentId }: { agentId: string }) => ({
+      items: agentId === companion.id ? [{ id: 'video-1', agentId: companion.id, enabled: true,
+        roles: ['expression'], title: '孤高曼波', description: '庆祝视频', tags: ['视频', '庆祝'],
+        originalTags: [], transcript: '', mimeType: 'video/mp4', bytes: 20, usageCount: 0,
+        builtIn: false, createdAt: 1, updatedAt: 1, revision: 'video-1',
+        uri: 'vault://resources/records/video-1.yml' }] : [], nextCursor: -1,
+    }))
     const actorId = SessionId('video-actor-session')
     await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
-    const actorScope = toolScope()
+    const actorScope = toolScope(value.directory.vaults)
     const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
     const runtime = new CompanionActorRuntime(value.ctx, value.directory as never)
     runtime.install(actor)
@@ -269,8 +290,8 @@ describe('CompanionActorRuntime', () => {
       act: '庆祝', query: '一起庆祝成功', tags: ['视频', '庆祝'],
     }, execution(actor))
 
-    expect(value.directory.references.react).toHaveBeenCalledWith(expect.objectContaining({
-      scopes: ['public', companion.id], tags: ['视频', '庆祝'],
+    expect(value.directory.vaults.searchResources).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: companion.id, tags: ['视频', '庆祝'], roles: ['expression'],
     }))
     expect(value.appended.map(event => event.type)).toEqual([
       'companion/expression-intent', 'companion/reference',

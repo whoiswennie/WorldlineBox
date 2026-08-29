@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "lib/types" },
+  "include": ["src"],
+  "references": [
+    { "path": "../../../vendor/cordis" }, { "path": "../../../vendor/schemastery" },
+    { "path": "../agent-vault" }, { "path": "../agent-vault-local" },
+    { "path": "../../core/agent" }, { "path": "../../llm/llm" },
+    { "path": "../../core/session" }, { "path": "../../core/tools" },
+    { "path": "../../core/system-prompt" }, { "path": "../../runtime-diagnostics/invariants" }
+  ]
+}
