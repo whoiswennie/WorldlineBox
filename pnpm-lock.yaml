@@ -1634,6 +1634,9 @@ importers:
       '@deepseek-ai/dsh-agent-loop':
         specifier: workspace:^
         version: link:../../core/agent-loop
+      '@deepseek-ai/dsh-agent-vault':
+        specifier: workspace:^
+        version: link:../../agent-vault/agent-vault
       '@deepseek-ai/dsh-agent-vault-local':
         specifier: workspace:^
         version: link:../../agent-vault/agent-vault-local
