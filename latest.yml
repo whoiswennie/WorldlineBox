@@ -1,11 +1,11 @@
-version: "0.1.0"
+version: "0.2.0"
 files:
-  - url: "https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.0/WorldlineBox-Setup-0.1.0.exe"
-    sha512: "hQPPAEuZEnNyvTaxKUeV6fpbr6WHGA/JWl6lY01KRXw2oxsROXziKg87eg8I8KnLJwUYJPP5BKHc90RwFHOC3g=="
-    size: 499033966
-path: "WorldlineBox-Setup-0.1.0.exe"
-sha512: "hQPPAEuZEnNyvTaxKUeV6fpbr6WHGA/JWl6lY01KRXw2oxsROXziKg87eg8I8KnLJwUYJPP5BKHc90RwFHOC3g=="
-releaseDate: "2026-08-28T14:16:14.718Z"
+  - url: "https://github.com/whoiswennie/WorldlineBox/releases/download/v0.2.0/WorldlineBox-Setup-0.2.0.exe"
+    sha512: "Pqe6MUHmyRD3RXi0J+UYlvLOjF8OB4ZNeNBULtXpMpZ1deiZ5et/gDkQkm0pkw/2D+qJZp76mmUKQ6i0XNdGRA=="
+    size: 499254574
+path: "WorldlineBox-Setup-0.2.0.exe"
+sha512: "Pqe6MUHmyRD3RXi0J+UYlvLOjF8OB4ZNeNBULtXpMpZ1deiZ5et/gDkQkm0pkw/2D+qJZp76mmUKQ6i0XNdGRA=="
+releaseDate: "2026-08-29T10:05:05.218Z"
 releaseNotes: |-
-  WorldlineBox 0.1.0 稳定版本。
+  WorldlineBox 0.2.0 稳定版本。
   包含 Agent、虚拟伙伴、内置浏览器、终端与工作区能力。
