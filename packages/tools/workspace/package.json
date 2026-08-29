@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-tool-workspace",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

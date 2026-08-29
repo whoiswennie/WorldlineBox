@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-tool-browser",
   "description": "Model-facing professional browser automation over Worldline's built-in browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",
