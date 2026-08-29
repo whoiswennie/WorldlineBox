@@ -774,5 +774,26 @@ describe.skipIf(!existsSync(worldlineBin))('worldline BUILT bin (node lib/bin.js
       expect(stdout).toContain(`patched by ${profilePatch}, ${overlay}`)
       expect(stderr).toContain('patch: entry "absent-row" not found')
     }, 30_000)
+
+    it('includes local plugin disablement in the effective config dump', async () => {
+      const init = await runBuiltBin(['--profile', 'web', '--dump-default-config'], { WORLDLINE_HOME: home })
+      expect(init.code).toBe(0)
+      const localExtensions = join(home, 'profiles', 'web', 'local-extensions.json')
+      writeFileSync(localExtensions, JSON.stringify({
+        disabledPlugins: ['include:agent-loop'],
+        removedPlugins: [],
+        disabledSkills: [],
+      }))
+
+      const { stdout, code, stderr } = await runBuiltBin(
+        ['--profile', 'web', '--dump-config'],
+        { WORLDLINE_HOME: home },
+      )
+
+      expect(code).toBe(0)
+      expect(stderr).toBe('')
+      expect(stdout).toMatch(/id: agent-loop[\s\S]*?disabled: true/u)
+      expect(stdout).toContain(`patched by ${localExtensions}`)
+    }, 30_000)
   })
 })

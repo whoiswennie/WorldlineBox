@@ -136,6 +136,26 @@ describe('built-in complete NetEase music surface', () => {
     expect(play).toHaveBeenCalled()
   })
 
+  it('honors a persisted autoplay opt-in while restoring its checkpoint', async () => {
+    const input = props({ autoPlay: true, trackId: '1005', positionSeconds: 42.5 })
+    const view = render(<NeteaseMusic {...input} />)
+    await waitFor(() => {
+      expect(input.resolveStream).toHaveBeenCalledWith(
+        '18322613388',
+        '1005',
+        expect.any(AbortSignal),
+      )
+    })
+    const audio = view.container.querySelector('audio') as HTMLAudioElement
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 125 })
+    fireEvent.loadedMetadata(audio)
+
+    expect(audio.currentTime).toBe(42.5)
+    expect(play).toHaveBeenCalled()
+    expect((view.container.querySelector('input[type="checkbox"]') as HTMLInputElement).checked)
+      .toBe(true)
+  })
+
   it('persists progress and can select any song in the complete list', async () => {
     const input = props({ autoPlay: false })
     const view = render(<NeteaseMusic {...input} />)
@@ -198,14 +218,14 @@ describe('built-in complete NetEase music surface', () => {
   })
 
   it('persists the autoplay toggle without replacing the active audio element', async () => {
-    const input = props({ autoPlay: true })
+    const input = props({ autoPlay: false })
     const view = render(<NeteaseMusic {...input} />)
     fireEvent.click(screen.getByRole('button', { name: '网易云歌单' }))
     await screen.findByText('歌曲 1')
     const audio = view.container.querySelector('audio')
 
     fireEvent.click(screen.getByRole('checkbox', { name: '启动时自动播放' }))
-    expect(input.actions.setAutoPlay).toHaveBeenCalledWith(false)
+    expect(input.actions.setAutoPlay).toHaveBeenCalledWith(true)
     expect(view.container.querySelector('audio')).toBe(audio)
   })
 
@@ -255,8 +275,10 @@ describe('built-in complete NetEase music surface', () => {
     })
     const audio = view.container.querySelector('audio') as HTMLAudioElement
     Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 63.5 })
-    fireEvent(window, new Event('beforeunload'))
-    expect(input.actions.rememberProgress).toHaveBeenCalledWith('1000', 63.5)
+    fireEvent.timeUpdate(audio)
+    audio.currentTime = 0
+    fireEvent(window, new Event('pagehide'))
+    expect(input.actions.rememberProgress).toHaveBeenLastCalledWith('1000', 63.5)
   })
 
   it('defaults to list looping and cycles through single-song and shuffle modes', async () => {

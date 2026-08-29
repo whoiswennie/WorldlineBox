@@ -242,6 +242,11 @@ export function CompanionUserContent({ fallback, node, sessionId, useSessions }:
 /** Display and manage live room participants beside the conversation title. */
 export function CompanionRoomHeader({ sessionId, useSession, useSessions }: HeaderProps) {
   const enabled = useSessions(state => state.byId[sessionId]?.agentPreset === PRESET_ID)
+  const subagentAddress = useSessions(state => (
+    state.current === sessionId && state.currentAddress?.childSessionId === sessionId
+      ? state.currentAddress
+      : undefined
+  ))
   const membershipVersion = useSession(snapshot => snapshot.chat.order.flatMap((key) => {
     const node = snapshot.chat.nodes.get(key)
     return node?.kind === 'companion-membership' ? [key] : []
@@ -268,16 +273,26 @@ export function CompanionRoomHeader({ sessionId, useSession, useSessions }: Head
     return () => { document.removeEventListener('pointerdown', closeOutside) }
   }, [])
   if (!enabled) return null
-  const roomIds = directory.rooms[sessionId]?.participantIds ?? []
-  const joined = roomIds.flatMap((id) => {
+  const roomSessionId = subagentAddress?.parentSessionId ?? sessionId
+  const room = directory.rooms[roomSessionId]
+  const roomIds = room?.participantIds ?? []
+  const actorCompanionId = subagentAddress === undefined
+    ? undefined
+    : Object.entries(room?.actorSessionIds ?? {})
+      .find(([, actorSessionId]) => actorSessionId === sessionId)?.[0]
+  // A companion actor child is a view of its parent room, not a new room.
+  // Present the exact actor bound to this child so an independently-created
+  // child-room default can never replace the identity shown in the header.
+  const visibleRoomIds = actorCompanionId === undefined ? roomIds : [actorCompanionId]
+  const joined = visibleRoomIds.flatMap((id) => {
     const companion = directory.companions.find(item => item.id === id)
     return companion === undefined ? [] : [companion]
   })
   const ownerName = auth.user?.displayName || auth.user?.username || '我'
   const toggle = (id: string): void => {
     void (roomIds.includes(id)
-      ? companionStore.removeParticipant(sessionId, id)
-      : companionStore.addParticipant(sessionId, id))
+      ? companionStore.removeParticipant(roomSessionId, id)
+      : companionStore.addParticipant(roomSessionId, id))
   }
   return <div className={css.participantStrip}>
     <span>{joined.length + 1} 人</span>

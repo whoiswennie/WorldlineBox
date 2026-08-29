@@ -66,6 +66,12 @@ describe('reference quick add', () => {
     await waitFor(() => { expect(screen.getByRole('button', { name: '引用库' })).toBeTruthy() })
     fireEvent.click(screen.getByRole('button', { name: '引用库' }))
     await waitFor(() => { expect(screen.getByRole('button', { name: '新增引用' })).toBeTruthy() })
+    expect(screen.getByRole('button', { name: '筛选栏' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByPlaceholderText('搜索引用资料')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '收起筛选栏' }))
+    expect(screen.queryByPlaceholderText('搜索引用资料')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '筛选栏' }))
+    expect(screen.getByPlaceholderText('搜索引用资料')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '新增引用' }))
 
     expect(screen.getByText('把资源放进来')).toBeTruthy()
@@ -137,6 +143,8 @@ describe('reference quick add', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '禁用引用 可暂停视频' })).toBeTruthy()
     })
+    expect(screen.getByText('1 个标签')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /#视频/u }).getAttribute('data-tone')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '禁用引用 可暂停视频' }))
 
     await waitFor(() => {

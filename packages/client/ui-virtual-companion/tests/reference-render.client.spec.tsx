@@ -133,4 +133,49 @@ describe('generic reference rendering', () => {
     load.mockRestore()
     releaseIdentity()
   })
+
+  it('resolves a companion subagent identity from its parent room actor binding', async () => {
+    const kaguya = {
+      id: 'kaguya', name: '辉夜', handle: 'KAGUYA', avatar: '/kaguya.png', portrait: '/kaguya.png',
+      status: '在线', description: '', persona: '', style: '', speakingStyle: '', behaviorLogic: '',
+      builtIn: true, createdAt: 1, updatedAt: 1,
+    }
+    const yachiyo = { ...kaguya, id: 'yachiyo', name: '月见八千代', avatar: '/yachiyo.png' }
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      ok: true,
+      value: {
+        companions: [kaguya, yachiyo],
+        rooms: {
+          room: {
+            sessionId: 'room', participantIds: [kaguya.id],
+            actorSessionIds: { [kaguya.id]: 'kaguya-child' }, updatedAt: 1,
+          },
+          'kaguya-child': {
+            sessionId: 'kaguya-child', participantIds: [yachiyo.id], updatedAt: 1,
+          },
+        },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))))
+    await companionStore.load(true)
+    const load = vi.spyOn(companionStore, 'load').mockResolvedValue()
+    const headerProps = {
+      sessionId: 'kaguya-child',
+      useSession: (selector: (state: unknown) => unknown) => selector({
+        chat: { order: [], nodes: new Map() },
+      }),
+      useSessions: (selector: (state: unknown) => unknown) => selector({
+        current: 'kaguya-child',
+        currentAddress: {
+          parentSessionId: 'room', childSessionId: 'kaguya-child', mode: 'continuable',
+        },
+        byId: { 'kaguya-child': { agentPreset: 'virtual-companion' } },
+      }),
+    } as unknown as ComponentProps<typeof CompanionRoomHeader>
+
+    render(<CompanionRoomHeader {...headerProps} />)
+
+    expect(screen.getByTitle('我、辉夜')).toBeTruthy()
+    expect(screen.queryByTitle('我、月见八千代')).toBeNull()
+    load.mockRestore()
+  })
 })

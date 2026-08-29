@@ -14,7 +14,14 @@ import {
   renderConfigDump,
   type ConfigDumpLayer,
 } from '@deepseek-ai/dsh-app-boot'
-import { homePatchPath, prepareProfile, PROFILE_ROOT_FILENAME } from './profile-boot.ts'
+import {
+  homePatchPath,
+  LOCAL_EXTENSIONS_FILENAME,
+  localExtensionPatches,
+  prepareProfile,
+  PROFILE_ROOT_FILENAME,
+  readLocalExtensionState,
+} from './profile-boot.ts'
 
 const NAME = 'worldline'
 
@@ -41,6 +48,11 @@ export function runDumpConfig(profile: string, defaultOnly: boolean, patches: re
     const homePatches = loadOptionalPatches(NAME, homePatchFile)
     if (homePatches !== undefined) {
       layers.push({ label: homePatchFile, patches: homePatches })
+    }
+    const localExtensionFile = join(loaded.dir, LOCAL_EXTENSIONS_FILENAME)
+    const localPatches = localExtensionPatches(readLocalExtensionState(loaded.dir))
+    if (localPatches.length > 0) {
+      layers.push({ label: localExtensionFile, patches: localPatches })
     }
     for (const file of patches) {
       const absolute = resolve(file)

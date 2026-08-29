@@ -21,7 +21,17 @@ import {
   lineNumbers,
   rectangularSelection,
 } from '@codemirror/view'
-import { Button, MarkdownText, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  Button,
+  IconChevronDownOutline14,
+  IconChevronRightOutline14,
+  IconFolderClose16,
+  IconFolderOpen16,
+  IconPlusOutline16,
+  IconSearchOutline16,
+  MarkdownText,
+  Modal,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   KnowledgeDocument,
@@ -52,6 +62,13 @@ interface OpenDocument {
   viewMode: ViewMode
   error: string | undefined
   conflict: KnowledgeDocument | undefined
+}
+interface KnowledgeScopeOption {
+  id: string
+  name: string
+  description: string
+  avatar: string
+  sharedAvatars?: readonly string[]
 }
 export interface KnowledgeVaultPageInjected {}
 export type KnowledgeVaultPageProps = PropsRuntime<'worldline.main.page'> &
@@ -91,6 +108,133 @@ async function uploadReference(draft: ReferenceDraft, file: File): Promise<Refer
   if (!response.ok || envelope.ok !== true || envelope.value === undefined)
     throw new Error(envelope.error ?? `引用上传失败（${String(response.status)}）`)
   return envelope.value
+}
+
+function ScopeAvatar({
+  option,
+  size = 'normal',
+}: {
+  option: KnowledgeScopeOption
+  size?: 'normal' | 'large'
+}) {
+  if (option.id === 'public') {
+    const avatars = option.sharedAvatars?.filter(Boolean).slice(0, 3) ?? []
+    return <span className={css.scopeAvatar} data-shared data-size={size} aria-hidden="true">
+      {avatars.length > 0
+        ? avatars.map((avatar, index) => <img key={`${avatar}:${String(index)}`} src={avatar} alt="" />)
+        : <b>✦</b>}
+    </span>
+  }
+  return <span className={css.scopeAvatar} data-size={size} aria-hidden="true">
+    {option.avatar !== ''
+      ? <img src={option.avatar} alt="" />
+      : <b>{option.name.trim().slice(0, 1) || '伙'}</b>}
+  </span>
+}
+
+function ScopeSwitcher({
+  options,
+  value,
+  onChange,
+}: {
+  options: readonly KnowledgeScopeOption[]
+  value: string
+  onChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const selected = options.find(option => option.id === value) ?? options[0]
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent): void => {
+      if (root.current?.contains(event.target as Node) !== true) setOpen(false)
+    }
+    const escape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', close)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('pointerdown', close)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [open])
+  if (selected === undefined) return null
+  return <div className={css.scopeSwitcher} ref={root}>
+    <button
+      type="button"
+      className={css.scopeTrigger}
+      role="combobox"
+      aria-label="选择知识库"
+      aria-controls="knowledge-scope-options"
+      aria-expanded={open}
+      aria-haspopup="listbox"
+      onClick={() => { setOpen(current => !current) }}
+    >
+      <ScopeAvatar option={selected} />
+      <span className={css.scopeCopy}>
+        <strong>{selected.name}</strong>
+        <small>{selected.description}</small>
+      </span>
+      <span className={css.scopeChevron} data-open={open} aria-hidden="true">
+        <IconChevronDownOutline14 />
+      </span>
+    </button>
+    {open && <div
+      className={css.scopeMenu}
+      id="knowledge-scope-options"
+      role="listbox"
+      aria-label="知识库列表"
+    >
+      <header>
+        <div><strong>选择知识库</strong><small>进入伙伴专属的记忆空间</small></div>
+        <span aria-hidden="true">✦</span>
+      </header>
+      <div className={css.scopeOptions}>
+        {options.map(option => <button
+          type="button"
+          key={option.id}
+          role="option"
+          aria-selected={option.id === selected.id}
+          onClick={() => {
+            onChange(option.id)
+            setOpen(false)
+          }}
+        >
+          <ScopeAvatar option={option} />
+          <span>
+            <strong>{option.name}</strong>
+            <small>{option.description}</small>
+          </span>
+          <i aria-hidden="true">{option.id === selected.id ? '✓' : '›'}</i>
+        </button>)}
+      </div>
+      <footer><span>头像与伙伴资料保持同步</span><b aria-hidden="true">♡</b></footer>
+    </div>}
+  </div>
+}
+
+function referenceTagTone(tag: string): number {
+  let value = 0
+  for (const character of tag) value += character.codePointAt(0) ?? 0
+  return value % 5
+}
+
+function TagOutline() {
+  return <svg
+    viewBox="0 0 16 16"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.35"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M2.4 3.2v4.1l6.1 6.1 5-5-6.1-6.1H3.3a.9.9 0 0 0-.9.9Z" />
+    <circle cx="5.25" cy="5.2" r="1" />
+  </svg>
 }
 
 function MarkdownEditor({
@@ -181,6 +325,23 @@ function MarkdownEditor({
   return <div ref={host} className={css.editorSurface} />
 }
 
+function MarkdownDocumentOutline() {
+  return <svg
+    viewBox="0 0 16 16"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.25"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M3.5 1.75h5.1l3.9 3.9v8.6h-9z" />
+    <path d="M8.5 1.75v4h4M5.75 8.25h4.5M5.75 10.5h4.5" />
+  </svg>
+}
+
 function TreeBranch({
   scope,
   directory,
@@ -219,7 +380,8 @@ function TreeBranch({
           setOpen(true)
         }}
       >
-        <span>›</span>
+        <span className={css.treeChevron}><IconChevronRightOutline14 /></span>
+        <span className={css.treeGlyph}><IconFolderClose16 /></span>
         {directory.replace(/^.*\//u, '')}
       </button>
     )
@@ -233,7 +395,8 @@ function TreeBranch({
             setOpen(false)
           }}
         >
-          <span>⌄</span>
+          <span className={css.treeChevron}><IconChevronDownOutline14 /></span>
+          <span className={css.treeGlyph}><IconFolderOpen16 /></span>
           {directory.replace(/^.*\//u, '')}
         </button>
       )}
@@ -258,8 +421,9 @@ function TreeBranch({
               onOpen(entry.path)
             }}
           >
-            <span>◇</span>
-            {entry.name.replace(/\.md$/iu, '')}
+            <span className={css.treeChevron} />
+            <span className={css.treeFileGlyph}><MarkdownDocumentOutline /></span>
+            <span className={css.treeName}>{entry.name}</span>
           </button>
         ),
       )}
@@ -267,7 +431,21 @@ function TreeBranch({
   )
 }
 
-function KnowledgeWorkbench({ scope }: { scope: string }) {
+function KnowledgeWorkbench({
+  scope,
+  scopeOption,
+  showTree,
+  showInfo,
+  setShowTree,
+  setShowInfo,
+}: {
+  scope: string
+  scopeOption: KnowledgeScopeOption
+  showTree: boolean
+  showInfo: boolean
+  setShowTree: (visible: boolean) => void
+  setShowInfo: (visible: boolean) => void
+}) {
   const [documents, setDocuments] = useState<OpenDocument[]>([])
   const documentsRef = useRef<OpenDocument[]>([])
   const [activePath, setActivePath] = useState<string>()
@@ -296,7 +474,7 @@ function KnowledgeWorkbench({ scope }: { scope: string }) {
               document,
               content: document.content,
               status: 'saved',
-              viewMode: 'split',
+              viewMode: 'edit',
               error: undefined,
               conflict: undefined,
             },
@@ -407,7 +585,7 @@ function KnowledgeWorkbench({ scope }: { scope: string }) {
           document,
           content: document.content,
           status: 'saved',
-          viewMode: 'split',
+          viewMode: 'edit',
           error: undefined,
           conflict: undefined,
         },
@@ -483,22 +661,46 @@ function KnowledgeWorkbench({ scope }: { scope: string }) {
       )
     }
   }
+  const closeDocument = (path: string): void => {
+    void saveNow(path)
+    const current = documentsRef.current
+    const index = current.findIndex(item => item.document.path === path)
+    const remaining = current.filter(item => item.document.path !== path)
+    if (activePath === path) {
+      setActivePath((remaining[index] ?? remaining[index - 1])?.document.path)
+    }
+    setDocuments(remaining)
+  }
   return (
-    <div className={css.knowledgeWorkbench}>
-      <aside className={css.filePane}>
+    <div
+      className={css.knowledgeWorkbench}
+      data-tree-open={showTree}
+      data-info-open={showInfo}
+    >
+      {showTree && <aside className={css.filePane}>
         <div className={css.paneTitle}>
           <strong>文件</strong>
-          <button
-            type="button"
-            onClick={() => {
-              setNewPageTitle('')
-              setCreateError('')
-              setCreating(true)
-            }}
-            title="新建 Markdown"
-          >
-            ＋
-          </button>
+          <div>
+            <button
+              type="button"
+              onClick={() => {
+                setNewPageTitle('')
+                setCreateError('')
+                setCreating(true)
+              }}
+              title="新建 Markdown"
+            >
+              <IconPlusOutline16 />
+            </button>
+            <button
+              type="button"
+              aria-label="收起文件树"
+              onClick={() => { setShowTree(false) }}
+              title="收起文件树"
+            >
+              ×
+            </button>
+          </div>
         </div>
         <form
           className={css.vaultSearch}
@@ -507,6 +709,7 @@ function KnowledgeWorkbench({ scope }: { scope: string }) {
             void search()
           }}
         >
+          <IconSearchOutline16 />
           <input
             value={query}
             onChange={(event) => {
@@ -542,28 +745,65 @@ function KnowledgeWorkbench({ scope }: { scope: string }) {
             />
           )}
         </div>
-      </aside>
+      </aside>}
       <section className={css.documentPane}>
-        <div className={css.tabStrip}>
+        <div className={css.tabStrip} role="tablist" aria-label="已打开的知识页">
           {documents.map(item => (
-            <button
-              type="button"
+            <div
               key={item.document.path}
-              aria-current={item.document.path === activePath}
-              onClick={() => {
-                setActivePath(item.document.path)
-              }}
+              className={css.documentTab}
+              data-active={item.document.path === activePath || undefined}
             >
-              <span>{item.document.title}</span>
-              <i data-status={item.status} />
-            </button>
+              <button
+                type="button"
+                className={css.documentTabTitle}
+                role="tab"
+                aria-selected={item.document.path === activePath}
+                onClick={() => {
+                  setActivePath(item.document.path)
+                }}
+              >
+                <span className={css.documentTabIcon}><MarkdownDocumentOutline /></span>
+                <span>{item.document.title}</span>
+                <i data-status={item.status} />
+              </button>
+              <button
+                type="button"
+                className={css.documentTabClose}
+                aria-label={`关闭标签页 ${item.document.title}`}
+                title="关闭标签页"
+                onClick={() => { closeDocument(item.document.path) }}
+              >
+                ×
+              </button>
+            </div>
           ))}
         </div>
         {active === undefined ? (
           <div className={css.emptyEditor}>
-            <span>◇</span>
-            <strong>打开或新建一个知识页</strong>
-            <p>Markdown 是唯一真源。文件树、搜索索引和 Agent 视图都由它派生。</p>
+            <div className={css.emptyMuse}>
+              <i aria-hidden="true">✦</i>
+              <ScopeAvatar option={scopeOption} size="large" />
+              <i aria-hidden="true">♡</i>
+            </div>
+            <small>{scopeOption.id === 'public' ? 'SHARED MEMORY' : 'PRIVATE MEMORY'}</small>
+            <strong>{scopeOption.id === 'public'
+              ? '打开大家共同的记忆书页'
+              : `翻开 ${scopeOption.name} 的记忆书页`}</strong>
+            <p>{scopeOption.id === 'public'
+              ? '把灵感、设定与旅途记录整理在这里，让每位伙伴都能找到它。'
+              : `这里是你与 ${scopeOption.name} 的专属知识空间，写下设定、回忆与想一起完成的事。`}</p>
+            <button
+              type="button"
+              className={css.emptyCreate}
+              onClick={() => {
+                setNewPageTitle('')
+                setCreateError('')
+                setCreating(true)
+              }}
+            >
+              <span aria-hidden="true">＋</span> 新建知识页
+            </button>
           </div>
         ) : (
           <>
@@ -654,9 +894,17 @@ function KnowledgeWorkbench({ scope }: { scope: string }) {
           </>
         )}
       </section>
-      <aside className={css.infoPane}>
+      {showInfo && <aside className={css.infoPane}>
         <div className={css.paneTitle}>
           <strong>页面信息</strong>
+          <button
+            type="button"
+            aria-label="收起页面信息"
+            onClick={() => { setShowInfo(false) }}
+            title="收起页面信息"
+          >
+            ×
+          </button>
         </div>
         {active === undefined ? (
           <p>打开页面后显示标题、标签、双链和来源。</p>
@@ -688,7 +936,7 @@ function KnowledgeWorkbench({ scope }: { scope: string }) {
             )}
           </div>
         )}
-      </aside>
+      </aside>}
       <Modal
         open={creating}
         onClose={() => {
@@ -871,7 +1119,17 @@ function ReferenceTagEditor({
   </div>
 }
 
-function ReferenceWorkbench({ scope }: { scope: string }) {
+function ReferenceWorkbench({
+  scope,
+  scopeOption,
+  showFilters,
+  setShowFilters,
+}: {
+  scope: string
+  scopeOption: KnowledgeScopeOption
+  showFilters: boolean
+  setShowFilters: (visible: boolean) => void
+}) {
   const [items, setItems] = useState<readonly ReferenceAsset[]>([])
   const [catalog, setCatalog] = useState<readonly ReferenceTagCount[]>([])
   const [query, setQuery] = useState('')
@@ -1018,134 +1276,161 @@ function ReferenceWorkbench({ scope }: { scope: string }) {
     }
   }
   return (
-    <div className={css.referenceWorkbench}>
-      <header>
-        <div>
-          <h2>引用库</h2>
-          <p>用自然语言和开放标签检索任何可引用资源；标签由你自由定义。</p>
+    <div className={css.referenceWorkbench} data-filters-open={showFilters}>
+      {showFilters && <aside className={css.referenceSidebar}>
+        <div className={css.paneTitle}>
+          <strong>检索与标签</strong>
+          <button
+            type="button"
+            aria-label="收起筛选栏"
+            onClick={() => { setShowFilters(false) }}
+            title="收起筛选栏"
+          >
+            ×
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={beginCreate}
-        >
-          新增引用
-        </button>
-      </header>
-      <div className={css.referenceFilters}>
-        <input
-          value={query}
-          onChange={(event) => {
-            setQuery(event.currentTarget.value)
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') void load()
-          }}
-          placeholder="搜索标题、描述、标签或内容"
-        />
-        <input
-          list="reference-tag-filter"
-          value={tag}
-          onChange={(event) => {
-            setTag(event.currentTarget.value)
-          }}
-          placeholder="按标签筛选"
-        />
-        <datalist id="reference-tag-filter">
-          {catalog.map(item => (
-            <option key={item.tag} value={item.tag}>{String(item.count)}</option>
-          ))}
-        </datalist>
-        <select
-          aria-label="引用状态"
-          value={enabledFilter}
-          onChange={(event) => {
-            setEnabledFilter(event.currentTarget.value as 'all' | 'enabled' | 'disabled')
-          }}
-        >
-          <option value="all">全部状态</option>
-          <option value="enabled">已启用</option>
-          <option value="disabled">已禁用</option>
-        </select>
-        <button
-          type="button"
-          onClick={() => {
-            void load()
-          }}
-        >
-          检索
-        </button>
-      </div>
-      {error !== '' && !editing && <p className={css.editorError}>{error}</p>}
-      <div className={css.referenceGrid}>
-        {items.map(item => (
-          <article key={item.id} data-enabled={item.enabled || undefined}>
-            <div className={css.referenceMedia}>
-              <ReferenceMedia item={item} />
+        <label className={css.referenceSearch}>
+          <IconSearchOutline16 />
+          <input
+            value={query}
+            onChange={(event) => { setQuery(event.currentTarget.value) }}
+            placeholder="搜索引用资料"
+          />
+        </label>
+        <label className={css.referenceStatusFilter}>
+          <span>状态</span>
+          <select
+            aria-label="引用状态"
+            value={enabledFilter}
+            onChange={(event) => {
+              setEnabledFilter(event.currentTarget.value as 'all' | 'enabled' | 'disabled')
+            }}
+          >
+            <option value="all">全部状态</option>
+            <option value="enabled">已启用</option>
+            <option value="disabled">已禁用</option>
+          </select>
+        </label>
+        <div className={css.referenceTagBrowser}>
+          <div className={css.referenceTagTitle}>
+            <div><span><TagOutline /></span><strong>标签</strong></div>
+            <small>{catalog.length} 个标签</small>
+          </div>
+          <button
+            type="button"
+            className={css.allReferencesTag}
+            aria-pressed={tag === ''}
+            onClick={() => { setTag('') }}
+          >
+            <ScopeAvatar option={scopeOption} />
+            <span className={css.allReferencesCopy}>
+              <strong>全部引用</strong><small>浏览这个知识库的所有资源</small>
+            </span>
+            <b>{items.length}</b>
+          </button>
+          <div className={css.referenceTagCloud}>
+            {catalog.map(item => <button
+              type="button"
+              key={item.tag}
+              data-tone={referenceTagTone(item.tag)}
+              aria-pressed={tag === item.tag}
+              onClick={() => { setTag(current => current === item.tag ? '' : item.tag) }}
+            >
+              <i><TagOutline /></i>
+              <span>#{item.tag}</span>
+              <small>{item.count}</small>
+            </button>)}
+          </div>
+        </div>
+      </aside>}
+      <section className={css.referenceContent}>
+        <header>
+          <div className={css.referenceHeading}>
+            <ScopeAvatar option={scopeOption} />
+            <div>
+              <h2>{tag === '' ? '全部引用' : `#${tag}`}</h2>
+              <p>{scopeOption.name} · {items.length} 项图片、文本与音视频资源</p>
             </div>
-            <h3>{item.title}</h3>
-            <p>{item.description}</p>
-            <div className={css.tagList}>
-              {item.tags.map(tag => (
-                <span key={tag}>#{tag}</span>
-              ))}
-            </div>
-            <small>
-              {item.mimeType || '外部链接'}
-            </small>
-            <div className={css.referenceActions}>
-              <div className={css.referenceState}>
-                <span data-enabled={item.enabled || undefined}>
-                  {item.enabled ? '已启用' : '已禁用'}
-                </span>
-                {item.builtIn && <span>内置</span>}
+          </div>
+          <button type="button" onClick={beginCreate}>新增引用</button>
+        </header>
+        {error !== '' && !editing && <p className={css.editorError}>{error}</p>}
+        <div className={css.referenceGrid}>
+          {items.map(item => (
+            <article key={item.id} data-enabled={item.enabled || undefined}>
+              <div className={css.referenceMedia}>
+                <ReferenceMedia item={item} />
               </div>
-              <button
-                type="button"
-                className={item.enabled ? css.disableAction : css.enableAction}
-                disabled={changingEnabledId === item.id}
-                aria-label={`${item.enabled ? '禁用' : '启用'}引用 ${item.title}`}
-                onClick={() => {
-                  void setReferenceEnabled(item, !item.enabled)
-                }}
-              >
-                {changingEnabledId === item.id ? '处理中…' : item.enabled ? '禁用' : '启用'}
-              </button>
-              {!item.builtIn && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      editReference(item)
-                    }}
-                  >
-                    编辑
-                  </button>
-                  <button
-                    type="button"
-                    className={css.deleteAction}
-                    onClick={() => {
-                      setPendingDelete(item)
-                    }}
-                  >
-                    删除
-                  </button>
-                </>
-              )}
-            </div>
-          </article>
-        ))}
-      </div>
-      {nextCursor >= 0 && (
-        <button
-          type="button"
-          className={css.loadMore}
-          onClick={() => {
-            void load(nextCursor, true)
-          }}
-        >
-          加载更多
-        </button>
-      )}
+              <h3>{item.title}</h3>
+              <p>{item.description}</p>
+              <div className={css.tagList}>
+                {item.tags.map(tag => (
+                  <span key={tag} data-tone={referenceTagTone(tag)}>#{tag}</span>
+                ))}
+              </div>
+              <small>
+                {item.mimeType || '外部链接'}
+              </small>
+              <div className={css.referenceActions}>
+                <div className={css.referenceState}>
+                  <span data-enabled={item.enabled || undefined}>
+                    {item.enabled ? '已启用' : '已禁用'}
+                  </span>
+                  {item.builtIn && <span>内置</span>}
+                </div>
+                <button
+                  type="button"
+                  className={item.enabled ? css.disableAction : css.enableAction}
+                  disabled={changingEnabledId === item.id}
+                  aria-label={`${item.enabled ? '禁用' : '启用'}引用 ${item.title}`}
+                  onClick={() => {
+                    void setReferenceEnabled(item, !item.enabled)
+                  }}
+                >
+                  {changingEnabledId === item.id ? '处理中…' : item.enabled ? '禁用' : '启用'}
+                </button>
+                {!item.builtIn && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        editReference(item)
+                      }}
+                    >
+                      编辑
+                    </button>
+                    <button
+                      type="button"
+                      className={css.deleteAction}
+                      onClick={() => {
+                        setPendingDelete(item)
+                      }}
+                    >
+                      删除
+                    </button>
+                  </>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
+        {items.length === 0 && <div className={css.referenceEmpty}>
+          <ScopeAvatar option={scopeOption} size="large" />
+          <strong>没有匹配的引用资料</strong>
+          <p>换一个标签看看，或者为 {scopeOption.name} 添加新的引用资料。</p>
+        </div>}
+        {nextCursor >= 0 && (
+          <button
+            type="button"
+            className={css.loadMore}
+            onClick={() => {
+              void load(nextCursor, true)
+            }}
+          >
+            加载更多
+          </button>
+        )}
+      </section>
       {editing && (
         <div className={css.modalBackdrop}>
           <section
@@ -1363,88 +1648,102 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
   const list = useCompanionStore().companions
   const [scope, setScope] = useState('public')
   const [tab, setTab] = useState<VaultTab>('knowledge')
+  const [showTree, setShowTree] = useState(true)
+  const [showInfo, setShowInfo] = useState(false)
+  const [showReferenceFilters, setShowReferenceFilters] = useState(true)
   useEffect(() => {
     void companionStore.load()
   }, [])
   const scopes = useMemo(
     () => [
-      { id: 'public', name: '公共知识库', description: '所有 Agent 可访问', avatar: '' },
+      {
+        id: 'public',
+        name: '公共知识库',
+        description: '所有伙伴共享的记忆空间',
+        avatar: '',
+        sharedAvatars: list.map(companion => companion.avatar),
+      },
       ...list.map(companion => ({
         id: companion.id,
         name: companion.name,
-        description: '伙伴私有',
+        description: '伙伴专属知识与回忆',
         avatar: companion.avatar,
       })),
     ],
     [list],
   )
+  const selectedScope = scopes.find(item => item.id === scope) ?? scopes[0]
+  if (selectedScope === undefined) return null
   return (
     <main className={css.page}>
-      <aside className={css.vaults}>
-        <header>
-          <span>KNOWLEDGE SYSTEM</span>
-          <h1>知识库</h1>
-          <p>人和 Agent 共同维护的长期知识。</p>
-        </header>
-        <nav>
-          {scopes.map(item => (
-            <button
-              type="button"
-              key={item.id}
-              aria-current={scope === item.id}
-              onClick={() => {
-                setScope(item.id)
-              }}
-            >
-              <span className={css.vaultIcon} data-avatar={item.avatar !== '' || undefined}>
-                {item.avatar === '' ? (
-                  '◎'
-                ) : (
-                  <>
-                    <i>◌</i>
-                    <img src={item.avatar} alt="" />
-                  </>
-                )}
-              </span>
-              <span>
-                <strong>{item.name}</strong>
-                <small>{item.description}</small>
-              </span>
-            </button>
-          ))}
-        </nav>
-      </aside>
       <section className={css.main}>
         <header className={css.topbar}>
-          <div>
-            <strong>{scopes.find(item => item.id === scope)?.name}</strong>
-            <span>{scope === 'public' ? 'PUBLIC VAULT' : 'PRIVATE VAULT'}</span>
+          <ScopeSwitcher options={scopes} value={scope} onChange={setScope} />
+          <div className={css.topbarActions}>
+            <div className={css.paneToggles}>
+              {tab === 'knowledge' ? <>
+                <button
+                  type="button"
+                  aria-pressed={showTree}
+                  onClick={() => { setShowTree(value => !value) }}
+                >
+                  文件树
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={showInfo}
+                  onClick={() => { setShowInfo(value => !value) }}
+                >
+                  页面信息
+                </button>
+              </> : <button
+                type="button"
+                aria-pressed={showReferenceFilters}
+                onClick={() => { setShowReferenceFilters(value => !value) }}
+              >
+                筛选栏
+              </button>}
+            </div>
+            <nav>
+              <button
+                type="button"
+                aria-current={tab === 'knowledge'}
+                onClick={() => {
+                  setTab('knowledge')
+                }}
+              >
+                知识文档
+              </button>
+              <button
+                type="button"
+                aria-current={tab === 'references'}
+                onClick={() => {
+                  setTab('references')
+                }}
+              >
+                引用库
+              </button>
+            </nav>
           </div>
-          <nav>
-            <button
-              type="button"
-              aria-current={tab === 'knowledge'}
-              onClick={() => {
-                setTab('knowledge')
-              }}
-            >
-              知识文档
-            </button>
-            <button
-              type="button"
-              aria-current={tab === 'references'}
-              onClick={() => {
-                setTab('references')
-              }}
-            >
-              引用库
-            </button>
-          </nav>
         </header>
         {tab === 'knowledge' ? (
-          <KnowledgeWorkbench key={`knowledge:${scope}`} scope={scope} />
+          <KnowledgeWorkbench
+            key={`knowledge:${scope}`}
+            scope={scope}
+            scopeOption={selectedScope}
+            showTree={showTree}
+            showInfo={showInfo}
+            setShowTree={setShowTree}
+            setShowInfo={setShowInfo}
+          />
         ) : (
-          <ReferenceWorkbench key={`reference:${scope}`} scope={scope} />
+          <ReferenceWorkbench
+            key={`reference:${scope}`}
+            scope={scope}
+            scopeOption={selectedScope}
+            showFilters={showReferenceFilters}
+            setShowFilters={setShowReferenceFilters}
+          />
         )}
       </section>
     </main>

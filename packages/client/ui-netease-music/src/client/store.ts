@@ -120,7 +120,7 @@ function saveCustomPlaylist(
 export function createMusicPreferenceStore(): MusicPreferenceStore {
   return defineStore({
     init: (): MusicPreferences => ({
-      autoPlay: true,
+      autoPlay: false,
       positionSeconds: 0,
       volume: 0.8,
       playbackMode: 'list',
@@ -129,7 +129,9 @@ export function createMusicPreferenceStore(): MusicPreferenceStore {
     }),
     persist: 'worldline.netease-music.preferences.v1',
     actions: {
-      setAutoPlay: (draft, enabled: boolean) => { draft.autoPlay = enabled },
+      setAutoPlay: (draft, enabled: boolean) => {
+        draft.autoPlay = enabled
+      },
       selectTrack: (draft, trackId: string) => {
         draft.trackId = trackId
         draft.positionSeconds = 0

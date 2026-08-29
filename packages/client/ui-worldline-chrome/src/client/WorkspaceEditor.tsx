@@ -36,8 +36,8 @@ const samePath = (left: string, right: string): boolean => normalized(left) === 
 const fileName = (path: string): string => path.replace(/[\\/]$/, '').replace(/^.*[\\/]/, '')
 const isMarkdown = (preview: WorkspaceTreePreview): boolean => preview.kind === 'text'
   && (preview.mimeType === 'text/markdown' || /\.(?:md|markdown|mdown|mkd|mkdn)$/i.test(preview.name))
-const defaultViewMode = (preview: WorkspaceTreePreview): MarkdownViewMode => (
-  isMarkdown(preview) ? 'split' : 'edit'
+const defaultViewMode = (_preview: WorkspaceTreePreview): MarkdownViewMode => (
+  'edit'
 )
 
 class WorkspaceEditorStore {

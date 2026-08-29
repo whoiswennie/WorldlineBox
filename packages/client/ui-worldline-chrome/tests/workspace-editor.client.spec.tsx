@@ -82,11 +82,12 @@ describe('central workspace editor', () => {
 
     const modeGroup = screen.getByRole('group', { name: 'Markdown 视图模式' })
     expect(modeGroup).toBeTruthy()
-    expect(screen.getByRole('button', { name: '分屏' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: '编辑' }).getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByRole('textbox')).toBeTruthy()
-    expect(screen.getByRole('heading', { level: 1, name: 'First' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { level: 1, name: 'First' })).toBeNull()
 
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '# Updated' } })
+    fireEvent.click(screen.getByRole('button', { name: '分屏' }))
     expect(screen.getByRole('heading', { level: 1, name: 'Updated' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: '渲染' }))

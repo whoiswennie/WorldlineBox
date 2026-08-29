@@ -8,6 +8,24 @@ import { WorkspaceExplorer } from '../src/client/WorkspaceExplorer.tsx'
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 describe('workspace explorer dialogs', () => {
+  it('opens the selected workspace directory from the toolbar', async () => {
+    const sessionId = 'open-directory-session' as SessionId
+    const openPath = vi.fn(async () => {})
+    render(<WorkspaceExplorer {...({
+      useSessions: (selector: (state: unknown) => unknown) => selector({
+        current: sessionId,
+        byId: { [sessionId]: { cwd: 'C:\\workspace' } },
+      }),
+      listDirectory: vi.fn(async () => ({ path: 'C:\\workspace', truncated: false, entries: [] })),
+      searchFiles: vi.fn(), previewFile: vi.fn(), mutate: vi.fn(), openPath,
+      openInBrowser: vi.fn(), selectView: vi.fn(), close: vi.fn(),
+      subscribeChanges: vi.fn(() => () => undefined),
+    } as ComponentProps<typeof WorkspaceExplorer>)} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '在文件资源管理器中打开工作区' }))
+    await waitFor(() => { expect(openPath).toHaveBeenCalledWith('C:\\workspace') })
+  })
+
   it('renders folders and familiar file types with semantic SVG icons', async () => {
     const sessionId = 'icons-session' as SessionId
     render(<WorkspaceExplorer {...({

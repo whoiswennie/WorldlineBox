@@ -86,7 +86,10 @@ const EMPTY_LOCAL_EXTENSIONS: LocalExtensionState = {
   removedPlugins: [],
   disabledSkills: [],
 }
-const LOCAL_ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/u
+// Loader descendants are addressed as colon-delimited entry paths
+// (`include:gal-view`, `include:agent-presets:tool-goal`). Each segment keeps
+// the same conservative local-id alphabet; separators cannot form paths.
+const LOCAL_ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/u
 
 function uniqueLocalIds(value: unknown): string[] {
   return Array.isArray(value)
@@ -118,9 +121,12 @@ export function normalizeLocalExtensionState(value: Partial<LocalExtensionState>
 
 /** Convert local plugin preferences into the final composition layer. */
 export function localExtensionPatches(state: LocalExtensionState): PatchOptions[] {
+  const patchId = (runtimeId: string): string => runtimeId.startsWith('include:')
+    ? runtimeId.slice('include:'.length)
+    : runtimeId
   return [
-    ...state.disabledPlugins.map(id => ({ id, disabled: true })),
-    ...state.removedPlugins.map(id => ({ id, removed: true })),
+    ...state.disabledPlugins.map(id => ({ id: patchId(id), disabled: true })),
+    ...state.removedPlugins.map(id => ({ id: patchId(id), removed: true })),
   ]
 }
 

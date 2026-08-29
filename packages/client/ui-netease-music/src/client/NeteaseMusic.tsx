@@ -101,6 +101,8 @@ export function NeteaseMusic({
   resolveStream,
   loadLyrics,
 }: NeteaseMusicProps) {
+  // `init()` supplies false only when no preference exists. Once the user
+  // changes the switch, the persisted boolean is authoritative on every boot.
   const autoPlay = useStore(state => state.autoPlay)
   const storedTrackId = useStore(state => state.trackId)
   const storedPosition = useStore(state => state.positionSeconds ?? 0)
@@ -130,8 +132,10 @@ export function NeteaseMusic({
   const audio = useRef<HTMLAudioElement>(null)
   const activeLyric = useRef<HTMLButtonElement>(null)
   const restoredTrack = useRef<string>()
+  const activePlaylist = useRef(playlistId)
   const suppressNextPauseSave = useRef(false)
   const lastProgressWrite = useRef(0)
+  const checkpoint = useRef({ trackId: storedTrackId ?? '', positionSeconds: storedPosition })
   const failedTracks = useRef(new Set<string>())
 
   useEffect(() => {
@@ -147,6 +151,9 @@ export function NeteaseMusic({
   }, [catalogRevision, loadCatalog, playlistId])
 
   useEffect(() => {
+    if (activePlaylist.current === playlistId) return
+    activePlaylist.current = playlistId
+    checkpoint.current = { trackId: '', positionSeconds: 0 }
     setCurrentTrackId('')
     setCurrentTime(0)
     setDuration(0)
@@ -167,9 +174,15 @@ export function NeteaseMusic({
         ? storedTrackId ?? ''
         : tracks[0]?.id ?? ''
     if (selected === '') return
-    if (selected !== currentTrackId) setCurrentTrackId(selected)
+    if (selected !== currentTrackId) {
+      setCurrentTrackId(selected)
+      checkpoint.current = {
+        trackId: selected,
+        positionSeconds: selected === storedTrackId ? storedPosition : 0,
+      }
+    }
     if (storedTrackId !== selected) actions.selectTrack(selected)
-  }, [actions, currentTrackId, storedTrackId, tracks])
+  }, [actions, currentTrackId, storedPosition, storedTrackId, tracks])
 
   const currentIndex = tracks.findIndex(track => track.id === currentTrackId)
   const currentTrack = currentIndex < 0 ? undefined : tracks[currentIndex]
@@ -213,20 +226,22 @@ export function NeteaseMusic({
   }, [currentTrack, loadLyrics, playlistId])
 
   const remember = useCallback(() => {
-    const player = audio.current
-    if (player === null || currentTrackId === '') return
-    actions.rememberProgress(currentTrackId, player.currentTime)
+    const saved = checkpoint.current
+    if (saved.trackId === '') return
+    actions.rememberProgress(saved.trackId, saved.positionSeconds)
     lastProgressWrite.current = Date.now()
-  }, [actions, currentTrackId])
+  }, [actions])
 
   useEffect(() => {
     const save = (): void => { remember() }
     const visibility = (): void => { if (document.visibilityState === 'hidden') save() }
     window.addEventListener('beforeunload', save)
+    window.addEventListener('pagehide', save)
     document.addEventListener('visibilitychange', visibility)
     return () => {
       save()
       window.removeEventListener('beforeunload', save)
+      window.removeEventListener('pagehide', save)
       document.removeEventListener('visibilitychange', visibility)
     }
   }, [remember])
@@ -253,6 +268,7 @@ export function NeteaseMusic({
     player?.pause()
     if (player !== null) player.currentTime = 0
     restoredTrack.current = undefined
+    checkpoint.current = { trackId, positionSeconds: 0 }
     setCurrentTrackId(trackId)
     setCurrentTime(0)
     setDuration(0)
@@ -307,6 +323,10 @@ export function NeteaseMusic({
       : duration
     const next = Math.max(0, Math.min(seconds, Math.max(upper, 0)))
     if (player !== null) player.currentTime = next
+    if (currentTrackId !== '') checkpoint.current = {
+      trackId: currentTrackId,
+      positionSeconds: next,
+    }
     setCurrentTime(next)
     if (currentTrackId !== '') actions.rememberProgress(currentTrackId, next)
   }, [actions, currentTrackId, duration])
@@ -358,6 +378,7 @@ export function NeteaseMusic({
         ? resume
         : 0
       player.currentTime = safeResume
+      checkpoint.current = { trackId: currentTrack.id, positionSeconds: safeResume }
       setCurrentTime(safeResume)
       restoredTrack.current = currentTrack.id
     }
@@ -406,6 +427,10 @@ export function NeteaseMusic({
         }}
         onTimeUpdate={(event) => {
           const next = event.currentTarget.currentTime
+          if (currentTrackId !== '') checkpoint.current = {
+            trackId: currentTrackId,
+            positionSeconds: next,
+          }
           setCurrentTime(next)
           if (Date.now() - lastProgressWrite.current >= PROGRESS_WRITE_INTERVAL_MS) remember()
         }}

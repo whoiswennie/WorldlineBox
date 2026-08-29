@@ -8,17 +8,21 @@ import {
 beforeEach(() => { localStorage.clear() })
 
 describe('music preference store', () => {
-  it('defaults autoplay on and rehydrates the persisted account-local preference', () => {
+  it('defaults autoplay off on first install', () => {
     const first = createMusicPreferenceStore().create()
     expect(first.store.getSnapshot()).toEqual({
-      autoPlay: true,
+      autoPlay: false,
       positionSeconds: 0,
       volume: 0.8,
       playbackMode: 'list',
       playlistId: '18322613388',
       playlists: [],
     })
-    first.actions.setAutoPlay(false)
+  })
+
+  it('rehydrates an autoplay opt-in together with the playback checkpoint', () => {
+    const first = createMusicPreferenceStore().create()
+    first.actions.setAutoPlay(true)
     first.actions.selectTrack('3419785927')
     first.actions.rememberProgress('3419785927', 83.25)
     first.actions.setVolume(0.45)
@@ -29,7 +33,7 @@ describe('music preference store', () => {
 
     const restored = createMusicPreferenceStore().create()
     expect(restored.store.getSnapshot()).toEqual({
-      autoPlay: false,
+      autoPlay: true,
       trackId: '3419785927',
       positionSeconds: 83.25,
       volume: 0.45,

@@ -49,7 +49,9 @@ function retryableWriteError(error: unknown): boolean {
  * values into the cached parse, so repeated application (config hot-reloads)
  * could never revert a removed or changed patch. Inserted entries are indexed
  * as they are added, so a later patch in the same list can target a row an
- * earlier patch inserted. A patch that matches nothing warns and is skipped.
+ * earlier patch inserted. Patches may use legacy leaf ids or colon-delimited,
+ * group-relative paths when duplicate leaf ids need an unambiguous target. A
+ * patch that matches nothing warns and is skipped.
  * @param data - the parsed entry list (JSON-safe plain data).
  * @param patches - the patch list to apply, in order.
  * @param warn - sink for skipped-patch diagnostics (printf-style, `%C` = code).
@@ -63,12 +65,23 @@ export function applyEntryPatches(
   data = structuredClone(data)
   if (!patches?.length) return data
 
-  const entryMap = new Map<string, { entry: EntryOptions; parent: EntryOptions[] }>()
-  const buildMap = (entries: EntryOptions[]) => {
+  const entryMap = new Map<string, {
+    entry: EntryOptions
+    parent: EntryOptions[]
+    path: string
+  }>()
+  const buildMap = (entries: EntryOptions[], prefix = '') => {
     for (const entry of entries) {
-      if (entry.id) entryMap.set(entry.id, { entry, parent: entries })
+      const path = prefix === '' ? entry.id : `${prefix}${EntryTree.sep}${entry.id}`
+      if (entry.id) {
+        const record = { entry, parent: entries, path }
+        // Retain legacy leaf-id lookup and add an unambiguous group-relative
+        // path for management surfaces that carry complete Loader lineage.
+        entryMap.set(entry.id, record)
+        entryMap.set(path, record)
+      }
       if (entry.group && Array.isArray(entry.config)) {
-        buildMap(entry.config)
+        buildMap(entry.config, path)
       }
     }
   }
@@ -90,15 +103,22 @@ export function applyEntryPatches(
         }
         if (!Array.isArray(target.config)) target.config = []
         target.config.push(...insert)
+        // Re-index through the destination array, not the patch's temporary
+        // `insert` array. Removal needs the parent that owns the mounted row;
+        // otherwise `parent.splice()` only mutates the patch object and leaves
+        // the composed config tree untouched.
+        buildMap(target.config, entryMap.get(id)?.path ?? id)
       } else {
         data.push(...insert)
+        // Same ownership rule for root inserts: records must point at `data`
+        // so later disable/remove patches operate on the composed tree.
+        buildMap(data)
       }
       // Index what this patch added so a LATER patch in the same list can
       // target it. Patch lists compose one layer per source (each bundle
       // layer, then the user's, then `--patch` overlays), and a layer must be
       // able to configure or disable a row an earlier layer inserted; without
       // this, inserted rows were silently unpatchable.
-      buildMap(insert)
       continue
     }
 
@@ -121,7 +141,9 @@ export function applyEntryPatches(
 
     if (removed === true) {
       parent.splice(parent.indexOf(target), 1)
-      entryMap.delete(id)
+      for (const [key, candidate] of entryMap) {
+        if (candidate.entry === target) entryMap.delete(key)
+      }
       continue
     }
 

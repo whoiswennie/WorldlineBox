@@ -19,12 +19,12 @@ afterEach(async () => {
 describe('local extension state', () => {
   it('normalizes ids and lets removal outrank disablement', () => {
     expect(normalizeLocalExtensionState({
-      disabledPlugins: ['feature-a', 'feature-a', 'removed-one', '../unsafe'],
-      removedPlugins: ['removed-one', 'removed-one'],
+      disabledPlugins: ['feature-a', 'feature-a', 'include:gal-view', 'removed-one', '../unsafe'],
+      removedPlugins: ['removed-one', 'removed-one', 'include:agent-presets:tool-goal'],
       disabledSkills: ['my-skill', 'my-skill', 'Not Valid'],
     })).toEqual({
-      disabledPlugins: ['feature-a'],
-      removedPlugins: ['removed-one'],
+      disabledPlugins: ['feature-a', 'include:gal-view'],
+      removedPlugins: ['include:agent-presets:tool-goal', 'removed-one'],
       disabledSkills: ['my-skill'],
     })
   })
@@ -33,8 +33,8 @@ describe('local extension state', () => {
     const directory = await mkdtemp(join(tmpdir(), 'worldline-local-extensions-'))
     temporaryDirectories.push(directory)
     await writeFile(join(directory, LOCAL_EXTENSIONS_FILENAME), JSON.stringify({
-      disabledPlugins: ['optional-a'],
-      removedPlugins: ['optional-b'],
+      disabledPlugins: ['optional-a', 'include:gal-view'],
+      removedPlugins: ['optional-b', 'include:agent-presets:tool-goal'],
       disabledSkills: [],
     }))
 
@@ -43,11 +43,52 @@ describe('local extension state', () => {
       { id: 'core', name: '@deepseek-ai/dsh-core' },
       { id: 'optional-a', name: 'community-a' },
       { id: 'optional-b', name: 'community-b' },
+      { id: 'gal-view', name: 'gal-view' },
+      {
+        id: 'agent-presets', name: 'cordis:group', group: true,
+        config: [{ id: 'tool-goal', name: 'nested-tool-goal' }],
+      },
+      { id: 'tool-goal', name: 'top-level-tool-goal' },
     ], localExtensionPatches(state), () => {})
 
     expect(result).toEqual([
       { id: 'core', name: '@deepseek-ai/dsh-core' },
       { id: 'optional-a', name: 'community-a', disabled: true },
+      { id: 'gal-view', name: 'gal-view', disabled: true },
+      { id: 'agent-presets', name: 'cordis:group', group: true, config: [] },
+      { id: 'tool-goal', name: 'top-level-tool-goal' },
+    ])
+  })
+
+  it('applies local overrides to rows inserted by Profile Bundles', () => {
+    const result = applyEntryPatches([], [
+      {
+        insert: [
+          { id: 'gal-view', name: 'gal-view' },
+          { id: 'community-widget', name: 'community-widget' },
+          {
+            id: 'community-tools', name: 'cordis:group', group: true,
+            config: [],
+          },
+        ],
+      },
+      {
+        id: 'community-tools',
+        insert: [{ id: 'nested-view', name: 'nested-view' }],
+      },
+      ...localExtensionPatches({
+        disabledPlugins: ['include:community-widget'],
+        removedPlugins: ['include:gal-view', 'include:community-tools:nested-view'],
+        disabledSkills: [],
+      }),
+    ], () => {})
+
+    expect(result).toEqual([
+      { id: 'community-widget', name: 'community-widget', disabled: true },
+      {
+        id: 'community-tools', name: 'cordis:group', group: true,
+        config: [],
+      },
     ])
   })
 })
