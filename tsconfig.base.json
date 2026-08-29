@@ -72,6 +72,18 @@
       "@deepseek-ai/dsh-atomic-write": [
         "./packages/util/atomic-write/src/index.ts"
       ],
+      "@deepseek-ai/dsh-agent-vault": [
+        "./packages/agent-vault/agent-vault/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-agent-vault-local": [
+        "./packages/agent-vault/agent-vault-local/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-skill-agent-vault": [
+        "./packages/agent-vault/skill-agent-vault/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-tool-agent-vault": [
+        "./packages/agent-vault/tool-agent-vault/src/index.ts"
+      ],
       "@deepseek-ai/dsh-tool-call-timeout-policy": [
         "./packages/guard/timeout-policy/src"
       ],
