@@ -10,29 +10,100 @@ import { IconQuestionOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ToolCallViewProps } from '../../contract/slots.ts'
+import type { AskQuestionCardModel } from '../models/ask-question-card-model.ts'
 import { toolRowModel } from '../models/tool-call-model.ts'
 import { ToolRow } from '../components/ToolRow.tsx'
 import { CONVERSATION_NS as NS } from '../../locale.ts'
 
-/** One parsed answer entry, shape-checked (result JSON crosses the wire). */
-interface AnswerEntry { selected?: unknown; custom?: unknown }
-
-function isAnswer(value: unknown): value is AnswerEntry {
-  return typeof value === 'object' && value !== null
+interface AnswerEntry {
+  id: string
+  selected: string[]
+  custom?: string
 }
 
-/** Answered-count summary from the result JSON (a skipped question has
- *  empty `selected` and no `custom`); null when answer fields are invalid. */
-function answeredSummary(text: string, t: AskQuestionRowProps['t']): string | null {
-  let parsed: unknown
+interface QuestionEntry {
+  id: string
+  question: string
+}
+
+interface AnsweredQuestion extends QuestionEntry {
+  answers: string[]
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseJson(text: string): unknown {
   try {
-    parsed = JSON.parse(text)
+    return JSON.parse(text)
   } catch {
-    return null
+    return undefined
   }
-  if (typeof parsed !== 'object' || parsed === null) return null
-  const answers = (parsed as { answers?: unknown }).answers
-  if (!Array.isArray(answers) || !answers.every(isAnswer)) return null
+}
+
+function answerEntries(text: string): AnswerEntry[] | null {
+  const parsed = parseJson(text)
+  if (!isRecord(parsed) || !Array.isArray(parsed.answers) || !parsed.answers.every(isRecord)) return null
+  const entries: AnswerEntry[] = []
+  for (const answer of parsed.answers) {
+    if (typeof answer.id !== 'string'
+      || !Array.isArray(answer.selected)
+      || !answer.selected.every(item => typeof item === 'string')
+      || (answer.custom !== undefined && typeof answer.custom !== 'string')) return null
+    entries.push({
+      id: answer.id,
+      selected: answer.selected,
+      ...(answer.custom === undefined ? {} : { custom: answer.custom }),
+    })
+  }
+  return entries
+}
+
+function questionEntries(argsRaw: string): QuestionEntry[] | null {
+  const parsed = parseJson(argsRaw)
+  if (!isRecord(parsed) || !Array.isArray(parsed.questions) || parsed.questions.length === 0) return null
+  const entries: QuestionEntry[] = []
+  const ids = new Set<string>()
+  for (const question of parsed.questions) {
+    if (!isRecord(question)
+      || typeof question.id !== 'string'
+      || typeof question.question !== 'string'
+      || ids.has(question.id)) return null
+    ids.add(question.id)
+    entries.push({ id: question.id, question: question.question })
+  }
+  return entries
+}
+
+function pairAnswers(argsRaw: string, answers: AnswerEntry[]): AnsweredQuestion[] | null {
+  const questions = questionEntries(argsRaw)
+  if (questions === null || questions.length !== answers.length) return null
+  const byId = new Map<string, AnswerEntry>()
+  for (const answer of answers) {
+    if (byId.has(answer.id)) return null
+    byId.set(answer.id, answer)
+  }
+  const paired: AnsweredQuestion[] = []
+  for (const question of questions) {
+    const answer = byId.get(question.id)
+    if (answer === undefined) return null
+    paired.push({
+      ...question,
+      answers: [
+        ...answer.selected,
+        ...(answer.custom === undefined || answer.custom === '' ? [] : [answer.custom]),
+      ],
+    })
+  }
+  return paired
+}
+
+/** Best-effort answered-count summary when strict transcript pairing is unsafe. */
+function answeredSummary(text: string, t: AskQuestionRowProps['t']): string | null {
+  const parsed = parseJson(text)
+  if (!isRecord(parsed) || !Array.isArray(parsed.answers) || !parsed.answers.every(isRecord)) return null
+  const answers = parsed.answers
   const answered = answers.filter(a =>
     (Array.isArray(a.selected) && a.selected.length > 0)
     || (typeof a.custom === 'string' && a.custom !== '')).length
@@ -53,18 +124,36 @@ export function AskQuestionRow({ toolName, block, inspect, t }: AskQuestionRowPr
   // failed shape, and the abort keeps the shared stopped (amber) semantics of
   // any other interrupted tool call.
   const code = 'kind' in block ? block.error?.code : undefined
+  const argsRaw = ('kind' in block ? block.call?.argsRaw : block.argsRaw) ?? ''
   let summary = model.summary
   let state = model.state
+  let transcript: AskQuestionCardModel | null = null
   if (code === 'ASK_CANCELLED') {
     summary = t('ask.cancelled')
+    state = 'ok'
+    const questions = questionEntries(argsRaw)
+    if (questions !== null) {
+      transcript = { kind: 'unanswered', questions, verdict: t('ask.cancelledDetail') }
+    }
   } else if (code === 'ASK_ABORTED') {
     summary = t('ask.interrupted')
     state = 'stopped'
+    const questions = questionEntries(argsRaw)
+    if (questions !== null) {
+      transcript = { kind: 'unanswered', questions, verdict: t('ask.interruptedDetail') }
+    }
   } else if (model.state === 'running') {
     summary = t('ask.waiting')
   } else if ('kind' in block && model.state === 'ok') {
     const text = block.content.filter(b => b.type === 'text').map(b => b.text).join('')
+    const answers = answerEntries(text)
     summary = answeredSummary(text, t) ?? model.summary
+    if (answers !== null) {
+      const questions = pairAnswers(argsRaw, answers)
+      if (questions !== null) {
+        transcript = { kind: 'answered', questions, skippedLabel: t('ask.skipped') }
+      }
+    }
   }
   return (
     <ToolRow
@@ -74,8 +163,9 @@ export function AskQuestionRow({ toolName, block, inspect, t }: AskQuestionRowPr
       icon={<IconQuestionOutline14 />}
       title={t('ask.rowTitle')}
       summary={summary}
-      body={model.body}
-      output={model.output}
+      body={transcript === null ? model.body : null}
+      output={transcript === null ? model.output : null}
+      askQuestion={transcript}
       state={state}
       inspect={inspect}
     />

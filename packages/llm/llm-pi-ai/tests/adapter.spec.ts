@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { AttachmentId, AttachmentStore } from '@deepseek-ai/dsh-attachment'
+import { AttachmentId, AttachmentStore, ImageVariantId } from '@deepseek-ai/dsh-attachment'
 import type {
   ImageAttachmentLimits,
   ImageAttachmentRef,
+  ImageRequestPolicy,
+  RequestImageAttachment,
   SaveImageAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
@@ -106,7 +108,7 @@ describe('PiAiAdapter provider routing', () => {
     expect(server.requests[0]).toMatchObject({
       model: 'deepseek-v4-flash',
       temperature: 0.2,
-      max_completion_tokens: 77,
+      max_tokens: 77,
       thinking: { type: 'enabled' },
       reasoning_effort: 'max',
     })
@@ -210,8 +212,21 @@ describe('PiAiAdapter provider routing', () => {
       width: 1,
       height: 1,
     }
-    const readImage = vi.fn((_ref: ImageAttachmentRef): Promise<StoredImageAttachment> =>
-      Promise.resolve({ ref, data: Uint8Array.of(1) }))
+    const readImageRequest = vi.fn((
+      _ref: ImageAttachmentRef,
+      _policy: ImageRequestPolicy,
+    ): Promise<RequestImageAttachment> => Promise.resolve({
+      variantId: ImageVariantId(`sha256:${'b'.repeat(64)}`),
+      attachment: ref,
+      data: Uint8Array.of(1),
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+      depth: 'uchar',
+      space: 'srgb',
+      hasAlpha: true,
+    }))
 
     class LateAttachmentStore extends AttachmentStore {
       readonly imageLimits: ImageAttachmentLimits = {
@@ -231,8 +246,19 @@ describe('PiAiAdapter provider routing', () => {
         return Promise.reject(new Error('not used'))
       }
 
-      readImage(value: ImageAttachmentRef): Promise<StoredImageAttachment> {
-        return readImage(value)
+      override readImage(value: ImageAttachmentRef): Promise<StoredImageAttachment> {
+        return Promise.resolve({ ref: value, data: Uint8Array.of(1) })
+      }
+
+      override readImageRequest(
+        value: ImageAttachmentRef,
+        policy: ImageRequestPolicy,
+      ): Promise<RequestImageAttachment> {
+        return readImageRequest(value, policy)
+      }
+
+      override imageHostPath(): undefined {
+        return undefined
       }
     }
 
@@ -253,7 +279,10 @@ describe('PiAiAdapter provider routing', () => {
     })
 
     expect(result.finish.kind).toBe('error')
-    expect(readImage).toHaveBeenCalledWith(ref)
+    expect(readImageRequest).toHaveBeenCalledWith(
+      ref,
+      { maxPixels: 2048 * 2048, maxBytes: 1024 * 1024 },
+    )
     expect(server.paths).toEqual(['/v1/responses'])
   })
 
@@ -426,6 +455,7 @@ describe('provider profile lifecycle', () => {
         reasoning: {
           efforts: [
             { id: ReasoningEffortId('off'), name: 'Off' },
+            { id: ReasoningEffortId('low'), name: 'Low' },
             { id: ReasoningEffortId('high'), name: 'High' },
             { id: ReasoningEffortId('max'), name: 'Max' },
           ],

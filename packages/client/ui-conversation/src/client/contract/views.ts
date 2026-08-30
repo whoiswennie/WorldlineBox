@@ -29,4 +29,9 @@ export interface ChatStoreState {
    * persisted snapshots from before this field rehydrate without it.
    */
   inspect: { callId: CallId } | null
+  /** Manually expanded completed-turn process generations. */
+  turnProcesses: Array<{
+    readonly turn: number
+    readonly generation: import('./turn-process.ts').TurnProcessGeneration
+  }>
 }

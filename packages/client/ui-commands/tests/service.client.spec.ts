@@ -153,7 +153,9 @@ async function bench(opts: BenchOptions = {}) {
   }
   /** Warm one session's catalog through the source's own candidate pull. */
   const warm = async (session: ClientSessionContext) => {
-    await source.candidates(session, { query: '', position: 'leading', signal: new AbortController().signal })
+    await source.candidates(session, {
+      query: '', position: 'leading', drilled: false, signal: new AbortController().signal,
+    })
   }
   return { ctx, fiber, command, source, mint, warm, listCalls, executeCalls, executions, registered, notices }
 }
@@ -164,6 +166,7 @@ function menuPick(source: InputTriggerSource, name: string, session: ClientSessi
     session,
     position: 'leading',
     via: 'menu',
+    action: 'pick',
     span: { start: 0, end: end ?? name.length + 1, draftRev: 3 },
   }
   return source.onPick(pick)
@@ -185,7 +188,7 @@ const themeContribution = (over: Partial<CommandContribution> = {}): CommandCont
 })
 
 const req = (query: string, position: 'leading' | 'inline' = 'leading') =>
-  ({ query, position, signal: new AbortController().signal })
+  ({ query, position, drilled: false, signal: new AbortController().signal })
 
 describe('registration', () => {
   it('registers the "/" source with matchSpace/matchEnter/warm hooks and removes it on fiber disposal', async () => {

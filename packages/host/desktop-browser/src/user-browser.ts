@@ -160,9 +160,10 @@ export class UserBrowserRuntime {
 
   /**
    * Open an HTTP(S) destination in the active or a new tab.
-   * @param sessionId - conversation that owns the tab.
-   * @param url - validated HTTP(S) destination or about:blank.
-   * @param newTab - whether to create a tab instead of reusing the active one.
+   * @param sessionId - session id value.
+   * @param url - url value.
+   * @param newTab - new tab value.
+   * @returns The resulting value.
    */
   async openUrl(sessionId: string, url: string, newTab = false): Promise<string> {
     if (!validUrl(url)) throw new Error('内置浏览器只允许打开 HTTP(S) 网页。')
@@ -215,7 +216,10 @@ export class UserBrowserRuntime {
     if (session.tabs.size === 0) this.sessions.delete(sessionId)
   }
 
-  /** Restore one conversation's active native view without recreating its page. */
+  /**
+   *  Restore one conversation's active native view without recreating its page.
+   * @param sessionId - session id value.
+   */
   activateSession(sessionId: string): void {
     const session = this.sessions.get(sessionId)
     const active = session?.activeId === undefined ? undefined : session.tabs.get(session.activeId)
@@ -226,7 +230,8 @@ export class UserBrowserRuntime {
 
   /**
    * Move the active tab one entry backward when possible.
-   * @param sessionId - conversation identity.
+   * @param sessionId - session id value.
+   * @param tabId - tab id value.
    */
   async back(sessionId: string, tabId?: string): Promise<void> {
     await this.moveHistory(sessionId, -1, tabId)
@@ -234,7 +239,8 @@ export class UserBrowserRuntime {
 
   /**
    * Move the active tab one entry forward when possible.
-   * @param sessionId - conversation identity.
+   * @param sessionId - session id value.
+   * @param tabId - tab id value.
    */
   async forward(sessionId: string, tabId?: string): Promise<void> {
     await this.moveHistory(sessionId, 1, tabId)
@@ -242,14 +248,21 @@ export class UserBrowserRuntime {
 
   /**
    * Reload the active native tab.
-   * @param sessionId - conversation identity.
+   * @param sessionId - session id value.
+   * @param tabId - tab id value.
    */
   async reload(sessionId: string, tabId?: string): Promise<void> {
     const tab = this.selectedTab(sessionId, tabId)
     await tab.handle.sendCommand('Page.reload')
   }
 
-  /** Return a bounded live preview frame for the active tab. */
+  /**
+   *  Return a bounded live preview frame for the active tab.
+   * @param sessionId - session id value.
+   * @param maxWidth - max width value.
+   * @param maxHeight - max height value.
+   * @returns The resulting value.
+   */
   async capturePreview(
     sessionId: string,
     maxWidth: number,
@@ -258,7 +271,11 @@ export class UserBrowserRuntime {
     return await this.selectedTab(sessionId).handle.capturePreview(maxWidth, maxHeight)
   }
 
-  /** Forward normalized pointer input from the raster preview into Chromium. */
+  /**
+   *  Forward normalized pointer input from the raster preview into Chromium.
+   * @param sessionId - session id value.
+   * @param input - Input value to process.
+   */
   async dispatchPointer(sessionId: string, input: BrowserPointerInput): Promise<void> {
     const target = this.selectedTab(sessionId)
     const metrics = await target.handle.sendCommand('Page.getLayoutMetrics')
@@ -287,7 +304,11 @@ export class UserBrowserRuntime {
     })
   }
 
-  /** Forward text or a non-printable key into the active Chromium page. */
+  /**
+   *  Forward text or a non-printable key into the active Chromium page.
+   * @param sessionId - session id value.
+   * @param input - Input value to process.
+   */
   async dispatchKeyboard(
     sessionId: string,
     input: { text?: string; key?: string; code?: string; modifiers?: number },
@@ -307,13 +328,22 @@ export class UserBrowserRuntime {
     await target.handle.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
   }
 
-  /** Stop loading the selected tab. */
+  /**
+   *  Stop loading the selected tab.
+   * @param sessionId - session id value.
+   * @param tabId - tab id value.
+   */
   async stop(sessionId: string, tabId?: string): Promise<void> {
     const tab = this.selectedTab(sessionId, tabId)
     await tab.handle.sendCommand('Page.stopLoading')
   }
 
-  /** Navigate the selected tab without creating another tab. */
+  /**
+   *  Navigate the selected tab without creating another tab.
+   * @param sessionId - session id value.
+   * @param url - url value.
+   * @param tabId - tab id value.
+   */
   navigateTab(sessionId: string, url: string, tabId?: string): Promise<void> {
     if (!validUrl(url)) throw new Error('内置浏览器只允许打开 HTTP(S) 网页。')
     const tab = this.selectedTab(sessionId, tabId)
@@ -322,7 +352,12 @@ export class UserBrowserRuntime {
     return Promise.resolve()
   }
 
-  /** Refresh and return one selected tab's browser-safe state. */
+  /**
+   *  Refresh and return one selected tab's browser-safe state.
+   * @param sessionId - session id value.
+   * @param tabId - tab id value.
+   * @returns The resulting value.
+   */
   async tabState(sessionId: string, tabId?: string): Promise<UserBrowserTab> {
     const session = this.requiredSession(sessionId)
     const tab = tabId === undefined
@@ -339,7 +374,12 @@ export class UserBrowserRuntime {
     }
   }
 
-  /** Resolve one selected tab to its package-private CDP channel. */
+  /**
+   *  Resolve one selected tab to its package-private CDP channel.
+   * @param sessionId - session id value.
+   * @param tabId - tab id value.
+   * @returns The resulting value.
+   */
   automationTarget(sessionId: string, tabId?: string): UserBrowserAutomationTarget {
     const tab = this.selectedTab(sessionId, tabId)
     return {

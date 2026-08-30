@@ -84,6 +84,7 @@ export interface SubagentRunEndInfo {
  * to `maxDepth`; the other names match.
  */
 export interface SubagentCapabilities {
+  readonly agentOptions: boolean
   readonly outputSchema: boolean
   readonly depthLimit: boolean
   readonly toolFilter: boolean
@@ -300,6 +301,8 @@ export interface SubagentProvider {
    * It says nothing about tool registration, injected services, or authority inheritance.
    */
   readonly inheritsParentContext: boolean
+  /** Optional provider-owned default route, overridden by caller agent options. */
+  readonly agentRouteDefaults?: Readonly<{ provider: string; model: string }>
   /**
    * Establish a ONE-SHOT child and return its handle after publication.
    * The service has already validated that every requested start-time

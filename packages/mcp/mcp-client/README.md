@@ -98,7 +98,7 @@ Prefix-stable while the discovered tool set and schemas are unchanged. A re-sync
 
 #### What the model sees
 
-The public tool name and JSON arguments remain in assistant history. The execution-local canonical value always retains the complete JSON MCP blocks and optional structured content for programmatic and Code Mode callers. In Native context, supported image blocks are durably projected beside text in their original order after exact route-capability proof; Code Mode additionally ferries that settled rich projection through the outer `run_code` result without changing the canonical binding value. Refused images, audio, embedded resources, resource links, and unknown blocks remain visible as bounded text diagnostics, and MCP `isError` rejects the call before image persistence.
+The public tool name and JSON arguments remain in assistant history. The execution-local canonical value always retains the complete JSON MCP blocks and optional structured content for programmatic and PTC mode callers. In Native context, supported image blocks are durably projected beside text in their original order after exact route-capability proof; PTC mode additionally ferries that settled rich projection through the outer `run_code` result without changing the canonical binding value. Refused images, audio, embedded resources, resource links, and unknown blocks remain visible as bounded text diagnostics, and MCP `isError` rejects the call before image persistence.
 
 #### Token effect
 

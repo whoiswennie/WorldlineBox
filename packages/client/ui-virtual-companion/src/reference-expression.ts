@@ -94,6 +94,13 @@ function expressionScore(candidate: ExpressionCandidate, signal: string, preferr
 /**
  * Rank a small expression shortlist without embeddings. Titles, tags and descriptions provide
  * relevance while recent use remains a soft signal that never makes an asset unavailable.
+ * @param candidates - candidates value.
+ * @param intent - intent value.
+ * @param recentAssetIds - recent asset ids value.
+ * @param preferredAgentId - preferred agent id value.
+ * @param recentRoomText - recent room text value.
+ * @param limit - limit value.
+ * @returns The resulting value.
  */
 export function rankExpressionCandidates<Candidate extends ExpressionCandidate>(
   candidates: readonly Candidate[],
@@ -120,7 +127,15 @@ export function rankExpressionCandidates<Candidate extends ExpressionCandidate>(
     .map(item => item.candidate)
 }
 
-/** Select the leading automatic candidate when the Agent does not request a shortlist first. */
+/**
+ *  Select the leading automatic candidate when the Agent does not request a shortlist first.
+ * @param candidates - candidates value.
+ * @param intent - intent value.
+ * @param recentAssetIds - recent asset ids value.
+ * @param preferredAgentId - preferred agent id value.
+ * @param recentRoomText - recent room text value.
+ * @returns The resulting value.
+ */
 export function selectExpressionCandidate<Candidate extends ExpressionCandidate>(
   candidates: readonly Candidate[],
   intent: ReferenceIntent,

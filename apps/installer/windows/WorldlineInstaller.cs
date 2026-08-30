@@ -16,6 +16,13 @@ using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using WinForms = System.Windows.Forms;
 
+[assembly: AssemblyTitle("世界线盒子安装程序")]
+[assembly: AssemblyProduct("WorldlineBox")]
+[assembly: AssemblyCompany("WorldlineBox")]
+[assembly: AssemblyVersion("__WORLDLINE_ASSEMBLY_VERSION__")]
+[assembly: AssemblyFileVersion("__WORLDLINE_ASSEMBLY_VERSION__")]
+[assembly: AssemblyInformationalVersion("__WORLDLINE_VERSION__")]
+
 namespace WorldlineBox.Installer
 {
     internal static class Program

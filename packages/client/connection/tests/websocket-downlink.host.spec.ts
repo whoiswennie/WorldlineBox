@@ -76,6 +76,23 @@ async function acceptedSocket(downlinks: WebSocketDownlinks): Promise<WebSocket>
 }
 
 describe('WebSocket downlinks', () => {
+  it('sends Ping/Pong control frames without application messages', { timeout: 1_000 }, async () => {
+    const downlinks = new WebSocketDownlinks(api(idle, idle), 20)
+    const host = await serve(downlinks)
+    running.push(host.close)
+    const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
+    const messages = vi.fn()
+    socket.on('message', messages)
+    const ping = once(socket, 'ping')
+    await once(socket, 'open')
+    const accepted = await acceptedSocket(downlinks)
+    const pong = once(accepted, 'pong')
+
+    expect((await ping)[0]).toEqual(Buffer.alloc(0))
+    expect((await pong)[0]).toEqual(Buffer.alloc(0))
+    expect(messages).not.toHaveBeenCalled()
+  })
+
   it('carries mux and host over independent downstream sockets and cancels each source on close', async () => {
     let muxAborted = false
     let hostAborted = false
@@ -99,7 +116,7 @@ describe('WebSocket downlinks', () => {
           hostAborted = true
         }
       },
-    ))
+    ), 30_000)
     const host = await serve(downlinks)
     running.push(host.close)
 
@@ -142,7 +159,7 @@ describe('WebSocket downlinks', () => {
         }
       },
       idle,
-    ))
+    ), 30_000)
     const host = await serve(downlinks)
     running.push(host.close)
     const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
@@ -161,7 +178,7 @@ describe('WebSocket downlinks', () => {
         throw new Error('mux source failed')
       },
       idle,
-    ))
+    ), 30_000)
     const host = await serve(downlinks)
     running.push(host.close)
     const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
@@ -185,7 +202,7 @@ describe('WebSocket downlinks', () => {
         }
       },
       idle,
-    ))
+    ), 30_000)
     const host = await serve(downlinks)
     running.push(host.close)
     const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
@@ -217,7 +234,7 @@ describe('WebSocket downlinks', () => {
         }
       },
       idle,
-    ))
+    ), 30_000)
     const host = await serve(downlinks)
     running.push(host.close)
     const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
@@ -242,7 +259,7 @@ describe('WebSocket downlinks', () => {
         }
       },
       idle,
-    ))
+    ), 30_000)
     const host = await serve(downlinks)
     running.push(host.close)
     const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
@@ -266,7 +283,7 @@ describe('WebSocket downlinks', () => {
   })
 
   it('rejects when its acceptor has already closed', async () => {
-    const downlinks = new WebSocketDownlinks(api(idle, idle))
+    const downlinks = new WebSocketDownlinks(api(idle, idle), 30_000)
     await downlinks.close()
     await expect(downlinks.close()).rejects.toThrow('The server is not running')
   })
@@ -288,7 +305,7 @@ describe('WebSocket downlinks', () => {
         }
       },
       idle,
-    ))
+    ), 30_000)
     const host = await serve(downlinks)
     const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
     await once(socket, 'open')

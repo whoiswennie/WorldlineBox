@@ -44,6 +44,6 @@ owner 载荷为 `ToolCallOwnerProps`：`callId`、`toolName`、冻结的 `block`
 
 ## 已知限制与后续工作
 
-- Host 不把 `run_code` 暴露为 Code Mode 程序 binding，因此生产事件只产生一层分发；递归的运行时/UI 约定支持嵌套。
+- Host 不把 `run_code` 暴露为 PTC mode 程序 binding，因此生产事件只产生一层分发；递归的运行时/UI 约定支持嵌套。
 - 第一方工具视图集中在本包，可以通过 keyed slot 独立迁移到各自所属的业务包。
 - 工具文案复用 `ui-conversation` locale namespace。

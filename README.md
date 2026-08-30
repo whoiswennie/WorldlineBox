@@ -26,6 +26,19 @@ Worldline is the foundation application. **Worldline Fantasy** is the separate g
 
 Worldline is currently a developer preview. Interfaces may still change before a stable release.
 
+## 0.2.2 kernel update
+
+Worldline 0.2.2 selectively incorporates the stable, non-conflicting behavior from DeepSeek Harness 0.1.1-rc.2 and 0.1.2-alpha.1 while keeping Worldline's product boundaries authoritative. Highlights include:
+
+- DeepSeek Files API uploads with deterministic image normalization, reuse, expiry recovery, bounded fallbacks, and image-aware token estimates.
+- Faster startup and history transport, gzip responses, compact SQLite persistence with explicit schema 18 rejection/rebuild semantics, and lossless event provenance ranges.
+- Safer WebFetch networking, WebSocket heartbeat, resilient subprocess/PowerShell handling, torn-JSONL diagnostics, and stricter tool editing behavior.
+- Per-turn usage details, turn navigation/process folding, adaptive transcript width and font size, session-scoped question drafts, file mentions, streaming code highlighting, and CJK/Latin auto-spacing.
+- ACP v1 controls, profile-launched TypeScript SDK/ACP runtimes, dynamic subagent model routing, Claude Code/Codex model selection, third-party locales, and provider-settings extension slots.
+- PTC as the single current programmatic tool presentation mode. The stable `run_code` and persisted `tool/code-dispatch` vocabulary remain part of the current protocol, not a legacy implementation.
+
+Plugin inventory upload, incremental session-log upload, and feedback telemetry remain disabled by default. Worldline account data, settings, attachments, Agent Vault resources, `WORLDLINE_HOME`, and the `ignorable` event capability retain their existing ownership boundaries. Old Harness session SQLite schema 17 is intentionally not carried as a second implementation during this developer-preview upgrade; recreate that derived development database under schema 18.
+
 ## Quick start
 
 Node.js 24 is recommended; Node.js 22.19 or newer is supported. The repository uses the pnpm version pinned in `package.json`.
@@ -96,6 +109,6 @@ Start with [the development guide](docs/development.md), [AGENTS.md](AGENTS.md),
 
 ## Provenance and license
 
-Worldline began from the MIT-licensed [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) rc.7 foundation and has selectively absorbed the architecture and reliability improvements through Harness 0.1.1-rc.1. It remains an independently maintained product without an upstream merge workflow; Worldline branding, product behavior, and project-specific capabilities stay authoritative. Attribution and third-party notices remain intact.
+Worldline began from the MIT-licensed [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) rc.7 foundation and has selectively absorbed compatible architecture, reliability, performance, and product improvements through Harness 0.1.2-alpha.1. It remains an independently maintained product without an upstream merge workflow; Worldline branding, product behavior, and project-specific capabilities stay authoritative. Attribution and third-party notices remain intact.
 
 Source code and technical documentation are available under the [MIT License](LICENSE). The Worldline application identity, the Worldline Fantasy game identity, Huan artwork, icons, and other original character assets are governed by [BRAND_ASSETS.md](BRAND_ASSETS.md) and are not granted under the MIT license.

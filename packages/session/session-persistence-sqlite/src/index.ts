@@ -10,6 +10,7 @@ import type {
   SessionEvent,
   SessionHeader,
   SessionId,
+  Session,
   SessionPreparation,
 } from '@deepseek-ai/dsh-session'
 import {
@@ -96,6 +97,10 @@ export class SqliteSessionPersistence extends SessionPersistence {
 
   create(meta: SessionHeader): Promise<void> {
     return this.coordinator.create(meta)
+  }
+
+  override ensureMaterialized(session: Session): Promise<void> {
+    return this.coordinator.ensureMaterialized(session)
   }
 
   append(id: SessionId, events: readonly SessionEvent[]): Promise<void> {

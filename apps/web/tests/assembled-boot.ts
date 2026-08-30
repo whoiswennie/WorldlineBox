@@ -14,7 +14,9 @@ import { pathToFileURL } from 'node:url'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, vi } from 'vitest'
 import { bootInjections, orderByModuleGraph } from '@deepseek-ai/dsh-client-modules'
-import type { ClientModuleLoaderTarget, WebBootEntry } from '@deepseek-ai/dsh-client-modules/client'
+import type {
+  ClientModuleLoaderTarget, WebBootEntry, WebBootGraph,
+} from '@deepseek-ai/dsh-client-modules/client'
 import { AppWebEntry } from '@deepseek-ai/dsh-client-web'
 
 interface AssembledPlugin extends WebBootEntry {
@@ -122,7 +124,7 @@ const bundles = new Map(PLUGINS.map(plugin => [
 ]))
 
 interface FixtureWindow extends Window {
-  __WORLDLINE_BOOT__?: { rev: string; entries: WebBootEntry[] }
+  __WORLDLINE_BOOT__?: WebBootGraph
   __ModuleLoader__?: ClientModuleLoaderTarget
 }
 
@@ -193,8 +195,13 @@ export function mountAssembledApp(search = '?fixture'): void {
   const root = document.createElement('div')
   root.id = 'root'
   document.body.appendChild(root)
-  win.__WORLDLINE_BOOT__ = { rev: 'fx', entries: PLUGINS.map(({ bundlePath: _bundlePath, ...plugin }) => plugin) }
-  const [facadeRow] = bootInjections(win.__WORLDLINE_BOOT__)
+  const graph: WebBootGraph = {
+    rev: 'fx',
+    entries: PLUGINS.map(({ bundlePath: _bundlePath, ...plugin }) => plugin),
+    batches: [],
+  }
+  win.__WORLDLINE_BOOT__ = graph
+  const [facadeRow] = bootInjections(graph)
   if (facadeRow?.kind !== 'script') throw new Error('missing injected ModuleLoader facade row')
   ;(0, eval)(facadeRow.text)
   // Mirror the blocking Host-injected scripts before the Vite entry calls create().

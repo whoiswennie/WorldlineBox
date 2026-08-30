@@ -1,6 +1,6 @@
-/** Browser-safe account profile capability shared by providers and consumers. */
+/** Account profile capability shared inside the active Host runtime. */
 
-/** Public identity fields allowed to cross the account-authority seam. */
+/** Identity fields allowed to cross the current-tenant account-authority seam inside Host. */
 export interface AccountProfileSnapshot {
   id: number
   username: string
@@ -8,6 +8,12 @@ export interface AccountProfileSnapshot {
   lastLoginAt: number | null
   displayName: string
   avatar: string
+  /**
+   * Host-local materialization of the current avatar. This path is intended
+   * only for model tools such as `read_image`; browser API projections must
+   * continue to expose `avatar` and never serialize this host path.
+   */
+  avatarPath?: string
   bio: string
 }
 
@@ -22,7 +28,7 @@ export interface AccountProfile {
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    /** Browser-safe profile for the active account-scoped runtime. */
+    /** Current-tenant profile, including an optional Host-only avatar path. */
     localAccountProfile: AccountProfile
   }
 }

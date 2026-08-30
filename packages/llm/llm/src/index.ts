@@ -15,6 +15,7 @@ import type {
   LlmModelContext,
   LlmModelDiscoveryRequest,
   LlmModelInfo,
+  LlmImageRequestPricing,
   LlmResolvedModelInfo,
   LlmProviderInfo,
   ModelModality,
@@ -29,6 +30,7 @@ import type { LlmCallConfig, LlmCallConfigAdapterDefaults } from './call-config.
 import { HarnessError, INVALID_CREDENTIAL_CODE } from './error.ts'
 import { normalizeLlmFailure } from './adapter-failure.ts'
 import { normalizeApiKey } from './api-key.ts'
+import { contentHasImage, projectImagesForTextModel } from './content.ts'
 
 export * from './attribution.ts'
 export * from './brand.ts'
@@ -159,6 +161,8 @@ export interface PreparedLlmCall {
   readonly retryPolicy: ResolvedRetryPolicy
   /** Detached context metadata resolved with the registration-bound call. */
   readonly context?: LlmModelContext
+  /** Exact model modalities captured with the dispatch generation. */
+  readonly inputModalities?: readonly ModelModality[]
   /** Config fields materialized by the captured adapter rather than proposed by the caller. */
   readonly adapterDefaults: LlmCallConfigAdapterDefaults
   /**
@@ -222,6 +226,19 @@ export abstract class LlmAdapter {
     _signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
     return Promise.resolve({ provider, id: model, name: model })
+  }
+
+  /**
+  * Resolve provider-side request-image pricing for one exact model route.
+  * The default declares none, so consumers fall back to their own neutral
+  * estimate. Implementations must answer synchronously without I/O; the
+  * token meter resolves this per measurement.
+  * @param _provider - a route passed to `registerAdapter()` for this instance.
+  * @param _model - exact model id passed to {@link GenerateOptions.model}.
+  * @returns route-owned image pricing, or `undefined` when the route declares none.
+  */
+  imageRequestPricing(_provider: string, _model: string): LlmImageRequestPricing | undefined {
+    return undefined
   }
 
   /**
@@ -608,6 +625,16 @@ export class LlmRuntime extends Service {
   }
 
   /**
+   * Resolve one registered route's synchronous image pricing.
+   * @param provider - registered provider route to inspect.
+   * @param model - exact model id passed to the adapter.
+   * @returns route-specific image pricing, or undefined when the adapter has none.
+   */
+  imageRequestPricing(provider: string, model: string): LlmImageRequestPricing | undefined {
+    return this.adapters.get(provider)?.adapter.imageRequestPricing(provider, model)
+  }
+
+  /**
    * Resolve and validate all metadata from the adapter that owns one exact
    * route. The result is detached from adapter-owned objects; catalog
    * membership remains advisory and does not control request routing.
@@ -735,7 +762,11 @@ export class LlmRuntime extends Service {
     registration: AdapterRegistration,
     config: LlmCallConfig,
     signal?: AbortSignal,
-  ): Promise<{ config: LlmCallConfig; context?: LlmModelContext }> {
+  ): Promise<{
+    config: LlmCallConfig
+    context?: LlmModelContext
+    inputModalities?: readonly ModelModality[]
+  }> {
     const info = await this.resolveModelInfoFor(registration, config.model, signal)
     const defaulted = config.maxTokens === undefined && info.defaultMaxTokens !== undefined
       ? { ...config, maxTokens: info.defaultMaxTokens }
@@ -765,6 +796,7 @@ export class LlmRuntime extends Service {
     return {
       config: resolvedConfig,
       ...info.context === undefined ? {} : { context: info.context },
+      ...info.inputModalities === undefined ? {} : { inputModalities: info.inputModalities },
     }
   }
 
@@ -797,6 +829,7 @@ export class LlmRuntime extends Service {
       retryPolicy: registration.retryPolicy,
       adapterDefaults,
       ...context === undefined ? {} : { context },
+      ...resolved.inputModalities === undefined ? {} : { inputModalities: resolved.inputModalities },
       stream: (options: GenerateOptions): AsyncIterable<StreamChunk> => {
         if (dispatched) {
           throw new LlmError('a prepared LLM call can only be dispatched once', 'INVALID_PREPARED_CALL')
@@ -808,7 +841,13 @@ export class LlmRuntime extends Service {
           )
         }
         dispatched = true
-        return this.streamWithRegistration(options, { registration, config: resolvedConfig })
+        return this.streamWithRegistration(options, {
+          registration,
+          config: resolvedConfig,
+          ...resolved.inputModalities === undefined
+            ? {}
+            : { inputModalities: resolved.inputModalities },
+        })
       },
     })
   }
@@ -842,14 +881,19 @@ export class LlmRuntime extends Service {
    */
   private async * adapterStream(
     options: GenerateOptions,
-    prepared?: { registration: AdapterRegistration; config: LlmCallConfig },
+    prepared?: {
+      registration: AdapterRegistration
+      config: LlmCallConfig
+      inputModalities?: readonly ModelModality[]
+    },
   ): AsyncGenerator<StreamChunk> {
     let iterator: AsyncIterator<StreamChunk>
     try {
       const registration = prepared?.registration ?? this.registration(options.provider)
-      const resolvedConfig = prepared === undefined
-        ? (await this.resolveCallFor(registration, options, options.signal)).config
-        : prepared.config
+      const resolved = prepared === undefined
+        ? await this.resolveCallFor(registration, options, options.signal)
+        : prepared
+      const resolvedConfig = resolved.config
       if (prepared !== undefined && !callConfigEquals(options, resolvedConfig)) {
         throw new LlmError(
           'prepared LLM call config changed before adapter dispatch',
@@ -862,7 +906,20 @@ export class LlmRuntime extends Service {
           ? deepFreeze({ ...options, ...resolvedConfig })
           : { ...options, ...resolvedConfig }
       const adapter = registration.adapter
-      const stream = adapter.stream(this.forAdapter(resolvedOptions, adapter))
+      const projectedOptions = resolved.inputModalities !== undefined
+        && !resolved.inputModalities.includes('image')
+        && resolvedOptions.messages.some(message => contentHasImage(message.content))
+        ? Object.isFrozen(resolvedOptions)
+          ? deepFreeze({
+            ...resolvedOptions,
+            messages: projectImagesForTextModel(resolvedOptions.messages) as Message[],
+          })
+          : {
+            ...resolvedOptions,
+            messages: projectImagesForTextModel(resolvedOptions.messages) as Message[],
+          }
+        : resolvedOptions
+      const stream = adapter.stream(this.forAdapter(projectedOptions, adapter))
       iterator = stream[Symbol.asyncIterator]()
     } catch (error: unknown) {
       yield adapterFailureChunk(error, options.signal)
@@ -916,7 +973,11 @@ export class LlmRuntime extends Service {
 
   private streamWithRegistration(
     options: GenerateOptions,
-    prepared?: { registration: AdapterRegistration; config: LlmCallConfig },
+    prepared?: {
+      registration: AdapterRegistration
+      config: LlmCallConfig
+      inputModalities?: readonly ModelModality[]
+    },
   ): AsyncIterable<StreamChunk> {
     return this.ctx.waterfall(
       this,

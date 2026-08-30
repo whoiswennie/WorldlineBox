@@ -64,6 +64,27 @@ describe('pi-ai credential store over harness records', () => {
     await expect(ctx.credentials.readRecord(CODEX)).resolves.toEqual({ kind: 'grant', payload: granted })
   })
 
+  it('stores the JSON image of OAuth grants with optional undefined members', async () => {
+    const ctx = await stored()
+    const store = credentialStoreFrom(ctx)
+    const granted = {
+      type: 'oauth' as const,
+      access: 'at',
+      optional: undefined,
+      nested: { present: 'yes', absent: undefined },
+      list: ['value', undefined],
+    }
+
+    await store.modify('openai-codex', () => Promise.resolve(granted as never))
+
+    await expect(ctx.credentials.readRecord(CODEX)).resolves.toEqual({
+      kind: 'grant',
+      payload: {
+        type: 'oauth', access: 'at', nested: { present: 'yes' }, list: ['value', null],
+      },
+    })
+  })
+
   it('shows the mutation the current credential and leaves it alone when declined', async () => {
     const store = credentialStoreFrom(await stored())
     await store.modify('openai-codex', () =>

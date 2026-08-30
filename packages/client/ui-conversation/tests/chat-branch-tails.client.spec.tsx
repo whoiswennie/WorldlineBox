@@ -101,8 +101,9 @@ describe('MessageItem arms', () => {
         }}
       />,
     )
-    expect(view.container.querySelector('[data-ref-chip="session"]')?.textContent).toBe('你好')
-    expect(view.container.querySelector('[data-ref-chip="session"] svg')).not.toBeNull()
+    expect(view.container.querySelector('[data-ref-chip="session"]')?.textContent).toBe('@你好')
+    expect(view.container.querySelector('[data-ref-chip="session"] [data-ref-mention-mark]')).not.toBeNull()
+    expect(view.container.querySelector('[data-ref-chip="session"] svg')).toBeNull()
     expect(view.getByText('这个在讲啥')).toBeTruthy()
     expect(view.getByText('引用会话 · 你好')).toBeTruthy()
   })
@@ -121,7 +122,7 @@ describe('MessageItem arms', () => {
         }}
       />,
     )
-    expect(view.container.querySelector('[data-ref-chip="session"]')?.textContent).toBe('Research notes')
+    expect(view.container.querySelector('[data-ref-chip="session"]')?.textContent).toBe('@Research notes')
     expect(view.getByText('what changed?')).toBeTruthy()
     expect(view.getByText('引用会话 · Research notes')).toBeTruthy()
   })

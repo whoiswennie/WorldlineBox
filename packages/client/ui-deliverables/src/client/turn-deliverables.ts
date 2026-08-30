@@ -37,7 +37,7 @@ interface DeliverablesState extends DeliverablesTurnData {
  * than tool name: a diff card, or a generic card whose kind is `edit` (the
  * shape `str_replace_editor`'s insert presents). Every other card produces
  * nothing to open — a read looked, a delete removed, a terminal ran. Only
- * root call views enter this Turn accumulator; nested Code Mode dispatches
+ * root call views enter this Turn accumulator; nested PTC mode dispatches
  * preserve the pre-assembly behavior and do not contribute independently.
  */
 function producedPaths(view: ToolResultNode['callView']): readonly string[] {

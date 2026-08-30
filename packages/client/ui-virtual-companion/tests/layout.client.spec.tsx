@@ -51,11 +51,12 @@ describe('virtual companion layout', () => {
     expect(experienceCss).toContain("data-chat-flow-kind='turn-tail'")
   })
 
-  it('keeps mixed user references in a bounded message surface and a two-column grid', () => {
+  it('keeps mixed user references in a bounded message surface with companion-sized media', () => {
     expect(chatCss).toMatch(/\.richUserMessage\s*\{[^}]*width:\s*fit-content;[^}]*max-width:\s*min\(520px, 100%\);/s)
-    expect(chatCss).toMatch(/\.referenceGrid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s)
+    expect(chatCss).toMatch(/\.referenceGrid\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/s)
+    expect(chatCss).toMatch(/\.referenceGrid \.toolMeme\s*\{[^}]*margin:\s*0;/s)
     expect(chatCss).toContain(".richUserMessage[data-media-only='true']")
-    expect(chatCss).toMatch(/\.referenceGrid\[data-reference-count='1'\][^{]*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s)
+    expect(chatCss).not.toContain('.userMeme')
   })
 
   it('keeps a visible fallback for the room owner in the participant avatar stack', () => {

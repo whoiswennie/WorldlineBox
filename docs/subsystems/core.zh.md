@@ -165,6 +165,8 @@ interface AgentOptions {
   provider?: string
   /** Model id interpreted by the selected provider adapter. */
   model?: string
+  /** Adapter-owned reasoning effort for the selected provider/model route. */
+  reasoningEffort?: ReasoningEffortId
   /** Maximum output tokens for each conversation-model request. */
   maxTokens?: number
 }
@@ -228,7 +230,12 @@ pre-step 决策使用与持久 user-role 输入相同、带标识的 `UserMessag
 /** Whether and with which messages the loop enters a proposed step. */
 type PreStepDecision =
   | { kind: 'reject' }
-  | { kind: 'enter'; messages: UserMessage[] }
+  | {
+    kind: 'enter'
+    messages: UserMessage[]
+    /** Start a distinct model-message series before this step's admitted messages. */
+    startsRequestSeries?: true
+  }
 ```
 
 `agent/request-error` 在失败的模型步骤关闭之后、其轮次关闭之前运行。listener 可以在失败轮次的 signal 仍然存活时修复持久状态或 await 策略工作。处理该错误的 listener 返回 `{ kind: 'retry' }` 且不调用 `next()`；默认的 `undefined` 会让失败保持终态。
@@ -730,6 +737,305 @@ roots(): Agent[]
 
 Source: [`packages/core/agent/src/index.ts:256`](../../packages/core/agent/src/index.ts)
 
+<a id="ctxagentvaults--agentvaultservice-abstract-seam"></a>
+
+### `ctx.agentVaults` — `AgentVaultService` (abstract seam)
+
+Host service contract for portable, file-native Agent Vaults.
+
+```ts cordis-catalog
+/**
+ * List every Vault manifest.
+ * @returns Available manifests.
+ */
+abstract listAgents(): Promise<readonly AgentVaultManifest[]>
+
+/**
+ * Bind a runtime Agent to its only private Vault.
+ * @param runtimeAgentId - Runtime identity.
+ * @param agentId - Vault identity.
+ * @returns Binding disposer.
+ */
+abstract bindRuntimeAgent(runtimeAgentId: string, agentId: string): () => void
+
+/**
+ * Resolve an authorized private Vault.
+ * @param runtimeAgentId - Runtime identity.
+ * @returns Bound Vault identity, if any.
+ */
+abstract resolveRuntimeAgent(runtimeAgentId: string): string | undefined
+
+/**
+ * Create a new Vault.
+ * @param agentId - Portable Agent identity.
+ * @param name - Display name.
+ * @returns Created manifest.
+ */
+abstract createAgent(agentId: string, name: string): Promise<AgentVaultManifest>
+
+/**
+ * Move a Vault to recoverable trash.
+ * @param agentId - Vault identity.
+ * @param context - Authorized mutation context.
+ * @returns Completion.
+ */
+abstract removeAgent(agentId: string, context: VaultWriteContext): Promise<void>
+
+/**
+ * Read a Vault manifest.
+ * @param agentId - Vault identity.
+ * @returns Manifest.
+ */
+abstract manifest(agentId: string): Promise<AgentVaultManifest>
+
+/**
+ * Read a Vault policy.
+ * @param agentId - Vault identity.
+ * @returns Policy.
+ */
+abstract policy(agentId: string): Promise<VaultPolicy>
+
+/**
+ * Replace a Vault policy.
+ * @param agentId - Vault identity.
+ * @param policy - New policy.
+ * @param context - Authorized mutation context.
+ * @returns Persisted policy.
+ */
+abstract setPolicy(agentId: string, policy: VaultPolicy, context: VaultWriteContext): Promise<VaultPolicy>
+
+/**
+ * List a portable directory.
+ * @param agentId - Vault identity.
+ * @param uri - Directory URI.
+ * @param cursor - Entry offset.
+ * @param limit - Result bound.
+ * @returns Directory entries.
+ */
+abstract list(agentId: string, uri: VaultUri, cursor?: number, limit?: number): Promise<readonly VaultEntry[]>
+
+/**
+ * Read a bounded document view.
+ * @param agentId - Vault identity.
+ * @param uri - Document URI.
+ * @param view - Read mode.
+ * @param selector - Section or grep selector.
+ * @returns Parsed document.
+ */
+abstract read(agentId: string, uri: VaultUri, view?: VaultDocument['view'], selector?: string): Promise<VaultDocument>
+
+/**
+ * Write one document.
+ * @param agentId - Vault identity.
+ * @param uri - Document URI.
+ * @param content - Markdown source.
+ * @param context - Authorized mutation context.
+ * @returns Persisted document.
+ */
+abstract write(agentId: string, uri: VaultUri, content: string, context: VaultWriteContext): Promise<VaultDocument>
+
+/**
+ * Move one document.
+ * @param agentId - Vault identity.
+ * @param source - Source URI.
+ * @param target - Target URI.
+ * @param context - Authorized mutation context.
+ * @returns Moved entry.
+ */
+abstract move(agentId: string, source: VaultUri, target: VaultUri, context: VaultWriteContext): Promise<VaultEntry>
+
+/**
+ * Read revision history.
+ * @param agentId - Vault identity.
+ * @param uri - Document URI.
+ * @param limit - Result bound.
+ * @returns Historical entries.
+ */
+abstract history(agentId: string, uri: VaultUri, limit?: number): Promise<readonly VaultEntry[]>
+
+/**
+ * Recall directional cards.
+ * @param input - Bounded query.
+ * @returns Ranked cards.
+ */
+abstract recall(input: RecallQuery): Promise<RecallResult>
+
+/**
+ * Follow local Wiki links progressively.
+ * @param agentId - Vault identity.
+ * @param origins - Starting URIs.
+ * @param maxPages - Page bound.
+ * @param maxChars - Character bound.
+ * @returns Read documents.
+ */
+abstract explore(agentId: string, origins: readonly VaultUri[], maxPages?: number, maxChars?: number): Promise<readonly VaultDocument[]>
+
+/**
+ * Inspect structured self.
+ * @param agentId - Vault identity.
+ * @returns Self snapshot.
+ */
+abstract inspectSelf(agentId: string): Promise<SelfSnapshot>
+
+/**
+ * Update one self module.
+ * @param agentId - Vault identity.
+ * @param module - Replacement module.
+ * @param context - Authorized mutation context.
+ * @returns Persisted module.
+ */
+abstract updateSelf(agentId: string, module: SelfModule, context: VaultWriteContext): Promise<SelfModule>
+
+/**
+ * Capture immediately searchable memory.
+ * @param input - Memory facts.
+ * @param context - Authorized mutation context.
+ * @returns Short-term document.
+ */
+abstract captureMemory(input: CaptureMemoryInput, context: VaultWriteContext): Promise<VaultDocument>
+
+/**
+ * Queue an adjacent-stage consolidation.
+ * @param agentId - Vault identity.
+ * @param source - Source stage.
+ * @param target - Target stage.
+ * @param context - Authorized mutation context.
+ * @returns Queued job.
+ */
+abstract queueConsolidation(agentId: string, source: MemoryStage, target: MemoryStage, context: VaultWriteContext): Promise<ConsolidationJob>
+
+/**
+ * Run one bounded consolidation batch.
+ * @param jobId - Job identity.
+ * @param maxItems - Batch bound.
+ * @returns Updated job.
+ */
+abstract runConsolidation(jobId: string, maxItems?: number): Promise<ConsolidationJob>
+
+/**
+ * List consolidation jobs.
+ * @param agentId - Vault identity.
+ * @returns Jobs newest first.
+ */
+abstract consolidationJobs(agentId: string): Promise<readonly ConsolidationJob[]>
+
+/**
+ * Import resource bytes or an external reference.
+ * @param agentId - Vault identity.
+ * @param draft - Resource metadata.
+ * @param data - Optional bytes.
+ * @param context - Authorized mutation context.
+ * @returns Imported resource.
+ */
+abstract importResource(agentId: string, draft: VaultResourceDraft, data: Uint8Array | undefined, context: VaultWriteContext): Promise<VaultResource>
+
+/**
+ * Stream a file into resource storage.
+ * @param agentId - Vault identity.
+ * @param draft - Resource metadata.
+ * @param sourceFile - Host source path.
+ * @param context - Authorized mutation context.
+ * @returns Imported resource.
+ */
+abstract importResourceFromFile(agentId: string, draft: VaultResourceDraft, sourceFile: string, context: VaultWriteContext): Promise<VaultResource>
+
+/**
+ * Search resource metadata.
+ * @param input - Bounded resource query.
+ * @returns Cursor page.
+ */
+abstract searchResources(input: ResourceSearchInput): Promise<ResourcePage>
+
+/**
+ * Read resource metadata.
+ * @param agentId - Vault identity.
+ * @param id - Resource identity.
+ * @returns Resource metadata.
+ */
+abstract resource(agentId: string, id: string): Promise<VaultResource>
+
+/**
+ * Resolve a resource delivery target.
+ * @param agentId - Vault identity.
+ * @param id - Resource identity.
+ * @returns Host-only content target.
+ */
+abstract resourceContent(agentId: string, id: string): Promise<VaultResourceContent>
+
+/**
+ * Update resource metadata.
+ * @param agentId - Vault identity.
+ * @param id - Resource identity.
+ * @param patch - Mutable fields.
+ * @param context - Authorized mutation context.
+ * @returns Updated resource.
+ */
+abstract updateResource(agentId: string, id: string, patch: Partial<Pick<VaultResource, 'title' | 'description' | 'tags' | 'originalTags' | 'transcript' | 'roles' | 'durationMs'>>, context: VaultWriteContext): Promise<VaultResource>
+
+/**
+ * Remove a resource record.
+ * @param agentId - Vault identity.
+ * @param id - Resource identity.
+ * @param context - Authorized mutation context.
+ * @returns Completion.
+ */
+abstract removeResource(agentId: string, id: string, context: VaultWriteContext): Promise<void>
+
+/**
+ * Toggle resource availability.
+ * @param agentId - Vault identity.
+ * @param id - Resource identity.
+ * @param enabled - New state.
+ * @param context - Authorized mutation context.
+ * @returns Updated resource.
+ */
+abstract setResourceEnabled(agentId: string, id: string, enabled: boolean, context: VaultWriteContext): Promise<VaultResource>
+
+/**
+ * Export one portable character package.
+ * @param agentId - Vault identity.
+ * @param targetFile - Package target.
+ * @param shareable - Whether private history is omitted.
+ * @returns Package report.
+ */
+abstract exportAgent(agentId: string, targetFile: string, shareable: boolean): Promise<VaultPackageReport>
+
+/**
+ * Import a portable character package.
+ * @param packageFile - Package source.
+ * @param targetAgentId - Optional replacement identity.
+ * @returns Import report.
+ */
+abstract importAgent(packageFile: string, targetAgentId?: string): Promise<VaultPackageReport>
+
+/**
+ * Rebuild the disposable projection.
+ * @param agentId - Vault identity.
+ * @returns New index revision.
+ */
+abstract rebuildIndex(agentId: string): Promise<number>
+
+/**
+ * Resolve a URI for exceptional Host editing.
+ * @param agentId - Vault identity.
+ * @param uri - Portable URI.
+ * @param mode - Access mode.
+ * @param context - Required write context.
+ * @returns Host path and optional write lease.
+ */
+abstract resolvePath(agentId: string, uri: VaultUri, mode: 'read' | 'write', context?: VaultWriteContext): Promise<{ readonly path: string; readonly leaseId?: string }>
+
+/**
+ * Reconcile an external write lease.
+ * @param agentId - Vault identity.
+ * @param leaseId - Lease identity.
+ * @returns Reindexed entry.
+ */
+abstract reconcile(agentId: string, leaseId: string): Promise<VaultEntry>
+```
+
+Source: [`packages/agent-vault/agent-vault/src/index.ts:47`](../../packages/agent-vault/agent-vault/src/index.ts)
+
 <a id="agent-events"></a>
 
 ### `agent/*` events
@@ -756,7 +1062,7 @@ A fully configured agent and live session were published. Setup is composition-o
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:159`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:166`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentdisposed--emit"></a>
 
@@ -778,7 +1084,7 @@ An agent left the registry; AgentLoop emits this after driver quiescence and sco
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:168`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:175`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agenterror--emit"></a>
 
@@ -802,7 +1108,7 @@ A step or turn errored. The machine reports a failure here even when the error h
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:290`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:297`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentinboxclaimed--emit"></a>
 
@@ -826,7 +1132,7 @@ One message left the inbox inside its open turn. If the proposed step is rejecte
 
 Types: [Scoped](scope.md) · [UserMessage](session.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:197`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:204`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentinboxdiscarded--emit"></a>
 
@@ -847,7 +1153,7 @@ One message was discarded from the live inbox.
 
 Types: [Scoped](scope.md) · [UserMessage](session.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:205`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:212`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentinboxinserted--emit"></a>
 
@@ -868,7 +1174,7 @@ One message entered the live inbox.
 
 Types: [Scoped](scope.md) · [UserMessage](session.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:186`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:193`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentpre-step--waterfall"></a>
 
@@ -893,7 +1199,7 @@ Reject a proposed step or replace the messages that enter it. Calling `next()` p
 
 Types: [Scoped](scope.md) · [UserMessage](session.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:231`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:238`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentrequest--waterfall"></a>
 
@@ -919,7 +1225,7 @@ Replace the frozen call configuration. `await next()` yields the config the mach
 
 Types: [LlmCallConfig](llm-streaming.md) · [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:244`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:251`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentrequest-error--waterfall"></a>
 
@@ -948,7 +1254,7 @@ Handle one failed model-request attempt before the loop retries or closes its st
 
 Types: [LlmFailure](llm-streaming.md) · [ResolvedRetryPolicy](llm-streaming.md) · [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:260`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:267`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentsession-start--emit"></a>
 
@@ -972,7 +1278,7 @@ The session lifecycle began, once before the first turn. Use `agent.inject()` to
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:217`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:224`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentstatus--emit"></a>
 
@@ -995,7 +1301,7 @@ Agent status changed (`idle` ⇄ `running`). A waking delivery enters `running` 
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:178`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:185`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentturn-stopping--serial"></a>
 
@@ -1026,7 +1332,7 @@ The turn is about to close: the model owes no response (no live tool calls, no f
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:278`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:285`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agent-loop-events"></a>
 

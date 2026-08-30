@@ -58,7 +58,7 @@ Chat builder 为每个 Session 保留一个 mutable keyed store。内容更新�
 
 Trajectory Definition 组装出一条按时间顺序排列、以用途为判别字段的提供方请求流。助手请求始终携带数值型 `turn` 与 `step`；压缩请求携带 `step: 0`，其 `turn` 所有者可以是 `null`。这个 null 所有者表示手动压缩独立运行在两个轮次之间，并不表示它属于任一相邻轮次。由取消定稿的 `assistant/message` 会保留持久结果 seq 和提供方信息，但不会将请求标记为完成；`step/end` 会把该请求归类为错误。`session/end-seed` 边界会在边界时刻将未匹配的压缩请求以错误状态结束，错误固定为 `Compaction was interrupted before completion.`；后续 start 会投影为独立请求，而不会覆盖这项遗留的未匹配请求。
 
-## Code Mode 子调用树
+## PTC mode 子调用树
 
 每个 `ToolCallBlock` 都通过 `subCalls` 按启动顺序递归拥有自己的子调用。Chat 的 Tool Definition 按 call id 关联 root call 与 result，把 Code Dispatch 的 start/settlement 记录折叠进该 root Context，并投影为一棵 keyed 递归树；child call 不会成为独立 Chat root。start 落在已加载窗口之外时，其 settlement 仍以 `callTime: null` 渲染。一次 child 更新只复制其祖先链，因此未变化的 sibling 保持对象身份。会引入环或超过固定 256 层深度上限的边会被消费，但不会修改树。Trajectory 的 Tool Definition 为自己的 target 独立组装同一种嵌套数据契约。
 

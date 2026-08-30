@@ -286,6 +286,14 @@ readRaw(_id: SessionId, signal?: AbortSignal): Promise<SessionRawArtifact | unde
 abstract create(meta: SessionHeader): Promise<void>
 
 /**
+ * Ensure a live session has a durable header even when it has no events.
+ * Ordinary sessions remain lazily materialized; lifecycle frontends call
+ * this only when an empty session itself is a durable resumable resource.
+ * @param _session - live session whose header must become durable.
+ */
+ensureMaterialized(_session: Session): Promise<void>
+
+/**
  * Durably persist a batch of events. Honors the append-only and contiguous-
  * seq contracts: the first event's `seq` MUST equal the stored next-seq
  * (after `load` has durably closed any interrupted turn). Rejects non-JSON-
@@ -390,7 +398,7 @@ abstract list(signal?: AbortSignal): Promise<SessionHeader[]>
 abstract listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]>
 ```
 
-Types: [SessionEvent](session.md) · [SessionId](core.md)
+Types: [Session](session.md) · [SessionEvent](session.md) · [SessionId](core.md)
 
 Source: [`packages/session/session-persistence/src/index.ts:84`](../../packages/session/session-persistence/src/index.ts)
 <!-- END GENERATED cordis-surface -->

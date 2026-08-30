@@ -4,7 +4,7 @@ import type { ContentBlock as AcpContentBlock } from '@agentclientprotocol/sdk'
 import type { Context } from '@deepseek-ai/cordis'
 import { isImageAdmissionError } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 
 /** Raster formats shared by ACP image blocks and the core attachment vocabulary. */
@@ -60,10 +60,9 @@ function decodeImage(block: Extract<AcpContentBlock, { type: 'image' }>): SaveIm
 }
 
 /** Resolve the exact current route and require explicit image input support. */
-async function assertImageRoute(ctx: Context, agent: Agent, signal: AbortSignal): Promise<void> {
-  const routed = agent.session.requestHeader()?.config
-  const provider = routed?.provider ?? agent.options.provider
-  const model = routed?.model ?? agent.options.model
+async function assertImageRoute(ctx: Context, route: ModelSelection | undefined, signal: AbortSignal): Promise<void> {
+  const provider = route?.provider
+  const model = route?.model
   const llm = ctx.get('llm')
   if (provider === undefined || model === undefined || llm === undefined) {
     throw new AcpContentError('the current model route could not be resolved for image input', 'invalid')
@@ -110,20 +109,20 @@ function resourceLinkText(block: Extract<AcpContentBlock, { type: 'resource_link
 }
 
 /**
- * Admit one ACP prompt into ordered durable core content.
- * Every wire block and image is validated before the ordered image batch starts
- * writing; cancellation after a successful content-addressed write may leave an
- * unreachable object but never queues a late user message.
- * @param ctx - bridge context carrying attachment and model services.
- * @param agent - destination agent whose latest exact route controls admission.
- * @param prompt - untrusted ACP prompt blocks in wire order.
- * @param imageEnabled - capability result advertised during initialization.
- * @param signal - admission cancellation signal.
- * @returns core content with durable image references in wire order.
- */
+* Admit one ACP prompt into ordered durable core content.
+* Every wire block and image is validated before the ordered image batch starts
+* writing; cancellation after a successful content-addressed write may leave an
+* unreachable object but never queues a late user message.
+* @param ctx - bridge context carrying attachment and model services.
+* @param route - selection pinned to the accepted prompt.
+* @param prompt - untrusted ACP prompt blocks in wire order.
+* @param imageEnabled - capability result advertised during initialization.
+* @param signal - admission cancellation signal.
+* @returns core content with durable image references in wire order.
+*/
 export async function admitAcpPrompt(
   ctx: Context,
-  agent: Agent,
+  route: ModelSelection | undefined,
   prompt: readonly AcpContentBlock[],
   imageEnabled: boolean,
   signal: AbortSignal,
@@ -152,7 +151,7 @@ export async function admitAcpPrompt(
   if (images.length > 0) {
     const attachments = ctx.get('attachments')
     if (attachments === undefined) throw new AcpContentError('no attachment store is mounted', 'invalid')
-    await assertImageRoute(ctx, agent, signal)
+    await assertImageRoute(ctx, route, signal)
     signal.throwIfAborted()
     try {
       refs = await attachments.saveImages(images)

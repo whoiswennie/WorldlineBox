@@ -36,6 +36,7 @@ function request(
     query,
     quoted: options.quoted ?? false,
     position: 'inline',
+    drilled: false,
     signal: options.signal ?? new AbortController().signal,
   }
 }
@@ -167,17 +168,20 @@ describe('candidates', () => {
     releaseFiles()
     await expect(pending).resolves.toEqual([
       expect.objectContaining({
-        name: 'Folder · src/',
-        description: 'src',
+        name: 'src/',
+        icon: 'folder',
+        drill: true,
         section: 'Files & folders',
       }),
       expect.objectContaining({
-        name: 'File · a b.md',
-        description: 'docs/a b.md',
+        name: 'a b.md',
+        description: 'docs',
+        icon: 'file',
         section: 'Files & folders',
       }),
       expect.objectContaining({
-        name: 'Session · Research',
+        name: 'Research',
+        icon: 'session',
         description: 'source · /project · 2023-11-14T22:13:20.000Z',
         section: 'Session conversations',
       }),
@@ -203,12 +207,13 @@ describe('candidates', () => {
     }))
     const { source } = await bench(files, sessions)
     const quoted = await source.candidates(session, request('READ', { quoted: true }))
-    expect(quoted).toEqual([expect.objectContaining({ name: 'File · README.md' })])
+    expect(quoted).toEqual([expect.objectContaining({ name: 'README.md', icon: 'file' })])
     expect(source.onPick({
       candidate: quoted[0]!,
       session,
       position: 'inline',
       via: 'menu',
+      action: 'pick',
       span: { start: 0, end: 6, draftRev: 1 },
     })).toEqual({
       insert: {
@@ -221,7 +226,7 @@ describe('candidates', () => {
     })
     expect(sessions).not.toHaveBeenCalled()
     await expect(source.candidates(session, request('research'))).resolves.toEqual([
-      expect.objectContaining({ name: 'Session · Research' }),
+      expect.objectContaining({ name: 'Research' }),
     ])
   })
 
@@ -268,7 +273,8 @@ describe('candidates', () => {
     const { source } = await bench(files, sessions)
     await expect(source.candidates(session, request('same'))).resolves.toEqual([
       expect.objectContaining({
-        name: 'Session · same',
+        name: 'same',
+        icon: 'session',
         description: '(no cwd) · 1970-01-01T00:00:00.000Z',
       }),
     ])
@@ -276,18 +282,32 @@ describe('candidates', () => {
 })
 
 describe('pick and codec', () => {
-  const pick = (source: InputTriggerSource, candidate: InputTriggerCandidate) => source.onPick({
+  const pick = (
+    source: InputTriggerSource,
+    candidate: InputTriggerCandidate,
+    action: 'pick' | 'drill' = 'pick',
+  ) => source.onPick({
     candidate,
     session,
     position: 'inline',
     via: 'menu',
+    action,
     span: { start: 0, end: 1, draftRev: 1 },
   })
 
   it('inserts files as atomic icon labels while keeping directory completion open', async () => {
     const { source } = await bench()
     const [directory, file] = await source.candidates(session, request(''))
-    expect(pick(source, directory!)).toEqual({ text: '@src/', continue: true })
+    expect(pick(source, directory!)).toEqual({
+      insert: {
+        source: 'reference',
+        ref: '@src/',
+        label: 'src/',
+        appearance: 'folder',
+        clipboardText: '@src/',
+      },
+    })
+    expect(pick(source, directory!, 'drill')).toEqual({ text: '@src/', continue: true })
     expect(pick(source, file!)).toEqual({
       insert: {
         source: 'reference',
@@ -298,13 +318,13 @@ describe('pick and codec', () => {
       },
     })
     const [quotedDirectory] = await source.candidates(session, request('', { quoted: true }))
-    expect(pick(source, quotedDirectory!)).toEqual({ text: '@"src/', continue: true })
+    expect(pick(source, quotedDirectory!, 'drill')).toEqual({ text: '@"src/', continue: true })
   })
 
   it('inserts sessions as atomic chips whose clipboard and model forms are canonical mentions', async () => {
     const { source } = await bench()
     const candidates = await source.candidates(session, request(''))
-    const candidate = candidates.find(item => item.name === 'Session · Research')!
+    const candidate = candidates.find(item => item.name === 'Research')!
     const mention = '@[Research](dsh-session:InNvdXJjZSI)'
     expect(pick(source, candidate)).toEqual({
       insert: {

@@ -4,19 +4,28 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { FIRST_PARTY_SECTION_ORDER } from '@deepseek-ai/dsh-system-prompt'
 import { BROWSER_ACTIONS, type BrowserAction, type BrowserCommand } from '@deepseek-ai/dsh-browser'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
+import { scopeOf } from '@deepseek-ai/dsh-scope'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 
 export const name = 'tool-browser'
 export const inject = ['tools', 'systemPrompt']
+/**
+ * Default browser tool timeout ms.
+ */
 export const DEFAULT_BROWSER_TOOL_TIMEOUT_MS = 65_000
+/**
+ * Default browser max output chars.
+ */
 export const DEFAULT_BROWSER_MAX_OUTPUT_CHARS = 200_000
 
+/** Browser-control execution and output bounds. */
 export interface Config {
   /** Cooperative timeout enforced outside individual CDP calls. */
   timeoutMs?: number
@@ -24,6 +33,10 @@ export interface Config {
   maxOutputChars?: number
 }
 
+/**
+ * Config.
+ * @returns The resulting value.
+ */
 export const Config: z<Config> = z.object({
   timeoutMs: z.number().default(DEFAULT_BROWSER_TOOL_TIMEOUT_MS),
   maxOutputChars: z.number().default(DEFAULT_BROWSER_MAX_OUTPUT_CHARS),
@@ -50,6 +63,42 @@ interface BrowserToolArgs {
   method?: string
   params?: Record<string, JsonValue>
   open?: boolean
+}
+
+/**
+ * Browser tools installed outside Worldline can otherwise operate a second,
+ * invisible Electron view while the conversation Browser pane keeps showing
+ * this package's session-owned runtime. Hide only inherited legacy browser
+ * commands from this Agent; scoped first-party registration remains visible
+ * and unrelated tools/plugins are untouched.
+ */
+function restrictCompetingBrowserTools(ctx: Context): void {
+  const scope = scopeOf(ctx)
+  if (scope === undefined) return
+  let signature = ''
+  let lift: (() => void) | undefined
+  let reconciling = false
+  const reconcile = (): void => {
+    if (reconciling) return
+    // Read the unrestricted global plane so our own active restriction does
+    // not hide the names it must continue denying.
+    const deny = ctx.tools.schemas()
+      .map(tool => tool.name)
+      .filter(name => name !== 'browser_control' && name.startsWith('browser_'))
+      .sort()
+    const nextSignature = deny.join('\0')
+    if (nextSignature === signature) return
+    reconciling = true
+    try {
+      lift?.()
+      lift = deny.length === 0 ? undefined : ctx.tools.restrict({ deny })
+      signature = nextSignature
+    } finally {
+      reconciling = false
+    }
+  }
+  reconcile()
+  ctx.on('tools/change', reconcile)
 }
 
 function positiveInteger(name: string, value: number): void {
@@ -106,10 +155,12 @@ export function apply(ctx: Context, config: Config): void {
   const controller = ctx.get('browserController')
   if (controller === undefined) return
 
+  restrictCompetingBrowserTools(ctx)
+
   ctx.systemPrompt.section({
     name: 'tool:browser-control',
-    order: 112,
-    text: 'Use browser_control for interactive browser work in the built-in browser: open or focus tabs, inspect a snapshot before acting, click/fill/type/select, wait for navigation, inspect console/network diagnostics, and save screenshots inside the Session workspace. Prefer snapshot and targeted actions over evaluate or raw cdp; use evaluate/cdp only when the higher-level actions cannot complete the task.',
+    order: FIRST_PARTY_SECTION_ORDER.TOOL_BROWSER,
+    text: 'Use browser_control exclusively for interactive browser work. It is the only browser runtime connected to the Worldline Browser pane the user can see; do not use alternate browser_* tools from other bundles. Open or focus tabs, inspect a snapshot before acting, click/fill/type/select, wait for navigation, inspect console/network diagnostics, and save screenshots inside the Session workspace. Prefer snapshot and targeted actions over evaluate or raw cdp; use evaluate/cdp only when the higher-level actions cannot complete the task.',
   })
 
   ctx.tools.register(defineTool({

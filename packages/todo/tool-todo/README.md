@@ -42,7 +42,7 @@ A function/namespace plugin: it exports `name` / `inject` / `apply` and NO defau
 
 #### What the model sees
 
-The model sees the generated [`todo_write` schema](../../../docs/tool-catalog.md#worldline-tool-todo).
+The model sees the generated [`todo_write` schema](../../../docs/tool-catalog.md#deepseek-aidsh-tool-todo).
 
 #### Token effect
 

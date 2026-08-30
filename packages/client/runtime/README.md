@@ -58,7 +58,7 @@ The Chat builder keeps one mutable keyed store per Session. Content updates noti
 
 Trajectory Definitions assemble one chronological, purpose-discriminated provider-request stream. Assistant requests always carry their numeric `turn` and `step`; compaction requests carry `step: 0` and a `turn` owner that may be `null`. That null owner means a manual compaction ran standalone between turns, not that it belongs to either adjacent turn. A cancellation-finalized `assistant/message` retains its durable result seq and provider provenance but does not complete the request; `step/end` classifies that request as an error. A `session/end-seed` boundary closes an unmatched compaction request as an error at the boundary time with `Compaction was interrupted before completion.`; a later start projects as an independent request instead of overwriting the orphan.
 
-## Code Mode child-call tree
+## PTC mode child-call tree
 
 Every `ToolCallBlock` recursively owns its children through `subCalls`, in start order. Chat's Tool Definition correlates root calls and results by call id, folds Code Dispatch start/settlement records into that root Context, and projects one keyed recursive tree; child calls never become independent Chat roots. When a start falls outside the loaded window, its settlement remains renderable with `callTime: null`. A child update copies only its ancestor path, so unchanged siblings retain object identity. Edges that introduce a cycle or exceed the fixed 256-call depth limit are consumed without mutating the tree. Trajectory's Tool Definition independently assembles the same nested data contract for its target.
 

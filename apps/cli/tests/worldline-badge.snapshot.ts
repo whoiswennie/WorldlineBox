@@ -19,6 +19,16 @@ function normalizeBadgeAssetsPath(value: unknown): unknown {
   return value
 }
 
+function catalogText(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  const items: unknown[] = value
+  return items.map((item) => {
+    if (item === null || typeof item !== 'object') return ''
+    const text = (item as Record<string, unknown>)['text']
+    return typeof text === 'string' ? text : ''
+  }).join('\n')
+}
+
 describe('worldline badge assembled snapshot', () => {
   it('advertises and loads the opt-in bundled skill through the shipped app', async () => {
     const disabled = await runLoaderSmoke({
@@ -37,46 +47,34 @@ describe('worldline badge assembled snapshot', () => {
       configPath,
       tsconfigPath,
     })
-    const disabledSnapshot = JSON.parse(disabled.stdout) as unknown
-    const enabledSnapshot = normalizeBadgeAssetsPath(JSON.parse(enabled.stdout))
+    const disabledSnapshot = JSON.parse(disabled.stdout) as {
+      catalog?: unknown
+      result?: unknown
+      summary?: unknown
+    }
+    const enabledSnapshot = normalizeBadgeAssetsPath(JSON.parse(enabled.stdout)) as {
+      catalog?: unknown
+      result?: unknown
+      summary?: unknown
+    }
 
     expect(disabled.stderr).toBe('')
     expect(enabled.stderr).toBe('')
-    expect(disabledSnapshot).toMatchInlineSnapshot(`
+    const disabledCatalog = catalogText(disabledSnapshot.catalog)
+    expect(disabledCatalog).not.toContain('worldline-badge')
+    expect(disabledSnapshot.result).toEqual({
+      content: [{
+        text: 'Error: skill "worldline-badge" is unknown or no longer available',
+        type: 'text',
+      }],
+      error: { message: 'skill "worldline-badge" is unknown or no longer available' },
+      isError: true,
+    })
+    expect(disabledSnapshot.summary).toBeNull()
+    const enabledCatalog = catalogText(enabledSnapshot.catalog)
+    expect(enabledCatalog).toContain('`worldline-badge`')
+    expect({ result: enabledSnapshot.result, summary: enabledSnapshot.summary }).toMatchInlineSnapshot(`
       {
-        "catalog": null,
-        "result": {
-          "content": [
-            {
-              "text": "Error: skill "worldline-badge" is unknown or no longer available",
-              "type": "text",
-            },
-          ],
-          "error": {
-            "message": "skill "worldline-badge" is unknown or no longer available",
-          },
-          "isError": true,
-        },
-        "summary": null,
-      }
-    `)
-    expect(enabledSnapshot).toMatchInlineSnapshot(`
-      {
-        "catalog": [
-          {
-            "text": "<system-reminder>
-      A skill is a reusable set of task-specific instructions. The following skills are available in this session:
-
-      <available_skills>
-      - \`worldline-badge\`: Add the project-provided “powered by Worldline” badge to documents, pull requests, merge requests, and other attributed content. Use whenever creating a pull request or merge request. Also use when the user asks for a Worldline badge, powered-by-Worldline attribution, or a reusable badge asset or snippet.
-      </available_skills>
-
-      If the user names a skill, or the task clearly matches a skill's description, call the \`skill\` tool with the exact skill name before taking task actions. Load all applicable skills, then follow their full instructions. This catalog contains summaries only; do not infer or follow a skill's instructions until it has been loaded.
-      A user may also invoke a skill directly; its <skill_content> block then appears in this conversation. Follow it, and do not call the \`skill\` tool again for that skill.
-      </system-reminder>",
-            "type": "text",
-          },
-        ],
         "result": {
           "content": [
             {

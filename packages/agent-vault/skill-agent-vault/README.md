@@ -6,11 +6,19 @@ Eight progressively loaded methodology skills teach Agents to orient, capture im
 
 ## Model Experience
 
-Only skill summaries enter discovery. A complete workflow body is loaded when the Agent or user selects it.
+### Progressive Vault methodology
+
+#### What the model sees
+
+The skill catalog exposes eight stable `SKILL.md` summaries. Selecting one loads its complete workflow body for orientation, capture, consolidation, recall, self-development, capability learning, or resource use.
+
+#### Token effect
+
+Discovery has a fixed eight-summary cost; one complete, data-independent workflow body is added only when selected.
 
 #### KV Cache effect
 
-The stable catalog affects the prefix; loaded workflow content is data-independent and appears only when invoked.
+The stable catalog preserves the reusable prefix. Selecting a different workflow changes only the later loaded-skill suffix.
 
 ## Known Limitations and Deferred Work
 

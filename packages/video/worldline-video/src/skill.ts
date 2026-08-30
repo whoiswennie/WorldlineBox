@@ -42,7 +42,10 @@ const provider: SkillProvider = {
   },
 }
 
-/** Register the built-in video workflow instructions. */
+/**
+ *  Register the built-in video workflow instructions.
+ * @param ctx - Cordis context that owns the operation.
+ */
 export function registerVideoSkill(ctx: Context): void {
   ctx.skills.registerProvider(() => provider)
 }

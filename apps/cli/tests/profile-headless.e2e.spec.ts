@@ -86,7 +86,7 @@ describe('profile-driven headless CLI', () => {
       maxBuffer: 1024 * 1024,
     })
 
-    expect(result.stderr).toBe('')
+    expect(result.stderr).toBe('worldline: reasoning:\ninspect\n')
     expect(result.stdout).toBe('verified\n')
     expect(mock.requests).toHaveLength(2)
     expect(mock.headers.every(header => header.authorization === 'Bearer test-secret')).toBe(true)

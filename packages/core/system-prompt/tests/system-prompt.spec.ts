@@ -4,7 +4,7 @@ import SystemPrompt, { AssembleContext, PromptAssembly, renderContextSnapshot, r
 
 /**
  * Every assembly carries the plugin's own built-ins — `harness:identity`
- * (order −100) and `deployment:persona` (order 0, from config). Tests about
+ * and `deployment:persona` (from config). Tests about
  * registry MECHANICS strip them with {@link contributed} to stay focused on
  * their own sections; the built-ins' behavior is pinned by its own describe.
  */
@@ -98,6 +98,16 @@ describe('SystemPrompt', () => {
     expect(assembly.variables).toEqual({})
     expect(renderPrompt(assembly)).toBe(`${IDENTITY}\n\nYou are Worldline Runtime.\n\nBe precise.\n\ncwd: /tmp`)
     expect(renderContextSnapshot(assembly)).toBe('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\ncontext 1\n\ncontext 2')
+  })
+
+  it('breaks equal section orders by code-unit name', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    ctx.systemPrompt.section({ name: 'same:z', order: 10, text: 'z' })
+    ctx.systemPrompt.section({ name: 'same:a', order: 10, text: 'a' })
+
+    expect(contributed(await ctx.systemPrompt.assemble()).map(section => section.name))
+      .toEqual(['same:a', 'same:z'])
   })
 
   it('resolves section text providers against the assemble context, at each assemble call', async () => {
@@ -265,8 +275,8 @@ describe('SystemPrompt', () => {
 
     const passed: AssembleContext = {}
     const assembly = await ctx.systemPrompt.assemble(passed)
-    expect(seen).toEqual([['harness:identity', 'deployment:persona', 'base', 'from-a']])
-    expect(assembly.sections.map(s => s.name)).toEqual(['harness:identity', 'deployment:persona', 'base', 'from-a'])
+    expect(seen).toEqual([['harness:identity', 'base', 'deployment:persona', 'from-a']])
+    expect(assembly.sections.map(s => s.name)).toEqual(['harness:identity', 'base', 'deployment:persona', 'from-a'])
     expect(contexts[0]).toBe(passed) // the caller's context reaches listeners
   })
 
@@ -326,7 +336,7 @@ describe('SystemPrompt', () => {
     firstParameters.properties['leak'] = { type: 'string' }
 
     const second = await ctx.systemPrompt.assemble()
-    expect(second.sections.map(section => section.name)).toEqual(['harness:identity', 'deployment:persona', 'base'])
+    expect(second.sections.map(section => section.name)).toEqual(['harness:identity', 'base', 'deployment:persona'])
     expect(second.sections[0]!.text).toBe(IDENTITY)
     expect(second.contexts).toEqual([])
     expect(second.tools).toEqual([{ name: 't', description: 'tool', parameters: { type: 'object', properties: {} } }])

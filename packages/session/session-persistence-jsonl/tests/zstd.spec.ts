@@ -538,6 +538,7 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
   it('preserves complete records from a torn frame and re-encodes them with crash closers', async () => {
     const root = await freshRoot()
     const ctx = await mount(root)
+    const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => undefined)
     const header = meta('recover-torn', '/proj')
     await ctx.sessionPersistence.create(header)
     await ctx.sessionPersistence.append(header.id, oneTurnLog())
@@ -566,6 +567,9 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     const repaired = await readFile(path)
     expect(repaired.subarray(0, committed.length)).toEqual(committed)
     expect(scanZstdFrames(repaired).tornStart).toBeUndefined()
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(
+      /session "recover-torn" recovered from a torn tail.*incomplete tail bytes were discarded.*Review the restored session/,
+    ))
     expect(scanLog(await decodeCompleteFrames(repaired)).events).toEqual(loaded.events)
   })
 

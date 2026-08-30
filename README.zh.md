@@ -26,6 +26,19 @@
 
 世界线目前处于开发者预览阶段；稳定版发布前，接口仍可能调整。
 
+## 0.2.2 内核更新
+
+世界线 0.2.2 在世界线产品边界优先的前提下，选择性吸收 DeepSeek Harness 0.1.1-rc.2 与 0.1.2-alpha.1 中稳定且不冲突的行为：
+
+- DeepSeek Files API 上传、确定性图片规范化与复用、过期恢复、有界降级，以及计入图片压力的 Token 估算。
+- 启动与历史传输提速、HTTP gzip、采用单一 schema 18 的紧凑 SQLite 持久化，以及无损事件来源区间。
+- WebFetch 网络安全、WebSocket 心跳、子进程与 PowerShell 稳定性、截断 JSONL 诊断和更严格的编辑工具语义。
+- 精确回合用量、回合导航与过程折叠、自适应正文宽度和字号、按会话保存的问题草稿、文件提及、流式代码高亮及中西文自动间距。
+- ACP v1 控制、经 profile 启动的 TypeScript SDK/ACP 运行时、子代理动态模型路由、Claude Code/Codex 模型选择、第三方语言注册和提供方设置扩展插槽。
+- PTC 成为唯一现行的程序化工具呈现模式；最新版协议仍使用的 `run_code` 与持久化 `tool/code-dispatch` 词汇属于当前实现，并非旧兼容层。
+
+插件清单上传、增量会话日志上传和反馈遥测继续默认关闭。世界线账号、设置、附件、Agent Vault 资源、`WORLDLINE_HOME` 与 `ignorable` 事件能力继续保持原有所有权边界。开发者预览升级不会并行维护旧 Harness 会话 SQLite schema 17；该可重建开发数据库应直接按 schema 18 重建。
+
 ## 快速开始
 
 推荐使用 Node.js 24，最低支持 Node.js 22.19。pnpm 版本以 `package.json` 中的固定版本为准。
@@ -96,6 +109,6 @@ Profile 依次组合基础 Bundle、形态 Bundle、Profile 补丁、用户补�
 
 ## 来源与许可证
 
-世界线以 MIT 许可的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) rc.7 为初始底座，并已选择性吸收至 Harness 0.1.1-rc.1 的架构与可靠性优化。项目仍独立维护，不建立上游合并工作流；世界线的品牌、产品行为与项目特有能力始终具有优先权。相关署名与第三方许可证仍完整保留。
+世界线以 MIT 许可的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) rc.7 为初始底座，并已选择性吸收至 Harness 0.1.2-alpha.1 中兼容的架构、可靠性、性能与产品优化。项目仍独立维护，不建立上游合并工作流；世界线的品牌、产品行为与项目特有能力始终具有优先权。相关署名与第三方许可证仍完整保留。
 
 源代码与技术文档采用 [MIT License](LICENSE)。世界线的应用身份、世界线幻想的游戏身份、幻的角色美术、图标及其他原创角色资产遵循 [BRAND_ASSETS.md](BRAND_ASSETS.md)，不包含在 MIT 授权中。

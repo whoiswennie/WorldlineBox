@@ -32,7 +32,7 @@ function openState(partial?: Partial<MenuState>): MenuState {
     hit,
     generation: 1,
     groups: [
-      { source: 'command', status: 'ready', items: [{ name: 'goal', description: 'Set up a goal', icon: '⚑' }, { name: 'plan' }] },
+      { source: 'command', status: 'ready', items: [{ name: 'goal', description: 'Set up a goal', icon: 'file' }, { name: 'plan' }] },
       { source: 'skill', status: 'pending', items: [] },
     ],
     highlight: { source: 'command', index: 0 },
@@ -59,10 +59,23 @@ const t = makeTranslate(zh, commonZh)
 
 function mount(state: MenuState) {
   const menu = createSnapshotStore<MenuState>(state)
+  const headers = createSnapshotStore<ReadonlyMap<string, readonly []>>(new Map())
   const onPick = vi.fn()
+  const onCrumb = vi.fn()
+  const onHover = vi.fn()
   const onDismiss = vi.fn()
-  const view = render(<MenuView menu={menu} onPick={onPick} onDismiss={onDismiss} t={t} />)
-  return { menu, onPick, onDismiss, view }
+  const view = render(
+    <MenuView
+      menu={menu}
+      headers={headers}
+      onPick={onPick}
+      onCrumb={onCrumb}
+      onHover={onHover}
+      onDismiss={onDismiss}
+      t={t}
+    />,
+  )
+  return { menu, headers, onPick, onCrumb, onHover, onDismiss, view }
 }
 
 /** The non-interactive group title rows (role=presentation), in document order. */
@@ -84,8 +97,8 @@ describe('MenuView', () => {
   it('renders ready groups as option rows and pending groups as loading rows', () => {
     mount(openState())
     const options = screen.getAllByRole('option')
-    expect(options.map(o => o.textContent)).toEqual(['⚑goalSet up a goal', 'plan'])
-    expect(screen.queryByText('正在加载…')).not.toBeNull()
+    expect(options.map(o => o.textContent)).toEqual(['goalSet up a goal', 'plan'])
+    expect(screen.getByRole('status', { name: '正在加载…' })).toBeTruthy()
   })
 
   it('keeps an opted-out source title hidden while its candidates are pending', () => {
@@ -94,7 +107,7 @@ describe('MenuView', () => {
       highlight: null,
     }))
     expect(screen.queryByText('reference')).toBeNull()
-    expect(screen.getByText('正在加载…')).toBeTruthy()
+    expect(screen.getByRole('status', { name: '正在加载…' })).toBeTruthy()
   })
 
   it('titles each group with the localized source name, raw name for unknown sources, none for empty ready groups', () => {
@@ -162,23 +175,23 @@ describe('MenuView', () => {
   it('caps the list height at the design maximum when the composer sits low enough', () => {
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ bottom: 800 } as DOMRect)
     mount(openState())
-    expect(screen.getByRole('listbox').style.maxHeight).toBe('320px')
+    expect(document.querySelector<HTMLElement>('[data-trigger-menu]')?.style.maxHeight).toBe('320px')
   })
 
   it('clamps the list height to the space above the composer minus the safe margin', () => {
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ bottom: 200 } as DOMRect)
     mount(openState())
-    expect(screen.getByRole('listbox').style.maxHeight).toBe('188px')
+    expect(document.querySelector<HTMLElement>('[data-trigger-menu]')?.style.maxHeight).toBe('188px')
   })
 
   it('re-fits the height when the window resizes', () => {
     const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect')
     rect.mockReturnValue({ bottom: 800 } as DOMRect)
     mount(openState())
-    expect(screen.getByRole('listbox').style.maxHeight).toBe('320px')
+    expect(document.querySelector<HTMLElement>('[data-trigger-menu]')?.style.maxHeight).toBe('320px')
     rect.mockReturnValue({ bottom: 100 } as DOMRect)
     act(() => { window.dispatchEvent(new Event('resize')) })
-    expect(screen.getByRole('listbox').style.maxHeight).toBe('88px')
+    expect(document.querySelector<HTMLElement>('[data-trigger-menu]')?.style.maxHeight).toBe('88px')
   })
 
   it('pointerdown outside the menu (no composer card ancestor) dismisses', () => {
@@ -195,10 +208,19 @@ describe('MenuView', () => {
 
   it('pointerdown inside the surrounding composer card does not dismiss; outside it does', () => {
     const menu = createSnapshotStore<MenuState>(openState())
+    const headers = createSnapshotStore<ReadonlyMap<string, readonly []>>(new Map())
     const onDismiss = vi.fn()
     render(
       <div data-composer-card="">
-        <MenuView menu={menu} onPick={vi.fn()} onDismiss={onDismiss} t={t} />
+        <MenuView
+          menu={menu}
+          headers={headers}
+          onPick={vi.fn()}
+          onCrumb={vi.fn()}
+          onHover={vi.fn()}
+          onDismiss={onDismiss}
+          t={t}
+        />
         <button type="button" data-testid="composer-button" />
       </div>,
     )

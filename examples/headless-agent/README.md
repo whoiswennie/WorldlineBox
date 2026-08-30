@@ -29,4 +29,4 @@ The overlay creates the same absolute cwd inside the sandbox, but it does not up
 
 ## Advanced configuration
 
-[`advanced.cordis.yml`](advanced.cordis.yml) adds Code Mode and the Cordis tools to the test composition.
+[`advanced.cordis.yml`](advanced.cordis.yml) adds PTC and the Cordis tools to the test composition.

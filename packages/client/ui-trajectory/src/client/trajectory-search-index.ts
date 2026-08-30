@@ -64,7 +64,6 @@ function recordSources(
       block.content,
       block.callId ?? '',
       block.toolName ?? '',
-      block.imageAlt ?? '',
     ]),
     searchableJson(cell.messageSource),
     searchableJson(cell.promptDetail),

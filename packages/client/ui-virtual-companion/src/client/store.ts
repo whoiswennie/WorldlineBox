@@ -6,6 +6,9 @@ import type {
   VirtualCompanionSnapshot,
 } from '../contracts.ts'
 
+/**
+ * Contract for directory state.
+ */
 export interface DirectoryState extends VirtualCompanionSnapshot {
   readonly phase: 'idle' | 'loading' | 'ready' | 'error'
   readonly error?: string
@@ -17,6 +20,9 @@ interface ApiEnvelope {
   error?: string
 }
 
+/**
+ * Contract for companion experience state.
+ */
 export interface CompanionExperienceState {
   /** Reveal coordinator reasoning, context injections, and Tool calls in the transcript. */
   showProcess: boolean
@@ -26,7 +32,10 @@ type CompanionExperienceActions = {
   setShowProcess: (draft: CompanionExperienceState, visible: boolean) => void
 }
 
-/** Create the per-session, persisted presentation preference shared by companion chat seats. */
+/**
+ *  Create the per-session, persisted presentation preference shared by companion chat seats.
+ * @returns The resulting value.
+ */
 export function createCompanionExperienceStore(): EngineStoreHandle<
   CompanionExperienceState,
   CompanionExperienceActions
@@ -132,7 +141,10 @@ export const companionStore = {
   },
 }
 
-/** Subscribe a component to the shared companion snapshot. */
+/**
+ *  Subscribe a component to the shared companion snapshot.
+ * @returns The resulting value.
+ */
 export function useCompanionStore(): DirectoryState {
   return useSyncExternalStore(
     listener => companionStore.subscribe(listener),

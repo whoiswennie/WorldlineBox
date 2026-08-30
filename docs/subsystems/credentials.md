@@ -226,7 +226,7 @@ Read-only view of the active account tenant.
 current(): AccountProfileSnapshot | undefined
 ```
 
-Source: [`packages/identity/account-profile/src/index.ts:15`](../../packages/identity/account-profile/src/index.ts)
+Source: [`packages/identity/account-profile/src/index.ts:21`](../../packages/identity/account-profile/src/index.ts)
 
 <a id="authorization-events"></a>
 

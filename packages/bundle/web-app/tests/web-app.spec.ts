@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -96,7 +96,7 @@ interface BashContribution {
 
 describe('web-app runtime glue', () => {
   it('mounts dist serving, prompt section, bash variables, and publishes the URL with the LAN snapshot', async () => {
-    stageDist()
+    const distIndex = stageDist()
     const ctx = new Context()
     // Editor markers and a project .env SSH value do not establish a remote launch.
     ctx.provide(WORLDLINE_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([
@@ -129,6 +129,7 @@ describe('web-app runtime glue', () => {
     expect(ctx.get('webRuntime')).toEqual({
       lanAddresses: ['192.168.1.5'],
       trustedHosts: ['192.168.1.5', 'lab.internal'],
+      frontendRoot: dirname(distIndex),
     })
     expect(log).toHaveBeenCalledWith('worldline web: http://127.0.0.1:4567 (LAN: http://192.168.1.5:4567)')
     const assembly = await ctx.systemPrompt.assemble()

@@ -53,7 +53,7 @@ Use the <toolName> tool ONLY when the user explicitly asks for a workflow or for
 
 #### 模型看到的内容
 
-工具可见时，已生成的默认 [`workflow` schema](../../../docs/tool-catalog.md#worldline-tool-workflow) 包含完整的 JavaScript 钩子与元数据约定；`toolName` 可以重命名该定义，模型会提交脚本、元数据和可选 args。
+工具可见时，已生成的默认 [`workflow` schema](../../../docs/tool-catalog.md#deepseek-aidsh-tool-workflow) 包含完整的 JavaScript 钩子与元数据约定；`toolName` 可以重命名该定义，模型会提交脚本、元数据和可选 args。
 
 #### Token 影响
 
@@ -82,4 +82,4 @@ Use the <toolName> tool ONLY when the user explicitly asks for a workflow or for
 - **父级轮次会阻塞到整个工作流结算**：没有后台启动／轮询接口，取消会丢弃局部输出并返回错误。
 - **`args` 必须是对象，Native 结果文本有界**：调用方把顶层数组／标量包装到字段中；规范工作流结果保持完整，超过 `maxResultChars` 的 JSON 会在面向模型的投影中截断，而不是存储在检索句柄背后。
 - **每次工具注册的工作流策略固定**：提供方选择、上限和工具名称属于部署配置，不是模型调用参数。
-- **持久记录只覆盖顶层且只供观察**：嵌套 Code Mode dispatch 不记录；记录故障会刻意退化为不完整前缀，而不改变执行。
+- **持久记录只覆盖顶层且只供观察**：嵌套 PTC mode dispatch 不记录；记录故障会刻意退化为不完整前缀，而不改变执行。

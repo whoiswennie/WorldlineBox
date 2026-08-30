@@ -151,6 +151,12 @@ describe('Web session model selection', () => {
         mediaTypes: ['image/png'],
       },
       validateImage,
+      validateImageBatch(inputs: readonly Parameters<typeof saveImage>[0][]) {
+        const validate = AttachmentStore.prototype as unknown as {
+          validateImageBatch(this: unknown, batch: readonly Parameters<typeof saveImage>[0][]): void
+        }
+        validate.validateImageBatch.call(attachments, inputs)
+      },
       saveImage,
     }
     ctx.provide('attachments', {

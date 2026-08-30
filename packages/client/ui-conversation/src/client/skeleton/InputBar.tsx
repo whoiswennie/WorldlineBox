@@ -26,7 +26,7 @@ import { deriveDecorations } from '../contract/decorations.ts'
 import type { DraftDecorations } from '../contract/decorations.ts'
 import type { EditRange } from '../contract/input.ts'
 import { attachmentErrorText, imageSizeText } from '../image-labels.ts'
-import { ReferenceIcon } from '../ReferenceIcon.tsx'
+import { ReferenceIcon } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ContextMeter } from './ContextMeter.tsx'
 import { PermissionSelect } from './PermissionSelect.tsx'
 import { isSafariBrowser, repairSafariTextareaLayout } from './safari.ts'
@@ -388,6 +388,10 @@ export function InputBar({
       // does NOT release (backspacing the token is the only exit gesture).
       keyboard.dismissPopup()
       if (keyboard.arbitrate('escape', composing) === 'consumed') e.preventDefault()
+      return
+    }
+    if (e.key === 'Tab') {
+      if (keyboard.arbitrate('tab', composing) === 'consumed') e.preventDefault()
       return
     }
     if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z' || e.key === 'y')) {

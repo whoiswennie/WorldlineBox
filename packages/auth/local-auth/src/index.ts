@@ -40,6 +40,7 @@ const BODY_LIMIT = 3 * 1_024 * 1_024
 const AVATAR_LIMIT = 2 * 1_024 * 1_024
 const ACTIVE_ACCOUNT_FILE = 'active-account.json'
 const MAX_SESSIONS_PER_ACCOUNT = 16
+const AVATAR_EXTENSIONS = ['png', 'jpg', 'webp'] as const
 
 /** Storage roots and legacy migration controls for local authentication. */
 export interface Config {
@@ -74,6 +75,13 @@ interface AuthDatabase {
   savedUserIds: number[]
   autoLoginUserIds: number[]
   sessions: SessionRecord[]
+}
+
+interface LocalAuthRuntimeOptions {
+  /** Account whose isolated runtime is active in this process. */
+  activeUserId?: number
+  /** Host-only directory where the active avatar is materialized for model tools. */
+  profileAssetRoot?: string
 }
 
 /** Account projection safe to expose to the authenticated local browser. */
@@ -122,8 +130,8 @@ function publicUser(account: AccountRecord): PublicUser {
 
 function normalizedUsername(value: unknown): { display: string; key: string } {
   const display = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : ''
-  if (display.length < 3 || display.length > 32) throw new AuthError('用户名长度应为 3 到 32 个字符')
-  if (/[\u0000-\u001f\u007f]/u.test(display)) throw new AuthError('用户名包含不可用字符')
+  if (display.length < 3 || display.length > 32) throw new AuthError('账号长度应为 3 到 32 个字符')
+  if (/[\u0000-\u001f\u007f]/u.test(display)) throw new AuthError('账号包含不可用字符')
   return { display, key: display.toLocaleLowerCase('zh-CN') }
 }
 
@@ -242,10 +250,15 @@ export class LocalAuthStore {
   private readonly activeAccountFile: string
   private data = emptyDatabase()
   private mutation = Promise.resolve()
+  private activeAvatarPath: string | undefined
   /** Initialization barrier covering load, legacy migration, and first save. */
   readonly ready: Promise<void>
 
-  constructor(private readonly logger: Context['logger'], config: Config = {}) {
+  constructor(
+    private readonly logger: Context['logger'],
+    config: Config = {},
+    private readonly runtime: LocalAuthRuntimeOptions = {},
+  ) {
     this.directory = config.root ?? process.env[WORLDLINE_AUTH_HOME_ENV] ?? worldlineHomePath('auth')
     this.file = join(this.directory, 'accounts.json')
     this.activeAccountFile = join(this.directory, ACTIVE_ACCOUNT_FILE)
@@ -263,7 +276,7 @@ export class LocalAuthStore {
         || !Array.isArray(candidate.savedUserIds)
         || !Array.isArray(candidate.sessions)
       ) {
-        throw new Error('账户数据库结构无效')
+        throw new Error('账号数据库结构无效')
       }
       let autoLoginUserIds: number[]
       if (Array.isArray(candidate.autoLoginUserIds)) {
@@ -291,7 +304,33 @@ export class LocalAuthStore {
     }
     this.data.sessions = this.data.sessions.filter(session => session.expiresAt > Date.now())
     if (this.data.accounts.length === 0) await this.migrateLegacyAccounts()
+    const active = this.runtime.activeUserId === undefined
+      ? undefined
+      : this.data.accounts.find(account => account.id === this.runtime.activeUserId)
+    if (active !== undefined) await this.materializeAvatar(active.id, active.avatar ?? '')
     await this.save()
+  }
+
+  private async materializeAvatar(userId: number, avatar: string): Promise<void> {
+    const root = this.runtime.profileAssetRoot
+    if (userId !== this.runtime.activeUserId || root === undefined) return
+    await mkdir(root, { recursive: true, mode: 0o700 })
+    if (avatar === '') {
+      await Promise.all(AVATAR_EXTENSIONS.map(extension =>
+        rm(join(root, `avatar.${extension}`), { force: true })))
+      this.activeAvatarPath = undefined
+      return
+    }
+    const match = /^data:image\/(png|jpeg|webp);base64,([a-z\d+/]+=*)$/iu.exec(avatar)
+    if (match?.[1] === undefined || match[2] === undefined) throw new AuthError('头像格式无效')
+    const extension = match[1].toLocaleLowerCase('en-US') === 'jpeg' ? 'jpg' : match[1].toLocaleLowerCase('en-US')
+    const target = join(root, `avatar.${extension}`)
+    const temporary = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+    await writeFile(temporary, Buffer.from(match[2], 'base64'), { mode: 0o600 })
+    await rename(temporary, target)
+    await Promise.all(AVATAR_EXTENSIONS.filter(candidate => candidate !== extension)
+      .map(candidate => rm(join(root, `avatar.${candidate}`), { force: true })))
+    this.activeAvatarPath = target
   }
 
   private async migrateLegacyAccounts(): Promise<void> {
@@ -313,7 +352,7 @@ export class LocalAuthStore {
         }))
         this.data.savedUserIds = saved.map(row => Number(row.user_id)).filter(Number.isSafeInteger)
         this.data.nextUserId = Math.max(0, ...this.data.accounts.map(account => account.id)) + 1
-        if (rows.length > 0) this.logger.info(`已迁移 ${rows.length} 个本地账户`)
+        if (rows.length > 0) this.logger.info(`已迁移 ${rows.length} 个本地账号`)
       } finally {
         database.close()
       }
@@ -363,6 +402,15 @@ export class LocalAuthStore {
   profile(userId: number): PublicUser | undefined {
     const account = this.data.accounts.find(candidate => candidate.id === userId)
     return account === undefined ? undefined : publicUser(account)
+  }
+
+  /**
+   * Return the Host-only materialized avatar for the active tenant.
+   * @param userId - Local account whose active-tenant avatar is requested.
+   * @returns Absolute avatar path for the active tenant, or undefined when unavailable.
+   */
+  profileAvatarPath(userId: number): string | undefined {
+    return userId === this.runtime.activeUserId ? this.activeAvatarPath : undefined
   }
 
   private async setActiveAccount(userId: number | null): Promise<void> {
@@ -438,7 +486,7 @@ export class LocalAuthStore {
     return this.exclusive(async () => {
       const username = normalizedUsername(body.username)
       const password = validatedPassword(body.password)
-      if (this.data.accounts.some(account => account.usernameKey === username.key)) throw new AuthError('该用户名已被注册', 409)
+      if (this.data.accounts.some(account => account.usernameKey === username.key)) throw new AuthError('该账号已被注册', 409)
       const now = Date.now()
       const account: AccountRecord = {
         id: this.data.nextUserId++,
@@ -469,7 +517,7 @@ export class LocalAuthStore {
       const account = this.data.accounts.find(candidate => candidate.usernameKey === username.key)
       const dummy = `${PASSWORD_PREFIX}$${'00'.repeat(32)}$${'00'.repeat(PASSWORD_BYTES)}`
       const matches = await verifyPassword(password, account?.passwordHash ?? dummy)
-      if (account === undefined || !matches) throw new AuthError('用户名或密码错误', 401)
+      if (account === undefined || !matches) throw new AuthError('账号或密码错误', 401)
       account.lastLoginAt = Date.now()
       await this.createSession(account, body.remember === true, body.autoLogin === true, res)
       await this.setActiveAccount(account.id)
@@ -477,12 +525,17 @@ export class LocalAuthStore {
     })
   }
 
-  /** Exchange a trusted single-use launcher proof for this container's own session cookie. */
+  /**
+   *  Exchange a trusted single-use launcher proof for this container's own session cookie.
+   * @param userId - user id value.
+   * @param res - res value.
+   * @returns The resulting value.
+   */
   async bootstrap(userId: number, res: ServerResponse): Promise<PublicUser> {
     await this.ready
     return this.exclusive(async () => {
       const account = this.data.accounts.find(candidate => candidate.id === userId)
-      if (account === undefined) throw new AuthError('启动授权对应的本地账户不存在', 401)
+      if (account === undefined) throw new AuthError('启动授权对应的本地账号不存在', 401)
       await this.createSession(account, true, true, res)
       return publicUser(account)
     })
@@ -523,7 +576,9 @@ export class LocalAuthStore {
     return this.exclusive(async () => {
       const account = this.accountBySession(req)
       if (account === undefined) throw new AuthError('请先登录账号', 401)
-      Object.assign(account, validatedProfile(body))
+      const profile = validatedProfile(body)
+      await this.materializeAvatar(account.id, profile.avatar ?? '')
+      Object.assign(account, profile)
       await this.save()
       return publicUser(account)
     })
@@ -537,7 +592,7 @@ export class LocalAuthStore {
     await this.ready
     await this.exclusive(async () => {
       const userId = Number(body.userId)
-      if (!Number.isSafeInteger(userId)) throw new AuthError('账户标识无效')
+      if (!Number.isSafeInteger(userId)) throw new AuthError('账号标识无效')
       this.data.savedUserIds = this.data.savedUserIds.filter(id => id !== userId)
       await this.save()
     })
@@ -626,15 +681,24 @@ export function createLocalAuthHandler(
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
-  const store = new LocalAuthStore(ctx.logger, config)
   const managed = process.env[WORLDLINE_ACCOUNT_MANAGED_ENV] === '1'
     || process.env.WORLDLINE_DESKTOP_MANAGED === '1'
   const rawAccountId = process.env[WORLDLINE_ACCOUNT_ID_ENV]
   const expected = rawAccountId !== undefined && /^[1-9]\d*$/u.test(rawAccountId)
     ? Number(rawAccountId)
     : undefined
+  const store = new LocalAuthStore(ctx.logger, config, {
+    ...(expected === undefined ? {} : { activeUserId: expected }),
+    profileAssetRoot: worldlineHomePath('profile'),
+  })
   ctx.provide('localAccountProfile', {
-    current: () => expected === undefined ? undefined : store.profile(expected),
+    current: () => {
+      if (expected === undefined) return undefined
+      const profile = store.profile(expected)
+      if (profile === undefined) return undefined
+      const avatarPath = store.profileAvatarPath(expected)
+      return { ...profile, ...(avatarPath === undefined ? {} : { avatarPath }) }
+    },
   } satisfies AccountProfile)
   const handler = createLocalAuthHandler(store, managed
     ? {

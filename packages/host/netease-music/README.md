@@ -10,7 +10,7 @@ Host authority for a user-selected public NetEase playlist, defaulting to `18322
 
 #### What the model sees
 
-Nothing. The Remote is consumed only by the global music UI.
+Nothing. The `ctx.remote.neteaseMusic` surface is consumed only by the global music UI.
 
 #### Token effect
 

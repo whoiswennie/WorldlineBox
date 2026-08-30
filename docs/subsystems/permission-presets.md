@@ -34,8 +34,9 @@ interface Config {
    */
   presets?: Record<string, PresetSpec>
   /**
-   * Default for new sessions. When omitted, the preset matching the composed
-   * sandbox and approval defaults is used.
+   * Default for fresh sessions and eligible confirmed blank reuse. When
+   * omitted, the preset matching the composed sandbox and approval defaults
+   * is used.
    */
   defaultPreset?: string
 }

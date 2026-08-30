@@ -7,7 +7,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
-import type { LlmCallConfig, LlmFailure, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
+import type { LlmCallConfig, LlmFailure, ReasoningEffortId, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
 import type { AgentCancelCause, Session, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
 export type { AgentCancelCause } from '@deepseek-ai/dsh-session'
 import type { Inbox } from './inbox.ts'
@@ -26,6 +26,8 @@ export interface AgentOptions {
   provider?: string
   /** Model id interpreted by the selected provider adapter. */
   model?: string
+  /** Adapter-owned reasoning effort for the selected provider/model route. */
+  reasoningEffort?: ReasoningEffortId
   /** Maximum output tokens for each conversation-model request. */
   maxTokens?: number
 }
@@ -52,7 +54,12 @@ export type AgentStatus = 'idle' | 'running'
 /** Whether and with which messages the loop enters a proposed step. */
 export type PreStepDecision =
   | { kind: 'reject' }
-  | { kind: 'enter'; messages: UserMessage[] }
+  | {
+    kind: 'enter'
+    messages: UserMessage[]
+    /** Start a distinct model-message series before this step's admitted messages. */
+    startsRequestSeries?: true
+  }
 
 /** Action returned by a listener that owns model-request recovery. */
 export type RequestErrorAction = { kind: 'retry' } | undefined

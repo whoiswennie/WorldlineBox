@@ -4,6 +4,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { MessageImagesOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: the 'conversation.view' SlotMap row (declared by the slot's
@@ -19,8 +20,21 @@ import { registerTrajectoryConversationView } from './trajectory-snapshot-builde
 import { registerTrajectoryToolDefinition } from './trajectory-tool-definition.ts'
 import { TrajectoryView, type TrajectoryViewInjected } from './TrajectoryView.tsx'
 
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** Optional renderer for durable images embedded in the trajectory ledger. */
+    'conversation.trajectory.images': {
+      kind: 'single'
+      scope: 'session'
+      owner: MessageImagesOwnerProps
+    }
+  }
+}
+
 /** Required services: the conversation slot, registries, ordinary Session paging, and the locale service. */
-export const inject = ['slots', 'conversationEvents', 'conversationViews', 'sessions', 'locale']
+export const inject = [
+  'slots', 'conversationEvents', 'conversationViews', 'sessions', 'locale',
+]
 
 /**
  * Client plugin body: register the trajectory view tab. The registration
@@ -46,6 +60,9 @@ export function apply(ctx: Context): void {
     order: 10,
     locale: NS,
     label: () => t('view.trajectory'),
+    children: {
+      'conversation.trajectory.images': { kind: 'single', scope: 'session' },
+    },
     inject: (sessionId: SessionId): TrajectoryViewInjected => {
       const session = ctx.sessions.binding(sessionId)?.session
       if (session === undefined) {
@@ -58,6 +75,7 @@ export function apply(ctx: Context): void {
           await session.loadOlder()
           return session.getSnapshot().views.get('trajectory') !== before
         },
+        loadImage: attachment => ctx.conversation.resolveImage(sessionId, attachment),
         setActualDuration: (value) => { duration.set(value) },
       }
     },

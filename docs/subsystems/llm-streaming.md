@@ -353,7 +353,7 @@ One model call is a fully-assembled `GenerateOptions`. The adapter answers with 
 
 Source: [`packages/llm/llm/src/types.ts`](../../packages/llm/llm/src/types.ts)
 
-Provider and model discovery uses small provider-neutral descriptors. A model catalog is advisory: routing still keys on a registered provider, and an adapter may accept unlisted model ids.
+Provider and model discovery uses small provider-neutral descriptors. A model catalog is advisory: routing still keys on a registered provider.
 
 Registering an adapter returns a handle: the disposer, plus the atomic route replacement a plugin whose route set is user-configurable needs.
 
@@ -555,7 +555,7 @@ interface FinishReasonMap {
 
 `FinishReason = FinishReasonMap[keyof FinishReasonMap]`. `TokenUsage` (per-call accounting with disjoint cache fields) is detailed [below](#tokenusage).
 
-`GenerateOptions.tools` carries `ToolSchema` — the JSON-schema description of a tool, as sent to the model. It is declared in worldline-llm (not worldline-tools) precisely because it is part of the request the loop assembles every step:
+`GenerateOptions.tools` carries `ToolSchema` — the JSON-schema description of a tool, as sent to the model. It is declared in dsh-llm (not dsh-tools) precisely because it is part of the request the loop assembles every step:
 
 ```ts type-equiv
 /**
@@ -626,7 +626,7 @@ interface LlmDiscoveredModel {
 
 ### The request envelope: `LlmCallConfig` and the logged header
 
-The loop builds each request from logged state. `EpochHeader` records call config, marks the fields supplied by adapter defaults, and records the rendered prompt and authoritative returned tool order (configured by `toolOrder`, or lexicographic when unset) through full `request/header` snapshots. Together with derived history, this makes the request reconstructable from the session log. See [session.md](session.md#the-request-header-event-requestheader) and the reconstructability contract.
+The loop builds each request from logged state. `EpochHeader` records call config, marks the fields supplied by adapter defaults, and records the rendered prompt and authoritative returned tool order (configured by `toolOrder`, or lexicographic when unset) through full `request/header` snapshots. Together with derived history, this makes the request reconstructable from the session log. See [session.md](session.md#the-request-header-event-requestheader).
 
 `agent/request` receives a frozen call-config seed and may return a replacement to switch provider, model, reasoning effort, or sampling. Before the waterfall, the loop removes values marked as adapter defaults so exact-model preparation materializes the selected route's current values; unmarked explicit settings remain in the proposal. After the waterfall, preparation rejects unsupported explicit effort ids without clamping and logs the effective config plus the fields supplied by adapter defaults under the turn signal. The prepared call keeps one adapter registration through dispatch. Requests reaching `llm/stream` are deep-frozen, so mutation throws, and carry a process-local loop identity so observers do not confuse separately logged frozen auxiliary calls with conversation requests.
 
@@ -662,6 +662,12 @@ interface LlmCallConfigAdapterDefaults {
 }
 ```
 
+## Official DeepSeek request extensions
+
+`ctx.deepseekLlmApiExtensions` is the provider-specific registry for additive top-level fields on `deepseek-official` requests. Contributor plugins use `register(field, provider)` to claim one field; the adapter calls `prepare(request)` after serializing its base body and merges the returned fields before HTTP. The prepared `accept()` transaction runs after 2xx, so a contributor can commit delivery state without treating a transport or provider rejection as acceptance. Preparation, collision, and acceptance failures use `REQUEST_EXTENSION` and fail the model request.
+
+The [wire reference](../deepseek-llm-api-wire-extensions.md) defines the exact request headers, extension transaction, field versions, and receiver obligations. The shipped composition registers [`dsh_session_log`](../../packages/session/session-log-deepseek/README.md) as a lossless incremental canonical-log suffix and [`dsh_plugin_packages`](../../packages/llm/plugin-package-inventory-deepseek/README.md) as the complete active Loader-backed package set. These fields remain outside model messages and are absent from the pi-ai adapter path.
+
 ## Service and provider contracts
 
 `LlmAdapter` is the provider contract: subclass, implement `stream()`, and register one adapter instance with `ctx.llm.registerAdapter(providers, adapter)`. `GenerateOptions.provider` selects the registered adapter; `GenerateOptions.model` is passed to that adapter and need not be registered at lifecycle start. Duplicate provider routes fail atomically. Optional `providerRetryPolicy()` is captured per route with normal defaults, while `providerInfo()` and asynchronous `listModels()` feed `LlmRuntime.listProviders()` / `listModels()` with detached selector metadata. That catalog is advisory rather than a request whitelist: the adapter remains authoritative and may accept unlisted model ids. One asynchronous `resolveModel()` query returns exact model identity plus optional correctness-sensitive context capacity, an adapter-configured `defaultMaxTokens`, and ordered model-owned reasoning ids with an optional deployment default; absent fields mean unavailable metadata or provider-owned behavior, not invalid catalog membership. The resolver receives optional cancellation and must settle promptly after abort. `LlmRuntime.resolveModelInfo()` validates and detaches the aggregate. At the final adapter boundary, `resolveCallConfig()` materializes the output default only when `maxTokens` is absent and validates and materializes reasoning, so direct calls cannot bypass either configured behavior; direct dispatch captures one registration before awaiting that resolution. The agent loop instead uses `prepareCall()` to keep the same registration across model resolution, durable header logging, and dispatch, retain detached context metadata from that exact lookup, and report which config fields the adapter defaulted. Adapter lookup happens at the terminal continuation of the `llm/stream` waterfall, so a listener may short-circuit the call or route a mutable one-shot request before lookup. AgentLoop observes a request attempt once the outer waterfall returns a stream handle; that limited boundary does not prove a lazy terminal adapter was constructed or began provider I/O. The `block-start` / `block-end` `index` correlation and the assembler together mean an adapter only has to emit well-formed chunks — block reassembly is not each adapter's problem. [architecture.md](../architecture.md#turn-flow) shows where `ctx.llm.stream()` and the `llm/stream` waterfall sit in one turn.
@@ -675,6 +681,8 @@ interface PreparedLlmCall {
   readonly retryPolicy: ResolvedRetryPolicy
   /** Detached context metadata resolved with the registration-bound call. */
   readonly context?: LlmModelContext
+  /** Exact model modalities captured with the dispatch generation. */
+  readonly inputModalities?: readonly ModelModality[]
   /** Config fields materialized by the captured adapter rather than proposed by the caller. */
   readonly adapterDefaults: LlmCallConfigAdapterDefaults
   /**
@@ -731,6 +739,16 @@ declare abstract class LlmAdapter {
     _signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo>;
   /**
+   * Resolve provider-side request-image pricing for one exact model route.
+   * The default declares none, so consumers fall back to their own neutral
+   * estimate. Implementations must answer synchronously without I/O; the
+   * token meter resolves this per measurement.
+   * @param _provider - a route passed to `registerAdapter()` for this instance.
+   * @param _model - exact model id passed to {@link GenerateOptions.model}.
+   * @returns route-owned image pricing, or `undefined` when the route declares none.
+   */
+  imageRequestPricing(_provider: string, _model: string): LlmImageRequestPricing | undefined;
+  /**
    * Stream one model call as raw chunks. The only required method.
    * @param options - the fully-assembled request; implementations must honor `options.signal`.
    * @returns the chunk stream, obeying the adapter contract documented on `StreamChunk`.
@@ -748,6 +766,33 @@ declare abstract class LlmAdapter {
 ## Cordis API
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+
+<a id="ctxdeepseekllmapiextensions--deepseekllmapiextensionregistry"></a>
+
+### `ctx.deepseekLlmApiExtensions` — `DeepSeekLlmApiExtensionRegistry`
+
+Registry of independently owned top-level fields for official DeepSeek requests.
+
+```ts cordis-catalog
+/**
+ * Register the sole provider of one top-level request field. Registration is effect-scoped.
+ * @param field - declaration-merged field owned by the provider.
+ * @param provider - request-time field preparation and optional acceptance behavior.
+ * @returns disposer that releases the field.
+ */
+register<K extends keyof DeepSeekLlmApiExtensionMap>( field: K, provider: DeepSeekLlmApiExtensionProvider<DeepSeekLlmApiExtensionMap[K]>, ): () => Promise<void>
+
+/**
+ * Prepare every currently registered field from one immutable base request.
+ * Preparation failures reject before HTTP dispatch. Field values are cloned and frozen;
+ * providers retain no mutable alias to the outgoing request.
+ * @param request - exact serialized request facts before extension fields.
+ * @returns detached fields and their idempotent joint acceptance transaction.
+ */
+async prepare(request: DeepSeekLlmApiExtensionRequest): Promise<PreparedDeepSeekLlmApiExtensions>
+```
+
+Source: [`packages/llm/deepseek-llm-api-extensions/src/index.ts:66`](../../packages/llm/deepseek-llm-api-extensions/src/index.ts)
 
 <a id="ctxllm--llmruntime"></a>
 
@@ -827,6 +872,14 @@ providerRetryPolicy(provider: string): ResolvedRetryPolicy
 async listModels(provider: string): Promise<LlmModelInfo[]>
 
 /**
+ * Resolve one registered route's synchronous image pricing.
+ * @param provider - registered provider route to inspect.
+ * @param model - exact model id passed to the adapter.
+ * @returns route-specific image pricing, or undefined when the adapter has none.
+ */
+imageRequestPricing(provider: string, model: string): LlmImageRequestPricing | undefined
+
+/**
  * Resolve and validate all metadata from the adapter that owns one exact
  * route. The result is detached from adapter-owned objects; catalog
  * membership remains advisory and does not control request routing.
@@ -873,7 +926,7 @@ async prepareCall(config: LlmCallConfig, signal?: AbortSignal): Promise<Prepared
 stream(options: GenerateOptions): AsyncIterable<StreamChunk>
 ```
 
-Source: [`packages/llm/llm/src/index.ts:284`](../../packages/llm/llm/src/index.ts)
+Source: [`packages/llm/llm/src/index.ts:301`](../../packages/llm/llm/src/index.ts)
 
 <a id="llm-events"></a>
 
@@ -922,5 +975,5 @@ Waterfall around every streaming model call (retry, replay, routing). Bound to t
 'llm/stream'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
 ```
 
-Source: [`packages/llm/llm/src/index.ts:64`](../../packages/llm/llm/src/index.ts)
+Source: [`packages/llm/llm/src/index.ts:66`](../../packages/llm/llm/src/index.ts)
 <!-- END GENERATED cordis-surface -->

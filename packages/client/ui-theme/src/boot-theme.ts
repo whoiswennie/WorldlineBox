@@ -6,10 +6,10 @@
  */
 
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
-import { DEFAULT_PREFERENCE, type ThemePreference } from './theme-settings.ts'
+import { DEFAULT_FONT_SIZE, DEFAULT_PREFERENCE, type ThemePreference } from './theme-settings.ts'
 
 /** Build the inline script body for one schema-validated built-in preference. */
-function bootThemeScript(preference: ThemePreference): string {
+function bootThemeScript(preference: ThemePreference, fontSize: number): string {
   return `(() => {
   const preference = ${JSON.stringify(preference)}
   const systemDark = preference === 'system'
@@ -18,17 +18,20 @@ function bootThemeScript(preference: ThemePreference): string {
   const dark = preference === 'dark' || systemDark
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
   document.body.toggleAttribute('data-ds-dark-theme', dark)
+  document.body.style.setProperty('--dsh-content-font-size', ${JSON.stringify(`${fontSize}px`)})
 })()`
 }
 
 /**
- * The theme bootstrap as an injection row: an inline script immediately after
- * the opening body tag, before the shell mount and module script.
- * @param preference - Current Host-backed built-in preference.
- * @returns the body script row.
- */
+* The theme bootstrap as an injection row: an inline script immediately after
+* the opening body tag, before the shell mount and module script.
+* @param preference - Current Host-backed built-in preference.
+* @param fontSize - Current Host-backed content font size in px.
+* @returns the body script row.
+*/
 export function bootThemeInjection(
   preference: ThemePreference = DEFAULT_PREFERENCE,
+  fontSize: number = DEFAULT_FONT_SIZE,
 ): IndexInjection {
-  return { kind: 'script', placement: 'body', text: bootThemeScript(preference) }
+  return { kind: 'script', placement: 'body', text: bootThemeScript(preference, fontSize) }
 }

@@ -17,6 +17,7 @@ import {
   DEFAULT_PROFILE_BUNDLES,
   initProfile,
   PROFILE_TEMPLATES,
+  PROFILE_PATCH_RELOAD,
   readProfileManifest,
   resolveProfileDir,
 } from '@deepseek-ai/dsh-app-boot'
@@ -33,7 +34,11 @@ const NAME = 'worldline'
 export function runPlugin(profile: string, args: readonly string[]): number {
   const dir = resolveProfileDir(profile)
   if (!existsSync(join(dir, 'package.json'))) {
-    initProfile(dir, PROFILE_TEMPLATES[profile] ?? DEFAULT_PROFILE_BUNDLES)
+    initProfile(
+      dir,
+      PROFILE_TEMPLATES[profile] ?? DEFAULT_PROFILE_BUNDLES,
+      PROFILE_PATCH_RELOAD[profile],
+    )
     process.stderr.write(`${NAME}: initialized profile ${profile} at ${dir}\n`)
   }
   const before = readProfileManifest(NAME, dir)

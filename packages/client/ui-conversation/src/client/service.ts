@@ -60,6 +60,8 @@ export interface IConversation {
    * @returns completion of the page pull.
    */
   loadOlder(): Promise<void>
+  /** Resolve one durable image for a session-scoped browser presentation slot. */
+  resolveImage(sessionId: SessionId, attachment: ImageAttachmentRef): Promise<string>
 }
 
 /** Create one browser-only draft descriptor; only its id enters input state. */

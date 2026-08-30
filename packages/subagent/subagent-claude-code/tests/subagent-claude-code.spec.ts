@@ -59,8 +59,8 @@ type QueryFactory = (params: {
 
 const queryMock = vi.hoisted(() => vi.fn<QueryFactory>())
 
-const CLAUDE_AGENT_SDK_VERSION = '0.3.220'
-const CLAUDE_CODE_VERSION = '2.1.220'
+const CLAUDE_AGENT_SDK_VERSION = '0.3.241'
+const CLAUDE_CODE_VERSION = '2.1.241'
 const CLAUDE_PLATFORM_PACKAGES = [
   '@anthropic-ai/claude-agent-sdk-darwin-arm64',
   '@anthropic-ai/claude-agent-sdk-darwin-x64',
@@ -665,7 +665,7 @@ describe('task admission and package contracts', () => {
     child.stdout.end()
     await expect(run.result).resolves.toEqual({
       output: [],
-      diagnostic: expectedFailureDiagnostic('query-run', 'missing-result'),
+      diagnostic: expectedFailureDiagnostic('query-run', 'invalid-result'),
       stopReason: 'error',
     })
     expect(warn).toHaveBeenCalledWith(
@@ -840,6 +840,7 @@ describe('query options and result mapping', () => {
     const diagnostics: string[] = []
     const spec: ClaudeCodeRunSpec = {
       cwd: '/workspace',
+      model: 'claude-sonnet-test',
       permissionMode: 'acceptEdits',
       env: {
         HOST_VISIBLE: 'overridden',
@@ -861,6 +862,7 @@ describe('query options and result mapping', () => {
     expect(options).toMatchObject({
       abortController: controller,
       cwd: '/workspace',
+      model: 'claude-sonnet-test',
       persistSession: false,
       disallowedTools: ['AskUserQuestion'],
       permissionMode: 'acceptEdits',
@@ -897,14 +899,14 @@ describe('query options and result mapping', () => {
         message: 'enter SECRET_TOKEN',
         requestedSchema: { secret: true },
       },
-      { signal: callbackSignal },
+      { signal: callbackSignal, requestId: 'request-2' },
     )).resolves.toEqual({ action: 'decline' })
     await expect(options.onUserDialog!(
       {
         dialogKind: 'refusal_fallback_prompt',
         payload: { path: '/private/secret.txt', token: 'SECRET_TOKEN' },
       },
-      { signal: callbackSignal },
+      { signal: callbackSignal, requestId: 'request-3' },
     )).resolves.toEqual({ behavior: 'cancelled' })
     expect(diagnostics).toEqual([
       'Claude Code unattended decision (mode: acceptEdits; request: tool permission; decision: denied): the provider does not request human approval',
@@ -967,23 +969,23 @@ describe('query options and result mapping', () => {
   it('accepts only a non-error success with a non-blank final result', () => {
     expect(successfulResult(success('exact final'))).toBe('exact final')
     expect(() => successfulResult(success('answer', true)))
-      .toThrow(expectedFailureDiagnostic('query-run', 'invalid-success'))
+      .toThrow(expectedFailureDiagnostic('query-run', 'invalid-result'))
     expect(() => successfulResult(success(' \n ')))
-      .toThrow(expectedFailureDiagnostic('query-run', 'invalid-success'))
+      .toThrow(expectedFailureDiagnostic('query-run', 'invalid-result'))
     const sdkFailure = () => successfulResult(failure(
       'error_during_execution',
       ['SECRET_TOKEN', '/private/secret.txt'],
     ))
     expect(sdkFailure).toThrow(expectedFailureDiagnostic(
       'query-run',
-      'error_during_execution',
+      'product-error',
     ))
     expect(sdkFailure).not.toThrow('SECRET_TOKEN')
     expect(sdkFailure).not.toThrow('/private/secret.txt')
     expect(() => successfulResult(failure(
       'error_max_turns',
       [],
-    ))).toThrow(expectedFailureDiagnostic('query-run', 'error_max_turns'))
+    ))).toThrow(expectedFailureDiagnostic('query-run', 'limit'))
 
     const unknown = {
       type: 'result',
@@ -1009,7 +1011,7 @@ describe('query options and result mapping', () => {
     })
     await expect(consumeClaudeQuery(
       queryFrom([{ type: 'system', subtype: 'init' } as SDKMessage]),
-    )).rejects.toThrow(expectedFailureDiagnostic('query-run', 'missing-result'))
+    )).rejects.toThrow(expectedFailureDiagnostic('query-run', 'invalid-result'))
 
     const onPermissionDenied = vi.fn()
     await expect(consumeClaudeQuery(queryFrom([
@@ -1047,14 +1049,14 @@ describe('run publication, cancellation, and settlement', () => {
     expect(fixture.child.terminate).toHaveBeenCalledOnce()
   })
 
-  it('flattens every SDK error result without inventing shared stop reasons', async () => {
-    const subtypes: ErrorSubtype[] = [
-      'error_during_execution',
-      'error_max_turns',
-      'error_max_budget_usd',
-      'error_max_structured_output_retries',
+  it('groups SDK errors by parent-action category without changing stop reasons', async () => {
+    const cases: Array<readonly [ErrorSubtype, string]> = [
+      ['error_during_execution', 'product-error'],
+      ['error_max_turns', 'limit'],
+      ['error_max_budget_usd', 'limit'],
+      ['error_max_structured_output_retries', 'limit'],
     ]
-    for (const subtype of subtypes) {
+    for (const [subtype, category] of cases) {
       const fixture = fakeRun([failure(subtype)])
       const onError = vi.fn()
       const run = await startClaudeCodeRun(
@@ -1063,7 +1065,7 @@ describe('run publication, cancellation, and settlement', () => {
       )
       await expect(run.result).resolves.toEqual({
         output: [],
-        diagnostic: expectedFailureDiagnostic('query-run', subtype),
+        diagnostic: expectedFailureDiagnostic('query-run', category),
         stopReason: 'error',
       })
       expect(onError).toHaveBeenCalledWith(
@@ -1083,7 +1085,7 @@ describe('run publication, cancellation, and settlement', () => {
     const result = await run.result
     expect(result).toEqual({
       output: [],
-      diagnostic: `${expectedFailureDiagnostic('query-run', 'error_during_execution')}\nClaude Code unattended decision (mode: dontAsk; request: tool permission; decision: denied): Claude Code denied the request before an interactive prompt`,
+      diagnostic: `${expectedFailureDiagnostic('query-run', 'product-error')}\nClaude Code unattended decision (mode: dontAsk; request: tool permission; decision: denied): Claude Code denied the request before an interactive prompt`,
       stopReason: 'error',
     })
     expect(result.diagnostic).not.toContain('SECRET_TOKEN')
@@ -1126,7 +1128,7 @@ describe('run publication, cancellation, and settlement', () => {
       output: [],
       diagnostic: expectedFailureDiagnostic(
         'query-run',
-        'error_during_execution',
+        'product-error',
       ),
       stopReason: 'error',
     })
@@ -1163,9 +1165,9 @@ describe('run publication, cancellation, and settlement', () => {
 
   it('maps invalid success and missing result to fixed query-run facts', async () => {
     for (const [messages, category] of [
-      [[success('answer', true)], 'invalid-success'],
-      [[success('')], 'invalid-success'],
-      [[{ type: 'system', subtype: 'init' } as SDKMessage], 'missing-result'],
+      [[success('answer', true)], 'invalid-result'],
+      [[success('')], 'invalid-result'],
+      [[{ type: 'system', subtype: 'init' } as SDKMessage], 'invalid-result'],
     ] as const) {
       const fixture = fakeRun(messages)
       const run = await startClaudeCodeRun(request(), fixture.spec)
@@ -1207,7 +1209,7 @@ describe('run publication, cancellation, and settlement', () => {
         output: [],
         diagnostic: expectedFailureDiagnostic(
           'process',
-          'process-exit',
+          'process',
           outcome,
         ),
         stopReason: 'error',

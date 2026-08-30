@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -66,7 +67,9 @@ afterEach(async () => {
       await exited
     }
   }
-  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true })
+  for (const home of homes.splice(0)) {
+    await rm(home, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 })
+  }
 })
 
 describe('built Web profile', () => {
@@ -114,7 +117,7 @@ describe('built Web profile', () => {
 
     const expected = [
       ['standard', '标准模式', 'order: 1'],
-      ['code', 'PTC 模式', 'order: 2'],
+      ['ptc', 'PTC 模式', 'order: 2'],
       ['minimal', '极简模式', 'order: 3'],
       ['cordis', '创造模式', 'order: 4'],
       ['virtual-companion', '虚拟伙伴', 'order: 5'],
@@ -130,9 +133,9 @@ describe('built Web profile', () => {
     expect(standard).toContain("name: '@deepseek-ai/dsh-tool-ask-user'")
     expect(standard).toContain('backgroundMode: continuable')
 
-    const code = readPreset('code', 'agent.cordis.yml')
-    expect(code).toContain("name: '@deepseek-ai/dsh-agent-tool-presentation'")
-    expect(code).toContain('mode: code')
+    const ptc = readPreset('ptc', 'agent.cordis.yml')
+    expect(ptc).toContain("name: '@deepseek-ai/dsh-agent-tool-presentation'")
+    expect(ptc).toContain('mode: ptc')
 
     const minimal = readPreset('minimal', 'agent.cordis.yml')
     expect(minimal).toContain('complete: true')
@@ -164,7 +167,7 @@ describe('built Web profile', () => {
 
   it('mounts every shipped agent preset through the production session boundary', async () => {
     const url = await launchBuiltWeb()
-    for (const agentPreset of ['standard', 'code', 'minimal', 'cordis', 'virtual-companion']) {
+    for (const agentPreset of ['standard', 'ptc', 'minimal', 'cordis', 'virtual-companion']) {
       const sessionId = `preset-${agentPreset}`
       const response = await fetch(`${url}/api/session.create`, {
         method: 'POST',

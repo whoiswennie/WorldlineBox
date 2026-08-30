@@ -19,11 +19,11 @@ These package-specific rules supplement the repo-wide [conventions](../AGENTS.md
 
 [Naming rules](../docs/cookbook/adding-a-package.md#name-the-role-that-exists):
 
-- All Harness and Worldline-specific packages use `@deepseek-ai/dsh-*` technical coordinates; vendored framework packages retain their upstream `@deepseek-ai/*` coordinates. Product identity remains Worldline regardless of the internal package coordinate.
+- Harness uses `@deepseek-ai/dsh-*`; vendored frameworks keep upstream coordinates. Product: Worldline.
 
 - **Package tsconfig:** extends `tsconfig.base.json` (Client: `tsconfig.base.client.json`), uses `rootDir: src`, `outDir: lib/types`, and references each workspace dependency plus `runtime-diagnostics/invariants`; registers in exactly one aggregate. Only `api/remotes` splits for generated contracts; ordinary two-entry Client plugins do not ([layout](../docs/development.md#typescript-project-layout)).
 - `src/types.ts` contains only types — no runtime code.
 - Tests live at package level under `tests/`, not `src/__tests__/`.
-- A package's README and JSDoc are part of the change: altered behavior (config keys, defaults, error codes, wire fields) updates them in the same commit. `doc-sync` gates what it can; keep prose complete and concise, and verify accuracy against code.
+- README and JSDoc are part of a change: altered config, defaults, errors, or wire fields update them together. `doc-sync` gates what it can; keep prose concise and code-accurate.
 - Package READMEs document model, token, and KV-cache effects using the [canonical Model Experience format](../docs/cookbook/adding-a-package.md#4-write-the-package-readme).
 - Package READMEs put durable consumer gaps and non-obvious maintainer constraints under `## Known Limitations and Deferred Work`; ordinary cleanup stays in its TODO. Packages with none use a justified [allowlist entry](../scripts/verify-package-readme-limitations.ts).

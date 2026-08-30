@@ -11,6 +11,7 @@ import { registerToolConversationNode } from './tool.ts'
 import { registerTurnErrorConversationNode } from './turn-error.ts'
 import { registerTurnMaxTokensConversationNode } from './turn-max-tokens.ts'
 import { registerTurnTailConversationNode } from './turn-tail.ts'
+import { registerTurnProcess } from './turn-process.ts'
 
 /**
  * Register the Chat business Definitions and target builder contributed by this package.
@@ -26,6 +27,7 @@ export function registerConversationNodes(ctx: Context): void {
   registerRetryConversationNode(ctx)
   registerTurnErrorConversationNode(ctx)
   registerTurnMaxTokensConversationNode(ctx)
+  registerTurnProcess(ctx)
   registerTurnTailConversationNode(ctx)
   registerUnknownConversationFallback(ctx)
   registerChatConversationView(ctx)

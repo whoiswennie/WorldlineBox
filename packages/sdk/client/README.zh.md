@@ -4,26 +4,29 @@
 
 以子进程方式驱动 Worldline 运行时、走 stdio JSON-RPC 的 TypeScript 客户端 SDK——[Python SDK](../../../python/README.md)（`worldline-fantasy-project`）的设计孪生，共享同一个运行时对端、协议与分层：`DeepSeekHarness` 是高层自有运行 API，`HarnessClient` 是低层协议客户端。包（package）根枚举消费方接口：两层客户端、面向调用方的类型和 `JsonRpcResponseError`；源模块、规范化辅助函数与订阅投递机制不供消费方导入。纯库：不在任何 Cordis 上下文注册；它所 spawn 的运行时进程是一个完整 harness，其组成由自己的 `cordis.yml` 决定。
 
-与 Python SDK 不同，启动规格完全显式（`command`/`args`）：本包面向仓库近旁的 TypeScript 消费方，包括 [`worldline-subagent-dsh-sdk`](../../subagent/subagent-dsh-sdk/README.md) 后端和自动化；它们知道自己要启动哪个运行时。捆绑运行时解析（寻找打包可执行文件）仍归 Python 发行版负责。
+启动接口现在以 profile 为中心。调用方可以显式提供 `dshBin`，也可以省略它，让客户端解析同版本的 `@deepseek-ai/dsh` 依赖；客户端统一构造 `worldline --profile <name>` 参数和有序的 `--patch` 叠加层。这样 SDK、ACP、CLI 与打包运行时共享同一条应用组合路径，不再暴露原始 `command`/`args` 作为第二套运行时 API。
 
 ## DeepSeekHarness
 
 ```ts
 import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 
 await using harness = new DeepSeekHarness({
-  launch: { command: 'node', args: ['lib/bin.js', 'cordis.yml'] },
+  profile: 'sdk',
+  patches: ['./automation.cordis.patch.yml'],
   provider: 'deepseek-official',
   model: 'deepseek-v4-flash',
+  reasoningEffort: ReasoningEffortId('max'),
   maxTokens: 49_152,
 })
 const result = await harness.run('say hi')
 console.log(result.finalResponse)
 ```
 
-子进程在首次使用时惰性启动，并在多次 `run()` 之间持续归实例所有；必须 `close()`（或 `await using`），子进程才总能被回收。`start()` 记忆化 `initialize` 握手（工作区 cwd——在通过协议传输之前解析为绝对路径——加 provider/model 路由和可选的正整数 `maxTokens` 输出上限）；握手失败会回收运行时并换入全新客户端，后续调用用新子进程重试（直到终结性的 `close()`）。该上限作用于根 agent（智能体）的每次请求，并由进程内后代继承；压缩（compaction）插件单独持有摘要上限。`session(id?)` 打开具名或全新的会话句柄。
+子进程在首次使用时惰性启动，并在多次 `run()` 之间持续归实例所有；必须 `close()`（或 `await using`），子进程才总能被回收。`start()` 记忆化有界的 `initialize` 握手（默认 10 秒），其中包含工作区 cwd、provider/model 路由、可选且由适配器持有的 `reasoningEffort`，以及可选的正整数 `maxTokens` 输出上限。服务器会在接受提示词前校验确切路由。握手失败会回收运行时并换入全新客户端；若初始化和清理同时失败，有序 `AggregateError` 会保留两项原因，失败客户端也仍由实例持有。该上限作用于根 agent（智能体）的每次请求，并由进程内后代继承；压缩（compaction）插件单独持有摘要上限。`session(id?)` 打开具名或全新的会话句柄。
 
-`run(input, { sessionId?, onNotification? })` 拥有一个活动区间：它将提示词排入队列，等待其 `MessageId` 出现在持久的 `agent/inbox/spliced` 回执中，然后持续收集到整个 agent 下一次进入 `idle`。它返回 `RunResult { sessionId, finalResponse, events, notifications }`。`finalResponse` 是该区间内根会话最后提交的助手文本，并非因果上归属于该提示词的响应；steering（中途引导）、注入的上下文和其他排队工作都可能在 idle 前参与其中。`events` 包含根会话事件，`notifications` 还包含通过 `subagent.started` 发现的后代，均按协议传输顺序排列。结果不携带提示词级状态或轮次原因。传输丢失、超时和协议违例会导致 Promise 被拒绝；模型结果仍可在事件流中观察，但不会归属于某一输入。
+`run(input, { sessionId?, onNotification? })` 接受文本或 `SdkPromptContentBlock[]`；内联栅格图片块会进入运行时的持久附件库。它拥有一个活动区间：它将提示词排入队列，等待其 `MessageId` 出现在持久的 `agent/inbox/spliced` 回执中，然后持续收集到整个 agent 下一次进入 `idle`。它返回 `RunResult { sessionId, finalResponse, events, notifications }`。`finalResponse` 是该区间内根会话最后提交的助手文本，并非因果上归属于该提示词的响应；steering（中途引导）、注入的上下文和其他排队工作都可能在 idle 前参与其中。`events` 包含根会话事件，`notifications` 还包含通过 `subagent.started` 发现的后代，均按协议传输顺序排列。结果不携带提示词级状态或轮次原因。传输丢失、超时和协议违例会导致 Promise 被拒绝；模型结果仍可在事件流中观察，但不会归属于某一输入。
 
 ## HarnessClient
 
@@ -43,7 +46,6 @@ console.log(result.finalResponse)
 
 ## 已知限制与暂缓事项
 
-- **无捆绑运行时解析**——调用方显式指定运行时可执行文件；打包可执行文件的发现留在 Python 侧，直到出现 TypeScript 发行版消费方。
 - **无轮次中取消**——协议层没有提示词取消方法；放弃轮次意味着关闭运行时（见协议的 [已知限制](../protocol/README.md)）。
 - **没有逐提示词结果或取消**——低层 `prompt()` 只返回入队回执；高层 `run()` 负责从回执收集到 idle，放弃该过程意味着关闭运行时。
 - **客户端→服务端通知与服务端→客户端请求**在协议两端都未实现；传输层为未来审批流保留了承载能力。

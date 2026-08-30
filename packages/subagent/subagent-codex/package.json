@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-subagent-codex",
   "description": "One-shot Codex subagent provider over the official app-server protocol",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": {
     "access": "public"
   },
@@ -44,7 +44,7 @@
   "dependencies": {
     "@deepseek-ai/dsh-sdk-protocol": "workspace:^",
     "@deepseek-ai/schemastery": "workspace:^",
-    "@openai/codex": "0.147.0"
+    "@openai/codex": "0.149.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis-plugin-loader": "workspace:^",

@@ -17,6 +17,7 @@ import type { ClientModuleLoaderTarget, WebBootEntry, WebBootGraph } from '../sr
 
 const MODULES_ID = '@deepseek-ai/dsh-client-modules'
 const RUNTIME_ID = '@deepseek-ai/dsh-client-runtime'
+const BOOTSTRAP_URL = '/plugins/_batch/bootstrap/boot/client.js'
 
 let root: string | undefined
 
@@ -83,6 +84,29 @@ function construct(packageNames: string[]): ClientModuleRegistry {
   return constructWithRoute(packageNames).service
 }
 
+async function routeRequest(route: WebRoute, url: string, method = 'GET'): Promise<{
+  status: number
+  headers: Record<string, string> | undefined
+  body: Buffer
+}> {
+  let status = 0
+  let headers: Record<string, string> | undefined
+  let body = Buffer.alloc(0)
+  const response = {
+    writeHead(nextStatus: number, nextHeaders?: Record<string, string>) {
+      status = nextStatus
+      headers = nextHeaders
+      return response
+    },
+    end(chunk?: Uint8Array) {
+      body = chunk === undefined ? Buffer.alloc(0) : Buffer.from(chunk)
+      return response
+    },
+  } as unknown as ServerResponse
+  await route.handler({ method, url } as IncomingMessage, response)
+  return { status, headers, body }
+}
+
 /** Execute the exact first inline script emitted by the Host boot rows. */
 function injectedFacade(graph: WebBootGraph): { html: string; target: ClientModuleLoaderTarget } {
   const html = renderIndexInjections(
@@ -103,6 +127,12 @@ const bootGraph = (): WebBootGraph => ({
     { id: MODULES_ID, url: '/plugins/modules.js?rev=m', rev: 'm' },
     { id: RUNTIME_ID, url: '/plugins/runtime.js?rev=r', rev: 'r' },
   ],
+  batches: [{
+    phase: 'bootstrap',
+    url: BOOTSTRAP_URL,
+    rev: 'boot',
+    entries: [MODULES_ID, RUNTIME_ID],
+  }],
 })
 
 describe('HTML bootstrap facade', () => {
@@ -110,12 +140,11 @@ describe('HTML bootstrap facade', () => {
     const graph = bootGraph()
     const { html, target } = injectedFacade(graph)
     const facadeAt = html.indexOf('window.__ModuleLoader__=')
-    const modulesAt = html.indexOf('<script src="/plugins/modules.js?rev=m"></script>')
-    const runtimeAt = html.indexOf('<script src="/plugins/runtime.js?rev=r"></script>')
+    const bootstrapAt = html.indexOf(`<script src="${BOOTSTRAP_URL}"></script>`)
     const graphAt = html.indexOf('globalThis["__WORLDLINE_BOOT__"] = ')
     const entryAt = html.indexOf('<script type="module" src="/index.js"></script>')
-    expect([facadeAt, modulesAt, runtimeAt, graphAt, entryAt]).toEqual([...new Set([
-      facadeAt, modulesAt, runtimeAt, graphAt, entryAt,
+    expect([facadeAt, bootstrapAt, graphAt, entryAt]).toEqual([...new Set([
+      facadeAt, bootstrapAt, graphAt, entryAt,
     ])].sort((a, b) => a - b))
 
     target.load({ id: MODULES_ID, factory: () => modulesClient })
@@ -169,7 +198,7 @@ describe('desktop account storage namespace', () => {
   it('injects the namespace before the boot graph and escapes script-breaking text', () => {
     const html = renderIndexInjections(
       '<html><head></head><body></body></html>',
-      bootInjections({ rev: 'r1', entries: [] }, 'user-7<unsafe'),
+      bootInjections({ rev: 'r1', entries: [], batches: [] }, 'user-7<unsafe'),
     )
     expect(html).toContain('globalThis["__WORLDLINE_STORAGE_NAMESPACE__"] = "user-7\\u003cunsafe"')
     expect(html.indexOf('__WORLDLINE_STORAGE_NAMESPACE__')).toBeLessThan(html.indexOf('__WORLDLINE_BOOT__'))
@@ -185,6 +214,25 @@ describe('desktop account storage namespace', () => {
 })
 
 describe('client bundle activation', () => {
+  it('serves one immutable initial batch and keeps HEAD bodyless', async () => {
+    const first = '@fixture/batch-first'
+    const second = '@fixture/batch-second'
+    for (const [name, marker] of [[first, 'FIRST'], [second, 'SECOND']] as const) {
+      const path = writePackage(name)
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, `window.${marker}=true\n`)
+    }
+    const { service, route } = constructWithRoute([first, second])
+    const batch = service.graph().batches.find(candidate => candidate.phase === 'application')
+    expect(batch?.entries).toEqual([first, second])
+    const response = await routeRequest(route, batch!.url)
+    expect(response.status).toBe(200)
+    expect(response.headers?.['cache-control']).toBe('public, max-age=31536000, immutable')
+    expect(response.body.toString('utf8')).toContain('FIRST')
+    expect(response.body.toString('utf8')).toContain('SECOND')
+    expect((await routeRequest(route, batch!.url, 'HEAD')).body).toHaveLength(0)
+  })
+
   it('accepts dsh.client metadata without rewriting its dependency ids', () => {
     const packageName = '@fixture/upstream-dsh-client'
     const clientPath = writePackage(packageName, {

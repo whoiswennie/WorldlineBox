@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { BrowserCommand, BrowserController, BrowserExecutionOptions } from '@deepseek-ai/dsh-browser'
+import { createScope } from '@deepseek-ai/dsh-scope'
+import type { Scope } from '@deepseek-ai/dsh-scope'
 import { CallId } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -72,5 +74,55 @@ describe('tool-browser composition', () => {
       command: { action: 'navigate', tabId: 'tab-1', url: 'example.com', timeoutMs: 1234 },
     })
     expect(calls[0]?.options?.signal).toBe(signal)
+  })
+
+  it('keeps an Agent on the visible Worldline runtime when legacy browser tools are global', async () => {
+    const ctx = await baseContext()
+    const controller: BrowserController = {
+      execute: vi.fn(async (
+        _sessionId: string,
+        command: BrowserCommand,
+        _options?: BrowserExecutionOptions,
+      ) => ({ action: command.action, tabs: [] })),
+    }
+    await ctx.plugin((inner: Context) => { inner.provide('browserController', controller) })
+    for (const legacyName of ['browser_open', 'browser_snapshot']) {
+      ctx.tools.register({
+        name: legacyName,
+        description: 'legacy browser tool',
+        parameters: { type: 'object', properties: {} },
+        output: {
+          schema: { type: 'string' },
+          render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) ?? '' }],
+        },
+        execute: async () => 'legacy',
+      })
+    }
+
+    const session = Session.create(SessionId('browser-scope'))
+    const agent = { id: session.id, session, options: {} } as Agent
+    let scope!: Scope
+    await ctx.plugin(Object.assign((inner: Context) => {
+      scope = createScope(inner, agent)
+    }, { inject: ['tools', 'systemPrompt', 'browserController'] }))
+    await scope.ctx.plugin(ToolBrowser)
+
+    expect(ctx.tools.schemas(agent).map(tool => tool.name)).toEqual(['browser_control'])
+    expect(ctx.tools.schemas().map(tool => tool.name).sort())
+      .toEqual(['browser_open', 'browser_snapshot'])
+    ctx.tools.register({
+      name: 'browser_download',
+      description: 'late legacy browser tool',
+      parameters: { type: 'object', properties: {} },
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) ?? '' }],
+      },
+      execute: async () => 'legacy',
+    })
+    expect(ctx.tools.schemas(agent).map(tool => tool.name)).toEqual(['browser_control'])
+    const prompt = await scope.ctx.systemPrompt.assemble({ scope: agent })
+    expect(prompt.sections.find(section => section.name === 'tool:browser-control')?.text)
+      .toContain('only browser runtime connected to the Worldline Browser pane')
   })
 })

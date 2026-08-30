@@ -1,5 +1,7 @@
 # Worldline native video tools
 
+English | [中文](README.zh.md)
+
 These executables are release inputs for the Worldline desktop application. They are not installed globally during development. The assisted Windows installer deploys them under `resources/tools/`, appends the two exact binary directories to the selected all-users or current-user `PATH`, and removes only those entries during uninstall.
 
 ## Windows x64 inventory

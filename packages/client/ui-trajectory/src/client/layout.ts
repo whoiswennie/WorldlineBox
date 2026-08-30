@@ -13,6 +13,7 @@ import type {
   ToolCallBlock,
   ToolResultNode,
 } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type {
   TrajectoryCellProps,
   TrajectorySourceBlock,
@@ -785,12 +786,7 @@ function assistantSourceBlock(block: AssistantBlock): TrajectorySourceBlock {
       callId: block.callId,
       toolName: block.name,
     }
-    // Attachment refs carry no fetchable bytes, so the record shows the
-    // durable metadata instead of an inline preview.
-    case 'image': return {
-      type: 'image',
-      content: stringifySourceValue(block.attachment),
-    }
+    case 'image': return { type: 'image', content: '', attachment: block.attachment }
     case 'other': return sourceBlock(block.block)
   }
 }
@@ -801,50 +797,26 @@ function sourceBlock(value: unknown): TrajectorySourceBlock {
   }
   const block = value as Record<string, unknown>
   const type = typeof block.type === 'string' ? block.type : 'unknown'
+  if (type === 'image' && isImageAttachmentRef(block.attachment)) {
+    return { type, content: '', attachment: block.attachment }
+  }
   if (typeof block.text === 'string') {
     return { type: type === 'reasoning' ? 'thinking' : type, content: block.text }
   }
-  const imageSrc = sourceImage(block)
-  const imageAlt = typeof block.alt === 'string' ? block.alt : undefined
   return {
     type,
-    content: imageSrc === undefined ? stringifySourceValue(value) : '',
-    ...(imageSrc !== undefined ? { imageSrc } : {}),
-    ...(imageAlt !== undefined ? { imageAlt } : {}),
+    content: stringifySourceValue(value),
   }
 }
 
-function sourceImage(block: Record<string, unknown>): string | undefined {
-  if (typeof block.type !== 'string' || !block.type.toLowerCase().includes('image')) return undefined
-  for (const candidate of [block.url, block.image_url]) {
-    if (typeof candidate === 'string') return safeImageSource(candidate)
-  }
-  if (typeof block.data === 'string') {
-    const mediaType = [block.mimeType, block.mediaType, block.media_type]
-      .find((candidate): candidate is string => typeof candidate === 'string')
-      ?? 'image/png'
-    return safeImageSource(
-      block.data.startsWith('data:')
-        ? block.data
-        : `data:${mediaType};base64,${block.data}`,
-    )
-  }
-  if (typeof block.source !== 'object' || block.source === null) return undefined
-  const source = block.source as Record<string, unknown>
-  if (typeof source.url === 'string') return safeImageSource(source.url)
-  if (typeof source.data !== 'string') return undefined
-  const mediaType = typeof source.media_type === 'string' ? source.media_type : 'image/png'
-  return safeImageSource(`data:${mediaType};base64,${source.data}`)
-}
-
-function safeImageSource(value: string): string | undefined {
-  if (value.startsWith('data:image/') || value.startsWith('blob:')) return value
-  try {
-    const protocol = new URL(value).protocol
-    return protocol === 'http:' || protocol === 'https:' ? value : undefined
-  } catch {
-    return undefined
-  }
+function isImageAttachmentRef(value: unknown): value is ImageAttachmentRef {
+  if (typeof value !== 'object' || value === null) return false
+  const ref = value as Record<string, unknown>
+  return typeof ref.attachmentId === 'string'
+    && typeof ref.mediaType === 'string'
+    && typeof ref.bytes === 'number'
+    && typeof ref.width === 'number'
+    && typeof ref.height === 'number'
 }
 
 function stringifySourceValue(value: unknown): string {

@@ -1,14 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { useSyncExternalStore } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type {
-  ConversationSnapshot, SessionId, SessionListState, WorkspaceListState,
-} from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import { PendingWait } from '@deepseek-ai/dsh-client-runtime/client'
 import type { RpcReceipt } from '@deepseek-ai/dsh-api-remotes/client'
 import { RpcId } from '@deepseek-ai/dsh-client-connection/client'
-import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import { PendingQuestion, type QuestionComposerProps } from '../src/client/contract/slots.ts'
+import { createQuestionDraftStore } from '../src/client/draft-store.ts'
 import { QuestionComposer, parseRecommendedLabel } from '../src/client/QuestionComposer.tsx'
 import { en, zh } from '../src/client/locales.ts'
 import { zh as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
@@ -25,18 +24,30 @@ const seatOver = (dict: Record<string, string>, common: Record<string, string>):
 /** Framework standard-kit stubs: the composer consumes only the locale seat;
  *  the composed props type mandates delivery of the rest (framework hooks are
  *  plain stubs per the client testing discipline). */
-const kit = {
+const kitBase: Omit<QuestionComposerProps, 'matched' | 'interactions' | 'useStore' | 'actions'> = {
   session: undefined,
   sessionId: SID,
-  useSession: (() => { throw new Error('unused') }) as unknown as SnapshotSelectorHook<ConversationSnapshot>,
-  useSessions: (() => { throw new Error('unused') }) as unknown as SnapshotSelectorHook<SessionListState>,
-  useWorkspaces: (() => { throw new Error('unused') }) as unknown as SnapshotSelectorHook<WorkspaceListState>,
-  useProjection: (() => undefined) as never,
-  useInput: (() => { throw new Error('unused') }) as never,
+  useSession: () => { throw new Error('unused') },
+  useSessions: () => { throw new Error('unused') },
+  useWorkspaces: () => { throw new Error('unused') },
+  useProjection: (() => undefined),
+  useInput: (() => { throw new Error('unused') }),
   inputActions: { setDraft: () => { throw new Error('unused') }, submit: () => { throw new Error('unused') } } as never,
   // The seat's key domain is question ∪ common.
   t: seatOver(zh, commonZh),
 }
+
+let kit: Omit<QuestionComposerProps, 'matched' | 'interactions'>
+
+beforeEach(() => {
+  const instance = createQuestionDraftStore().create(SID)
+  const useStore: QuestionComposerProps['useStore'] = selector => useSyncExternalStore(
+    listener => instance.subscribe(listener),
+    () => selector(instance.getSnapshot()),
+    () => selector(instance.getSnapshot()),
+  )
+  kit = { ...kitBase, useStore, actions: instance.actions }
+})
 
 const QUESTIONS = [
   {

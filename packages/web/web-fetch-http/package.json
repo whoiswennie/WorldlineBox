@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-web-fetch-http",
   "description": "Anonymous public HTTP(S) fetch provider for the Worldline web capability seam (ctx.web)",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": {
     "access": "public"
   },
@@ -38,7 +38,9 @@
     "@deepseek-ai/cordis": "workspace:^"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "workspace:^"
+    "@deepseek-ai/schemastery": "workspace:^",
+    "ipaddr.js": "^2.5.0",
+    "undici": "^8.10.0"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-invariants": "workspace:^",

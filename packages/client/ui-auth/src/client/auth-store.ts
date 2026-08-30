@@ -56,6 +56,9 @@ export function setAuthSnapshot(next: AuthSnapshot): void {
   for (const listener of listeners) listener()
 }
 
+/**
+ * Contract for api response.
+ */
 export interface ApiResponse {
   ok: boolean
   user?: AuthUser | null
@@ -85,7 +88,10 @@ export async function authRequest(path: string, body?: Record<string, unknown>):
   return data
 }
 
-/** Remove and return the launch proof before any navigation or diagnostic can retain it. */
+/**
+ *  Remove and return the launch proof before any navigation or diagnostic can retain it.
+ * @returns The resulting value.
+ */
 export function consumeAuthBootstrapToken(): string | undefined {
   if (typeof location === 'undefined' || typeof history === 'undefined') return undefined
   const fragment = new URLSearchParams(location.hash.slice(1))
@@ -124,7 +130,10 @@ export interface ManagedRestartOptions {
   reload?: () => void
 }
 
-/** Wait for the replacement Host generation before reloading the current client container. */
+/**
+ *  Wait for the replacement Host generation before reloading the current client container.
+ * @param options - Operation options.
+ */
 export async function reloadAfterManagedRestart(options: ManagedRestartOptions = {}): Promise<void> {
   const attempts = options.attempts ?? 80
   const request = options.request ?? fetch
@@ -146,7 +155,7 @@ export async function reloadAfterManagedRestart(options: ManagedRestartOptions =
     }
     await wait(options.retryDelayMs ?? 250)
   }
-  throw new Error('账户运行时重启超时，请重新启动世界线。')
+  throw new Error('账号运行时重启超时，请重新启动世界线。')
 }
 
 /** Refresh the complete authentication state while containing transport errors in the store. */

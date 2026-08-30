@@ -2,7 +2,8 @@
  * @deepseek-ai/dsh-headless — one-shot direct Agent driver. The bundle patch
  * rides over worldline-base without Host, HTTP, or browser plugins; this runner
  * creates one Agent through the core registry, drives the task to quiescence,
- * flushes its Session, prints the final assistant text, and exits.
+ * streams provider reasoning to stderr, flushes its Session, prints the final
+ * assistant text to stdout, and exits.
  *
  * @module @deepseek-ai/dsh-headless
  */
@@ -11,9 +12,9 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { assertNever, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 // Empty type imports carry the loader Context merge for the settlement await
@@ -81,6 +82,63 @@ function summarize(events: readonly SessionEvent[], firstSeq: number): RunOutcom
   return { text, reason }
 }
 
+/** Stream reasoning chunks from this exact one-shot Agent to stderr. */
+function streamReasoning(
+  ctx: Context,
+  agent: Agent,
+  stderr: HeadlessIo['stderr'],
+): () => void {
+  let started = false
+  let open = false
+  let endsWithNewline = true
+  const close = (): void => {
+    if (!open) return
+    if (!endsWithNewline) stderr.write('\n')
+    open = false
+    endsWithNewline = true
+  }
+  const dispose = ctx.on('session/event', (session, event) => {
+    if (session !== agent.session) return
+    if (event.type === 'turn/start') {
+      close()
+      started = true
+      return
+    }
+    if (!started || event.type !== 'assistant/chunk') return
+    const chunk = event.data.chunk
+    switch (chunk.type) {
+      case 'reasoning-delta':
+        if (chunk.text === '') return
+        if (!open) {
+          stderr.write('worldline: reasoning:\n')
+          open = true
+        }
+        stderr.write(chunk.text)
+        endsWithNewline = chunk.text.endsWith('\n')
+        return
+      case 'block-start':
+        if (chunk.blockType !== 'reasoning') close()
+        return
+      case 'block-end':
+        if (chunk.block.type !== 'reasoning') close()
+        return
+      case 'usage':
+        return
+      case 'text-delta':
+      case 'tool-call-delta':
+      case 'finish':
+        close()
+        return
+      default:
+        return assertNever(chunk, 'headless reasoning stream')
+    }
+  })
+  return () => {
+    dispose()
+    close()
+  }
+}
+
 /** Report an unexpected direct-driver failure and request a failing exit. */
 function fail(io: HeadlessIo, error: unknown): void {
   io.stderr.write(`worldline: ${error instanceof Error ? error.message : String(error)}\n`)
@@ -119,11 +177,16 @@ async function run(ctx: Context, task: string, io: HeadlessIo): Promise<void> {
   })
   await agent.whenIdle()
   const firstSeq = agent.session.seq
-  agent.followup(createUserMessage({
-    content: [{ type: 'text', text: task }],
-    source: { kind: 'user' },
-  }))
-  await agent.whenIdle()
+  const stopReasoning = streamReasoning(ctx, agent, io.stderr)
+  try {
+    agent.followup(createUserMessage({
+      content: [{ type: 'text', text: task }],
+      source: { kind: 'user' },
+    }))
+    await agent.whenIdle()
+  } finally {
+    stopReasoning()
+  }
   await sessions.flush(agent.session)
   const outcome = summarize(agent.session.events, firstSeq)
   io.stdout.write(outcome.text + '\n')

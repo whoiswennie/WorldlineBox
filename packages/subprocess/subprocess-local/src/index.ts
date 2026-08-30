@@ -165,7 +165,8 @@ export class LocalSubprocessRuntime extends SubprocessRuntime {
     }
     spec.signal?.throwIfAborted()
     const options: IPtyForkOptions = {
-      name: spec.env?.TERM ?? 'xterm-256color',
+      // A persistent non-interactive shell must not infer cursor-control behavior from TERM.
+      name: 'dumb',
       rows: spec.rows,
       cols: spec.cols,
       cwd: spec.cwd,

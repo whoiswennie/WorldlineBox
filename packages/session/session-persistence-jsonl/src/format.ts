@@ -9,7 +9,9 @@
  */
 
 import { join } from 'node:path'
-import { decodeStorageRecord, packChunkRuns, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import {
+  decodeSeqRanges, decodeStorageRecord, encodeSeqRanges, packChunkRuns, SESSION_FORMAT_VERSION,
+} from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader, SessionId, StorageRecord } from '@deepseek-ai/dsh-session'
 import { SessionFormatUnsupportedError, sessionFormatVersionRefusal } from '@deepseek-ai/dsh-session-persistence'
 
@@ -211,16 +213,33 @@ export function logPath(
  * Serialize an event batch as JSONL lines (no trailing newline). With
  * `packChunks` on, delta-chunk runs pack into `text-chunks` /
  * `reasoning-chunks` / `tool-call-chunks` storage rows; off writes one event
- * per line, byte-identical to the pre-packing layout. Reading is layout-blind
- * either way ({@link scanLog} always decodes rows), so the switch changes only
- * newly written bytes.
+ * per line. Provenance sequences use the same lossless range encoding in both
+ * modes. Reading is layout-blind either way ({@link scanLog} always decodes
+ * rows), so the switch changes only newly written bytes.
  * @param events - the batch to serialize, in log order.
  * @param packChunks - whether to pack delta runs into storage rows.
  * @returns the batch's JSONL text; the writer adds the final newline.
  */
 export function eventLines(events: readonly SessionEvent[], packChunks: boolean): string {
   const records: readonly StorageRecord[] = packChunks ? packChunkRuns(events) : events
-  return records.map(record => JSON.stringify(record)).join('\n')
+  return records.map(record => JSON.stringify(encodeProvenanceForStorage(record))).join('\n')
+}
+
+function encodeProvenanceForStorage(record: StorageRecord): unknown {
+  if (!('sourceEventSeqs' in record)) return record
+  return { ...record, sourceEventSeqs: encodeSeqRanges(record.sourceEventSeqs) }
+}
+
+function expandProvenanceFromStorage(parsed: unknown): unknown {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new TypeError('stored session records must be objects')
+  }
+  const record = parsed as { seq?: unknown; sourceEventSeqs?: unknown }
+  if (record.sourceEventSeqs === undefined) return parsed
+  if (!Number.isSafeInteger(record.seq) || (record.seq as number) < 0) {
+    throw new TypeError('stored session event seq must be a non-negative safe integer')
+  }
+  return { ...record, sourceEventSeqs: decodeSeqRanges(record.sourceEventSeqs, record.seq as number) }
 }
 
 interface SessionLogScan {
@@ -348,7 +367,7 @@ export class SessionLogScanner {
     this.eventLine += 1
     let decoded: SessionEvent[]
     try {
-      decoded = decodeStorageRecord(JSON.parse(line.toString('utf8')))
+      decoded = decodeStorageRecord(expandProvenanceFromStorage(JSON.parse(line.toString('utf8'))))
     } catch {
       this.issue ??= new Error(`corrupt session log: unparsable committed event at line ${this.eventLine}`)
       return

@@ -102,7 +102,6 @@ export function CompanionProcessToggle({
         <path d="M2 8c1.5-2.3 3.5-3.5 6-3.5s4.5 1.2 6 3.5c-1.5 2.3-3.5 3.5-6 3.5S3.5 10.3 2 8Z" />
         <circle cx="8" cy="8" r="1.8" />
       </svg>
-      <span>{t('processLabel')}</span>
       <span className={css.switchTrack} aria-hidden="true"><span /></span>
     </button>
   )

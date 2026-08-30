@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-client-connection",
   "description": "Wire consumer layer: HTTP-up/WebSocket-down client, ConnectionController dual streams with reconnect, and fixture api",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": {
     "access": "public"
   },
@@ -39,6 +39,7 @@
   "license": "MIT",
   "dependencies": {
     "@deepseek-ai/schemastery": "workspace:^",
+    "@deepseek-ai/dsh-timeout": "workspace:^",
     "ws": "^8.21.0"
   },
   "files": [

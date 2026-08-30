@@ -26,7 +26,7 @@ System prompt assembly registry. Plugins contribute ordered sections, tool schem
 
 ### Live events
 
-`system-prompt/assemble` is authoritative for ordinary sections; a complete section is the final prompt constraint applied after the waterfall. Listeners that replace entries must preserve any active Code Mode or structured-output protocol. Use [`ToolRuntime.restrict()`](../tools/README.md) when filtering must stay aligned across presentation, lookup, and execution. Registry-change notifications are unfiltered. The generated region of [system-prompt.md](../../../docs/subsystems/system-prompt.md#cordis-surface) owns signatures and dispatch contracts.
+`system-prompt/assemble` is authoritative for ordinary sections; a complete section is the final prompt constraint applied after the waterfall. Listeners that replace entries must preserve any active PTC mode or structured-output protocol. Use [`ToolRuntime.restrict()`](../tools/README.md) when filtering must stay aligned across presentation, lookup, and execution. Registry-change notifications are unfiltered. The generated region of [system-prompt.md](../../../docs/subsystems/system-prompt.md#cordis-surface) owns signatures and dispatch contracts.
 
 ### Key types
 

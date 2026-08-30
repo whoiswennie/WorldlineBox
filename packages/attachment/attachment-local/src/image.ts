@@ -7,8 +7,33 @@ import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 /** Decoded metadata from a supported image. */
 export interface DetectedImage {
   mediaType: ImageMediaType
+  /** Intrinsic width with EXIF orientation applied. */
   width: number
+  /** Intrinsic height with EXIF orientation applied. */
   height: number
+  animated: boolean
+  carriesMetadata: boolean
+  depth: string
+  space: string
+  hasAlpha: boolean
+}
+
+/**
+* Check alpha metadata for bytes produced by this package's encoders.
+* Sharp/libvips may omit an all-opaque alpha plane from WebP output; every
+* other addition or removal indicates that the encoded result is incompatible
+* with its source facts.
+* @param sourceHasAlpha - whether the source bytes declare an alpha plane, or undefined when the source frame is unspecified.
+* @param output - decoded media type and alpha metadata from the encoded result.
+* @returns whether the output alpha metadata is compatible with the source.
+*/
+export function encodedAlphaIsCompatible(
+  sourceHasAlpha: boolean | undefined,
+  output: Pick<DetectedImage, 'mediaType' | 'hasAlpha'>,
+): boolean {
+  return sourceHasAlpha === undefined
+    || output.hasAlpha === sourceHasAlpha
+    || (sourceHasAlpha && !output.hasAlpha && output.mediaType === 'image/webp')
 }
 
 const MEDIA_TYPES: Readonly<Record<string, ImageMediaType>> = {
@@ -18,13 +43,34 @@ const MEDIA_TYPES: Readonly<Record<string, ImageMediaType>> = {
   gif: 'image/gif',
 }
 
+function carriesRetainedMetadata(metadata: Awaited<ReturnType<Sharp['metadata']>>): boolean {
+  return metadata.exif !== undefined
+    || metadata.xmp !== undefined
+    || metadata.iptc !== undefined
+    || metadata.icc !== undefined
+    || metadata.hasProfile
+    || metadata.tifftagPhotoshop !== undefined
+    || metadata.comments !== undefined
+    || metadata.orientation !== undefined
+}
+
 async function imageMetadata(image: Sharp): Promise<DetectedImage> {
   const metadata = await image.metadata()
   const mediaType = MEDIA_TYPES[metadata.format as string]
   if (mediaType === undefined) {
     throw new AttachmentError('Unsupported or malformed image data.', 'INVALID_IMAGE')
   }
-  return { mediaType, width: metadata.width, height: metadata.height }
+  const transposed = metadata.orientation !== undefined && metadata.orientation >= 5
+  return {
+    mediaType,
+    width: transposed ? metadata.height : metadata.width,
+    height: transposed ? metadata.width : metadata.height,
+    animated: (metadata.pages ?? 1) > 1,
+    carriesMetadata: carriesRetainedMetadata(metadata),
+    depth: metadata.depth,
+    space: metadata.space,
+    hasAlpha: metadata.hasAlpha,
+  }
 }
 
 /**

@@ -63,6 +63,17 @@ export interface WebBootEntry {
   external?: string[]
 }
 
+/** Initial scheduling phase for one content-addressed combo script. */
+export type WebBootBatchPhase = 'bootstrap' | 'application'
+
+/** One initial combo script shared by all listed graph entries. */
+export interface WebBootBatch {
+  phase: WebBootBatchPhase
+  url: string
+  rev: string
+  entries: string[]
+}
+
 /** The composed client entry graph the host injects as `window.__WORLDLINE_BOOT__`. */
 export interface WebBootGraph {
   /** Consistency anchor over the whole graph (content + bundle hashes). */
@@ -73,6 +84,8 @@ export interface WebBootGraph {
    * unrelated and remains owned by fiber service waiting.
    */
   entries: WebBootEntry[]
+  /** Initial combo descriptors; every entry belongs to exactly one batch. */
+  batches: WebBootBatch[]
 }
 
 /** The npm-package view of one boot row: what the module table needs to fetch the bundle. */
@@ -81,8 +94,12 @@ export interface BootModuleRow {
   id: string
   /** Bundle endpoint, '/plugins/<id>/client.js?rev=<rev>'. */
   url: string
+  /** Content-addressed combo endpoint used before the first HMR invalidation. */
+  initialUrl: string
   /** Bundle content hash. */
   rev: string
+  /** Injected package rows whose factories must arrive before this row materializes. */
+  inject: string[]
   /** Module specifiers this row requests from the module table ([] when the wire omits them). */
   external: string[]
 }
@@ -155,8 +172,12 @@ export function parseBootManifest(wire: unknown): BootManifest {
   if (!Array.isArray(graph.entries)) {
     throw new Error('client-modules: boot manifest entries must be an array')
   }
-  const modules: BootModuleRow[] = []
+  if (!Array.isArray(graph.batches)) {
+    throw new Error('client-modules: boot manifest batches must be an array')
+  }
+  const moduleFields: Omit<BootModuleRow, 'initialUrl'>[] = []
   const plugins: BootPluginRow[] = []
+  const seenEntryIds = new Set<string>()
   for (const value of graph.entries as unknown[]) {
     if (typeof value !== 'object' || value === null) {
       throw new Error('client-modules: boot manifest entry is not an object')
@@ -166,16 +187,19 @@ export function parseBootManifest(wire: unknown): BootManifest {
     if (typeof row.id !== 'string' || typeof row.url !== 'string' || typeof row.rev !== 'string') {
       throw new Error(`client-modules: boot manifest entry ${where} must carry string id/url/rev`)
     }
+    if (seenEntryIds.has(row.id)) throw new Error(`client-modules: duplicate graph entry "${row.id}"`)
+    seenEntryIds.add(row.id)
     const subject = `boot manifest entry ${where}`
     const inject = optionalStringArray(subject, 'inject', row.inject)
     const external = optionalStringArray(subject, 'external', row.external)
     if (row.immediately !== undefined && typeof row.immediately !== 'boolean') {
       throw new Error(`client-modules: boot manifest entry ${where} immediately must be a boolean`)
     }
-    modules.push({
+    moduleFields.push({
       id: row.id,
       url: row.url,
       rev: row.rev,
+      inject: inject === undefined ? [] : [...inject],
       external: external === undefined ? [] : [...external],
     })
     plugins.push({
@@ -184,6 +208,40 @@ export function parseBootManifest(wire: unknown): BootManifest {
       immediately: row.immediately === true,
     })
   }
+
+  const entryIds = new Set(moduleFields.map(row => row.id))
+  const initialUrls = new Map<string, string>()
+  const batchUrls = new Set<string>()
+  for (const value of graph.batches as unknown[]) {
+    if (typeof value !== 'object' || value === null) {
+      throw new Error('client-modules: boot manifest batch is not an object')
+    }
+    const batch = value as Record<string, unknown>
+    if (batch.phase !== 'bootstrap' && batch.phase !== 'application') {
+      throw new Error('client-modules: boot manifest batch phase must be "bootstrap" or "application"')
+    }
+    if (typeof batch.url !== 'string' || typeof batch.rev !== 'string') {
+      throw new Error(`client-modules: boot manifest ${batch.phase} batch must carry string url/rev`)
+    }
+    if (batchUrls.has(batch.url)) {
+      throw new Error(`client-modules: duplicate batch URL ${JSON.stringify(batch.url)}`)
+    }
+    batchUrls.add(batch.url)
+    const entries = optionalStringArray(`boot manifest ${batch.phase} batch`, 'entries', batch.entries)
+    if (entries === undefined || entries.length === 0) {
+      throw new Error(`client-modules: boot manifest ${batch.phase} batch entries must be non-empty`)
+    }
+    for (const id of entries) {
+      if (!entryIds.has(id)) throw new Error(`client-modules: batch names unknown entry "${id}"`)
+      if (initialUrls.has(id)) throw new Error(`client-modules: entry "${id}" belongs to multiple batches`)
+      initialUrls.set(id, batch.url)
+    }
+  }
+  const modules = moduleFields.map((row): BootModuleRow => {
+    const initialUrl = initialUrls.get(row.id)
+    if (initialUrl === undefined) throw new Error(`client-modules: entry "${row.id}" belongs to no batch`)
+    return { ...row, initialUrl }
+  })
   return { rev: graph.rev, modules, plugins }
 }
 
@@ -290,7 +348,7 @@ export interface ClientModuleLoader {
    * invalidation hook). The bootstrap module remains materialized.
    * @param id - entry name to invalidate.
    */
-  invalidate(id: string): void
+  invalidate(id: string, rev?: string): void
 }
 
 /** Internal construction inputs assembled by the modules bundle's bootstrap export. */

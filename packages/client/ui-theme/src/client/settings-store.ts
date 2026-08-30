@@ -4,7 +4,7 @@
  * reads via props.useStore.
  */
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client'
-import type { ThemePreference } from '../theme-settings.ts'
+import { DEFAULT_FONT_SIZE, type ThemePreference } from '../theme-settings.ts'
 
 /** Store state mirrored from the theme snapshot. */
 export interface AppearanceRowState {
@@ -12,6 +12,33 @@ export interface AppearanceRowState {
   preference: ThemePreference
   /** Service revision; -1 until first sync so revision 0 lands as a change. */
   revision: number
+}
+
+/** Store state mirrored from the theme snapshot's font size. */
+export interface FontSizeRowState {
+  fontSize: number
+  revision: number
+}
+
+type FontSizeRowActions = {
+  sync: (draft: FontSizeRowState, fontSize: number, revision: number) => void
+}
+
+/**
+* Declares the font-size row state and write surface.
+* @returns the store handle.
+*/
+export function createFontSizeRowStore(): EngineStoreHandle<FontSizeRowState, FontSizeRowActions> {
+  return defineStore({
+    init: (): FontSizeRowState => ({ fontSize: DEFAULT_FONT_SIZE, revision: -1 }),
+    actions: {
+      sync: (draft, fontSize, revision) => {
+        if (revision <= draft.revision) return
+        draft.fontSize = fontSize
+        draft.revision = revision
+      },
+    },
+  })
 }
 
 /** Declared action shape giving the exported factory a stable return type. */

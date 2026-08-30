@@ -41,6 +41,10 @@ export interface KnowledgeTreeEntry {
   readonly size?: number
 }
 
+/**
+ * Type contract for knowledge read view.
+ * @returns The resulting value.
+ */
 export type KnowledgeReadView = 'top' | 'section' | 'grep' | 'full'
 
 /** Search metadata is deliberately small; document bodies are fetched separately. */
@@ -54,6 +58,9 @@ export interface KnowledgeSearchResult {
   readonly updatedAt: number
 }
 
+/**
+ * Contract for knowledge document.
+ */
 export interface KnowledgeDocument extends KnowledgeSearchResult {
   readonly content: string
   readonly headings: readonly string[]
@@ -107,6 +114,9 @@ export interface ReferenceAsset {
   readonly url?: string
 }
 
+/**
+ * Contract for reference draft.
+ */
 export interface ReferenceDraft {
   readonly scope: string
   readonly title: string
@@ -118,11 +128,17 @@ export interface ReferenceDraft {
   readonly durationMs?: number
 }
 
+/**
+ * Contract for reference page.
+ */
 export interface ReferencePage {
   readonly items: readonly ReferenceAsset[]
   readonly nextCursor: number
 }
 
+/**
+ * Contract for reference tag count.
+ */
 export interface ReferenceTagCount {
   readonly tag: string
   readonly count: number
@@ -154,6 +170,9 @@ export interface CompanionExpressionIntentEventData {
   readonly assetId: string
 }
 
+/**
+ * Contract for companion room membership event data.
+ */
 export interface CompanionRoomMembershipEventData {
   readonly version: 1
   readonly action: 'joined' | 'left'
@@ -162,6 +181,10 @@ export interface CompanionRoomMembershipEventData {
   readonly actor: 'owner' | 'mention'
 }
 
+/**
+ * Type contract for companion stream speaker.
+ * @returns The resulting value.
+ */
 export type CompanionStreamSpeaker =
   | { readonly type: 'companion'; readonly companionId: string; readonly actorSessionId: string }
   | { readonly type: 'narrator'; readonly actorSessionId: string }
@@ -225,7 +248,12 @@ export interface VirtualCompanionDraft {
   readonly behaviorLogic: string
 }
 
-/** Pick one stable pseudo-random initial companion so Host and Client cannot race to different rooms. */
+/**
+ *  Pick one stable pseudo-random initial companion so Host and Client cannot race to different rooms.
+ * @param sessionId - session id value.
+ * @param companions - companions value.
+ * @returns The resulting value.
+ */
 export function initialCompanionId(
   sessionId: string,
   companions: readonly Pick<VirtualCompanion, 'id'>[],

@@ -1,6 +1,9 @@
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { ReferenceAsset } from '../contracts.ts'
 
+/**
+ * Reference source.
+ */
 export const REFERENCE_SOURCE = 'companion-reference-draft'
 
 interface ReferenceValue {
@@ -16,6 +19,11 @@ function escapeXml(text: string): string {
     .replaceAll('>', '&gt;')
 }
 
+/**
+ * Encode reference.
+ * @param asset - asset value.
+ * @returns The resulting value.
+ */
 export function encodeReference(asset: Pick<ReferenceAsset, 'id' | 'title'>): string {
   return JSON.stringify({ id: asset.id, title: asset.title } satisfies ReferenceValue)
 }
@@ -27,6 +35,11 @@ function decodeReference(ref: string): ReferenceValue {
   return { id: value.id, title: value.title }
 }
 
+/**
+ * User reference protocol.
+ * @param value - Value to process.
+ * @returns The resulting value.
+ */
 export function userReferenceProtocol(value: ReferenceValue): string {
   return `<user-reference asset-id="${escapeXml(value.id)}">${escapeXml(value.title)}</user-reference>`
 }

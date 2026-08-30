@@ -5,8 +5,13 @@
 import { Fragment, memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ConversationSnapshot, UseProjection } from '@deepseek-ai/dsh-client-runtime/client'
+import type {
+  ConversationSnapshot, PartialAssistant, UseProjection,
+} from '@deepseek-ai/dsh-client-runtime/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
+import type {
+  ContextBreakdownProjection, TokenUsageProjection,
+} from '@deepseek-ai/dsh-token-meter/client'
 // Type-only: merges the sessionStats key into SessionProjectionMap for useProjection.
 import type {} from '@deepseek-ai/dsh-session-stats/client'
 import type { ComposerBarProps } from '../contract/slots.ts'
@@ -34,6 +39,63 @@ interface WindowStats {
   decodeMs: number
   /** Summed output tokens over the same decode-timed steps. */
   decodeTokens: number
+}
+
+const LIVE_TOKEN_BUCKET = 16
+
+/**
+ * Low-frequency estimate for the unfinished assistant step. Returning a
+ * bucketed primitive lets the snapshot selector suppress most chunk frames;
+ * provider usage replaces it as soon as the step reports exact accounting.
+ */
+export function estimatePartialOutput(partial: PartialAssistant | null | undefined): number {
+  if (partial == null) return 0
+  let tokens = 0
+  for (const block of partial.blocks) {
+    switch (block.kind) {
+      case 'text':
+      case 'reasoning':
+        tokens += Math.ceil(block.text.length / 4) + 4
+        break
+      case 'tool-call':
+        tokens += Math.ceil((block.name.length + block.argsRaw.length) / 4) + 4
+        break
+      case 'image':
+        tokens += 4
+        break
+      default:
+        tokens += Math.ceil(JSON.stringify(block.block).length / 4) + 4
+    }
+  }
+  return tokens === 0 ? 0 : Math.max(1, Math.round(tokens / LIVE_TOKEN_BUCKET) * LIVE_TOKEN_BUCKET)
+}
+
+function estimatedRequestInput(breakdown: ContextBreakdownProjection | undefined): number {
+  if (breakdown === undefined) return 0
+  return breakdown.systemTokens + breakdown.toolsTokens + breakdown.messageTokens
+}
+
+function liveUsage(
+  settled: TokenUsageProjection | undefined,
+  breakdown: ContextBreakdownProjection | undefined,
+  turn: number | null,
+  step: number | null,
+  outputTokens: number,
+): { usage: TokenUsageProjection | undefined; estimated: boolean } {
+  if (turn === null || step === null) return { usage: settled, estimated: false }
+  const exact = settled?.lastReportedStep
+  if (exact?.turn === turn && exact.step === step) return { usage: settled, estimated: false }
+  const inputTokens = estimatedRequestInput(breakdown)
+  if (inputTokens === 0 && outputTokens === 0) return { usage: settled, estimated: false }
+  return {
+    usage: {
+      uncachedInputTokens: (settled?.uncachedInputTokens ?? 0) + inputTokens,
+      outputTokens: (settled?.outputTokens ?? 0) + outputTokens,
+      cacheReadTokens: settled?.cacheReadTokens ?? 0,
+      cacheWriteTokens: settled?.cacheWriteTokens ?? 0,
+    },
+    estimated: true,
+  }
 }
 
 /**
@@ -130,6 +192,11 @@ export interface StatsLineProps {
 export const StatsLine = memo(function StatsLine({ useSession, useProjection, t, placement = 'composer' }: StatsLineProps) {
   const settledNodes = useSession(s => s.chat.legacy.nodes)
   const usage = useProjection('tokenUsage')
+  const breakdown = useProjection('contextBreakdown')
+  const activeTurn = useSession(s => s.partial?.turn ?? null)
+  const activeStep = useSession(s => s.partial?.step ?? null)
+  const liveOutputTokens = useSession(s => estimatePartialOutput(s.partial))
+  const accounting = liveUsage(usage, breakdown, activeTurn, activeStep, liveOutputTokens)
   // Every figure rides the durable sessionStats projection, so paging and
   // compaction cannot change any of them; an assembly without the unit falls
   // back to the window-scoped fold wholesale (same field names), paid only
@@ -178,17 +245,17 @@ export const StatsLine = memo(function StatsLine({ useSession, useProjection, t,
   // compaction. Gated on actual token activity: a session whose steps all
   // settled without billing (e.g. every request failed) shows its counts
   // without a zero-token group.
-  if (usage !== undefined
-    && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {
-    const cacheHit = cacheHitPercent(usage)
+  if (accounting.usage !== undefined
+    && (billedInputTokens(accounting.usage) > 0 || accounting.usage.outputTokens > 0)) {
+    const cacheHit = usage === undefined ? null : cacheHitPercent(usage)
     if (cacheHit !== null) {
       const cache = t('stats.cacheHit', { percent: cacheHit })
       groups.push(cache)
       metrics.push({ key: 'cache', label: cache })
     }
-    const tokens = t('stats.tokens', {
-      input: formatTokens(billedInputTokens(usage)),
-      output: formatTokens(usage.outputTokens),
+    const tokens = t(accounting.estimated ? 'stats.tokensEstimated' : 'stats.tokens', {
+      input: formatTokens(billedInputTokens(accounting.usage)),
+      output: formatTokens(accounting.usage.outputTokens),
     })
     groups.push(tokens)
     metrics.push({ key: 'tokens', label: tokens })

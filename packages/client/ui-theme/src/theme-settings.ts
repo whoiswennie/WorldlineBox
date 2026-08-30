@@ -10,22 +10,41 @@ export const THEME_SETTINGS_NAMESPACE = 'ui-theme'
 
 /** Field carrying the selected built-in theme preference. */
 export const THEME_PREFERENCE_FIELD = 'preference'
+/**
+ * Font size field.
+ */
+export const FONT_SIZE_FIELD = 'fontSize'
 
 /** Theme preference persisted by the product Appearance row. */
 export type ThemePreference = typeof THEME_PREFERENCES[number]
 
 /** Default preference when the user-settings document has no override. */
 export const DEFAULT_PREFERENCE: ThemePreference = 'system'
+/**
+ * Font size min.
+ */
+export const FONT_SIZE_MIN = 12
+/**
+ * Font size max.
+ */
+export const FONT_SIZE_MAX = 17
+/**
+ * Default font size.
+ */
+export const DEFAULT_FONT_SIZE = 14
 
 /** Durable theme section shared by the Host schema and the browser scope. */
 export interface ThemeSettings {
   /** Selected built-in preference. */
   preference: ThemePreference
+  /** Conversation content font size in whole CSS pixels. */
+  fontSize: number
 }
 
 /** Durable theme schema; also the wire envelope the browser scope validates against. */
 export const ThemeSettingsSchema: z<ThemeSettings> = z.object({
   [THEME_PREFERENCE_FIELD]: z.union([...THEME_PREFERENCES]).default(DEFAULT_PREFERENCE),
+  [FONT_SIZE_FIELD]: z.number().step(1).min(FONT_SIZE_MIN).max(FONT_SIZE_MAX).default(DEFAULT_FONT_SIZE),
 })
 
 /**

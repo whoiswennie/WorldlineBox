@@ -56,6 +56,25 @@ describe('TrajectoryTurn', () => {
 })
 
 describe('deriveTrajectoryLayout', () => {
+  it('preserves durable assistant image identity for the presentation slot', () => {
+    const attachment = {
+      attachmentId: 'sha256-image',
+      mediaType: 'image/png',
+      bytes: 68,
+      width: 1,
+      height: 1,
+    }
+    const nodes = [{
+      kind: 'assistant', seq: 1, time: 1_000, turn: 1, step: 1,
+      blocks: [{ kind: 'image', attachment }],
+    }] as unknown as ConversationSnapshot['nodes']
+
+    const turns = deriveTrajectoryLayout({ nodes, partial: null, runningCalls: [] })
+    const message = turns[0]?.groups[0]?.cells[0]
+
+    expect(message?.sourceBlocks).toEqual([{ type: 'image', content: '', attachment }])
+  })
+
   it('expands assistant blocks, hangs usage on Message, and folds call+result into Tool', () => {
     const nodes = [
       { kind: 'user', seq: 1, time: 1_000, content: [{ type: 'text', text: 'hello' }], source: null },

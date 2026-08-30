@@ -50,7 +50,12 @@ export interface WorldlineProfileManifest {
   bundles?: string[]
   /** Installed Bundle dependencies intentionally excluded from composition. */
   disabledBundles?: string[]
+  /** Whether profile and home patch files reload while this profile is active. */
+  patchReload?: ProfilePatchReload
 }
+
+/** User patch-file lifecycle selected by a profile. */
+export type ProfilePatchReload = 'live' | 'startup'
 
 /** The DSH package.json section shared with the inherited Harness architecture. */
 export interface DshManifestSection {
@@ -120,6 +125,8 @@ export interface Profile {
   patchPath: string
   /** The profile's own patches; empty when the file is absent. */
   patches: PatchOptions[]
+  /** Whether the launcher watches user patch files after boot. */
+  patchReload: ProfilePatchReload
 }
 
 /**
@@ -139,9 +146,24 @@ export function resolveProfileDir(name: string, home: string = resolveWorldlineH
 
 /** The shipped profile templates auto-initialized on first use, by name. */
 export const PROFILE_TEMPLATES: Record<string, readonly string[]> = {
+  acp: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'],
   web: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'],
   headless: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'],
+  sdk: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-sdk-app'],
+  'sdk-minimal': ['@deepseek-ai/dsh-sdk-minimal'],
 }
+
+/** Shipped automation profiles freeze their patch stack after startup; Web remains live. */
+export const PROFILE_PATCH_RELOAD: Readonly<Record<string, ProfilePatchReload>> = Object.freeze({
+  acp: 'startup',
+  web: 'live',
+  headless: 'startup',
+  sdk: 'startup',
+  'sdk-minimal': 'startup',
+})
+
+/** Custom profiles retain Worldline's historical live patch behavior. */
+export const DEFAULT_PROFILE_PATCH_RELOAD: ProfilePatchReload = 'live'
 
 /** Installation-owned bundle tuples normalized to the shipped template. */
 const INSTALLATION_OWNED_PROFILE_TUPLES: Record<string, readonly string[]> = {
@@ -170,13 +192,18 @@ autoInstallPeers: false
 `
 
 /**
- * Initialize a profile directory: manifest, empty user patch layer, and the
- * pnpm settings out-of-tree plugins need. Existing files are never touched,
- * so re-running is a no-op on an initialized profile.
- * @param dir - the profile directory from {@link resolveProfileDir}.
- * @param bundles - the initial `dsh.profile.bundles` layer list.
- */
-export function initProfile(dir: string, bundles: readonly string[]): void {
+* Initialize a profile directory: manifest, empty user patch layer, and the
+* pnpm settings out-of-tree plugins need. Existing files are never touched,
+* so re-running is a no-op on an initialized profile.
+* @param dir - the profile directory from {@link resolveProfileDir}.
+* @param bundles - the initial `dsh.profile.bundles` layer list.
+* @param patchReload - user patch-file lifecycle; custom profiles default to live reload.
+*/
+export function initProfile(
+  dir: string,
+  bundles: readonly string[],
+  patchReload: ProfilePatchReload = DEFAULT_PROFILE_PATCH_RELOAD,
+): void {
   mkdirSync(dir, { recursive: true })
   const manifestPath = join(dir, 'package.json')
   if (!existsSync(manifestPath)) {
@@ -184,7 +211,7 @@ export function initProfile(dir: string, bundles: readonly string[]): void {
       name: `worldline-profile-${basename(dir)}`,
       private: true,
       dependencies: {},
-      dsh: { profile: { bundles: [...bundles] } },
+      dsh: { profile: { bundles: [...bundles], patchReload } },
     }
     writeFileSync(manifestPath, JSON.stringify(manifest, undefined, 2) + '\n')
   }
@@ -619,11 +646,13 @@ export function loadProfile(
         `${binName}: profile ${JSON.stringify(name)} does not exist; create it with 'worldline plugin --profile ${name} add <package>'`,
       )
     }
-    initProfile(dir, template)
+    initProfile(dir, template, PROFILE_PATCH_RELOAD[name] ?? DEFAULT_PROFILE_PATCH_RELOAD)
   }
   const migrated = migratePersistedProfile(dir, readProfileManifest(binName, dir))
   const manifest = normalizeShippedProfile(name, dir, migrated)
-  const bundles = profileManifestSection(manifest)?.bundles ?? []
+  const profileManifest = profileManifestSection(manifest)
+  const bundles = profileManifest?.bundles ?? []
+  const patchReload = profileManifest?.patchReload ?? DEFAULT_PROFILE_PATCH_RELOAD
   const layers = bundles.map((packageName): ProfileLayer => {
     const packageDir = resolveBundleDir(binName, packageName, installAnchor, dir)
     const bundleManifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as ProfileManifest
@@ -638,7 +667,7 @@ export function loadProfile(
   const patches = options.userLayer !== false && existsSync(patchPath)
     ? loadOverlayPatches(binName, patchPath)
     : []
-  return { name, dir, layers, patchPath, patches }
+  return { name, dir, layers, patchPath, patches, patchReload }
 }
 
 /**

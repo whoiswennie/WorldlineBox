@@ -37,6 +37,19 @@ export function recordKeyFor(providerId: string): CredentialKey {
   return credentialKey(RECORD_SCOPE, providerId)
 }
 
+/** JSON-compatible image of an OAuth grant, dropping explicit undefined fields. */
+function jsonImage(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(entry => entry === undefined ? null : jsonImage(entry))
+  if (typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype) {
+    const image: Record<string, unknown> = {}
+    for (const [key, member] of Object.entries(value)) {
+      if (member !== undefined) image[key] = jsonImage(member)
+    }
+    return image
+  }
+  return value
+}
+
 /**
  * Translate a stored record into the credential pi-ai expects.
  *
@@ -72,7 +85,7 @@ function toRecord(credential: Credential): CredentialRecord {
       ...credential.env === undefined ? {} : { env: { ...credential.env } },
     }
   }
-  return { kind: 'grant', payload: credential }
+  return { kind: 'grant', payload: jsonImage(credential) }
 }
 
 /**

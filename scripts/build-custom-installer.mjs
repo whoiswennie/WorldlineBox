@@ -34,6 +34,7 @@ const version = args.get('--version') || desktopPackage.version
 if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) {
   throw new Error(`Invalid installer version: ${JSON.stringify(version)}`)
 }
+const assemblyVersion = `${version.split('-', 1)[0]}.0`
 
 await mkdir(temporary, { recursive: true })
 await mkdir(dirname(output), { recursive: true })
@@ -41,7 +42,13 @@ const installerSource = await readFile(source, 'utf8')
 if (!installerSource.includes('__WORLDLINE_VERSION__')) {
   throw new Error('Worldline installer source is missing the version placeholder')
 }
-await writeFile(compiledSource, installerSource.replaceAll('__WORLDLINE_VERSION__', version), 'utf8')
+await writeFile(
+  compiledSource,
+  installerSource
+    .replaceAll('__WORLDLINE_ASSEMBLY_VERSION__', assemblyVersion)
+    .replaceAll('__WORLDLINE_VERSION__', version),
+  'utf8',
+)
 
 const framework = `${process.env.WINDIR || 'C:\\Windows'}\\Microsoft.NET\\Framework64\\v4.0.30319`
 const compiler = resolve(framework, 'csc.exe')

@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-// StatsLine (composer.dock entry): totals derivation + the RFC hard
-// acceptance — zero renders during streaming.
+// StatsLine (composer.dock entry): durable totals plus bounded-frequency live estimates.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
@@ -412,6 +411,36 @@ describe('StatsLine', () => {
     expect(view.container.textContent).toBe('1 turns · 1 steps| Input 0 tok · Output 7 tok')
   })
 
+  it('shows low-frequency estimated totals while a step streams, then yields to exact usage', () => {
+    const { set, source } = makeSource({ nodes: [assistant(1, 1)] })
+    const values = {
+      tokenUsage: USAGE,
+      contextBreakdown: { systemTokens: 10, toolsTokens: 20, messageTokens: 70 },
+    }
+    const view = render(<StatsLine {...props(source, values)} />)
+
+    act(() => {
+      set({ partial: { turn: 2, step: 1, blocks: [{ kind: 'text', text: 'x'.repeat(80) }] } })
+    })
+    expect(view.container.textContent).toContain('Input ≈200 tok · Output ≈37 tok')
+
+    act(() => {
+      set({ partial: { turn: 2, step: 1, blocks: [{ kind: 'text', text: 'x'.repeat(82) }] } })
+    })
+    expect(view.container.textContent).toContain('Output ≈37 tok')
+
+    const exact = {
+      uncachedInputTokens: 20,
+      outputTokens: 18,
+      cacheReadTokens: 180,
+      cacheWriteTokens: 0,
+      lastReportedStep: { turn: 2, step: 1 },
+    }
+    view.rerender(<StatsLine {...props(source, { ...values, tokenUsage: exact })} />)
+    expect(view.container.textContent).toContain('Input 200 tok · Output 18 tok')
+    expect(view.container.textContent).not.toContain('≈')
+  })
+
   it('includes cache writes in billed input and the cache-hit denominator', () => {
     const { source } = makeSource({ nodes: [assistant(1, 1)] })
     const view = render(<StatsLine {...props(source, {
@@ -426,7 +455,7 @@ describe('StatsLine', () => {
       .toBe('1 turns · 1 steps| Cache hit 45%| Input 200 tok · Output 7 tok')
   })
 
-  it('renders ZERO times during streaming chunk frames (RFC hard acceptance)', () => {
+  it('keeps parent composition stable while the bucketed live selector handles chunk frames', () => {
     const { set, source } = makeSource({ nodes: [assistant(1, 1)] })
     let renders = 0
     function Counting(p: StatsLineProps) {

@@ -63,6 +63,9 @@ export interface TurnTailChatData {
   readonly tokensPerSecond?: number
 }
 
+/** Turn-level disclosure payload controlling process rows before the finalized answer. */
+export type TurnProcessChatData = import('./turn-process.ts').TurnProcessSpec
+
 /**
  * Test whether a Tool root has settled.
  * @param block - Tool root lifecycle value.

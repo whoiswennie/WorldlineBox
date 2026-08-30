@@ -163,6 +163,7 @@ describe('virtual companion continuable child compaction', () => {
     }
     const directory = {
       vaults,
+      appearance: async () => undefined,
       resourceUrl: () => '',
       actorRooms: (companionId: string) => Object.entries(room.actorSessionIds)
         .filter(([id]) => id === companionId)

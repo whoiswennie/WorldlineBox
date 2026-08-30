@@ -1,4 +1,8 @@
-/** Technical presentation facts are ordinary open tags, not a user-facing closed kind system. */
+/**
+ *  Technical presentation facts are ordinary open tags, not a user-facing closed kind system.
+ * @param mimeType - mime type value.
+ * @returns The resulting value.
+ */
 export function inferReferenceMediaTags(mimeType: string): readonly string[] {
   const normalized = mimeType.trim().toLocaleLowerCase('en-US')
   const tags = normalized.startsWith('image/') ? ['图片']
@@ -10,7 +14,11 @@ export function inferReferenceMediaTags(mimeType: string): readonly string[] {
   return [...tags, ...(subtype === undefined || subtype === 'octet-stream' ? [] : [subtype])]
 }
 
-/** Split natural language without imposing a product-owned semantic taxonomy. */
+/**
+ *  Split natural language without imposing a product-owned semantic taxonomy.
+ * @param text - text value.
+ * @returns The resulting value.
+ */
 export function expandReferenceQuery(text: string): readonly string[] {
   return text.trim().normalize('NFKC').toLocaleLowerCase('zh-CN')
     .split(/[\s,，。！!？?、;；:：]+/u).filter(Boolean).slice(0, 32)

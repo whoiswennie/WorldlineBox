@@ -40,6 +40,10 @@ export interface ImageReadValue {
     width: number
     height: number
     name?: string
+    /** Orientation-applied source width; present only when storage downscaled it. */
+    sourceWidth?: number
+    /** Orientation-applied source height; present only when storage downscaled it. */
+    sourceHeight?: number
   }
 }
 
@@ -88,6 +92,9 @@ export function imageRefFromValue(image: ImageReadValue['image']): ImageAttachme
     width: image.width,
     height: image.height,
     ...image.name === undefined ? {} : { name: image.name },
+    ...image.sourceWidth === undefined || image.sourceHeight === undefined
+      ? {}
+      : { originalDimensions: { width: image.sourceWidth, height: image.sourceHeight } },
   }
 }
 
@@ -98,10 +105,13 @@ export function imageRefFromValue(image: ImageReadValue['image']): ImageAttachme
  * @returns the model-facing envelope; the image itself rides the adjacent image block.
  */
 export function formatImageReadOutput(displayPath: string, image: ImageReadValue['image']): string {
+  const scaled = image.sourceWidth !== undefined && image.sourceHeight !== undefined
+    ? ` (downscaled from ${image.sourceWidth}x${image.sourceHeight} px; multiply coordinates by ${(image.sourceWidth / image.width).toFixed(2)} to locate features in the original file)`
+    : ''
   return `<path>${displayPath}</path>
 <type>image</type>
 <content>
-${image.mediaType} image, ${image.width}x${image.height} px, ${image.bytes} bytes
+${image.mediaType} image, ${image.width}x${image.height} px, ${image.bytes} bytes${scaled}
 </content>`
 }
 
@@ -150,6 +160,8 @@ export function applyReadImageTool(ctx: Context): void {
               width: { type: 'integer', required: true },
               height: { type: 'integer', required: true },
               name: { type: 'string' },
+              sourceWidth: { type: 'integer' },
+              sourceHeight: { type: 'integer' },
             },
           },
         },
@@ -222,6 +234,12 @@ export function applyReadImageTool(ctx: Context): void {
           width: ref.width,
           height: ref.height,
           ...ref.name === undefined ? {} : { name: ref.name },
+          ...ref.originalDimensions === undefined
+            ? {}
+            : {
+              sourceWidth: ref.originalDimensions.width,
+              sourceHeight: ref.originalDimensions.height,
+            },
         },
       }
       return value

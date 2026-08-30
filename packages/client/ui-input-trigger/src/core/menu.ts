@@ -131,6 +131,13 @@ export const menuReduce: MenuReduce = (state, ev) => {
       if (hl && next.source === hl.source && next.index === hl.index) return state
       return { ...state, highlight: next }
     }
+    case 'hover': {
+      if (!state.open) return state
+      const group = state.groups.find(item => item.source === ev.source)
+      if (group?.status !== 'ready' || group.items[ev.index] === undefined) return state
+      if (state.highlight?.source === ev.source && state.highlight.index === ev.index) return state
+      return { ...state, highlight: { source: ev.source, index: ev.index } }
+    }
     case 'close':
       return closed(state)
   }

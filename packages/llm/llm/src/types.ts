@@ -140,6 +140,17 @@ export interface TokenUsage {
   reasoningTokens?: number
 }
 
+/** Request price of one image occurrence under one exact provider/model projection. */
+export interface LlmImageRequestPrice {
+  visualTokens: number
+  text: string
+}
+
+/** Synchronous provider-side image pricing for one exact model route. */
+export interface LlmImageRequestPricing {
+  priceImages(images: readonly ImageAttachmentRef[]): readonly LlmImageRequestPrice[]
+}
+
 /** Display metadata for one registered provider route. */
 export interface LlmProviderInfo {
   /** Provider route key used by {@link GenerateOptions.provider}. */

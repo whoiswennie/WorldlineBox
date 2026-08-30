@@ -18,6 +18,7 @@ import * as WebFetchLocal from '@deepseek-ai/dsh-web-fetch-http'
 import * as WebSearchExa from '@deepseek-ai/dsh-web-search-exa'
 import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
 import * as TimeoutPolicy from '@deepseek-ai/dsh-tool-call-timeout-policy'
+import { publicHttpNetwork } from '../../web-fetch-http/src/network.ts'
 
 const testToolSignal = new AbortController().signal
 
@@ -30,6 +31,7 @@ let ctx: Context
 let fiber: Awaited<ReturnType<Context['plugin']>>
 
 beforeEach(async () => {
+  vi.spyOn(publicHttpNetwork, 'resolve').mockResolvedValue([{ address: '127.0.0.1', family: 4 }])
   handler = (_req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<h1>Hello</h1><p>World</p>') }
   server = createServer((req, res) => { handler(req, res) })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -52,6 +54,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await fiber.dispose()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   await new Promise<void>(resolve => server.close(() => { resolve() }))
 })
 
@@ -162,7 +165,6 @@ describe('tool-call timeout returns TOOL_TIMEOUT (deadline wins over a slow fetc
     // A direct provider caller bypasses tools/execute, so a short configured backstop
     // must produce provider-owned WEB_FETCH_TIMEOUT rather than TOOL_TIMEOUT.
     const direct = new WebFetchLocal.HttpFetchProvider({
-      maxUrlLength: 2048,
       maxResponseBytes: 5_000_000,
       maxBodyChars: 100_000,
       timeoutMs: 50,

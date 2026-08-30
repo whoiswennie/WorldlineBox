@@ -28,7 +28,7 @@
 
 ### 实时事件
 
-普通段以 `system-prompt/assemble` 的返回结果为准；complete 段则会在 waterfall 之后作为最终提示词约束生效。替换条目的监听器必须保留任何已启用的 Code Mode 或结构化输出协议。筛选需要在呈现、查找与执行之间保持一致时，应使用 [`ToolRuntime.restrict()`](../tools/README.md)。注册表变更通知不经过筛选。[system-prompt.md](../../../docs/subsystems/system-prompt.md#cordis-surface) 的生成区块拥有事件签名和分发约定。
+普通段以 `system-prompt/assemble` 的返回结果为准；complete 段则会在 waterfall 之后作为最终提示词约束生效。替换条目的监听器必须保留任何已启用的 PTC mode 或结构化输出协议。筛选需要在呈现、查找与执行之间保持一致时，应使用 [`ToolRuntime.restrict()`](../tools/README.md)。注册表变更通知不经过筛选。[system-prompt.md](../../../docs/subsystems/system-prompt.md#cordis-surface) 的生成区块拥有事件签名和分发约定。
 
 ### 关键类型
 

@@ -65,8 +65,8 @@ describe('WindowsProcessInspector (injected internals)', () => {
     const fake = fakeInternals()
     const inspector = new WindowsProcessInspector(fake.internals)
     expect(inspector.foregroundPgid(77)).toBe(77)
-    expect(inspector.isStdinWaiting(77)).toBe(false)
-    expect(inspector.processSession(77)).toEqual([])
+    expect(inspector.isStdinWaiting(77, 77)).toBe(false)
+    expect(inspector.snapshot().session(77)).toEqual([])
   })
 
   it('delegates tree walks and identity checks to the internals', () => {
@@ -74,7 +74,7 @@ describe('WindowsProcessInspector (injected internals)', () => {
     fake.add({ pid: 10, parentPid: 0 }, 't10')
     fake.add({ pid: 11, parentPid: 10 }, 't11')
     const inspector = new WindowsProcessInspector(fake.internals)
-    expect(inspector.processTree(10)).toEqual([
+    expect(inspector.snapshot().tree(10)).toEqual([
       { pid: 11, started: 't11' },
       { pid: 10, started: 't10' },
     ])
@@ -130,7 +130,7 @@ const win32 = process.platform === 'win32' ? describe : describe.skip
 win32('WindowsProcessInspector over the real koffi bindings', () => {
   it('walks the live process table from the test runner itself', () => {
     const inspector = createWindowsProcessInspector()
-    const tree = inspector.processTree(process.pid)
+    const tree = inspector.snapshot().tree(process.pid)
     const self = tree.find(member => member.pid === process.pid)
     expect(self).toBeDefined()
     expect(inspector.isAlive(self!)).toBe(true)

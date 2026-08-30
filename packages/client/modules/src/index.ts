@@ -32,11 +32,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import { optionalStringArray, stripClientSuffix } from './client/manifest.ts'
-import type { WebBootEntry, WebBootGraph } from './client/manifest.ts'
+import type { WebBootBatch, WebBootEntry, WebBootGraph } from './client/manifest.ts'
 
 export { stripClientSuffix } from './client/manifest.ts'
 export type {
-  BootManifest, BootModuleRow, BootPluginRow, WebBootEntry, WebBootGraph,
+  BootManifest, BootModuleRow, BootPluginRow, WebBootBatch, WebBootBatchPhase,
+  WebBootEntry, WebBootGraph,
 } from './client/manifest.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -264,9 +265,9 @@ window.__ModuleLoader__={
   }
 }
 })()`
-  const preload = PARSER_PRELOAD_IDS.map(id => graph.entries.find(entry => entry.id === id))
-    .filter((entry): entry is WebBootEntry => entry !== undefined)
-    .map((entry): IndexInjection => ({ kind: 'script-src', placement: 'head', src: entry.url }))
+  const preload = graph.batches
+    .filter(batch => batch.phase === 'bootstrap')
+    .map((batch): IndexInjection => ({ kind: 'script-src', placement: 'head', src: batch.url }))
   return [
     { kind: 'script', placement: 'head', text: queue },
     ...preload,
@@ -277,7 +278,11 @@ window.__ModuleLoader__={
   ]
 }
 
-/** Resolve the browser-persistence namespace for the desktop-managed runtime. */
+/**
+ *  Resolve the browser-persistence namespace for the desktop-managed runtime.
+ * @param env - env value.
+ * @returns The resulting value.
+ */
 export function desktopStorageNamespace(env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (env.WORLDLINE_ACCOUNT_MANAGED !== '1' && env.WORLDLINE_DESKTOP_MANAGED !== '1') return undefined
   const accountId = env.WORLDLINE_ACCOUNT_ID
@@ -307,6 +312,8 @@ export class ClientModuleRegistry extends Service {
   private readonly resolvePkgJson: (spec: string) => string
   private flushQueued = false
   private composed: WebBootGraph
+  private batchResources = new Map<string, Buffer>()
+  private previousBatchResources = new Map<string, Buffer>()
 
   /**
    * Build the service: subscribe, seed, and run the activation flush.
@@ -425,7 +432,31 @@ export class ClientModuleRegistry extends Service {
 
   private compose(): WebBootGraph {
     const entries = orderByModuleGraph([...this.table.values()].map(record => record.entry))
-    return { rev: shortHash(JSON.stringify(entries)), entries }
+    const bootstrapIds = new Set<string>(PARSER_PRELOAD_IDS)
+    const groups: readonly [WebBootBatch['phase'], WebBootEntry[]][] = [
+      ['bootstrap', entries.filter(entry => bootstrapIds.has(entry.id))],
+      ['application', entries.filter(entry => !bootstrapIds.has(entry.id))],
+    ]
+    const resources = new Map<string, Buffer>()
+    const batches: WebBootBatch[] = []
+    for (const [phase, rows] of groups) {
+      if (rows.length === 0) continue
+      const parts: Buffer[] = []
+      for (const row of rows) {
+        const path = this.table.get(row.id)?.meta.clientPath
+        if (path === undefined) throw new Error(`client-modules: missing client path for ${row.id}`)
+        parts.push(readFileSync(path), Buffer.from('\n;\n'))
+      }
+      const body = Buffer.concat(parts)
+      const rev = shortHash(body)
+      const url = `/plugins/_batch/${phase}/${rev}/client.js`
+      resources.set(url, body)
+      batches.push({ phase, url, rev, entries: rows.map(row => row.id) })
+    }
+    const graph = { rev: shortHash(JSON.stringify({ entries, batches })), entries, batches }
+    this.previousBatchResources = this.batchResources
+    this.batchResources = resources
+    return graph
   }
 
   private notifyGraphChanged(): void {
@@ -548,6 +579,16 @@ export class ClientModuleRegistry extends Service {
     }
     /* v8 ignore next -- `?? '/'` arm: node:http always sets url on server requests. */
     const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
+    const batch = this.batchResources.get(pathname) ?? this.previousBatchResources.get(pathname)
+    if (batch !== undefined) {
+      res.writeHead(200, {
+        'content-type': 'text/javascript; charset=utf-8',
+        'cache-control': 'public, max-age=31536000, immutable',
+        'content-length': String(batch.length),
+      })
+      res.end(req.method === 'HEAD' ? undefined : batch)
+      return
+    }
     // The id may contain a scope slash. Anything else under /plugins (including
     // /plugins/events when the HMR row is absent) is an unknown resource.
     const prefix = '/plugins/'

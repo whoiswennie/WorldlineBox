@@ -159,16 +159,24 @@ function emptyWorkspaces() {
 /** Standalone view props: the session-scope standard kit the outlet would bake. */
 function standaloneProps(
   nodes: ConversationSnapshot['nodes'],
-): ConvViewProps & { t: (key: LocaleKeysOf<'trajectory'>) => string } {
+): ConvViewProps
+  & Pick<ComponentProps<typeof TrajectoryView>, 'renderSlot' | 'SessionProvider' | 'loadImage'>
+  & { t: (key: LocaleKeysOf<'trajectory'>) => string } {
   return {
     sessionId: SID,
+    SessionProvider: (({ children }: { children: (sessionId: SessionId) => ReactNode }) =>
+      children(SID)) as never,
     useSession: fakeSession(nodes).useSession,
     useSessions: emptySessions(),
     useWorkspaces: emptyWorkspaces(),
     useProjection: (() => undefined) as never,
+    loadImage: (() => Promise.resolve('')) as never,
+    renderSlot: (() => null) as never,
     // The locale seat the outlet would inject for the declared namespace.
     t: (key: LocaleKeysOf<'trajectory'>) => zh[key as TrajectoryKey] ?? key,
-  } as unknown as ConvViewProps & { t: (key: LocaleKeysOf<'trajectory'>) => string }
+  } as unknown as ConvViewProps
+    & Pick<ComponentProps<typeof TrajectoryView>, 'renderSlot' | 'SessionProvider' | 'loadImage'>
+    & { t: (key: LocaleKeysOf<'trajectory'>) => string }
 }
 
 /** Real-stack bench: root Context + real SlotRegistry ring + the plugin fiber. */

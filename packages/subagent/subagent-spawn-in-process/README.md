@@ -26,7 +26,7 @@ Spawn advertises `{ outputSchema: true, depthLimit: true, toolFilter: true, pers
 
 #### What the model sees
 
-The fresh child receives the standalone task content verbatim, inherits the parent model and workspace by default, and sees the global prompt with any configured child-scoped persona shadow. A tool filter removes global wire schemas, executable lookup, and Code Mode SDK bindings for that child but leaves independently registered guidance. It receives zero parent conversation messages; the filter is visibility/composition, not an authority grant inherited from the parent.
+The fresh child receives the standalone task content verbatim, inherits the parent model and workspace by default, and sees the global prompt with any configured child-scoped persona shadow. A tool filter removes global wire schemas, executable lookup, and PTC mode SDK bindings for that child but leaves independently registered guidance. It receives zero parent conversation messages; the filter is visibility/composition, not an authority grant inherited from the parent.
 
 #### Token effect
 

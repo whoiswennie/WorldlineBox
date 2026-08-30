@@ -653,7 +653,7 @@ describe('per-model reasoning efforts', () => {
   it('narrows a catalog model’s levels in place', () => {
     const [catalogModel] = getBuiltinModels('deepseek')
     if (catalogModel === undefined) throw new Error('the installed catalog ships no deepseek model')
-    expect(getSupportedThinkingLevels(catalogModel as Model<Api>)).toEqual(['off', 'high', 'max'])
+    expect(getSupportedThinkingLevels(catalogModel as Model<Api>)).toEqual(['off', 'low', 'high', 'max'])
 
     const model = modelOf({
       deepseek: { models: [{ id: catalogModel.id, reasoningEfforts: { off: null, high: 'high' } }] },
@@ -933,6 +933,31 @@ describe('compat switches', () => {
     expect(models.get('qwen-local')?.compat).toEqual({
       thinkingFormat: 'qwen-chat-template',
       chatTemplateKwargs: { enable_thinking: { $var: 'thinking.enabled' } },
+    })
+  })
+
+  it('carries private-endpoint stream and vLLM reasoning controls', () => {
+    const models = modelsOf({
+      'acme-baseten': {
+        api: 'openai-completions',
+        baseURL: 'https://acme.test',
+        models: [{
+          id: 'reasoning-local',
+          compat: {
+            supportsFinishReason: false,
+            thinkingFormat: 'baseten',
+            chatTemplateArgs: { enable_thinking: { $var: 'thinking.enabled' } },
+            supportsThinkingTokenBudget: true,
+          },
+        }],
+      },
+    }, 'acme-baseten')
+
+    expect(models.get('reasoning-local')?.compat).toEqual({
+      supportsFinishReason: false,
+      thinkingFormat: 'baseten',
+      chatTemplateArgs: { enable_thinking: { $var: 'thinking.enabled' } },
+      supportsThinkingTokenBudget: true,
     })
   })
 

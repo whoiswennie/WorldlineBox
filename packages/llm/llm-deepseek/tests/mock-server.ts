@@ -40,6 +40,13 @@ export async function mockServer(script: Behavior[]): Promise<MockServer> {
     let body = ''
     request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
     request.on('end', () => {
+      // Existing chat-focused tests exercise the adapter's documented inline
+      // fallback. Files API transport and reuse have dedicated tests.
+      if (request.url?.startsWith('/files') === true) {
+        response.writeHead(404, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ error: { message: 'Files API unavailable in chat mock' } }))
+        return
+      }
       requests.push(JSON.parse(body))
       headers.push(request.headers)
       const behavior = script.shift()

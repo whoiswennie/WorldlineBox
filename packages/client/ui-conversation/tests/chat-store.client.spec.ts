@@ -10,9 +10,21 @@ beforeEach(() => {
 })
 
 describe('createChatStore', () => {
+  it('tracks only the current answer generation for an expanded turn process', () => {
+    const store = createChatStore().create()
+    store.actions.setTurnProcessOpen(2, '2|1', true)
+    expect(store.store.getSnapshot().turnProcesses).toEqual([{ turn: 2, generation: '2|1' }])
+    store.actions.setTurnProcessOpen(2, '2|2', true)
+    expect(store.store.getSnapshot().turnProcesses).toEqual([{ turn: 2, generation: '2|2' }])
+    store.actions.setTurnProcessOpen(2, '2|2', false)
+    expect(store.store.getSnapshot().turnProcesses).toEqual([])
+  })
+
   it('init shape: empty selection/draft/view', () => {
     const store = createChatStore().create()
-    expect(store.store.getSnapshot()).toEqual({ selection: null, draft: '', view: null, inspect: null })
+    expect(store.store.getSnapshot()).toEqual({
+      selection: null, draft: '', view: null, inspect: null, turnProcesses: [],
+    })
   })
 
   it('actions cover the declared write set', () => {

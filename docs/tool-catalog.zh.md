@@ -17,11 +17,13 @@
 
 | 工具包 | 模型可见名称 | 依赖 | 写入／影响 | 随产品发布的别名 | 部署说明 |
 | --- | --- | --- | --- | --- | --- |
+| `@deepseek-ai/dsh-tool-agent-vault` | `memory_consolidate`, `memory_explore`, `memory_recall`, `memory_remember`, `procedure_recall`, `resource_find`, `self_inspect`, `self_update`, `vault_read`, `vault_reconcile`, `vault_resolve_path`, `vault_update` | `ctx.tools`, `ctx.agentVaults`, `ctx.systemPrompt`, `a calling Agent` | `tool/call`, `Agent Vault documents/resources/audit state`, `tool/result` | - | Agent Vault tools operate only for a calling Agent whose runtime session is explicitly bound to an authorized private Vault. |
 | `@deepseek-ai/dsh-tool-ask-user` | `ask_user_question` | `ctx.tools`、`ctx.userQuestions` | `tool/call`、`tool/result after a UI/provider answers the question` | - | ask_user_question 会暂停工具调用，直到当前 UI 提供方返回人类答案。 |
-| `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`、`ctx.codeRuntime (execution time)`、`ctx.systemPrompt` | `tool/call`、`one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`、`tool/result` | - | 在 `mode: code`／`mode: both` 下，它由工具注册表所有，作为可过滤能力层之外的保留传输机制（参见 Code Mode 约定）。在 `code` 下，它是注册表对协议格式（wire format）的唯一贡献；其他可见能力在使用已加载运行时语言生成的 SDK 章节中声明。程序通过 binding 调用这些能力，调用按照原生并发约定调度：启动顺序和策略遵循提交顺序，并发安全的函数体最多重叠执行 `maxParallelSubCalls` 个。调用会重新进入完整且受守卫保护的工具流水线，并将每个嵌套执行关联到此外层结果。 |
+| `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`、`ctx.codeRuntime (execution time)`、`ctx.systemPrompt` | `tool/call`、`one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`、`tool/result` | - | 在 `mode: ptc`／`mode: both` 下，它由工具注册表所有，作为可过滤能力层之外的保留传输机制（参见 PTC 约定）。在 `ptc` 下，它是注册表对协议格式（wire format）的唯一贡献；其他可见能力在使用已加载运行时语言生成的 SDK 章节中声明。程序通过 binding 调用这些能力，调用按照原生并发约定调度：启动顺序和策略遵循提交顺序，并发安全的函数体最多重叠执行 `maxParallelSubCalls` 个。调用会重新进入完整且受守卫保护的工具流水线，并将每个嵌套执行关联到此外层结果。 |
 | `@deepseek-ai/dsh-plan-mode` | `exit_plan_mode` | `ctx.tools`、`ctx.systemPrompt`、`ctx.userQuestions (execution time, opportunistic)` | `tool/call`、`plan/mode inactive on an approved review`、`tool/result` | - | 规划未激活时，exit_plan_mode 仍保留在面向模型的 schema 中，这样状态转换不会在规划策略变更之外额外造成工具目录变动。其执行路径会拒绝规划模式之外的调用；在规划模式下，它通过用户交互 seam 提交计划（批准／根据反馈继续规划），批准后会在步骤边界记录规划模式已停用。 |
 | `@deepseek-ai/dsh-tool-bash` | `bash` | `ctx.tools`、`ctx.shell`、`ctx.systemPrompt`、`ctx.shellEnv`、`ctx.jobs at call time for run_in_background` | `tool/call`、`tool/result` | - | bash 工具是 bash 执行器 seam 面向模型的消费方。使用 `run_in_background` 的运行会注册到通用 `ctx.jobs` 运行时，并通过 `job_*` 工具（来自 `@deepseek-ai/dsh-tool-jobs`）收集／停止；禁用 `enableRunInBackground` 配置（默认为 true）后，该参数会被完全移除。 |
 | `@deepseek-ai/dsh-tool-pwsh` | `pwsh` | `ctx.tools`、`ctx.shell`、`ctx.systemPrompt`、`ctx.shellEnv`、`ctx.jobs at call time for run_in_background` | `tool/call`、`tool/result` | - | pwsh 工具是 Windows 组合中 bash 执行器 seam 的 PowerShell 方言消费方（由 `@deepseek-ai/dsh-pwsh-local` 等 PowerShell 执行器为 `ctx.shell` 提供后端）；除沙箱接口外，它逐项对应 bash 工具调用。使用 `run_in_background` 的运行会注册到通用 `ctx.jobs` 运行时，并通过 `job_*` 工具收集／停止；托管的 `WORLDLINE_*` 环境来自 `@deepseek-ai/dsh-shell-env`。每次调用都在新进程中运行，不使用持久 PTY 会话。路径采用原生 `C:\...` 形式，变量采用 `$env:NAME`。 |
+| `@deepseek-ai/dsh-tool-browser` | `browser_control` | `ctx.tools`, `ctx.browserController`, `ctx.systemPrompt`, `a calling Agent` | `tool/call`, `tool/result`, `conversation-owned native browser tab state` | - | browser_control is registered only in desktop compositions that provide ctx.browserController; screenshots stay inside the calling Session workspace. |
 | `@deepseek-ai/dsh-tool-cordis` | `cordis_define`、`cordis_inspect_list`、`cordis_inspect_query`、`cordis_inspect_self`、`cordis_run`、`cordis_stop`、`cordis_undefine` | `ctx.tools`、`ctx.dynamicCordisRunner` | `tool/call`、`tool/result`、`process-local dynamic package lifecycle` | - | 不在任何随产品发布的树中，因为动态 Package 代码可以访问真实运行时，所以必须显式选择启用。该工具集注入 `@deepseek-ai/dsh-cordis-host-runner` 提供的 `ctx.dynamicCordisRunner`，后者拥有定义注册表和 vm 沙箱；组合缺少它时这些工具不会激活。运行中的 Package 在停止、undefine 或 WORLDLINE 重启前可以注册**额外的**模型可见工具；发生这类工具集变化时，系统会记录完整且有变动的请求头。 |
 | `@deepseek-ai/dsh-tool-bash-persistent` | `bash` | `ctx.tools`、`ctx.terminals`、`an owning Agent at execution time` | `tool/call`、`PTY shell state`、`tool/result` | - | 一个按所有者隔离的持久 bash 工具；部署组合提供 PTY 后端，并可覆盖面向模型的环境描述。 |
 | `@deepseek-ai/dsh-tool-pwsh-persistent` | `pwsh` | `ctx.tools`、`ctx.terminals`、`an owning Agent at execution time` | `tool/call`、`PTY shell state`、`tool/result` | - | 一个按所有者隔离的持久 pwsh 工具，持久 bash 工具的 Windows 对应物；部署组合提供 pwsh 方言的 PTY 后端，并可覆盖面向模型的环境描述。 |
@@ -43,6 +45,425 @@
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
+| `@deepseek-ai/dsh-worldline-video` | `video_index`, `video_probe`, `video_read` | `ctx.tools`, `ctx.skills`, `ctx.subprocess`, `packaged FFmpeg and yt-dlp at execution time` | `tool/call`, `private video cache and sampled JPEGs`, `tool/result` | - | video_probe is metadata-only for online sources; video_index chooses resumable cache or no-media-save stream mode, and video_read performs bounded timestamped sampling from the reusable manifest. |
+
+<a id="deepseek-ai-dsh-tool-agent-vault"></a>
+
+## `@deepseek-ai/dsh-tool-agent-vault`
+
+### `memory_consolidate`
+
+Queue and execute one bounded, checkpointed memory-stage consolidation batch. Never processes the complete backlog in one call.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "source": {
+      "type": "string",
+      "enum": [
+        "short",
+        "medium"
+      ]
+    },
+    "target": {
+      "type": "string",
+      "enum": [
+        "medium",
+        "long"
+      ]
+    },
+    "batch_size": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "source",
+    "target"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `memory_explore`
+
+Follow a bounded Wiki neighborhood from previously recalled vault:// origins.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "origins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "max_pages": {
+      "type": "integer"
+    },
+    "max_chars": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "origins"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `memory_recall`
+
+Quickly retrieve at most five directional cards from your declarative memory without reading self or full documents.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "short",
+        "medium",
+        "long"
+      ]
+    }
+  },
+  "required": [
+    "query"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `memory_remember`
+
+Immediately save one bounded user-requested fact, preference, commitment, or event into short-term memory so the next turn can recall it.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "importance": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "title",
+    "content"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `procedure_recall`
+
+Find saved capabilities, methods, and experience cards by task terms, aliases, and tags; results do not imply current tool availability.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "query"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `resource_find`
+
+Find enabled expression, appearance, source, or attachment resources in your Vault without loading binary content.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "roles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "expression",
+          "appearance",
+          "source",
+          "attachment"
+        ]
+      }
+    }
+  },
+  "required": [
+    "query"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `self_inspect`
+
+Inspect your structured enabled and disabled self modules, including identity, appearance, persona, state, relationships, and capability boundaries.
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `self_update`
+
+Propose or apply one explicit structured self-module update. Host policy, stability, user locks, and revision are authoritative.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "autonomous": {
+          "type": "boolean"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "stability": {
+          "type": "string",
+          "enum": [
+            "core",
+            "stable",
+            "dynamic"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "revision": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "enabled",
+        "autonomous",
+        "locked",
+        "stability",
+        "summary",
+        "details",
+        "revision",
+        "updatedAt"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "module",
+    "reason"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `vault_read`
+
+Progressively read one exact vault:// Markdown result using top, section, grep, or full view.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "uri": {
+      "type": "string"
+    },
+    "view": {
+      "type": "string",
+      "enum": [
+        "top",
+        "section",
+        "grep",
+        "full"
+      ]
+    },
+    "selector": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "uri"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `vault_reconcile`
+
+Close a vault_resolve_path write lease and immediately reconcile the externally edited Markdown file into the derived index.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "lease_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "lease_id"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `vault_resolve_path`
+
+Resolve one exact memory or procedure vault:// URI to a temporary Host path only when a non-Vault tool genuinely requires it. A write result includes a lease that must be reconciled; never save the Host path in Vault content.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "uri": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "uri",
+    "mode",
+    "reason"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `vault_update`
+
+Create or revision-update one memory or procedure Markdown document. This tool refuses self and resource paths.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "uri": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "expected_revision": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "uri",
+    "content",
+    "reason"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+Agent Vault tools operate only for a calling Agent whose runtime session is explicitly bound to an authorized private Vault.
 
 <a id="worldline-tool-ask-user"></a>
 
@@ -146,9 +567,9 @@ ask_user_question 会暂停工具调用，直到当前 UI 提供方返回人类�
 }
 ```
 
-来源：[`packages/core/tools/src/code-mode.ts`](../packages/core/tools/src/code-mode.ts)
+来源：[`packages/core/tools/src/ptc.ts`](../packages/core/tools/src/ptc.ts)
 
-在 `mode: code`／`mode: both` 下，它由工具注册表所有，作为可过滤能力层之外的保留传输机制（参见 Code Mode 约定）。在 `code` 下，它是注册表对协议格式的唯一贡献；其他可见能力在使用已加载运行时语言生成的 SDK 章节中声明。程序通过 binding 调用这些能力，调用按照原生并发约定调度：启动顺序和策略遵循提交顺序，并发安全的函数体最多重叠执行 `maxParallelSubCalls` 个。调用会重新进入完整且受守卫保护的工具流水线，并将每个嵌套执行关联到此外层结果。
+在 `mode: ptc`／`mode: both` 下，它由工具注册表所有，作为可过滤能力层之外的保留传输机制（参见 PTC 约定）。在 `ptc` 下，它是注册表对协议格式的唯一贡献；其他可见能力在使用已加载运行时语言生成的 SDK 章节中声明。程序通过 binding 调用这些能力，调用按照原生并发约定调度：启动顺序和策略遵循提交顺序，并发安全的函数体最多重叠执行 `maxParallelSubCalls` 个。调用会重新进入完整且受守卫保护的工具流水线，并将每个嵌套执行关联到此外层结果。
 
 <a id="worldline-plan-mode"></a>
 
@@ -264,6 +685,139 @@ bash 工具是 bash 执行器 seam 面向模型的消费方。使用 `run_in_bac
 来源：[`packages/shell/tool-pwsh/src/index.ts`](../packages/shell/tool-pwsh/src/index.ts)
 
 pwsh 工具是 Windows 组合中 bash 执行器 seam 的 PowerShell 方言消费方（由 `@deepseek-ai/dsh-pwsh-local` 等 PowerShell 执行器为 `ctx.shell` 提供后端）；除沙箱接口外，它逐项对应 bash 工具调用。使用 `run_in_background` 的运行会注册到通用 `ctx.jobs` 运行时，并通过 `job_*` 工具收集／停止；托管的 `WORLDLINE_*` 环境来自 `@deepseek-ai/dsh-shell-env`。每次调用都在新进程中运行，不使用持久 PTY 会话。路径采用原生 `C:\...` 形式，变量采用 `$env:NAME`。
+
+<a id="deepseek-ai-dsh-tool-browser"></a>
+
+## `@deepseek-ai/dsh-tool-browser`
+
+### `browser_control`
+
+Control Worldline's built-in, conversation-owned browser through high-level actions or Chrome DevTools Protocol.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "Browser operation to perform.",
+      "enum": [
+        "list",
+        "open",
+        "focus",
+        "close",
+        "state",
+        "navigate",
+        "reload",
+        "back",
+        "forward",
+        "stop",
+        "snapshot",
+        "html",
+        "text",
+        "screenshot",
+        "evaluate",
+        "click",
+        "fill",
+        "type",
+        "press",
+        "select",
+        "wait_for_selector",
+        "wait_for_load",
+        "console",
+        "network",
+        "clear_logs",
+        "devtools",
+        "cdp"
+      ]
+    },
+    "tab_id": {
+      "type": "string",
+      "description": "Target tab id. Omit to use the active tab where supported."
+    },
+    "url": {
+      "type": "string",
+      "description": "HTTP(S) URL for open or navigate. A missing scheme is treated as HTTPS."
+    },
+    "timeout_ms": {
+      "type": "number",
+      "description": "Action timeout in milliseconds, capped at 60000."
+    },
+    "selector": {
+      "type": "string",
+      "description": "CSS selector for element actions."
+    },
+    "text": {
+      "type": "string",
+      "description": "Visible text target, or text to type when value is omitted."
+    },
+    "value": {
+      "type": "string",
+      "description": "Value for fill, type, or select."
+    },
+    "key": {
+      "type": "string",
+      "description": "Key or shortcut for press, for example Enter or Ctrl+L."
+    },
+    "x": {
+      "type": "number",
+      "description": "Viewport x coordinate for click or screenshot clipping."
+    },
+    "y": {
+      "type": "number",
+      "description": "Viewport y coordinate for click or screenshot clipping."
+    },
+    "width": {
+      "type": "number",
+      "description": "Screenshot clip width."
+    },
+    "height": {
+      "type": "number",
+      "description": "Screenshot clip height."
+    },
+    "max_text_length": {
+      "type": "number",
+      "description": "Maximum page text characters returned by snapshot or text."
+    },
+    "max_elements": {
+      "type": "number",
+      "description": "Maximum interactive elements returned by snapshot."
+    },
+    "max_entries": {
+      "type": "number",
+      "description": "Maximum console or network entries returned."
+    },
+    "save_path": {
+      "type": "string",
+      "description": "Screenshot path relative to the Session workspace."
+    },
+    "expression": {
+      "type": "string",
+      "description": "JavaScript expression or async body for evaluate."
+    },
+    "method": {
+      "type": "string",
+      "description": "Chrome DevTools Protocol method for cdp."
+    },
+    "params": {
+      "type": "object",
+      "description": "JSON parameters for cdp.",
+      "additionalProperties": true
+    },
+    "open": {
+      "type": "boolean",
+      "description": "Explicit DevTools open state; omit to toggle."
+    }
+  },
+  "required": [
+    "action"
+  ]
+}
+```
+
+Source: [`packages/browser/tool-browser/src/index.ts`](../packages/browser/tool-browser/src/index.ts)
+
+browser_control is registered only in desktop compositions that provide ctx.browserController; screenshots stay inside the calling Session workspace.
 
 <a id="worldline-tool-cordis"></a>
 
@@ -530,6 +1084,33 @@ pwsh 工具是 Windows 组合中 bash 执行器 seam 的 PowerShell 方言消费
 
 一个按所有者隔离的持久 bash 工具；部署组合提供 PTY 后端，并可覆盖面向模型的环境描述。
 
+<a id="deepseek-ai-dsh-tool-pwsh-persistent"></a>
+
+## `@deepseek-ai/dsh-tool-pwsh-persistent`
+
+### `pwsh`
+
+Run commands in a persistent PowerShell shell. State, including the current directory and exported environment variables, persists across calls for this agent.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "command": {
+      "type": "string",
+      "description": "The PowerShell command to run. Relative path is preferred in the command."
+    }
+  },
+  "required": [
+    "command"
+  ]
+}
+```
+
+Source: [`packages/shell/tool-pwsh-persistent/src/index.ts`](../packages/shell/tool-pwsh-persistent/src/index.ts)
+
+One owner-isolated persistent pwsh tool, the Windows counterpart of the persistent bash tool; deployment composition supplies a pwsh-dialect PTY backend and may override the model-facing environment description.
+
 <a id="worldline-tool-str-replace-editor"></a>
 
 ## `@deepseek-ai/dsh-tool-str-replace-editor`
@@ -542,6 +1123,7 @@ pwsh 工具是 Windows 组合中 bash 执行器 seam 的 PowerShell 方言消费
 * 如果 `path` 是文件，`view` 会显示应用 `cat -n` 后的结果。如果 `path` 是目录，`view` 会列出最多向下 2 层的非隐藏文件和目录
 * 如果指定的 `create` 命令目标 `path` 已作为文件存在，则不能使用该命令
 * 如果 `command` 产生较长输出，输出会被截断并标记为 `<response clipped>`
+* 对所选命令未使用的参数，`null` 占位值按省略处理。必填参数仍须提供值；删除匹配项时请省略 `str_replace.new_str`，不要将其设为 `null`
 
 使用 `str_replace` 命令时请注意：
 
@@ -568,27 +1150,62 @@ pwsh 工具是 Windows 组合中 bash 执行器 seam 的 PowerShell 方言消费
       "description": "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`."
     },
     "file_text": {
-      "type": "string",
-      "description": "Required parameter of `create` command, with the content of the file to be created."
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required string parameter of `create`; null is treated as omitted by other commands."
     },
     "insert_line": {
-      "type": "integer",
-      "description": "Required parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`."
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required integer parameter of `insert`; null is treated as omitted by other commands."
     },
     "new_str": {
-      "type": "string",
-      "description": "Optional parameter of `str_replace` command containing the new string (if not given, no string will be added). Required parameter of `insert` command containing the string to insert."
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional string for `str_replace` (omit it to delete) and required string for `insert`. Null is accepted only by commands that do not use it."
     },
     "old_str": {
-      "type": "string",
-      "description": "Required parameter of `str_replace` command containing the string in `path` to replace."
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required string for `str_replace`; null is treated as omitted by other commands."
     },
     "view_range": {
-      "type": "array",
-      "description": "Optional parameter of `view` command when `path` points to a file. If none is given, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file.",
-      "items": {
-        "type": "integer"
-      }
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional line range for `view`; omitted or null shows the full file."
     }
   },
   "required": [
@@ -2061,7 +2678,6 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 工作流的身份通过 `meta` 参数以 JSON 形式传入：必填的 `name`（简短 kebab-case）和 `description` 字符串，以及可选的 `whenToUse` 字符串和 `phases` 数组（`{title, detail?, provider?, model?}`）。`script` 参数只能是纯 JavaScript **函数体**，不能是 TypeScript，也不能包含 `export const meta` 语句；meta 是参数而非代码。脚本支持顶层 await；请以 `return <value>` 结尾，该值必须可以 JSON 序列化，并作为此工具的结果。
 
 脚本函数体提供以下钩子：
-
 - `agent(prompt, opts?): Promise<any>`：运行一个 subagent 直至完成。不提供 `opts.schema` 时，解析为子级最终文本；提供 `opts.schema` 时，它必须是以对象为根、且**只能**使用 type/properties/required/additionalProperties/items/enum/const/oneOf 的 JSON Schema，不支持 pattern/format/数值边界，此时解析为通过校验的对象。子级失败时解析为 `null`，可使用 `.filter(Boolean)` 过滤。其他选项包括 `label`（显示名称）、`phase`（进度组），以及相互独立的 `provider`／`model` LLM（大语言模型）目标覆盖项，两者可单独提供。其他任何选项（`effort`／`isolation`／`agentType`）都会明确报错。
 - `pipeline(items, ...stages): Promise<any[]>`：让每个条目分别经过各阶段，阶段之间**没有**屏障；多阶段工作优先使用它。每个阶段接收 `(prev, item, index)`。普通的阶段异常会将该**条目**变为 `null`，并跳过它的剩余阶段。
 - `parallel(thunks): Promise<any[]>`：并发运行零参数函数并等待**全部**完成。它会形成屏障，仅当某个阶段确实需要汇总全部先前结果时使用。抛出异常的 thunk 解析为 `null`。
@@ -2196,3 +2812,100 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 来源：[`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
 
 web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。
+
+<a id="deepseek-ai-dsh-worldline-video"></a>
+
+## `@deepseek-ai/dsh-worldline-video`
+
+### `video_index`
+
+Build or reuse a durable chapter index. Online mode can use a stable resumable private cache or refresh a direct stream without saving media.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "source": {
+      "type": "string",
+      "description": "Absolute local video path or public HTTP(S) video/page URL."
+    },
+    "online_mode": {
+      "type": "string",
+      "description": "Online only: cache (default) downloads resumably for stability; stream avoids saving media and reads sampled ranges from refreshed direct URLs.",
+      "enum": [
+        "cache",
+        "stream"
+      ]
+    }
+  },
+  "required": [
+    "source"
+  ]
+}
+```
+
+Source: [`packages/video/worldline-video/src/tools.ts`](../packages/video/worldline-video/src/tools.ts)
+
+### `video_probe`
+
+Inspect a local video container or an online video page. Online probing retrieves metadata and caption availability without saving the media file.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "source": {
+      "type": "string",
+      "description": "Absolute local video path or public HTTP(S) video/page URL."
+    }
+  },
+  "required": [
+    "source"
+  ]
+}
+```
+
+Source: [`packages/video/worldline-video/src/tools.ts`](../packages/video/worldline-video/src/tools.ts)
+
+### `video_read`
+
+Read one bounded chapter or time range from a video index. Returns timestamped local JPEG paths and matching text captions for visual inspection.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "manifest_path": {
+      "type": "string",
+      "description": "Absolute manifest path returned by video_index."
+    },
+    "chapter": {
+      "type": "integer",
+      "description": "Zero-based chapter index. Use this for long videos."
+    },
+    "start_seconds": {
+      "type": "number",
+      "description": "Optional explicit range start in seconds."
+    },
+    "end_seconds": {
+      "type": "number",
+      "description": "Optional explicit range end in seconds."
+    },
+    "max_frames": {
+      "type": "integer",
+      "description": "Frames to materialize, from 1 to 32. Defaults to 12."
+    },
+    "width": {
+      "type": "integer",
+      "description": "Maximum JPEG width, from 320 to 1920. Defaults to 960."
+    }
+  },
+  "required": [
+    "manifest_path"
+  ]
+}
+```
+
+Source: [`packages/video/worldline-video/src/tools.ts`](../packages/video/worldline-video/src/tools.ts)
+
+video_probe is metadata-only for online sources; video_index chooses resumable cache or no-media-save stream mode, and video_read performs bounded timestamped sampling from the reusable manifest.

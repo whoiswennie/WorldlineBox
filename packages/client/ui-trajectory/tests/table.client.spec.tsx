@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { RenderMessageImages } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { TrajectoryTable } from '../src/client/TrajectoryTable.tsx'
 import type { TrajectoryTurnModel } from '../src/client/layout.ts'
 
@@ -65,6 +66,44 @@ const FOLD_PROPS = {
 }
 
 describe('TrajectoryTable', () => {
+  it('renders durable trajectory images through the optional attachment slot', () => {
+    const renderImages = vi.fn<RenderMessageImages>(({ images }) => (
+      <div data-testid="durable-trajectory-image">{images[0]?.attachment.attachmentId}</div>
+    ))
+    const turns: readonly TrajectoryTurnModel[] = [{
+      turn: 1,
+      groups: [{
+        title: 'Step 1',
+        cells: [{
+          index: 1,
+          kind: 'message',
+          text: 'Image',
+          sourceBlocks: [{
+            type: 'image',
+            content: '',
+            attachment: {
+              attachmentId: 'sha256-image' as never,
+              mediaType: 'image/png',
+              bytes: 68,
+              width: 1,
+              height: 1,
+            },
+          }],
+          timeSeconds: 0.1,
+        }],
+      }],
+    }]
+
+    render(<TrajectoryTable turns={turns} renderImages={renderImages} {...FOLD_PROPS} />)
+    fireEvent.click(screen.getByRole('row', { name: /ASSISTANT/ }))
+
+    expect(screen.getByTestId('durable-trajectory-image').textContent).toBe('sha256-image')
+    expect(renderImages).toHaveBeenCalledTimes(1)
+    const rendered = renderImages.mock.calls[0]?.[0]
+    expect(rendered?.align).toBe('start')
+    expect(rendered?.images[0]?.attachment.attachmentId).toBe('sha256-image')
+  })
+
   it('shows a muted placeholder for an assistant response containing only tool calls', () => {
     const turns: readonly TrajectoryTurnModel[] = [{
       turn: 1,

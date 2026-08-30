@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-SDK 提供方会在全新的子进程中把每个 subagent 作为完整的 Worldline 运行时运行，并经由 [TypeScript SDK 客户端](../../sdk/client/README.md) 通过 stdio JSON-RPC 驱动。它是 [`subagent-acp`](../subagent-acp/README.md) 之外的第二个进程外后端，差异在协议格式（wire format）和子进程约定：ACP（Agent Client Protocol）后端能驱动任何 Agent Client Protocol agent（智能体）；本后端专门驱动 harness SDK 运行时（`worldline-jsonrpc-agent` bin 或打包后的可执行文件），因此子进程是一个完整的对等 harness，拥有由 `cordis.yml` 决定的组合、会话持久化、模型路由和工具。
+SDK 提供方会在全新的子进程中把每个 subagent 作为完整的 Worldline 运行时运行，并经由 [TypeScript SDK 客户端](../../sdk/client/README.md) 通过 stdio JSON-RPC 驱动。它是 [`subagent-acp`](../subagent-acp/README.md) 之外的第二个进程外后端，差异在协议格式（wire format）和子进程约定：ACP（Agent Client Protocol）后端能驱动任何 ACP agent（智能体）；本后端通过同版本 CLI 启动具名 Worldline profile，因此子进程是一个完整的对等 harness，拥有自己的组合、会话持久化、模型路由和工具。
 
 ## 启动与所有权
 
@@ -20,15 +20,17 @@ SDK 客户端返回自有子活动，而不是提示词结果。提供方读取�
 
 ## 能力与上下文
 
-Provider 不宣告任何启动期能力（`outputSchema`/`depthLimit`/`toolFilter`/`persona` 全为 false），且 `inheritsParentContext: false`：子进程是另一进程里的全新运行时，唯一来自父方的输入是工作区 cwd。基于本 provider 的 `worldline-tool-subagent` 部署应设置 `maxDepth: 'provider-managed'`——子 harness 拥有自己的递归预算。
+Provider 声明 `agentOptions: true`，同时保持 `outputSchema`/`depthLimit`/`toolFilter`/`persona` 为 false，并且 `inheritsParentContext: false`。请求可以覆盖 provider、model、推理强度与最大输出 token；子进程仍是另一进程里的全新运行时，唯一来自父方的输入是工作区 cwd。基于本 provider 的 `worldline-tool-subagent` 部署应设置 `maxDepth: 'provider-managed'`——子 harness 拥有自己的递归预算。
 
 ## 配置
 
 | 键 | 默认 | 含义 |
 |---|---|---|
 | `providerName` | `worldline-sdk` | `ctx.subagents` 上的注册名。 |
-| `command` | 必填 | 每次运行时 spawn 的可执行文件（子运行时 bin 或打包后的可执行文件）。 |
-| `args` | `[]` | 命令参数（通常是子进程的 `cordis.yml` 路径）。 |
+| `dshBin` | 同版本 SDK 依赖 | 可选的显式 Worldline CLI 模块，在插件加载时解析并校验。 |
+| `profile` | `sdk` | 子进程的具名 profile。 |
+| `patches` | `[]` | 每次启动的有序 profile patch 文件，在插件加载时解析并校验。 |
+| `dshHome` | 必填 | 嵌套子进程使用的绝对隔离 Worldline home。 |
 | `cwd` | 父会话 cwd | 工作目录覆盖；校验规则与 [`subagent-acp`](../subagent-acp/README.md) 相同。 |
 | `provider` | `deepseek-official` | 写入子进程 `initialize` 的提供方路由。 |
 | `model` | `deepseek-v4-flash` | 写入子进程 `initialize` 的模型。 |
@@ -43,8 +45,9 @@ Provider 不宣告任何启动期能力（`outputSchema`/`depthLimit`/`toolFilte
   name: '@deepseek-ai/dsh-subagent-dsh-sdk'
   config:
     providerName: worldline-sdk
-    command: node
-    args: ['./packages/examples/jsonrpc-demo/lib/bin.js', './examples/jsonrpc-agent/cordis.yml']
+    profile: sdk
+    patches: ['./profiles/research-child.cordis.patch.yml']
+    dshHome: !!js worldlineHomePath('children')
     maxTokens: 49152
     env:
       DEEPSEEK_API_KEY: !!js process.env.DEEPSEEK_API_KEY
@@ -65,7 +68,7 @@ Provider 不宣告任何启动期能力（`outputSchema`/`depthLimit`/`toolFilte
 
 #### 模型看到的内容
 
-子运行时的模型会收到作为用户消息的独立任务，以及该运行时自身配置的系统提示词、工具和全新会话。它不会收到父级对话。本提供方不声明可选的启动时能力，因此本地服务会拒绝要求 persona、工具过滤、深度强制或结构化输出的请求，而不是静默省略这些要求。
+子运行时的模型会收到作为用户消息的独立任务，以及该运行时自身配置的系统提示词、工具和全新会话。它不会收到父级对话。本提供方接受模型路由选项，但本地服务仍会拒绝要求 persona、工具过滤、深度强制或结构化输出的请求，而不是静默省略这些要求。
 
 #### Token 影响
 
@@ -92,6 +95,6 @@ Provider 不宣告任何启动期能力（`outputSchema`/`depthLimit`/`toolFilte
 ## 已知限制与暂缓事项
 
 - **每次运行都使用全新的运行时进程**：不使用进程池；harness 运行时需要启动完整的插件树，因此每次运行的 spawn 成本高于 ACP 后端通常使用的子进程。
-- **不支持可选的启动时能力**：父级无法在子进程内强制执行 `outputSchema`、深度限制、工具过滤或 persona；应改为配置子进程自身的 `cordis.yml`。
+- **不支持非路由启动能力**：父级无法在子进程内强制执行 `outputSchema`、深度限制、工具过滤或 persona；应改为配置子进程自身的 profile。
 - **子进程的 transcript（文本记录）保留在其自身的会话根目录中**：父级日志只记录委派工具调用／结果（seam 的子级隔离规则）；流式 `session.event` 通道只用于提取输出，不会桥接到父级日志中。
 - **仅支持本地子进程**：解析出的 cwd 是本地路径；远程运行时需要独立的后端。

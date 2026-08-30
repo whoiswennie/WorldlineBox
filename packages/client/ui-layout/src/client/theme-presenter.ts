@@ -11,6 +11,10 @@ import type { ThemeSnapshot } from '@deepseek-ai/dsh-client-ui-theme/client'
 
 /** Body attribute selecting the dark base palette in the token stylesheets. */
 export const DARK_ATTRIBUTE = 'data-ds-dark-theme'
+/**
+ * Content font size variable.
+ */
+export const CONTENT_FONT_SIZE_VARIABLE = '--dsh-content-font-size'
 
 /** Applies theme snapshots to the document; one instance per plugin fiber. */
 export class ThemePresenter {
@@ -40,6 +44,7 @@ export class ThemePresenter {
     const body = document.body
     if (scheme === 'dark') body.setAttribute(DARK_ATTRIBUTE, '')
     else body.removeAttribute(DARK_ATTRIBUTE)
+    body.style.setProperty(CONTENT_FONT_SIZE_VARIABLE, `${snapshot.fontSize}px`)
     for (const name of this.appliedTokens) body.style.removeProperty(name)
     this.appliedTokens = []
     for (const [name, value] of Object.entries(snapshot.active.tokens)) {
@@ -55,6 +60,7 @@ export class ThemePresenter {
     document.documentElement.style.removeProperty('color-scheme')
     const body = document.body
     body.removeAttribute(DARK_ATTRIBUTE)
+    body.style.removeProperty(CONTENT_FONT_SIZE_VARIABLE)
     for (const name of this.appliedTokens) body.style.removeProperty(name)
     this.appliedTokens = []
     this.themeColorMeta.remove()

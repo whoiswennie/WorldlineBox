@@ -298,13 +298,13 @@ async function runScenario(scenario: SdkScenario): Promise<{
   }
 
   const harness = new DeepSeekHarness({
-    launch: {
-      command: launch.command,
-      args: launch.args,
-      cwd,
-      env,
-      requestTimeoutMs: 110_000,
+    dshBin: launch.args.at(-1)!,
+    processCwd: cwd,
+    env: {
+      ...env,
+      NODE_OPTIONS: [env.NODE_OPTIONS, ...launch.args.slice(0, -1)].filter(Boolean).join(' '),
     },
+    requestTimeoutMs: 110_000,
     cwd,
     provider: 'deepseek-official',
     model: 'deepseek-v4-flash',

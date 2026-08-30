@@ -4,6 +4,7 @@
    a 2px active bar. */
 
 .root {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -19,11 +20,60 @@
      the input card clears the bare clearance, so the input card stays exactly
      content + 32px at every width. Declared on the root because the
      transcript and the composer seat are sibling subtrees. */
-  --worldline-chat-content-width: 748px;
+  --worldline-chat-content-width: var(
+    --worldline-chat-user-width,
+    clamp(680px, calc(var(--worldline-conversation-column-width, 0px) * 0.64), 920px)
+  );
   --worldline-composer-card-max-width: calc(var(--worldline-chat-content-width) + 32px);
   --worldline-composer-side-clearance: 16px;
   --worldline-composer-dock-inset: 8px;
 }
+
+.widthHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 8;
+  width: min(
+    40px,
+    calc((100% - var(--worldline-chat-content-width)) / 2 - 48px)
+  );
+  cursor: col-resize;
+}
+
+.widthHandle[data-side='left'] {
+  right: calc(50% + var(--worldline-chat-content-width) / 2 + 24px);
+}
+
+.widthHandle[data-side='right'] {
+  left: calc(50% + var(--worldline-chat-content-width) / 2 + 24px);
+}
+
+.widthHandle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to bottom,
+    transparent calc(var(--worldline-width-handle-pointer-y, 50%) - 52px),
+    var(--dsw-alias-scrollbar-hover-l1) calc(var(--worldline-width-handle-pointer-y, 50%) - 12px),
+    var(--dsw-alias-scrollbar-hover-l1) calc(var(--worldline-width-handle-pointer-y, 50%) + 12px),
+    transparent calc(var(--worldline-width-handle-pointer-y, 50%) + 52px)
+  );
+  opacity: 0;
+  pointer-events: none;
+}
+
+.widthHandle[data-side='left']::after { right: 16px; }
+.widthHandle[data-side='right']::after { left: 16px; }
+
+.widthHandle:hover::after,
+.widthHandle[data-dragging]::after { opacity: 1; }
+
+.root:has([data-conversation-composer-overlay]) .widthHandle { display: none; }
 
 .header {
   position: relative;
@@ -223,6 +273,19 @@
   min-height: 0;
 }
 
+/* The transcript-width handles belong to the body, not to the complete
+   conversation column. Keeping their positioning context below the header
+   makes the session title, view tabs, and layout controls an entirely
+   separate hit region instead of relying on z-index arbitration. */
+.bodyFrame {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* Composer context stack (Figma 9:937): standalone dock cards share one
    rhythm above the input card. */
 .composerStack {
@@ -264,6 +327,7 @@
 .scrollBody {
   display: flex;
   flex: 1;
+  min-width: 0;
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;

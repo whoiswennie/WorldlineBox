@@ -367,20 +367,67 @@ describe('ConversationRoot resident composer', () => {
 
   it('active phase: fixed header outside the scrollport; sticky composer seat inside it', () => {
     const b = mount(conversationSnapshot())
+    const bodyFrame = b.view.container.querySelector('[data-conversation-body-frame]')
     const host = b.view.container.querySelector('[data-conversation-scroll]')
     const seat = b.view.container.querySelector('[data-composer-seat]')
     const header = b.view.container.querySelector('header')
+    const handles = [...b.view.container.querySelectorAll('[data-width-handle]')]
     const textarea = b.view.container.querySelector('textarea')
+    expect(bodyFrame).not.toBeNull()
     expect(host).not.toBeNull()
     expect(seat).not.toBeNull()
     expect(header).not.toBeNull()
-    // Header is column chrome above the scrollport; the seat sticks inside it.
+    // Header is column chrome above the complete body frame. Width handles
+    // occupy that frame only, so they cannot intercept title or tab clicks.
+    expect(bodyFrame?.contains(header)).toBe(false)
+    expect(bodyFrame?.contains(host)).toBe(true)
+    expect(handles).toHaveLength(2)
+    expect(handles.every(handle => bodyFrame?.contains(handle) === true)).toBe(true)
+    expect(handles.every(handle => host?.contains(handle) === false)).toBe(true)
     expect(host?.contains(header)).toBe(false)
     expect(host?.contains(seat)).toBe(true)
     expect(seat?.contains(textarea)).toBe(true)
     expect(b.slotCalls).toContain('conversation.session.header.lineage')
     expect(b.slotCalls).toContain('conversation.session.header.actions')
     expect(b.slotCalls).toContain('conversation.session.header.utilities')
+  })
+
+  it('publishes live transcript and composer heights for viewport-bound floating controls', () => {
+    const callbacks: ResizeObserverCallback[] = []
+    class GeometryObserver {
+      constructor(callback: ResizeObserverCallback) { callbacks.push(callback) }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', GeometryObserver)
+    let viewportHeight = 640
+    let composerHeight = 144
+    const clientHeight = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.hasAttribute('data-conversation-scroll') ? viewportHeight : 0
+      })
+    const offsetHeight = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.hasAttribute('data-composer-seat') ? composerHeight : 0
+      })
+    try {
+      const b = mount(conversationSnapshot())
+      const host = b.view.container.querySelector<HTMLElement>('[data-conversation-scroll]')
+      expect(host?.style.getPropertyValue('--worldline-conversation-viewport-height')).toBe('640px')
+      expect(host?.style.getPropertyValue('--worldline-composer-height')).toBe('144px')
+
+      viewportHeight = 520
+      composerHeight = 220
+      act(() => {
+        for (const callback of callbacks) callback([], {} as ResizeObserver)
+      })
+      expect(host?.style.getPropertyValue('--worldline-conversation-viewport-height')).toBe('520px')
+      expect(host?.style.getPropertyValue('--worldline-composer-height')).toBe('220px')
+    } finally {
+      clientHeight.mockRestore()
+      offsetHeight.mockRestore()
+    }
   })
 
   it('keeps both layout toggles at the right end of the conversation tab row', () => {

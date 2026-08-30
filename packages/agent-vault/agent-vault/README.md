@@ -8,11 +8,11 @@ The service deliberately separates `self`, `memory`, `procedure`, and `resource`
 
 ## Model Experience
 
-Consumers expose bounded recall cards and progressive reads instead of the complete Vault.
+Indirectly, through the mounted Vault skill and tool consumers.
 
 #### KV Cache effect
 
-Only the compiled self snapshot and bounded activated cards affect a turn's prompt suffix.
+The service itself adds no prefix; consumers own any bounded suffix they render.
 
 ## Known Limitations and Deferred Work
 

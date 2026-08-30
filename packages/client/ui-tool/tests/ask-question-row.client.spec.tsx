@@ -19,6 +19,10 @@ import { zh } from '@deepseek-ai/dsh-client-ui-conversation/src/client/locales.t
 afterEach(cleanup)
 
 const ARGS = JSON.stringify({ questions: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] })
+const CARD_ARGS = JSON.stringify({ questions: [
+  { id: 'a', question: '选择发布方式' },
+  { id: 'b', question: '补充说明' },
+] })
 
 const resultNode = (argsRaw: string, resultText: string | null, over?: Partial<ToolResultNode>): ToolResultNode => ({
   kind: 'tool-result', seq: 10, time: 2_000, callTime: 1_000, callId: 'c1',
@@ -71,6 +75,19 @@ describe('AskQuestionRow', () => {
     expect(view.container.querySelector('[data-state="ok"]')).not.toBeNull()
   })
 
+  it('expands settled answers as a readable question transcript', () => {
+    render(<AskQuestionRow {...rowProps(resultNode(CARD_ARGS, answers([
+      { id: 'a', selected: ['仅本地'] },
+      { id: 'b', selected: [], custom: '' },
+    ])))} />)
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    expect(screen.getByText('选择发布方式')).toBeTruthy()
+    expect(screen.getByText('仅本地')).toBeTruthy()
+    expect(screen.getByText('补充说明')).toBeTruthy()
+    expect(screen.getByText('未回答')).toBeTruthy()
+    expect(screen.queryByText(CARD_ARGS)).toBeNull()
+  })
+
   it.each([
     { label: 'non-JSON result text', text: 'oops' },
     { label: 'non-object result root', text: '"str"' },
@@ -88,7 +105,16 @@ describe('AskQuestionRow', () => {
     const view = render(<AskQuestionRow {...rowProps(resultNode(ARGS, null,
       { isError: true, error: { name: 'UserQuestionError', code: 'ASK_CANCELLED' } }))} />)
     expect(screen.getByText('已取消')).toBeTruthy()
-    expect(view.container.querySelector('[data-state="error"]')).not.toBeNull()
+    expect(view.container.querySelector('[data-state="ok"]')).not.toBeNull()
+  })
+
+  it('expands cancelled questions without exposing raw JSON', () => {
+    render(<AskQuestionRow {...rowProps(resultNode(CARD_ARGS, null,
+      { isError: true, error: { name: 'UserQuestionError', code: 'ASK_CANCELLED' } }))} />)
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    expect(screen.getByText('本轮已取消，未提交回答')).toBeTruthy()
+    expect(screen.getByText('选择发布方式')).toBeTruthy()
+    expect(screen.queryByText(CARD_ARGS)).toBeNull()
   })
 
   it('a turn abort while pending reads interrupted with stopped semantics', () => {

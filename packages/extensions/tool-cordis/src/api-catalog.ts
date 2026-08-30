@@ -378,6 +378,217 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'agentVaults',
+    summary: 'Host service contract for portable, file-native Agent Vaults.',
+    description: 'Host service contract for portable, file-native Agent Vaults.',
+    methods: [
+      {
+        signature: 'abstract listAgents(): Promise<readonly AgentVaultManifest[]>',
+        description: 'List every Vault manifest.',
+        parameters: [],
+        returns: 'Available manifests.',
+      },
+      {
+        signature: 'abstract bindRuntimeAgent(runtimeAgentId: string, agentId: string): () => void',
+        description: 'Bind a runtime Agent to its only private Vault.',
+        parameters: [{ name: 'runtimeAgentId', description: 'Runtime identity.' }, { name: 'agentId', description: 'Vault identity.' }],
+        returns: 'Binding disposer.',
+      },
+      {
+        signature: 'abstract resolveRuntimeAgent(runtimeAgentId: string): string | undefined',
+        description: 'Resolve an authorized private Vault.',
+        parameters: [{ name: 'runtimeAgentId', description: 'Runtime identity.' }],
+        returns: 'Bound Vault identity, if any.',
+      },
+      {
+        signature: 'abstract createAgent(agentId: string, name: string): Promise<AgentVaultManifest>',
+        description: 'Create a new Vault.',
+        parameters: [{ name: 'agentId', description: 'Portable Agent identity.' }, { name: 'name', description: 'Display name.' }],
+        returns: 'Created manifest.',
+      },
+      {
+        signature: 'abstract removeAgent(agentId: string, context: VaultWriteContext): Promise<void>',
+        description: 'Move a Vault to recoverable trash.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Completion.',
+      },
+      {
+        signature: 'abstract manifest(agentId: string): Promise<AgentVaultManifest>',
+        description: 'Read a Vault manifest.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }],
+        returns: 'Manifest.',
+      },
+      {
+        signature: 'abstract policy(agentId: string): Promise<VaultPolicy>',
+        description: 'Read a Vault policy.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }],
+        returns: 'Policy.',
+      },
+      {
+        signature: 'abstract setPolicy(agentId: string, policy: VaultPolicy, context: VaultWriteContext): Promise<VaultPolicy>',
+        description: 'Replace a Vault policy.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'policy', description: 'New policy.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Persisted policy.',
+      },
+      {
+        signature: 'abstract list(agentId: string, uri: VaultUri, cursor?: number, limit?: number): Promise<readonly VaultEntry[]>',
+        description: 'List a portable directory.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'uri', description: 'Directory URI.' }, { name: 'cursor', description: 'Entry offset.' }, { name: 'limit', description: 'Result bound.' }],
+        returns: 'Directory entries.',
+      },
+      {
+        signature: 'abstract read(agentId: string, uri: VaultUri, view?: VaultDocument[\'view\'], selector?: string): Promise<VaultDocument>',
+        description: 'Read a bounded document view.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'uri', description: 'Document URI.' }, { name: 'view', description: 'Read mode.' }, { name: 'selector', description: 'Section or grep selector.' }],
+        returns: 'Parsed document.',
+      },
+      {
+        signature: 'abstract write(agentId: string, uri: VaultUri, content: string, context: VaultWriteContext): Promise<VaultDocument>',
+        description: 'Write one document.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'uri', description: 'Document URI.' }, { name: 'content', description: 'Markdown source.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Persisted document.',
+      },
+      {
+        signature: 'abstract move(agentId: string, source: VaultUri, target: VaultUri, context: VaultWriteContext): Promise<VaultEntry>',
+        description: 'Move one document.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'source', description: 'Source URI.' }, { name: 'target', description: 'Target URI.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Moved entry.',
+      },
+      {
+        signature: 'abstract history(agentId: string, uri: VaultUri, limit?: number): Promise<readonly VaultEntry[]>',
+        description: 'Read revision history.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'uri', description: 'Document URI.' }, { name: 'limit', description: 'Result bound.' }],
+        returns: 'Historical entries.',
+      },
+      {
+        signature: 'abstract recall(input: RecallQuery): Promise<RecallResult>',
+        description: 'Recall directional cards.',
+        parameters: [{ name: 'input', description: 'Bounded query.' }],
+        returns: 'Ranked cards.',
+      },
+      {
+        signature: 'abstract explore(agentId: string, origins: readonly VaultUri[], maxPages?: number, maxChars?: number): Promise<readonly VaultDocument[]>',
+        description: 'Follow local Wiki links progressively.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'origins', description: 'Starting URIs.' }, { name: 'maxPages', description: 'Page bound.' }, { name: 'maxChars', description: 'Character bound.' }],
+        returns: 'Read documents.',
+      },
+      {
+        signature: 'abstract inspectSelf(agentId: string): Promise<SelfSnapshot>',
+        description: 'Inspect structured self.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }],
+        returns: 'Self snapshot.',
+      },
+      {
+        signature: 'abstract updateSelf(agentId: string, module: SelfModule, context: VaultWriteContext): Promise<SelfModule>',
+        description: 'Update one self module.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'module', description: 'Replacement module.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Persisted module.',
+      },
+      {
+        signature: 'abstract captureMemory(input: CaptureMemoryInput, context: VaultWriteContext): Promise<VaultDocument>',
+        description: 'Capture immediately searchable memory.',
+        parameters: [{ name: 'input', description: 'Memory facts.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Short-term document.',
+      },
+      {
+        signature: 'abstract queueConsolidation(agentId: string, source: MemoryStage, target: MemoryStage, context: VaultWriteContext): Promise<ConsolidationJob>',
+        description: 'Queue an adjacent-stage consolidation.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'source', description: 'Source stage.' }, { name: 'target', description: 'Target stage.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Queued job.',
+      },
+      {
+        signature: 'abstract runConsolidation(jobId: string, maxItems?: number): Promise<ConsolidationJob>',
+        description: 'Run one bounded consolidation batch.',
+        parameters: [{ name: 'jobId', description: 'Job identity.' }, { name: 'maxItems', description: 'Batch bound.' }],
+        returns: 'Updated job.',
+      },
+      {
+        signature: 'abstract consolidationJobs(agentId: string): Promise<readonly ConsolidationJob[]>',
+        description: 'List consolidation jobs.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }],
+        returns: 'Jobs newest first.',
+      },
+      {
+        signature: 'abstract importResource(agentId: string, draft: VaultResourceDraft, data: Uint8Array | undefined, context: VaultWriteContext): Promise<VaultResource>',
+        description: 'Import resource bytes or an external reference.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'draft', description: 'Resource metadata.' }, { name: 'data', description: 'Optional bytes.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Imported resource.',
+      },
+      {
+        signature: 'abstract importResourceFromFile(agentId: string, draft: VaultResourceDraft, sourceFile: string, context: VaultWriteContext): Promise<VaultResource>',
+        description: 'Stream a file into resource storage.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'draft', description: 'Resource metadata.' }, { name: 'sourceFile', description: 'Host source path.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Imported resource.',
+      },
+      {
+        signature: 'abstract searchResources(input: ResourceSearchInput): Promise<ResourcePage>',
+        description: 'Search resource metadata.',
+        parameters: [{ name: 'input', description: 'Bounded resource query.' }],
+        returns: 'Cursor page.',
+      },
+      {
+        signature: 'abstract resource(agentId: string, id: string): Promise<VaultResource>',
+        description: 'Read resource metadata.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'id', description: 'Resource identity.' }],
+        returns: 'Resource metadata.',
+      },
+      {
+        signature: 'abstract resourceContent(agentId: string, id: string): Promise<VaultResourceContent>',
+        description: 'Resolve a resource delivery target.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'id', description: 'Resource identity.' }],
+        returns: 'Host-only content target.',
+      },
+      {
+        signature: 'abstract updateResource(agentId: string, id: string, patch: Partial<Pick<VaultResource, \'title\' | \'description\' | \'tags\' | \'originalTags\' | \'transcript\' | \'roles\' | \'durationMs\'>>, context: VaultWriteContext): Promise<VaultResource>',
+        description: 'Update resource metadata.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'id', description: 'Resource identity.' }, { name: 'patch', description: 'Mutable fields.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Updated resource.',
+      },
+      {
+        signature: 'abstract removeResource(agentId: string, id: string, context: VaultWriteContext): Promise<void>',
+        description: 'Remove a resource record.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'id', description: 'Resource identity.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Completion.',
+      },
+      {
+        signature: 'abstract setResourceEnabled(agentId: string, id: string, enabled: boolean, context: VaultWriteContext): Promise<VaultResource>',
+        description: 'Toggle resource availability.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'id', description: 'Resource identity.' }, { name: 'enabled', description: 'New state.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Updated resource.',
+      },
+      {
+        signature: 'abstract exportAgent(agentId: string, targetFile: string, shareable: boolean): Promise<VaultPackageReport>',
+        description: 'Export one portable character package.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'targetFile', description: 'Package target.' }, { name: 'shareable', description: 'Whether private history is omitted.' }],
+        returns: 'Package report.',
+      },
+      {
+        signature: 'abstract importAgent(packageFile: string, targetAgentId?: string): Promise<VaultPackageReport>',
+        description: 'Import a portable character package.',
+        parameters: [{ name: 'packageFile', description: 'Package source.' }, { name: 'targetAgentId', description: 'Optional replacement identity.' }],
+        returns: 'Import report.',
+      },
+      {
+        signature: 'abstract rebuildIndex(agentId: string): Promise<number>',
+        description: 'Rebuild the disposable projection.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }],
+        returns: 'New index revision.',
+      },
+      {
+        signature: 'abstract resolvePath(agentId: string, uri: VaultUri, mode: \'read\' | \'write\', context?: VaultWriteContext): Promise<{ readonly path: string; readonly leaseId?: string }>',
+        description: 'Resolve a URI for exceptional Host editing.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'uri', description: 'Portable URI.' }, { name: 'mode', description: 'Access mode.' }, { name: 'context', description: 'Required write context.' }],
+        returns: 'Host path and optional write lease.',
+      },
+      {
+        signature: 'abstract reconcile(agentId: string, leaseId: string): Promise<VaultEntry>',
+        description: 'Reconcile an external write lease.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'leaseId', description: 'Lease identity.' }],
+        returns: 'Reindexed entry.',
+      },
+    ],
+  },
+  {
     key: 'apiProxy',
     summary: 'Root interface of the unified API.',
     description: 'Root interface of the unified API. New client-request domain = one new file pair + one field here + one map row.',
@@ -438,7 +649,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'async saveImages(inputs: readonly SaveImageAttachment[]): Promise<readonly ImageAttachmentRef[]>',
-        description: 'Validate one ordered image batch before committing any member. Validation failures start no writes; storage failures return no partial references, although already published content-addressed objects may stay unreachable until a future retention policy collects them.',
+        description: 'Validate and durably commit an ordered image batch.',
         parameters: [{ name: 'inputs', description: 'encoded images in their owning message order.' }],
         returns: 'durable references in the exact input order.',
       },
@@ -454,6 +665,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'ref', description: 'durable reference from the session log.' }, { name: 'signal', description: 'optional cancellation for backend read and verification work.' }],
         returns: 'the verified bytes and canonical reference.',
         throws: ['the signal reason when aborted, or a storage error when verification fails.'],
+      },
+      {
+        signature: 'imageHostPath(ref: ImageAttachmentRef): string | undefined',
+        description: 'Locate this provider\'s immutable normalized object on the host, when file-backed.',
+        parameters: [{ name: 'ref', description: 'durable image reference to locate.' }],
+        returns: 'the immutable host path, or undefined for non-file-backed providers.',
+      },
+      {
+        signature: 'readImageRequest( ref: ImageAttachmentRef, policy: ImageRequestPolicy, signal?: AbortSignal, ): Promise<RequestImageAttachment>',
+        description: 'Generate or read one deterministic model-request image version.',
+        parameters: [{ name: 'ref', description: 'durable image reference to project.' }, { name: 'policy', description: 'request-size and encoding constraints.' }, { name: 'signal', description: 'optional cancellation for projection work.' }],
+        returns: 'normalized bytes and metadata suitable for a model request.',
       },
     ],
   },
@@ -697,6 +920,25 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'deepseekLlmApiExtensions',
+    summary: 'Registry of independently owned top-level fields for official DeepSeek requests.',
+    description: 'Registry of independently owned top-level fields for official DeepSeek requests.',
+    methods: [
+      {
+        signature: 'register<K extends keyof DeepSeekLlmApiExtensionMap>( field: K, provider: DeepSeekLlmApiExtensionProvider<DeepSeekLlmApiExtensionMap[K]>, ): () => Promise<void>',
+        description: 'Register the sole provider of one top-level request field. Registration is effect-scoped.',
+        parameters: [{ name: 'field', description: 'declaration-merged field owned by the provider.' }, { name: 'provider', description: 'request-time field preparation and optional acceptance behavior.' }],
+        returns: 'disposer that releases the field.',
+      },
+      {
+        signature: 'async prepare(request: DeepSeekLlmApiExtensionRequest): Promise<PreparedDeepSeekLlmApiExtensions>',
+        description: 'Prepare every currently registered field from one immutable base request. Preparation failures reject before HTTP dispatch. Field values are cloned and frozen; providers retain no mutable alias to the outgoing request.',
+        parameters: [{ name: 'request', description: 'exact serialized request facts before extension fields.' }],
+        returns: 'detached fields and their idempotent joint acceptance transaction.',
+      },
+    ],
+  },
+  {
     key: 'directoryPicker',
     summary: 'Abstract directory-picking service.',
     description: 'Abstract directory-picking service. Subclass, implement `capability()`, and load the subclass as a plugin — it registers as `ctx.directoryPicker` (one implementation per context; loading a second throws, cordis\' standard duplicate-service behavior). The capability object must be stable for the service lifetime: consumers may capture it across calls.',
@@ -768,6 +1010,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Return the canonical absolute path a subprocess in this filesystem\'s execution world can open. The path is deliberately separate from FsTarget.targetKey: consumers may pass this value to another OS capability, but must continue treating the target key as opaque.',
         parameters: [{ name: 'target', description: 'the resolved target whose process path is required.' }],
         returns: 'an absolute path in the backend\'s execution world.',
+      },
+      {
+        signature: 'processPathFromHostPath(hostPath: string): string | undefined',
+        description: 'Map an absolute host path into this execution world when it identifies the same file.',
+        parameters: [{ name: 'hostPath', description: 'absolute path in the host filesystem.' }],
+        returns: 'the equivalent execution-world path, or undefined when no safe mapping exists.',
       },
       {
         signature: 'abstract fileUrl(target: FsTarget): string',
@@ -1027,6 +1275,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'detached model metadata in adapter-preferred order.',
       },
       {
+        signature: 'imageRequestPricing(provider: string, model: string): LlmImageRequestPricing | undefined',
+        description: 'Resolve one registered route\'s synchronous image pricing.',
+        parameters: [{ name: 'provider', description: 'registered provider route to inspect.' }, { name: 'model', description: 'exact model id passed to the adapter.' }],
+        returns: 'route-specific image pricing, or undefined when the adapter has none.',
+      },
+      {
         signature: 'async resolveModelInfo( provider: string, model: string, signal?: AbortSignal, ): Promise<LlmResolvedModelInfo>',
         description: 'Resolve and validate all metadata from the adapter that owns one exact route. The result is detached from adapter-owned objects; catalog membership remains advisory and does not control request routing.',
         parameters: [{ name: 'provider', description: 'registered provider route to inspect.' }, { name: 'model', description: 'exact model id passed to the adapter.' }, { name: 'signal', description: 'optional cancellation for adapter-owned asynchronous lookup.' }],
@@ -1240,6 +1494,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'abstract create(meta: SessionHeader): Promise<void>',
         description: 'Register a new session\'s metadata. A backend MAY defer the physical write until the first append (lazy materialization), in which case a created-but-never-appended session is absent from list — abandoned sessions leave nothing behind.',
         parameters: [{ name: 'meta', description: 'the immutable header (id, version, cwd, lineage) to record.' }],
+      },
+      {
+        signature: 'ensureMaterialized(_session: Session): Promise<void>',
+        description: 'Ensure a live session has a durable header even when it has no events. Ordinary sessions remain lazily materialized; lifecycle frontends call this only when an empty session itself is a durable resumable resource.',
+        parameters: [{ name: '_session', description: 'live session whose header must become durable.' }],
       },
       {
         signature: 'abstract append(id: SessionId, events: readonly SessionEvent[]): Promise<void>',
@@ -1832,6 +2091,19 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'subagentModelSelection',
+    summary: 'Owns the validated, live subagent model-routing settings for this host scope.',
+    description: 'Owns the validated, live subagent model-routing settings for this host scope.',
+    methods: [
+      {
+        signature: 'current(): SubagentModelSelectionSettings',
+        description: 'Return the current model-routing policy.',
+        parameters: [],
+        returns: 'a detached snapshot that callers may safely inspect.',
+      },
+    ],
+  },
+  {
     key: 'subagents',
     summary: 'Named provider registry with one-shot runs, durable discovery, and continuable-child operations.',
     description: 'Named provider registry with one-shot runs, durable discovery, and continuable-child operations.',
@@ -2164,7 +2436,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     methods: [
       {
         signature: 'presentAs(mode: ToolPresentationMode): () => void',
-        description: 'Present the calling scope\'s tools in `mode` instead of the deployment default. Nearest scope on the chain wins, so a preset\'s standing declaration covers every agent joined under it.\n\nScoped only, and one declaration per scope: this is how an agent preset composes Code Mode agents beside native ones in the same process, and a process-global override would be the `mode` config field instead.',
+        description: 'Present the calling scope\'s tools in `mode` instead of the deployment default. Nearest scope on the chain wins, so a preset\'s standing declaration covers every agent joined under it.\n\nScoped only, and one declaration per scope: this is how an agent preset composes PTC mode agents beside native ones in the same process, and a process-global override would be the `mode` config field instead.',
         parameters: [{ name: 'mode', description: 'the presentation the covered agents\' models see.' }],
         returns: 'the exact disposer that restores the deployment default.',
       },
@@ -2869,14 +3141,6 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [],
   },
   {
-    name: 'tools/code-dispatch-log',
-    mode: 'waterfall',
-    signature: '\'tools/code-dispatch-log\'(this: Scoped<ToolRuntime>, dispatch: CodeDispatchLog, next: () => Promise<ContentBlock[]>): Promise<ContentBlock[]>',
-    summary: 'Allow a listener to replace content in the DURABLE LOG COPY of one `run_code` sub-dispatch outcome before the bridge appends its `tool/code-dispatch` event.',
-    description: 'Allow a listener to replace content in the DURABLE LOG COPY of one `run_code` sub-dispatch outcome before the bridge appends its `tool/code-dispatch` event. `next()` keeps the content unchanged; a listener may return replacement blocks (e.g. the spill policy\'s preview + locator for an oversized text result). Only the logged copy is affected — the program already received the complete value, and the model sees neither. A throwing listener is contained: the bridge falls back to logging the original settled content. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent\'s dispatches.',
-    parameters: [{ name: 'dispatch', description: 'the parent execution, sub-call identity, and the settled content to log.' }],
-  },
-  {
     name: 'tools/execute',
     mode: 'waterfall',
     signature: '\'tools/execute\'(this: Scoped<ToolRuntime>, exec: ToolDispatchExecution, next: () => Promise<ToolExecutionResult>): Promise<ToolExecutionResult>',
@@ -2899,6 +3163,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     summary: 'Allow, deny, or ask before dispatch.',
     description: 'Allow, deny, or ask before dispatch. `next()` delegates to allow; missing approval support turns `ask` into denial. Async gates must observe `exec.signal`; the registry rechecks cancellation after they settle but never abandons their promise. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent\'s calls.',
     parameters: [{ name: 'exec', description: 'the pending call (name, parsed arguments, caller agent).' }],
+  },
+  {
+    name: 'tools/ptc-dispatch-log',
+    mode: 'waterfall',
+    signature: '\'tools/ptc-dispatch-log\'(this: Scoped<ToolRuntime>, dispatch: PtcDispatchLog, next: () => Promise<ContentBlock[]>): Promise<ContentBlock[]>',
+    summary: 'Allow a listener to replace content in the DURABLE LOG COPY of one `run_code` sub-dispatch outcome before the bridge appends its `tool/code-dispatch` event.',
+    description: 'Allow a listener to replace content in the DURABLE LOG COPY of one `run_code` sub-dispatch outcome before the bridge appends its `tool/code-dispatch` event. `next()` keeps the content unchanged; a listener may return replacement blocks (e.g. the spill policy\'s preview + locator for an oversized text result). Only the logged copy is affected — the program already received the complete value, and the model sees neither. A throwing listener is contained: the bridge falls back to logging the original settled content. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent\'s dispatches.',
+    parameters: [{ name: 'dispatch', description: 'the parent execution, sub-call identity, and the settled content to log.' }],
   },
   {
     name: 'tools/result',
@@ -2978,7 +3250,7 @@ export const EVENT_API: readonly EventApiEntry[] = [
 export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'AccountProfileSnapshot',
-    declaration: 'export interface AccountProfileSnapshot {\n    id: number;\n    username: string;\n    createdAt: number;\n    lastLoginAt: number | null;\n    displayName: string;\n    avatar: string;\n    bio: string;\n}',
+    declaration: 'export interface AccountProfileSnapshot {\n    id: number;\n    username: string;\n    createdAt: number;\n    lastLoginAt: number | null;\n    displayName: string;\n    avatar: string;\n    avatarPath?: string;\n    bio: string;\n}',
   },
   {
     name: 'AdapterRegistrationHandle',
@@ -3002,7 +3274,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'AgentOptions',
-    declaration: 'export interface AgentOptions {\n    provider?: string;\n    model?: string;\n    maxTokens?: number;\n}',
+    declaration: 'export interface AgentOptions {\n    provider?: string;\n    model?: string;\n    reasoningEffort?: ReasoningEffortId;\n    maxTokens?: number;\n}',
   },
   {
     name: 'AgentPreset',
@@ -3019,6 +3291,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'AgentStatus',
     declaration: 'export type AgentStatus = \'idle\' | \'running\';',
+  },
+  {
+    name: 'AgentVaultDomain',
+    declaration: 'export type AgentVaultDomain = typeof AGENT_VAULT_DOMAINS[number];',
+  },
+  {
+    name: 'AgentVaultManifest',
+    declaration: 'export interface AgentVaultManifest {\n    readonly format: \'worldline-agent-vault\';\n    readonly formatVersion: 1;\n    readonly agent: {\n        readonly id: string;\n        readonly name: string;\n    };\n    readonly createdAt: number;\n    readonly updatedAt: number;\n}',
+  },
+  {
+    name: 'AllowedModelRoute',
+    declaration: 'export interface AllowedModelRoute {\n    readonly provider: string;\n    readonly model: string;\n}',
   },
   {
     name: 'ApiKeyRecord',
@@ -3181,6 +3465,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface CancelOptions {\n    keepInbox?: boolean | undefined;\n}',
   },
   {
+    name: 'CaptureMemoryInput',
+    declaration: 'export interface CaptureMemoryInput {\n    readonly agentId: string;\n    readonly title: string;\n    readonly content: string;\n    readonly tags?: readonly string[];\n    readonly aliases?: readonly string[];\n    readonly sources?: readonly string[];\n    readonly importance?: 1 | 2 | 3 | 4 | 5;\n    readonly occurredAt?: number;\n}',
+  },
+  {
     name: 'ClientResponse',
     declaration: 'export interface ClientResponse {\n    type: \'client-response\';\n    rpcId: RpcId;\n    result: RpcResult<unknown>;\n}',
   },
@@ -3195,10 +3483,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'CodeBindingNamespace',
     declaration: 'export interface CodeBindingNamespace {\n    global: string;\n    functions: Record<string, CodeBindingFunction>;\n    errorClass?: CodeBindingErrorClass;\n}',
-  },
-  {
-    name: 'CodeDispatchLog',
-    declaration: 'export interface CodeDispatchLog {\n    readonly exec: ToolExecution;\n    readonly agent?: Agent;\n    readonly subCallId: CallId;\n    readonly name: string;\n    readonly isError: boolean;\n    readonly content: ContentBlock[];\n}',
   },
   {
     name: 'CodeJsonValue',
@@ -3245,10 +3529,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface CommandInvocation {\n    readonly commandId: CommandId;\n    readonly agent: Agent;\n    readonly rawInput: string;\n    readonly attachments: readonly ImageBlock[];\n    readonly signal: AbortSignal;\n}',
   },
   {
-    name: 'CommandResult',
-    declaration: 'export type CommandResult = {\n    readonly kind: \'success\';\n    readonly text?: string;\n    readonly sourceEventSeq?: number;\n} | {\n    readonly kind: \'error\';\n    readonly text: string;\n};',
-  },
-  {
     name: 'CompactionAgentContext',
     declaration: 'export interface CompactionAgentContext {\n    session: Session;\n    options: {\n        provider?: string;\n        model?: string;\n    };\n}',
   },
@@ -3289,6 +3569,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ConnectionRpcHandlerOptions {\n    readonly authority: ConnectionRpcAuthority;\n}',
   },
   {
+    name: 'ConsolidationJob',
+    declaration: 'export interface ConsolidationJob {\n    readonly id: string;\n    readonly agentId: string;\n    readonly status: \'queued\' | \'running\' | \'paused\' | \'completed\' | \'failed\';\n    readonly sourceStage: MemoryStage;\n    readonly targetStage: MemoryStage;\n    readonly total: number;\n    readonly processed: number;\n    readonly checkpoint?: string;\n    readonly createdAt: number;\n    readonly updatedAt: number;\n    readonly error?: string;\n}',
+  },
+  {
     name: 'ContentBlockMap',
     declaration: 'export interface ContentBlockMap {\n    \'text\': TextBlock;\n    \'reasoning\': ReasoningBlock;\n    \'image\': ImageBlock;\n    \'tool-call\': ToolCallBlock;\n    \'tool-result\': ToolResultBlock;\n}',
   },
@@ -3326,7 +3610,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ContinuableSubagentDescriptorData',
-    declaration: 'export interface ContinuableSubagentDescriptorData extends SubagentDescriptorBase {\n    readonly mode: \'continuable\';\n    readonly label: string;\n    readonly agentProvider?: string;\n    readonly agentModel?: string;\n    readonly persona?: string;\n    readonly toolFilter?: ToolRestriction;\n}',
+    declaration: 'export interface ContinuableSubagentDescriptorData extends SubagentDescriptorBase {\n    readonly mode: \'continuable\';\n    readonly label: string;\n    readonly agentProvider?: string;\n    readonly agentModel?: string;\n    readonly agentReasoningEffort?: ReasoningEffortId;\n    readonly persona?: string;\n    readonly toolFilter?: ToolRestriction;\n}',
   },
   {
     name: 'CordisDynamicPackageId',
@@ -3399,6 +3683,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'CredentialRef',
     declaration: 'export type CredentialRef = Branded<\'CredentialRef\'>;',
+  },
+  {
+    name: 'DeepSeekLlmApiExtensionMap',
+    declaration: 'export interface DeepSeekLlmApiExtensionMap {\n}',
+  },
+  {
+    name: 'DeepSeekLlmApiExtensionProvider',
+    declaration: 'export interface DeepSeekLlmApiExtensionProvider<T extends DeepSeekLlmApiJson> {\n    prepare(request: DeepSeekLlmApiExtensionRequest): PreparedDeepSeekLlmApiExtension<T> | undefined | Promise<PreparedDeepSeekLlmApiExtension<T> | undefined>;\n}',
+  },
+  {
+    name: 'DeepSeekLlmApiExtensionRequest',
+    declaration: 'export interface DeepSeekLlmApiExtensionRequest {\n    readonly body: Readonly<Record<string, DeepSeekLlmApiJson>>;\n    readonly sessionId?: string;\n    readonly purpose?: \'compaction\' | \'session-title\';\n    readonly signal: AbortSignal;\n}',
+  },
+  {
+    name: 'DeepSeekLlmApiJson',
+    declaration: 'export type DeepSeekLlmApiJson = null | boolean | number | string | DeepSeekLlmApiJson[] | {\n    [key: string]: DeepSeekLlmApiJson;\n};',
   },
   {
     name: 'DiffCallView',
@@ -3626,7 +3926,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ImageAttachmentRef',
-    declaration: 'export interface ImageAttachmentRef {\n    attachmentId: AttachmentId;\n    mediaType: ImageMediaType;\n    bytes: number;\n    width: number;\n    height: number;\n    name?: string;\n}',
+    declaration: 'export interface ImageAttachmentRef {\n    attachmentId: AttachmentId;\n    mediaType: ImageMediaType;\n    bytes: number;\n    width: number;\n    height: number;\n    name?: string;\n    originalDimensions?: {\n        width: number;\n        height: number;\n    };\n}',
   },
   {
     name: 'ImageBlock',
@@ -3635,6 +3935,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ImageMediaType',
     declaration: 'export type ImageMediaType = \'image/png\' | \'image/jpeg\' | \'image/webp\' | \'image/gif\';',
+  },
+  {
+    name: 'ImageRequestPolicy',
+    declaration: 'export interface ImageRequestPolicy {\n    maxPixels: number;\n    maxBytes: number;\n}',
+  },
+  {
+    name: 'ImageVariantId',
+    declaration: 'export type ImageVariantId = Branded<\'ImageVariantId\'>;',
   },
   {
     name: 'Inbox',
@@ -3762,7 +4070,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'LlmAdapter',
-    declaration: 'export abstract class LlmAdapter {\n    providerInfo(provider: string): LlmProviderInfo;\n    providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined;\n    listModels(_provider: string): Promise<readonly LlmModelInfo[]>;\n    resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;\n    abstract stream(options: GenerateOptions): AsyncIterable<StreamChunk>;\n}',
+    declaration: 'export abstract class LlmAdapter {\n    providerInfo(provider: string): LlmProviderInfo;\n    providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined;\n    listModels(_provider: string): Promise<readonly LlmModelInfo[]>;\n    resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;\n    imageRequestPricing(_provider: string, _model: string): LlmImageRequestPricing | undefined;\n    abstract stream(options: GenerateOptions): AsyncIterable<StreamChunk>;\n}',
   },
   {
     name: 'LlmCallConfig',
@@ -3783,6 +4091,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'LlmFailure',
     declaration: 'export interface LlmFailure {\n    readonly message: string;\n    readonly code: string;\n    readonly status?: number;\n    readonly providerRetryAfterMs?: number;\n    readonly requestId?: ProviderRequestId;\n}',
+  },
+  {
+    name: 'LlmImageRequestPrice',
+    declaration: 'export interface LlmImageRequestPrice {\n    visualTokens: number;\n    text: string;\n}',
+  },
+  {
+    name: 'LlmImageRequestPricing',
+    declaration: 'export interface LlmImageRequestPricing {\n    priceImages(images: readonly ImageAttachmentRef[]): readonly LlmImageRequestPrice[];\n}',
   },
   {
     name: 'LlmModelContext',
@@ -3814,7 +4130,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'LlmRuntime',
-    declaration: 'export class LlmRuntime extends Service {\n    constructor(ctx: Context);\n    registerAdapter(providers: string[], adapter: LlmAdapter): AdapterRegistrationHandle;\n    listProviders(): LlmProviderInfo[];\n    registerConfigurableProviders(entries: readonly LlmConfigurableProvider[]): DirectoryRegistrationHandle;\n    listConfigurableProviders(): LlmConfigurableProvider[];\n    registerModelDiscovery(settingsNs: string, discover: (request: LlmModelDiscoveryRequest) => Promise<readonly LlmDiscoveredModel[]>): () => void;\n    async discoverModels(settingsNs: string, request: LlmModelDiscoveryRequest): Promise<LlmDiscoveredModel[]>;\n    providerRetryPolicy(provider: string): ResolvedRetryPolicy;\n    async listModels(provider: string): Promise<LlmModelInfo[]>;\n    async resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>;\n    async resolveCallConfig(config: LlmCallConfig, signal?: AbortSignal): Promise<LlmCallConfig>;\n    async prepareCall(config: LlmCallConfig, signal?: AbortSignal): Promise<PreparedLlmCall>;\n    stream(options: GenerateOptions): AsyncIterable<StreamChunk>;\n}',
+    declaration: 'export class LlmRuntime extends Service {\n    constructor(ctx: Context);\n    registerAdapter(providers: string[], adapter: LlmAdapter): AdapterRegistrationHandle;\n    listProviders(): LlmProviderInfo[];\n    registerConfigurableProviders(entries: readonly LlmConfigurableProvider[]): DirectoryRegistrationHandle;\n    listConfigurableProviders(): LlmConfigurableProvider[];\n    registerModelDiscovery(settingsNs: string, discover: (request: LlmModelDiscoveryRequest) => Promise<readonly LlmDiscoveredModel[]>): () => void;\n    async discoverModels(settingsNs: string, request: LlmModelDiscoveryRequest): Promise<LlmDiscoveredModel[]>;\n    providerRetryPolicy(provider: string): ResolvedRetryPolicy;\n    async listModels(provider: string): Promise<LlmModelInfo[]>;\n    imageRequestPricing(provider: string, model: string): LlmImageRequestPricing | undefined;\n    async resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>;\n    async resolveCallConfig(config: LlmCallConfig, signal?: AbortSignal): Promise<LlmCallConfig>;\n    async prepareCall(config: LlmCallConfig, signal?: AbortSignal): Promise<PreparedLlmCall>;\n    stream(options: GenerateOptions): AsyncIterable<StreamChunk>;\n}',
   },
   {
     name: 'LspHover',
@@ -3859,6 +4175,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ManualCompactAgentContext',
     declaration: 'export interface ManualCompactAgentContext extends CompactionAgentContext {\n    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;\n}',
+  },
+  {
+    name: 'MemoryStage',
+    declaration: 'export type MemoryStage = \'short\' | \'medium\' | \'long\';',
   },
   {
     name: 'Message',
@@ -3981,8 +4301,16 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type PostToolDecision = {\n    kind: \'accept\';\n    content?: ContentBlock[];\n    value?: never;\n    additionalContexts?: UserMessage[];\n} | {\n    kind: \'accept\';\n    value: JsonValue;\n    content?: never;\n    additionalContexts?: UserMessage[];\n} | {\n    kind: \'block\';\n    feedback: ContentBlock[];\n    additionalContexts?: UserMessage[];\n};',
   },
   {
+    name: 'PreparedDeepSeekLlmApiExtension',
+    declaration: 'export interface PreparedDeepSeekLlmApiExtension<T extends DeepSeekLlmApiJson> {\n    readonly value: T;\n    accept?(): void | Promise<void>;\n}',
+  },
+  {
+    name: 'PreparedDeepSeekLlmApiExtensions',
+    declaration: 'export interface PreparedDeepSeekLlmApiExtensions {\n    readonly fields: Readonly<Partial<DeepSeekLlmApiExtensionMap>>;\n    accept(): Promise<void>;\n}',
+  },
+  {
     name: 'PreparedLlmCall',
-    declaration: 'export interface PreparedLlmCall {\n    readonly config: LlmCallConfig;\n    readonly retryPolicy: ResolvedRetryPolicy;\n    readonly context?: LlmModelContext;\n    readonly adapterDefaults: LlmCallConfigAdapterDefaults;\n    stream(options: GenerateOptions): AsyncIterable<StreamChunk>;\n}',
+    declaration: 'export interface PreparedLlmCall {\n    readonly config: LlmCallConfig;\n    readonly retryPolicy: ResolvedRetryPolicy;\n    readonly context?: LlmModelContext;\n    readonly inputModalities?: readonly ModelModality[];\n    readonly adapterDefaults: LlmCallConfigAdapterDefaults;\n    stream(options: GenerateOptions): AsyncIterable<StreamChunk>;\n}',
   },
   {
     name: 'PreparedReferencedMessage',
@@ -4006,7 +4334,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PreStepDecision',
-    declaration: 'export type PreStepDecision = {\n    kind: \'reject\';\n} | {\n    kind: \'enter\';\n    messages: UserMessage[];\n};',
+    declaration: 'export type PreStepDecision = {\n    kind: \'reject\';\n} | {\n    kind: \'enter\';\n    messages: UserMessage[];\n    startsRequestSeries?: true;\n};',
   },
   {
     name: 'PreToolDecision',
@@ -4057,6 +4385,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface PruneResult {\n    readonly pruned: readonly PrunedEntry[];\n    readonly charsRemoved: number;\n}',
   },
   {
+    name: 'PtcDispatchLog',
+    declaration: 'export interface PtcDispatchLog {\n    readonly exec: ToolExecution;\n    readonly agent?: Agent;\n    readonly subCallId: CallId;\n    readonly name: string;\n    readonly isError: boolean;\n    readonly content: ContentBlock[];\n}',
+  },
+  {
     name: 'ReadFileLine',
     declaration: 'export interface ReadFileLine {\n    number: number;\n    text: string;\n}',
   },
@@ -4071,6 +4403,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ReasoningEffortId',
     declaration: 'export type ReasoningEffortId = Branded<\'ReasoningEffortId\'>;',
+  },
+  {
+    name: 'RecallBudget',
+    declaration: 'export interface RecallBudget {\n    readonly maxResults?: number;\n    readonly maxChars?: number;\n    readonly maxMillis?: number;\n}',
+  },
+  {
+    name: 'RecallCard',
+    declaration: 'export interface RecallCard {\n    readonly uri: VaultUri;\n    readonly id: string;\n    readonly domain: Exclude<AgentVaultDomain, \'self\'>;\n    readonly title: string;\n    readonly summary: string;\n    readonly tags: readonly string[];\n    readonly score: number;\n    readonly confidence: \'high\' | \'medium\' | \'low\';\n    readonly reasons: readonly string[];\n    readonly matchedTerms: readonly string[];\n    readonly revision: string;\n    readonly updatedAt: number;\n}',
+  },
+  {
+    name: 'RecallQuery',
+    declaration: 'export interface RecallQuery {\n    readonly agentId: string;\n    readonly domain: Exclude<AgentVaultDomain, \'self\'>;\n    readonly query: string;\n    readonly tags?: readonly string[];\n    readonly stage?: MemoryStage;\n    readonly budget?: RecallBudget;\n}',
+  },
+  {
+    name: 'RecallResult',
+    declaration: 'export interface RecallResult {\n    readonly cards: readonly RecallCard[];\n    readonly continuation?: string;\n    readonly elapsedMs: number;\n    readonly indexRevision: number;\n}',
   },
   {
     name: 'RedactedSecret',
@@ -4090,7 +4438,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RequestHeaderReason',
-    declaration: 'export type RequestHeaderReason = \'initial\' | \'resume\' | \'change\';',
+    declaration: 'export type RequestHeaderReason = \'initial\' | \'resume\' | \'change\' | \'series\';',
+  },
+  {
+    name: 'RequestImageAttachment',
+    declaration: 'export interface RequestImageAttachment {\n    variantId: ImageVariantId;\n    attachment: ImageAttachmentRef;\n    data: Uint8Array;\n    mediaType: ImageMediaType;\n    bytes: number;\n    width: number;\n    height: number;\n    depth: \'uchar\';\n    space: \'srgb\';\n    hasAlpha: boolean;\n}',
   },
   {
     name: 'RequestRunOutcome',
@@ -4119,6 +4471,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ResolvedSubagentStartRequest',
     declaration: 'export interface ResolvedSubagentStartRequest extends SubagentStartRequest {\n    readonly descriptor: SubagentDescriptorData;\n}',
+  },
+  {
+    name: 'ResourcePage',
+    declaration: 'export interface ResourcePage {\n    readonly items: readonly VaultResource[];\n    readonly nextCursor: number;\n}',
+  },
+  {
+    name: 'ResourceSearchInput',
+    declaration: 'export interface ResourceSearchInput {\n    readonly agentId: string;\n    readonly query: string;\n    readonly tags?: readonly string[];\n    readonly roles?: readonly VaultResourceRole[];\n    readonly includeDisabled?: boolean;\n    readonly cursor?: number;\n    readonly limit?: number;\n}',
   },
   {
     name: 'RestoredSessionOptions',
@@ -4221,6 +4581,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SearchResultView = SearchMatchesResultView | SearchPathsResultView;',
   },
   {
+    name: 'SelfModule',
+    declaration: 'export interface SelfModule {\n    readonly id: string;\n    readonly title: string;\n    readonly enabled: boolean;\n    readonly autonomous: boolean;\n    readonly locked: boolean;\n    readonly stability: \'core\' | \'stable\' | \'dynamic\';\n    readonly summary: string;\n    readonly details: readonly string[];\n    readonly updatedAt: number;\n    readonly revision: string;\n}',
+  },
+  {
+    name: 'SelfSnapshot',
+    declaration: 'export interface SelfSnapshot {\n    readonly agentId: string;\n    readonly modules: readonly SelfModule[];\n    readonly compiled: string;\n    readonly revision: string;\n}',
+  },
+  {
     name: 'SendTeamMessageRequest',
     declaration: 'export interface SendTeamMessageRequest {\n    readonly target: string;\n    readonly content: ContentBlock[];\n    readonly delivery: \'quiet\' | \'wakeup\';\n    readonly signal: AbortSignal;\n}',
   },
@@ -4242,7 +4610,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionEventMap',
-    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: CallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'todo/write\': {\n        todos: TodoItem[];\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n    };\n    \'request/context\': RequestContext;\n    \'session/end-seed\': Record<string, never>;\n}',
+    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: CallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'todo/write\': {\n        todos: TodoItem[];\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n        startsSeries?: true;\n    };\n    \'request/context\': RequestContext;\n    \'session/end-seed\': Record<string, never>;\n}',
   },
   {
     name: 'SessionEventMetadataFilter',
@@ -4622,7 +4990,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SubagentCapabilities',
-    declaration: 'export interface SubagentCapabilities {\n    readonly outputSchema: boolean;\n    readonly depthLimit: boolean;\n    readonly toolFilter: boolean;\n    readonly persona: boolean;\n}',
+    declaration: 'export interface SubagentCapabilities {\n    readonly agentOptions: boolean;\n    readonly outputSchema: boolean;\n    readonly depthLimit: boolean;\n    readonly toolFilter: boolean;\n    readonly persona: boolean;\n}',
   },
   {
     name: 'SubagentDescendantListEntry',
@@ -4641,8 +5009,12 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SubagentInterruptAuthority = {\n    readonly kind: \'user\';\n    readonly parentSessionId: SessionId;\n} | {\n    readonly kind: \'ancestor\';\n    readonly agent: Agent;\n};',
   },
   {
+    name: 'SubagentModelSelectionSettings',
+    declaration: 'export interface SubagentModelSelectionSettings {\n    enabled: boolean;\n    allowedModels: AllowedModelRoute[];\n}',
+  },
+  {
     name: 'SubagentProvider',
-    declaration: 'export interface SubagentProvider {\n    readonly name: string;\n    readonly capabilities: SubagentCapabilities;\n    readonly inheritsParentContext: boolean;\n    start(request: ResolvedSubagentStartRequest): Promise<SubagentRun>;\n    prepareContinuable?(request: ContinuableCreateRequest): Promise<ContinuableCreateSpec>;\n}',
+    declaration: 'export interface SubagentProvider {\n    readonly name: string;\n    readonly capabilities: SubagentCapabilities;\n    readonly inheritsParentContext: boolean;\n    readonly agentRouteDefaults?: Readonly<{\n        provider: string;\n        model: string;\n    }>;\n    start(request: ResolvedSubagentStartRequest): Promise<SubagentRun>;\n    prepareContinuable?(request: ContinuableCreateRequest): Promise<ContinuableCreateSpec>;\n}',
   },
   {
     name: 'SubagentReportDelivery',
@@ -4902,7 +5274,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'TokenSurfaceNode',
-    declaration: 'export interface TokenSurfaceNode {\n    readonly seq: number;\n    readonly tokens: number;\n}',
+    declaration: 'export interface TokenSurfaceNode {\n    readonly seq: number;\n    readonly tokens: number;\n    readonly heuristicTokens: number;\n}',
   },
   {
     name: 'TokenUsage',
@@ -4974,7 +5346,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolPresentationMode',
-    declaration: 'export type ToolPresentationMode = \'native\' | \'code\' | \'both\';',
+    declaration: 'export type ToolPresentationMode = \'native\' | \'ptc\' | \'both\';',
   },
   {
     name: 'ToolProviderResult',
@@ -5101,8 +5473,64 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface UserQuestionProvider {\n    ask(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer>;\n}',
   },
   {
+    name: 'VaultActor',
+    declaration: 'export interface VaultActor {\n    readonly type: \'agent\' | \'user\' | \'system\';\n    readonly id: string;\n}',
+  },
+  {
+    name: 'VaultDocument',
+    declaration: 'export interface VaultDocument extends VaultEntry {\n    readonly kind: \'document\';\n    readonly title: string;\n    readonly summary: string;\n    readonly tags: readonly string[];\n    readonly aliases: readonly string[];\n    readonly sources: readonly string[];\n    readonly headings: readonly string[];\n    readonly links: readonly string[];\n    readonly content: string;\n    readonly totalLines: number;\n    readonly view: \'top\' | \'section\' | \'grep\' | \'full\';\n}',
+  },
+  {
+    name: 'VaultEntry',
+    declaration: 'export interface VaultEntry {\n    readonly uri: VaultUri;\n    readonly id: string;\n    readonly domain: AgentVaultDomain;\n    readonly kind: \'directory\' | \'document\' | \'resource\';\n    readonly name: string;\n    readonly bytes: number;\n    readonly revision: string;\n    readonly updatedAt: number;\n}',
+  },
+  {
+    name: 'VaultPackageReport',
+    declaration: 'export interface VaultPackageReport {\n    readonly agentId: string;\n    readonly files: number;\n    readonly resources: number;\n    readonly bytes: number;\n    readonly sha256: string;\n    readonly warnings: readonly string[];\n}',
+  },
+  {
+    name: 'VaultPolicy',
+    declaration: 'export interface VaultPolicy {\n    readonly aiWriteMode: VaultWriteMode;\n    readonly domains: Readonly<Record<AgentVaultDomain, VaultWriteMode>>;\n    readonly userEditable: boolean;\n    readonly fullyFrozen: boolean;\n}',
+  },
+  {
+    name: 'VaultResource',
+    declaration: 'export interface VaultResource {\n    readonly id: string;\n    readonly agentId: string;\n    readonly uri: VaultUri;\n    readonly enabled: boolean;\n    readonly roles: readonly VaultResourceRole[];\n    readonly title: string;\n    readonly description: string;\n    readonly tags: readonly string[];\n    readonly originalTags: readonly string[];\n    readonly transcript: string;\n    readonly mimeType: string;\n    readonly bytes: number;\n    readonly durationMs?: number;\n    readonly usageCount: number;\n    readonly lastUsedAt?: number;\n    readonly sha256?: string;\n    readonly externalUrl?: string;\n    readonly builtIn: boolean;\n    readonly createdAt: number;\n    readonly updatedAt: number;\n    readonly revision: string;\n}',
+  },
+  {
+    name: 'VaultResourceContent',
+    declaration: 'export type VaultResourceContent = {\n    readonly type: \'file\';\n    readonly path: string;\n    readonly mimeType: string;\n    readonly bytes: number;\n} | {\n    readonly type: \'external\';\n    readonly url: string;\n    readonly mimeType: string;\n};',
+  },
+  {
+    name: 'VaultResourceDraft',
+    declaration: 'export interface VaultResourceDraft {\n    readonly enabled: boolean;\n    readonly roles: readonly VaultResourceRole[];\n    readonly title: string;\n    readonly description: string;\n    readonly tags: readonly string[];\n    readonly originalTags: readonly string[];\n    readonly transcript: string;\n    readonly mimeType: string;\n    readonly bytes: number;\n    readonly durationMs?: number;\n    readonly externalUrl?: string;\n    readonly builtIn: boolean;\n    readonly usageCount?: number;\n    readonly lastUsedAt?: number;\n    readonly preferredId?: string;\n    readonly createdAt?: number;\n}',
+  },
+  {
+    name: 'VaultResourceRole',
+    declaration: 'export type VaultResourceRole = \'expression\' | \'appearance\' | \'source\' | \'attachment\';',
+  },
+  {
+    name: 'VaultUri',
+    declaration: 'export type VaultUri = `vault://${string}` | `shared://${string}` | `agent://${string}/public/${string}` | `resource://sha256/${string}` | `temp://session/${string}`;',
+  },
+  {
+    name: 'VaultWriteContext',
+    declaration: 'export interface VaultWriteContext {\n    readonly actor: VaultActor;\n    readonly reason: string;\n    readonly expectedRevision?: string;\n}',
+  },
+  {
+    name: 'VaultWriteMode',
+    declaration: 'export type VaultWriteMode = \'autonomous\' | \'proposal\' | \'readonly\';',
+  },
+  {
     name: 'WebAccessGuard',
     declaration: 'export interface WebAccessGuard {\n    path: string;\n    authorize: (req: IncomingMessage) => boolean | Promise<boolean>;\n}',
+  },
+  {
+    name: 'WebBootBatch',
+    declaration: 'export interface WebBootBatch {\n    phase: WebBootBatchPhase;\n    url: string;\n    rev: string;\n    entries: string[];\n}',
+  },
+  {
+    name: 'WebBootBatchPhase',
+    declaration: 'export type WebBootBatchPhase = \'bootstrap\' | \'application\';',
   },
   {
     name: 'WebBootEntry',
@@ -5110,7 +5538,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'WebBootGraph',
-    declaration: 'export interface WebBootGraph {\n    rev: string;\n    entries: WebBootEntry[];\n}',
+    declaration: 'export interface WebBootGraph {\n    rev: string;\n    entries: WebBootEntry[];\n    batches: WebBootBatch[];\n}',
   },
   {
     name: 'WebFetchBody',

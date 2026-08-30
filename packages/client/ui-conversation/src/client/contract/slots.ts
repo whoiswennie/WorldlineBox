@@ -420,6 +420,18 @@ export interface ChatNodeOwnerProps {
   renderMessageImages: RenderMessageImages
   /** Resolve optional file mentions for the closing assistant of a completed turn. */
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined
+  /** Shared completed-turn process disclosure state. */
+  turnProcess?: TurnProcessOwnerProps | undefined
+}
+
+/**
+ * Contract for turn process owner props.
+ */
+export interface TurnProcessOwnerProps {
+  readonly spec: import('./turn-process.ts').TurnProcessSpec
+  readonly foldable: boolean
+  readonly open: boolean
+  setOpen(open: boolean): void
 }
 
 /** Currency for an optional assistant-body presentation override. */
@@ -763,6 +775,10 @@ export interface ChatScrollPosition {
  * outside the view (layout orchestration; the session object layer).
  */
 export interface ChatViewInjected {
+  /** Host-backed completed-turn display mode. */
+  transcriptView: import('@deepseek-ai/dsh-client-runtime/client').SnapshotStore<
+    import('../../submission-settings.ts').TranscriptViewMode
+  >
   /** Selection write + details panel opening in one gesture (store action + layout orchestration). */
   openDetails: (target: SelectionTarget) => void
   /**

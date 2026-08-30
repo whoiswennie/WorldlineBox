@@ -47,6 +47,7 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
+  ImageAttachmentAccessResolver,
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
@@ -92,6 +93,11 @@ export interface PiAiAdapterOptions {
   auth: PiAiAuthInjection
   /** Resolve the optional durable attachment service at request time. */
   resolveAttachments?: () => AttachmentStore | undefined
+  /** Resolve a durable image into the current tool execution world's access path. */
+  resolveImageAccess?: (
+    attachments: AttachmentStore,
+    ref: Parameters<ImageAttachmentAccessResolver>[0],
+  ) => ReturnType<ImageAttachmentAccessResolver>
   /**
    * Observe one assistant history message degrading to provider-neutral
    * conversion because its stored replay state is unusable by this build.
@@ -341,7 +347,15 @@ export class PiAiAdapter extends LlmAdapter {
       }
       const context = attachments === undefined
         ? toPiContext(options, undefined, onReplayDegrade)
-        : await toPiContext(options, attachments, onReplayDegrade, profile.maxRequestImageBytes)
+        : await toPiContext(options, {
+          attachments,
+          resolveImageAccess: ref => this.config.resolveImageAccess?.(attachments, ref),
+          maxRequestImageBytes: profile.maxRequestImageBytes,
+          requestImagePolicy: {
+            maxPixels: profile.requestImagePixelBudget,
+            maxBytes: profile.requestImageMaxBytes,
+          },
+        }, onReplayDegrade)
       const events = snapshot.models.streamSimple(model, context, {
         ...profileOptions(profile, reasoning, apiKey),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
@@ -352,7 +366,7 @@ export class PiAiAdapter extends LlmAdapter {
         // Harness-owned and therefore win collisions.
         headers: requestHeaders(profile.headers),
       })
-      const iterator = toStreamChunks(events, model.contextWindow)[Symbol.asyncIterator]()
+      const iterator = toStreamChunks(events, model.contextWindow, options.signal)[Symbol.asyncIterator]()
       let exhausted = false
       try {
         while (true) {

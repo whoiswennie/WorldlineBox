@@ -27,7 +27,7 @@ import CordisHostRunner from '@deepseek-ai/dsh-cordis-host-runner'
 import * as ToolCordis from '@deepseek-ai/dsh-tool-cordis'
 
 /**
- * With-key Code Mode proof: a real model receives only `run_code`, composes two
+ * With-key PTC proof: a real model receives only `run_code`, composes two
  * sub-calls, writes a file, and returns curated output while the log records
  * each `tool/code-dispatch`. The keyless Loader smoke is in the sibling test.
  */
@@ -54,7 +54,7 @@ async function codeModeHarness(cwd: string): Promise<Context> {
   await harness.plugin(LlmRuntime)
   await harness.plugin(SessionStore)
   await harness.plugin(SystemPrompt, { persona: PERSONA })
-  await harness.plugin(ToolRuntime, { mode: 'code' })
+  await harness.plugin(ToolRuntime, { mode: 'ptc' })
   await harness.plugin(AgentRegistry)
   await harness.plugin(AgentLoop, { agents: [] })
   await harness.plugin(LlmDeepSeek)
@@ -71,7 +71,7 @@ async function workspaceCodeModeHarness(): Promise<Context> {
   await harness.plugin(LlmRuntime)
   await harness.plugin(SessionStore)
   await harness.plugin(SystemPrompt, { persona: PERSONA })
-  await harness.plugin(ToolRuntime, { mode: 'code' })
+  await harness.plugin(ToolRuntime, { mode: 'ptc' })
   await harness.plugin(AgentRegistry)
   await harness.plugin(LocalFileSystem, { cwd: '/' })
   await harness.plugin(ToolFs)
@@ -85,7 +85,7 @@ async function workspaceCodeModeHarness(): Promise<Context> {
 let keylessCall = 0
 const testToolSignal = new AbortController().signal
 
-/** Execute one outer Code Mode call through the real registry and worker. */
+/** Execute one outer PTC call through the real registry and worker. */
 function runCode(
   harness: Context,
   code: string,
@@ -115,7 +115,7 @@ function completion(result: ToolExecutionResult): unknown {
 async function typedCodeModeHarness(): Promise<Context> {
   const harness = new Context()
   await harness.plugin(SystemPrompt)
-  await harness.plugin(ToolRuntime, { mode: 'code' })
+  await harness.plugin(ToolRuntime, { mode: 'ptc' })
   await harness.plugin(WorkerThreadCodeRuntime, {})
   return harness
 }
@@ -132,7 +132,7 @@ async function backgroundCodeModeHarness(cwd: string): Promise<Context> {
   return harness
 }
 
-describe('Code Mode typed values: keyless real-worker contracts', () => {
+describe('PTC typed values: keyless real-worker contracts', () => {
   it('crosses a large intermediate value intact and exposes only typed tool failure fields', async () => {
     ctx = await typedCodeModeHarness()
     ctx.tools.register(defineTool({
@@ -349,7 +349,7 @@ function waitForIdle(harness: Context, agent: Agent): Promise<void> {
   })
 }
 
-describe.skipIf(!process.env.DEEPSEEK_API_KEY)('Code Mode: real model writes a program over real tools', () => {
+describe.skipIf(!process.env.DEEPSEEK_API_KEY)('PTC: real model writes a program over real tools', () => {
   it('collapses the wire tool list to [run_code], bridges sub-calls, and returns curated output', async () => {
     workdir = await mkdtemp(join(tmpdir(), 'worldline-code-mode-e2e-'))
     ctx = await codeModeHarness(workdir)
@@ -399,7 +399,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('Code Mode: real model writes a p
     workdir = await mkdtemp(join(tmpdir(), 'worldline-code-mode-workspace-e2e-'))
     await mkdir(join(workdir, '.git'), { recursive: true })
     await mkdir(join(workdir, 'pkg/deep'), { recursive: true })
-    await writeFile(join(workdir, 'pkg/AGENTS.md'), `If asked for the Code Mode workspace handshake, reply with exactly ${WORKSPACE_PROBE} and nothing else.\n`)
+    await writeFile(join(workdir, 'pkg/AGENTS.md'), `If asked for the PTC workspace handshake, reply with exactly ${WORKSPACE_PROBE} and nothing else.\n`)
     await writeFile(join(workdir, 'pkg/deep/task.txt'), 'Touch this file to discover the nested instructions.\n')
     ctx = await workspaceCodeModeHarness()
     const handle = await ctx.agents.create({
@@ -411,7 +411,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('Code Mode: real model writes a p
     handle.agent.followup(createUserMessage({
       content: [{
         type: 'text',
-        text: 'Use one run_code program to call tools.read on pkg/deep/task.txt. After it finishes, answer: Code Mode workspace handshake?',
+        text: 'Use one run_code program to call tools.read on pkg/deep/task.txt. After it finishes, answer: PTC workspace handshake?',
       }], source: { kind: 'user' } }))
     await waitForIdle(ctx, handle.agent)
 

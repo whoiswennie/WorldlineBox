@@ -166,11 +166,16 @@ const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
   // also shares its generated FFI code through a hashed runtime chunk.
   '@deepseek-ai/dsh-sandbox-windows-acl': ['lib/runner.js', 'lib/types-*.js'],
   // SQLite loads every statement from immutable package resources at runtime.
-  '@deepseek-ai/dsh-session-persistence-sqlite': ['resources/sql/**/*.sql'],
+  '@deepseek-ai/dsh-session-persistence-sqlite': [
+    'resources/zstd-dictionary.bin',
+    'resources/sql/**/*.sql',
+  ],
   '@deepseek-ai/dsh-skill-badge': ['assets'],
   // Agent Vault methodology is loaded progressively from immutable package resources.
   '@deepseek-ai/dsh-skill-agent-vault': ['assets'],
   '@deepseek-ai/dsh-subprocess-local': ['scripts/ensure-spawn-helper.mjs'],
+  // Model-selection settings are a public subpath with a standalone runtime bundle.
+  '@deepseek-ai/dsh-tool-subagent': ['lib/model-selection-settings.js'],
   // The video workflow body is a runtime-loaded, model-visible skill resource.
   '@deepseek-ai/dsh-worldline-video': ['assets'],
 }

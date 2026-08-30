@@ -75,12 +75,12 @@ export type {
 } from './contract/store.ts'
 export type {
   AssistantBlock, AssistantMessageNode, AssistantProvenanceView, AssistantRequestConfig,
-  AssistantTiming, ChatLocationNodeIndex, ChatNodeStore, ChatSnapshot,
+  AssistantTiming, ChatLocationNodeIndex, ChatNodeStore, ChatSnapshot, ChatTurnNavigationIndex,
   CommandNode, CompactionSummaryNode, ComposerPhase,
   ContextMessageNode, ConversationNode, ConversationSnapshot, ModelRetryNode, QueuedMessage,
   LegacyConversationSlice, PartialAssistant, RunningToolCall,
   SteeringMessageNode, TodoItem, ToolCallBlock, ToolResultNode, TurnErrorNode, TurnMaxTokensNode,
-  UnknownSurfaceNode, UserMessageNode,
+  TurnNavigationItem, UnknownSurfaceNode, UserMessageNode,
 } from './sessions/conversation.ts'
 export {
   EMPTY_CHAT_SNAPSHOT, EMPTY_CONVERSATION_VIEWS, toAssistantBlock, toAssistantBlocks,

@@ -300,6 +300,7 @@ describe('SessionPersistenceSqlite physical packing', () => {
 
     const db = new DatabaseSync(path)
     expect(db.prepare(testSql('select-user-version')).get()).toEqual({ user_version: SCHEMA_VERSION })
+    expect(db.prepare(testSql('select-page-size')).get()).toEqual({ page_size: 65_536 })
     expect(db.prepare(testSql('count-events')).get()).toEqual({ count: 7 })
     expect(db.prepare(testSql('count-packed-events')).get())
       .toEqual({ count: 1 })
@@ -372,11 +373,11 @@ describe('SessionPersistenceSqlite physical packing', () => {
   it('rejects an older SQLite physical schema', async () => {
     const path = await freshDbPath('dsh-sqlite-old-schema-')
     const seed = await openDatabase(DatabaseSync, path, 'wal', DEFAULT_BUSY_TIMEOUT_MS)
-    seed.exec(testSql('set-user-version-16'))
+    seed.exec(testSql('set-user-version-17'))
     seed.close()
     await chmod(path, 0o600)
     await expect(openDatabase(DatabaseSync, path, 'wal', DEFAULT_BUSY_TIMEOUT_MS))
-      .rejects.toThrow(/schema version 16.*incompatible/)
+      .rejects.toThrow(/schema version 17.*incompatible/)
   })
 
   it('rejects a stale physical append without replacing the winning tail', async () => {
@@ -528,7 +529,7 @@ describe('SessionPersistenceSqlite schema ownership', () => {
 
     const foreignPath = await freshDbPath('dsh-sqlite-foreign-')
     const foreign = new DatabaseSync(foreignPath)
-    foreign.exec(testSql('set-user-version-17'))
+    foreign.exec(testSql('set-user-version-18'))
     foreign.exec(testSql('set-application-id-12345'))
     foreign.close()
     await expect(openDatabase(DatabaseSync, foreignPath, 'wal', DEFAULT_BUSY_TIMEOUT_MS)).rejects.toThrow(/has application id 12345/)

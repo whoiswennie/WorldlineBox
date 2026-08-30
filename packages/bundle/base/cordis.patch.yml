@@ -24,8 +24,18 @@
     - id: llm
       name: '@deepseek-ai/dsh-llm'
 
+    - id: deepseek-llm-api-extensions
+      name: '@deepseek-ai/dsh-deepseek-llm-api-extensions'
+
     - id: session
       name: '@deepseek-ai/dsh-session'
+
+    # Explicit opt-in only: may send a redacted incremental session suffix to
+    # the official DeepSeek endpoint after it accepts an ordinary model request.
+    - id: session-log-deepseek
+      name: '@deepseek-ai/dsh-session-log-deepseek'
+      config:
+        enabled: false
 
     - id: typert
       name: '@deepseek-ai/dsh-typert-registry'
@@ -57,6 +67,12 @@
 
     - id: agent
       name: '@deepseek-ai/dsh-agent'
+
+    # Explicit opt-in only: reports active Loader package names and versions.
+    - id: plugin-package-inventory-deepseek
+      name: '@deepseek-ai/dsh-plugin-package-inventory-deepseek'
+      config:
+        enabled: false
 
     # The transport-independent default for Agents created by entry points.
     # Settings may supply a saved selection; consumers read it at creation time.

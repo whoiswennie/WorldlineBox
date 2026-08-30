@@ -114,6 +114,7 @@ const THINKING_FORMAT_GATE: Record<PiAiThinkingFormat, true> = {
   'deepseek': true,
   'openrouter': true,
   'together': true,
+  'baseten': true,
   'zai': true,
   'qwen': true,
   'chat-template': true,
@@ -231,6 +232,7 @@ const COMPLETIONS_COMPAT_GATE = {
   supportsDeveloperRole: 'offer',
   supportsReasoningEffort: 'offer',
   supportsUsageInStreaming: 'offer',
+  supportsFinishReason: 'offer',
   maxTokensField: 'offer',
   requiresToolResultName: 'offer',
   requiresAssistantAfterToolResult: 'offer',
@@ -238,6 +240,8 @@ const COMPLETIONS_COMPAT_GATE = {
   requiresReasoningContentOnAssistantMessages: 'offer',
   thinkingFormat: 'offer',
   chatTemplateKwargs: 'offer',
+  chatTemplateArgs: 'offer',
+  supportsThinkingTokenBudget: 'offer',
   supportsStrictMode: 'offer',
   cacheControlFormat: 'offer',
   supportsLongCacheRetention: 'offer',
@@ -257,6 +261,7 @@ const RESPONSES_COMPAT_GATE = {
   supportsLongCacheRetention: 'offer',
   sessionAffinityFormat: 'withhold',
   supportsOpenAIGrammarTools: 'withhold',
+  supportsAdditionalTools: 'withhold',
   supportsToolSearch: 'withhold',
   supportsExplicitPromptCacheMode: 'withhold',
 } as const satisfies Record<keyof OpenAIResponsesCompat, CompatDisposition>
@@ -358,6 +363,8 @@ export interface PiAiCompatProfile {
   supportsReasoningEffort?: boolean
   /** Whether the endpoint accepts `stream_options: {include_usage: true}`; `openai-completions`. */
   supportsUsageInStreaming?: boolean
+  /** Whether the endpoint includes a stream `finish_reason`; `openai-completions`. */
+  supportsFinishReason?: boolean
   /** Which output-cap field the endpoint reads; `openai-completions`. */
   maxTokensField?: NonNullable<OpenAICompletionsCompat['maxTokensField']>
   /** Whether tool results must carry `name`; `openai-completions`. */
@@ -378,6 +385,10 @@ export interface PiAiCompatProfile {
    * can read, so kwargs set beside another format are sent nowhere.
    */
   chatTemplateKwargs?: NonNullable<OpenAICompletionsCompat['chatTemplateKwargs']>
+  /** Arguments sent as `chat_template_args` under the Baseten thinking format. */
+  chatTemplateArgs?: NonNullable<OpenAICompletionsCompat['chatTemplateArgs']>
+  /** Whether a vLLM-compatible endpoint accepts `thinking_token_budget`. */
+  supportsThinkingTokenBudget?: boolean
   /**
    * Whether the endpoint accepts `strict` in tool definitions;
    * `openai-completions`, the three Responses protocols, `bedrock-converse-stream`.

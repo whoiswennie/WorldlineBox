@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/host/netease-music/README.md
-README.md: 13461103acb00f6eda7645a791cdf85b0298a341
-README.zh.md: 5a0bc8f808c18536a023322d57125b53dfadc63d
+README.md: 05b969f0205dbdc71d878e3816c440ec565c000a
+README.zh.md: 40372edf8e97545db7190e7904953090bfc047e8

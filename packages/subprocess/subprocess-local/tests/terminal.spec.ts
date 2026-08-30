@@ -67,6 +67,16 @@ class FakeInspector implements ProcessInspector {
   isStdinWaiting() { return this.waiting }
   processTree() { return this.root === undefined ? this.members : [this.root, ...this.members] }
   processSession() { return this.sessionMembers }
+  snapshot() {
+    const tree = [...this.processTree()]
+    const session = [...this.processSession()]
+    const alive = new Set(this.alive)
+    return {
+      tree: () => tree,
+      session: () => session,
+      alive: (identity: ProcessIdentity) => alive.has(identity.pid),
+    }
+  }
   isAlive(identity: ProcessIdentity) { return this.alive.has(identity.pid) }
   signalGroup(pgid: number, signal: SubprocessTerminalSignal) {
     if (this.throwGroup) throw new Error('group failed')
@@ -320,11 +330,11 @@ describe('LocalTerminalHandle', () => {
         inspector.alive.add(124)
         return [root, { pid: 124, started: 'first' }]
       }
-      if (reads === 3) {
+      if (reads >= 3 && !inspector.processes.some(([pid]) => pid === 125)) {
         inspector.alive.add(125)
         return [root, { pid: 125, started: 'late' }]
       }
-      return []
+      return [root]
     }
     const handle = makeHandle(pty, inspector, 10)
     await handle.terminate()

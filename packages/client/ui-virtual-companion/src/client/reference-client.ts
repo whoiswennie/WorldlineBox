@@ -19,6 +19,11 @@ async function request<T>(path: string, body: Record<string, unknown>): Promise<
   return envelope.value
 }
 
+/**
+ * Search references.
+ * @param input - Input value to process.
+ * @returns The resulting value.
+ */
 export function searchReferences(input: {
   readonly scopes: readonly string[]
   readonly query?: string
@@ -29,6 +34,11 @@ export function searchReferences(input: {
   return request('search', { query: '', ...input })
 }
 
+/**
+ * Get reference.
+ * @param id - id value.
+ * @returns The resulting value.
+ */
 export function getReference(id: string): Promise<ReferenceAsset> {
   return request('get', { id })
 }

@@ -22,6 +22,13 @@ describe('workspace explorer dialogs', () => {
       subscribeChanges: vi.fn(() => () => undefined),
     } as ComponentProps<typeof WorkspaceExplorer>)} />)
 
+    const toolbarButtons = screen.getByText('工作区').nextElementSibling?.querySelectorAll('button')
+    expect([...toolbarButtons ?? []].map(button => button.getAttribute('title'))).toEqual([
+      '新建文件',
+      '新建文件夹',
+      '在文件资源管理器中打开工作区',
+      '清空工作区',
+    ])
     fireEvent.click(screen.getByRole('button', { name: '在文件资源管理器中打开工作区' }))
     await waitFor(() => { expect(openPath).toHaveBeenCalledWith('C:\\workspace') })
   })

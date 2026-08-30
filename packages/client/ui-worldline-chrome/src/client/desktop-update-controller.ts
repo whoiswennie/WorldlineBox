@@ -1,5 +1,9 @@
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 
+/**
+ * Type contract for desktop update phase.
+ * @returns The resulting value.
+ */
 export type DesktopUpdatePhase =
   | 'unsupported'
   | 'idle'
@@ -49,6 +53,10 @@ function updateBridge(): DesktopUpdateBridge | undefined {
 
 /** Converts preload events into the renderer's standard observable currency. */
 export class DesktopUpdateController {
+  /**
+   * Current store.
+   * @returns The resulting value.
+   */
   readonly store: SnapshotStore<DesktopUpdateSnapshot> = createSnapshotStore(INITIAL)
   private readonly bridge = updateBridge()
 
@@ -67,6 +75,10 @@ export class DesktopUpdateController {
     })
   }
 
+  /**
+   * Start.
+   * @returns The resulting value.
+   */
   start(): () => void {
     if (this.bridge === undefined) return () => {}
     let active = true
@@ -77,16 +89,25 @@ export class DesktopUpdateController {
     return () => { active = false; off() }
   }
 
+  /**
+   * Check.
+   */
   async check(): Promise<void> {
     if (this.bridge === undefined) return
     try { this.accept(await this.bridge.check()) } catch (error) { this.fail(error) }
   }
 
+  /**
+   * Download.
+   */
   async download(): Promise<void> {
     if (this.bridge === undefined) return
     try { this.accept(await this.bridge.download()) } catch (error) { this.fail(error) }
   }
 
+  /**
+   * Install.
+   */
   async install(): Promise<void> {
     if (this.bridge === undefined) return
     try { await this.bridge.install() } catch (error) { this.fail(error) }

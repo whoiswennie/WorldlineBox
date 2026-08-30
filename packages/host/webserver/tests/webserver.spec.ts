@@ -28,7 +28,7 @@ afterEach(async () => {
 })
 
 /** Write a cordis.yml with one webserver row, then boot it through the real Loader. */
-async function loadComposition(port = 0): Promise<Context> {
+async function loadComposition(port = 0, gzip = false): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'worldline-webserver-loader-'))
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
@@ -36,6 +36,13 @@ async function loadComposition(port = 0): Promise<Context> {
     '  config:',
     "    host: '127.0.0.1'",
     `    port: ${String(port)}`,
+    ...(gzip
+      ? [
+        '    compression: gzip',
+        '    compressionLevel: 1',
+        '    compressionThresholdBytes: 16',
+      ]
+      : []),
     '',
   ].join('\n'))
 
@@ -62,9 +69,13 @@ async function loadComposition(port = 0): Promise<Context> {
 }
 
 /** GET (by default) one path against the running server; returns status plus a body prefix. */
-async function request(port: number, path: string, init?: RequestInit): Promise<{ status: number; body: string }> {
+async function request(
+  port: number,
+  path: string,
+  init?: RequestInit,
+): Promise<{ status: number; body: string; headers: Headers }> {
   const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, init)
-  return { status: response.status, body: (await response.text()).slice(0, 80) }
+  return { status: response.status, body: (await response.text()).slice(0, 80), headers: response.headers }
 }
 
 /** Open one raw upgrade request and return after the handler writes its response. */
@@ -86,6 +97,58 @@ async function upgrade(port: number, path: string): Promise<ReturnType<typeof co
 }
 
 describe('real Loader composition', () => {
+  it('compresses eligible responses and skips small, event-stream, and range bodies', { timeout: 60_000 }, async () => {
+    expect(HttpServer.Config({ host: '127.0.0.1', port: 0 })).toEqual({
+      host: '127.0.0.1',
+      port: 0,
+      compression: 'none',
+      compressionLevel: 1,
+      compressionThresholdBytes: 1024,
+    })
+    const loaded = await loadComposition(0, true)
+    const server = loaded.webServer
+    const body = 'compressible response '.repeat(8)
+    server.register({
+      kind: 'exact', path: '/text', handler: (_req, res) => {
+        res.writeHead(200, {
+          'content-type': 'text/plain; charset=utf-8',
+          'content-length': String(Buffer.byteLength(body)),
+        })
+        res.end(body)
+      },
+    })
+    server.register({
+      kind: 'exact', path: '/small', handler: (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain', 'content-length': '5' })
+        res.end('small')
+      },
+    })
+    server.register({
+      kind: 'exact', path: '/events', handler: (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.end(body)
+      },
+    })
+    server.register({
+      kind: 'exact', path: '/range', handler: (_req, res) => {
+        res.writeHead(206, { 'content-type': 'text/plain', 'content-range': 'bytes 0-15/160' })
+        res.end(body.slice(0, 16))
+      },
+    })
+
+    const compressed = await request(server.port, '/text', {
+      headers: { 'accept-encoding': 'br, gzip, deflate' },
+    })
+    expect(compressed.headers.get('content-encoding')).toBe('gzip')
+    expect(compressed.headers.get('content-length')).toBeNull()
+    expect((await request(server.port, '/small', { headers: { 'accept-encoding': 'gzip' } }))
+      .headers.get('content-encoding')).toBeNull()
+    expect((await request(server.port, '/events', { headers: { 'accept-encoding': 'gzip' } }))
+      .headers.get('content-encoding')).toBeNull()
+    expect((await request(server.port, '/range', { headers: { 'accept-encoding': 'gzip' } }))
+      .headers.get('content-encoding')).toBeNull()
+  })
+
   // Real-Loader composition resolves workspace packages through tsx at test
   // time; first resolution after the host/client program split is slow enough
   // to trip the default 5s budget on cold caches.

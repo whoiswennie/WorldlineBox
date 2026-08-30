@@ -11,7 +11,7 @@ import type {
 } from '@deepseek-ai/dsh-client-runtime/client'
 import { JsonBlock, MessageText, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeOwnerProps, ChatNodeViewProps, ChatViewSlotProps } from '../contract/slots.ts'
-import { ReferenceIcon } from '../ReferenceIcon.tsx'
+import { ReferenceIcon } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CompactionItem } from './CompactionItem.tsx'
 import { ContextInjectionRow } from './ContextInjectionRow.tsx'
 import { MessageIconActions } from './MessageIconActions.tsx'
@@ -200,10 +200,12 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
         data-ref-chip={referenceKind ?? 'skill'}
         title={label}
       >
-        {referenceKind !== undefined && (
+        {referenceKind === 'session' ? (
+          <span className={css.mentionMark} data-ref-mention-mark aria-hidden="true">@</span>
+        ) : referenceKind !== undefined && (
           <ReferenceIcon kind={referenceKind} size={16} className={css.refIcon} />
         )}
-        {displayLabel}
+        <span className={css.refLabel}>{displayLabel}</span>
       </span>,
     )
     cursor = end

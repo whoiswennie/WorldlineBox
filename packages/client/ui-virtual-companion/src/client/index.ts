@@ -127,7 +127,7 @@ export function apply(ctx: ClientContext): void {
         ? [{
           name: '所有伙伴',
           description: '邀请通讯录中的全部虚拟伙伴',
-          icon: '✦',
+          icon: 'companion' as const,
           section: '虚拟伙伴',
           value: JSON.stringify({
             sessionId: session.sessionId,
@@ -143,7 +143,7 @@ export function apply(ctx: ClientContext): void {
       )).map(companion => ({
         name: companion.name,
         description: companion.handle,
-        icon: '✦',
+        icon: 'companion' as const,
         section: '虚拟伙伴',
         value: JSON.stringify({ sessionId: session.sessionId, ids: [companion.id], names: [companion.name] }),
       }))]

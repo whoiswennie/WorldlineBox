@@ -1,9 +1,9 @@
 /** Account-scoped virtual companion directory, room state, and Agent context. */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { mkdir, readFile, rm } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { basename, join } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -27,11 +27,13 @@ import type {
   VirtualCompanionRoom,
   VirtualCompanionSnapshot,
   ReferenceDraft,
+  ReferenceIntent,
 } from './contracts.ts'
 import { initialCompanionId } from './contracts.ts'
 import { BUILT_IN_MEMES } from './builtin-memes.ts'
 import { CompanionActorRuntime } from './actor-runtime.ts'
 import { migrateLegacyCompanions } from './agent-vault-migration.ts'
+import { rankExpressionCandidates } from './reference-expression.ts'
 
 export type {
   VirtualCompanion,
@@ -66,6 +68,13 @@ const IROHA_ID = 'iroha-sakayori'
 const IROHA_ART = '/worldline-experience/iroha-sakayori.png'
 const KAGUYA_ID = 'kaguya'
 const KAGUYA_ART = '/worldline-experience/kaguya.png'
+const PROFILE_APPEARANCE_ID = 'profile-appearance'
+
+/** Host assembly facts needed to materialize bundled companion artwork. */
+export interface Config {
+  /** Absolute frontend dist root that owns `/worldline-experience/*`. */
+  frontendRoot?: string
+}
 
 const YACHIYO_FAVORITE_SONG = {
   key: 'builtin-yachiyo-favorite-song-oborozukiyo',
@@ -486,6 +495,9 @@ export class VirtualCompanionDirectory {
   private data = emptyDirectory()
   private mutation = Promise.resolve()
   private readonly requiredResponders = new WeakMap<Agent, RequiredResponders>()
+  /**
+   * Current ready.
+   */
   readonly ready: Promise<void>
   private readonly agentVaults: AgentVaultService | undefined
 
@@ -493,6 +505,7 @@ export class VirtualCompanionDirectory {
     private readonly logger: Context['logger'],
     root?: string,
     agentVaults?: AgentVaultService,
+    private readonly frontendRoot?: string,
   ) {
     this.directory = root ?? worldlineHomePath('companions')
     this.file = join(this.directory, 'directory.json')
@@ -563,6 +576,7 @@ export class VirtualCompanionDirectory {
       vaults: this.agentVaults,
     })
     if (this.agentVaults !== undefined) {
+      for (const profile of this.data.companions) await this.syncProfile(profile)
       await this.seedBuiltInKnowledge()
       await this.seedBuiltInReferences()
     }
@@ -574,20 +588,135 @@ export class VirtualCompanionDirectory {
     const known = (await this.agentVaults.listAgents()).some(item => item.agent.id === profile.id)
     if (!known) await this.agentVaults.createAgent(profile.id, profile.name)
     const snapshot = await this.agentVaults.inspectSelf(profile.id)
+    const appearance = await this.syncAppearanceResource(profile)
     const values: Readonly<Record<string, { summary: string; details: readonly string[] }>> = {
       identity: { summary: `${profile.name}（${profile.handle}）`, details: [profile.description, profile.persona] },
-      appearance: { summary: profile.avatar === '' ? '尚未提供形象资料。' : '已登记角色形象。',
-        details: profile.avatar === '' ? [] : [`形象资源：${profile.avatar}`, `立绘资源：${profile.portrait || profile.avatar}`] },
+      appearance: { summary: appearance === undefined ? '尚未提供形象资料。' : '已登记角色形象。',
+        details: appearance === undefined ? [] : [
+          `形象资源：${profile.avatar}`,
+          `立绘资源：${profile.portrait || profile.avatar}`,
+          `Vault 形象资源：vault://resources/records/${appearance.id}.yml`,
+          `可发送形象资源 ID：${appearance.id}`,
+        ] },
       persona: { summary: profile.style, details: [profile.persona, profile.behaviorLogic] },
       voice: { summary: profile.speakingStyle, details: [] },
       state: { summary: profile.status, details: [] },
     }
     for (const current of snapshot.modules) {
       const next = values[current.id]; if (next === undefined) continue
+      if (current.summary === next.summary
+        && current.details.length === next.details.filter(Boolean).length
+        && current.details.every((value, index) => value === next.details.filter(Boolean)[index])) continue
       await this.agentVaults.updateSelf(profile.id, { ...current, summary: next.summary,
         details: next.details.filter(Boolean), updatedAt: Date.now() } satisfies SelfModule,
       { actor: { type: 'user', id: 'companion-profile-editor' }, reason: 'User updated companion profile.',
         expectedRevision: current.revision })
+    }
+  }
+
+  private async appearanceSource(profile: VirtualCompanion): Promise<{
+    data?: Uint8Array
+    externalUrl?: string
+    mimeType: string
+    digest?: string
+  } | undefined> {
+    const source = profile.portrait || profile.avatar
+    if (source === '') return undefined
+    const dataMatch = /^data:image\/(png|jpeg|webp);base64,([a-z\d+/]+=*)$/iu.exec(source)
+    if (dataMatch?.[1] !== undefined && dataMatch[2] !== undefined) {
+      const data = Buffer.from(dataMatch[2], 'base64')
+      const mimeType = `image/${dataMatch[1].toLocaleLowerCase('en-US')}`
+      return { data, mimeType, digest: createHash('sha256').update(data).digest('hex') }
+    }
+    if (source.startsWith('/worldline-experience/') && this.frontendRoot !== undefined) {
+      const root = resolve(this.frontendRoot)
+      const path = resolve(root, source.slice(1))
+      if (path !== root && path.startsWith(root + sep)) {
+        const data = await readFile(path)
+        const extension = extname(path).toLocaleLowerCase('en-US')
+        const mimeType = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
+          : extension === '.webp' ? 'image/webp' : 'image/png'
+        return { data, mimeType, digest: createHash('sha256').update(data).digest('hex') }
+      }
+    }
+    return { externalUrl: source, mimeType: 'image/png' }
+  }
+
+  private async syncAppearanceResource(profile: VirtualCompanion): Promise<VaultResource | undefined> {
+    if (this.agentVaults === undefined) return undefined
+    const source = await this.appearanceSource(profile)
+    const current = await this.agentVaults.resource(profile.id, PROFILE_APPEARANCE_ID).catch(() => undefined)
+    if (source === undefined) {
+      if (current !== undefined) await this.agentVaults.removeResource(profile.id, current.id, {
+        actor: { type: 'user', id: 'companion-profile-editor' },
+        reason: 'User removed the companion appearance image.', expectedRevision: current.revision,
+      })
+      return undefined
+    }
+    const metadata = {
+      title: `${profile.name}的形象图`,
+      description: `${profile.name}当前资料中登记的官方形象参考。`,
+      tags: [profile.name, profile.handle, '形象', '形象图', '立绘', '头像'],
+      originalTags: [] as string[], transcript: '', roles: ['appearance'] as const,
+    }
+    const sameContent = current !== undefined && (source.digest === undefined
+      ? current.externalUrl === source.externalUrl
+      : current.sha256 === source.digest)
+    if (sameContent) {
+      const sameMetadata = current.title === metadata.title
+        && current.description === metadata.description
+        && current.transcript === metadata.transcript
+        && current.roles.length === metadata.roles.length
+        && current.roles.every((value, index) => value === metadata.roles[index])
+        && current.tags.length === metadata.tags.length
+        && current.tags.every((value, index) => value === metadata.tags[index])
+        && current.originalTags.length === metadata.originalTags.length
+        && current.originalTags.every((value, index) => value === metadata.originalTags[index])
+      if (sameMetadata) return current
+      return await this.agentVaults.updateResource(profile.id, current.id, metadata, {
+        actor: { type: 'user', id: 'companion-profile-editor' },
+        reason: 'Synchronize companion appearance metadata.', expectedRevision: current.revision,
+      })
+    }
+    if (current !== undefined) await this.agentVaults.removeResource(profile.id, current.id, {
+      actor: { type: 'user', id: 'companion-profile-editor' },
+      reason: 'Replace the companion appearance image.', expectedRevision: current.revision,
+    })
+    return await this.agentVaults.importResource(profile.id, {
+      preferredId: PROFILE_APPEARANCE_ID,
+      enabled: true,
+      ...metadata,
+      mimeType: source.mimeType,
+      bytes: source.data?.byteLength ?? 0,
+      ...(source.externalUrl === undefined ? {} : { externalUrl: source.externalUrl }),
+      builtIn: profile.builtIn,
+      usageCount: 0,
+    }, source.data, {
+      actor: { type: 'user', id: 'companion-profile-editor' },
+      reason: 'Register the companion appearance as a first-class Vault resource.',
+    })
+  }
+
+  /**
+   * Resolve the companion's enabled appearance resource and optional Host path.
+   * @param companionId - Companion whose registered appearance is requested.
+   * @returns Enabled appearance resource and optional Host path, or undefined when absent.
+   */
+  async appearance(companionId: string): Promise<{
+    resource: VaultResource
+    hostPath?: string
+  } | undefined> {
+    if (this.agentVaults === undefined) return undefined
+    const exact = await this.agentVaults.resource(companionId, PROFILE_APPEARANCE_ID).catch(() => undefined)
+    const resource = exact?.enabled === true && exact.roles.includes('appearance')
+      ? exact
+      : (await this.agentVaults.searchResources({ agentId: companionId, query: '',
+        roles: ['appearance'], limit: 1 })).items[0]
+    if (resource === undefined || !resource.enabled) return undefined
+    const content = await this.agentVaults.resourceContent(companionId, resource.id).catch(() => undefined)
+    return {
+      resource,
+      ...(content?.type === 'file' ? { hostPath: content.path } : {}),
     }
   }
 
@@ -695,6 +824,10 @@ export class VirtualCompanionDirectory {
     return pending
   }
 
+  /**
+   * Snapshot.
+   * @returns The resulting value.
+   */
   snapshot(): VirtualCompanionSnapshot {
     return structuredClone({
       companions: this.data.companions,
@@ -702,15 +835,30 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Companion.
+   * @param id - id value.
+   * @returns The resulting value.
+   */
   companion(id: string): VirtualCompanion | undefined {
     const companion = this.data.companions.find(item => item.id === id)
     return companion === undefined ? undefined : structuredClone(companion)
   }
 
+  /**
+   * Owns scope.
+   * @param scope - scope value.
+   * @returns The resulting value.
+   */
   ownsScope(scope: string): boolean {
     return scope === 'public' || this.data.companions.some(companion => companion.id === scope)
   }
 
+  /**
+   * Room.
+   * @param sessionId - session id value.
+   * @returns The resulting value.
+   */
   room(sessionId: string): VirtualCompanionRoom | undefined {
     const room = this.data.rooms[sessionId]
     return room === undefined ? undefined : structuredClone(room)
@@ -728,6 +876,11 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Actor binding.
+   * @param childId - child id value.
+   * @returns The resulting value.
+   */
   actorBinding(
     childId: string,
   ):
@@ -746,8 +899,17 @@ export class VirtualCompanionDirectory {
     return undefined
   }
 
+  /**
+   * Close.
+   */
   close(): void {}
 
+  /**
+   * Bind actor.
+   * @param roomSessionId - room session id value.
+   * @param companionId - companion id value.
+   * @param childId - child id value.
+   */
   async bindActor(roomSessionId: string, companionId: string, childId: string): Promise<void> {
     await this.exclusive(async () => {
       const room = this.data.rooms[roomSessionId]
@@ -763,6 +925,12 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Unbind actor.
+   * @param roomSessionId - room session id value.
+   * @param companionId - companion id value.
+   * @param childId - child id value.
+   */
   async unbindActor(roomSessionId: string, companionId: string, childId: string): Promise<void> {
     await this.exclusive(async () => {
       const room = this.data.rooms[roomSessionId]
@@ -775,6 +943,11 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Bind narrator.
+   * @param roomSessionId - room session id value.
+   * @param childId - child id value.
+   */
   async bindNarrator(roomSessionId: string, childId: string): Promise<void> {
     await this.exclusive(async () => {
       const room = this.data.rooms[roomSessionId]
@@ -788,6 +961,11 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Unbind narrator.
+   * @param roomSessionId - room session id value.
+   * @param childId - child id value.
+   */
   async unbindNarrator(roomSessionId: string, childId: string): Promise<void> {
     await this.exclusive(async () => {
       const room = this.data.rooms[roomSessionId]
@@ -798,6 +976,11 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Create.
+   * @param value - Value to process.
+   * @returns The resulting value.
+   */
   async create(value: unknown): Promise<VirtualCompanionSnapshot> {
     return await this.exclusive(async () => {
       const input = draft(value)
@@ -820,6 +1003,12 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Update.
+   * @param id - id value.
+   * @param value - Value to process.
+   * @returns The resulting value.
+   */
   async update(id: unknown, value: unknown): Promise<VirtualCompanionSnapshot> {
     return await this.exclusive(async () => {
       const index = this.data.companions.findIndex(companion => companion.id === id)
@@ -881,6 +1070,11 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Remove.
+   * @param id - id value.
+   * @returns The resulting value.
+   */
   async remove(id: unknown): Promise<VirtualCompanionSnapshot> {
     return await this.exclusive(async () => {
       const index = this.data.companions.findIndex(companion => companion.id === id)
@@ -899,6 +1093,12 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Set room.
+   * @param sessionId - session id value.
+   * @param participantIds - participant ids value.
+   * @returns The resulting value.
+   */
   async setRoom(sessionId: unknown, participantIds: unknown): Promise<VirtualCompanionSnapshot> {
     return await this.exclusive(async () => {
       const id = field(sessionId, '会话 ID', 200)
@@ -933,7 +1133,11 @@ export class VirtualCompanionDirectory {
     })
   }
 
-  /** Invite names from newly inserted input synchronously before first prompt assembly. */
+  /**
+   *  Invite names from newly inserted input synchronously before first prompt assembly.
+   * @param agent - Agent that owns the operation.
+   * @param message - message value.
+   */
   inviteMentions(agent: Agent, message: UserMessage): void {
     if (!isCompanionAgent(agent)) return
     if (message.source.kind !== 'user') return
@@ -1048,6 +1252,11 @@ export class VirtualCompanionDirectory {
     })
   }
 
+  /**
+   * Prompt for.
+   * @param agent - Agent that owns the operation.
+   * @returns The resulting value.
+   */
   promptFor(agent: Agent | undefined): string {
     if (agent === undefined || !isCompanionAgent(agent)) return ''
     const room = this.data.rooms[agent.id]
@@ -1135,7 +1344,12 @@ export class VirtualCompanionDirectory {
   }
 }
 
-/** Bind the room context to one exact agent scope. */
+/**
+ *  Bind the room context to one exact agent scope.
+ * @param directory - directory value.
+ * @param agent - Agent that owns the operation.
+ * @returns The resulting value.
+ */
 export function installCompanionRoomPrompt(
   directory: VirtualCompanionDirectory,
   agent: Agent,
@@ -1147,25 +1361,104 @@ export function installCompanionRoomPrompt(
   })
 }
 
-/** Install the public Agent Vault into an ordinary/coordinator Agent scope. */
+/**
+ * Search the enabled public expression catalog without treating model-suggested semantic words as
+ * exact tag constraints. The complete bounded catalog is included so an exact title still wins
+ * when the storage index cannot tokenize a mixed Chinese/Latin phrase.
+ * @param vaults - Account-scoped Agent Vault service.
+ * @param intent - Semantic reference intent selected by the ordinary Agent.
+ * @param limit - Maximum number of ranked candidates to return.
+ * @returns Ranked enabled public expression resources.
+ */
+export async function findPublicExpressions(
+  vaults: AgentVaultService,
+  intent: ReferenceIntent,
+  limit = 5,
+): Promise<VaultResource[]> {
+  const query = [
+    intent.assetTitle ?? '', intent.query ?? '', intent.act, ...(intent.preferredTags ?? []),
+  ].filter(Boolean).join(' ')
+  const [direct, catalog] = await Promise.all([
+    vaults.searchResources({ agentId: 'public', query, roles: ['expression'], limit: 24 }),
+    vaults.searchResources({ agentId: 'public', query: '', roles: ['expression'], limit: 100 }),
+  ])
+  return rankExpressionCandidates(
+    [...direct.items, ...catalog.items], intent, [], 'public', '', limit,
+  )
+}
+
+/**
+ *  Install the public Agent Vault into an ordinary/coordinator Agent scope.
+ * @param directory - directory value.
+ * @param agent - Agent that owns the operation.
+ * @returns The resulting value.
+ */
 export function installLibraryRuntime(directory: VirtualCompanionDirectory, agent: Agent): () => void {
   const disposers: Array<() => unknown> = [directory.vaults.bindRuntimeAgent(agent.id, 'public')]
   disposers.push(agent.ctx.systemPrompt.context({ name: 'agent-vault:public-policy', order: -8,
-    text: () => '你只能通过 Agent Vault 工具访问公共认知。先快速召回方向，再渐进读取；不要全量扫描，不要把普通知识检索写入 self。' }))
+    text: () => '你只能通过 Agent Vault 工具访问公共认知。先快速召回方向，再渐进读取；不要全量扫描，不要把普通知识检索写入 self。公共引用资料是真实可发送的图片、GIF、视频、音频或其他资源，不要用 Emoji、颜文字或互联网搜索冒充。用户点名引用资料时，先用 expression_search 按原名查找，再把返回的 asset_id 交给 express。' }))
   disposers.push(agent.ctx.tools.register(defineTool({
-    name: 'express', description: 'Resolve one public expression resource from a semantic intent without injecting the full catalog.',
-    parameters: { act: { type: 'string', required: true }, query: { type: 'string' },
-      tags: { type: 'array', items: { type: 'string' } } },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {
-      found: { type: 'boolean', required: true }, asset_id: { type: 'string', required: true },
-      title: { type: 'string', required: true }, url: { type: 'string', required: true },
-      mime_type: { type: 'string', required: true }, markup: { type: 'string', required: true },
-    } }, render: (_args, value) => [{ type: 'text', text: value.found
-      ? `Expression resource resolved: ${value.title}` : 'No suitable public resource found.' }] },
+    name: 'expression_search',
+    description: 'Find up to five enabled public reference resources by exact title and complementary semantic keywords. Use this before express when the user names a resource.',
+    parameters: {
+      keywords: { type: 'array', required: true, items: { type: 'string' } },
+      named_title: { type: 'string' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        candidates: {
+          type: 'array', required: true,
+          items: { type: 'object', additionalProperties: false, properties: {
+            asset_id: { type: 'string', required: true }, title: { type: 'string', required: true },
+            mime_type: { type: 'string', required: true },
+            tags: { type: 'array', required: true, items: { type: 'string' } },
+          } },
+        },
+      } },
+      render: (_args, value) => [{ type: 'text', text: value.candidates.length === 0
+        ? 'No public reference-resource candidates found.'
+        : `Public reference-resource candidates: ${value.candidates.map(candidate =>
+          `${candidate.title} (${candidate.asset_id}; ${candidate.mime_type})`).join(', ')}` }],
+    },
     execute: async (args) => {
-      const page = await directory.vaults.searchResources({ agentId: 'public',
-        query: `${args.act} ${args.query ?? ''}`, tags: args.tags ?? [], roles: ['expression'], limit: 1 })
-      const selected = page.items[0]
+      const keywords = args.keywords.map(value => value.trim()).filter(Boolean).slice(0, 12)
+      const found = await findPublicExpressions(directory.vaults, {
+        act: keywords.join(' '), query: keywords.join(' '), preferredTags: keywords,
+        ...(args.named_title === undefined ? {} : { assetTitle: args.named_title }),
+      })
+      return { candidates: found.map(value => ({
+        asset_id: value.id, title: value.title, mime_type: value.mimeType,
+        tags: [...value.tags].slice(0, 12),
+      })) }
+    },
+  })))
+  disposers.push(agent.ctx.tools.register(defineTool({
+    name: 'express', description: 'Send one enabled public reference resource as visible media in the conversation. Prefer an asset_id returned by expression_search when the user names a resource.',
+    parameters: { act: { type: 'string', required: true }, query: { type: 'string' },
+      tags: { type: 'array', items: { type: 'string' } }, asset_id: { type: 'string' } },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        found: { type: 'boolean', required: true }, asset_id: { type: 'string', required: true },
+        title: { type: 'string', required: true }, url: { type: 'string', required: true },
+        mime_type: { type: 'string', required: true }, markup: { type: 'string', required: true },
+      } },
+      render: (_args, value) => [{ type: 'text', text: value.found
+        ? `Expression resource resolved: ${value.title}` : 'No suitable public resource found.' }],
+      // The model-facing text is deliberately compact, but the durable Client projection needs
+      // the resolved URL and MIME type to render the actual media instead of an empty Tool row.
+      presentationMeta: (_args, value) => value,
+    },
+    execute: async (args) => {
+      let selected: VaultResource | undefined
+      if (args.asset_id !== undefined) {
+        const exact = await directory.vaults.resource('public', args.asset_id).catch(() => undefined)
+        if (exact?.enabled === true && exact.roles.includes('expression')) selected = exact
+      }
+      selected ??= (await findPublicExpressions(directory.vaults, {
+        act: args.act,
+        ...(args.query === undefined ? {} : { query: args.query }),
+        ...(args.tags === undefined ? {} : { preferredTags: args.tags }),
+      }, 1))[0]
       return selected === undefined
         ? { found: false, asset_id: '', title: '', url: '', mime_type: '', markup: '' }
         : { found: true, asset_id: selected.id, title: selected.title,
@@ -1205,8 +1498,8 @@ function send(res: ServerResponse, status: number, value: unknown): void {
 }
 
 /** Mount persistence, HTTP CRUD, mention invitations, and dynamic room context. */
-export function apply(ctx: Context): void {
-  const directory = new VirtualCompanionDirectory(ctx.logger, undefined, ctx.agentVaults)
+export function apply(ctx: Context, config: Config = {}): void {
+  const directory = new VirtualCompanionDirectory(ctx.logger, undefined, ctx.agentVaults, config.frontendRoot)
   const actors = new CompanionActorRuntime(ctx, directory)
   const pendingReferenceUploads = new Map<string, { draft: ReferenceDraft; expiresAt: number }>()
   const installed = new Map<

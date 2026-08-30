@@ -15,6 +15,8 @@ export interface TokenUsageProjection {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  /** Most recent step already represented by these exact provider totals. */
+  lastReportedStep?: { readonly turn: number; readonly step: number } | undefined
 }
 
 /**

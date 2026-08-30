@@ -10,6 +10,7 @@
 // Type-only edge: the SlotMap augmentation below merges into this package's interface.
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import type { InputTriggerCrumb, PickAction } from '../types.ts'
 import type { MenuState } from '../core/contract.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -29,12 +30,16 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 export interface MenuViewInjected {
   /** The service's menu state store (read-only here; MenuView subscribes). */
   menu: SnapshotStore<MenuState>
+  /** Breadcrumbs published per source for the open menu. */
+  headers: SnapshotStore<ReadonlyMap<string, readonly InputTriggerCrumb[]>>
   /**
    * Pointer pick routed back through the service pipeline.
    * @param source - source (group) name.
    * @param index - candidate index within the group.
    */
-  onPick: (source: string, index: number) => void
+  onPick: (source: string, index: number, action?: PickAction) => void
+  onHover: (source: string, index: number) => void
+  onCrumb: (source: string, index: number) => void
   /** Dismiss the menu (external pointer outside the composer area). */
   onDismiss: () => void
 }

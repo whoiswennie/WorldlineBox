@@ -1,6 +1,7 @@
 /** Bounded, domain-separated model tools over `ctx.agentVaults`. */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { FIRST_PARTY_SECTION_ORDER } from '@deepseek-ai/dsh-system-prompt'
 import { AgentVaultError } from '@deepseek-ai/dsh-agent-vault'
 import type { MemoryStage, SelfModule, VaultUri } from '@deepseek-ai/dsh-agent-vault'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -26,7 +27,9 @@ const sharedUri = (uri: VaultUri): VaultUri => uri.startsWith('vault://')
 async function combinedRecall(ctx: Context, input: Parameters<Context['agentVaults']['recall']>[0]) {
   const [own, shared] = await Promise.all([
     ctx.agentVaults.recall(input),
-    ctx.agentVaults.recall({ ...input, agentId: 'public' }).catch(() => undefined),
+    input.agentId === 'public'
+      ? Promise.resolve(undefined)
+      : ctx.agentVaults.recall({ ...input, agentId: 'public' }).catch(() => undefined),
   ])
   const cards = [...own.cards, ...(shared?.cards ?? []).map(card => ({ ...card, uri: sharedUri(card.uri) }))]
     .sort((a, b) => b.score - a.score || b.updatedAt - a.updatedAt)
@@ -53,7 +56,7 @@ function writeContext(runtimeAgentId: string, reason: string, expectedRevision?:
 
 /** Register the Vault orientation, recall, exploration, memory, self, procedure, and resource tools. */
 export function apply(ctx: Context): void {
-  ctx.systemPrompt.section({ name: 'tool:agent-vault', order: 108, text:
+  ctx.systemPrompt.section({ name: 'tool:agent-vault', order: FIRST_PARTY_SECTION_ORDER.TOOL_AGENT_VAULT, text:
     'Your private Agent Vault is accessed only through the dedicated tools. Start with bounded recall; follow useful vault:// results progressively. memory tools never inspect self, procedure recall never certifies a new capability, and self changes require self_update plus Host policy. Never persist resolved host paths.' })
 
   ctx.tools.register(defineTool({
@@ -81,10 +84,24 @@ export function apply(ctx: Context): void {
     isConcurrencySafe: () => true,
     execute: async (args, exec) => {
       const agentId = authorizedAgentId(ctx, runtimeAgentId(exec)); const query = text(args.query)
-      const options = { query, tags: array(args.tags), roles: array(args.roles) as never, limit: 12 }
+      const roles = array(args.roles) as Array<'expression' | 'appearance' | 'source' | 'attachment'>
+      const options = { query, tags: array(args.tags), limit: 12 }
+      const search = async (scope: string) => {
+        if (roles.length === 0) return await ctx.agentVaults.searchResources({ agentId: scope, ...options })
+        const pages = await Promise.all(roles.map(role => ctx.agentVaults.searchResources({
+          agentId: scope, ...options, roles: [role],
+        })))
+        return {
+          items: [...new Map(pages.flatMap(page => page.items)
+            .map(item => [`${item.agentId}:${item.id}`, item])).values()],
+          nextCursor: -1,
+        }
+      }
       const [own, shared] = await Promise.all([
-        ctx.agentVaults.searchResources({ agentId, ...options }),
-        ctx.agentVaults.searchResources({ agentId: 'public', ...options }).catch(() => ({ items: [], nextCursor: -1 })),
+        search(agentId),
+        agentId === 'public'
+          ? Promise.resolve({ items: [], nextCursor: -1 })
+          : search('public').catch(() => ({ items: [], nextCursor: -1 })),
       ])
       return encode({ items: [...own.items, ...shared.items].slice(0, 12), nextCursor: -1 })
     },

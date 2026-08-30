@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-The code-execution capability seam (see capability seams): a runtime Service Definition for executing one model-written program against host-provided async bindings, capturing what it printed and returned; replaceable providers; and the tool registry's [Code Mode](../core/tools/README.md) Consumer (`tools: { mode: code }` — the `run_code` tool and the SDK generated in the loaded runtime's `language`). Design is in the Code Mode contract. **Product** packages.
+The code-execution capability seam (see capability seams): a runtime Service Definition for executing one model-written program against host-provided async bindings, capturing what it printed and returned; replaceable providers; and the tool registry's [PTC mode](../core/tools/README.md) Consumer (`tools: { mode: ptc }` — the `run_code` tool and the SDK generated in the loaded runtime's `language`). Design is in the PTC mode contract. **Product** packages.
 
 | Package | Role | ctx key |
 |---|---|---|

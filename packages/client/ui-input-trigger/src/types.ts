@@ -29,16 +29,41 @@ export type TriggerPosition = 'leading' | 'inline'
 /** Which of the three pick paths produced a pick. */
 export type PickVia = 'menu' | 'space' | 'enter'
 
+/** Resolve a candidate, or drill into it without closing completion. */
+export type PickAction = 'pick' | 'drill'
+
+/** Leading glyph token mapped to a shared SVG by the menu. */
+export type InputTriggerCandidateIcon = 'file' | 'folder' | 'session' | 'companion'
+
 /** One menu candidate. Pure display data — zero behavior declaration. */
 export interface InputTriggerCandidate {
   readonly name: string
   readonly description?: string
-  readonly icon?: string
+  readonly icon?: InputTriggerCandidateIcon
   readonly hint?: string
   /** Optional visual heading shared by adjacent candidates; sectioned groups omit their source-title row. */
   readonly section?: string
   /** Opaque source-owned pick payload. */
   readonly value?: string
+  /** Offer directory descent through Tab or the row chevron. */
+  readonly drill?: boolean
+}
+
+/**
+* One crumb of a source's menu header. The pipeline treats `value` as opaque
+* and hands it straight back on pick, so a source names its own destinations.
+*/
+export interface InputTriggerCrumb {
+  readonly label: string
+  readonly value: string
+  readonly current?: boolean
+}
+
+/** What a source needs to decide the header of the open menu. */
+export interface HeaderRequest {
+  readonly query: string
+  readonly quoted?: boolean
+  readonly drilled: boolean
 }
 
 /** Pick-moment snapshot of the trigger token span. CAS: stale draftRev ⇒ the whole action no-ops. */
@@ -135,6 +160,7 @@ export interface CandidateRequest {
   /** Whether the active @file token is an open quoted path. */
   readonly quoted?: boolean
   readonly position: TriggerPosition
+  readonly drilled: boolean
   readonly signal: AbortSignal
 }
 
@@ -144,6 +170,7 @@ export interface InputTriggerPick {
   readonly session: ClientSessionContext
   readonly position: TriggerPosition
   readonly via: PickVia
+  readonly action: PickAction
   readonly span: TokenSpan
 }
 
@@ -181,6 +208,8 @@ export interface InputTriggerSource {
   /** Whether the menu renders the source-title row; defaults to true. */
   readonly showGroupTitle?: boolean
   candidates(session: ClientSessionContext, req: CandidateRequest): Promise<readonly InputTriggerCandidate[]>
+  /** Optional breadcrumb trail for a drilled menu. */
+  header?(session: ClientSessionContext, req: HeaderRequest): readonly InputTriggerCrumb[] | undefined
   /** Every pick lands here; claim/insert outcomes are executed by the pipeline via the scoped input events. */
   onPick(pick: InputTriggerPick): PickOutcome
   /** Synchronous space-time adjudication over hot state only. `token` is the just-completed leading token (e.g. '/goal'). */
@@ -236,7 +265,7 @@ export interface TriggerGuard {
 }
 
 /** Keys the menu intercepts while open (all behind the IME composition guard). */
-export type ArbitrateKey = 'up' | 'down' | 'enter' | 'escape'
+export type ArbitrateKey = 'up' | 'down' | 'enter' | 'escape' | 'tab'
 
 /** consumed = key handled; pick-highlighted = enter picked the highlight; pass = let the input see it. */
 export type ArbitrateOutcome = 'consumed' | 'pick-highlighted' | 'pass'

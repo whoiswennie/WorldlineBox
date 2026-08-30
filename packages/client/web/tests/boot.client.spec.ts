@@ -73,7 +73,7 @@ describe('bootstrap failure rendering', () => {
     await expectBootFailure(() => {
       installFacade()
       const duplicate = { id: 'duplicate', url: '/duplicate/client.js', rev: '1' }
-      win.__WORLDLINE_BOOT__ = { rev: 'graph', entries: [duplicate, duplicate] }
+      win.__WORLDLINE_BOOT__ = { rev: 'graph', entries: [duplicate, duplicate], batches: [] }
     }, 'duplicate graph entry "duplicate"')
   })
 })
@@ -89,9 +89,16 @@ describe('plugin activation', () => {
       { id: MODULES_ID, url: '/modules.js', rev: '1' },
       { id: 'renderer', url: '/renderer.js', rev: '1' },
     ]
-    win.__WORLDLINE_BOOT__ = { rev: 'graph', entries }
+    win.__WORLDLINE_BOOT__ = {
+      rev: 'graph',
+      entries,
+      batches: [
+        { phase: 'bootstrap', url: '/bootstrap.js', rev: 'boot', entries: [MODULES_ID] },
+        { phase: 'application', url: '/application.js', rev: 'app', entries: ['consumer', 'renderer'] },
+      ],
+    }
     const registrations = new Map<string, ClientBundleRegistration>([
-      ['/consumer.js', {
+      ['consumer', {
         id: 'consumer',
         factory: () => ({
           inject: ['modules'],
@@ -101,7 +108,7 @@ describe('plugin activation', () => {
           },
         }),
       }],
-      ['/renderer.js', {
+      ['renderer', {
         id: 'renderer',
         factory: () => ({
           apply: (ctx: Context) => {
@@ -118,9 +125,8 @@ describe('plugin activation', () => {
     ])
     const entry = new AppWebEntry(container, {
       loadBundle: async (url) => {
-        const registration = registrations.get(url)
-        if (registration === undefined) throw new Error(`missing fixture registration ${url}`)
-        target.load(registration)
+        if (url !== '/application.js') throw new Error(`missing fixture registration ${url}`)
+        for (const registration of registrations.values()) target.load(registration)
       },
     })
 

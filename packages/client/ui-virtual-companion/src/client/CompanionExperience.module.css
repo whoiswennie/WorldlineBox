@@ -1,5 +1,6 @@
 .processToggle {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
   height: 28px;
@@ -10,6 +11,7 @@
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
 }

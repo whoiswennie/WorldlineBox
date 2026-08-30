@@ -48,6 +48,7 @@ function limitSubagentDiagnostic(diagnostic: string): string {
  * request needing any of them before `start` runs — never accepted-then-ignored.
  */
 export const NO_START_CAPABILITIES: SubagentCapabilities = Object.freeze({
+  agentOptions: false,
   outputSchema: false,
   depthLimit: false,
   toolFilter: false,

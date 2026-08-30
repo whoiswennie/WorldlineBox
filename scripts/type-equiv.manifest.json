@@ -802,7 +802,7 @@
     },
     {
       "doc": "docs/subsystems/tools.md",
-      "symbol": "CodeDispatchLog",
+      "symbol": "PtcDispatchLog",
       "source": "packages/core/tools/src/index.ts"
     },
     {

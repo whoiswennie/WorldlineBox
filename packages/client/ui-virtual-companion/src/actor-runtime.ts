@@ -1,8 +1,13 @@
 /** Independent, continuable virtual-companion actors and coordinator dispatch. */
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { basename, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { AgentVaultService, VaultResource } from '@deepseek-ai/dsh-agent-vault'
+import type {} from '@deepseek-ai/dsh-account-profile'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
@@ -29,6 +34,7 @@ type ActorBinding =
 interface ActorDirectory {
   readonly vaults: AgentVaultService
   resourceUrl(agentId: string, resourceId: string): string
+  appearance(companionId: string): Promise<{ resource: VaultResource; hostPath?: string } | undefined>
   companion(id: string): VirtualCompanion | undefined
   room(sessionId: string): VirtualCompanionRoom | undefined
   actorRooms(companionId: string): readonly { roomSessionId: string; childId: string }[]
@@ -60,6 +66,67 @@ interface ActorTextStream {
   readonly parent: Agent
 }
 
+interface TrustedImageValue {
+  readonly path: string
+  readonly image: {
+    readonly attachmentId: string
+    readonly mediaType: ImageMediaType
+    readonly bytes: number
+    readonly width: number
+    readonly height: number
+    readonly name?: string
+  }
+}
+
+const IMAGE_VALUE_SCHEMA = {
+  type: 'object' as const,
+  additionalProperties: false,
+  properties: {
+    attachmentId: { type: 'string' as const, required: true },
+    mediaType: { type: 'string' as const, required: true,
+      enum: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] },
+    bytes: { type: 'integer' as const, required: true },
+    width: { type: 'integer' as const, required: true },
+    height: { type: 'integer' as const, required: true },
+    name: { type: 'string' as const },
+  },
+} as const
+
+function imageMediaType(path: string, declared?: string): ImageMediaType | undefined {
+  if (declared === 'image/png' || declared === 'image/jpeg'
+    || declared === 'image/webp' || declared === 'image/gif') return declared
+  const extension = extname(path).toLocaleLowerCase('en-US')
+  return extension === '.png' ? 'image/png'
+    : extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
+      : extension === '.webp' ? 'image/webp'
+        : extension === '.gif' ? 'image/gif' : undefined
+}
+
+async function trustedImage(ctx: Context, path: string, declared?: string): Promise<TrustedImageValue | undefined> {
+  const attachments = ctx.get('attachments')
+  const mediaType = imageMediaType(path, declared)
+  if (attachments === undefined || mediaType === undefined
+    || !attachments.imageLimits.mediaTypes.includes(mediaType)) return undefined
+  const data = await readFile(path)
+  const reference = await attachments.saveImage({ data, mediaType, name: basename(path) })
+  return { path, image: {
+    attachmentId: reference.attachmentId,
+    mediaType: reference.mediaType,
+    bytes: reference.bytes,
+    width: reference.width,
+    height: reference.height,
+    ...(reference.name === undefined ? {} : { name: reference.name }),
+  } }
+}
+
+function imageReference(value: TrustedImageValue['image']): ImageAttachmentRef {
+  return {
+    attachmentId: AttachmentId(value.attachmentId), mediaType: value.mediaType,
+    bytes: value.bytes, width: value.width, height: value.height,
+    ...(value.name === undefined ? {} : { name: value.name }),
+  }
+}
+
 function isNotResumable(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error
     && (error as { code?: unknown }).code === 'NOT_RESUMABLE'
@@ -72,6 +139,7 @@ function actorPersona(companion: VirtualCompanion): string {
     '',
     '每轮任务都会附带来自你自己 Agent Vault 的启用印象卡快照；只有显式 self_update 才能修改它。',
     '你的普通回答文字会由运行时实时、流式地送入房间；直接自然地写出要让用户看见的话，不要调用工具发送文字，也不要输出 XML 或角色标签。',
+    '你拥有确定的自身形象资源。用户询问你的外观时，先调用 inspect_self_appearance 取得真实图像再描述；用户要求发送你的形象图时，调用 show_self_appearance，绝不能用普通表情包替代。',
     '引用资源与自然语言是同级的表达动作，包括图片、GIF、视频、音频、文本、外链和未来扩展的 MIME 类型，不等同于表情包。需要挑选时，先用 expression_search 取得至多 5 个候选，再按真实语境把一个或多个 asset_id 交给 express；候选只是反馈，不是命令。',
     '检索时要从多个互补维度组织关键词：资源原名或别名、情绪与语气、动作与对象、适用场景、作品/角色/来源、媒体类型。不要只把名字机械拆词，也不要只搜抽象情绪；用户点名某个资源时，必须把名称原样放进 named_title。',
     '在闲聊、撒娇、玩笑、安慰、庆祝或其他有明显情绪的时刻，像真实聊天一样主动穿插合适素材，不必等用户提醒；严肃任务中不要强行发送。不要先调用 resource_find 或扫描资源目录。',
@@ -175,6 +243,7 @@ function actorPrompt(
   parent: Agent,
   companion: VirtualCompanion,
   self: string,
+  appearance: string,
   instruction: string,
   evidence: string,
 ): ContentBlock[] {
@@ -196,6 +265,7 @@ function actorPrompt(
       '',
       '本轮启用的自我印象卡快照（只用于保持当前身份、状态与认知，不代表普通记忆检索结果）：',
       self,
+      appearance,
       '',
       `<reference-channel mode="${channel.mode}" exchange-depth="${String(channel.exchangeDepth)}"${channel.pendingReplyTo === undefined ? '' : ` pending-reply-to="${channel.pendingReplyTo}"`}>`,
       `recent-acts=${channel.recentActs.join(',') || 'none'}`,
@@ -237,6 +307,10 @@ export class CompanionActorRuntime {
 
   constructor(private readonly ctx: Context, private readonly directory: ActorDirectory) {}
 
+  /**
+   * Install.
+   * @param agent - Agent that owns the operation.
+   */
   install(agent: Agent): void {
     if (this.installed.has(agent)) return
     const binding = this.directory.actorBinding(agent.id)
@@ -244,6 +318,10 @@ export class CompanionActorRuntime {
     if (dispose !== undefined) this.installed.set(agent, dispose)
   }
 
+  /**
+   * Dispose.
+   * @param agent - Agent that owns the operation.
+   */
   dispose(agent?: Agent): void {
     if (agent !== undefined) {
       this.installed.get(agent)?.()
@@ -261,6 +339,13 @@ export class CompanionActorRuntime {
     this.narratorDispatches.clear()
   }
 
+  /**
+   * Record membership.
+   * @param parent - parent value.
+   * @param before - before value.
+   * @param after - after value.
+   * @param actor - actor value.
+   */
   recordMembership(parent: Agent, before: readonly string[], after: readonly string[], actor: 'owner' | 'mention'): void {
     const epoch = this.directory.room(parent.id)?.epoch ?? 0
     for (const companionId of after.filter(id => !before.includes(id))) {
@@ -331,11 +416,22 @@ export class CompanionActorRuntime {
           }
           let existing = room.actorSessionIds?.[companion.id]
           const self = await this.directory.vaults.inspectSelf(companion.id)
+          const appearance = await this.directory.appearance(companion.id)
+          const appearanceContext = appearance === undefined
+            ? '自身形象资源：尚未提供；不要猜测外观，也不要用表情包冒充。'
+            : [
+              `自身形象资源 ID：${appearance.resource.id}`,
+              appearance.hostPath === undefined
+                ? '自身形象文件路径：当前资源只有可发送地址，不能声称已经视觉查看。'
+                : `自身形象文件路径：${appearance.hostPath}（需要了解画面时使用 inspect_self_appearance）`,
+              '需要把本人形象发到房间时使用 show_self_appearance；不要从 expression_search 挑选替代图。',
+            ].join('\n')
           const content = actorPrompt(
             this.directory,
             parent,
             companion,
             self.compiled,
+            appearanceContext,
             args.instruction,
             args.evidence ?? '',
           )
@@ -691,27 +787,104 @@ export class CompanionActorRuntime {
         found: { type: 'boolean', required: true }, id: { type: 'string', required: true },
         name: { type: 'string', required: true }, profile: { type: 'string', required: true },
         appearance: { type: 'string', required: true },
-      } }, render: (_args, value) => [{ type: 'text', text: value.found
-        ? `Room member profile resolved: ${value.name}` : value.appearance }] },
-      execute: (args) => {
+        image: IMAGE_VALUE_SCHEMA,
+      } }, render: (_args, value) => [
+        { type: 'text', text: value.found ? `Room member profile resolved: ${value.name}. ${value.appearance}` : value.appearance },
+        ...(value.image === undefined ? [] : [{ type: 'image' as const, attachment: imageReference(value.image) }]),
+      ] },
+      execute: async (args) => {
         const target = parent(); const id = args.companion_id
-        if (id === 'owner') return Promise.resolve({ found: false, id, name: '房主', profile: '',
-          appearance: '当前运行时没有向伙伴开放房主头像；不要猜测房主外貌。' })
+        if (id === 'owner') {
+          const owner = actor.ctx.get('localAccountProfile')?.current()
+          if (owner === undefined) return { found: false, id, name: '房主', profile: '',
+            appearance: '当前运行时没有可用的房主资料；不要猜测房主外貌。' }
+          const image = owner.avatarPath === undefined ? undefined : await trustedImage(actor.ctx, owner.avatarPath)
+          return { found: true, id, name: owner.displayName,
+            profile: `${owner.username}；${owner.bio}`,
+            appearance: owner.avatarPath === undefined
+              ? '房主没有提供可查看的头像；不要猜测外貌。'
+              : image === undefined
+                ? `房主头像文件路径：${owner.avatarPath}，但当前模型链路无法载入图像；不要猜测画面。`
+                : `房主头像文件路径：${owner.avatarPath}；真实图像随本工具结果提供。`,
+            ...(image === undefined ? {} : { image: image.image }) }
+        }
         const room = this.directory.room(target.id)
         if (room === undefined || !room.participantIds.includes(id)) {
-          return Promise.resolve({ found: false, id, name: '', profile: '', appearance: '该伙伴不在当前房间。' })
+          return { found: false, id, name: '', profile: '', appearance: '该伙伴不在当前房间。' }
         }
         const member = this.directory.companion(id)
         if (member === undefined) {
-          return Promise.resolve({ found: false, id, name: '', profile: '', appearance: '伙伴资料不存在。' })
+          return { found: false, id, name: '', profile: '', appearance: '伙伴资料不存在。' }
         }
-        const appearance = member.avatar === ''
+        const registered = await this.directory.appearance(id)
+        const image = registered?.hostPath === undefined
+          ? undefined
+          : await trustedImage(actor.ctx, registered.hostPath, registered.resource.mimeType)
+        const appearance = registered === undefined
           ? '尚未提供头像或形象图；不要自行补全外貌。'
-          : member.avatar.startsWith('data:')
-            ? '已提供可移植的内嵌头像；图像保存在该伙伴 Agent Vault 的 appearance 模块中。'
-            : `头像与形象参考：${member.portrait || member.avatar}`
-        return Promise.resolve({ found: true, id, name: member.name,
-          profile: `${member.handle}；${member.description}`, appearance })
+          : image === undefined
+            ? '已登记形象资源，但当前模型链路无法载入图像；不要猜测画面。'
+            : `形象文件路径：${registered.hostPath}；真实图像随本工具结果提供。`
+        return { found: true, id, name: member.name,
+          profile: `${member.handle}；${member.description}`, appearance,
+          ...(image === undefined ? {} : { image: image.image }) }
+      },
+    })))
+    disposers.push(actor.ctx.tools.register(defineTool({
+      name: 'inspect_self_appearance',
+      description: 'Load your own registered appearance as an actual image for visual inspection. Use before describing what you look like; this does not send the image to the room.',
+      parameters: {},
+      output: { schema: { type: 'object', additionalProperties: false, properties: {
+        found: { type: 'boolean', required: true }, message: { type: 'string', required: true },
+        path: { type: 'string', required: true }, image: IMAGE_VALUE_SCHEMA,
+      } }, render: (_args, value) => [
+        { type: 'text', text: value.message },
+        ...(value.image === undefined ? [] : [{ type: 'image' as const, attachment: imageReference(value.image) }]),
+      ] },
+      execute: async () => {
+        const appearance = await this.directory.appearance(binding.companionId)
+        if (appearance?.hostPath === undefined) return {
+          found: false, path: '', message: 'No Host-readable self appearance is available; do not guess visual details.',
+        }
+        const image = await trustedImage(actor.ctx, appearance.hostPath, appearance.resource.mimeType)
+        if (image === undefined) return {
+          found: false, path: appearance.hostPath,
+          message: 'The registered self appearance could not be loaded on this model route; do not guess visual details.',
+        }
+        return {
+          found: true, path: image.path, image: image.image,
+          message: `Registered self appearance loaded from ${image.path}. Describe only details visible in the adjacent image.`,
+        }
+      },
+    })))
+    disposers.push(actor.ctx.tools.register(defineTool({
+      name: 'show_self_appearance',
+      description: 'Send your own registered appearance image to the room. Use this exact tool when the user asks to see or receive your avatar, portrait, character image, or appearance; never substitute an expression resource.',
+      parameters: {},
+      output: { schema: { type: 'object', additionalProperties: false, properties: {
+        sent: { type: 'boolean', required: true }, asset_id: { type: 'string', required: true },
+        title: { type: 'string', required: true }, message: { type: 'string', required: true },
+      } }, render: (_args, value) => [{ type: 'text', text: value.message }] },
+      execute: async () => {
+        const target = parent()
+        const appearance = await this.directory.appearance(binding.companionId)
+        if (appearance === undefined) return {
+          sent: false, asset_id: '', title: '',
+          message: 'No registered self appearance is available; explain this naturally without substituting another resource.',
+        }
+        const room = this.directory.room(binding.roomSessionId)
+        target.session.append('companion/reference', {
+          version: 1, companionId: binding.companionId, actorSessionId: actor.id,
+          roomEpoch: room?.epoch ?? binding.epoch,
+          assetId: appearance.resource.id, title: appearance.resource.title,
+          mimeType: appearance.resource.mimeType,
+          url: this.directory.resourceUrl(appearance.resource.agentId, appearance.resource.id),
+        })
+        this.emitted.add(actor.id)
+        return {
+          sent: true, asset_id: appearance.resource.id, title: appearance.resource.title,
+          message: `Your registered appearance was delivered: ${appearance.resource.title}. Do not announce completion; continue naturally only if prose is useful.`,
+        }
       },
     })))
     disposers.push(actor.ctx.tools.register(defineTool({
@@ -866,7 +1039,11 @@ export class CompanionActorRuntime {
     return () => { for (const dispose of disposers.reverse()) dispose() }
   }
 
-  /** Mirror one independent actor's native token stream into its parent room. */
+  /**
+   *  Mirror one independent actor's native token stream into its parent room.
+   * @param session - Session that owns the operation.
+   * @param event - event value.
+   */
   handleActorEvent(session: Session, event: SessionEvent): void {
     const binding = this.directory.actorBinding(session.id)
     if (binding === undefined) return
@@ -974,7 +1151,10 @@ export class CompanionActorRuntime {
     this.emitted.add(actorSessionId)
   }
 
-  /** Completes the matching dispatch and preserves useful output if an actor ignored direct emission. */
+  /**
+   *  Completes the matching dispatch and preserves useful output if an actor ignored direct emission.
+   * @param info - info value.
+   */
   handleSettled(info: SubagentRunEndInfo): void {
     this.fallbackFromSettled(info)
     const queue = this.settlementWaiters.get(info.id)

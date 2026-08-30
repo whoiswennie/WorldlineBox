@@ -19,6 +19,7 @@ import { createSettingsSchemaOperations } from './schema-operations.ts'
 import { en, zh, type ModelsKey } from './locales.ts'
 
 export type { ModelsSectionInjected, ModelsSectionProps } from './ModelsSection.tsx'
+export type { ModelsFooterOwnerProps, ProviderCardExtrasOwnerProps } from './slot-contract.ts'
 export type { ModelsKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -92,5 +93,9 @@ export function apply(ctx: ClientContext): void {
     order: 10,
     label: () => t('nav'),
     inject: injected,
+    children: {
+      'settings.models.provider-card': { kind: 'keyed', scope: 'root' },
+      'settings.models.footer': { kind: 'list', scope: 'root' },
+    },
   }, ModelsSection))
 }

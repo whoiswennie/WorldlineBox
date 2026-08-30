@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   activeAtToken,
+  DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES,
   formatFileMention,
   WorkspaceFileSearch,
 } from '../src/search.ts'
@@ -150,25 +151,38 @@ describe('WorkspaceFileSearch', () => {
     ])
   })
 
-  it('invalidates cached traversal, enforces the entry cap, and settles disposal', async () => {
+  it('serves an invalidated index while its replacement builds, then swaps it in', async () => {
     const root = await workspace()
-    const capped = search(root, { maxEntries: 2 })
     const signal = new AbortController().signal
-    expect(await capped.list('README', signal)).toEqual([
-      { path: 'README.md', kind: 'file' },
-    ])
-
     const files = search(root)
     expect(await files.list('fresh-file', signal)).toEqual([])
     await writeFile(join(root, 'fresh-file.ts'), 'fresh')
     expect(await files.list('fresh-file', signal)).toEqual([])
     files.invalidate()
-    expect(await files.list('fresh-file', signal)).toEqual([
-      { path: 'fresh-file.ts', kind: 'file' },
-    ])
+    expect(await files.list('fresh-file', signal)).toEqual([])
+    await vi.waitFor(async () => {
+      expect(await files.list('fresh-file', signal)).toEqual([
+        { path: 'fresh-file.ts', kind: 'file' },
+      ])
+    })
     files.dispose()
     expect(await files.list('fresh-file', signal)).toEqual([])
     files.dispose()
+  })
+
+  it('enforces the entry cap and excludes generated output by default', async () => {
+    const root = await workspace()
+    const capped = search(root, { maxEntries: 2 })
+    expect(await capped.list('README', new AbortController().signal)).toEqual([
+      { path: 'README.md', kind: 'file' },
+    ])
+
+    await mkdir(join(root, 'dist'), { recursive: true })
+    await writeFile(join(root, 'dist', 'terminal-view.js'), 'built')
+    const files = search(root, { excludedDirectories: [...DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES] })
+    expect(await files.list('terminal-view', new AbortController().signal)).toEqual([
+      { path: 'src/terminal-view.ts', kind: 'file' },
+    ])
   })
 
   it('cancels individual callers, skips missing directories, and validates limits', async () => {

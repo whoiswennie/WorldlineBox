@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-base",
   "description": "The shared worldline core as a profile bundle: every profile's first patch layer, inserting the base plugin rows over the empty profile root",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": {
     "access": "public"
   },
@@ -60,6 +60,7 @@
     "@deepseek-ai/dsh-compaction-basic": "workspace:^",
     "@deepseek-ai/dsh-compaction-tool-result-pruner": "workspace:^",
     "@deepseek-ai/dsh-credentials-local": "workspace:^",
+    "@deepseek-ai/dsh-deepseek-llm-api-extensions": "workspace:^",
     "@deepseek-ai/dsh-fs-local": "workspace:^",
     "@deepseek-ai/dsh-fs-observation-policy": "workspace:^",
     "@deepseek-ai/dsh-fs-sandbox": "workspace:^",
@@ -69,6 +70,7 @@
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-llm-deepseek": "workspace:^",
     "@deepseek-ai/dsh-llm-pi-ai": "workspace:^",
+    "@deepseek-ai/dsh-plugin-package-inventory-deepseek": "workspace:^",
     "@deepseek-ai/dsh-llm-retry": "workspace:^",
     "@deepseek-ai/dsh-permission-presets": "workspace:^",
     "@deepseek-ai/dsh-plan-mode": "workspace:^",
@@ -79,6 +81,7 @@
     "@deepseek-ai/dsh-session": "workspace:^",
     "@deepseek-ai/dsh-session-checkpoint-policy": "workspace:^",
     "@deepseek-ai/dsh-session-persistence-jsonl": "workspace:^",
+    "@deepseek-ai/dsh-session-log-deepseek": "workspace:^",
     "@deepseek-ai/dsh-session-projection": "workspace:^",
     "@deepseek-ai/dsh-session-query-sqlite": "workspace:^",
     "@deepseek-ai/dsh-session-telemetry-otel": "workspace:^",

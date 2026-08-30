@@ -5,6 +5,7 @@ import type {
   ToolCallBlock, TurnLocation,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import { deriveTurnMetrics } from '../src/client/chat/turn-metrics.ts'
+import { turnNavigationItem } from '../src/client/conversation-nodes/turn-navigation.ts'
 
 const EMPTY: readonly never[] = []
 
@@ -292,6 +293,12 @@ export function chatSnapshotFixture(input: {
     order,
     nodes: store,
     locations,
+    navigation: {
+      items: () => timeline.turnOrder.flatMap((turn) => {
+        const item = turnNavigationItem(turn, locations, store)
+        return item === undefined ? [] : [item]
+      }),
+    },
     timeline,
     legacy,
   }

@@ -115,7 +115,12 @@ async function keyframeTimes(
   return [...new Set(values.map(value => Math.round(value * 1_000) / 1_000))].sort((a, b) => a - b)
 }
 
-/** Create stable approximately ten-minute chapters, snapped to nearby keyframes. */
+/**
+ *  Create stable approximately ten-minute chapters, snapped to nearby keyframes.
+ * @param durationSeconds - duration seconds value.
+ * @param keyframes - keyframes value.
+ * @returns The resulting value.
+ */
 export function createChapters(durationSeconds: number, keyframes: readonly number[]): VideoChapter[] {
   if (!(durationSeconds > 0)) return [{ index: 0, startSeconds: 0, endSeconds: 0, title: 'Complete video' }]
   const target = 10 * 60
@@ -273,7 +278,13 @@ async function resolveOnlineStream(
   return { url: value.url, headers: value.http_headers ?? {} }
 }
 
-/** Probe without downloading online media, or inspect a local container. */
+/**
+ *  Probe without downloading online media, or inspect a local container.
+ * @param ctx - Cordis context that owns the operation.
+ * @param source - source value.
+ * @param signal - Cancellation signal for the operation.
+ * @returns The resulting value.
+ */
 export async function probeVideo(ctx: Context, source: string, signal?: AbortSignal): Promise<VideoProbe> {
   const sourceKind = classifySource(source)
   const tools = await resolveVideoExecutables(ctx, signal)
@@ -403,7 +414,14 @@ async function buildManifest(
   }, { waitMs: 2 * 60 * 60 * 1_000 })
 }
 
-/** Build or reuse an atomic, content-keyed video index. */
+/**
+ *  Build or reuse an atomic, content-keyed video index.
+ * @param ctx - Cordis context that owns the operation.
+ * @param source - source value.
+ * @param options - Operation options.
+ * @param signal - Cancellation signal for the operation.
+ * @returns The resulting value.
+ */
 export async function indexVideo(
   ctx: Context,
   source: string,
@@ -471,7 +489,14 @@ async function extractFrame(
   return target
 }
 
-/** Read a bounded time range from an index and materialize only requested frames. */
+/**
+ *  Read a bounded time range from an index and materialize only requested frames.
+ * @param ctx - Cordis context that owns the operation.
+ * @param manifestPath - manifest path value.
+ * @param options - Operation options.
+ * @param signal - Cancellation signal for the operation.
+ * @returns The resulting value.
+ */
 export async function readVideoRange(
   ctx: Context,
   manifestPath: string,
@@ -519,7 +544,12 @@ export async function readVideoRange(
   }
 }
 
-/** Exposed for diagnostics and tests; never mutates the process environment. */
+/**
+ *  Exposed for diagnostics and tests; never mutates the process environment.
+ * @param ctx - Cordis context that owns the operation.
+ * @param signal - Cancellation signal for the operation.
+ * @returns The resulting value.
+ */
 export async function videoToolEnvironment(ctx: Context, signal?: AbortSignal): Promise<{ path: string }> {
   return { path: pathWithBundledTools(await resolveVideoExecutables(ctx, signal)) }
 }

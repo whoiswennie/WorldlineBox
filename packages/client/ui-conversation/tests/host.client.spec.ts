@@ -20,9 +20,12 @@ describe('ui-conversation host', () => {
     const fiber = ctx.plugin({ apply })
     await fiber.await()
     const ns = settingsNamespace(CONVERSATION_SETTINGS_NAMESPACE)
-    expect(ctx.settings.get(ns)).toEqual({ busyEnter: DEFAULT_BUSY_ENTER_BEHAVIOR })
+    expect(ctx.settings.get(ns)).toEqual({
+      busyEnter: DEFAULT_BUSY_ENTER_BEHAVIOR,
+      transcriptView: 'compact',
+    })
     await ctx.settings.update(ns, { busyEnter: 'steer' })
-    expect(ctx.settings.get(ns)).toEqual({ busyEnter: 'steer' })
+    expect(ctx.settings.get(ns)).toEqual({ busyEnter: 'steer', transcriptView: 'compact' })
     await expect(ctx.settings.update(ns, { busyEnter: 'invalid' })).rejects.toThrow()
     await fiber.dispose()
     expect(ctx.settings.describe().map(row => row.ns)).not.toContain(ns)

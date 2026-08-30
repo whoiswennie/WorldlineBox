@@ -10,7 +10,7 @@
 
 #### 模型可见内容
 
-无。该 Remote 只由全局音乐界面使用。
+无。`ctx.remote.neteaseMusic` 接口只由全局音乐界面使用。
 
 #### Token 影响
 

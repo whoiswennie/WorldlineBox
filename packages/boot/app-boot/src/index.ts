@@ -19,7 +19,7 @@ import { worldlineHomePath, resolveWorldlineHome } from '@deepseek-ai/dsh-home-p
 import { createLaunchEnvironmentSnapshot, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import type {} from '@deepseek-ai/cordis-plugin-hmr'
 // Side-effect type import: resolves `ctx.get('systemPrompt')` to the service.
-import type {} from '@deepseek-ai/dsh-system-prompt'
+import { FIRST_PARTY_SECTION_ORDER } from '@deepseek-ai/dsh-system-prompt'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -52,10 +52,12 @@ export interface LocalExtensionState {
 export {
   composeEntries,
   DEFAULT_PROFILE_BUNDLES,
+  DEFAULT_PROFILE_PATCH_RELOAD,
   healProfilesModuleFallback,
   initProfile,
   loadProfile,
   PROFILE_PATCH_FILENAME,
+  PROFILE_PATCH_RELOAD,
   PROFILE_TEMPLATES,
   profileBundlePatch,
   PROFILES_DIR,
@@ -70,6 +72,7 @@ export {
   type WorldlineProfileManifest,
   type DshManifestSection,
   type Profile,
+  type ProfilePatchReload,
   type ProfileBundleReconciliation,
   type ProfileBundleState,
   type ProfileLayer,
@@ -863,7 +866,7 @@ export function addRuntimeSourceSection(ctx: Context, sourceRoot: string): (() =
   if (systemPrompt === undefined) return undefined
   return systemPrompt.section({
     name: RUNTIME_SOURCE_SECTION,
-    order: -99,
+    order: FIRST_PARTY_SECTION_ORDER.HARNESS_SOURCE,
     text: `The Worldline runtime implementation checkout is at ${sourceRoot}. The checkout location and current working directory are separate values and may differ; never infer the working directory from this path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend WORLDLINE itself.`,
   })
 }

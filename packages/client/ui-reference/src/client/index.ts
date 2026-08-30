@@ -11,7 +11,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {
-  ClientSessionContext, InputTriggerServiceContract, InputTriggerSource,
+  ClientSessionContext, InputTriggerCrumb, InputTriggerServiceContract, InputTriggerSource,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import { formatFileMention } from '@deepseek-ai/dsh-file-reference/grammar'
 import type { FileReferenceCandidate } from '@deepseek-ai/dsh-file-reference/types'
@@ -34,7 +34,7 @@ export function apply(ctx: ClientContext): void {
     trigger: '@',
     name: 'reference',
     showGroupTitle: false,
-    async candidates(session: ClientSessionContext, { query, quoted, signal }) {
+    async candidates(session: ClientSessionContext, { query, quoted, drilled, signal }) {
       const files = ctx.remote.fileReferences.list(session.sessionId, query, signal).then(
         result => result.ok ? result.value : [],
         () => [],
@@ -47,25 +47,30 @@ export function apply(ctx: ClientContext): void {
         )
       const [fileItems, sessionItems] = await Promise.all([files, sessions])
       if (signal.aborted) return []
+      const withLocation = crumbsFor(query, quoted === true, drilled, t) === undefined
       return [
-        ...fileItems.flatMap(candidate => fileCandidate(candidate, quoted === true, t)),
+        ...fileItems.flatMap(candidate => fileCandidate(candidate, quoted === true, withLocation, t)),
         ...sessionItems.map(candidate => sessionCandidate(candidate, t)),
       ]
     },
-    onPick({ candidate }) {
+    header(_session, request) {
+      return crumbsFor(request.query, request.quoted === true, request.drilled, t)
+    },
+    onPick({ candidate, action }) {
       const value = parseCandidate(candidate.value)
       if (value?.kind === 'file') {
-        return value.fileKind === 'directory'
-          ? { text: value.mention, continue: true }
-          : {
-            insert: {
-              source: 'reference',
-              ref: value.mention,
-              label: value.label,
-              appearance: 'file',
-              clipboardText: value.mention,
-            },
-          }
+        if (value.fileKind === 'directory' && action === 'drill') {
+          return { text: value.mention, continue: true }
+        }
+        return {
+          insert: {
+            source: 'reference',
+            ref: value.mention,
+            label: value.fileKind === 'directory' ? `${value.label}/` : value.label,
+            appearance: value.fileKind === 'directory' ? 'folder' : 'file',
+            clipboardText: value.mention,
+          },
+        }
       }
       if (value?.kind === 'session') {
         return {
@@ -95,10 +100,49 @@ type ReferenceCandidateValue =
   | { kind: 'file'; fileKind: FileReferenceCandidate['kind']; label: string; mention: string }
   | { kind: 'session'; label: string; mention: string }
 
-function fileCandidate(candidate: FileReferenceCandidate, preserveQuote: boolean, t: Translate) {
+function crumbsFor(
+  query: string,
+  quoted: boolean,
+  drilled: boolean,
+  t: Translate,
+): readonly InputTriggerCrumb[] | undefined {
+  if (!drilled) return undefined
+  const slash = query.lastIndexOf('/')
+  if (slash < 0) return undefined
+  const segments = query.slice(0, slash).split('/').filter(segment => segment !== '')
+  const crumbs: InputTriggerCrumb[] = [{
+    label: t('crumb.root'),
+    value: directoryValue(t('crumb.root'), quoted ? '@"' : '@'),
+  }]
+  for (const [index, segment] of segments.entries()) {
+    const path = segments.slice(0, index + 1).join('/')
+    const mention = formatFileMention({ path, kind: 'directory' }, quoted)
+    if (mention === undefined) return undefined
+    crumbs.push({
+      label: segment,
+      value: directoryValue(segment, mention),
+      ...(index === segments.length - 1 ? { current: true } : {}),
+    })
+  }
+  return crumbs
+}
+
+function directoryValue(label: string, mention: string): string {
+  const value: ReferenceCandidateValue = { kind: 'file', fileKind: 'directory', label, mention }
+  return JSON.stringify(value)
+}
+
+function fileCandidate(
+  candidate: FileReferenceCandidate,
+  preserveQuote: boolean,
+  withLocation: boolean,
+  t: Translate,
+) {
   const mention = formatFileMention(candidate, preserveQuote)
   if (mention === undefined) return []
-  const name = candidate.path.slice(candidate.path.lastIndexOf('/') + 1)
+  const slash = candidate.path.lastIndexOf('/')
+  const name = candidate.path.slice(slash + 1)
+  const parent = slash < 0 ? '' : candidate.path.slice(0, slash)
   const directory = candidate.kind === 'directory'
   const value: ReferenceCandidateValue = {
     kind: 'file',
@@ -107,10 +151,12 @@ function fileCandidate(candidate: FileReferenceCandidate, preserveQuote: boolean
     mention,
   }
   return [{
-    name: `${t(directory ? 'candidate.folder' : 'candidate.file')} · ${name}${directory ? '/' : ''}`,
-    description: candidate.path,
+    name: `${name}${directory ? '/' : ''}`,
+    ...(withLocation && parent !== '' ? { description: parent } : {}),
+    icon: directory ? 'folder' as const : 'file' as const,
     section: t('section.files'),
     value: JSON.stringify(value),
+    ...(directory ? { drill: true } : {}),
   }]
 }
 
@@ -123,8 +169,9 @@ function sessionCandidate(candidate: SessionReferenceMentionCandidate, t: Transl
     mention: candidate.mention,
   }
   return {
-    name: `${t('candidate.session')} · ${candidate.label}`,
+    name: candidate.label,
     description,
+    icon: 'session' as const,
     section: t('section.sessions'),
     value: JSON.stringify(value),
   }

@@ -32,6 +32,14 @@ interface ImageAttachmentRef {
   height: number
   /** Optional display name stripped of local path information. */
   name?: string
+  /**
+   * Orientation-applied source dimensions before normalization. Present only
+   * when the persisted provider-independent image was downscaled.
+   */
+  originalDimensions?: {
+    width: number
+    height: number
+  }
 }
 ```
 
@@ -109,10 +117,7 @@ Immutable binary attachment service. Implementations validate bytes before publi
 abstract validateImage(input: SaveImageAttachment): Promise<void>
 
 /**
- * Validate one ordered image batch before committing any member.
- * Validation failures start no writes; storage failures return no partial
- * references, although already published content-addressed objects may stay
- * unreachable until a future retention policy collects them.
+ * Validate and durably commit an ordered image batch.
  * @param inputs - encoded images in their owning message order.
  * @returns durable references in the exact input order.
  */
@@ -133,7 +138,23 @@ abstract saveImage(input: SaveImageAttachment): Promise<ImageAttachmentRef>
  * @throws the signal reason when aborted, or a storage error when verification fails.
  */
 abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment>
+
+/**
+ * Locate this provider's immutable normalized object on the host, when file-backed.
+ * @param ref - durable image reference to locate.
+ * @returns the immutable host path, or undefined for non-file-backed providers.
+ */
+imageHostPath(ref: ImageAttachmentRef): string | undefined
+
+/**
+ * Generate or read one deterministic model-request image version.
+ * @param ref - durable image reference to project.
+ * @param policy - request-size and encoding constraints.
+ * @param signal - optional cancellation for projection work.
+ * @returns normalized bytes and metadata suitable for a model request.
+ */
+readImageRequest( ref: ImageAttachmentRef, policy: ImageRequestPolicy, signal?: AbortSignal, ): Promise<RequestImageAttachment>
 ```
 
-Source: [`packages/attachment/attachment/src/index.ts:33`](../../packages/attachment/attachment/src/index.ts)
+Source: [`packages/attachment/attachment/src/index.ts:38`](../../packages/attachment/attachment/src/index.ts)
 <!-- END GENERATED cordis-surface -->

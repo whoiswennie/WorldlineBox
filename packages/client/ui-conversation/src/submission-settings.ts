@@ -17,13 +17,35 @@ export type BusyEnterBehavior = typeof BUSY_ENTER_BEHAVIORS[number]
 /** Default preserves Enter-as-Queue for running conversations. */
 export const DEFAULT_BUSY_ENTER_BEHAVIOR: BusyEnterBehavior = 'queue'
 
+/**
+ * Transcript view field.
+ */
+export const TRANSCRIPT_VIEW_FIELD = 'transcriptView'
+/**
+ * Transcript view modes.
+ */
+export const TRANSCRIPT_VIEW_MODES = ['normal', 'compact'] as const
+/**
+ * Type contract for transcript view mode.
+ * @returns The resulting value.
+ */
+export type TranscriptViewMode = typeof TRANSCRIPT_VIEW_MODES[number]
+/**
+ * Default transcript view mode.
+ * @returns The resulting value.
+ */
+export const DEFAULT_TRANSCRIPT_VIEW_MODE: TranscriptViewMode = 'compact'
+
 /** Durable conversation section shared by the Host schema and the browser scope. */
 export interface ConversationSettings {
   /** Delivery mode for plain Enter while the addressed agent is busy. */
   busyEnter: BusyEnterBehavior
+  /** Completed-turn process presentation. */
+  transcriptView: TranscriptViewMode
 }
 
 /** Durable conversation schema; also the wire envelope the browser scope validates against. */
 export const ConversationSettingsSchema: z<ConversationSettings> = z.object({
   [BUSY_ENTER_FIELD]: z.union([...BUSY_ENTER_BEHAVIORS]).default(DEFAULT_BUSY_ENTER_BEHAVIOR),
+  [TRANSCRIPT_VIEW_FIELD]: z.union([...TRANSCRIPT_VIEW_MODES]).default(DEFAULT_TRANSCRIPT_VIEW_MODE),
 })

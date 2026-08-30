@@ -387,9 +387,9 @@ describe('worldline web keyless CLI smoke', () => {
     }
   }, 30_000)
 
-  it('WORLDLINE_TOOLS_MODE=code collapses the provider wire tools to run_code with the SDK prompt section', async () => {
+  it('WORLDLINE_TOOLS_MODE=ptc collapses the provider wire tools to run_code with the SDK prompt section', async () => {
     requireDist()
-    const workspace = mkdtempSync(join(tmpdir(), 'worldline-web-code-mode-'))
+    const workspace = mkdtempSync(join(tmpdir(), 'worldline-web-ptc-mode-'))
 
     interface CodeModeProviderRequest {
       messages?: { role?: string; content?: string }[]
@@ -428,7 +428,7 @@ describe('worldline web keyless CLI smoke', () => {
           ...process.env,
           DEEPSEEK_API_KEY: 'keyless-web-code-mode',
           DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}`,
-          WORLDLINE_TOOLS_MODE: 'code',
+          WORLDLINE_TOOLS_MODE: 'ptc',
           WORLDLINE_HOME: join(workspace, '.worldline'),
           WORLDLINE_AGENTS_HOME: join(workspace, '.agents'),
           TSX_TSCONFIG_PATH: join(REPO_ROOT, 'tsconfig.json'),

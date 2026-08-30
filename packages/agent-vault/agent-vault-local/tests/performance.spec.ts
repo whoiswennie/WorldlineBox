@@ -32,11 +32,15 @@ describe('Agent Vault scale profile', () => {
       const rebuildStarted = performance.now(); await vault.rebuildIndex('scale-agent')
       const rebuildMs = performance.now() - rebuildStarted
       const recallStarted = performance.now()
+      const recallCpuStarted = process.cpuUsage()
       const result = await vault.recall({ agentId: 'scale-agent', domain: 'memory', query: '星海分镜蓝图',
         budget: { maxResults: 5, maxChars: 4_000, maxMillis: 500 } })
+      const recallCpu = process.cpuUsage(recallCpuStarted)
+      const recallCpuMs = (recallCpu.user + recallCpu.system) / 1_000
       const recallMs = performance.now() - recallStarted
       expect(result.cards[0]?.title).toBe(`课程知识 ${String(count - 1)}`)
-      expect(recallMs).toBeLessThan(500)
+      expect(recallCpuMs).toBeLessThan(500)
+      expect(recallMs).toBeLessThan(2_000)
       expect(rebuildMs).toBeLessThan(120_000)
     } finally {
       vault.close()

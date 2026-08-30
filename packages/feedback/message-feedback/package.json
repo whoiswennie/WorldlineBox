@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-message-feedback",
   "description": "Lifecycle-bound per-message rating and note sidecar for the Worldline",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": {
     "access": "public"
   },

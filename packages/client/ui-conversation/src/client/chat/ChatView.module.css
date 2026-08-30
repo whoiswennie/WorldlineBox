@@ -45,13 +45,21 @@
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+}
+
+.column > :not([hidden]):not(.flowItem:empty)
+  ~ :not([hidden]):not(.flowItem:empty) {
+  margin-top: var(--worldline-chat-flow-gap, 12px);
 }
 
 /* Settled-flow identity boundary. It is neutral today and becomes the natural
    measurement/mount unit for a virtualizer without changing the column gap. */
 .flowItem {
   min-width: 0;
+}
+
+.flowItem[data-turn-process-answer] {
+  --worldline-chat-flow-gap: 8px;
 }
 
 /* A keyed renderer may intentionally decline its row after dispatch (the

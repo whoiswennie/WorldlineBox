@@ -5,8 +5,9 @@
  * verifies the committed artifact. The tool registry is the source of truth.
  */
 
-import { globSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
+import { globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
@@ -40,6 +41,8 @@ import SkillRegistry from '@deepseek-ai/dsh-skill'
 import * as SkillFileSystem from '@deepseek-ai/dsh-skill-filesystem'
 import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
 import * as ToolAskUser from '@deepseek-ai/dsh-tool-ask-user'
+import LocalAgentVaultService from '@deepseek-ai/dsh-agent-vault-local'
+import * as ToolAgentVault from '@deepseek-ai/dsh-tool-agent-vault'
 import * as ToolBash from '@deepseek-ai/dsh-tool-bash'
 import * as ToolPwsh from '@deepseek-ai/dsh-tool-pwsh'
 import * as ToolBashPersistent from '@deepseek-ai/dsh-tool-bash-persistent'
@@ -111,7 +114,7 @@ const OUT = 'docs/tool-catalog.md'
 function registerCatalogSubagentProvider(ctx: Context, name: string): void {
   const provider: SubagentProvider = {
     name,
-    capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
+    capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
     inheritsParentContext: false,
     start: () => Promise.reject(new Error('tool-catalog provider cannot start a child')),
     // Declared so consumers configured for continuable background mode mount.
@@ -194,6 +197,20 @@ export interface ToolPackage {
  */
 const TOOL_PACKAGES: ToolPackage[] = [
   {
+    pkg: '@deepseek-ai/dsh-tool-agent-vault',
+    dir: 'tool-agent-vault',
+    source: 'packages/agent-vault/tool-agent-vault/src/index.ts',
+    requires: ['ctx.tools', 'ctx.agentVaults', 'ctx.systemPrompt', 'a calling Agent'],
+    writes: ['tool/call', 'Agent Vault documents/resources/audit state', 'tool/result'],
+    async mount(ctx) {
+      const worldlineHome = mkdtempSync(join(tmpdir(), 'worldline-tool-catalog-vault-'))
+      ctx.effect(() => () => { rmSync(worldlineHome, { recursive: true, force: true }) }, 'tool catalog Agent Vault temp root')
+      new LocalAgentVaultService(ctx, { worldlineHome })
+      await ctx.plugin(ToolAgentVault)
+    },
+    note: 'Agent Vault tools operate only for a calling Agent whose runtime session is explicitly bound to an authorized private Vault.',
+  },
+  {
     pkg: '@deepseek-ai/dsh-tool-ask-user',
     dir: 'tool-ask-user',
     source: 'packages/interaction/tool-ask-user/src/index.ts',
@@ -209,16 +226,16 @@ const TOOL_PACKAGES: ToolPackage[] = [
   {
     pkg: '@deepseek-ai/dsh-tools',
     dir: 'tools',
-    source: 'packages/core/tools/src/code-mode.ts',
+    source: 'packages/core/tools/src/ptc.ts',
     requires: ['ctx.tools', 'ctx.codeRuntime (execution time)', 'ctx.systemPrompt'],
     writes: ['tool/call', 'one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call', 'tool/result'],
     // The registry's OWN tool: run_code exists only under a non-native mode
     // (the registry registers it in its constructor; the code runtime is read
     // at assembly/execution time, so the schema harvest needs none mounted).
-    toolsConfig: { mode: 'code' },
+    toolsConfig: { mode: 'ptc' },
     async mount() {},
     note:
-      'Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: code` / `mode: both` (see the Code Mode contract). Under `code` it is the registry\'s only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime\'s language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result.',
+      'Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: ptc` / `mode: both` (see the PTC contract). Under `ptc` it is the registry\'s only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime\'s language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result.',
   },
   {
     pkg: '@deepseek-ai/dsh-plan-mode',

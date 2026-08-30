@@ -6,14 +6,11 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  ClientSideConnection,
+  client as createAcpClientApp,
+  methods,
   ndJsonStream,
   PROTOCOL_VERSION,
-  type Agent as AcpAgent,
-  type Client,
-  type RequestPermissionRequest,
-  type RequestPermissionResponse,
-  type SessionNotification,
+  type ClientContext,
 } from '@agentclientprotocol/sdk'
 
 /**
@@ -58,7 +55,7 @@ const CORDIS_YML = `
 
 interface Spawned {
   child: ChildProcessWithoutNullStreams
-  client: ClientSideConnection
+  client: ClientContext
   stderr: string[]
 }
 
@@ -108,15 +105,13 @@ async function boot(): Promise<Spawned & { cwd: string }> {
     Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
     Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
   )
-  const makeClient = (_agent: AcpAgent): Client => ({
-    sessionUpdate(_params: SessionNotification): Promise<void> {
-      return Promise.resolve()
-    },
-    requestPermission(_params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
-      return Promise.resolve({ outcome: { outcome: 'cancelled' } })
-    },
-  })
-  const client = new ClientSideConnection(makeClient, stream)
+  const client = createAcpClientApp({ name: 'worldline-acp-demo-source-test' })
+    .onNotification(methods.client.session.update, () => Promise.resolve())
+    .onRequest(methods.client.session.requestPermission, () => (
+      Promise.resolve({ outcome: { outcome: 'cancelled' as const } })
+    ))
+    .connect(stream)
+    .agent
   spawned = { child, client, stderr }
   return { ...spawned, cwd }
 }
@@ -128,7 +123,7 @@ describe('worldline-acp-demo real-load-path smoke (bin + Loader, keyless)', () =
     // crashes the tree on the first service read here — see the loader-export regression.
     let init
     try {
-      init = await client.initialize({
+      init = await client.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION,
         clientCapabilities: {},
       })
@@ -139,10 +134,12 @@ describe('worldline-acp-demo real-load-path smoke (bin + Loader, keyless)', () =
     }
     expect(init.agentCapabilities).toEqual({
       promptCapabilities: { image: false, audio: false, embeddedContext: false },
+      mcpCapabilities: { http: true },
+      sessionCapabilities: { close: {}, list: {}, resume: {} },
     })
 
     // session/new reaches the agent FACTORY (create) without the model.
-    const { sessionId } = await client.newSession({ cwd, mcpServers: [] })
+    const { sessionId } = await client.request(methods.agent.session.new, { cwd, mcpServers: [] })
     expect(sessionId).toBeTruthy()
 
     expect(stderr.join('')).not.toContain('without inject')

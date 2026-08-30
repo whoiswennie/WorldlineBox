@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import LocalAgentVaultService from '@deepseek-ai/dsh-agent-vault-local'
-import { VirtualCompanionDirectory } from '../src/index.ts'
+import { findPublicExpressions, VirtualCompanionDirectory } from '../src/index.ts'
 
 const roots: string[] = []
 const stores: VirtualCompanionDirectory[] = []
@@ -33,6 +33,14 @@ async function fixture(): Promise<{ root: string
 }
 
 describe('VirtualCompanionDirectory', { timeout: 30_000 }, () => {
+  it('finds an exact public title despite mixed semantic words and non-catalog tags', async () => {
+    const { vaults } = await fixture()
+    const found = await findPublicExpressions(vaults, {
+      act: 'meme', query: '孤高曼波 表情包', preferredTags: ['manbo', 'meme'],
+    }, 1)
+    expect(found).toMatchObject([{ title: '孤高曼波', mimeType: 'video/mp4', enabled: true }])
+  })
+
   it('keeps the directory snapshot small while seeding one unified Agent Vault per companion', async () => {
     const { legacy, store, vaults } = await fixture()
     const snapshot = store.snapshot()
@@ -66,6 +74,34 @@ describe('VirtualCompanionDirectory', { timeout: 30_000 }, () => {
     expect(store.ownsScope(companion.id)).toBe(false)
     await expect(vaults.manifest(companion.id)).rejects.toMatchObject({ code: 'VAULT_NOT_FOUND' })
     expect(await readFile(marker, 'utf8')).toBe('preserve me')
+  })
+
+  it('registers one stable first-class appearance resource for an uploaded portrait', async () => {
+    const { store, vaults } = await fixture()
+    const bytes = Buffer.from('uploaded-companion-portrait')
+    const image = `data:image/png;base64,${bytes.toString('base64')}`
+    const created = await store.create({
+      name: '形象测试伙伴', handle: 'LOOK', avatar: image, portrait: image, status: '在线',
+      description: '测试形象资源', persona: '身份', style: '风格', speakingStyle: '语气', behaviorLogic: '逻辑',
+    })
+    const profile = created.companions.find(item => item.name === '形象测试伙伴')!
+    const appearance = await store.appearance(profile.id)
+    expect(appearance?.resource).toMatchObject({
+      id: 'profile-appearance', roles: ['appearance'], mimeType: 'image/png', bytes: bytes.length,
+    })
+    expect(appearance?.hostPath).toBeDefined()
+    expect(await readFile(appearance!.hostPath!)).toEqual(bytes)
+    const self = await vaults.inspectSelf(profile.id)
+    expect(self.modules.find(module => module.id === 'appearance')?.details)
+      .toContain('可发送形象资源 ID：profile-appearance')
+
+    const before = appearance!.resource.revision
+    await store.update(profile.id, {
+      name: profile.name, handle: profile.handle, avatar: profile.avatar, portrait: profile.portrait,
+      status: '忙碌', description: profile.description, persona: profile.persona, style: profile.style,
+      speakingStyle: profile.speakingStyle, behaviorLogic: profile.behaviorLogic,
+    })
+    expect((await store.appearance(profile.id))?.resource.revision).toBe(before)
   })
 
   it('restores an edited built-in profile and replaces its private Vault with bundled originals', async () => {

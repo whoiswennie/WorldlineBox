@@ -9,6 +9,7 @@ export const NS = 'reference'
 export const zh = {
   'section.files': '文件与文件夹',
   'section.sessions': 'Session 对话',
+  'crumb.root': '工作区',
   'candidate.file': '文件',
   'candidate.folder': '文件夹',
   'candidate.session': 'Session',
@@ -29,6 +30,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 export const en = {
   'section.files': 'Files & folders',
   'section.sessions': 'Session conversations',
+  'crumb.root': 'Workspace',
   'candidate.file': 'File',
   'candidate.folder': 'Folder',
   'candidate.session': 'Session',

@@ -69,9 +69,9 @@ export function AccountSettings(_props: PropsRuntime<'settings.section'>) {
     setBusy(true); setError(''); setNotice('')
     try {
       const response = await authRequest('profile', { displayName, bio, avatar })
-      if (response.user === undefined || response.user === null) throw new Error('服务器未返回账户资料')
+      if (response.user === undefined || response.user === null) throw new Error('服务器未返回账号资料')
       replaceAuthUser(response.user)
-      setNotice('账户资料已保存')
+      setNotice('账号资料已保存')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally { setBusy(false) }
@@ -93,22 +93,34 @@ export function AccountSettings(_props: PropsRuntime<'settings.section'>) {
 
   return <div className={css.page}>
     {cropSource !== '' && <AvatarCropDialog imageUrl={cropSource} onCancel={() => { setCropSource('') }} onConfirm={(value) => { setAvatar(value); setCropSource('') }} />}
-    <header className={css.heading}><span>ACCOUNT PROFILE</span><h2>账号主页</h2><p>管理这台设备上的用户资料。每个账号拥有独立的会话、设置、凭据、插件和运行数据。</p></header>
+    <header className={css.heading}>
+      <div><span>ACCOUNT PROFILE</span><h2>账号主页</h2><p>管理这台设备上的账号资料。每个账号拥有独立的会话、设置、凭据、插件和运行数据。</p></div>
+      <span className={css.localBadge}><Icon kind="shield" />本地独立空间</span>
+    </header>
     {(error !== '' || notice !== '') && <div className={error !== '' ? css.error : css.notice} role={error !== '' ? 'alert' : 'status'} aria-live="polite">{error || notice}</div>}
     <form onSubmit={(event) => { void save(event) }}>
       <section className={css.profileCard}>
-        <div className={css.avatarColumn}>
+        <div className={css.identityPanel}>
           <div className={css.avatar}>{avatar !== '' ? <img src={avatar} alt="用户头像" /> : <Icon kind="user" />}</div>
+          <div className={css.identityCopy}>
+            <span>当前账号</span>
+            <strong>{displayName.trim() || user.username}</strong>
+            <small>@{user.username}</small>
+          </div>
           <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void onFile(event) }} />
-          <button type="button" className={css.upload} onClick={() => { inputRef.current?.click() }}><Icon kind="upload" />上传并裁剪</button>
-          {avatar !== '' && <button type="button" className={css.remove} onClick={() => { setAvatar('') }}>移除头像</button>}
-          <small>PNG、JPEG 或 WebP，原图不超过 5 MB</small>
+          <div className={css.avatarActions}>
+            <button type="button" className={css.upload} onClick={() => { inputRef.current?.click() }}><Icon kind="upload" />上传并裁剪</button>
+            {avatar !== '' && <button type="button" className={css.remove} onClick={() => { setAvatar('') }}>移除头像</button>}
+            <small>PNG、JPEG 或 WebP · 最大 5 MB</small>
+          </div>
         </div>
         <div className={css.fields}>
-          <label><span>显示名称</span><input aria-label="显示名称" value={displayName} maxLength={80} onChange={(event) => { setDisplayName(event.target.value) }} /></label>
-          <label><span>登录用户名</span><input aria-label="登录用户名" value={user.username} readOnly aria-readonly="true" /><small>用户名是本地登录标识，目前不可修改。</small></label>
-          <label><span>个人信息</span><textarea aria-label="个人信息" value={bio} maxLength={2000} rows={6} placeholder="介绍你的称呼、角色、长期目标或希望被如何协助……" onChange={(event) => { setBio(event.target.value) }} /><small>{bio.length.toLocaleString()} / 2,000</small></label>
-          <div className={css.actions}><button type="submit" className={css.save} disabled={busy}>{busy ? '保存中…' : '保存资料'}</button></div>
+          <div className={css.fieldGrid}>
+            <label><span>显示名称</span><input aria-label="显示名称" value={displayName} maxLength={80} onChange={(event) => { setDisplayName(event.target.value) }} /></label>
+            <label><span>账号</span><input aria-label="账号" value={user.username} readOnly aria-readonly="true" /><small>本地账号标识，不可修改</small></label>
+          </div>
+          <label className={css.bioField}><span>个人信息</span><textarea aria-label="个人信息" value={bio} maxLength={2000} rows={5} placeholder="介绍你的称呼、角色、长期目标或希望被如何协助……" onChange={(event) => { setBio(event.target.value) }} /><small>{bio.length.toLocaleString()} / 2,000</small></label>
+          <div className={css.actions}><span>保存后会立即用于新的对话上下文</span><button type="submit" className={css.save} disabled={busy}>{busy ? '保存中…' : '保存资料'}</button></div>
         </div>
       </section>
     </form>

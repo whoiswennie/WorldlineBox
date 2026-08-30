@@ -8,11 +8,11 @@
 
 工具注册表搬不进 preset。它的消费者全在宿主平面——[`worldline-agent-loop`](../agent-loop/README.md) 读它的调度器，[`worldline-apiproxy`](../../host/apiproxy/README.md) 读它的 presenter 来渲染工具卡，每个工具插件都往里注册——而一个服务只有在**所有**消费者一起下沉时才能下沉。
 
-preset 能拥有的是这份注册表的**呈现方式**。`ctx.tools.presentAs()` 只为正在挂载的那个 agent 声明，于是一个 Code Mode 会话可以和多个 native 会话同进程并存，各自看到各自的清单。[`worldline-tools`](../tools/README.md) 那一行上的 `mode` 仍然是默认值，供未作声明的 agent 使用。
+preset 能拥有的是这份注册表的**呈现方式**。`ctx.tools.presentAs()` 只为正在挂载的那个 agent 声明，于是一个 PTC mode 会话可以和多个 native 会话同进程并存，各自看到各自的清单。[`worldline-tools`](../tools/README.md) 那一行上的 `mode` 仍然是默认值，供未作声明的 agent 使用。
 
 ## 它做什么
 
-`native` 立即生效。code 类模式则等待 `ctx.codeRuntime`——这是一个宿主平面服务（[`worldline-code-runtime-worker-thread`](../../code-runtime/code-runtime-worker-thread/README.md)）：若某个 preset 在未组装运行时的部署上选择 Code Mode，本行就停在 pending，`worldline-agent-presets` 会指名此 id 拒绝挂载。另一种做法——先乐观应用——会把失败推迟到该会话的第一次请求，那时操作者对 preset 和组装都已无从下手。
+`native` 立即生效。code 类模式则等待 `ctx.codeRuntime`——这是一个宿主平面服务（[`worldline-code-runtime-worker-thread`](../../code-runtime/code-runtime-worker-thread/README.md)）：若某个 preset 在未组装运行时的部署上选择 PTC mode，本行就停在 pending，`worldline-agent-presets` 会指名此 id 拒绝挂载。另一种做法——先乐观应用——会把失败推迟到该会话的第一次请求，那时操作者对 preset 和组装都已无从下手。
 
 `mode` 是必填而非有默认值：不带这一行的 preset 本来就会拿到部署默认值，省略它等于这一行白组装了。
 
@@ -28,4 +28,4 @@ preset 能拥有的是这份注册表的**呈现方式**。`ctx.tools.presentAs(
 
 ## 已知限制与暂缓事项
 
-- **运行时仍在宿主平面** —— preset 可以选择 Code Mode，却无法自带它所需的 TypeScript 运行时；未组装运行时的部署也就无法组装任何 code 模式的 preset。
+- **运行时仍在宿主平面** —— preset 可以选择 PTC mode，却无法自带它所需的 TypeScript 运行时；未组装运行时的部署也就无法组装任何 code 模式的 preset。

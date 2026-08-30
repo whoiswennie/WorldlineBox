@@ -24,7 +24,11 @@ function cleanCaptionText(text: string): string {
     .trim()
 }
 
-/** Parse WebVTT or SubRip text into normalized segments. */
+/**
+ *  Parse WebVTT or SubRip text into normalized segments.
+ * @param content - content value.
+ * @returns The resulting value.
+ */
 export function parseVttOrSrt(content: string): CaptionSegment[] {
   const blocks = content.replace(/^\uFEFF/u, '').split(/\r?\n\s*\r?\n/gu)
   const segments: CaptionSegment[] = []
@@ -45,7 +49,11 @@ export function parseVttOrSrt(content: string): CaptionSegment[] {
   return segments
 }
 
-/** Parse dialogue rows from Advanced SubStation Alpha subtitles. */
+/**
+ *  Parse dialogue rows from Advanced SubStation Alpha subtitles.
+ * @param content - content value.
+ * @returns The resulting value.
+ */
 export function parseAss(content: string): CaptionSegment[] {
   const segments: CaptionSegment[] = []
   for (const line of content.split(/\r?\n/gu)) {
@@ -61,7 +69,11 @@ export function parseAss(content: string): CaptionSegment[] {
   return segments
 }
 
-/** Read every supported text-caption file, ignoring one corrupt track at a time. */
+/**
+ *  Read every supported text-caption file, ignoring one corrupt track at a time.
+ * @param paths - paths value.
+ * @returns The resulting value.
+ */
 export async function readCaptionFiles(paths: readonly string[]): Promise<CaptionSegment[]> {
   const all: CaptionSegment[] = []
   for (const path of paths) {
@@ -84,7 +96,14 @@ export async function readCaptionFiles(paths: readonly string[]): Promise<Captio
   return unique
 }
 
-/** Render only caption text overlapping a requested time range. */
+/**
+ *  Render only caption text overlapping a requested time range.
+ * @param segments - segments value.
+ * @param startSeconds - start seconds value.
+ * @param endSeconds - end seconds value.
+ * @param maxCharacters - max characters value.
+ * @returns The resulting value.
+ */
 export function captionsForRange(
   segments: readonly CaptionSegment[],
   startSeconds: number,
@@ -102,7 +121,11 @@ export function captionsForRange(
   }
 }
 
-/** Human-readable video timestamp. */
+/**
+ *  Human-readable video timestamp.
+ * @param seconds - seconds value.
+ * @returns The resulting value.
+ */
 export function formatTime(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds))
   const hours = Math.floor(whole / 3600)

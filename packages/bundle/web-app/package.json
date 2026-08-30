@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-web-app",
   "description": "The worldline browser-surface bundle: the web patch layer over worldline-base plus the runtime glue plugin (frontend dist serving, web-surface prompt, bash runtime variables, URL line)",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": {
     "access": "public"
   },
@@ -99,6 +99,7 @@
     "@deepseek-ai/dsh-session-projection-cache": "workspace:^",
     "@deepseek-ai/dsh-session-log-export": "workspace:^",
     "@deepseek-ai/dsh-session-stats": "workspace:^",
+    "@deepseek-ai/dsh-tool-subagent": "workspace:^",
     "@deepseek-ai/dsh-storage": "workspace:^",
     "@deepseek-ai/dsh-storage-domain": "workspace:^",
     "@deepseek-ai/dsh-storage-json": "workspace:^",

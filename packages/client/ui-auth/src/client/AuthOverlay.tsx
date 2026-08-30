@@ -58,7 +58,7 @@ export function AuthOverlay(_props: PropsRuntime<'shell.overlay'>) {
 
   const submit = async (event?: FormEvent): Promise<void> => {
     event?.preventDefault()
-    if (username.trim().length < 3 || username.trim().length > 32) { setError('用户名长度必须为 3–32 个字符。'); return }
+    if (username.trim().length < 3 || username.trim().length > 32) { setError('账号长度必须为 3–32 个字符。'); return }
     if (password.length === 0 || password.length > 256) { setError('密码不能为空且不能超过 256 个字符。'); return }
     if (mode === 'register' && password !== confirmPassword) { setError('两次输入的密码不一致。'); return }
     setBusy(true)
@@ -90,34 +90,34 @@ export function AuthOverlay(_props: PropsRuntime<'shell.overlay'>) {
     await refreshAuth()
   }
 
-  return createPortal(<main className={css.overlay} role="dialog" aria-modal="true" aria-label="世界线本地账户">
+  return createPortal(<main className={css.overlay} role="dialog" aria-modal="true" aria-label="世界线本地账号">
     <div className={css.glowOne} /><div className={css.glowTwo} />
     <section className={css.card}>
       <header className={css.title}>
         <img src="/worldline-icon.png" alt="世界线" />
-        <h1>世界线本地账户</h1>
-        <p>账户与凭据仅保存在这台设备上，不连接任何外部账户系统</p>
+        <h1>世界线本地账号</h1>
+        <p>账号资料与凭据仅保存在这台设备上，不连接任何外部账号系统</p>
       </header>
       <div className={css.tabs} role="tablist">
         <button type="button" role="tab" aria-selected={mode === 'login'} data-active={mode === 'login' || undefined} onClick={() => { switchMode('login') }}>登录</button>
         <button type="button" role="tab" aria-selected={mode === 'register'} data-active={mode === 'register' || undefined} onClick={() => { switchMode('register') }}>注册</button>
       </div>
       {mode === 'login' && auth.savedAccounts.length > 0 ? <section className={css.saved}>
-        <header><strong>已保存账户</strong><button type="button" onClick={useOther}><Icon kind="plus" />使用其他账户</button></header>
+        <header><strong>已保存账号</strong><button type="button" onClick={useOther}><Icon kind="plus" />使用其他账号</button></header>
         <div>{auth.savedAccounts.map(account => <article key={account.id} data-selected={selectedAccount === account.id || undefined}>
           <button type="button" className={css.account} onClick={() => { setSelectedAccount(account.id); setUsername(account.username); setPassword('') }}><span>{account.avatar !== '' ? <img src={account.avatar} alt="" /> : account.displayName.slice(0, 1).toUpperCase()}</span><span><strong>{account.displayName}</strong><small>@{account.username} · 独立数据空间</small></span>{selectedAccount === account.id ? <b>✓</b> : null}</button>
-          <button type="button" className={css.remove} aria-label="移除已保存账户" title="移除已保存账户" onClick={() => { void removeSaved(account.id) }}><Icon kind="trash" /></button>
+          <button type="button" className={css.remove} aria-label="移除已保存账号" title="移除已保存账号" onClick={() => { void removeSaved(account.id) }}><Icon kind="trash" /></button>
         </article>)}</div>
       </section> : null}
       <form onSubmit={(event) => { void submit(event) }}>
-        <label><span>用户名</span><i><Icon kind="user" /><input autoFocus value={username} autoComplete="username" disabled={busy} onChange={(event) => { setUsername(event.target.value); setSelectedAccount(null) }} placeholder="请输入 3–32 个字符" /></i></label>
+        <label><span>账号</span><i><Icon kind="user" /><input aria-label="账号" autoFocus value={username} autoComplete="username" disabled={busy} onChange={(event) => { setUsername(event.target.value); setSelectedAccount(null) }} placeholder="请输入 3–32 个字符" /></i></label>
         <label><span>密码</span><i><Icon kind="lock" /><input type={showPassword ? 'text' : 'password'} value={password} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} disabled={busy} onChange={(event) => { setPassword(event.target.value) }} placeholder="请输入密码" /><button type="button" aria-label="显示或隐藏密码" onClick={() => { setShowPassword(value => !value) }}><Icon kind="eye" /></button></i></label>
         {mode === 'register' ? <label><span>确认密码</span><i><Icon kind="shield" /><input type={showPassword ? 'text' : 'password'} value={confirmPassword} autoComplete="new-password" disabled={busy} onChange={(event) => { setConfirmPassword(event.target.value) }} placeholder="请再次输入密码" /></i></label> : null}
         <div className={css.preferences}><label><input type="checkbox" checked={remember} disabled={busy} onChange={(event) => { setRemember(event.target.checked); if (!event.target.checked) setAutoLogin(false) }} />记住账号</label><label data-disabled={!remember || undefined}><input type="checkbox" checked={autoLogin} disabled={busy || !remember} onChange={(event) => { setAutoLogin(event.target.checked) }} /><Icon kind="zap" />两种入口自动登录</label></div>
         {error !== '' || auth.error !== '' ? <div className={css.error} role="alert">{error || auth.error}</div> : null}
-        <button className={css.submit} type="submit" disabled={busy || auth.loading}>{busy ? '请稍候…' : mode === 'login' ? '登录本地账户' : '注册本地账户'}</button>
+        <button className={css.submit} type="submit" disabled={busy || auth.loading}>{busy ? '请稍候…' : mode === 'login' ? '登录本地账号' : '注册本地账号'}</button>
       </form>
-      <div className={css.security}><Icon kind="shield" /><span>账户密码使用随机盐和 scrypt 哈希，仅保存在本机。</span></div>
+      <div className={css.security}><Icon kind="shield" /><span>账号密码使用随机盐和 scrypt 哈希，仅保存在本机。</span></div>
     </section>
   </main>, document.body)
 }

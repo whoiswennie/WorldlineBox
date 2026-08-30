@@ -55,31 +55,35 @@ function ReferenceMedia({ id, fallbackTitle }: { id: string; fallbackTitle: stri
     }, () => { if (active) setMissing(true) })
     return () => { active = false }
   }, [asset, id])
-  if (asset === undefined) return <figure
-    className={`${css.meme} ${css.userMeme}`}
-    data-reference-state={missing ? 'missing' : 'loading'}
-    title={fallbackTitle}
-  >
-    <span className={css.missingMeme}>
-      {missing ? `${fallbackTitle}（引用已移除）` : '正在载入引用…'}
-    </span>
-  </figure>
-  return <figure
-    className={`${css.meme} ${css.userMeme}`}
-    data-reference-media-type={asset.mimeType}
-    title={asset.title}
-  >
-    <ReferenceContent resource={{
-      id: asset.id,
-      title: asset.title,
-      url: asset.url,
-      mimeType: asset.mimeType,
-      text: asset.transcript,
-      description: asset.description,
-      tags: asset.tags,
-    }} mode="conversation" />
-    <figcaption>{asset.title}</figcaption>
-  </figure>
+  if (asset === undefined) return <div className={`${css.assistantBubble} ${css.toolMemeBubble}`}>
+    <figure
+      className={`${css.meme} ${css.toolMeme}`}
+      data-reference-state={missing ? 'missing' : 'loading'}
+      title={fallbackTitle}
+    >
+      <span className={css.missingMeme}>
+        {missing ? `${fallbackTitle}（引用已移除）` : '正在载入引用…'}
+      </span>
+    </figure>
+  </div>
+  return <div className={`${css.assistantBubble} ${css.toolMemeBubble}`}>
+    <figure
+      className={`${css.meme} ${css.toolMeme}`}
+      data-reference-media-type={asset.mimeType}
+      title={asset.title}
+    >
+      <ReferenceContent resource={{
+        id: asset.id,
+        title: asset.title,
+        url: asset.url,
+        mimeType: asset.mimeType,
+        text: asset.transcript,
+        description: asset.description,
+        tags: asset.tags,
+      }} mode="conversation" />
+      <figcaption>{asset.title}</figcaption>
+    </figure>
+  </div>
 }
 
 interface UserReferenceSegment {

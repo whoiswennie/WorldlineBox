@@ -1,6 +1,6 @@
 /** Durable attachment vocabulary. @module @deepseek-ai/dsh-attachment/types */
 
-import type { AttachmentId } from './brand.ts'
+import type { AttachmentId, ImageVariantId } from './brand.ts'
 
 export type { AttachmentId } from './brand.ts'
 
@@ -21,6 +21,14 @@ export interface ImageAttachmentRef {
   height: number
   /** Optional display name stripped of local path information. */
   name?: string
+  /**
+   * Orientation-applied source dimensions before normalization. Present only
+   * when the persisted provider-independent image was downscaled.
+   */
+  originalDimensions?: {
+    width: number
+    height: number
+  }
 }
 
 /** Deployment-resolved limits used by upload admission and request buffering. */
@@ -57,4 +65,32 @@ export interface SaveImageAttachment {
 export interface StoredImageAttachment {
   ref: ImageAttachmentRef
   data: Uint8Array
+}
+
+/** Deterministic request-image policy selected by one exact model route. */
+export interface ImageRequestPolicy {
+  /** Maximum width multiplied by height after aspect-preserving projection. */
+  maxPixels: number
+  /** Encoded-byte target before base64 expansion or Files API upload. */
+  maxBytes: number
+}
+
+/** Cached request version derived from one provider-independent normalized attachment. */
+export interface RequestImageAttachment {
+  /** Cache and upload-index key over the attachment id, policy, and encoder parameters. */
+  variantId: ImageVariantId
+  /** Durable normalized attachment from which this request version was derived. */
+  attachment: ImageAttachmentRef
+  /** Encoded request bytes. */
+  data: Uint8Array
+  mediaType: ImageMediaType
+  bytes: number
+  width: number
+  height: number
+  /** Provider-compatible sample depth proven after request encoding. */
+  depth: 'uchar'
+  /** Provider-compatible color space proven after request encoding. */
+  space: 'srgb'
+  /** Whether the encoded request version retains an alpha channel. */
+  hasAlpha: boolean
 }

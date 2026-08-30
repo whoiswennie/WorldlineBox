@@ -11,7 +11,14 @@ export interface CommandResult {
   outcome: SubprocessOutcome
 }
 
-/** Run a fixed argv vector through Worldline's managed subprocess service. */
+/**
+ *  Run a fixed argv vector through Worldline's managed subprocess service.
+ * @param ctx - Cordis context that owns the operation.
+ * @param argv - argv value.
+ * @param cwd - cwd value.
+ * @param signal - Cancellation signal for the operation.
+ * @returns The resulting value.
+ */
 export async function runCommand(
   ctx: Context,
   argv: readonly string[],
@@ -37,7 +44,12 @@ export async function runCommand(
   return { stdout: stdout.text, stderr: stderr.text, outcome }
 }
 
-/** Require a successful command and include a bounded diagnostic on failure. */
+/**
+ *  Require a successful command and include a bounded diagnostic on failure.
+ * @param command - command value.
+ * @param result - result value.
+ * @returns The resulting value.
+ */
 export function requireSuccess(command: string, result: CommandResult): string {
   if (result.outcome.exitCode === 0 && result.outcome.signal === null) return result.stdout
   const detail = result.stderr.trim().slice(-4_000)

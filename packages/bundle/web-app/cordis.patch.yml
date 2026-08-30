@@ -34,8 +34,8 @@
 
 - id: tools
   config:
-    # TEMPORARY workaround: WORLDLINE_TOOLS_MODE (native|code|both) opts a whole worldline
-    # process into Code Mode while per-session tool-presentation selection is being
+    # TEMPORARY workaround: WORLDLINE_TOOLS_MODE (native|ptc|both) opts a whole worldline
+    # process into PTC mode while per-session tool-presentation selection is being
     # designed; unset keeps the schema default (native). Remove the env seam
     # once the web UI owns the choice per session.
     mode: !!js process.env.WORLDLINE_TOOLS_MODE
@@ -45,6 +45,11 @@
 # `dsh.client` rows are the browser roster the modules node half scans into
 # window.__WORLDLINE_BOOT__; the modules row is simultaneously a host row.
 - insert:
+    # Host-owned opt-in sampled when a new Web session receives its preset
+    # delegation tools. The settings document keeps this disabled by default.
+    - id: subagent-model-selection-settings
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
+
     - id: code-runtime
       name: '@deepseek-ai/dsh-code-runtime-worker-thread'
 
@@ -139,6 +144,9 @@
       config:
         host: !!js ctx.webStartup.host ?? '127.0.0.1'
         port: !!js ctx.webStartup.port ?? 3080
+        compression: gzip
+        compressionLevel: 1
+        compressionThresholdBytes: 1024
 
     # Desktop browser integration. In an ordinary Web process this plug-in is
     # a no-op; under apps/desktop it owns the persistent user-browser tabs and
@@ -246,6 +254,9 @@
     # selects the relationship-first preset through the normal session seam.
     - id: ui-virtual-companion
       name: '@deepseek-ai/dsh-client-ui-virtual-companion'
+      inject: [webRuntime]
+      config:
+        frontendRoot: !!js ctx.webRuntime.frontendRoot
 
     - id: ui-sidebar
       name: '@deepseek-ai/dsh-client-ui-sidebar'

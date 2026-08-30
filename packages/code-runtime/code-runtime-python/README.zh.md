@@ -17,7 +17,7 @@ host 与 CPython 子进程在子进程的 fd 3 上交换一个无版本号的 JS
 
 ## Model Experience
 
-经由 [`dsh-tools`](../../core/tools/README.md) 里的 Code Mode 间接生效：Code Mode 把本后端的精确完成值（放得下时）或一个明确的 `invalid-output` / `output-limit` 失败，连同精确的 `[dsh-code-runtime-python] log capture truncated at <maxLogBytes> bytes` 日志标记，渲染进一个保留的 `run_code` 结果。
+经由 [`dsh-tools`](../../core/tools/README.md) 里的 PTC mode 间接生效：PTC mode 把本后端的精确完成值（放得下时）或一个明确的 `invalid-output` / `output-limit` 失败，连同精确的 `[dsh-code-runtime-python] log capture truncated at <maxLogBytes> bytes` 日志标记，渲染进一个保留的 `run_code` 结果。
 
 #### KV Cache effect
 

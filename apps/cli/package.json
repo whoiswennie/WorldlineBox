@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh",
   "description": "worldline CLI: profile boot, plugin management, and the browser UI alias",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": {
     "access": "public"
   },
@@ -25,6 +25,7 @@
     "@deepseek-ai/cordis-plugin-loader": "workspace:^",
     "@deepseek-ai/cordis-plugin-timer": "workspace:^",
     "@deepseek-ai/dsh-agent-tool-presentation": "workspace:^",
+    "@deepseek-ai/dsh-acp-app": "workspace:^",
     "@deepseek-ai/dsh-account-profile-context": "workspace:^",
     "@deepseek-ai/dsh-account-profile": "workspace:^",
     "@deepseek-ai/dsh-app-boot": "workspace:^",
@@ -70,6 +71,8 @@
     "@deepseek-ai/dsh-tool-pwsh": "workspace:^",
     "@deepseek-ai/dsh-tool-ralph": "workspace:^",
     "@deepseek-ai/dsh-schedule": "workspace:^",
+    "@deepseek-ai/dsh-sdk-app": "workspace:^",
+    "@deepseek-ai/dsh-sdk-minimal": "workspace:^",
     "@deepseek-ai/dsh-tool-skill": "workspace:^",
     "@deepseek-ai/dsh-tool-str-replace-editor": "workspace:^",
     "@deepseek-ai/dsh-tool-subagent": "workspace:^",

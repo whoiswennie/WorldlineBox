@@ -23,7 +23,7 @@ import { createJavaScriptRegexEngine, defaultJavaScriptRegexConstructor } from '
 import langTs from '@shikijs/langs/typescript'
 import langBash from '@shikijs/langs/shellscript'
 import langJson from '@shikijs/langs/json'
-import type { HighlighterCore } from 'shiki/core'
+import type { GrammarState, HighlighterCore, ThemedToken } from 'shiki/core'
 import type { CSSProperties } from 'react'
 
 /** A shiki grammar module's default export (a `LanguageRegistration[]`), taken
@@ -276,6 +276,104 @@ export function highlightToHtml(code: string, lang: string | undefined): string 
 export interface HighlightSpan {
   text: string
   style: CSSProperties
+}
+
+/** vscode-textmate FontStyle bits shiki folds into text decorations. */
+const DECORATION_BITS: readonly (readonly [number, string])[] = [[4, 'underline'], [8, 'line-through']]
+
+function spanStyle(token: ThemedToken): CSSProperties {
+  const style: CSSProperties = { color: token.color }
+  const bits = token.fontStyle ?? 0
+  if ((bits & 1) !== 0) style.fontStyle = 'italic'
+  if ((bits & 2) !== 0) style.fontWeight = 'bold'
+  const decorations = DECORATION_BITS.filter(([bit]) => (bits & bit) !== 0)
+  if (decorations.length > 0) style.textDecoration = decorations.map(([, value]) => value).join(' ')
+  return style
+}
+
+/** Match shiki HTML's whitespace merging while producing React spans. */
+function lineSpans(line: ThemedToken[]): HighlightSpan[] {
+  const spans: HighlightSpan[] = []
+  let pendingWhitespace = ''
+  for (const [index, token] of line.entries()) {
+    if (/^\s+$/.test(token.content) && index + 1 < line.length) {
+      pendingWhitespace += token.content
+      continue
+    }
+    spans.push({ text: pendingWhitespace + token.content, style: spanStyle(token) })
+    pendingWhitespace = ''
+  }
+  return spans
+}
+
+/**
+ * Incremental highlighter for one append-mostly streaming code fence. Completed
+ * lines and their grammar state are retained; non-append changes reset safely.
+ */
+export class StreamingHighlightSession {
+  private resolved: string | undefined
+  private prefix = ''
+  private spans: HighlightSpan[][] = []
+  private state: GrammarState | undefined
+  private lastCode: string | undefined
+  private lastLang: string | undefined
+  private lastResult: HighlightSpan[][] | undefined
+
+  private reset(resolved: string | undefined): void {
+    this.resolved = resolved
+    this.prefix = ''
+    this.spans = []
+    this.state = undefined
+  }
+
+  private tokenize(resolved: string, text: string): ThemedToken[][] {
+    return highlighter().codeToTokensBase(text, {
+      lang: resolved,
+      theme: 'css-variables',
+      ...(this.state === undefined ? {} : { grammarState: this.state }),
+    })
+  }
+
+  /**
+  * Tokenize the fence's current text into per-line highlighted runs;
+  * `undefined` means the caller renders its plain fallback. Idempotent per
+  * (`code`, `lang`) input — repeated calls return the identical result array —
+  * and a retained line keeps its span-array identity across growing calls, so
+  * a React caller can reuse cached line elements. A lazy grammar not yet
+  * loaded returns `undefined` and loads in the background exactly as
+  * {@link highlightToHtml} does; the next call after it registers highlights.
+  * @param code - the fence text accumulated so far (display-trimmed, no synthetic trailing newline).
+  * @param lang - the language hint (a markdown fence info string).
+  * @returns one entry per line of `code` (each an array of runs), or `undefined` for unknown or not-yet-loaded languages.
+  */
+  update(code: string, lang: string | undefined): readonly HighlightSpan[][] | undefined {
+    if (code === this.lastCode && lang === this.lastLang && this.lastResult !== undefined) {
+      return this.lastResult
+    }
+    this.lastCode = code
+    this.lastLang = lang
+    const resolved = lang === undefined ? undefined : LANG_ALIASES.get(lang.toLowerCase())
+    if (resolved === undefined || !ensureGrammar(resolved)) {
+      this.reset(undefined)
+      this.lastResult = undefined
+      return undefined
+    }
+    if (resolved !== this.resolved || !code.startsWith(this.prefix)) this.reset(resolved)
+    const rest = code.slice(this.prefix.length)
+    const lastNewline = rest.lastIndexOf('\n')
+    if (lastNewline >= 0) {
+      const grownEnd = rest[lastNewline - 1] === '\r' ? lastNewline - 1 : lastNewline
+      const tokens = this.tokenize(resolved, rest.slice(0, grownEnd))
+      for (const line of tokens) this.spans.push(lineSpans(line))
+      this.state = highlighter().getLastGrammarState(tokens)
+      this.prefix = code.slice(0, this.prefix.length + lastNewline + 1)
+    }
+    this.lastResult = [
+      ...this.spans,
+      ...this.tokenize(resolved, rest.slice(lastNewline + 1)).map(lineSpans),
+    ]
+    return this.lastResult
+  }
 }
 
 /**

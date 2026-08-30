@@ -92,6 +92,10 @@ const user = (seq: number, text: string): UserMessageNode => ({
   content: [{ type: 'text', text }] as never,
   source: null,
 })
+const userInTurn = (seq: number, text: string, turn: number): ConversationNode => ({
+  ...user(seq, text),
+  turn,
+} as unknown as ConversationNode)
 const assistant = (seq: number, text: string, turn = 1): AssistantMessageNode => ({
   kind: 'assistant', seq, time: seq * 1_000, turn, step: 1, blocks: [{ kind: 'text', text }],
 })
@@ -287,6 +291,7 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
     fileMentions: () => undefined,
     inspectCall,
     chatScroll,
+    transcriptView: createSnapshotStore('compact' as const),
     forkAt,
     // Mirrors the real lookup chain (conversation namespace, then common).
     t,
@@ -338,6 +343,34 @@ describe('Chat node rendering', () => {
 })
 
 describe('ChatView', () => {
+  it('renders bounded loaded-turn previews with accessible navigation marks', () => {
+    const chat = chatSnapshotFixture({
+      nodes: [
+        userInTurn(1, 'first prompt', 1),
+        assistant(2, 'first response', 1),
+        userInTurn(4, 'second prompt', 2),
+        assistant(5, 'second response', 2),
+      ],
+      turnEnds: new Map([[1, 3], [2, 6]]),
+    })
+    expect(chat.navigation.items()).toEqual([
+      { turn: 1, anchorKey: 'fixture:user:1', prompt: 'first prompt', response: 'first response' },
+      { turn: 2, anchorKey: 'fixture:user:4', prompt: 'second prompt', response: 'second response' },
+    ])
+    const harness = makeHarness({ chat })
+    const view = render(<harness.ChatView {...harness.props} />)
+    const navigation = view.getByRole('navigation', { name: '轮次导航' })
+    expect(navigation.style.getPropertyValue('--turn-natural-height')).toBe('22px')
+    const first = view.getByRole('button', { name: '跳转到第 1 轮' })
+    const second = view.getByRole('button', { name: '跳转到第 2 轮' })
+    expect(first.parentElement?.style.getPropertyValue('--turn-natural-position')).toBe('0px')
+    expect(second.parentElement?.style.getPropertyValue('--turn-natural-position')).toBe('10px')
+    expect(second.getAttribute('aria-current')).toBe('true')
+    fireEvent.focus(first)
+    expect(view.getByRole('tooltip').textContent).toContain('first prompt')
+    expect(view.getByRole('tooltip').textContent).toContain('first response')
+  })
+
   it('hands a windowless tool result to the Tool seat with an empty tool name', () => {
     const h = makeHarness({
       nodes: [{ ...toolResult(3, 'w1'), call: null }],

@@ -32,8 +32,6 @@ export const inject = ['web']
 
 /** Plugin config: the provider's transport and size limits plus its `User-Agent` (all defaulted). */
 export interface Config {
-  /** Maximum accepted request URL length. */
-  maxUrlLength?: number
   /** Maximum response body size in bytes. */
   maxResponseBytes?: number
   /** Maximum decoded body length in characters. */
@@ -47,7 +45,6 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  maxUrlLength: z.number().default(2048),
   maxResponseBytes: z.number().default(5_000_000),
   maxBodyChars: z.number().default(100_000),
   timeoutMs: z.number().default(30_000),
@@ -84,13 +81,11 @@ function assertNonNegativeInteger(name: string, value: number): void {
 export function apply(ctx: Context, config: Config): void {
   // schemastery (Config) has already filled every defaulted field.
   const resolved = config as ResolvedConfig
-  assertPositiveFinite('maxUrlLength', resolved.maxUrlLength)
   assertPositiveFinite('maxResponseBytes', resolved.maxResponseBytes)
   assertPositiveFinite('maxBodyChars', resolved.maxBodyChars)
   assertTimeoutMs(resolved.timeoutMs)
   assertNonNegativeInteger('maxRedirects', resolved.maxRedirects)
   const limits: HttpFetchLimits = {
-    maxUrlLength: resolved.maxUrlLength,
     maxResponseBytes: resolved.maxResponseBytes,
     maxBodyChars: resolved.maxBodyChars,
     timeoutMs: resolved.timeoutMs,

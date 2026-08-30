@@ -193,7 +193,7 @@ export class VaultIndex {
         `).all(match, domain, stage ?? null, stage ?? null, limit)
       } catch { rows = [] }
     }
-    if (rows.length < limit) {
+    if (rows.length === 0) {
       const lexicalTerms = [...new Set([query.trim(), ...terms]
         .map(term => term.trim()).filter(Boolean))].slice(0, 16)
       const escaped = lexicalTerms.map(term => `%${term.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`)
@@ -205,8 +205,7 @@ export class VaultIndex {
         AND (${lexical}) ORDER BY d.updated_at DESC LIMIT ?
       `).all(domain, stage ?? null, stage ?? null,
         ...escaped.flatMap(pattern => fields.map(() => pattern)), limit) as Record<string, unknown>[]
-      const seen = new Set(rows.map(row => String(row['id'])))
-      rows.push(...fallback.filter(row => !seen.has(String(row['id']))).slice(0, limit - rows.length))
+      rows = fallback
     }
     return rows.map((row) => {
       const stageValue = memoryStage(row['stage'])

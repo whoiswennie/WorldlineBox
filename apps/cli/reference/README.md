@@ -8,9 +8,9 @@ This reference defines the profile, web-alias, plugin-management, and config-dum
 
 `worldline --profile <name>` boots the profile at `$WORLDLINE_HOME/profiles/<name>`. The effective tree is composed over an empty root by applying, in order: each bundle patch named in the profile manifest's `dsh.profile.bundles` list, the profile's own `cordis.patch.yml`, the home-level `$WORLDLINE_HOME/cordis.patch.yml` (machine-local preferences shared by every profile, so it outranks the per-profile layer), and each `--patch <path>` overlay in argv order. Later layers win per row; a patch replaces the targeted row's complete `config` value rather than deep-merging keys, and may insert new rows. A parse, schema, resolution, or plugin boot failure is reported and exits nonzero. SIGINT and SIGTERM dispose the mounted root before exit.
 
-Bundle names resolve from the worldline installation first, then from the profile directory. In-box bundles (`@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `@deepseek-ai/dsh-headless`) therefore always come from the same installation as the running `worldline`; out-of-tree bundles come from the profile's pnpm-managed `node_modules`. A bare plugin `name` in any patch row resolves through the profile directory's Node parent-walk, which reaches the maintained installation fallback `$WORLDLINE_HOME/profiles/node_modules` (one symlink per package the installation's app and bundles depend on, healed on every launch).
+Bundle names resolve from the worldline installation first, then from the profile directory. In-box bundles (`@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `@deepseek-ai/dsh-headless`, `@deepseek-ai/dsh-sdk-app`, `@deepseek-ai/dsh-sdk-minimal`, and `@deepseek-ai/dsh-acp-app`) therefore always come from the same installation as the running `worldline`; out-of-tree bundles come from the profile's pnpm-managed `node_modules`. A bare plugin `name` in any patch row resolves through the profile directory's Node parent-walk, which reaches the maintained installation fallback `$WORLDLINE_HOME/profiles/node_modules` (one symlink per package the installation's app and bundles depend on, healed on every launch).
 
-The `web` and `headless` profiles auto-initialize from shipped templates on first use (`web`: base + web-app; `headless`: base + headless). Any other missing profile fails loud with a hint to run `worldline plugin --profile <name> add <package>`.
+The `web`, `headless`, `sdk`, `sdk-minimal`, and `acp` profiles auto-initialize from shipped templates on first use (`web`: base + web-app; `headless`: base + headless; `sdk`: sdk-app; `sdk-minimal`: sdk-minimal; `acp`: acp-app). Any other missing profile fails loud with a hint to run `worldline plugin --profile <name> add <package>`.
 
 ### App arguments
 
@@ -27,7 +27,7 @@ The shipped apps own these command lines:
 | `web` | `--host`, `--port`, repeatable `--trusted-host`, `--no-open` |
 | `headless` | the task text, as the positional argument |
 
-A one-shot task (`worldline --profile headless "run the tests"`) creates one fresh persisted Agent through the core registry, submits the task, waits for quiescence, and flushes the Session before deriving the last non-empty assistant text and final `turn/end` reason from its durable interval. It prints the text on stdout and exits 0 for `completed`, else 1. An invocation with no task is a usage error from that app. The shipped headless profile mounts no ApiProxy, Host, HTTP server, Web runtime, or browser client; a successful run writes nothing to stderr and opens no listening port.
+A one-shot task (`worldline --profile headless "run the tests"`) creates one fresh persisted Agent through the core registry, submits the task, waits for quiescence, and flushes the Session before deriving the last non-empty assistant text and final `turn/end` reason from its durable interval. It prints only the final answer on stdout, streams reasoning progress to stderr, and exits 0 for `completed`, else 1. An invocation with no task is a usage error from that app. The shipped headless profile mounts no ApiProxy, Host, HTTP server, Web runtime, or browser client and opens no listening port.
 
 Inspect the composed tree without booting it:
 
@@ -45,11 +45,11 @@ worldline --profile web --patch ./extra.yml --dump-config
 The Codex and Claude Code subagent providers are separate optional Bundles. Add either package, both in one command, or remove either package independently:
 
 ```sh
-dsh plugin --profile <name> add @deepseek-ai/dsh-subagent-codex
-dsh plugin --profile <name> add @deepseek-ai/dsh-subagent-claude-code
-dsh plugin --profile <name> add @deepseek-ai/dsh-subagent-codex @deepseek-ai/dsh-subagent-claude-code
-dsh plugin --profile <name> remove @deepseek-ai/dsh-subagent-codex
-dsh plugin --profile <name> remove @deepseek-ai/dsh-subagent-claude-code
+worldline plugin --profile <name> add @deepseek-ai/dsh-subagent-codex
+worldline plugin --profile <name> add @deepseek-ai/dsh-subagent-claude-code
+worldline plugin --profile <name> add @deepseek-ai/dsh-subagent-codex @deepseek-ai/dsh-subagent-claude-code
+worldline plugin --profile <name> remove @deepseek-ai/dsh-subagent-codex
+worldline plugin --profile <name> remove @deepseek-ai/dsh-subagent-claude-code
 ```
 
 The successful pnpm operation changes the Profile manifest and Bundle list on disk; a running Profile keeps the Bundle set from its current start. Restart that Profile after adding, removing, or updating a Bundle. This startup boundary applies to Bundle membership, while ordinary edits to the Profile or home `cordis.patch.yml` take effect through hot reload. On the next start, each installed Bundle registers only its dormant Host provider; a copied Preset must separately enable the matching tool row for new Agents. The [Codex provider README](../../../packages/subagent/subagent-codex/README.md) and [Claude Code provider README](../../../packages/subagent/subagent-claude-code/README.md) own executable, authentication, payload, and failure details; the [base Bundle reference](../../../packages/bundle/base/README.md) owns the default dependency closure.
@@ -57,11 +57,11 @@ The successful pnpm operation changes the Profile manifest and Bundle list on di
 The Codex and Claude Code subagent providers are separate optional Bundles. Add either package, both in one command, or remove either package independently:
 
 ```sh
-dsh plugin --profile <name> add @deepseek-ai/dsh-subagent-codex
-dsh plugin --profile <name> add @deepseek-ai/dsh-subagent-claude-code
-dsh plugin --profile <name> add @deepseek-ai/dsh-subagent-codex @deepseek-ai/dsh-subagent-claude-code
-dsh plugin --profile <name> remove @deepseek-ai/dsh-subagent-codex
-dsh plugin --profile <name> remove @deepseek-ai/dsh-subagent-claude-code
+worldline plugin --profile <name> add @deepseek-ai/dsh-subagent-codex
+worldline plugin --profile <name> add @deepseek-ai/dsh-subagent-claude-code
+worldline plugin --profile <name> add @deepseek-ai/dsh-subagent-codex @deepseek-ai/dsh-subagent-claude-code
+worldline plugin --profile <name> remove @deepseek-ai/dsh-subagent-codex
+worldline plugin --profile <name> remove @deepseek-ai/dsh-subagent-claude-code
 ```
 
 The successful pnpm operation changes the Profile manifest and Bundle list on disk; a running Profile keeps the Bundle set from its current start. Restart that Profile after adding, removing, or updating a Bundle. This startup boundary applies to Bundle membership, while ordinary edits to the Profile or home `cordis.patch.yml` take effect through hot reload. On the next start, each installed Bundle registers only its dormant Host provider; a copied Preset must separately enable the matching tool row for new Agents. The [Codex provider README](../../../packages/subagent/subagent-codex/README.md) and [Claude Code provider README](../../../packages/subagent/subagent-claude-code/README.md) own executable, authentication, payload, and failure details; the [base Bundle reference](../../../packages/bundle/base/README.md) owns the default dependency closure.
@@ -89,11 +89,11 @@ The production Web runner needs built package and frontend artifacts (`pnpm run 
 
 Process shutdown gives the plugin tree up to five seconds to dispose. The first `SIGINT`/`SIGTERM` starts that graceful drain — `SIGTERM` is a supervisor's ordinary stop request and exits 0 on every surface, `SIGINT` reports 130; a second signal forces immediate exit. If one-shot normal completion is already stuck in disposal, the first `Ctrl+C` is the escalation and exits immediately instead of being swallowed.
 
-All modes treat the invoking directory as the default workspace root, load applicable `AGENTS.md` or `CLAUDE.md` instructions with a 65,536-byte render budget, and use an in-memory SQLite session content index. Every profile boot watches valid edits of both `cordis.patch.yml` layers (profile and home) and reapplies them transactionally; a one-shot surface exits through its bounded shutdown, which disposes the watchers.
+All modes treat the invoking directory as the default workspace root, load applicable `AGENTS.md` or `CLAUDE.md` instructions with a 65,536-byte render budget, and use an in-memory SQLite session content index. Interactive `web` and custom profiles watch valid edits of both `cordis.patch.yml` layers (profile and home) and reapply them transactionally. The shipped automation profiles (`headless`, `sdk`, `sdk-minimal`, and `acp`) freeze their patch stack at startup so one invocation or protocol process has a stable composition.
 
 New sessions default to the `workspace-write` permission preset. Bash and filesystem mutations are restricted to the session workspace and platform temporary roots; reads, network access, and process visibility are not confined. `WORLDLINE_PERMISSION_MODE` changes the process fallback. Stored General-settings permissions affect later Web sessions, not an already-open one.
 
-`WORLDLINE_TOOLS_MODE` selects `native`, `code`, or `both` for the process; another value fails at boot. The shipped `minimal` agent preset keeps that deployment presentation, fixes the complete system prompt to `You are a helpful software engineer assistant.`, and composes only persistent `bash` plus `str_replace_editor`. Select 极简模式 when creating a Web session; every other prompt section and model-facing plugin remains absent from that agent while the shared browser, workspace, persistence, sandbox, and permission host stays in place.
+`WORLDLINE_TOOLS_MODE` selects `native`, `ptc`, or `both` for the process; another value fails at boot. The shipped `minimal` agent preset keeps that deployment presentation, fixes the complete system prompt to `You are a helpful software engineer assistant.`, and composes only persistent `bash` plus `str_replace_editor`. Select 极简模式 when creating a Web session; every other prompt section and model-facing plugin remains absent from that agent while the shared browser, workspace, persistence, sandbox, and permission host stays in place.
 
 ## Shared deployment behavior
 

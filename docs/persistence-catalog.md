@@ -90,7 +90,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:339`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:346`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:375`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:407`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:344`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:351`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:380`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:412`](../packages/core/session/src/types.ts)
 
 ## Events
 
@@ -404,7 +404,7 @@ Source: [`packages/compaction/compaction/src/types.ts:32`](../packages/compactio
 'companion/expression-intent': CompanionExpressionIntentEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:201`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:217`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionreference--log-only"></a>
 
@@ -415,7 +415,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:201`](../package
 'companion/reference': CompanionReferenceEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:203`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:219`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionroom-membership--log-only"></a>
 
@@ -426,7 +426,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:203`](../package
 'companion/room-membership': CompanionRoomMembershipEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:205`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:221`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionstream-delta--log-only"></a>
 
@@ -437,7 +437,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:205`](../package
 'companion/stream-delta': CompanionStreamDeltaEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:209`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:225`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionstream-end--log-only"></a>
 
@@ -448,7 +448,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:209`](../package
 'companion/stream-end': CompanionStreamEndEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:211`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:227`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionstream-start--log-only"></a>
 
@@ -459,7 +459,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:211`](../package
 'companion/stream-start': CompanionStreamStartEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:207`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:223`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 ### `feedback/*`
 
@@ -618,7 +618,7 @@ Source: [`packages/plan/plan-mode/src/index.ts:51`](../packages/plan/plan-mode/s
 'request/context': RequestContext
 ```
 
-Source: [`packages/core/session/src/types.ts:312`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:317`](../packages/core/session/src/types.ts)
 
 <a id="requestheader--log-only"></a>
 
@@ -629,7 +629,12 @@ Source: [`packages/core/session/src/types.ts:312`](../packages/core/session/src/
  * Full header for the next request, appended inside its step before dispatch.
  * It is log-only; the latest snapshot reconstructs the request header.
  */
-'request/header': { header: EpochHeader; reason: RequestHeaderReason }
+'request/header': {
+  header: EpochHeader
+  reason: RequestHeaderReason
+  /** A changed header also begins a distinct model-message series. */
+  startsSeries?: true
+}
 ```
 
 Source: [`packages/core/session/src/types.ts:307`](../packages/core/session/src/types.ts)
@@ -707,7 +712,7 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 'session/end-seed': Record<string, never>
 ```
 
-Source: [`packages/core/session/src/types.ts:335`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:340`](../packages/core/session/src/types.ts)
 
 <a id="sessiontitle--log-only"></a>
 
@@ -737,6 +742,24 @@ Source: [`packages/session/session-title/src/index.ts:100`](../packages/session/
 Types: [SessionTitleLlmRequestEventData](subsystems/session-title.md)
 
 Source: [`packages/session/session-title-llm/src/index.ts:43`](../packages/session/session-title-llm/src/index.ts)
+
+### `session-log-deepseek/*`
+
+<a id="session-log-deepseekdelivery-accepted--log-only"></a>
+
+#### `session-log-deepseek/delivery-accepted` — log-only
+
+```ts persistence-catalog
+/** Records that the configured endpoint accepted one delivery through `throughSeq`. */
+'session-log-deepseek/delivery-accepted': {
+  /** Session identity the accepted delivery carried; inherited fork markers retain the parent's id. */
+  sessionId: import('@deepseek-ai/dsh-session/types').SessionId
+  /** Last canonical event included in the accepted request. */
+  throughSeq: number
+}
+```
+
+Source: [`packages/session/session-log-deepseek/src/types.ts:26`](../packages/session/session-log-deepseek/src/types.ts)
 
 ### `step/*`
 
@@ -779,7 +802,26 @@ Source: [`packages/core/session/src/types.ts:253`](../packages/core/session/src/
 'subagent/descriptor': SubagentDescriptorData
 ```
 
-Source: [`packages/subagent/subagent/src/descriptor.ts:37`](../packages/subagent/subagent/src/descriptor.ts)
+Source: [`packages/subagent/subagent/src/descriptor.ts:38`](../packages/subagent/subagent/src/descriptor.ts)
+
+<a id="subagentmodel-selection-policy--log-only"></a>
+
+#### `subagent/model-selection-policy` — log-only
+
+```ts persistence-catalog
+/**
+ * Records that this session's delegation tool exposes child provider,
+ * model, and reasoning-effort selection. Appended before the first model
+ * request; absence means the fixed-route definition. Log-only: it carries
+ * no `surfaceOp` and never enters model history.
+ */
+'subagent/model-selection-policy': {
+  /** Exact routes this Session may select explicitly for a child. */
+  allowedModels: AllowedModelRoute[]
+}
+```
+
+Source: [`packages/subagent/tool-subagent/src/model-selection-state.ts:14`](../packages/subagent/tool-subagent/src/model-selection-state.ts)
 
 ### `team/*`
 
@@ -894,7 +936,7 @@ Source: [`packages/core/session/src/types.ts:282`](../packages/core/session/src/
  * before returning), so its execution-enclosure relation holds by
  * construction.
  */
-'tool/code-dispatch': CodeDispatchEventData
+'tool/code-dispatch': PtcDispatchEventData
 ```
 
 Source: [`packages/core/tools/src/types.ts:56`](../packages/core/tools/src/types.ts)
@@ -917,7 +959,7 @@ Source: [`packages/core/tools/src/types.ts:56`](../packages/core/tools/src/types
  * with `tool/code-dispatch` by `subCallId` (timing = the two events'
  * `time` fields).
  */
-'tool/code-dispatch-start': CodeDispatchStartEventData
+'tool/code-dispatch-start': PtcDispatchStartEventData
 ```
 
 Source: [`packages/core/tools/src/types.ts:40`](../packages/core/tools/src/types.ts)

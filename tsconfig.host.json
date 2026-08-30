@@ -54,7 +54,16 @@
       "path": "./packages/bundle/base"
     },
     {
+      "path": "./packages/bundle/acp-app"
+    },
+    {
       "path": "./packages/bundle/headless"
+    },
+    {
+      "path": "./packages/bundle/sdk-app"
+    },
+    {
+      "path": "./packages/bundle/sdk-minimal"
     },
     {
       "path": "./packages/bundle/web-app"
@@ -315,7 +324,13 @@
       "path": "./packages/llm/llm"
     },
     {
+      "path": "./packages/llm/deepseek-llm-api-extensions"
+    },
+    {
       "path": "./packages/llm/llm-deepseek"
+    },
+    {
+      "path": "./packages/llm/plugin-package-inventory-deepseek"
     },
     {
       "path": "./packages/llm/llm-pi-ai"
@@ -391,6 +406,9 @@
     },
     {
       "path": "./packages/session/session-persistence-jsonl"
+    },
+    {
+      "path": "./packages/session/session-log-deepseek"
     },
     {
       "path": "./packages/session/session-persistence-sqlite"

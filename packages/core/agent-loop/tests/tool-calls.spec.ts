@@ -690,7 +690,7 @@ describe('tool-call scheduler: failure quiescence', () => {
   })
 })
 
-describe('code-mode native-tool denial through the agent loop', () => {
+describe('PTC native-tool denial through the agent loop', () => {
   /** A minimal in-process code runtime for test purposes — never actually runs. */
   class FakeCodeRuntime extends CodeRuntime {
     readonly language = 'typescript'
@@ -705,7 +705,7 @@ describe('code-mode native-tool denial through the agent loop', () => {
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
     await ctx.plugin(SystemPrompt, { persona: '' })
-    await ctx.plugin(ToolRuntime, { mode: 'code' })
+    await ctx.plugin(ToolRuntime, { mode: 'ptc' })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- FakeCodeRuntime is an internal test helper with an opaque type shape
     await ctx.plugin(FakeCodeRuntime as any)
     await ctx.plugin(AgentRegistry)
@@ -714,7 +714,7 @@ describe('code-mode native-tool denial through the agent loop', () => {
     return ctx
   }
 
-  it('denies a model-direct native-tool call under code mode: tool body never runs and session records UNKNOWN_TOOL', async () => {
+  it('denies a model-direct native-tool call under PTC mode: tool body never runs and session records UNKNOWN_TOOL', async () => {
     let toolInvoked = false
     const tool = defineContentToolFixture({
       name: 'write',
@@ -729,7 +729,7 @@ describe('code-mode native-tool denial through the agent loop', () => {
       },
     })
 
-    // Scripted model emits a native tool call under code mode — the wire
+    // Scripted model emits a native tool call under PTC mode — the wire
     // never advertised it, but a non-compliant provider may still emit one.
     const adapter = new MockAdapter([
       [

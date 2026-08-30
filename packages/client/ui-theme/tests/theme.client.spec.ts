@@ -8,6 +8,11 @@ import type {
   ThemeTokenOverrides,
 } from '@deepseek-ai/dsh-client-ui-theme/client'
 import { ThemeRuntime } from '@deepseek-ai/dsh-client-ui-theme/client'
+import {
+  DEFAULT_FONT_SIZE,
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+} from '../src/theme-settings.ts'
 
 const make = (host = stubSettingsScope<ThemeSettings>()): {
   ctx: Context
@@ -26,10 +31,27 @@ describe('ThemeRuntime', () => {
     const { theme } = make()
     const snapshot = theme.getTheme()
     expect(snapshot.preference).toBe('system')
+    expect(snapshot.fontSize).toBe(DEFAULT_FONT_SIZE)
     // jsdom matchMedia is absent; system resolves to light.
     expect(snapshot.active.id).toBe('light')
     expect(snapshot.active.colorScheme).toBe('light')
     expect(snapshot.themes.map(t => t.id)).toEqual(['light', 'dark'])
+  })
+
+  it('setFontSize validates, persists, and republishes only real changes', () => {
+    const { theme, events, host } = make()
+    theme.setFontSize(16)
+    expect(theme.getTheme().fontSize).toBe(16)
+    expect(host.set).toHaveBeenCalledWith('fontSize', 16)
+    expect(events).toHaveLength(1)
+
+    theme.setFontSize(16)
+    expect(events).toHaveLength(1)
+    expect(host.set).toHaveBeenCalledOnce()
+
+    for (const invalid of [FONT_SIZE_MIN - 1, FONT_SIZE_MAX + 1, 14.5]) {
+      expect(() => { theme.setFontSize(invalid) }).toThrow(/integer from 12 to 17/)
+    }
   })
 
   it('setTheme switches, writes through the scope, republishes, and keeps DOM untouched', () => {
@@ -50,19 +72,31 @@ describe('ThemeRuntime', () => {
 
   it('adopts a published Host section without writing it back', () => {
     const { theme, events, host } = make()
-    host.publish({ status: 'ready', value: { preference: 'dark' }, revision: 1, writable: true })
+    host.publish({
+      status: 'ready',
+      value: { preference: 'dark', fontSize: 16 },
+      revision: 1,
+      writable: true,
+    })
     expect(theme.getTheme().preference).toBe('dark')
+    expect(theme.getTheme().fontSize).toBe(16)
     expect(events).toHaveLength(1)
     expect(host.set).not.toHaveBeenCalled()
-    host.publish({ value: { preference: 'dark' }, revision: 2 })
+    host.publish({ value: { preference: 'dark', fontSize: 16 }, revision: 2 })
     expect(events).toHaveLength(1)
   })
 
   it('adopts a section already standing at construction', () => {
     const host = stubSettingsScope<ThemeSettings>()
-    host.publish({ status: 'ready', value: { preference: 'dark' }, revision: 1, writable: true })
+    host.publish({
+      status: 'ready',
+      value: { preference: 'dark', fontSize: 15 },
+      revision: 1,
+      writable: true,
+    })
     const { theme } = make(host)
     expect(theme.getTheme().preference).toBe('dark')
+    expect(theme.getTheme().fontSize).toBe(15)
   })
 
   it('throws on unknown setTheme ids, duplicate registration, and the system id', () => {

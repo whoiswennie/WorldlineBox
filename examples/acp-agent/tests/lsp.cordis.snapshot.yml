@@ -27,3 +27,9 @@
               maxLocations: 1
           - id: llm-replay
             name: '@deepseek-ai/dsh-llm-replay'
+            config:
+              providers:
+                - id: deepseek-official
+                  name: DeepSeek
+                  models:
+                    - id: deepseek-v4-pro

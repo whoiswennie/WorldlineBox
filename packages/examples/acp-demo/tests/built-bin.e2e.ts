@@ -5,13 +5,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
-  ClientSideConnection,
+  client as createAcpClientApp,
+  methods,
   ndJsonStream,
   PROTOCOL_VERSION,
-  type Agent as AcpAgent,
-  type Client,
-  type RequestPermissionRequest,
-  type RequestPermissionResponse,
   type SessionNotification,
 } from '@agentclientprotocol/sdk'
 import { Readable, Writable } from 'node:stream'
@@ -58,6 +55,20 @@ async function link(target: string, name: string, nm: string): Promise<void> {
   await symlink(target, dest, process.platform === 'win32' ? 'junction' : 'dir')
 }
 
+async function packageRoot(entry: string, expectedName: string): Promise<string> {
+  let current = dirname(entry)
+  while (true) {
+    const manifest = join(current, 'package.json')
+    if (existsSync(manifest)) {
+      const parsed = JSON.parse(await readFile(manifest, 'utf8')) as { name?: string }
+      if (parsed.name === expectedName) return current
+    }
+    const parent = dirname(current)
+    if (parent === current) throw new Error(`Unable to locate package root for ${expectedName}`)
+    current = parent
+  }
+}
+
 /** Build a temp consumer dir + a minimal acp `cordis.yml`. Returns the dir. */
 async function makeConsumer(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'acp-built-bin-'))
@@ -74,8 +85,8 @@ async function makeConsumer(): Promise<string> {
     // Resolve from ACP's package.json URL (the package that declares the
     // dep), not this test file's location — `acp-agent` does not depend on these.
     const fromAcp = pathToFileURL(join(acpPkgDir, 'package.json')).href
-    const resolved = fileURLToPath(import.meta.resolve(`${dep}/package.json`, fromAcp))
-    await link(dirname(resolved), dep, nm)
+    const resolved = fileURLToPath(import.meta.resolve(dep, fromAcp))
+    await link(await packageRoot(resolved, dep), dep, nm)
   }
   await writeFile(join(dir, 'mock-llm.mjs'), [
     "import { LlmAdapter } from '@deepseek-ai/dsh-llm'",
@@ -156,29 +167,43 @@ describe.skipIf(!existsSync(acpBin))('worldline-acp-demo BUILT bin (node lib/bin
       Readable.toWeb(passthrough) as ReadableStream<Uint8Array>,
     )
     const updates: SessionNotification['update'][] = []
-    const makeClient = (_a: AcpAgent): Client => ({
-      sessionUpdate(params: SessionNotification): Promise<void> {
+    const client = createAcpClientApp({ name: 'worldline-acp-demo-built-test' })
+      .onNotification(methods.client.session.update, ({ params }) => {
         updates.push(params.update)
         return Promise.resolve()
-      },
-      requestPermission(_p: RequestPermissionRequest): Promise<RequestPermissionResponse> {
-        return Promise.resolve({ outcome: { outcome: 'cancelled' } })
-      },
-    })
-    const client = new ClientSideConnection(makeClient, stream)
+      })
+      .onRequest(methods.client.session.requestPermission, () => (
+        Promise.resolve({ outcome: { outcome: 'cancelled' as const } })
+      ))
+      .connect(stream)
+      .agent
 
-    const init = await client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const init = await client.request(methods.agent.initialize, {
+      protocolVersion: PROTOCOL_VERSION,
+      clientCapabilities: {},
+    })
     expect(init.agentCapabilities).toEqual({
       promptCapabilities: { image: false, audio: false, embeddedContext: false },
+      mcpCapabilities: { http: true },
+      sessionCapabilities: { close: {}, list: {}, resume: {} },
     })
     const sessionCwd = consumer
-    const { sessionId } = await client.newSession({ cwd: sessionCwd, mcpServers: [] })
-    const result = await client.prompt({ sessionId, prompt: [{ type: 'text', text: 'reply' }] })
+    const { sessionId } = await client.request(methods.agent.session.new, { cwd: sessionCwd, mcpServers: [] })
+    const result = await client.request(methods.agent.session.prompt, {
+      sessionId,
+      prompt: [{ type: 'text', text: 'reply' }],
+    })
     expect(result.stopReason).toBe('end_turn')
-    await expect.poll(() => updates).toEqual([{
+    await expect.poll(() => updates.length).toBe(1)
+    expect(updates[0]).toMatchObject({
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'ACP BUILT OK' },
-    }])
+    })
+    const update = updates[0]
+    if (update?.sessionUpdate !== 'agent_message_chunk') {
+      throw new Error('Expected one ACP assistant message update.')
+    }
+    expect(update.messageId).toBeTypeOf('string')
     const sessionsRoot = join(sessionCwd, '.sessions')
     let log: string | undefined
     await expect.poll(async () => {

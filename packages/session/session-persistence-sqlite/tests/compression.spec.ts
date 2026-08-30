@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { zstdCompressSync } from 'node:zlib'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -13,7 +15,6 @@ import {
   bindRecord,
   decodeRow,
   scanRows,
-  ZSTD_DATA_THRESHOLD_BYTES,
 } from '../src/compression.ts'
 import type { EventRow } from '../src/schema.ts'
 
@@ -48,6 +49,12 @@ function row(record: StorageRecord): EventRow {
 }
 
 describe('SQLite compression', () => {
+  it('pins the schema-18 dictionary bytes', () => {
+    const dictionary = readFileSync(new URL('../resources/zstd-dictionary.bin', import.meta.url))
+    expect(createHash('sha256').update(dictionary).digest('hex'))
+      .toBe('5bffba4398790bb464889104fbf5829416ef88adbd49a4d269e7cb90e0a170a8')
+  })
+
   it('stores a 100-member run in one row and restores every logical event', () => {
     const events = Array.from({ length: 100 }, (_, index) => chunk(index))
     const records = packChunkRuns(events)
@@ -212,19 +219,20 @@ describe('SQLite compression', () => {
     },
   )
 
-  it('compresses large data and delta-encodes complete provenance arrays', () => {
+  it('compresses large data and run-encodes complete provenance arrays', () => {
     const sources = Array.from({ length: 2_000 }, (_, index) => index + 10)
     const event = {
       type: 'assistant/message',
       seq: sources.at(-1)! + 1,
       time: 1,
-      data: { text: 'x'.repeat(ZSTD_DATA_THRESHOLD_BYTES * 2) },
+      data: { text: 'x'.repeat(8_192) },
       sourceEventSeqs: sources,
       surfaceOp: 'append',
     } as unknown as SessionEvent
     const bound = bindRecord(event)
     expect(bound.data).toBeInstanceOf(Uint8Array)
     expect(bound.sourceEventSeqs).toBeInstanceOf(Uint8Array)
+    expect(bound.sourceEventSeqs?.[0]).toBe(1)
     expect(bound.sourceEventSeqs?.byteLength).toBeLessThan(Buffer.byteLength(JSON.stringify(sources)))
     expect(decodeRow(row(event))).toEqual([event])
 
@@ -264,20 +272,33 @@ describe('SQLite compression', () => {
   it('rejects malformed compressed and delta-encoded values', () => {
     const scalar = row({ type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } })
     expect(() => decodeRow({ ...scalar, data: Buffer.from('not zstd') })).toThrow()
-    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x80]) }))
+    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x00]) }))
+      .toThrow(/truncated tagged payload/)
+    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x01]) }))
+      .toThrow(/truncated tagged payload/)
+    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x02, 0x00]) }))
+      .toThrow(/unknown encoding tag/)
+    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x00, 0x80]) }))
       .toThrow(/truncated varint/)
-    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x80, 0x00]) }))
+    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x00, 0x80, 0x00]) }))
       .toThrow(/non-canonical varint/)
-    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x00, 0x01]) }))
+    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x00, 0x00, 0x01]) }))
       .toThrow(/decoded seq is out of range/)
     expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([
-      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x02,
+      0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x02,
     ]) })).toThrow(/decoded seq is out of range/)
     expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([
-      0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x10,
+      0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x10,
     ]) })).toThrow(/varint is out of range/)
-    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.alloc(9, 0x80) }))
+    expect(() => decodeRow({
+      ...scalar,
+      source_event_seqs: Buffer.concat([Buffer.from([0x00]), Buffer.alloc(9, 0x80)]),
+    }))
       .toThrow(/varint is out of range/)
+    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x01, 0x00, 0x01]) }))
+      .toThrow(/run exceeds its event sequence/)
+    expect(() => decodeRow({ ...scalar, source_event_seqs: Buffer.from([0x01, 0x00, 0x00]) }))
+      .toThrow(/run count must be positive/)
   })
 
   it('rejects an oversized packed data column before JSON decoding', () => {

@@ -6,7 +6,11 @@ Service Definition for controlling conversation-owned native browser tabs. The c
 
 ## Model Experience
 
-None. This package declares a Host capability. A separate consumer decides whether and how it becomes model-visible.
+Indirectly, through a separately mounted browser tool consumer.
+
+#### KV Cache effect
+
+The Host capability itself adds no model prefix; its consumer owns any schema or result tokens.
 
 ## Known Limitations and Deferred Work
 

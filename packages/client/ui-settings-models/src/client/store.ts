@@ -32,6 +32,8 @@ export interface ProviderRow {
   apiKeyEnv: string | undefined
   /** Credential state for {@link apiKeyEnv}, once described. */
   credential: CredentialView | undefined
+  /** Conventional `<ROUTE>_API_KEY` state while the profile names no reference. */
+  derivedCredential?: CredentialView
 }
 
 /** Page snapshot. */
@@ -177,7 +179,7 @@ export class ModelsSettingsStore {
         credential: undefined,
       }
     })
-    const refs = [...new Set(rows.flatMap(row => row.apiKeyEnv === undefined ? [] : [row.apiKeyEnv]))]
+    const refs = [...new Set(rows.map(row => row.apiKeyEnv ?? deriveKeyRef(row.entry.provider)))]
     let credentials: Record<string, CredentialView> = {}
     let credentialError: string | null = null
     if (refs.length > 0) {
@@ -198,12 +200,15 @@ export class ModelsSettingsStore {
       s.error = null
       s.credentialError = credentialError
       s.writable = writable
-      s.rows = rows.map(row => ({
-        ...row,
-        ...row.apiKeyEnv !== undefined && credentials[row.apiKeyEnv] !== undefined
-          ? { credential: credentials[row.apiKeyEnv] }
-          : {},
-      }))
+      s.rows = rows.map((row) => {
+        const named = row.apiKeyEnv === undefined ? undefined : credentials[row.apiKeyEnv]
+        const derived = row.apiKeyEnv !== undefined ? undefined : credentials[deriveKeyRef(row.entry.provider)]
+        return {
+          ...row,
+          ...named === undefined ? {} : { credential: named },
+          ...derived === undefined ? {} : { derivedCredential: derived },
+        }
+      })
       s.namespaces = namespaces
     })
   }

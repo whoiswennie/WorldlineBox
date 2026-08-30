@@ -13,6 +13,10 @@ interface BuiltInMeme {
   readonly durationMs?: number
 }
 
+/**
+ * Built in memes.
+ * @returns The resulting value.
+ */
 export const BUILT_IN_MEMES: readonly BuiltInMeme[] = [
   { id: 'builtin-yachiyo-runami-001', scope: 'yachiyo-runami', title: '吃薯片', content: '八千代-吃薯片', asset: '/worldline-experience/companion-memes/yachiyo-runami/001.gif', mimeType: 'image/gif' },
   { id: 'builtin-yachiyo-runami-002', scope: 'yachiyo-runami', title: '大咩哟', content: '八千代-大咩哟', asset: '/worldline-experience/companion-memes/yachiyo-runami/002.gif', mimeType: 'image/gif' },

@@ -372,6 +372,19 @@ export interface ChatNodeStore {
   values(): readonly ChatConversationViewNode[]
 }
 
+/** One loaded Turn projected into the compact transcript navigation rail. */
+export interface TurnNavigationItem {
+  readonly turn: number
+  readonly anchorKey: string
+  readonly prompt: string
+  readonly response: string
+}
+
+/** Stable live projection whose item array changes only with visible rail data. */
+export interface ChatTurnNavigationIndex {
+  items(): readonly TurnNavigationItem[]
+}
+
 /**
  * Stable live Location index. An old ChatSnapshot observes later membership
  * changes through this index.
@@ -397,6 +410,7 @@ export interface ChatSnapshot {
   readonly order: readonly string[]
   readonly nodes: ChatNodeStore
   readonly locations: ChatLocationNodeIndex
+  readonly navigation: ChatTurnNavigationIndex
   readonly timeline: ConversationTimelineSnapshot
   readonly legacy: LegacyConversationSlice
 }
@@ -419,6 +433,9 @@ export const EMPTY_CHAT_SNAPSHOT: ChatSnapshot = {
   locations: {
     getTurn: () => EMPTY_LIST,
     getStep: () => EMPTY_LIST,
+  },
+  navigation: {
+    items: () => EMPTY_LIST,
   },
   timeline: EMPTY_TIMELINE,
   legacy: {

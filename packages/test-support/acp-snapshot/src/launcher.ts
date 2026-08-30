@@ -11,12 +11,26 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import {
-  ClientSideConnection,
+  client as createAcpClientApp,
+  methods,
   ndJsonStream,
-  type Agent as AcpAgent,
-  type Client,
+  type CancelNotification,
+  type CloseSessionRequest,
+  type CloseSessionResponse,
+  type InitializeRequest,
+  type InitializeResponse,
+  type ListSessionsRequest,
+  type ListSessionsResponse,
+  type NewSessionRequest,
+  type NewSessionResponse,
+  type PromptRequest,
+  type PromptResponse,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
+  type ResumeSessionRequest,
+  type ResumeSessionResponse,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
   type SessionNotification,
 } from '@agentclientprotocol/sdk'
 import { resolveExampleLaunch } from '@deepseek-ai/dsh-loader-smoke'
@@ -49,6 +63,19 @@ export interface AcpTestLaunchOptions {
   requestPermission?: (params: RequestPermissionRequest) => Promise<RequestPermissionResponse>
 }
 
+/** Stable ACP v1 methods used by the subprocess test harness. */
+export interface AcpTestClient {
+  readonly closed: Promise<void>
+  initialize: (params: InitializeRequest) => Promise<InitializeResponse>
+  newSession: (params: NewSessionRequest) => Promise<NewSessionResponse>
+  listSessions: (params: ListSessionsRequest) => Promise<ListSessionsResponse>
+  resumeSession: (params: ResumeSessionRequest) => Promise<ResumeSessionResponse>
+  closeSession: (params: CloseSessionRequest) => Promise<CloseSessionResponse>
+  setSessionConfigOption: (params: SetSessionConfigOptionRequest) => Promise<SetSessionConfigOptionResponse>
+  prompt: (params: PromptRequest) => Promise<PromptResponse>
+  cancel: (params: CancelNotification) => Promise<void>
+}
+
 /** A running ACP test process and its captured client-side outputs. */
 export interface LaunchedAcpTestAgent {
   /** The child process, exposed for process-level assertions. */
@@ -56,7 +83,7 @@ export interface LaunchedAcpTestAgent {
   /** Resolve when the OS spawns the child; reject with its asynchronous spawn failure. */
   spawned: Promise<void>
   /** The SDK connection backed by the child's stdio. */
-  client: ClientSideConnection
+  client: AcpTestClient
   /** Session updates in receive order. */
   updates: SessionNotification['update'][]
   /** Decode all stdout bytes captured so far. */
@@ -152,8 +179,8 @@ export function launchAcpTestAgent(options: AcpTestLaunchOptions): LaunchedAcpTe
   }
   const requestPermission = options.requestPermission
     ?? (() => Promise.resolve({ outcome: { outcome: 'cancelled' as const } }))
-  const makeClient = (_agent: AcpAgent): Client => ({
-    sessionUpdate(params: SessionNotification): Promise<void> {
+  const clientApp = createAcpClientApp({ name: 'worldline-box-acp-test-client' })
+    .onNotification(methods.client.session.update, ({ params }) => {
       return trackClientCallback(() => {
         updates.push(params.update)
         for (let index = updateWaiters.length - 1; index >= 0; index--) {
@@ -173,17 +200,30 @@ export function launchAcpTestAgent(options: AcpTestLaunchOptions): LaunchedAcpTe
           waiter.resolve(params.update)
         }
       })
-    },
-    requestPermission: params => trackClientCallback(() => requestPermission(params)),
-  })
-  const client = new ClientSideConnection(makeClient, stream)
+    })
+    .onRequest(methods.client.session.requestPermission, ({ params }) => (
+      trackClientCallback(() => requestPermission(params))
+    ))
+  const connection = clientApp.connect(stream)
+  const context = connection.agent
+  const client: AcpTestClient = {
+    closed: connection.closed,
+    initialize: params => context.request(methods.agent.initialize, params),
+    newSession: params => context.request(methods.agent.session.new, params),
+    listSessions: params => context.request(methods.agent.session.list, params),
+    resumeSession: params => context.request(methods.agent.session.resume, params),
+    closeSession: params => context.request(methods.agent.session.close, params),
+    setSessionConfigOption: params => context.request(methods.agent.session.setConfigOption, params),
+    prompt: params => context.request(methods.agent.session.prompt, params),
+    cancel: params => context.notify(methods.agent.session.cancel, params),
+  }
   // `exit` only reports the parent process's status. Descendants may retain
   // inherited stdout/stderr handles and buffered ACP frames may still be
   // crossing the SDK parser. Node's `close` follows stdio closure; the SDK's
   // `closed` follows parser exhaustion. Capture both eagerly so a caller that
   // invokes close after process exit still joins the complete drain boundary.
   const stdioClosed = new Promise<void>(resolve => child.once('close', () => { resolve() }))
-  const drained = Promise.all([stdioClosed, client.closed]).then(async () => {
+  const drained = Promise.all([stdioClosed, connection.closed]).then(async () => {
     // The ACP SDK's readable loop dispatches client callbacks without awaiting
     // them. Once `closed` settles no new callbacks can start, but callbacks
     // already in flight still belong to this launch's teardown boundary.
@@ -194,7 +234,7 @@ export function launchAcpTestAgent(options: AcpTestLaunchOptions): LaunchedAcpTe
   // A caller may await a pending update without calling close(). Make natural
   // stream exhaustion terminal for those waiters too, but only after the
   // parser has dispatched every buffered frame.
-  void client.closed.then(closeUpdateStream)
+  void connection.closed.then(closeUpdateStream)
 
   return {
     child,

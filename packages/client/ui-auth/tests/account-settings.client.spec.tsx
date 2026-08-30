@@ -26,6 +26,8 @@ describe('account settings', () => {
     }), { status: 200, headers: { 'content-type': 'application/json' } }))
     render(<AccountSettings {...({} as ComponentProps<typeof AccountSettings>)} />)
 
+    expect(screen.getByLabelText<HTMLInputElement>('账号').value).toBe('tenant-seven')
+    expect(screen.queryByText('登录用户名')).toBeNull()
     fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: '新的名称' } })
     fireEvent.change(screen.getByLabelText('个人信息'), { target: { value: '新的资料' } })
     fireEvent.click(screen.getByRole('button', { name: '保存资料' }))

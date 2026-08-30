@@ -18,7 +18,7 @@ describe('raster decoding', () => {
       ['gif', 'image/gif'],
     ] as const) {
       await expect(detectImage(await raster(format)))
-        .resolves.toEqual({ mediaType, width: 3, height: 2 })
+        .resolves.toMatchObject({ mediaType, width: 3, height: 2 })
     }
   })
 
@@ -31,7 +31,7 @@ describe('raster decoding', () => {
     await expect(detectImage(await raster('png'), { maxDimension: 2 }))
       .rejects.toMatchObject({ code: 'IMAGE_DIMENSION_TOO_LARGE' })
     await expect(detectImage(await raster('png'), { maxDimension: 3 }))
-      .resolves.toEqual({ mediaType: 'image/png', width: 3, height: 2 })
+      .resolves.toMatchObject({ mediaType: 'image/png', width: 3, height: 2 })
   })
 
   it('rejects malformed bytes and truncated payloads with readable headers', async () => {

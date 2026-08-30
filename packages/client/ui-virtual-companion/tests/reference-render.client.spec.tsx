@@ -109,6 +109,24 @@ describe('generic reference rendering', () => {
     expect(grid?.querySelectorAll('figure')).toHaveLength(3)
   })
 
+  it('uses the same media figure convention for user and companion references', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ ok: true, value: {
+      id: 'same-style', scope: 'public', title: '同一素材', description: '', tags: [], transcript: '',
+      mimeType: 'image/gif', bytes: 1, url: '/same.gif', enabled: true, builtIn: true, usageCount: 0,
+      createdAt: 1, updatedAt: 1,
+    } }), { status: 200, headers: { 'content-type': 'application/json' } }))))
+    const user = render(<RichUserText text={'<user-reference asset-id="same-style">同一素材</user-reference>'} />)
+    await waitFor(() => { expect(screen.getByAltText('同一素材')).toBeTruthy() })
+    const userFigure = user.container.querySelector('figure')
+    const userFigureClass = userFigure?.className
+    expect(userFigure?.parentElement?.className).toContain('assistantBubble')
+    expect(userFigure?.parentElement?.className).toContain('toolMemeBubble')
+    user.unmount()
+
+    const companion = render(<ReferenceToolView {...props('/same.gif', 'image/gif')} />)
+    expect(companion.container.querySelector('figure')?.className).toBe(userFigureClass)
+  })
+
   it('always reserves the first participant avatar for the room owner', () => {
     const user = {
       id: 7, username: 'owner', createdAt: 1, lastLoginAt: 1,

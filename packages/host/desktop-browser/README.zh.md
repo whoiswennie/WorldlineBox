@@ -6,6 +6,8 @@
 
 工作区本地页面使用不透明路由 token 和 realpath 包含性检查。只有所选工作区内的 HTML 入口文件可以打开，交付前每项引用资源都会对同一规范根目录重新检查。
 
+CDP 动作词表与诊断设计改编自 MIT 许可的 Master Cat 浏览器自动化实现；详见 [MASTER_CAT_NOTICE.md](MASTER_CAT_NOTICE.md)。
+
 ## 模型体验
 
 ### 用户自有原生标签页
@@ -21,8 +23,6 @@
 #### KV Cache 影响
 
 产品浏览器状态与模型前缀相互独立，不会使现有 cache 条目失效。
-
-CDP 动作词表与诊断设计改编自 MIT 许可的 Master Cat 浏览器自动化实现；详见 [MASTER_CAT_NOTICE.md](MASTER_CAT_NOTICE.md)。
 
 ## 已知限制与暂缓事项
 

@@ -47,6 +47,8 @@ interface WebBootGraph {
    * unrelated and remains owned by fiber service waiting.
    */
   entries: WebBootEntry[]
+  /** Initial combo descriptors; every entry belongs to exactly one batch. */
+  batches: WebBootBatch[]
 }
 ```
 
@@ -122,5 +124,5 @@ onRebuilt(listener: (id: string, rev: string) => void): () => void
 onGraphChanged(listener: () => void): () => void
 ```
 
-Source: [`packages/client/modules/src/index.ts:296`](../../packages/client/modules/src/index.ts)
+Source: [`packages/client/modules/src/index.ts:301`](../../packages/client/modules/src/index.ts)
 <!-- END GENERATED cordis-surface -->

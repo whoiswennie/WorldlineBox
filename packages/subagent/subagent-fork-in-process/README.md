@@ -31,7 +31,7 @@ See [`worldline-subagent-spawn-in-process`](../subagent-spawn-in-process/README.
 
 #### What the model sees
 
-The child receives the parent's balanced completed-turn surface prefix, then the new task content verbatim. A configured persona shadows prompt text in the child's fresh scope; a tool restriction filters its global wire schemas, executable lookup, and Code Mode SDK bindings but not standalone guidance. The parent's tool view and authority are not inherited. An optional structured-output request adds its child-only contract. The parent's current in-flight turn is excluded.
+The child receives the parent's balanced completed-turn surface prefix, then the new task content verbatim. A configured persona shadows prompt text in the child's fresh scope; a tool restriction filters its global wire schemas, executable lookup, and PTC mode SDK bindings but not standalone guidance. The parent's tool view and authority are not inherited. An optional structured-output request adds its child-only contract. The parent's current in-flight turn is excluded.
 
 #### Token effect
 

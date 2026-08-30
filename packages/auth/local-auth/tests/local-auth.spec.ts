@@ -103,6 +103,44 @@ describe('local authentication HTTP boundary', () => {
     expect(await firstSnapshot.json()).toMatchObject({ user: { displayName: '世界线旅人', bio: '独立资料', avatar } })
   })
 
+  it('materializes only the active tenant avatar as a Host-readable image path', async () => {
+    await new Promise<void>(resolve => server.close(() => { resolve() }))
+    const profileRoot = join(root, 'tenant-profile')
+    store = new LocalAuthStore(new Context().logger, { root, legacyDatabasePath: false }, {
+      activeUserId: 1,
+      profileAssetRoot: profileRoot,
+    })
+    await store.ready
+    const handler = createLocalAuthHandler(store)
+    server = createServer((req, res) => { void handler(req, res) })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => { resolve() })
+    })
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+
+    const registration = await post('/worldline-auth/register', {
+      username: 'avatar-owner', password: 'password-1234',
+    })
+    const cookie = cookieOf(registration)
+    const bytes = Buffer.from('materialized-avatar')
+    const avatar = `data:image/png;base64,${bytes.toString('base64')}`
+    expect((await post('/worldline-auth/profile', {
+      displayName: 'Avatar Owner', bio: '', avatar,
+    }, { cookie })).status).toBe(200)
+    const avatarPath = join(profileRoot, 'avatar.png')
+    expect(store.profileAvatarPath(1)).toBe(avatarPath)
+    expect(await readFile(avatarPath)).toEqual(bytes)
+    expect(JSON.stringify(await (await fetch(`${baseUrl}/worldline-auth/session`, { headers: { cookie } })).json()))
+      .not.toContain(avatarPath)
+
+    expect((await post('/worldline-auth/profile', {
+      displayName: 'Avatar Owner', bio: '', avatar: '',
+    }, { cookie })).status).toBe(200)
+    expect(store.profileAvatarPath(1)).toBeUndefined()
+    await expect(readFile(avatarPath)).rejects.toThrow()
+  })
+
   it('keeps WebUI and Electron sessions valid together and revokes both on device logout', async () => {
     const input = {
       username: 'shared-containers',
@@ -191,7 +229,7 @@ describe('local authentication HTTP boundary', () => {
     expect((await post('/worldline-auth/login', input, { origin: 'http://attacker.invalid' })).status).toBe(403)
     const shortName = await post('/worldline-auth/register', { username: 'ab', password: 'password-1234' })
     expect(shortName.status).toBe(400)
-    expect(await shortName.json()).toMatchObject({ error: '用户名长度应为 3 到 32 个字符' })
+    expect(await shortName.json()).toMatchObject({ error: '账号长度应为 3 到 32 个字符' })
   })
 
   it('accepts non-empty local passwords without a minimum length', async () => {

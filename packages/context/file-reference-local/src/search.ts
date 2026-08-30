@@ -15,9 +15,25 @@ export { activeAtToken, formatFileMention } from '@deepseek-ai/dsh-file-referenc
 /** Default maximum file and directory candidates rendered for one query. */
 export const DEFAULT_FILE_SEARCH_MAX_RESULTS = 20
 /** Default maximum entries retained in one workspace search index. */
-export const DEFAULT_FILE_SEARCH_MAX_ENTRIES = 10_000
-/** Directory basenames omitted from traversal unless the deployment overrides them. */
-export const DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES = ['.git', 'node_modules'] as const
+export const DEFAULT_FILE_SEARCH_MAX_ENTRIES = 50_000
+/** Version-control, dependency, cache, and unambiguous generated-output trees omitted by default. */
+export const DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES = [
+  '.git',
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  'target',
+  '.next',
+  '.nuxt',
+  '.turbo',
+  '.venv',
+  '__pycache__',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.gradle',
+] as const
 
 /** Resolved limits and exclusions for one workspace index. */
 export interface FileSearchConfig {
@@ -41,6 +57,11 @@ interface IndexGeneration {
   promise: Promise<IndexedPath[]>
 }
 
+interface SettledIndex {
+  entries: IndexedPath[]
+  startedAt: number
+}
+
 /**
  * Cancellable, reusable fuzzy index rooted at one agent working directory.
  * Directory-scoped queries list live state; bare fuzzy queries share one
@@ -48,7 +69,9 @@ interface IndexGeneration {
  */
 export class WorkspaceFileSearch {
   private readonly excludedDirectories: ReadonlySet<string>
+  private settled: SettledIndex | undefined
   private generation: IndexGeneration | undefined
+  private invalidations = 0
   private disposed = false
 
   constructor(
@@ -83,7 +106,7 @@ export class WorkspaceFileSearch {
       const fragment = slash < 0 ? '' : query.slice(slash + 1)
       return this.listDirectory(directory, fragment, signal)
     }
-    const indexed = await waitForPromise(this.ensureIndex(), signal)
+    const indexed = await this.indexFor(signal)
     return rankCandidates(
       indexed.filter(candidate => visibleForGlobalQuery(candidate.path, query)),
       query,
@@ -91,31 +114,53 @@ export class WorkspaceFileSearch {
     )
   }
 
-  /** Discard the current index so the next bare query observes a fresh tree. */
+  /** Mark the index stale; it keeps answering while its replacement is built. */
   invalidate(): void {
-    this.generation?.controller.abort(new Error('file search index invalidated'))
-    this.generation = undefined
+    this.invalidations += 1
   }
 
   /** Abort traversal and make later queries return no candidates. */
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    this.invalidate()
+    this.generation?.controller.abort(new Error('file search index disposed'))
+    this.generation = undefined
+    this.settled = undefined
+  }
+
+  private async indexFor(signal: AbortSignal): Promise<readonly IndexedPath[]> {
+    const settled = this.settled
+    if (settled === undefined) return waitForPromise(this.ensureIndex(), signal)
+    if (settled.startedAt < this.invalidations) {
+      void this.ensureIndex().catch(() => {
+        // A background refresh failure does not discard a usable stale index.
+      })
+    }
+    return settled.entries
   }
 
   private ensureIndex(): Promise<IndexedPath[]> {
     if (this.generation !== undefined) return this.generation.promise
     const controller = new AbortController()
+    const startedAt = this.invalidations
     const generation = {
       controller,
       promise: Promise.resolve([] as IndexedPath[]),
     } satisfies IndexGeneration
-    generation.promise = this.scanWorkspace(controller.signal).catch((error: unknown) => {
-      /* v8 ignore next -- every owned abort clears `generation` synchronously; this only protects an unexpected scan failure */
-      if (this.generation === generation) this.generation = undefined
-      throw error
-    })
+    generation.promise = this.scanWorkspace(controller.signal).then(
+      (entries) => {
+        /* v8 ignore next -- dispose normally aborts before a scan resolves. */
+        if (this.disposed) return entries
+        this.generation = undefined
+        this.settled = { entries, startedAt }
+        return entries
+      },
+      (error: unknown) => {
+        /* v8 ignore next -- dispose clears this synchronously. */
+        if (this.generation === generation) this.generation = undefined
+        throw error
+      },
+    )
     this.generation = generation
     return generation.promise
   }
@@ -130,7 +175,9 @@ export class WorkspaceFileSearch {
       if (directory === undefined) {
         throw new Error('file search selected a missing directory')
       }
-      const entries = await readDirectory(directory.absolute, signal)
+      const entries = cursor === 0
+        ? await readWorkspaceRoot(directory.absolute, signal)
+        : await readDirectory(directory.absolute, signal)
       for (const entry of entries) {
         signal.throwIfAborted()
         const path = directory.relative === '' ? entry.name : `${directory.relative}/${entry.name}`
@@ -195,6 +242,13 @@ async function resolveDisplayDirectory(
     }
   }
   return absolute
+}
+
+async function readWorkspaceRoot(absolute: string, signal: AbortSignal) {
+  signal.throwIfAborted()
+  const entries = await readdir(absolute, { withFileTypes: true })
+  signal.throwIfAborted()
+  return entries.sort((left, right) => compareText(left.name, right.name))
 }
 
 async function readDirectory(absolute: string, signal: AbortSignal) {

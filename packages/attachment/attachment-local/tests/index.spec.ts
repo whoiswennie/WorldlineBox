@@ -15,7 +15,7 @@ import LocalAttachmentStore, {
 describe('local attachment service', () => {
   it('resolves every omitted admission limit explicitly', () => {
     const service = new LocalAttachmentStore(new Context(), {})
-    expect(DEFAULT_MAX_IMAGE_BYTES).toBe(3.5 * 1024 * 1024)
+    expect(DEFAULT_MAX_IMAGE_BYTES).toBe(20 * 1024 * 1024)
     expect(service.imageLimits).toEqual({
       maxImageBytes: DEFAULT_MAX_IMAGE_BYTES,
       maxImagesPerMessage: DEFAULT_MAX_IMAGES_PER_MESSAGE,
@@ -35,7 +35,10 @@ describe('local attachment service', () => {
         'base64',
       ))
       const ref = await service.saveImage({ data, mediaType: 'image/png' })
-      await expect(service.readImage(ref)).resolves.toEqual({ ref, data })
+      const stored = await service.readImage(ref)
+      expect(stored.ref).toEqual(ref)
+      expect(stored.data.byteLength).toBe(ref.bytes)
+      expect(stored.ref).toMatchObject({ width: 1, height: 1 })
     } finally {
       await rm(worldlineHome, { recursive: true, force: true })
     }

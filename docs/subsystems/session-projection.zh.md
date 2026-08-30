@@ -12,23 +12,26 @@
 
 ```ts type-equiv
 /**
- * One domain's state-driven computation unit: three pure synchronous
- * functions plus declarations — never an opaque getter. The framework drives
+ * One domain's state-driven computation unit: a pure synchronous fold plus
+ * declarations and an optional client view — never an opaque getter. The framework drives
  * `apply` on every committed session event; the domain holds no
- * subscriptions and owns only the mathematics. All three functions MUST be
- * synchronous (an async unit would tear the carriers' consistency cut) and
+ * subscriptions and owns only the computation. All functions MUST be
+ * synchronous (an async unit would tear the carriers' consistency cut), and
  * `state` MUST be plain JSON (the persisted-cache precondition).
  */
-interface ProjectionDefinition<K extends keyof SessionProjectionMap, S> {
-  /** The projection key this unit owns (its `SessionProjectionMap` entry). */
+interface ProjectionDefinition<
+  K extends keyof SessionProjectionStateMap,
+  S extends SessionProjectionStateMap[K] = SessionProjectionStateMap[K],
+> {
+  /** The projection key this unit owns (its `SessionProjectionStateMap` entry). */
   key: K
-  /** Validates the wire payload (`view` output) before it leaves the host. */
-  schema: ZodType<SessionProjectionMap[K]>
+  /** Validates persisted state before it seeds a fold. */
+  stateSchema: ZodType<S>
   /**
    * State for the empty log.
    * @returns the initial state.
    */
-  init(): S
+  init(): NoInfer<S>
   /**
    * Pure transition: previous state + one committed event → next state. A
    * unit uninterested in an event MUST return the same state reference — an
@@ -37,13 +40,18 @@ interface ProjectionDefinition<K extends keyof SessionProjectionMap, S> {
    * @param event - the next committed session event.
    * @returns the next state (same reference when the event is not the unit's).
    */
-  apply(state: S, event: SessionEvent): S
-  /**
-   * State → wire payload (the read-side projection).
-   * @param state - the current state.
-   * @returns the whole current value for this unit's key.
-   */
-  view(state: S): SessionProjectionMap[K]
+  apply(state: NoInfer<S>, event: SessionEvent): NoInfer<S>
+  /** Client view. Omit for host-only units. */
+  wire?: K extends keyof SessionProjectionMap ? {
+    /** Validates the wire payload before it leaves the host. */
+    viewSchema: ZodType<SessionProjectionMap[K]>
+    /**
+     * State → wire payload (the read-side projection).
+     * @param state - the current state.
+     * @returns the whole current value for this unit's key.
+     */
+    view(state: NoInfer<S>): SessionProjectionMap[K]
+  } : never
   /**
    * Persisted-cache invalidation version: bump whenever the serialized state fields or the
    * fold semantics change, so persisted `(sessionId, key, ver, seq, val)`
@@ -60,14 +68,14 @@ interface ProjectionDefinition<K extends keyof SessionProjectionMap, S> {
 
 ```ts type-equiv
 /**
- * One consistent read cut over every registered unit for one session.
+ * One consistent read cut over every registered client-visible unit for one session.
  * `asOfSeq` is the shared watermark — the seq of the last event every value
  * reflects (`-1` for an empty log, mirroring `session/subscribed.lastSeq`).
  */
 interface ProjectionSnapshot {
   /** Seq of the last event the values reflect; -1 for an empty log. */
   asOfSeq: number
-  /** Whole current value per registered key. */
+  /** Whole current client value per registered key. */
   values: Partial<SessionProjectionMap>
 }
 ```

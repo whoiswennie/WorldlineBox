@@ -26,7 +26,7 @@ spawn 声明 `{ outputSchema: true, depthLimit: true, toolFilter: true, persona:
 
 #### 模型看到的内容
 
-全新的子 agent 逐字接收独立任务内容，默认继承父 agent 的模型和工作区，并看到带有已配置子 agent 作用域 persona 遮蔽的全局提示词。工具过滤器会为该子 agent 移除全局协议 schema、可执行工具查找和 Code Mode SDK 绑定，但保留独立注册的指导内容。它不接收任何父 agent 对话消息；过滤控制的是可见性与组合，并非从父 agent 继承的权限授予。
+全新的子 agent 逐字接收独立任务内容，默认继承父 agent 的模型和工作区，并看到带有已配置子 agent 作用域 persona 遮蔽的全局提示词。工具过滤器会为该子 agent 移除全局协议 schema、可执行工具查找和 PTC mode SDK 绑定，但保留独立注册的指导内容。它不接收任何父 agent 对话消息；过滤控制的是可见性与组合，并非从父 agent 继承的权限授予。
 
 #### Token 影响
 

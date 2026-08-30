@@ -1,14 +1,31 @@
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client'
 
+/**
+ * Type contract for playback mode.
+ * @returns The resulting value.
+ */
 export type PlaybackMode = 'list' | 'single' | 'shuffle'
+/**
+ * Default netease playlist id.
+ */
 export const DEFAULT_NETEASE_PLAYLIST_ID = '18322613388'
+/**
+ * Default netease playlist name.
+ */
 export const DEFAULT_NETEASE_PLAYLIST_NAME = '默认'
 
+/**
+ * Contract for saved netease playlist.
+ */
 export interface SavedNeteasePlaylist {
   readonly id: string
   readonly name: string
 }
 
+/**
+ * Default netease playlist.
+ * @returns The resulting value.
+ */
 export const DEFAULT_NETEASE_PLAYLIST: SavedNeteasePlaylist = {
   id: DEFAULT_NETEASE_PLAYLIST_ID,
   name: DEFAULT_NETEASE_PLAYLIST_NAME,
@@ -29,6 +46,7 @@ function autoplayCookieName(): string {
  * Cookies are host-scoped rather than port-scoped. The desktop runtime uses a
  * fresh loopback port after restart, so this small preference bridge preserves
  * the user's explicit autoplay choice when localStorage moves to a new origin.
+ * @returns The resulting value.
  */
 export function persistedMusicAutoplayPreference(): boolean | undefined {
   if (typeof document === 'undefined') return undefined
@@ -38,12 +56,18 @@ export function persistedMusicAutoplayPreference(): boolean | undefined {
   return value === '1' ? true : value === '0' ? false : undefined
 }
 
-/** Persist an explicit autoplay choice across changing loopback ports. */
+/**
+ *  Persist an explicit autoplay choice across changing loopback ports.
+ * @param enabled - enabled value.
+ */
 export function persistMusicAutoplayPreference(enabled: boolean): void {
   if (typeof document === 'undefined') return
   document.cookie = `${autoplayCookieName()}=${enabled ? '1' : '0'}; Path=/; Max-Age=${AUTOPLAY_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`
 }
 
+/**
+ * Contract for music preferences.
+ */
 export interface MusicPreferences {
   /** Whether the custom player starts after restoring its saved track and timestamp. */
   autoPlay: boolean
@@ -111,7 +135,11 @@ function customPlaylists(preferences: PlaylistPreferenceSlice): SavedNeteasePlay
   return playlists
 }
 
-/** Return the immutable default plus every valid saved or legacy playlist. */
+/**
+ *  Return the immutable default plus every valid saved or legacy playlist.
+ * @param preferences - preferences value.
+ * @returns The resulting value.
+ */
 export function resolveNeteasePlaylists(
   preferences: PlaylistPreferenceSlice,
 ): readonly SavedNeteasePlaylist[] {
@@ -146,7 +174,10 @@ function saveCustomPlaylist(
   activatePlaylist(draft, playlistId)
 }
 
-/** Create the account-isolated, persisted music preference store. */
+/**
+ *  Create the account-isolated, persisted music preference store.
+ * @returns The resulting value.
+ */
 export function createMusicPreferenceStore(): MusicPreferenceStore {
   return defineStore({
     init: (): MusicPreferences => ({

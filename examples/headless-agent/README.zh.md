@@ -29,4 +29,4 @@ pnpm exec vitest run --config vitest.e2e.config.ts packages/e2b/e2b/tests/compos
 
 ## 高级配置
 
-[`advanced.cordis.yml`](advanced.cordis.yml) 在测试组装中添加 Code Mode 和 Cordis 工具。
+[`advanced.cordis.yml`](advanced.cordis.yml) 在测试组装中添加 PTC 和 Cordis 工具。

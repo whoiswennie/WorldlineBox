@@ -476,6 +476,12 @@ describe('image attachments', () => {
         maxImagePixels: 1_000_000, maxImageDimension: 2000, mediaTypes: ['image/png'],
       },
       validateImage: vi.fn(() => Promise.resolve()),
+      validateImageBatch(inputs: readonly unknown[]) {
+        const validate = AttachmentStore.prototype as unknown as {
+          validateImageBatch(this: unknown, batch: readonly unknown[]): void
+        }
+        validate.validateImageBatch.call(this, inputs)
+      },
       saveImage: vi.fn((input: { mediaType: string; name?: string }) => {
         saved += 1
         return Promise.resolve({

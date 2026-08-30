@@ -35,6 +35,12 @@ interface Config {
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /** Response compression for socket-backed HTTP requests. */
+  compression?: 'none' | 'gzip'
+  /** Gzip DEFLATE level from 0 through 9. */
+  compressionLevel?: number
+  /** Minimum known response length eligible for gzip. */
+  compressionThresholdBytes?: number
 }
 ```
 
@@ -135,7 +141,7 @@ collectIndexInjections(): IndexInjection[]
 renderIndex(html: string): string
 ```
 
-Source: [`packages/host/webserver/src/index.ts:81`](../../packages/host/webserver/src/index.ts)
+Source: [`packages/host/webserver/src/index.ts:133`](../../packages/host/webserver/src/index.ts)
 
 <a id="webserver-events"></a>
 
@@ -158,5 +164,5 @@ Collect the structured index injection table. Emitted on every index render and 
 'webserver/index-inject'(table: IndexInjection[]): void
 ```
 
-Source: [`packages/host/webserver/src/index.ts:34`](../../packages/host/webserver/src/index.ts)
+Source: [`packages/host/webserver/src/index.ts:36`](../../packages/host/webserver/src/index.ts)
 <!-- END GENERATED cordis-surface -->

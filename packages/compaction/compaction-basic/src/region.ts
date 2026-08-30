@@ -43,6 +43,8 @@ interface PreparedCompaction extends SurfaceSelection {
   readonly measurement: TokenMeasurement
   readonly selectedNodes: TokenMeasurement['nodes']
   readonly shadowedTokenCount: number
+  /** Route-priced selected span used to verify the replacement actually shrinks pressure. */
+  readonly shadowedRouteTokenCount: number
   readonly input: SummarizationInput
 }
 
@@ -351,7 +353,8 @@ function prepareCompaction(
     ...selection,
     measurement,
     selectedNodes,
-    shadowedTokenCount: selectedNodes.reduce((total, node) => total + node.tokens, 0),
+    shadowedTokenCount: selectedNodes.reduce((total, node) => total + node.heuristicTokens, 0),
+    shadowedRouteTokenCount: selectedNodes.reduce((total, node) => total + node.tokens, 0),
     input: buildSummarizationInput(session, selection.shadowedSeqs),
   }
 }
@@ -371,9 +374,9 @@ async function summarizeCompaction(
     source: compactCheckpointSource(compactionId, sourceCommandId),
   })
   const framedSummaryTokenCount = dependencies.meter.estimateMessage(checkpointMessage)
-  if (framedSummaryTokenCount >= prepared.shadowedTokenCount) {
+  if (framedSummaryTokenCount >= prepared.shadowedRouteTokenCount) {
     throw new Error(
-      `summary is not smaller than the shadowed content (${framedSummaryTokenCount} estimated framed tokens >= ${prepared.shadowedTokenCount})`,
+      `summary is not smaller than the shadowed content (${framedSummaryTokenCount} estimated framed tokens >= ${prepared.shadowedRouteTokenCount})`,
     )
   }
   return {

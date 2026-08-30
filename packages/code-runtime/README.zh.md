@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-代码执行能力 seam（参见能力 seam）：运行时 Service Definition，用于对宿主提供的异步绑定执行模型编写的程序，并捕获它打印和返回的内容；可替换的提供方；以及工具注册表的 [Code Mode](../core/tools/README.md) Consumer（`tools: { mode: code }`，即 `run_code` 工具和按所加载运行时 `language` 生成的 SDK）。设计见 Code Mode 约定。这些全是**产品**包。
+代码执行能力 seam（参见能力 seam）：运行时 Service Definition，用于对宿主提供的异步绑定执行模型编写的程序，并捕获它打印和返回的内容；可替换的提供方；以及工具注册表的 [PTC mode](../core/tools/README.md) Consumer（`tools: { mode: ptc }`，即 `run_code` 工具和按所加载运行时 `language` 生成的 SDK）。设计见 PTC mode 约定。这些全是**产品**包。
 
 | 包 | 职责 | ctx key |
 |---|---|---|

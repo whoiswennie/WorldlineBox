@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Code Mode sub-call acceptance on the REAL machinery stack (same bench as
+// PTC mode sub-call acceptance on the REAL machinery stack (same bench as
 // chat-toolview-slot.spec): a run_code result renders the 'code' variant row
 // (description summary, program body), its logged sub-dispatches render as
 // always-visible nested rows through the SAME keyed toolview hole — the bash

@@ -38,10 +38,34 @@ import { resolveWorldlineHome } from '@deepseek-ai/dsh-home-paths'
 const SHIPPED_PRESET_ROOT = fileURLToPath(new URL('../config/agent-presets/', import.meta.url))
 
 import { WORLDLINE_LAUNCH_ENVIRONMENT_KEY, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
-import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
+import { provideCmdline, type AppReady } from '@deepseek-ai/dsh-cmdline'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
 
 const NAME = 'worldline'
+
+/** Gate stdio EOF shutdown until the complete Worldline profile boot commits. */
+function createAppReady(): { service: AppReady; commit(): void } {
+  let ready = false
+  const listeners = new Set<() => void>()
+  return {
+    service: {
+      onReady(listener) {
+        if (ready) {
+          listener()
+          return () => {}
+        }
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+    },
+    commit() {
+      if (ready) return
+      ready = true
+      for (const listener of [...listeners]) listener()
+      listeners.clear()
+    },
+  }
+}
 
 // Cordis exposes FiberState as a const enum, so source-mode execution has no
 // runtime object to import. Keep the single value this launcher needs as an
@@ -321,6 +345,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   let liveBundlePatches = composed.bundlePatches
   let runningBundles = composed.profile.layers.map(layer => layer.packageName)
   const app: { current?: Context } = {}
+  const appReady = createAppReady()
   const shutdown = createProcessShutdown(async () => { await app.current?.fiber.dispose() })
   const signalShutdown = new AbortController()
   const interrupt = (code: number): void => {
@@ -370,6 +395,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     provideCmdline(hostCtx, {
       args: options.args,
       exit: code => void shutdown.shutdown(code),
+      ready: appReady.service,
     })
     let reconciliation = Promise.resolve<readonly string[]>(runningBundles)
     let extensionUpdate = Promise.resolve()
@@ -421,7 +447,8 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   // landed mid-setup. Watching is unconditional: a one-shot surface exits
   // through its bounded shutdown, which disposes the watchers before the
   // loop drains.
-  if (!signalShutdown.signal.aborted
+  if (composed.profile.patchReload === 'live'
+    && !signalShutdown.signal.aborted
     && ctx.fiber.state === FIBER_ACTIVE
     && ctx.get('loader') !== undefined) {
     try {
@@ -451,6 +478,11 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     } catch (error) {
       suppressShutdownError(ctx, signalShutdown.signal, error)
     }
+  }
+  if (!signalShutdown.signal.aborted
+    && ctx.fiber.state === FIBER_ACTIVE
+    && ctx.get('loader') !== undefined) {
+    appReady.commit()
   }
   return { ctx, shutdown }
 }

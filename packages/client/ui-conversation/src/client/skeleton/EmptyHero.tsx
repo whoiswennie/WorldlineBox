@@ -1,4 +1,4 @@
-// Hero chrome for the blank-draft phase of ConversationRoot: fish headline,
+// Hero chrome for the blank-draft phase of ConversationRoot: brand mark and headline,
 // glow backdrop, and the workspace row. Pure presentation — the resident
 // composer is NOT rendered here (it keeps its own stable tree position in
 // ConversationRoot so the textarea survives the hero → composer flip); CSS

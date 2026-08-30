@@ -14,8 +14,12 @@ flowchart LR
   cfg --> plugin_worldline_base_hmr
   plugin_worldline_base_llm["llm<br/>@deepseek-ai/dsh-llm"]
   cfg --> plugin_worldline_base_llm
+  plugin_worldline_base_deepseek_llm_api_extensions["deepseek-llm-api-extensions<br/>@deepseek-ai/dsh-deepseek-llm-api-extensions"]
+  cfg --> plugin_worldline_base_deepseek_llm_api_extensions
   plugin_worldline_base_session["session<br/>@deepseek-ai/dsh-session"]
   cfg --> plugin_worldline_base_session
+  plugin_worldline_base_session_log_deepseek["session-log-deepseek<br/>@deepseek-ai/dsh-session-log-deepseek"]
+  cfg --> plugin_worldline_base_session_log_deepseek
   plugin_worldline_base_typert["typert<br/>@deepseek-ai/dsh-typert-registry"]
   cfg --> plugin_worldline_base_typert
   plugin_worldline_base_typert_loader["typert-loader<br/>@deepseek-ai/dsh-typert-loader"]
@@ -30,6 +34,8 @@ flowchart LR
   cfg --> plugin_worldline_base_user_questions
   plugin_worldline_base_agent["agent<br/>@deepseek-ai/dsh-agent"]
   cfg --> plugin_worldline_base_agent
+  plugin_worldline_base_plugin_package_inventory_deepseek["plugin-package-inventory-deepseek<br/>@deepseek-ai/dsh-plugin-package-inventory-deepseek"]
+  cfg --> plugin_worldline_base_plugin_package_inventory_deepseek
   plugin_worldline_base_agent_default_model["agent-default-model<br/>@deepseek-ai/dsh-agent-default-model"]
   cfg --> plugin_worldline_base_agent_default_model
   plugin_worldline_base_jobs["jobs<br/>@deepseek-ai/dsh-jobs-local"]
@@ -46,6 +52,12 @@ flowchart LR
   cfg --> plugin_worldline_base_session_persistence_jsonl
   plugin_worldline_base_attachment_local["attachment-local<br/>@deepseek-ai/dsh-attachment-local"]
   cfg --> plugin_worldline_base_attachment_local
+  plugin_worldline_base_agent_vault_local["agent-vault-local<br/>@deepseek-ai/dsh-agent-vault-local"]
+  cfg --> plugin_worldline_base_agent_vault_local
+  plugin_worldline_base_skill_agent_vault["skill-agent-vault<br/>@deepseek-ai/dsh-skill-agent-vault"]
+  cfg --> plugin_worldline_base_skill_agent_vault
+  plugin_worldline_base_tool_agent_vault["tool-agent-vault<br/>@deepseek-ai/dsh-tool-agent-vault"]
+  cfg --> plugin_worldline_base_tool_agent_vault
   plugin_worldline_base_session_query_sqlite["session-query-sqlite<br/>@deepseek-ai/dsh-session-query-sqlite"]
   cfg --> plugin_worldline_base_session_query_sqlite
   plugin_worldline_base_session_projection["session-projection<br/>@deepseek-ai/dsh-session-projection"]
@@ -88,6 +100,8 @@ flowchart LR
   cfg --> plugin_worldline_base_skill_filesystem
   plugin_worldline_base_skill_badge["skill-badge<br/>@deepseek-ai/dsh-skill-badge"]
   cfg --> plugin_worldline_base_skill_badge
+  plugin_worldline_base_worldline_video["worldline-video<br/>@deepseek-ai/dsh-worldline-video"]
+  cfg --> plugin_worldline_base_worldline_video
   plugin_worldline_base_tool_skill["tool-skill<br/>@deepseek-ai/dsh-tool-skill"]
   cfg --> plugin_worldline_base_tool_skill
   plugin_worldline_base_commands["commands<br/>@deepseek-ai/dsh-commands"]
@@ -171,7 +185,9 @@ flowchart LR
 | `timer` | `@deepseek-ai/cordis-plugin-timer` |
 | `hmr` | `@deepseek-ai/cordis-plugin-hmr` |
 | `llm` | `@deepseek-ai/dsh-llm` |
+| `deepseek-llm-api-extensions` | `@deepseek-ai/dsh-deepseek-llm-api-extensions` |
 | `session` | `@deepseek-ai/dsh-session` |
+| `session-log-deepseek` | `@deepseek-ai/dsh-session-log-deepseek` |
 | `typert` | `@deepseek-ai/dsh-typert-registry` |
 | `typert-loader` | `@deepseek-ai/dsh-typert-loader` |
 | `typert-gateway` | `@deepseek-ai/dsh-api-gateway` |
@@ -179,6 +195,7 @@ flowchart LR
 | `session-title-llm` | `@deepseek-ai/dsh-session-title-first-prompt-llm` |
 | `user-questions` | `@deepseek-ai/dsh-user-questions` |
 | `agent` | `@deepseek-ai/dsh-agent` |
+| `plugin-package-inventory-deepseek` | `@deepseek-ai/dsh-plugin-package-inventory-deepseek` |
 | `agent-default-model` | `@deepseek-ai/dsh-agent-default-model` |
 | `jobs` | `@deepseek-ai/dsh-jobs-local` |
 | `llm-retry` | `@deepseek-ai/dsh-llm-retry` |
@@ -187,6 +204,9 @@ flowchart LR
 | `llm-pi-ai` | `@deepseek-ai/dsh-llm-pi-ai` |
 | `session-persistence-jsonl` | `@deepseek-ai/dsh-session-persistence-jsonl` |
 | `attachment-local` | `@deepseek-ai/dsh-attachment-local` |
+| `agent-vault-local` | `@deepseek-ai/dsh-agent-vault-local` |
+| `skill-agent-vault` | `@deepseek-ai/dsh-skill-agent-vault` |
+| `tool-agent-vault` | `@deepseek-ai/dsh-tool-agent-vault` |
 | `session-query-sqlite` | `@deepseek-ai/dsh-session-query-sqlite` |
 | `session-projection` | `@deepseek-ai/dsh-session-projection` |
 | `session-telemetry-otel` | `@deepseek-ai/dsh-session-telemetry-otel` |
@@ -208,6 +228,7 @@ flowchart LR
 | `skill` | `@deepseek-ai/dsh-skill` |
 | `skill-filesystem` | `@deepseek-ai/dsh-skill-filesystem` |
 | `skill-badge` | `@deepseek-ai/dsh-skill-badge` |
+| `worldline-video` | `@deepseek-ai/dsh-worldline-video` |
 | `tool-skill` | `@deepseek-ai/dsh-tool-skill` |
 | `commands` | `@deepseek-ai/dsh-commands` |
 | `command-feedback` | `@deepseek-ai/dsh-command-feedback` |

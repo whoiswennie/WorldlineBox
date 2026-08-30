@@ -27,7 +27,10 @@ import {
 import { queryTerms, scoreCandidate } from './search.ts'
 
 /** Filesystem provider configuration. */
-export interface Config { readonly worldlineHome?: string }
+export interface Config {
+  /** Override the Worldline home whose durable Agent Vault is used. */
+  readonly worldlineHome?: string
+}
 
 const DEFAULT_POLICY: VaultPolicy = Object.freeze({
   aiWriteMode: 'autonomous',

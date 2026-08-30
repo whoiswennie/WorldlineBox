@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-account-profile-context",
   "description": "Opt-in model context for the active Worldline account profile",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

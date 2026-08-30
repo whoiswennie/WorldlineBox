@@ -25,6 +25,7 @@ Service Definition：[worldline-subagent](../../packages/subagent/subagent)（`c
  * to `maxDepth`; the other names match.
  */
 interface SubagentCapabilities {
+  readonly agentOptions: boolean
   readonly outputSchema: boolean
   readonly depthLimit: boolean
   readonly toolFilter: boolean
@@ -436,6 +437,8 @@ interface SubagentProvider {
    * It says nothing about tool registration, injected services, or authority inheritance.
    */
   readonly inheritsParentContext: boolean
+  /** Optional provider-owned default route, overridden by caller agent options. */
+  readonly agentRouteDefaults?: Readonly<{ provider: string; model: string }>
   /**
    * Establish a ONE-SHOT child and return its handle after publication.
    * The service has already validated that every requested start-time
@@ -483,6 +486,22 @@ spawn 和 fork 后端通过 `parent.ctx` 创建一个普通的单次 agent，将
 ## Cordis API
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+
+<a id="ctxsubagentmodelselection--subagentmodelselectionconfig"></a>
+
+### `ctx.subagentModelSelection` — `SubagentModelSelectionConfig`
+
+Owns the validated, live subagent model-routing settings for this host scope.
+
+```ts cordis-catalog
+/**
+ * Return the current model-routing policy.
+ * @returns a detached snapshot that callers may safely inspect.
+ */
+current(): SubagentModelSelectionSettings
+```
+
+Source: [`packages/subagent/tool-subagent/src/model-selection-settings.ts:45`](../../packages/subagent/tool-subagent/src/model-selection-settings.ts)
 
 <a id="ctxsubagents--subagentruntime"></a>
 
@@ -667,7 +686,7 @@ async start(name: string, request: SubagentStartRequest): Promise<SubagentRun>
 
 Types: [Agent](core.md) · [ContentBlock](llm-streaming.md) · [MessageId](llm-streaming.md) · [SessionId](core.md)
 
-Source: [`packages/subagent/subagent/src/index.ts:171`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:172`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagent-events"></a>
 
@@ -693,7 +712,7 @@ A published child settled. Scope-filtered dispatch uses the same delegating pare
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/subagent/subagent/src/index.ts:166`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:167`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagentprovider-added--emit"></a>
 
@@ -710,7 +729,7 @@ A provider became resolvable in the registry.
 'subagent/provider-added'(provider: SubagentProvider): void
 ```
 
-Source: [`packages/subagent/subagent/src/index.ts:140`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:141`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagentprovider-removed--emit"></a>
 
@@ -727,7 +746,7 @@ A provider left the registry. Accepted runs remain holder-owned.
 'subagent/provider-removed'(name: string): void
 ```
 
-Source: [`packages/subagent/subagent/src/index.ts:146`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:147`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagentstart--emit"></a>
 
@@ -751,5 +770,5 @@ A provider established a published child. For in-process providers, `ctx.agents.
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/subagent/subagent/src/index.ts:157`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:158`](../../packages/subagent/subagent/src/index.ts)
 <!-- END GENERATED cordis-surface -->

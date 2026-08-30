@@ -58,4 +58,50 @@ describe('Agent Vault tools', () => {
       await rm(home, { recursive: true, force: true })
     }
   })
+
+  it('treats requested resource roles as alternatives across private and public Vaults', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'worldline-vault-resource-tools-'))
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    const vault = new LocalAgentVaultService(ctx, { worldlineHome: home })
+    try {
+      await vault.createAgent('private-mind', '私有心智')
+      await vault.createAgent('public', '公共资料')
+      await vault.importResource('public', {
+        preferredId: 'public-manbo', enabled: true, roles: ['expression'], title: '孤高曼波',
+        description: '曼波视频', tags: ['曼波'], originalTags: [], transcript: '',
+        mimeType: 'video/mp4', bytes: 1, builtIn: false,
+      }, Uint8Array.from([1]), {
+        actor: { type: 'user', id: 'resource-test' }, reason: 'test fixture',
+      })
+      const session = Session.create(SessionId('resource-runtime-session'))
+      const agent = { id: session.id, session, options: {} } as Agent
+      vault.bindRuntimeAgent(agent.id, 'private-mind')
+      VaultTools.apply(ctx)
+
+      const found = await ctx.tools.execute({
+        signal, agent, callId: CallId('find-resource'), name: 'resource_find',
+        arguments: {
+          query: '曼波', roles: ['expression', 'appearance', 'source', 'attachment'],
+        },
+      })
+      expect(found.isError).toBe(false)
+      expect(JSON.stringify(found.value)).toContain('孤高曼波')
+
+      const publicSession = Session.create(SessionId('public-resource-runtime-session'))
+      const publicAgent = { id: publicSession.id, session: publicSession, options: {} } as Agent
+      vault.bindRuntimeAgent(publicAgent.id, 'public')
+      const publicFound = await ctx.tools.execute({
+        signal, agent: publicAgent, callId: CallId('find-public-resource'), name: 'resource_find',
+        arguments: { query: '曼波', roles: ['expression', 'appearance'] },
+      })
+      if (typeof publicFound.value !== 'string') throw new Error('resource_find returned non-text output')
+      const publicItems = JSON.parse(publicFound.value) as { items: unknown[] }
+      expect(publicItems.items).toHaveLength(1)
+    } finally {
+      vault.close()
+      await rm(home, { recursive: true, force: true })
+    }
+  })
 })

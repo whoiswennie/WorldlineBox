@@ -132,6 +132,49 @@ describe('headless runner', () => {
     await test.ctx.fiber.dispose()
   })
 
+  it('keeps reasoning progress on stderr and final machine output on stdout', async () => {
+    const test = await bench({
+      afterPrompt(session, message) {
+        session.append('turn/start', { turn: 1 })
+        session.append('step/start', { turn: 1, step: 1 })
+        session.append('user/message', message, { surfaceOp: 'append' })
+        session.append('assistant/chunk', {
+          turn: 1,
+          step: 1,
+          chunk: { type: 'reasoning-delta', index: 0, text: 'checking' },
+        })
+        session.append('assistant/chunk', {
+          turn: 1,
+          step: 1,
+          chunk: { type: 'reasoning-delta', index: 0, text: ' safely\n' },
+        })
+        session.append('assistant/chunk', {
+          turn: 1,
+          step: 1,
+          chunk: { type: 'text-delta', index: 1, text: 'done' },
+        })
+        session.append('assistant/message', {
+          turn: 1,
+          step: 1,
+          message: createAssistantMessage({
+            content: [{ type: 'text', text: 'done' }],
+            source: { provider: 'test-provider', model: 'test-model' },
+          }),
+        }, { surfaceOp: 'append' })
+        session.append('step/end', { turn: 1, step: 1 })
+        session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      },
+    })
+
+    expect(await test.run()).toEqual({
+      code: 0,
+      out: 'done\n',
+      err: 'worldline: reasoning:\nchecking safely\n',
+      order: ['flush', 'exit'],
+    })
+    await test.ctx.fiber.dispose()
+  })
+
   it('waits for asynchronously appended events instead of racing Agent idleness', async () => {
     const test = await bench({
       afterPrompt: async (session, message) => {

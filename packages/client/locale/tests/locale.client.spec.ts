@@ -27,7 +27,7 @@ describe('LocaleRuntime', () => {
     const { svc } = make()
     expect(svc.getLocale()).toMatchObject({
       active: 'zh',
-      locales: [{ id: 'zh', label: '中文' }, { id: 'en', label: 'English' }],
+      locales: [{ id: 'zh', label: '中文', fallback: 'en' }, { id: 'en', label: 'English' }],
     })
   })
 
@@ -73,6 +73,85 @@ describe('LocaleRuntime', () => {
     expect(() => { svc.setLocale('fr') }).toThrow('not registered')
   })
 
+  it('registers, selects, persists, and reversibly unloads an external language', () => {
+    let value: LocaleSettings | undefined = {}
+    const listeners = new Set<() => void>()
+    const set = vi.fn(async (_field: string, next: string) => { value = { preference: next } })
+    const host = {
+      getSnapshot: () => ({ status: 'ready', value, revision: 0, writable: true }),
+      subscribe: (listener: () => void) => {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+      set,
+    } as unknown as SettingsScope<LocaleSettings>
+    const svc = new LocaleRuntime(new Context(), host)
+    svc.register('demo', 'en', { hello: 'Hello' })
+    svc.register('demo', 'JA', { hello: 'こんにちは' })
+    const dispose = svc.addLanguage({ id: 'ja', label: '日本語', fallback: 'EN' })
+
+    svc.setLocale('JA')
+    expect(svc.getLocale().active).toBe('ja')
+    expect(svc.bind('demo')('hello')).toBe('こんにちは')
+    expect(set).toHaveBeenCalledWith('preference', 'ja')
+
+    dispose()
+    expect(svc.getLocale().active).toBe('zh')
+    expect(svc.bind('demo')('hello')).toBe('Hello')
+  })
+
+  it('walks recursive language fallbacks for feature and common dictionaries', () => {
+    const { svc } = make()
+    svc.register('demo', 'en', { base: 'English', shared: 'English shared' })
+    svc.register('demo', 'fr', { shared: 'Français' })
+    svc.register('demo', 'fr-CA', { local: 'Québec' })
+    svc.register('common', 'en', { commonBase: 'Common English' })
+    svc.register('common', 'fr', { commonShared: 'Common French' })
+    svc.addLanguage({ id: 'fr', label: 'Français', fallback: 'en' })
+    svc.addLanguage({ id: 'fr-CA', label: 'Français (Canada)', fallback: 'fr' })
+    svc.setLocale('fr-ca')
+    const t = svc.bind('demo')
+    expect(t('local')).toBe('Québec')
+    expect(t('shared')).toBe('Français')
+    expect(t('base')).toBe('English')
+    expect(t('commonShared')).toBe('Common French')
+    expect(t('commonBase')).toBe('Common English')
+  })
+
+  it('validates external language definitions and dictionary locale ids', () => {
+    const { svc } = make()
+    expect(() => svc.addLanguage({ id: 'EN', label: 'Other English', fallback: 'en' }))
+      .toThrow('already registered')
+    expect(() => svc.addLanguage({ id: 'bad locale', label: 'Bad', fallback: 'en' }))
+      .toThrow('not a BCP 47-style tag')
+    expect(() => svc.addLanguage({ id: 'fr', label: '   ', fallback: 'en' }))
+      .toThrow('label must not be empty')
+    expect(() => svc.addLanguage({ id: 'fr', label: 'Français', fallback: 'de' }))
+      .toThrow('not registered')
+    expect(() => svc.register('demo', 'bad locale', { hello: 'Bad' }))
+      .toThrow('not a BCP 47-style tag')
+  })
+
+  it('adopts a saved external locale when its definition appears later', () => {
+    const listeners = new Set<() => void>()
+    const set = vi.fn()
+    const host = {
+      getSnapshot: () => ({
+        status: 'ready', value: { preference: 'ja' }, revision: 1, writable: true,
+      }),
+      subscribe: (listener: () => void) => {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+      set,
+    } as unknown as SettingsScope<LocaleSettings>
+    const svc = new LocaleRuntime(new Context(), host)
+    expect(svc.getLocale().active).toBe('zh')
+    svc.addLanguage({ id: 'ja', label: '日本語', fallback: 'en' })
+    expect(svc.getLocale().active).toBe('ja')
+    expect(set).not.toHaveBeenCalled()
+  })
+
   it('稳定缓存命名空间绑定函数', () => {
     const { svc } = make()
     expect(svc.bind('a')).toBe(svc.bind('a'))
@@ -89,7 +168,7 @@ describe('LocaleRuntime', () => {
   it('persists explicit choices and adopts later Host preferences without write-back', () => {
     let value: LocaleSettings | undefined = {}
     const listeners = new Set<() => void>()
-    const set = vi.fn(async (_field: string, next: string) => { value = { preference: next as never } })
+    const set = vi.fn(async (_field: string, next: string) => { value = { preference: next } })
     const host = {
       getSnapshot: () => ({ status: 'ready', value, revision: 0, writable: true }),
       subscribe: (listener: () => void) => {

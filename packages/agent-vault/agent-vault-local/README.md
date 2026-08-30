@@ -6,11 +6,11 @@ The local `ctx.agentVaults` provider stores semantic truth below `WORLDLINE_HOME
 
 ## Model Experience
 
-Recall combines exact title, aliases, canonical tags, FTS ranking, and character n-gram scoring. It does not call an embedding model or remote semantic service.
+Indirectly, through the mounted Vault skill and tool consumers.
 
 #### KV Cache effect
 
-Bounded recall results stabilize prompt size independently of Vault size.
+The storage provider adds no prefix; consumers own any bounded recall results they render.
 
 ## Known Limitations and Deferred Work
 

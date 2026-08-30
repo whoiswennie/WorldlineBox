@@ -27,6 +27,8 @@ import { ComposerSubmissionPolicy } from './input/submission-policy.ts'
 import { InputBar } from './skeleton/InputBar.tsx'
 import { EnterBehaviorRow } from './settings/EnterBehaviorRow.tsx'
 import type { EnterBehaviorRowInjected } from './settings/EnterBehaviorRow.tsx'
+import { TranscriptViewRow, type TranscriptViewRowInjected } from './settings/TranscriptViewRow.tsx'
+import { TranscriptViewPolicy } from './transcript-view.ts'
 import { ChatView } from './chat/ChatView.tsx'
 import { TopbarStatsLine } from './chat/StatsLine.tsx'
 import { ApprovalPanel } from './skeleton/ApprovalPanel.tsx'
@@ -150,9 +152,10 @@ export function apply(ctx: Context): void {
 
   // Apply-time construction keeps store identity bound to this fiber.
   const chatStore = createChatStore()
-  const submissionPolicy = new ComposerSubmissionPolicy(
-    ctx.settingsScope.bind<ConversationSettings>({ namespace: CONVERSATION_SETTINGS_NAMESPACE }),
-  )
+  const conversationSettings =
+    ctx.settingsScope.bind<ConversationSettings>({ namespace: CONVERSATION_SETTINGS_NAMESPACE })
+  const submissionPolicy = new ComposerSubmissionPolicy(conversationSettings)
+  const transcriptView = new TranscriptViewPolicy(conversationSettings)
 
   ctx.slots.inject('settings.general.item', () => ctx.slots.register({
     name: 'settings.general.item',
@@ -164,6 +167,17 @@ export function apply(ctx: Context): void {
       setBusyEnter: (behavior) => { submissionPolicy.setBusyEnter(behavior) },
     }),
   }, EnterBehaviorRow))
+
+  ctx.slots.inject('settings.general.item', () => ctx.slots.register({
+    name: 'settings.general.item',
+    id: 'transcript-view',
+    order: 30,
+    locale: NS,
+    inject: (): TranscriptViewRowInjected => ({
+      hooks: { transcriptView: transcriptView.mode },
+      setTranscriptView: (mode) => { transcriptView.setMode(mode) },
+    }),
+  }, TranscriptViewRow))
 
   // Chat semantic reader positions by session, surviving view switches and
   // width reflow when the tab ring remounts the view. Deliberately not
@@ -414,6 +428,7 @@ export function apply(ctx: Context): void {
       const conversation = concreteConversation(ctx)
       const scoped = scopedConversation(sessions, sessionId)
       return {
+        transcriptView: transcriptView.mode,
         openDetails: (target) => {
           actions.select(target)
           layout.openDetails()

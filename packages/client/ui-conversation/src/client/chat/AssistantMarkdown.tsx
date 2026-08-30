@@ -16,6 +16,7 @@ import { JsonBlock, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MarkdownFileMentions } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeOwnerProps, ChatViewSlotProps } from '../contract/slots.ts'
 import { ReasoningRow } from './ReasoningRow.tsx'
+import { useSearchableHidden } from './searchable-hidden.ts'
 import css from './AssistantMarkdown.module.css'
 
 export interface AssistantMarkdownProps {
@@ -25,6 +26,8 @@ export interface AssistantMarkdownProps {
   interrupted?: boolean | undefined
   /** Render consecutive image blocks through the attachment slot. */
   renderMessageImages: ChatNodeOwnerProps['renderMessageImages']
+  reasoningHidden?: boolean | undefined
+  revealProcess?: (() => void) | undefined
   /** Resolved prose file mentions for this Assistant's closing turn. */
   mentions?: MarkdownFileMentions | undefined
   /** The owning view's locale seat, passed down as a plain prop. */
@@ -33,7 +36,8 @@ export interface AssistantMarkdownProps {
 
 /** Reasoning block as the Think variant summary row (figma 39:28304). */
 export const AssistantMarkdown = memo(function AssistantMarkdown({
-  blocks, streaming, interrupted, renderMessageImages, mentions, t,
+  blocks, streaming, interrupted, renderMessageImages,
+  reasoningHidden = false, revealProcess, mentions, t,
 }: AssistantMarkdownProps) {
   // Stable per locale revision (t identity changes on switch): a fresh object
   // per render would rebuild MarkdownText's component table every chunk.
@@ -63,7 +67,11 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
         )
         break
       case 'reasoning':
-        rendered.push(<ReasoningRow key={i} text={block.text} running={streaming && i === last} t={t} />)
+        rendered.push(
+          <ProcessReasoning key={i} hidden={reasoningHidden} reveal={revealProcess}>
+            <ReasoningRow text={block.text} running={streaming && i === last} t={t} />
+          </ProcessReasoning>,
+        )
         break
       case 'image': {
         // Consecutive image blocks share one gallery so several images tile
@@ -112,3 +120,14 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
     </div>
   )
 })
+
+function ProcessReasoning({ hidden, reveal, children }: {
+  hidden: boolean
+  reveal?: (() => void) | undefined
+  children: ReactNode
+}) {
+  const ref = useSearchableHidden(hidden, reveal ?? NOOP)
+  return <div ref={ref} data-turn-process-inline={hidden || undefined}>{children}</div>
+}
+
+const NOOP = (): void => {}

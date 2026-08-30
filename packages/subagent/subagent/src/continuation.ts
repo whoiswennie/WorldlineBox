@@ -43,6 +43,7 @@ import {
   applyChildComposition,
   captureDelegatedPolicyOverrides,
   childSessionMeta,
+  parentAgentOptionsForDelegation,
   resolveChildAgentOptions,
   resolveChildDepth,
 } from './child-agent.ts'
@@ -417,14 +418,17 @@ export class SubagentContinuationManager {
     const childDepth = resolveChildDepth(parent, request.maxDepth)
     // Snapshot before any await: invalid descriptor JSON rejects the call
     // before a child exists, and the detached value is what reaches the log.
-    const agentProvider = request.agentOptions?.provider ?? parent.options.provider
-    const agentModel = request.agentOptions?.model ?? parent.options.model
+    const parentOptions = parentAgentOptionsForDelegation(parent)
+    const agentProvider = request.agentOptions?.provider ?? parentOptions.provider
+    const agentModel = request.agentOptions?.model ?? parentOptions.model
+    const agentReasoningEffort = request.agentOptions?.reasoningEffort ?? parentOptions.reasoningEffort
     const descriptor = snapshotSubagentDescriptor({
       mode: 'continuable',
       provider: spec.provider,
       label: spec.label,
       ...agentProvider !== undefined ? { agentProvider } : {},
       ...agentModel !== undefined ? { agentModel } : {},
+      ...agentReasoningEffort !== undefined ? { agentReasoningEffort } : {},
       ...request.persona !== undefined ? { persona: request.persona } : {},
       ...request.toolFilter !== undefined ? { toolFilter: request.toolFilter } : {},
     })
@@ -981,6 +985,9 @@ export class SubagentContinuationManager {
         agentOptions: {
           ...descriptor.agentProvider !== undefined ? { provider: descriptor.agentProvider } : {},
           ...descriptor.agentModel !== undefined ? { model: descriptor.agentModel } : {},
+          ...descriptor.agentReasoningEffort !== undefined
+            ? { reasoningEffort: descriptor.agentReasoningEffort }
+            : {},
         },
         composition: { persona: descriptor.persona, toolFilter: descriptor.toolFilter },
         signal: options.signal,

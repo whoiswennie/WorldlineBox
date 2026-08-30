@@ -16,6 +16,7 @@ import { toolDefinition } from '../src/client/conversation-nodes/tool.ts'
 import { turnErrorDefinition } from '../src/client/conversation-nodes/turn-error.ts'
 import { turnMaxTokensDefinition } from '../src/client/conversation-nodes/turn-max-tokens.ts'
 import { turnTailDefinition } from '../src/client/conversation-nodes/turn-tail.ts'
+import { turnProcessDefinition } from '../src/client/conversation-nodes/turn-process.ts'
 import type {
   AssistantChatData, ManualCompactionChatData, RetryChatData, ToolChatData, TurnTailChatData,
 } from '../src/client/contract/chat-nodes.ts'
@@ -31,6 +32,7 @@ const DEFINITIONS: readonly ConversationNodeDefinition[] = [
   retryDefinition,
   turnErrorDefinition,
   turnMaxTokensDefinition,
+  turnProcessDefinition,
   turnTailDefinition,
 ]
 
@@ -118,6 +120,40 @@ function toolResult(callId: string, text: string) {
 }
 
 describe('built-in conversation node Definitions', () => {
+  it('projects a stable completed-turn process window before the final answer', () => {
+    const value = assembler([
+      at(1, 'turn/start', { turn: 1 }),
+      at(2, 'user/message', textMessage('user-1', 'question'), { surfaceOp: 'append' }),
+      at(3, 'step/start', { turn: 1, step: 1 }),
+      at(4, 'assistant/message', {
+        turn: 1,
+        step: 1,
+        message: assistantMessage('assistant-process', 'intermediate finding'),
+      }, { surfaceOp: 'append' }),
+      at(5, 'step/end', { turn: 1, step: 1 }),
+      at(6, 'step/start', { turn: 1, step: 2 }),
+      at(7, 'assistant/message', {
+        turn: 1,
+        step: 2,
+        message: assistantMessage('assistant-answer', 'final answer'),
+      }, { surfaceOp: 'append' }),
+      at(8, 'step/end', { turn: 1, step: 2 }),
+      at(9, 'turn/end', { turn: 1, reason: { kind: 'completed' } }),
+    ])
+    const current = snapshot(value)
+    expect(current.order.map(key => current.nodes.get(key)?.kind)).toEqual([
+      'user', 'turn-process', 'assistant-step', 'assistant-step', 'turn-tail',
+    ])
+    expect(node(current, 'turn-process')?.data).toMatchObject({
+      turn: 1,
+      controlAnchorSeq: 4,
+      processStartSeq: 1,
+      answerAnchorSeq: 7,
+      answerStep: 2,
+      messageCount: 1,
+    })
+  })
+
   it('keeps one keyed Assistant node while streaming settles and materializes interruption from Location', () => {
     const value = assembler([
       at(1, 'turn/start', { turn: 1 }),
@@ -392,10 +428,10 @@ describe('built-in conversation node Definitions', () => {
     const after = snapshot(value)
     expect(after.nodes).toBe(store)
     expect(after.nodes.get(existing?.key ?? '')).toBe(existing)
-    expect(after.order).toHaveLength(before.order.length + 3)
+    expect(after.order).toHaveLength(before.order.length + 4)
     expect(after.order.map(key => after.nodes.get(key)?.kind)).toEqual([
-      'user', 'assistant-step', 'turn-tail',
-      'user', 'assistant-step', 'turn-tail',
+      'user', 'turn-process', 'assistant-step', 'turn-tail',
+      'user', 'turn-process', 'assistant-step', 'turn-tail',
     ])
   })
 
@@ -425,7 +461,7 @@ describe('built-in conversation node Definitions', () => {
     expect(after.order.slice(0, oldOrder.length)).toEqual(oldOrder)
     expect(oldOrder.map(key => after.nodes.get(key))).toEqual(oldNodes)
     expect(after.order.map(key => after.nodes.get(key)?.kind)).toEqual([
-      'user', 'assistant-step', 'turn-tail', 'user',
+      'user', 'turn-process', 'assistant-step', 'turn-tail', 'user',
     ])
   })
 

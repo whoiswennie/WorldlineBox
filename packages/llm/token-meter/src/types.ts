@@ -39,4 +39,6 @@ export interface TokenSurfaceNode {
   readonly seq: number
   /** Heuristic tokens for the exact message projected by this node. */
   readonly tokens: number
+  /** Fixed heuristic price of the same message, independent of the routed adapter. */
+  readonly heuristicTokens: number
 }

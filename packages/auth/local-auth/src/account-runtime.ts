@@ -41,7 +41,11 @@ export interface ManagedAccountLaunch {
   bootstrapToken?: string
 }
 
-/** Read one valid positive account id from the device-global active marker. */
+/**
+ *  Read one valid positive account id from the device-global active marker.
+ * @param authHome - auth home value.
+ * @returns The resulting value.
+ */
 export async function readActiveAccountId(authHome: string): Promise<number | undefined> {
   try {
     const marker = JSON.parse(await readFile(join(authHome, 'active-account.json'), 'utf8')) as {
@@ -75,6 +79,8 @@ async function autoLoginEnabled(authHome: string, userId: number): Promise<boole
  *
  * Every call creates a fresh bootstrap token so a supervisor restart cannot
  * replay a proof captured from an earlier Host process.
+ * @param baseHome - base home value.
+ * @returns The resulting value.
  */
 export async function createManagedAccountLaunch(
   baseHome = resolveWorldlineHome(),
@@ -109,7 +115,12 @@ export async function createManagedAccountLaunch(
   }
 }
 
-/** Attach a launch proof as a fragment so it never reaches access logs or the initial GET. */
+/**
+ *  Attach a launch proof as a fragment so it never reaches access logs or the initial GET.
+ * @param url - url value.
+ * @param token - token value.
+ * @returns The resulting value.
+ */
 export function withAuthBootstrapFragment(url: string, token: string | undefined): string {
   if (token === undefined) return url
   const target = new URL(url)

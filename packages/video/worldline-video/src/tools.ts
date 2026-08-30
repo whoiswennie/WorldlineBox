@@ -6,7 +6,10 @@ function renderJson(value: unknown): Array<{ type: 'text'; text: string }> {
   return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
 }
 
-/** Register the bounded probe, index, and range-reading tool surface. */
+/**
+ *  Register the bounded probe, index, and range-reading tool surface.
+ * @param ctx - Cordis context that owns the operation.
+ */
 export function registerVideoTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'video_probe',

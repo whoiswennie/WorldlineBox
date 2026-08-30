@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 Local account and session authority for the Worldline Host. It stores scrypt password hashes, remembered accounts, cross-entry auto-login preferences, expiring session-token hashes, profile fields, and the active account tenant in owner-only files below the configured authentication root.
 
-The plugin exposes same-origin JSON routes through `host-webserver`, sets an HttpOnly `SameSite=Strict` cookie, and validates the managed account tenant before protected API or upgrade requests proceed. WebUI and Electron use the same account runtime root but retain separate browser cookie jars. A random single-use URL-fragment proof can mint each container's cookie without copying a password; the proof is consumed before the Host mutation and is never stored. Mutations are serialized and persisted through temporary-file replacement. The read-only `ctx.localAccountProfile` face exposes only the browser-safe profile of the active managed desktop tenant so an explicitly mounted context plugin can introduce the user to an Agent; credentials, cookie sessions, remembered accounts, and other tenants never cross that seam.
+The plugin exposes same-origin JSON routes through `host-webserver`, sets an HttpOnly `SameSite=Strict` cookie, and validates the managed account tenant before protected API or upgrade requests proceed. WebUI and Electron use the same account runtime root but retain separate browser cookie jars. A random single-use URL-fragment proof can mint each container's cookie without copying a password; the proof is consumed before the Host mutation and is never stored. Mutations are serialized and persisted through temporary-file replacement. For the active managed tenant only, an uploaded data-URL avatar is atomically materialized below the tenant profile directory. The read-only `ctx.localAccountProfile` face can expose that Host path to trusted model tools, while browser responses continue to contain only presentation data; credentials, cookie sessions, remembered accounts, and other tenants never cross that seam.
 
 ## Model Experience
 
@@ -12,7 +12,7 @@ The plugin exposes same-origin JSON routes through `host-webserver`, sets an Htt
 
 #### What the model sees
 
-Nothing directly: the `worldline_session` cookie remains in the Host/browser boundary, and this package registers no prompt contribution. An opt-in context consumer may read the active managed tenant's public display name and biography through `ctx.localAccountProfile`.
+Nothing directly: the `worldline_session` cookie remains in the Host/browser boundary, and this package registers no prompt contribution. An opt-in context consumer may read the active managed tenant's display name, biography, and optional Host avatar path through `ctx.localAccountProfile`; image bytes are loaded only by an explicit trusted image tool.
 
 #### Token effect
 

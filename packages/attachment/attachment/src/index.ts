@@ -5,20 +5,25 @@ import { AttachmentError } from './error.ts'
 import type {
   ImageAttachmentLimits,
   ImageAttachmentRef,
+  ImageRequestPolicy,
+  RequestImageAttachment,
   SaveImageAttachment,
   StoredImageAttachment,
 } from './types.ts'
 
-export { AttachmentId } from './brand.ts'
+export { AttachmentId, ImageVariantId } from './brand.ts'
 export { AttachmentError, isImageAdmissionError } from './error.ts'
 export type { AttachmentErrorCode, ImageAdmissionErrorCode } from './error.ts'
 export { admitEncodedImages } from './admission.ts'
+export { requestImageDimensions } from './request-projection.ts'
 export type {
   AttachmentId as AttachmentIdType,
   EncodedImageAttachment,
   ImageAttachmentLimits,
   ImageAttachmentRef,
+  ImageRequestPolicy,
   ImageMediaType,
+  RequestImageAttachment,
   SaveImageAttachment,
   StoredImageAttachment,
 } from './types.ts'
@@ -54,7 +59,7 @@ export abstract class AttachmentStore extends Service {
    * @param inputs - encoded images in their owning message order.
    * @returns durable references in the exact input order.
    */
-  async saveImages(inputs: readonly SaveImageAttachment[]): Promise<readonly ImageAttachmentRef[]> {
+  protected validateImageBatch(inputs: readonly SaveImageAttachment[]): void {
     const { maxImagesPerMessage, maxMessageImageBytes, mediaTypes } = this.imageLimits
     if (inputs.length > maxImagesPerMessage) {
       throw new AttachmentError('Image batch exceeds the configured image-count limit.', 'TOO_MANY_IMAGES')
@@ -68,6 +73,15 @@ export abstract class AttachmentStore extends Service {
         throw new AttachmentError(`Image type ${input.mediaType} is not accepted by this deployment.`, 'UNSUPPORTED_IMAGE_TYPE')
       }
     }
+  }
+
+  /**
+   * Validate and durably commit an ordered image batch.
+   * @param inputs - encoded images in their owning message order.
+   * @returns durable references in the exact input order.
+   */
+  async saveImages(inputs: readonly SaveImageAttachment[]): Promise<readonly ImageAttachmentRef[]> {
+    this.validateImageBatch(inputs)
     for (const input of inputs) await this.validateImage(input)
 
     const refs: ImageAttachmentRef[] = []
@@ -90,6 +104,37 @@ export abstract class AttachmentStore extends Service {
    * @throws the signal reason when aborted, or a storage error when verification fails.
    */
   abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment>
+
+  /**
+   * Locate this provider's immutable normalized object on the host, when file-backed.
+   * @param ref - durable image reference to locate.
+   * @returns the immutable host path, or undefined for non-file-backed providers.
+   */
+  imageHostPath(ref: ImageAttachmentRef): string | undefined {
+    void ref
+    return undefined
+  }
+
+  /**
+   * Generate or read one deterministic model-request image version.
+   * @param ref - durable image reference to project.
+   * @param policy - request-size and encoding constraints.
+   * @param signal - optional cancellation for projection work.
+   * @returns normalized bytes and metadata suitable for a model request.
+   */
+  readImageRequest(
+    ref: ImageAttachmentRef,
+    policy: ImageRequestPolicy,
+    signal?: AbortSignal,
+  ): Promise<RequestImageAttachment> {
+    signal?.throwIfAborted()
+    void ref
+    void policy
+    return Promise.reject(new AttachmentError(
+      'The mounted attachment provider cannot derive model-request images.',
+      'ATTACHMENT_PROJECTION_UNSUPPORTED',
+    ))
+  }
 }
 
 export default AttachmentStore

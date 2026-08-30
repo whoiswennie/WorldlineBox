@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 The **`CodeRuntime`** (`ctx.codeRuntime`) defines WHAT a code runtime does — run one model-written program against a set of host-provided async bindings and report `{ value, logs, error? }` — without saying HOW.
 
-This package owns the Service Definition role of the capability (the bash trio is the template — see capability seams): providers subclass `CodeRuntime` and register the service; the Consumer is the tool registry's Code Mode, which generates the model-facing SDK and bridges tool dispatch — both specified in the Code Mode contract, whose first provider is a Node worker-thread backend. The runtime knows nothing about tools or sessions: it is handed named async functions and a program string, and everything tool-shaped stays with the Consumer.
+This package owns the Service Definition role of the capability (the bash trio is the template — see capability seams): providers subclass `CodeRuntime` and register the service; the Consumer is the tool registry's PTC mode, which generates the model-facing SDK and bridges tool dispatch — both specified in the PTC mode contract, whose first provider is a Node worker-thread backend. The runtime knows nothing about tools or sessions: it is handed named async functions and a program string, and everything tool-shaped stays with the Consumer.
 
 ## Service API (`ctx.codeRuntime`)
 
@@ -24,7 +24,7 @@ Binding-global and error-class names are **language-portable**: they must match 
 
 ## Model Experience
 
-Indirectly, through Code Mode in `worldline-tools`, which exposes `run_code` and returns program logs, values, or failures as retained tool-result tokens.
+Indirectly, through PTC mode in `worldline-tools`, which exposes `run_code` and returns program logs, values, or failures as retained tool-result tokens.
 
 #### KV Cache effect
 
@@ -33,6 +33,6 @@ No direct invalidation; the named consumer owns any request-prefix changes.
 ## Known Limitations and Deferred Work
 
 - **`run()` is one-shot** — `logs` arrive only on the resolved `CodeRunResult`; the seam exposes no streaming-log or progress API for a live program's output.
-- **A persistent REPL-style kernel is recorded future work** — the no-state-between-runs contract stands until a persistent-kernel backend brings its own logging story (Code Mode contract).
+- **A persistent REPL-style kernel is recorded future work** — the no-state-between-runs contract stands until a persistent-kernel backend brings its own logging story (PTC mode contract).
 - **Only the worker-thread backend ships** — `'process'`/`'container'` are declared well-known `isolation` values with no implementation; a hard security boundary awaits a container backend.
 - **Intermediate binding values have no byte cap** — implementations remain subject to structured-clone cost and process memory, while a provider or executor may already have imposed its own acquisition bound.

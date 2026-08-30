@@ -12,6 +12,9 @@ import {
 } from './reference-tags.ts'
 
 export type { ReferenceAsset, ReferenceDraft, ReferencePage, ReferenceTagCount } from './contracts.ts'
+/**
+ * Contract for reference query.
+ */
 export interface ReferenceQuery {
   readonly scopes: readonly string[]
   readonly query: string
@@ -79,6 +82,9 @@ export class ReferenceVault {
   private mutation = Promise.resolve()
   constructor(private readonly root: string) {}
 
+  /**
+   * Initialize.
+   */
   async initialize(): Promise<void> {
     await mkdir(join(this.root, 'objects'), { recursive: true })
     const { DatabaseSync } = await import('node:sqlite')
@@ -125,6 +131,9 @@ export class ReferenceVault {
       ORDER BY a.last_used_at IS NULL DESC,a.usage_count ASC,a.updated_at DESC LIMIT ? OFFSET ?
     `)
   }
+  /**
+   * Close.
+   */
   close(): void {
     this.database?.close()
     this.database = undefined
@@ -132,6 +141,10 @@ export class ReferenceVault {
     this.fallbackStatement = undefined
   }
 
+  /**
+   * Seed.
+   * @param asset - asset value.
+   */
   async seed(asset: ReferenceAsset): Promise<void> {
     const current = this.get(asset.id)
     await this.exclusive(() => {
@@ -148,6 +161,13 @@ export class ReferenceVault {
       )
     })
   }
+  /**
+   * Create.
+   * @param draft - draft value.
+   * @param builtIn - built in value.
+   * @param fixedId - fixed id value.
+   * @returns The resulting value.
+   */
   async create(draft: ReferenceDraft, builtIn = false, fixedId?: string): Promise<ReferenceAsset> {
     const now = Date.now()
     const source = await this.sourceFrom(draft.asset, draft.mimeType)
@@ -176,6 +196,13 @@ export class ReferenceVault {
       return asset
     })
   }
+  /**
+   * Create upload.
+   * @param draft - draft value.
+   * @param data - data value.
+   * @param mimeType - mime type value.
+   * @returns The resulting value.
+   */
   async createUpload(
     draft: ReferenceDraft,
     data: Uint8Array,
@@ -217,7 +244,14 @@ export class ReferenceVault {
       return asset
     })
   }
-  /** Stream an arbitrarily large upload to CAS without retaining its bytes in process memory. */
+  /**
+   *  Stream an arbitrarily large upload to CAS without retaining its bytes in process memory.
+   * @param draft - draft value.
+   * @param chunks - chunks value.
+   * @param mimeType - mime type value.
+   * @param expectedBytes - expected bytes value.
+   * @returns The resulting value.
+   */
   async createUploadStream(
     draft: ReferenceDraft,
     chunks: AsyncIterable<Uint8Array>,
@@ -261,6 +295,12 @@ export class ReferenceVault {
       throw error
     }
   }
+  /**
+   * Update.
+   * @param id - id value.
+   * @param draft - draft value.
+   * @returns The resulting value.
+   */
   async update(id: string, draft: ReferenceDraft): Promise<ReferenceAsset> {
     const current = this.get(id)
     if (current === undefined) throw new Error('reference not found')
@@ -289,6 +329,10 @@ export class ReferenceVault {
       return next
     })
   }
+  /**
+   * Remove.
+   * @param id - id value.
+   */
   async remove(id: string): Promise<void> {
     await this.exclusive(() => {
       const current = this.get(id)
@@ -298,6 +342,12 @@ export class ReferenceVault {
       this.database?.prepare('DELETE FROM reference_assets WHERE id=?').run(id)
     })
   }
+  /**
+   * Set enabled.
+   * @param id - id value.
+   * @param enabled - enabled value.
+   * @returns The resulting value.
+   */
   async setEnabled(id: string, enabled: boolean): Promise<ReferenceAsset> {
     return await this.exclusive(() => {
       const current = this.get(id)
@@ -309,12 +359,22 @@ export class ReferenceVault {
       return { ...current, enabled, updatedAt }
     })
   }
+  /**
+   * Get.
+   * @param id - id value.
+   * @returns The resulting value.
+   */
   get(id: string): ReferenceAsset | undefined {
     const row = this.database?.prepare('SELECT * FROM reference_assets WHERE id=?').get(id) as
       | Record<string, unknown>
       | undefined
     return row === undefined ? undefined : this.asset(row)
   }
+  /**
+   * Query.
+   * @param input - Input value to process.
+   * @returns The resulting value.
+   */
   query(input: ReferenceQuery): ReferencePage {
     const scopes = [...new Set(input.scopes.map(cleanScope))]
     const tags = cleanArray(input.tags)
@@ -402,9 +462,21 @@ export class ReferenceVault {
     const items = rows.map(value => this.asset(value as Record<string, unknown>))
     return { items, nextCursor: items.length < limit ? -1 : cursor + items.length }
   }
+  /**
+   * React.
+   * @param input - Input value to process.
+   * @returns The resulting value.
+   */
   react(input: ReferenceQuery): ReferenceAsset | undefined {
     return this.query({ ...input, limit: 1 }).items[0]
   }
+  /**
+   * Tag catalog.
+   * @param scopesValue - scopes value value.
+   * @param limitValue - limit value value.
+   * @param includeDisabled - include disabled value.
+   * @returns The resulting value.
+   */
   tagCatalog(
     scopesValue: readonly string[],
     limitValue = 48,
@@ -424,11 +496,20 @@ export class ReferenceVault {
       count: Number((row as Record<string, unknown>)['count']),
     }))
   }
+  /**
+   * Mark used.
+   * @param id - id value.
+   */
   markUsed(id: string): void {
     this.database
       ?.prepare('UPDATE reference_assets SET usage_count=usage_count+1,last_used_at=? WHERE id=?')
       .run(Date.now(), id)
   }
+  /**
+   * Blob.
+   * @param id - id value.
+   * @returns The resulting value.
+   */
   async blob(id: string): Promise<{ data: Buffer; mimeType: string } | undefined> {
     const asset = this.get(id)
     if (asset === undefined || asset.source.type !== 'blob') return undefined
@@ -437,6 +518,11 @@ export class ReferenceVault {
       mimeType: asset.mimeType,
     }
   }
+  /**
+   * Blob info.
+   * @param id - id value.
+   * @returns The resulting value.
+   */
   blobInfo(id: string): { path: string; bytes: number; mimeType: string } | undefined {
     const asset = this.get(id)
     if (asset === undefined || asset.source.type !== 'blob') return undefined
@@ -446,11 +532,20 @@ export class ReferenceVault {
       mimeType: asset.mimeType,
     }
   }
+  /**
+   * Url.
+   * @param asset - asset value.
+   * @returns The resulting value.
+   */
   url(asset: ReferenceAsset): string {
     return asset.source.type === 'blob'
       ? `/api/virtual-companions/reference/blob/${asset.id}`
       : asset.source.url
   }
+  /**
+   * Remove scope.
+   * @param scopeValue - scope value value.
+   */
   async removeScope(scopeValue: string): Promise<void> {
     const scope = cleanScope(scopeValue)
     if (scope === 'public') throw new Error('public reference vault cannot be removed')

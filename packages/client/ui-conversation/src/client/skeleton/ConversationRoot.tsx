@@ -13,6 +13,101 @@ import css from './ConversationRoot.module.css'
 /** Full props composed from the slot contract. */
 export type ConversationRootProps = ConversationSlotProps
 
+const WIDTH_PREF_KEY = 'worldline.conversation.contentWidth'
+const CONTENT_MIN = 640
+const CONTENT_EDGE_BUDGET = 176
+
+function readWidthPreference(): number | null {
+  try {
+    const raw = localStorage.getItem(WIDTH_PREF_KEY)
+    if (raw === null) return null
+    const value = Number(raw)
+    return Number.isFinite(value) && value > 0 ? value : null
+  } catch {
+    return null
+  }
+}
+
+function resolveContentWidth(columnWidth: number, preference: number | null): number {
+  const max = Math.max(CONTENT_MIN, columnWidth - CONTENT_EDGE_BUDGET)
+  if (preference !== null) return Math.min(Math.max(preference, CONTENT_MIN), max)
+  return Math.max(680, Math.min(columnWidth * 0.64, 920))
+}
+
+function WidthHandle(props: {
+  side: 'left' | 'right'
+  onStart: () => number
+  onDrag: (width: number) => void
+  onCommit: (width: number) => void
+  onEnd: () => void
+}) {
+  const [dragging, setDragging] = useState(false)
+  const base = useRef(0)
+  const origin = useRef(0)
+  const latest = useRef(0)
+  const frame = useRef<number | null>(null)
+  const callbacks = useRef(props)
+  callbacks.current = props
+
+  const outwardWidth = () => {
+    const dx = latest.current - origin.current
+    const outward = callbacks.current.side === 'right' ? dx : -dx
+    return base.current + outward * 2
+  }
+  const cancelFrame = () => {
+    if (frame.current !== null) {
+      cancelAnimationFrame(frame.current)
+      frame.current = null
+    }
+  }
+  const onPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    origin.current = event.clientX
+    latest.current = event.clientX
+    base.current = callbacks.current.onStart()
+    setDragging(true)
+  }, [])
+  const onPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const box = event.currentTarget.getBoundingClientRect()
+    event.currentTarget.style.setProperty('--worldline-width-handle-pointer-y', `${event.clientY - box.top}px`)
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    latest.current = event.clientX
+    frame.current ??= requestAnimationFrame(() => {
+      frame.current = null
+      callbacks.current.onDrag(outwardWidth())
+    })
+  }, [])
+  const onPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    event.currentTarget.releasePointerCapture(event.pointerId)
+    cancelFrame()
+    latest.current = event.clientX
+    if (latest.current !== origin.current) callbacks.current.onCommit(outwardWidth())
+    setDragging(false)
+    callbacks.current.onEnd()
+  }, [])
+  const onPointerCancel = useCallback(() => {
+    cancelFrame()
+    setDragging(false)
+    callbacks.current.onEnd()
+  }, [])
+
+  return (
+    <div
+      className={css.widthHandle}
+      data-side={props.side}
+      data-width-handle={props.side}
+      data-dragging={dragging || undefined}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onPointerCancel}
+    />
+  )
+}
+
 export function ConversationRoot({
   sessionId, useSession, useSessions, useWorkspaces, useInput, useComposerBlock,
   renderSlot, renderSlotChain, selectWorkspace, t,
@@ -34,21 +129,74 @@ export function ConversationRoot({
   const [selectionError, setSelectionError] = useState('')
   const pickerAnchor = useRef<HTMLButtonElement>(null)
 
-  // Publishes the seat's live height as --worldline-composer-height on the scroll
-  // body so floating controls (ChatView back-to-bottom) clear the composer as
-  // it grows. Callback ref, not an effect; stable identity prevents observer
-  // churn while the first blank session fills the resident body outlet.
+  // Publishes the scrollport and seat's live heights on the scroll body so
+  // floating controls stay inside the visible transcript and clear the
+  // composer as it grows. Callback ref, not an effect; stable identity
+  // prevents observer churn while the first blank session fills the resident
+  // body outlet.
   const seatObserver = useRef<ResizeObserver | null>(null)
   const seatResizeRef = useCallback((seat: HTMLDivElement | null): void => {
     seatObserver.current?.disconnect()
     seatObserver.current = null
     const scroller = seat?.parentElement ?? null
     if (seat === null || scroller === null) return
-    seatObserver.current = new ResizeObserver(() => {
+    const publishGeometry = (): void => {
+      scroller.style.setProperty(
+        '--worldline-conversation-viewport-height',
+        `${scroller.clientHeight}px`,
+      )
       scroller.style.setProperty('--worldline-composer-height', `${seat.offsetHeight}px`)
-    })
+    }
+    seatObserver.current = new ResizeObserver(publishGeometry)
     seatObserver.current.observe(seat)
+    seatObserver.current.observe(scroller)
+    publishGeometry()
   }, [])
+
+  const rootEl = useRef<HTMLDivElement | null>(null)
+  const rootObserver = useRef<ResizeObserver | null>(null)
+  const publishWidths = useCallback((root: HTMLDivElement): void => {
+    const column = root.offsetWidth
+    root.style.setProperty('--worldline-conversation-column-width', `${column}px`)
+    const preference = readWidthPreference()
+    if (preference === null) root.style.removeProperty('--worldline-chat-user-width')
+    else root.style.setProperty('--worldline-chat-user-width', `${resolveContentWidth(column, preference)}px`)
+  }, [])
+  const rootResizeRef = useCallback((root: HTMLDivElement | null): void => {
+    rootObserver.current?.disconnect()
+    rootObserver.current = null
+    rootEl.current = root
+    if (root === null) return
+    rootObserver.current = new ResizeObserver(() => { publishWidths(root) })
+    rootObserver.current.observe(root)
+    publishWidths(root)
+  }, [publishWidths])
+
+  const onHandleStart = useCallback((): number => {
+    const root = rootEl.current
+    return root === null ? 680 : resolveContentWidth(root.offsetWidth, readWidthPreference())
+  }, [])
+  const onHandleDrag = useCallback((width: number): void => {
+    const root = rootEl.current
+    if (root === null) return
+    root.style.setProperty(
+      '--worldline-chat-user-width',
+      `${resolveContentWidth(root.offsetWidth, width)}px`,
+    )
+  }, [])
+  const onHandleCommit = useCallback((width: number): void => {
+    const root = rootEl.current
+    if (root === null) return
+    try {
+      localStorage.setItem(WIDTH_PREF_KEY, `${resolveContentWidth(root.offsetWidth, width)}`)
+    } catch {
+      // Storage failures keep the live width for this session only.
+    }
+  }, [])
+  const onHandleEnd = useCallback((): void => {
+    const root = rootEl.current
+    if (root !== null) publishWidths(root)
+  }, [publishWidths])
 
   const sessionWorkspace = sessionId === undefined
     ? undefined
@@ -199,11 +347,23 @@ export function ConversationRoot({
       delete: t('contextMenu.delete'),
       selectAll: t('contextMenu.selectAll'),
     }}>
-      <div className={css.root} data-phase={phase}>
+      <div ref={rootResizeRef} className={css.root} data-phase={phase}>
         {renderSlot('conversation.session.header', {})}
-        <div className={css.scrollBody} data-conversation-scroll="">
-          {renderSlot('conversation.session', {})}
-          {composerSeat}
+        <div className={css.bodyFrame} data-conversation-body-frame="">
+          <div className={css.scrollBody} data-conversation-scroll="">
+            {renderSlot('conversation.session', {})}
+            {composerSeat}
+          </div>
+          {phase === 'active' && (['left', 'right'] as const).map(side => (
+            <WidthHandle
+              key={side}
+              side={side}
+              onStart={onHandleStart}
+              onDrag={onHandleDrag}
+              onCommit={onHandleCommit}
+              onEnd={onHandleEnd}
+            />
+          ))}
         </div>
       </div>
     </ConversationContextMenu>

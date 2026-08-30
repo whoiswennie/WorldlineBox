@@ -209,12 +209,12 @@ export interface LaunchOptions {
   /** Synthetic model capacity for UI scenarios whose seeded history must remain uncompacted. */
   replayContextWindow?: number
   /**
-   * Tool presentation mode patched onto the shipped `tools` row (`code`
+   * Tool presentation mode patched onto the shipped `tools` row (`ptc`
    * collapses the wire to run_code + the SDK prompt section). Omit for the
-   * yml default. The code runtime row is always in the tree, so no extra
+   * yml default. The PTC runtime row is always in the tree, so no extra
    * insertion is needed.
    */
-  toolsMode?: 'native' | 'code' | 'both'
+  toolsMode?: 'native' | 'ptc' | 'both'
   /**
    * Insert the opt-in model-facing Cordis tool provider into the shipped tree.
    * Record and replay use the same tool surface, so captured request headers
@@ -419,9 +419,13 @@ export async function launchWebScaffold(options: LaunchOptions = {}): Promise<We
     // Authentication has its own focused client/Host coverage. General Web
     // journeys need the application surface immediately and run inside an
     // isolated temp home, so disable both faces instead of creating test-only
-    // accounts or letting the overlay hide the feature under test.
+    // accounts or letting the overlay hide the feature under test. The virtual
+    // companion consumes ui-auth's accountIdentity service; it has focused
+    // client coverage, so disable that dependent presentation face in this
+    // auth-free scaffold as well rather than inventing a second identity owner.
     { id: 'local-auth', disabled: true },
     { id: 'ui-auth', disabled: true },
+    { id: 'ui-virtual-companion', disabled: true },
     // Fixture sessions must never leave the process: the shipped row defaults
     // to the production OTLP endpoint (or whatever WORLDLINE_TELEMETRY_OTLP_URL
     // names in the ambient environment). A scenario that pins a real backend

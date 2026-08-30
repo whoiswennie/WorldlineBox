@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
-import { createUserMessage, CallId, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, createMessage } from '@deepseek-ai/dsh-llm'
+import { AttachmentId, ImageVariantId } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentStore, ImageAttachmentRef, RequestImageAttachment } from '@deepseek-ai/dsh-attachment'
+import {
+  createUserMessage, CallId, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, createMessage,
+  requestImageHandleText,
+} from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { AssistantMessage, AssistantMessageEvent, Usage } from '@earendil-works/pi-ai'
 import { toPiContext } from '../src/context.ts'
@@ -30,6 +33,21 @@ function assistant(overrides: Partial<AssistantMessage> = {}): AssistantMessage 
     stopReason: 'stop',
     timestamp: 0,
     ...overrides,
+  }
+}
+
+function requestImage(value: ImageAttachmentRef): RequestImageAttachment {
+  return {
+    variantId: ImageVariantId(`sha256:${'b'.repeat(64)}`),
+    attachment: value,
+    data: Uint8Array.of(1, 2, 3),
+    mediaType: value.mediaType,
+    bytes: 3,
+    width: value.width,
+    height: value.height,
+    depth: 'uchar',
+    space: 'srgb',
+    hasAlpha: value.mediaType === 'image/png',
   }
 }
 
@@ -76,7 +94,8 @@ describe('toPiContext', () => {
       width: 1,
       height: 1,
     }
-    const readImage = vi.fn().mockResolvedValue({ ref: attachment, data: Uint8Array.of(1, 2, 3) })
+    const prepared = requestImage(attachment)
+    const readImageRequest = vi.fn().mockResolvedValue(prepared)
     const context = await toPiContext({
       provider: 'openai',
       model: 'gpt-4.1',
@@ -84,13 +103,17 @@ describe('toPiContext', () => {
         content: [{ type: 'text', text: 'describe' }, { type: 'image', attachment }],
         source: { kind: 'plugin', plugin: 'test' },
       })],
-    }, { readImage } as unknown as AttachmentStore)
+    }, {
+      attachments: { readImageRequest } as unknown as AttachmentStore,
+      resolveImageAccess: () => undefined,
+    })
 
-    expect(readImage).toHaveBeenCalledWith(attachment)
+    expect(readImageRequest).toHaveBeenCalledWith(attachment, expect.any(Object), undefined)
     expect(context.messages[0]).toEqual({
       role: 'user',
       content: [
         { type: 'text', text: 'describe' },
+        { type: 'text', text: requestImageHandleText(attachment, prepared, undefined) },
         { type: 'image', data: 'AQID', mimeType: 'image/png' },
       ],
       timestamp: 0,
@@ -105,7 +128,8 @@ describe('toPiContext', () => {
       width: 1,
       height: 1,
     }
-    const readImage = vi.fn().mockResolvedValue({ ref: attachment, data: Uint8Array.of(1, 2, 3) })
+    const prepared = requestImage(attachment)
+    const readImageRequest = vi.fn().mockResolvedValue(prepared)
     const context = await toPiContext({
       provider: 'openai',
       model: 'gpt-4.1',
@@ -129,7 +153,10 @@ describe('toPiContext', () => {
         }],
         source: { kind: 'plugin', plugin: 'test' },
       })],
-    }, { readImage } as unknown as AttachmentStore)
+    }, {
+      attachments: { readImageRequest } as unknown as AttachmentStore,
+      resolveImageAccess: () => undefined,
+    })
 
     expect(context.messages).toEqual([{
       role: 'toolResult',
@@ -138,6 +165,7 @@ describe('toPiContext', () => {
       content: [
         { type: 'text', text: 'before' },
         { type: 'text', text: 'middle' },
+        { type: 'text', text: requestImageHandleText(attachment, prepared, undefined) },
         { type: 'image', data: 'AQID', mimeType: 'image/png' },
         { type: 'text', text: 'after' },
       ],
@@ -725,6 +753,17 @@ describe('mapStopReason / mapUsage', () => {
     ['stop', { kind: 'stop' }],
     ['length', { kind: 'max-tokens' }],
     ['toolUse', { kind: 'tool-calls' }],
+    ['pending', {
+      kind: 'error',
+      failure: { message: 'pi-ai stream for model "deepseek-v4-flash" ended pending', code: 'PI_AI_ERROR' },
+    }],
+    ['deferred', {
+      kind: 'error',
+      failure: {
+        message: 'pi-ai deferred response for model "deepseek-v4-flash" is not supported',
+        code: 'PI_AI_ERROR',
+      },
+    }],
     ['aborted', { kind: 'aborted', failure: { message: 'pi-ai stream aborted', code: 'ABORTED' } }],
   ] as const)('maps %s', (stopReason, expected) => {
     expect(mapStopReason(assistant({ stopReason, content: [{ type: 'text', text: 'ok' }] }))).toEqual(expected)

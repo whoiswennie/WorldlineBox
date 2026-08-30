@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-client-ui-plugin-center",
   "description": "Local plugin and skill management page",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": {
     "access": "public"
   },

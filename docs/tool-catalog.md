@@ -15,8 +15,9 @@ This table connects model-visible tool names to the plugin package and service s
 
 | Tool package | Model-visible names | Requires | Writes / affects | Shipped aliases | Deployment note |
 | --- | --- | --- | --- | --- | --- |
+| `@deepseek-ai/dsh-tool-agent-vault` | `memory_consolidate`, `memory_explore`, `memory_recall`, `memory_remember`, `procedure_recall`, `resource_find`, `self_inspect`, `self_update`, `vault_read`, `vault_reconcile`, `vault_resolve_path`, `vault_update` | `ctx.tools`, `ctx.agentVaults`, `ctx.systemPrompt`, `a calling Agent` | `tool/call`, `Agent Vault documents/resources/audit state`, `tool/result` | - | Agent Vault tools operate only for a calling Agent whose runtime session is explicitly bound to an authorized private Vault. |
 | `@deepseek-ai/dsh-tool-ask-user` | `ask_user_question` | `ctx.tools`, `ctx.userQuestions` | `tool/call`, `tool/result after a UI/provider answers the question` | - | ask_user_question pauses the tool call until the active UI provider returns a human answer. |
-| `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`, `ctx.codeRuntime (execution time)`, `ctx.systemPrompt` | `tool/call`, `one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`, `tool/result` | - | Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: code` / `mode: both` (see the Code Mode contract). Under `code` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result. |
+| `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`, `ctx.codeRuntime (execution time)`, `ctx.systemPrompt` | `tool/call`, `one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`, `tool/result` | - | Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: ptc` / `mode: both` (see the PTC contract). Under `ptc` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result. |
 | `@deepseek-ai/dsh-plan-mode` | `exit_plan_mode` | `ctx.tools`, `ctx.systemPrompt`, `ctx.userQuestions (execution time, opportunistic)` | `tool/call`, `plan/mode inactive on an approved review`, `tool/result` | - | exit_plan_mode stays in the model-facing schema while planning is inactive so transitions add no tool-catalog churn on top of the plan-policy change. Its execute path rejects calls outside plan mode; in plan mode it presents the plan over the user-questions seam (approve / keep planning with feedback), and approval logs plan mode inactive at the step boundary. |
 | `@deepseek-ai/dsh-tool-bash` | `bash` | `ctx.tools`, `ctx.shell`, `ctx.systemPrompt`, `ctx.shellEnv`, `ctx.jobs at call time for run_in_background` | `tool/call`, `tool/result` | - | The bash tool is the model-facing consumer of the bash executor seam. A `run_in_background` run registers with the generic `ctx.jobs` runtime and is collected/stopped through the `job_*` tools from `@deepseek-ai/dsh-tool-jobs`; the `enableRunInBackground` config (default true) removes the parameter entirely when disabled. |
 | `@deepseek-ai/dsh-tool-pwsh` | `pwsh` | `ctx.tools`, `ctx.shell`, `ctx.systemPrompt`, `ctx.shellEnv`, `ctx.jobs at call time for run_in_background` | `tool/call`, `tool/result` | - | The pwsh tool is the PowerShell-dialect consumer of the bash executor seam for Windows compositions (a PowerShell executor such as `@deepseek-ai/dsh-pwsh-local` backs `ctx.shell`); it mirrors the bash tool call-for-call minus sandbox controls — `run_in_background` runs register with the generic `ctx.jobs` runtime and are collected/stopped through the `job_*` tools, and the managed `WORLDLINE_*` environment comes from `@deepseek-ai/dsh-shell-env`. Each call runs in a fresh process (no persistent PTY session), with native `C:\...` paths and `$env:NAME` variables. |
@@ -43,6 +44,424 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
 | `@deepseek-ai/dsh-worldline-video` | `video_index`, `video_probe`, `video_read` | `ctx.tools`, `ctx.skills`, `ctx.subprocess`, `packaged FFmpeg and yt-dlp at execution time` | `tool/call`, `private video cache and sampled JPEGs`, `tool/result` | - | video_probe is metadata-only for online sources; video_index chooses resumable cache or no-media-save stream mode, and video_read performs bounded timestamped sampling from the reusable manifest. |
+
+<a id="deepseek-ai-dsh-tool-agent-vault"></a>
+
+## `@deepseek-ai/dsh-tool-agent-vault`
+
+### `memory_consolidate`
+
+Queue and execute one bounded, checkpointed memory-stage consolidation batch. Never processes the complete backlog in one call.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "source": {
+      "type": "string",
+      "enum": [
+        "short",
+        "medium"
+      ]
+    },
+    "target": {
+      "type": "string",
+      "enum": [
+        "medium",
+        "long"
+      ]
+    },
+    "batch_size": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "source",
+    "target"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `memory_explore`
+
+Follow a bounded Wiki neighborhood from previously recalled vault:// origins.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "origins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "max_pages": {
+      "type": "integer"
+    },
+    "max_chars": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "origins"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `memory_recall`
+
+Quickly retrieve at most five directional cards from your declarative memory without reading self or full documents.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "short",
+        "medium",
+        "long"
+      ]
+    }
+  },
+  "required": [
+    "query"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `memory_remember`
+
+Immediately save one bounded user-requested fact, preference, commitment, or event into short-term memory so the next turn can recall it.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "importance": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "title",
+    "content"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `procedure_recall`
+
+Find saved capabilities, methods, and experience cards by task terms, aliases, and tags; results do not imply current tool availability.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "query"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `resource_find`
+
+Find enabled expression, appearance, source, or attachment resources in your Vault without loading binary content.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "roles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "expression",
+          "appearance",
+          "source",
+          "attachment"
+        ]
+      }
+    }
+  },
+  "required": [
+    "query"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `self_inspect`
+
+Inspect your structured enabled and disabled self modules, including identity, appearance, persona, state, relationships, and capability boundaries.
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `self_update`
+
+Propose or apply one explicit structured self-module update. Host policy, stability, user locks, and revision are authoritative.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "autonomous": {
+          "type": "boolean"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "stability": {
+          "type": "string",
+          "enum": [
+            "core",
+            "stable",
+            "dynamic"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "revision": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "enabled",
+        "autonomous",
+        "locked",
+        "stability",
+        "summary",
+        "details",
+        "revision",
+        "updatedAt"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "module",
+    "reason"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `vault_read`
+
+Progressively read one exact vault:// Markdown result using top, section, grep, or full view.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "uri": {
+      "type": "string"
+    },
+    "view": {
+      "type": "string",
+      "enum": [
+        "top",
+        "section",
+        "grep",
+        "full"
+      ]
+    },
+    "selector": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "uri"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `vault_reconcile`
+
+Close a vault_resolve_path write lease and immediately reconcile the externally edited Markdown file into the derived index.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "lease_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "lease_id"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `vault_resolve_path`
+
+Resolve one exact memory or procedure vault:// URI to a temporary Host path only when a non-Vault tool genuinely requires it. A write result includes a lease that must be reconciled; never save the Host path in Vault content.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "uri": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "uri",
+    "mode",
+    "reason"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+### `vault_update`
+
+Create or revision-update one memory or procedure Markdown document. This tool refuses self and resource paths.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "uri": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "expected_revision": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "uri",
+    "content",
+    "reason"
+  ]
+}
+```
+
+Source: [`packages/agent-vault/tool-agent-vault/src/index.ts`](../packages/agent-vault/tool-agent-vault/src/index.ts)
+
+Agent Vault tools operate only for a calling Agent whose runtime session is explicitly bound to an authorized private Vault.
 
 <a id="deepseek-ai-dsh-tool-ask-user"></a>
 
@@ -146,9 +565,9 @@ Execute a TypeScript program against the available tools. Takes two required arg
 }
 ```
 
-Source: [`packages/core/tools/src/code-mode.ts`](../packages/core/tools/src/code-mode.ts)
+Source: [`packages/core/tools/src/ptc.ts`](../packages/core/tools/src/ptc.ts)
 
-Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: code` / `mode: both` (see the Code Mode contract). Under `code` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result.
+Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: ptc` / `mode: both` (see the PTC contract). Under `ptc` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result.
 
 <a id="deepseek-ai-dsh-plan-mode"></a>
 
@@ -701,6 +1120,7 @@ Custom editing tool for viewing, creating and editing files
 * If `path` is a file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep
 * The `create` command cannot be used if the specified `path` already exists as a file
 * If a `command` generates a long output, it will be truncated and marked with `<response clipped>`
+* A null placeholder for a parameter unused by the selected command is treated as omitted. Required parameters still need values; omit `str_replace.new_str` rather than setting it to null when deleting a match
 
 Notes for using the `str_replace` command:
 * The `old_str` parameter should match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!
@@ -726,27 +1146,62 @@ Notes for using the `str_replace` command:
       "description": "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`."
     },
     "file_text": {
-      "type": "string",
-      "description": "Required parameter of `create` command, with the content of the file to be created."
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required string parameter of `create`; null is treated as omitted by other commands."
     },
     "insert_line": {
-      "type": "integer",
-      "description": "Required parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`."
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required integer parameter of `insert`; null is treated as omitted by other commands."
     },
     "new_str": {
-      "type": "string",
-      "description": "Optional parameter of `str_replace` command containing the new string (if not given, no string will be added). Required parameter of `insert` command containing the string to insert."
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional string for `str_replace` (omit it to delete) and required string for `insert`. Null is accepted only by commands that do not use it."
     },
     "old_str": {
-      "type": "string",
-      "description": "Required parameter of `str_replace` command containing the string in `path` to replace."
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required string for `str_replace`; null is treated as omitted by other commands."
     },
     "view_range": {
-      "type": "array",
-      "description": "Optional parameter of `view` command when `path` points to a file. If none is given, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file.",
-      "items": {
-        "type": "integer"
-      }
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional line range for `view`; omitted or null shows the full file."
     }
   },
   "required": [

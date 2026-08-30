@@ -15,6 +15,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { RECONNECT_DEFAULTS, resolveReconnectPolicy, startConnection } from './connection.ts'
 import type { ReconnectConfig } from './connection.ts'
@@ -42,7 +43,7 @@ const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
  * namespace is a configuration error surfaced at plugin load, never silent
  * shadowing.
  */
-const activeServerNames = new WeakMap<Context, Set<string>>()
+const activeServerNames = new WeakMap<object, Set<string>>()
 
 // ---- Config ----
 
@@ -146,10 +147,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // Reserve the namespace next: a duplicate `serverName` fails THIS instance
   // at load with an actionable error and leaves the earlier instance intact.
   ctx.effect(() => {
-    let names = activeServerNames.get(ctx.root)
+    const owner = scopeOf(ctx) ?? ctx.root
+    let names = activeServerNames.get(owner)
     if (!names) {
       names = new Set()
-      activeServerNames.set(ctx.root, names)
+      activeServerNames.set(owner, names)
     }
     if (names.has(config.serverName)) {
       throw new Error(

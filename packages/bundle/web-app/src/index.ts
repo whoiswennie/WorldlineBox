@@ -13,6 +13,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { networkInterfaces } from 'node:os'
+import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -26,7 +27,7 @@ import {
 import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type {} from '@deepseek-ai/dsh-system-prompt'
+import { FIRST_PARTY_SECTION_ORDER } from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-shell-env'
 
 /** Stable Cordis plugin name. */
@@ -74,6 +75,8 @@ export interface WebRuntimeValues {
   lanAddresses: string[]
   /** LAN literals followed by explicit invocation authorities. */
   trustedHosts: string[]
+  /** Absolute root of the built frontend assets served by this Host. */
+  frontendRoot: string
 }
 
 /** Environment variable naming the canonical local URL of this Web GUI. */
@@ -137,7 +140,9 @@ try {
  * @param extra - explicit `--trusted-host` values, in argument order.
  * @returns the LAN display addresses and invocation-derived fence authorities.
  */
-export function resolveLanTrust(bindHost: string, extra: readonly string[]): WebRuntimeValues {
+export function resolveLanTrust(bindHost: string, extra: readonly string[]): Pick<
+  WebRuntimeValues, 'lanAddresses' | 'trustedHosts'
+> {
   const lanAddresses = bindHost === ALL_INTERFACES_HOST
     ? Object.values(networkInterfaces()).flat()
       .filter((iface): iface is NonNullable<typeof iface> => iface !== undefined && iface.family === 'IPv4' && !iface.internal)
@@ -234,19 +239,23 @@ export const internals: {
  * @param config - validated {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
-  const runtime = resolveLanTrust(ctx.webServer.host, config.trustedHosts)
+  const distIndex = internals.resolveDistIndex()
+  const runtime = {
+    ...resolveLanTrust(ctx.webServer.host, config.trustedHosts),
+    frontendRoot: dirname(distIndex),
+  }
   // The loopback URL belongs to this host. Under SSH, the operator reaches it
   // through a local forwarding address that this process cannot derive.
   const handoffBrowser = config.openBrowser && !launchedThroughSsh(ctx)
   // Release dependent rows only after bind-dependent trust has been sampled once.
   ctx.provide(WEB_RUNTIME_SERVICE, runtime)
-  ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
+  ctx.plugin(FrontendStatic, { distIndex })
   if (config.surfaceContext) {
     ctx.inject(['systemPrompt'], (promptCtx) => {
       addRuntimeSourceSection(promptCtx, SOURCE_ROOT)
       promptCtx.systemPrompt.section({
         name: 'app:web-surface',
-        order: -98,
+        order: FIRST_PARTY_SECTION_ORDER.WEB_SURFACE,
         text: () => webSurfacePrompt(localWebUrl(promptCtx), config.dev === true),
       })
     })

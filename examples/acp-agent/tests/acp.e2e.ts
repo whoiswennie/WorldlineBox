@@ -13,7 +13,7 @@ import { cleanupAcpExampleTest } from './cleanup.ts'
 
 /**
  * End-to-end: boot examples/acp-agent as a real subprocess speaking ACP over
- * its stdio, drive it with a real ClientSideConnection, send a real prompt, and
+ * its stdio, drive it with a real ACP v1 client application, send a real prompt, and
  * verify the WORLD (a file the agent wrote), not the agent's self-report. Owns
  * and disposes the subprocess in afterEach. Key-gated.
  *

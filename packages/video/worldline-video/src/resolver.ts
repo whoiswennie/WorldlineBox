@@ -3,6 +3,9 @@ import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 
+/**
+ * Contract for video executables.
+ */
 export interface VideoExecutables {
   ffmpeg: string
   ffprobe: string
@@ -34,7 +37,12 @@ async function bundledExecutables(root: string): Promise<VideoExecutables | unde
   return (await Promise.all(Object.values(tools).map(exists))).every(Boolean) ? tools : undefined
 }
 
-/** Locate packaged tools first and explicitly fall back to the host PATH. */
+/**
+ *  Locate packaged tools first and explicitly fall back to the host PATH.
+ * @param ctx - Cordis context that owns the operation.
+ * @param signal - Cancellation signal for the operation.
+ * @returns The resulting value.
+ */
 export async function resolveVideoExecutables(ctx: Context, signal?: AbortSignal): Promise<VideoExecutables> {
   const configured = process.env.WORLDLINE_VIDEO_TOOLS_DIR?.trim()
   const roots = [configured, SOURCE_TOOLS, resolve(process.cwd(), 'resources', 'tools')]
@@ -52,13 +60,21 @@ export async function resolveVideoExecutables(ctx: Context, signal?: AbortSignal
   return { ffmpeg, ffprobe, ffplay, ytDlp }
 }
 
-/** PATH value suitable for yt-dlp's FFmpeg discovery without global mutation. */
+/**
+ *  PATH value suitable for yt-dlp's FFmpeg discovery without global mutation.
+ * @param tools - tools value.
+ * @returns The resulting value.
+ */
 export function pathWithBundledTools(tools: VideoExecutables): string {
   const entries = [dirname(tools.ffmpeg), dirname(tools.ytDlp), process.env.PATH ?? '']
   return entries.filter(Boolean).join(delimiter)
 }
 
-/** Reject ambiguous or unsafe source spellings at the tool boundary. */
+/**
+ *  Reject ambiguous or unsafe source spellings at the tool boundary.
+ * @param source - source value.
+ * @returns The resulting value.
+ */
 export function classifySource(source: string): 'local' | 'online' {
   if (/^https?:\/\//iu.test(source)) return 'online'
   if (isAbsolute(source)) return 'local'

@@ -304,9 +304,9 @@ export function WorkspaceExplorer({
   >
     <header><div><strong>资源管理器</strong><span>{cwd ?? '尚未选择工作区'}</span></div><button type="button" title="关闭文件面板" onClick={close}><IconCloseOutline16 /></button></header>
     <div className={css.toolbar}><strong>工作区</strong><div>
-      <button type="button" title="在文件资源管理器中打开工作区" disabled={cwd === undefined} onClick={openWorkspaceDirectory}><IconFolderOpen16 /></button>
       <button type="button" title="新建文件" disabled={cwd === undefined} onClick={() => { if (cwd !== undefined) showPrompt('新建文件', '', (name) => { run({ operation: 'create-file', parent: cwd, name }) }) }}><IconPlusOutline16 /></button>
       <button type="button" title="新建文件夹" disabled={cwd === undefined} onClick={() => { if (cwd !== undefined) showPrompt('新建文件夹', '', (name) => { run({ operation: 'create-directory', parent: cwd, name }) }) }}><IconFolderOpenOutline16 /></button>
+      <button type="button" title="在文件资源管理器中打开工作区" disabled={cwd === undefined} onClick={openWorkspaceDirectory}><IconFolderOpen16 /></button>
       <button type="button" className={css.clearWorkspace} title="清空工作区" disabled={cwd === undefined} onClick={() => {
         if (cwd === undefined) return
         setConfirmation({

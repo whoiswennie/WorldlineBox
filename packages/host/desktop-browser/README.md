@@ -6,6 +6,8 @@ Desktop-only Host adapter for conversation-owned Electron browser tabs. It valid
 
 Workspace-local pages use opaque route tokens and realpath containment. Only HTML entry files below the selected workspace can be opened, and every referenced resource is rechecked against the same canonical root before delivery.
 
+The CDP action vocabulary and diagnostics design were adapted from the MIT-licensed Master Cat browser automation implementation; see [MASTER_CAT_NOTICE.md](MASTER_CAT_NOTICE.md).
+
 ## Model Experience
 
 ### User-owned native tabs
@@ -21,8 +23,6 @@ User navigation and native view lifecycle add no tokens to Agent requests.
 #### KV Cache effect
 
 Product browser state is independent of model prefixes and cannot invalidate an existing cache entry.
-
-The CDP action vocabulary and diagnostics design were adapted from the MIT-licensed Master Cat browser automation implementation; see [MASTER_CAT_NOTICE.md](MASTER_CAT_NOTICE.md).
 
 ## Known Limitations and Deferred Work
 

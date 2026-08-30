@@ -1,6 +1,7 @@
 /** Browser attachment plugin: fills conversation's composer and message-image slots. */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-trajectory/client'
 import { ComposerAttachments } from './ComposerAttachments.tsx'
 import { MessageImages } from './MessageImages.tsx'
 
@@ -15,6 +16,10 @@ export function apply(ctx: ClientContext): void {
   }, ComposerAttachments))
   ctx.slots.inject('conversation.message.images', () => ctx.slots.register({
     name: 'conversation.message.images',
+    locale: 'conversation',
+  }, MessageImages))
+  ctx.slots.inject('conversation.trajectory.images', () => ctx.slots.register({
+    name: 'conversation.trajectory.images',
     locale: 'conversation',
   }, MessageImages))
 }

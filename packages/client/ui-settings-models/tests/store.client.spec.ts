@@ -81,7 +81,9 @@ describe('ModelsSettingsStore', () => {
     expect(state.status).toBe('ready')
     expect(state.writable).toBe(true)
     expect(state.credentialError).toBeNull()
-    expect(seenRefs).toEqual([['DEEPSEEK_API_KEY', 'OPENAI_API_KEY']])
+    expect(seenRefs).toEqual([[
+      'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GHOST_API_KEY',
+    ]])
     const byProvider = new Map(state.rows.map(row => [row.entry.provider, row]))
     expect(byProvider.get('deepseek-official')).toMatchObject({
       configured: true,
@@ -95,7 +97,11 @@ describe('ModelsSettingsStore', () => {
       apiKeyEnv: 'OPENAI_API_KEY',
       credential: { configured: true },
     })
-    expect(byProvider.get('anthropic')).toMatchObject({ configured: false, removable: false })
+    expect(byProvider.get('anthropic')).toMatchObject({
+      configured: false,
+      removable: false,
+      derivedCredential: { configured: false, writable: true },
+    })
     expect(byProvider.get('anthropic')?.apiKeyEnv).toBeUndefined()
     expect(byProvider.get('ghost')).toMatchObject({ configured: false, removable: false })
     expect(state.namespaces.get('llm-pi-ai')?.ns).toBe('llm-pi-ai')
@@ -196,7 +202,7 @@ describe('edge joins', () => {
     expect(state.rows[0]?.apiKeyEnv).toBeUndefined()
   })
 
-  it('skips the credential describe entirely when no row names a reference', async () => {
+  it('derives the conventional credential reference when no row names one', async () => {
     const { face, mirror, seenRefs } = api({
       describeSettings: () => Promise.resolve(ok({
         writable: true,
@@ -211,7 +217,7 @@ describe('edge joins', () => {
     })
     const store = new ModelsSettingsStore(face, settingsSchema, mirror)
     await store.load()
-    expect(seenRefs).toEqual([])
+    expect(seenRefs).toEqual([['ANTHROPIC_API_KEY']])
     expect(store.store.getSnapshot().status).toBe('ready')
   })
 

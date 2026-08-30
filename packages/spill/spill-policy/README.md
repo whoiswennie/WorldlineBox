@@ -30,7 +30,7 @@ This plugin registers **no service** and owns no storage or preview mechanics: p
 
 **Best-effort:** no session owner, no `ctx.spillStore` backend, or a `saveText` rejection ⇒ the policy logs a warning and returns the original result. A spill failure never turns a successful call into an `isError` or hides the inline result. A successful replacement changes only `content`; the canonical programmatic value is preserved.
 
-**The dispatch-log arm:** a second listener on `tools/code-dispatch-log` applies the same cap, replacement pipeline, and best-effort fallbacks to the DURABLE copy of each `run_code` sub-call result (artifact label `dispatch`, keyed by the sub-call id). The program's value is untouched — it already crossed the worker boundary whole — and `read` sub-calls are bounded too: a log copy is not model context, so the read-again loop cannot occur, and `read` is precisely the tool that produces huge logs (rationale).
+**The dispatch-log arm:** a second listener on `tools/ptc-dispatch-log` applies the same cap, replacement pipeline, and best-effort fallbacks to the DURABLE copy of each `run_code` sub-call result (artifact label `dispatch`, keyed by the sub-call id). The program's value is untouched — it already crossed the worker boundary whole — and `read` sub-calls are bounded too: a log copy is not model context, so the read-again loop cannot occur, and `read` is precisely the tool that produces huge logs (rationale).
 
 ## Scope
 

@@ -1,5 +1,5 @@
 /**
- * Code Mode codegen: the pure projection from registered tool schemas to the TypeScript SDK
+ * PTC mode codegen: the pure projection from registered tool schemas to the TypeScript SDK
  * text the model programs against (the `tools:sdk` prompt section). Sibling of
  * `json-schema.ts` — `schemas()` (native function calling) and this module (the generated
  * `declare const tools` API) are two projections of the same store.
@@ -9,7 +9,7 @@
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import { assertSupportedJsonSchema } from './json-schema.ts'
 import type { JsonSchemaNode, JsonSchemaScalar } from './json-schema.ts'
-/** Internal Code Mode projection: the model-facing schema plus the canonical output schema. */
+/** Internal PTC mode projection: the model-facing schema plus the canonical output schema. */
 export interface ToolSdkSchema extends ToolSchema {
   /** Validated canonical value returned by the tool binding. */
   output: JsonSchemaNode
@@ -246,7 +246,7 @@ export function jsonSchemaToTs(schema: unknown, indent = 0): string {
   }
 }
 
-/** The fixed model-facing usage contract rendered above the declarations (see the Code Mode contract's "What the model sees"). */
+/** The fixed model-facing usage contract rendered above the declarations (see the PTC mode contract's "What the model sees"). */
 const SDK_INSTRUCTIONS = `## Writing code for run_code
 
 \`run_code\` takes two required arguments: \`code\` — the body of an async TypeScript function (erasable syntax only — no \`enum\` or namespaces; type annotations are advisory, the code runs type-stripped) — and \`description\`, a short summary of what the program does. Inside the program:

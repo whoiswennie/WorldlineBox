@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
@@ -12,12 +13,16 @@ const companion: VirtualCompanion = {
   speakingStyle: '简洁', behaviorLogic: '先理解再回应', builtIn: false, createdAt: 1, updatedAt: 1,
 }
 
-function toolScope(agentVaults?: unknown): { ctx: Agent['ctx']; tools: Map<string, ToolDefinition> } {
+function toolScope(agentVaults?: unknown, services: Record<string, unknown> = {}): {
+  ctx: Agent['ctx']
+  tools: Map<string, ToolDefinition>
+} {
   const tools = new Map<string, ToolDefinition>()
   const raw = { tools: { register: (definition: ToolDefinition) => {
     tools.set(definition.name, definition)
     return () => { tools.delete(definition.name) }
-  } }, systemPrompt: { section: () => () => undefined }, agentVaults }
+  } }, systemPrompt: { section: () => () => undefined }, agentVaults,
+  get: (name: string) => services[name] }
   const ctx = Object.assign(raw, {
     inject: (_dependencies: string[], callback: (scope: Agent['ctx']) => void) => {
       callback(raw as never)
@@ -47,6 +52,12 @@ function fixture() {
     title: '开心', description: '庆祝', tags: ['表情包', '庆祝'], originalTags: [], transcript: '',
     mimeType: 'image/gif', bytes: 10, usageCount: 0, builtIn: false, createdAt: 1, updatedAt: 1,
     revision: 'resource-1', uri: 'vault://resources/records/meme-1.yml' }
+  const appearanceResource = {
+    ...resource,
+    id: 'profile-appearance', roles: ['appearance'], title: '测试伙伴的形象图',
+    description: '角色形象', tags: ['形象'], mimeType: 'image/png',
+    revision: 'appearance-1', uri: 'vault://resources/records/profile-appearance.yml',
+  }
   const vaults = {
     bindRuntimeAgent: vi.fn(() => () => undefined),
     inspectSelf: vi.fn(async () => ({ agentId: companion.id, modules: [], compiled: companion.persona,
@@ -89,9 +100,16 @@ function fixture() {
   const deleteSession = vi.fn(async () => true)
   const directory = {
     vaults,
+    appearance: vi.fn(async (id: string): Promise<{
+      resource: typeof appearanceResource
+      hostPath?: string
+    } | undefined> => id === companion.id
+      ? { resource: appearanceResource }
+      : undefined),
     resourceUrl: vi.fn((_agentId: string, id: string) => id === 'video-1'
       ? '/video.mp4'
-      : id === 'builtin-public-005' ? '/gudug-manbo.mp4' : '/meme.gif'),
+      : id === 'builtin-public-005' ? '/gudug-manbo.mp4'
+        : id === appearanceResource.id ? '/appearance.png' : '/meme.gif'),
     knowledge: {
       tree: vi.fn(() => []), search: vi.fn(() => []), read: vi.fn(), remember: vi.fn(), audit: vi.fn(() => ({})),
     },
@@ -136,7 +154,7 @@ function fixture() {
   } as unknown as Context
   return {
     room, bindings, appended, parentScope, parent, startContinuable, followup,
-    drainContinuableChildren, deleteSession, directory, ctx,
+    drainContinuableChildren, deleteSession, directory, appearanceResource, ctx,
   }
 }
 
@@ -186,6 +204,7 @@ describe('CompanionActorRuntime', () => {
     expect(firstSpec.request.prompt[0]?.text).toContain('房主：你好')
     expect(firstSpec.request.prompt[0]?.text).toContain('<reference-channel mode="idle"')
     expect(firstSpec.request.prompt[0]?.text).toContain('不会预先注入完整目录')
+    expect(firstSpec.request.prompt[0]?.text).toContain('profile-appearance')
     expect(value.room.actorSessionIds?.[companion.id]).toBe(first.actor_session_id)
 
     const secondPending = dispatch.execute({
@@ -238,9 +257,13 @@ describe('CompanionActorRuntime', () => {
     const express = actorScope.tools.get('express')
     const resourceFind = actorScope.tools.get('resource_find')
     const inspectRoomMember = actorScope.tools.get('inspect_room_member')
+    const inspectSelfAppearance = actorScope.tools.get('inspect_self_appearance')
+    const showSelfAppearance = actorScope.tools.get('show_self_appearance')
     expect(express).toBeDefined()
     expect(resourceFind).toBeDefined()
     expect(inspectRoomMember).toBeDefined()
+    expect(inspectSelfAppearance).toBeDefined()
+    expect(showSelfAppearance).toBeDefined()
     expect(actorScope.tools.has('companion_say')).toBe(false)
     expect(actorScope.tools.has('reference')).toBe(false)
     if (express === undefined) throw new Error('actor express tool not registered')
@@ -250,7 +273,8 @@ describe('CompanionActorRuntime', () => {
     expect(inspected).toMatchObject({ found: true, name: companion.name })
     if (inspected === null || typeof inspected !== 'object') throw new Error('room member result is invalid')
     const appearance: unknown = Reflect.get(inspected, 'appearance')
-    expect(appearance).toContain('/portrait.png')
+    expect(appearance).toContain('已登记形象资源')
+    expect(appearance).toContain('不要猜测画面')
     await expect(resourceFind.execute({
       query: '庆祝', tags: ['表情包'], roles: ['expression'],
     }, execution(actor))).resolves.toContain('meme-1')
@@ -296,6 +320,55 @@ describe('CompanionActorRuntime', () => {
 
     value.room.participantIds = []
     await expect(express.execute({ act: 'reject', query: '不应送达' }, execution(actor))).rejects.toThrow(/离开房间/u)
+  })
+
+  it('loads actual owner and self images into inspection tool results', async () => {
+    const value = fixture()
+    const imagePath = resolve(process.cwd(), 'apps/web/public/worldline-experience/companion.png')
+    value.directory.appearance.mockResolvedValue({
+      resource: value.appearanceResource,
+      hostPath: imagePath,
+    })
+    const saveImage = vi.fn(async (input: { data: Uint8Array; mediaType: string; name?: string }) => ({
+      attachmentId: 'attachment-appearance', mediaType: input.mediaType,
+      bytes: input.data.byteLength, width: 1, height: 1, name: input.name,
+    }))
+    const actorScope = toolScope(value.directory.vaults, {
+      attachments: {
+        imageLimits: { mediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] },
+        saveImage,
+      },
+      localAccountProfile: { current: () => ({
+        id: 1, username: 'owner', displayName: '房主', bio: '公开资料', avatar: '',
+        avatarPath: imagePath, createdAt: 1, lastLoginAt: null,
+      }) },
+    })
+    const actorId = SessionId('appearance-inspection-actor')
+    await value.directory.bindActor(value.room.sessionId, companion.id, actorId)
+    const actor = { id: actorId, ctx: actorScope.ctx, session: { events: [] } } as unknown as Agent
+    const runtime = new CompanionActorRuntime(value.ctx, value.directory as never)
+    runtime.install(actor)
+
+    const inspectSelf = actorScope.tools.get('inspect_self_appearance')
+    const inspectMember = actorScope.tools.get('inspect_room_member')
+    const showSelf = actorScope.tools.get('show_self_appearance')
+    if (inspectSelf === undefined || inspectMember === undefined || showSelf === undefined) {
+      throw new Error('appearance tools not registered')
+    }
+    await expect(inspectSelf.execute({}, execution(actor))).resolves.toMatchObject({
+      found: true, path: imagePath, image: { attachmentId: 'attachment-appearance' },
+    })
+    await expect(inspectMember.execute({ companion_id: 'owner' }, execution(actor))).resolves.toMatchObject({
+      found: true, name: '房主', image: { attachmentId: 'attachment-appearance' },
+    })
+    await expect(showSelf.execute({}, execution(actor))).resolves.toMatchObject({
+      sent: true, asset_id: value.appearanceResource.id,
+    })
+    expect(value.appended.at(-1)).toMatchObject({
+      type: 'companion/reference',
+      data: { assetId: value.appearanceResource.id, url: '/appearance.png' },
+    })
+    expect(saveImage).toHaveBeenCalledTimes(2)
   })
 
   it('emits a late-bound video as a native room event at the actor call position', async () => {

@@ -112,9 +112,20 @@ describe('DeepSeekAdapter against a mock server', () => {
     const server = await mockServer([{ kind: 'sse', events: textEvents }])
     const signalSeen: (AbortSignal | undefined)[] = []
     const attachments = {
-      readImage: vi.fn((ref: ImageAttachmentRef, signal?: AbortSignal) => {
+      readImageRequest: vi.fn((ref: ImageAttachmentRef, _policy: unknown, signal?: AbortSignal) => {
         signalSeen.push(signal)
-        return Promise.resolve({ ref, data: Uint8Array.of(1, 2, 3) })
+        return Promise.resolve({
+          variantId: 'sha256:request-image' as never,
+          attachment: ref,
+          data: Uint8Array.of(1, 2, 3),
+          mediaType: ref.mediaType,
+          bytes: 3,
+          width: ref.width,
+          height: ref.height,
+          depth: 'uchar',
+          space: 'srgb',
+          hasAlpha: true,
+        })
       }),
     } as unknown as AttachmentStore
     const adapter = adapterOf({ baseURL: server.url }, attachments)
@@ -137,6 +148,7 @@ describe('DeepSeekAdapter against a mock server', () => {
         role: 'user',
         content: [
           { type: 'text', text: 'describe ' },
+          { type: 'text', text: expect.stringContaining(`Image ${imageRef.attachmentId}`) as string },
           { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
         ],
       }],
@@ -1060,16 +1072,16 @@ describe('plugin registration and config', () => {
 
   it.each([0, 1.5, Number.MAX_SAFE_INTEGER + 1])(
     'rejects invalid request image bound %s',
-    async (maxRequestImageBytes) => {
-      expect(() => resolveAdapterOptions({ maxRequestImageBytes }))
-        .toThrow(/maxRequestImageBytes must be a positive safe integer/)
+    async (maxInlineRequestImageBytes) => {
+      expect(() => resolveAdapterOptions({ maxInlineRequestImageBytes }))
+        .toThrow(/maxInlineRequestImageBytes must be a positive safe integer/)
 
       const ctx = new Context()
       await ctx.plugin(LlmRuntime)
       await expect(ctx.plugin(LlmDeepSeek, {
         baseURL: 'http://127.0.0.1:1',
-        maxRequestImageBytes,
-      })).rejects.toThrow(/maxRequestImageBytes/)
+        maxInlineRequestImageBytes,
+      })).rejects.toThrow(/maxInlineRequestImageBytes/)
       expect(ctx.llm.listProviders()).toEqual([])
     },
   )

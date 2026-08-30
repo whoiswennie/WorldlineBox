@@ -11,6 +11,7 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { RpcId, type ClientRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { WebServer, WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import { API_PATH, apply, HOST_EVENTS_PATH, inject, MUX_EVENTS_PATH, type HostConnectionHandle } from '../src/index.ts'
+import { DEFAULT_MAX_REQUEST_BODY_BYTES } from '../src/http-bridge.ts'
 
 /** Structural webServer fake recording both route registries. */
 function fakeHttpServer(
@@ -90,6 +91,24 @@ async function mounted(config?: { trustedHosts?: string[] }): Promise<{
 }
 
 describe('connection node half', () => {
+  it('keeps the default carrier cap large enough for the default 200 MiB image batch', async () => {
+    const ctx = new Context()
+    const routes: WebRoute[] = []
+    const upgrades: WebUpgradeRoute[] = []
+    ctx.provide('webServer', fakeHttpServer(routes, upgrades) as WebServer)
+    ctx.provide('attachments', {
+      imageLimits: { maxMessageImageBytes: 200 * 1024 * 1024 },
+    } as AttachmentStore)
+    ctx.provide('apiProxy', {} as ApiProxy)
+
+    expect(DEFAULT_MAX_REQUEST_BODY_BYTES).toBe(300 * 1024 * 1024)
+    const fiber = ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+    expect(routes).toHaveLength(1)
+    expect(upgrades).toHaveLength(2)
+    await fiber.dispose()
+  })
+
   it('fails loud when the carrier cap cannot hold the configured image batch', () => {
     const ctx = new Context()
     const routes: WebRoute[] = []

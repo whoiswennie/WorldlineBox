@@ -65,7 +65,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Entry, Loader } from '@deepseek-ai/cordis-plugin-loader'
 import z from '@deepseek-ai/schemastery'
 import type { PluginsEventFrame } from '../events.ts'
-import { EVENTS_ENDPOINT } from '../events.ts'
+import { EVENTS_ENDPOINT, parsePluginsEventFrame } from '../events.ts'
 
 export type { PluginsEventFrame } from '../events.ts'
 export { EVENTS_ENDPOINT } from '../events.ts'
@@ -113,7 +113,7 @@ export function apply(ctx: Context, config: Config): void {
   const modLoader = ctx.modules
   const loader: Loader = ctx.loader
 
-  async function reload(id: string): Promise<void> {
+  async function reload(id: string, rev: string): Promise<void> {
     const entry = findEntry(loader, id)
     if (entry === undefined) {
       ctx.logger.warn(`client-hmr: rebuilt frame for unknown entry "${id}" (not in the loader tree)`)
@@ -124,7 +124,7 @@ export function apply(ctx: Context, config: Config): void {
     // async half while the old fiber still serves: script loading registers
     // the fresh factory with zero side effects (lazy CJS — module bodies run
     // at materialization, not execution).
-    modLoader.invalidate(id)
+    modLoader.invalidate(id, rev)
     await modLoader.prefetch(id)
 
     const oldFiber = entry.fiber
@@ -157,7 +157,7 @@ export function apply(ctx: Context, config: Config): void {
   const handle = (frame: PluginsEventFrame): void => {
     switch (frame.type) {
       case 'rebuilt':
-        queue = queue.then(() => reload(frame.id)).catch((error: unknown) => {
+        queue = queue.then(() => reload(frame.id, frame.rev)).catch((error: unknown) => {
           ctx.logger.error(`client-hmr: reload of "${frame.id}" failed`)
           ctx.logger.error(error)
         })
@@ -178,15 +178,20 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => {
     const source = new EventSource(EVENTS_ENDPOINT)
     source.addEventListener('message', (event: MessageEvent<string>) => {
-      let frame: PluginsEventFrame
+      let value: unknown
       try {
-        frame = JSON.parse(event.data) as PluginsEventFrame
+        value = JSON.parse(event.data) as unknown
       } catch {
         // Wire boundary: a malformed dev-channel frame is dropped loudly.
         ctx.logger.warn(`client-hmr: unparseable event frame: ${event.data}`)
         return
       }
-      handle(frame)
+      const parsed = parsePluginsEventFrame(value)
+      if (parsed.kind === 'invalid') {
+        ctx.logger.warn(`client-hmr: invalid event frame: ${event.data}`)
+      } else if (parsed.kind === 'frame') {
+        handle(parsed.frame)
+      }
     })
     return () => { source.close() }
   }, 'client-hmr: event source')

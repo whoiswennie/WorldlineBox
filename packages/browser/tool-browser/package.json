@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-tool-browser",
   "description": "Model-facing professional browser automation over Worldline's built-in browser",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",
@@ -26,6 +26,7 @@
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-scope": "workspace:^",
     "@deepseek-ai/dsh-system-prompt": "workspace:^",
     "@deepseek-ai/dsh-tools": "workspace:^"
   },
@@ -39,6 +40,7 @@
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-scope": "workspace:^",
     "@deepseek-ai/dsh-system-prompt": "workspace:^",
     "@deepseek-ai/dsh-tools": "workspace:^"
   }

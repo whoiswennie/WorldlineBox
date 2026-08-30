@@ -10,6 +10,9 @@ import type {
 
 export type * from './types.ts'
 
+/**
+ * Netease playlist id.
+ */
 export const NETEASE_PLAYLIST_ID = '18322613388'
 const NETEASE_ORIGIN = 'https://music.163.com'
 const REQUEST_HEADERS = {
@@ -117,7 +120,11 @@ function splitInlineTranslation(text: string): Pick<NeteaseLyricLine, 'text' | '
   return original === '' || translatedText === '' ? { text } : { text: original, translatedText }
 }
 
-/** Parse a standard LRC document into ordered millisecond timestamps. */
+/**
+ *  Parse a standard LRC document into ordered millisecond timestamps.
+ * @param source - source value.
+ * @returns The resulting value.
+ */
 export function parseNeteaseLyrics(source: string): NeteaseLyricLine[] {
   const rawLines = source.split(/\r?\n/u)
   const offset = rawLines.reduce((value, line) => {
@@ -141,7 +148,11 @@ export function parseNeteaseLyrics(source: string): NeteaseLyricLine[] {
   return lines.sort((left, right) => left.timeMs - right.timeMs)
 }
 
-/** Parse NetEase's word-synchronized YRC document into line-level timestamps. */
+/**
+ *  Parse NetEase's word-synchronized YRC document into line-level timestamps.
+ * @param source - source value.
+ * @returns The resulting value.
+ */
 export function parseNeteaseWordLyrics(source: string): NeteaseLyricLine[] {
   const lines: NeteaseLyricLine[] = []
   for (const rawLine of source.split(/\r?\n/u)) {
@@ -171,7 +182,13 @@ function mergeLyrics(original: string, translated: string): NeteaseLyricLine[] {
   })
 }
 
-/** Fetch synchronized lyrics without sending NetEase account credentials. */
+/**
+ *  Fetch synchronized lyrics without sending NetEase account credentials.
+ * @param trackId - track id value.
+ * @param fetcher - fetcher value.
+ * @param signal - Cancellation signal for the operation.
+ * @returns The resulting value.
+ */
 export async function fetchNeteaseTrackLyrics(
   trackId: string,
   fetcher: Fetcher = fetch,
@@ -212,7 +229,13 @@ export async function fetchNeteaseTrackLyrics(
   }
 }
 
-/** Fetch every ordered song in the fixed public playlist, not just the first ten expanded rows. */
+/**
+ *  Fetch every ordered song in the fixed public playlist, not just the first ten expanded rows.
+ * @param playlistId - playlist id value.
+ * @param fetcher - fetcher value.
+ * @param signal - Cancellation signal for the operation.
+ * @returns The resulting value.
+ */
 export async function fetchNeteasePlaylistCatalog(
   playlistId: string = NETEASE_PLAYLIST_ID,
   fetcher: Fetcher = fetch,
@@ -266,7 +289,13 @@ function allowedStreamHost(hostname: string): boolean {
   return host === 'music.126.net' || host.endsWith('.music.126.net')
 }
 
-/** Resolve the official public media redirect and normalize it to HTTPS. */
+/**
+ *  Resolve the official public media redirect and normalize it to HTTPS.
+ * @param trackId - track id value.
+ * @param fetcher - fetcher value.
+ * @param signal - Cancellation signal for the operation.
+ * @returns The resulting value.
+ */
 export async function resolveNeteaseTrackStream(
   trackId: string,
   fetcher: Fetcher = fetch,
@@ -305,7 +334,12 @@ export class NeteaseMusicGateway extends TypertRemoteService {
     super(ctx, 'neteaseMusic')
   }
 
-  /** Return the complete ordered playlist catalog. */
+  /**
+   *  Return the complete ordered playlist catalog.
+   * @param playlistId - playlist id value.
+   * @param signal - Cancellation signal for the operation.
+   * @returns The resulting value.
+   */
   @Remote('catalog')
   async catalog(playlistId: string, signal: AbortSignal): Promise<NeteasePlaylistCatalog> {
     const normalizedPlaylistId = asPositiveId(playlistId)
@@ -325,7 +359,13 @@ export class NeteaseMusicGateway extends TypertRemoteService {
     }
   }
 
-  /** Resolve one public stream only when the song belongs to the built-in playlist. */
+  /**
+   *  Resolve one public stream only when the song belongs to the built-in playlist.
+   * @param playlistId - playlist id value.
+   * @param trackId - track id value.
+   * @param signal - Cancellation signal for the operation.
+   * @returns The resulting value.
+   */
   @Remote('stream')
   async stream(
     playlistId: string,
@@ -339,7 +379,13 @@ export class NeteaseMusicGateway extends TypertRemoteService {
     return await resolveNeteaseTrackStream(trackId, fetch, signal)
   }
 
-  /** Return synchronized lyrics only for a song in the built-in playlist. */
+  /**
+   *  Return synchronized lyrics only for a song in the built-in playlist.
+   * @param playlistId - playlist id value.
+   * @param trackId - track id value.
+   * @param signal - Cancellation signal for the operation.
+   * @returns The resulting value.
+   */
   @Remote('lyrics')
   async lyrics(
     playlistId: string,

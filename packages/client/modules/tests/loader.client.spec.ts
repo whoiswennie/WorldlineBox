@@ -28,7 +28,15 @@ afterEach(() => {
 })
 
 const row = (id: string, fields: Partial<BootModuleRow> = {}): BootModuleRow =>
-  ({ id, url: `/plugins/${id}/client.js?rev=0`, rev: '0', external: [], ...fields })
+  ({
+    id,
+    url: `/plugins/${id}/client.js?rev=0`,
+    initialUrl: `/plugins/${id}/client.js?rev=0`,
+    rev: '0',
+    inject: [],
+    external: [],
+    ...fields,
+  })
 
 interface Bench {
   loader: ClientModuleLoader
@@ -82,7 +90,16 @@ function bench(
     win.__ModuleLoader__?.load({ id, factory })
   }
   const loader = target.create({
-    boot: { rev: 'graph', entries },
+    boot: {
+      rev: 'graph',
+      entries,
+      batches: entries.map(entry => ({
+        phase: 'application' as const,
+        url: entry.initialUrl,
+        rev: entry.rev,
+        entries: [entry.id],
+      })),
+    },
     staticModules: opts.seed ?? {},
     ...(opts.defaultTransport === true ? {} : { loadBundle }),
   })
@@ -318,7 +335,7 @@ describe('failure modes', () => {
   it('double boot is loud', () => {
     const b = bench([])
     const options: ClientModuleCreateOptions = {
-      boot: { rev: 'graph', entries: [] },
+      boot: { rev: 'graph', entries: [], batches: [] },
       staticModules: {},
     }
     expect(() => b.target.create(options)).toThrow('create called after module-system boot')
@@ -333,10 +350,13 @@ describe('boot manifest wire', () => {
         { id: 'a', url: '/plugins/a/client.js', rev: '1' },
         { id: 'b', url: '/plugins/b/client.js', rev: '2', external: ['react'] },
       ],
+      batches: [
+        { phase: 'application', url: '/batch.js', rev: 'b', entries: ['a', 'b'] },
+      ],
     })
     expect(manifest.modules).toEqual([
-      { id: 'a', url: '/plugins/a/client.js', rev: '1', external: [] },
-      { id: 'b', url: '/plugins/b/client.js', rev: '2', external: ['react'] },
+      { id: 'a', url: '/plugins/a/client.js', initialUrl: '/batch.js', rev: '1', inject: [], external: [] },
+      { id: 'b', url: '/plugins/b/client.js', initialUrl: '/batch.js', rev: '2', inject: [], external: ['react'] },
     ])
   })
 
@@ -344,6 +364,7 @@ describe('boot manifest wire', () => {
     expect(() => parseBootManifest({
       rev: 'graph',
       entries: [{ id: 'a', url: '/a', rev: '1', external: 'react' }],
+      batches: [],
     })).toThrow('client-modules: boot manifest entry "a" external must be a string array')
   })
 })

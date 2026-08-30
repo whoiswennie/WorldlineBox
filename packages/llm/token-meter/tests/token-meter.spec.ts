@@ -185,7 +185,7 @@ describe('TokenMeter pricing', () => {
     expect(Object.isFrozen(snapshot.nodes[0])).toBe(true)
     expectSurfaceTotal(snapshot)
     expect(() => {
-      ;(snapshot.nodes as Array<{ seq: number; tokens: number }>).push({ seq: 99, tokens: 1 })
+      ;(snapshot.nodes as unknown as Array<{ seq: number; tokens: number }>).push({ seq: 99, tokens: 1 })
     }).toThrow(TypeError)
     expect(() => {
       ;(snapshot.nodes[0] as { seq: number; tokens: number }).tokens = 1
@@ -437,7 +437,7 @@ describe('replay anchors and surface folds', () => {
     })
     const measurement = meter().measure(session)
     const assistant = session.events.find(event => event.type === 'assistant/message')!
-    expect(measurement.nodes).toEqual([{ seq: assistant.seq, tokens: 0 }])
+    expect(measurement.nodes).toEqual([{ seq: assistant.seq, tokens: 0, heuristicTokens: 0 }])
     expect(measurement.surfaceTokens).toBe(0)
     expectSurfaceTotal(measurement)
   })

@@ -190,7 +190,7 @@ describe('ui-theme apply', () => {
     const b = await bench()
     const host = declareItems(b.slots)
     await b.ctx.plugin({ inject: [...inject], apply }).await()
-    expect(b.slots.entries(SLOT)).toHaveLength(1)
+    expect(b.slots.entries(SLOT)).toHaveLength(2)
 
     // Collapse: the declarer dies, the cascade removes our entry while the
     // apply closure still holds its (now stale) disposer.
@@ -207,7 +207,7 @@ describe('ui-theme apply', () => {
     declareItems(b.slots)
     const fiber = b.ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
-    expect(b.slots.entries(SLOT)).toHaveLength(1)
+    expect(b.slots.entries(SLOT)).toHaveLength(2)
     await fiber.dispose()
     expect(b.slots.entries(SLOT)).toHaveLength(0)
     // Dictionary disposal: translation falls back to the bare key.

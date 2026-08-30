@@ -1157,9 +1157,14 @@ describe('JsonlSessionPersistence: default packed chunk rows', () => {
     expect(scanned.committedBytes).toBe(Buffer.byteLength(headerAndTurn, 'utf8'))
   })
 
-  it('eventLines(packChunks: false) is byte-identical to the pre-packing layout', () => {
+  it('eventLines(packChunks: false) still range-encodes provenance and round-trips', () => {
     const log = chunkRunLog()
-    expect(eventLines(log, false)).toBe(log.map(e => JSON.stringify(e)).join('\n'))
+    const body = eventLines(log, false)
+    const rows = body.split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(rows[7]?.sourceEventSeqs).toEqual([[2, 6]])
+
+    const header = JSON.stringify(toHeaderLine(meta('unpacked-provenance')))
+    expect(scanLog(Buffer.from(`${header}\n${body}\n`)).events).toEqual(log)
   })
 })
 

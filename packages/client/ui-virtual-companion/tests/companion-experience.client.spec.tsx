@@ -64,6 +64,8 @@ describe('immersive companion experience', () => {
     const scope = container.querySelector<HTMLElement>('[data-conversation-scroll]')
     const toggle = screen.getByRole('switch', { name: '过程' })
     expect(toggle.getAttribute('aria-checked')).toBe('false')
+    expect(toggle.textContent).not.toContain('过程')
+    expect(toggle.querySelector('svg')).not.toBeNull()
     expect(scope?.dataset.companionProcess).toBe('hidden')
 
     fireEvent.click(toggle)

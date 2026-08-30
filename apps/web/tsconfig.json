@@ -50,7 +50,7 @@
     "tests/sidebar-scrollbar.e2e.ts",
     "tests/rail-search-expand.e2e.ts",
     "tests/conversation-column-overflow.e2e.ts",
-    "tests/code-mode-round.e2e.ts",
+    "tests/ptc-round.e2e.ts",
     "tests/composer-draft-scroll.e2e.ts",
     "tests/cordis-tool-round.e2e.ts",
     "tests/web-search-round.e2e.ts",

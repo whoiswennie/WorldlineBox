@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-The SDK provider runs each subagent as a complete Worldline runtime in a fresh subprocess, driven over stdio JSON-RPC through the [TypeScript SDK client](../../sdk/client/README.md). It is the second out-of-process backend beside [`subagent-acp`](../subagent-acp/README.md), differing in the wire and the child contract: the ACP backend drives any Agent Client Protocol agent; this backend drives specifically a harness SDK runtime (`worldline-jsonrpc-agent` bin or packaged executable), so the child is a full peer harness — own `cordis.yml`-decided composition, session persistence, model route, and tools.
+The SDK provider runs each subagent as a complete Worldline runtime in a fresh subprocess, driven over stdio JSON-RPC through the [TypeScript SDK client](../../sdk/client/README.md). It is the second out-of-process backend beside [`subagent-acp`](../subagent-acp/README.md), differing in the wire and the child contract: the ACP backend drives any Agent Client Protocol agent; this backend launches a named Worldline profile through the same-version CLI, so the child is a full peer harness with its own composition, session persistence, model route, and tools.
 
 ## Start and ownership
 
@@ -20,15 +20,17 @@ The SDK client returns an owned child activity rather than a prompt result. The 
 
 ## Capabilities and context
 
-The provider advertises no start-time capabilities (`outputSchema`/`depthLimit`/`toolFilter`/`persona` all false) and `inheritsParentContext: false`: the child is a fresh runtime in another process, and the only parent-derived input is the workspace cwd. `worldline-tool-subagent` deployments over this provider set `maxDepth: 'provider-managed'` — the child harness owns its own recursion budget.
+The provider advertises `agentOptions: true`, while `outputSchema`/`depthLimit`/`toolFilter`/`persona` remain false, and `inheritsParentContext: false`. Requests may override provider, model, reasoning effort, and maximum output tokens; the child is still a fresh runtime in another process, and the only parent-derived input is the workspace cwd. `worldline-tool-subagent` deployments over this provider set `maxDepth: 'provider-managed'` — the child harness owns its own recursion budget.
 
 ## Configuration
 
 | Key | Default | Meaning |
 |---|---|---|
 | `providerName` | `worldline-sdk` | Registry name on `ctx.subagents`. |
-| `command` | required | Executable spawned per run (the child runtime bin or packaged exe). |
-| `args` | `[]` | Command arguments (typically the child's `cordis.yml` path). |
+| `dshBin` | same-version SDK dependency | Optional explicit Worldline CLI module, resolved and checked at plugin load. |
+| `profile` | `sdk` | Named child profile. |
+| `patches` | `[]` | Ordered per-launch profile patch files, resolved and checked at plugin load. |
+| `dshHome` | required | Absolute isolated Worldline home for nested child processes. |
 | `cwd` | parent session cwd | Working-directory override; same validation as [`subagent-acp`](../subagent-acp/README.md). |
 | `provider` | `deepseek-official` | Provider route sent in the child's `initialize`. |
 | `model` | `deepseek-v4-flash` | Model sent in the child's `initialize`. |
@@ -43,8 +45,9 @@ The provider advertises no start-time capabilities (`outputSchema`/`depthLimit`/
   name: '@deepseek-ai/dsh-subagent-dsh-sdk'
   config:
     providerName: worldline-sdk
-    command: node
-    args: ['./packages/examples/jsonrpc-demo/lib/bin.js', './examples/jsonrpc-agent/cordis.yml']
+    profile: sdk
+    patches: ['./profiles/research-child.cordis.patch.yml']
+    dshHome: !!js worldlineHomePath('children')
     maxTokens: 49152
     env:
       DEEPSEEK_API_KEY: !!js process.env.DEEPSEEK_API_KEY
@@ -65,7 +68,7 @@ The package has no default export. Cordis loader unwrapping would otherwise hide
 
 #### What the model sees
 
-The child runtime's model receives the standalone task as its user message plus that runtime's own configured system prompt, tools, and fresh session. It receives no parent conversation. This provider advertises no optional start-time capabilities, so the local service rejects requests for persona, tool filtering, depth enforcement, or structured output instead of silently omitting them.
+The child runtime's model receives the standalone task as its user message plus that runtime's own configured system prompt, tools, and fresh session. It receives no parent conversation. This provider accepts model-route options, while the local service rejects requests for persona, tool filtering, depth enforcement, or structured output instead of silently omitting them.
 
 #### Token effect
 
@@ -92,6 +95,6 @@ Append-only; newly visible content follows the reusable request prefix and does 
 ## Known Limitations and Deferred Work
 
 - **A fresh runtime process per run** — no pooling; a harness runtime boots a full plugin tree, so per-run spawn cost is higher than the ACP backend's typical child.
-- **No optional start-time capabilities** — the parent cannot enforce `outputSchema`, depth, tool filters, or persona inside the child process; configure the child's own `cordis.yml` instead.
+- **No non-route start-time capabilities** — the parent cannot enforce `outputSchema`, depth, tool filters, or persona inside the child process; configure the child's own profile instead.
 - **The child's transcript stays in the child's own session root** — the parent log records only the delegation tool call/result (the seam's child-isolation rule); the streamed `session.event` channel is consumed for output extraction, not bridged into the parent log.
 - **Local child processes only** — the resolved cwd is a local path; a remote runtime would need its own backend.

@@ -102,7 +102,12 @@ const sid = (id: string) => id as SessionId
 const proj = (id: string): ClientSessionContext => ({ sessionId: sid(id) })
 
 const req = (query: string, signal?: AbortSignal) =>
-  ({ query, position: 'leading' as const, signal: signal ?? new AbortController().signal })
+  ({
+    query,
+    position: 'leading' as const,
+    drilled: false,
+    signal: signal ?? new AbortController().signal,
+  })
 
 describe('apply', () => {
   it('declares the services it binds', () => {
@@ -350,6 +355,7 @@ describe('pick lands plain text', () => {
       session: proj('s1'),
       position: 'leading',
       via: 'menu',
+      action: 'pick',
       span: { start: 0, end: 4, draftRev: 7 },
     })
     expect(outcome).toEqual({ text: '/commit-helper ' })

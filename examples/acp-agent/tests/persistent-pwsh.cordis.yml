@@ -28,8 +28,8 @@
   config:
     provider: deepseek-official
     model: deepseek-v4-pro
-    persistenceRoot: !!js process.env.DSH_SNAPSHOT_SESSIONS_ROOT ?? './.sessions'
-    persistenceCompression: !!js "process.env.DSH_SNAPSHOT === undefined ? 'zstd' : 'none'"
+    persistenceRoot: !!js process.env.WORLDLINE_SNAPSHOT_SESSIONS_ROOT ?? './.sessions'
+    persistenceCompression: !!js "process.env.WORLDLINE_SNAPSHOT === undefined ? 'zstd' : 'none'"
     workspaceContext: false
     skills:
       enabled: false
