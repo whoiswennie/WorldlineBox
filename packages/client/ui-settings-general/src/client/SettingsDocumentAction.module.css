@@ -24,3 +24,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.action > button {
+  min-height: 36px;
+  padding-inline: 14px;
+  border-color: rgb(187 213 225 / 78%);
+  background: rgb(255 255 255 / 78%);
+  box-shadow: 0 7px 20px rgb(64 112 137 / 7%);
+}
+.action > button::before { margin-right: 6px; color: #c25e8a; content: '◇'; font-size: 12px; }

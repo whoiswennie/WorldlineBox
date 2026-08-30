@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import type { DragEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { autocompletion, closeBrackets } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
@@ -29,6 +30,7 @@ import {
   IconFolderOpen16,
   IconPlusOutline16,
   IconSearchOutline16,
+  IconTrashOutline16,
   MarkdownText,
   Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -46,7 +48,7 @@ import { companionStore, useCompanionStore } from './store.ts'
 import { ReferenceContent } from './reference-renderer.tsx'
 import css from './KnowledgeVaultPage.module.css'
 
-type VaultTab = 'knowledge' | 'references'
+type VaultTab = 'knowledge' | 'references' | 'trash'
 type ViewMode = 'edit' | 'preview' | 'split'
 type SaveStatus = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict'
 interface Envelope<T> {
@@ -70,7 +72,65 @@ interface KnowledgeScopeOption {
   avatar: string
   sharedAvatars?: readonly string[]
 }
-export interface KnowledgeVaultPageInjected {}
+interface AgentVaultTrashItem {
+  id: string
+  agentId: string
+  name: string
+  deletedAt: number
+  createdAt: number
+  updatedAt: number
+  restorable: boolean
+  avatar: string
+}
+type TreeClipboardMode = 'copy' | 'cut'
+interface TreeClipboard {
+  mode: TreeClipboardMode
+  entry: KnowledgeTreeEntry
+}
+interface TreeMenu {
+  entry: KnowledgeTreeEntry
+  x: number
+  y: number
+}
+type TreeDialog =
+  | { kind: 'create-file' | 'create-folder'; parent: string }
+  | { kind: 'rename'; entry: KnowledgeTreeEntry }
+
+const DEFAULT_KNOWLEDGE_DIRECTORY = 'memory/long/pages'
+
+function parentDirectory(path: string): string {
+  const index = path.lastIndexOf('/')
+  return index < 0 ? '' : path.slice(0, index)
+}
+
+function managedTreeEntry(entry: KnowledgeTreeEntry): boolean {
+  return entry.path.split('/').length > 1
+    && (entry.path.startsWith('memory/') || entry.path.startsWith('procedures/'))
+}
+
+function writableTreeDirectory(entry: KnowledgeTreeEntry | undefined): string {
+  const candidate = entry?.kind === 'directory' ? entry.path
+    : entry === undefined ? DEFAULT_KNOWLEDGE_DIRECTORY : parentDirectory(entry.path)
+  return candidate === 'memory' || candidate === 'procedures'
+    || candidate.startsWith('memory/') || candidate.startsWith('procedures/')
+    ? candidate
+    : DEFAULT_KNOWLEDGE_DIRECTORY
+}
+
+function movedPath(path: string, source: string, target: string): string {
+  return path === source ? target : path.startsWith(`${source}/`)
+    ? `${target}${path.slice(source.length)}`
+    : path
+}
+export interface KnowledgeVaultOpenRequest {
+  scope: string
+  path: string
+  revision: number
+}
+export interface KnowledgeVaultPageInjected {
+  getOpenRequest?(): KnowledgeVaultOpenRequest | undefined
+  subscribeOpenRequest?(listener: () => void): () => void
+}
 export type KnowledgeVaultPageProps = PropsRuntime<'worldline.main.page'> &
   InjectFace<KnowledgeVaultPageInjected>
 
@@ -108,6 +168,17 @@ async function uploadReference(draft: ReferenceDraft, file: File): Promise<Refer
   if (!response.ok || envelope.ok !== true || envelope.value === undefined)
     throw new Error(envelope.error ?? `引用上传失败（${String(response.status)}）`)
   return envelope.value
+}
+
+function readTextFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.addEventListener('load', () => {
+      resolve(typeof reader.result === 'string' ? reader.result : '')
+    })
+    reader.addEventListener('error', () => { reject(reader.error ?? new Error('读取文件失败')) })
+    reader.readAsText(file)
+  })
 }
 
 function ScopeAvatar({
@@ -342,6 +413,15 @@ function MarkdownDocumentOutline() {
   </svg>
 }
 
+function ImportDocumentOutline() {
+  return <svg viewBox="0 0 18 18" width="18" height="18" fill="none"
+    stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round"
+    aria-hidden="true">
+    <path d="M4 2.25h6l3.75 3.75v9.75H4z" />
+    <path d="M10 2.25V6h3.75M6.5 11h5M9 8.5v5" />
+  </svg>
+}
+
 function KnowledgeBookOutline() {
   return <svg
     viewBox="0 0 24 24"
@@ -380,12 +460,22 @@ function TreeBranch({
   directory,
   onOpen,
   active,
+  selected,
+  onSelect,
+  onMenu,
+  onMove,
+  onFiles,
   revision,
 }: {
   scope: string
   directory: string
   onOpen: (path: string) => void
   active?: string
+  selected?: string
+  onSelect: (entry: KnowledgeTreeEntry) => void
+  onMenu: (menu: TreeMenu) => void
+  onMove: (source: string, targetDirectory: string, kind: KnowledgeTreeEntry['kind']) => void
+  onFiles: (files: readonly File[], targetDirectory: string) => void
   revision: number
 }) {
   const [entries, setEntries] = useState<readonly KnowledgeTreeEntry[]>([])
@@ -404,35 +494,60 @@ function TreeBranch({
       abort.abort()
     }
   }, [directory, open, revision, scope])
-  if (directory !== '' && !open)
-    return (
-      <button
-        type="button"
-        className={css.treeFolder}
-        onClick={() => {
-          setOpen(true)
-        }}
-      >
-        <span className={css.treeChevron}><IconChevronRightOutline14 /></span>
-        <span className={css.treeGlyph}><IconFolderClose16 /></span>
-        {directory.replace(/^.*\//u, '')}
-      </button>
-    )
+  const folderEntry: KnowledgeTreeEntry = {
+    name: directory.replace(/^.*\//u, ''),
+    path: directory,
+    kind: 'directory',
+  }
+  const drop = (event: DragEvent, targetDirectory: string): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    const source = event.dataTransfer.getData('application/x-worldline-vault-path')
+    if (source !== '') onMove(source, targetDirectory,
+      event.dataTransfer.getData('application/x-worldline-vault-kind') === 'directory'
+        ? 'directory' : 'document')
+    else if (event.dataTransfer.files.length > 0) {
+      onFiles([...event.dataTransfer.files], targetDirectory)
+    }
+  }
+  const folderRow = directory === '' ? null : <button
+    type="button"
+    className={css.treeFolder}
+    data-selected={selected === directory || undefined}
+    draggable={managedTreeEntry(folderEntry)}
+    onClick={() => {
+      onSelect(folderEntry)
+      setOpen(current => !current)
+    }}
+    onContextMenu={(event) => {
+      event.preventDefault()
+      onSelect(folderEntry)
+      onMenu({ entry: folderEntry, x: event.clientX, y: event.clientY })
+    }}
+    onDragStart={(event) => {
+      onSelect(folderEntry)
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('application/x-worldline-vault-path', directory)
+      event.dataTransfer.setData('application/x-worldline-vault-kind', 'directory')
+    }}
+    onDragOver={(event) => {
+      event.preventDefault()
+      event.dataTransfer.dropEffect = event.dataTransfer.types.includes(
+        'application/x-worldline-vault-path',
+      ) ? 'move' : 'copy'
+    }}
+    onDrop={(event) => { drop(event, directory) }}
+  >
+    <span className={css.treeChevron}>{open
+      ? <IconChevronDownOutline14 />
+      : <IconChevronRightOutline14 />}</span>
+    <span className={css.treeGlyph}>{open ? <IconFolderOpen16 /> : <IconFolderClose16 />}</span>
+    <span className={css.treeName}>{folderEntry.name}</span>
+  </button>
+  if (directory !== '' && !open) return folderRow
   return (
     <div className={directory === '' ? css.treeRoot : css.treeChildren}>
-      {directory !== '' && (
-        <button
-          type="button"
-          className={css.treeFolder}
-          onClick={() => {
-            setOpen(false)
-          }}
-        >
-          <span className={css.treeChevron}><IconChevronDownOutline14 /></span>
-          <span className={css.treeGlyph}><IconFolderOpen16 /></span>
-          {directory.replace(/^.*\//u, '')}
-        </button>
-      )}
+      {folderRow}
       {entries.map(entry =>
         entry.kind === 'directory' ? (
           <TreeBranch
@@ -441,6 +556,11 @@ function TreeBranch({
             directory={entry.path}
             onOpen={onOpen}
             revision={revision}
+            onSelect={onSelect}
+            onMenu={onMenu}
+            onMove={onMove}
+            onFiles={onFiles}
+            {...(selected === undefined ? {} : { selected })}
             {...(active === undefined ? {} : { active })}
           />
         ) : (
@@ -449,9 +569,23 @@ function TreeBranch({
             key={entry.path}
             className={css.treeFile}
             aria-current={active === entry.path}
+            data-selected={selected === entry.path || undefined}
             title={entry.path}
+            draggable={managedTreeEntry(entry)}
             onClick={() => {
+              onSelect(entry)
               onOpen(entry.path)
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              onSelect(entry)
+              onMenu({ entry, x: event.clientX, y: event.clientY })
+            }}
+            onDragStart={(event) => {
+              onSelect(entry)
+              event.dataTransfer.effectAllowed = 'move'
+              event.dataTransfer.setData('application/x-worldline-vault-path', entry.path)
+              event.dataTransfer.setData('application/x-worldline-vault-kind', entry.kind)
             }}
           >
             <span className={css.treeChevron} />
@@ -470,12 +604,14 @@ function KnowledgeWorkbench({
   showTree,
   showInfo,
   setShowInfo,
+  openRequest,
 }: {
   scope: string
   scopeOption: KnowledgeScopeOption
   showTree: boolean
   showInfo: boolean
   setShowInfo: (visible: boolean) => void
+  openRequest?: KnowledgeVaultOpenRequest
 }) {
   const [documents, setDocuments] = useState<OpenDocument[]>([])
   const documentsRef = useRef<OpenDocument[]>([])
@@ -484,9 +620,15 @@ function KnowledgeWorkbench({
   const [searchResults, setSearchResults] = useState<KnowledgeSearchResult[]>([])
   const searchRevision = useRef(0)
   const [treeRevision, setTreeRevision] = useState(0)
-  const [creating, setCreating] = useState(false)
-  const [newPageTitle, setNewPageTitle] = useState('')
-  const [createError, setCreateError] = useState('')
+  const [selectedEntry, setSelectedEntry] = useState<KnowledgeTreeEntry>()
+  const [clipboard, setClipboard] = useState<TreeClipboard>()
+  const [treeMenu, setTreeMenu] = useState<TreeMenu>()
+  const [treeDialog, setTreeDialog] = useState<TreeDialog>()
+  const [treeDialogValue, setTreeDialogValue] = useState('')
+  const [treeError, setTreeError] = useState('')
+  const [deleteEntry, setDeleteEntry] = useState<KnowledgeTreeEntry>()
+  const [dropActive, setDropActive] = useState(false)
+  const importInput = useRef<HTMLInputElement>(null)
   const timers = useRef(new Map<string, number>())
   documentsRef.current = documents
   const active = documents.find(item => item.document.path === activePath)
@@ -601,15 +743,38 @@ function KnowledgeWorkbench({
     setActivePath(undefined)
     setSearchResults([])
     setQuery('')
+    setSelectedEntry(undefined)
+    setClipboard(undefined)
+    setTreeMenu(undefined)
+    setTreeDialog(undefined)
+    setTreeError('')
   }, [scope])
-  const create = async (): Promise<void> => {
-    const title = newPageTitle.trim()
-    if (title === '') return
+  useEffect(() => {
+    if (openRequest === undefined) return
+    void openDocument(openRequest.path)
+  }, [openDocument, openRequest])
+  const beginTreeDialog = (dialog: TreeDialog): void => {
+    setTreeDialog(dialog)
+    setTreeDialogValue(dialog.kind === 'rename' ? dialog.entry.name : '')
+    setTreeError('')
+    setTreeMenu(undefined)
+  }
+  const createEntry = async (): Promise<void> => {
+    const value = treeDialogValue.trim()
+    if (treeDialog === undefined || treeDialog.kind === 'rename' || value === '') return
     try {
+      if (treeDialog.kind === 'create-folder') {
+        const entry = await post<KnowledgeTreeEntry>('knowledge/create', {
+          scope, kind: 'directory', parent: treeDialog.parent, name: value,
+        })
+        setSelectedEntry(entry)
+        setTreeRevision(current => current + 1)
+        setTreeDialog(undefined)
+        return
+      }
       const document = await post<KnowledgeDocument>('knowledge/create', {
-        scope,
-        folder: 'pages',
-        title,
+        scope, kind: 'document', parent: treeDialog.parent, name: value,
+        title: value.replace(/\.md$/iu, ''),
       })
       setDocuments(current => [
         ...current,
@@ -623,12 +788,14 @@ function KnowledgeWorkbench({
         },
       ])
       setActivePath(document.path)
+      setSelectedEntry({ name: document.path.replace(/^.*\//u, ''), path: document.path,
+        kind: 'document', updatedAt: document.updatedAt, revision: document.revision })
       setTreeRevision(value => value + 1)
-      setCreating(false)
-      setNewPageTitle('')
-      setCreateError('')
+      setTreeDialog(undefined)
+      setTreeDialogValue('')
+      setTreeError('')
     } catch (reason) {
-      setCreateError(reason instanceof Error ? reason.message : String(reason))
+      setTreeError(reason instanceof Error ? reason.message : String(reason))
     }
   }
   useEffect(() => {
@@ -712,13 +879,208 @@ function KnowledgeWorkbench({
     }
     setDocuments(remaining)
   }
+  const saveEntryDocuments = async (entry: KnowledgeTreeEntry): Promise<void> => {
+    await Promise.all(documentsRef.current
+      .filter(item => item.document.path === entry.path
+        || item.document.path.startsWith(`${entry.path}/`))
+      .map(item => saveNow(item.document.path)))
+  }
+  const applyMovedPath = (source: string, target: string): void => {
+    setDocuments(current => current.map((item) => {
+      const path = movedPath(item.document.path, source, target)
+      return path === item.document.path ? item : {
+        ...item,
+        document: { ...item.document, path },
+      }
+    }))
+    setActivePath(current => current === undefined ? undefined : movedPath(current, source, target))
+  }
+  const moveEntry = async (entry: KnowledgeTreeEntry, targetDirectory: string): Promise<void> => {
+    const target = `${targetDirectory}/${entry.name}`
+    if (target === entry.path) return
+    if (targetDirectory === entry.path || targetDirectory.startsWith(`${entry.path}/`)) {
+      setTreeError('不能把文件夹移动到它自己里面')
+      return
+    }
+    try {
+      await saveEntryDocuments(entry)
+      const moved = await post<KnowledgeTreeEntry>('knowledge/move', {
+        scope, source: entry.path, target,
+      })
+      applyMovedPath(entry.path, target)
+      setSelectedEntry(moved)
+      setTreeRevision(current => current + 1)
+      setTreeError('')
+      if (clipboard?.mode === 'cut' && clipboard.entry.path === entry.path) setClipboard(undefined)
+    } catch (reason) {
+      setTreeError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }
+  const pasteEntry = async (targetDirectory = writableTreeDirectory(selectedEntry)): Promise<void> => {
+    if (clipboard === undefined) return
+    if (clipboard.mode === 'cut') {
+      await moveEntry(clipboard.entry, targetDirectory)
+      return
+    }
+    const sourceDirectory = parentDirectory(clipboard.entry.path)
+    const name = sourceDirectory === targetDirectory
+      ? clipboard.entry.kind === 'document'
+        ? clipboard.entry.name.replace(/(\.md)?$/iu, '-副本.md')
+        : `${clipboard.entry.name}-副本`
+      : clipboard.entry.name
+    try {
+      const copied = await post<KnowledgeTreeEntry>('knowledge/copy', {
+        scope, source: clipboard.entry.path, target: `${targetDirectory}/${name}`,
+      })
+      setSelectedEntry(copied)
+      setTreeRevision(current => current + 1)
+      setTreeError('')
+    } catch (reason) {
+      setTreeError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }
+  const renameEntry = async (): Promise<void> => {
+    if (treeDialog?.kind !== 'rename') return
+    const entry = treeDialog.entry
+    let name = treeDialogValue.trim()
+    if (name === '') return
+    if (entry.kind === 'document' && !name.toLocaleLowerCase().endsWith('.md')) name += '.md'
+    const target = `${parentDirectory(entry.path)}/${name}`
+    try {
+      await saveEntryDocuments(entry)
+      const moved = await post<KnowledgeTreeEntry>('knowledge/move', {
+        scope, source: entry.path, target,
+      })
+      applyMovedPath(entry.path, target)
+      setSelectedEntry(moved)
+      setTreeRevision(current => current + 1)
+      setTreeDialog(undefined)
+      setTreeError('')
+    } catch (reason) {
+      setTreeError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }
+  const trashEntry = async (): Promise<void> => {
+    const entry = deleteEntry
+    if (entry === undefined) return
+    try {
+      await saveEntryDocuments(entry)
+      await post('knowledge/trash', { scope, path: entry.path })
+      for (const [path, timer] of timers.current) {
+        if (path === entry.path || path.startsWith(`${entry.path}/`)) {
+          window.clearTimeout(timer)
+          timers.current.delete(path)
+        }
+      }
+      const remaining = documentsRef.current.filter(item => item.document.path !== entry.path
+        && !item.document.path.startsWith(`${entry.path}/`))
+      setDocuments(remaining)
+      setActivePath(current => current === undefined || (current !== entry.path
+        && !current.startsWith(`${entry.path}/`)) ? current : remaining.at(-1)?.document.path)
+      setSelectedEntry(undefined)
+      setDeleteEntry(undefined)
+      setTreeRevision(current => current + 1)
+      setTreeError('')
+    } catch (reason) {
+      setTreeError(reason instanceof Error ? reason.message : String(reason))
+      setDeleteEntry(undefined)
+    }
+  }
+  const importFiles = async (files: readonly File[], targetDirectory: string): Promise<void> => {
+    setDropActive(false)
+    const accepted = files.filter(file => file.size <= 5 * 1_024 * 1_024
+      && (file.type.startsWith('text/') || /\.(?:md|markdown|txt)$/iu.test(file.name)))
+    if (accepted.length === 0) {
+      setTreeError('这里只能导入不超过 5 MB 的 Markdown 或纯文本文件；媒体文件请放入资源画廊')
+      return
+    }
+    try {
+      let last: KnowledgeDocument | undefined
+      for (const file of accepted) {
+        const name = file.name.replace(/\.(?:markdown|txt)$/iu, '.md')
+        last = await post<KnowledgeDocument>('knowledge/create', {
+          scope, kind: 'document', parent: targetDirectory, name,
+          title: name.replace(/\.md$/iu, ''), content: await readTextFile(file),
+        })
+      }
+      setTreeRevision(current => current + 1)
+      setTreeError(accepted.length === files.length ? '' : '部分非文本文件未导入；可在资源画廊管理媒体')
+      if (last !== undefined) await openDocument(last.path)
+    } catch (reason) {
+      setTreeError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }
+  useEffect(() => {
+    if (treeMenu === undefined) return
+    const close = (): void => { setTreeMenu(undefined) }
+    window.addEventListener('click', close)
+    window.addEventListener('blur', close)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('blur', close)
+    }
+  }, [treeMenu])
+  const handleTreeKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    const target = event.target as HTMLElement
+    if (target.matches('input, textarea, [contenteditable="true"]')) return
+    const command = event.ctrlKey || event.metaKey
+    const key = event.key.toLocaleLowerCase()
+    if (command && (key === 'c' || key === 'x') && selectedEntry !== undefined
+      && managedTreeEntry(selectedEntry)) {
+      event.preventDefault()
+      setClipboard({ mode: key === 'c' ? 'copy' : 'cut', entry: selectedEntry })
+      setTreeError('')
+    } else if (command && key === 'v' && clipboard !== undefined) {
+      event.preventDefault()
+      void pasteEntry()
+    } else if (event.key === 'F2' && selectedEntry !== undefined
+      && managedTreeEntry(selectedEntry)) {
+      event.preventDefault()
+      beginTreeDialog({ kind: 'rename', entry: selectedEntry })
+    } else if (event.key === 'Delete' && selectedEntry !== undefined
+      && managedTreeEntry(selectedEntry)) {
+      event.preventDefault()
+      setDeleteEntry(selectedEntry)
+    }
+  }
   return (
     <div
       className={css.knowledgeWorkbench}
       data-tree-open={showTree}
       data-info-open={showInfo}
     >
-      {showTree && <aside className={css.filePane}>
+      {showTree && <aside
+        className={css.filePane}
+        tabIndex={0}
+        onKeyDown={handleTreeKeyDown}
+        onDragEnter={(event) => {
+          if (event.dataTransfer.types.includes('Files')) setDropActive(true)
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false)
+        }}
+        onDragOver={(event) => {
+          event.preventDefault()
+          event.dataTransfer.dropEffect = event.dataTransfer.types.includes(
+            'application/x-worldline-vault-path',
+          ) ? 'move' : 'copy'
+        }}
+        onDrop={(event) => {
+          event.preventDefault()
+          setDropActive(false)
+          const source = event.dataTransfer.getData('application/x-worldline-vault-path')
+          const target = writableTreeDirectory(selectedEntry)
+          if (source !== '') {
+            const entry = source === selectedEntry?.path ? selectedEntry
+              : { name: source.replace(/^.*\//u, ''), path: source,
+                kind: event.dataTransfer.getData('application/x-worldline-vault-kind') === 'directory'
+                  ? 'directory' as const : 'document' as const }
+            void moveEntry(entry, target)
+          } else if (event.dataTransfer.files.length > 0) {
+            void importFiles([...event.dataTransfer.files], target)
+          }
+        }}
+      >
         <div className={css.paneTitle}>
           <div className={css.paneIdentity}>
             <span className={css.treeTitleIcon} aria-hidden="true"><IconFolderOpen16 /></span>
@@ -727,20 +1089,26 @@ function KnowledgeWorkbench({
               <strong>知识目录</strong>
             </span>
           </div>
-          <button
-            type="button"
-            className={css.createPageButton}
-            aria-label="新建知识页"
-            onClick={() => {
-              setNewPageTitle('')
-              setCreateError('')
-              setCreating(true)
-            }}
-            title="新建 Markdown"
-          >
-            <IconPlusOutline16 />
-            <span>新建页面</span>
-          </button>
+          <div className={css.treeToolbar}>
+            <button type="button" aria-label="新建文件" title="新建文件"
+              onClick={() => { beginTreeDialog({ kind: 'create-file',
+                parent: writableTreeDirectory(selectedEntry) }) }}>
+              <IconPlusOutline16 />
+            </button>
+            <button type="button" aria-label="新建文件夹" title="新建文件夹"
+              onClick={() => { beginTreeDialog({ kind: 'create-folder',
+                parent: writableTreeDirectory(selectedEntry) }) }}>
+              <IconFolderClose16 />
+            </button>
+            <button type="button" className={css.importDocumentButton} aria-label="导入文件"
+              title="拖入或选择 Markdown/文本文件"
+              onClick={() => { importInput.current?.click() }}><ImportDocumentOutline /></button>
+            <input ref={importInput} type="file" hidden multiple accept=".md,.markdown,.txt,text/plain,text/markdown"
+              onChange={(event) => {
+                void importFiles([...event.currentTarget.files ?? []], writableTreeDirectory(selectedEntry))
+                event.currentTarget.value = ''
+              }} />
+          </div>
         </div>
         <form
           className={css.vaultSearch}
@@ -757,7 +1125,11 @@ function KnowledgeWorkbench({
             placeholder="搜索标题、标签与正文"
           />
         </form>
-        <div className={css.fileTree}>
+        {treeError !== '' && <div className={css.treeError} role="status">
+          <span>{treeError}</span>
+          <button type="button" aria-label="关闭文件操作提示" onClick={() => { setTreeError('') }}>×</button>
+        </div>}
+        <div className={css.fileTree} data-drop-active={dropActive || undefined}>
           {query.trim() !== '' ? (
             searchResults.length > 0 ? searchResults.map(result => (
               <button
@@ -779,11 +1151,59 @@ function KnowledgeWorkbench({
               onOpen={(path) => {
                 void openDocument(path)
               }}
+              onSelect={setSelectedEntry}
+              onMenu={setTreeMenu}
+              onMove={(source, targetDirectory, kind) => {
+                const entry = source === selectedEntry?.path ? selectedEntry
+                  : { name: source.replace(/^.*\//u, ''), path: source,
+                    kind }
+                void moveEntry(entry, targetDirectory)
+              }}
+              onFiles={(files, targetDirectory) => { void importFiles(files, targetDirectory) }}
               revision={treeRevision}
+              {...(selectedEntry === undefined ? {} : { selected: selectedEntry.path })}
               {...(activePath === undefined ? {} : { active: activePath })}
             />
           )}
+          {dropActive && <div className={css.treeDropHint}>拖到文件夹中即可导入</div>}
         </div>
+        {treeMenu !== undefined && <div
+          className={css.treeMenu}
+          role="menu"
+          style={{ left: treeMenu.x, top: treeMenu.y }}
+          onClick={(event) => { event.stopPropagation() }}
+        >
+          <button type="button" role="menuitem" onClick={() => {
+            beginTreeDialog({ kind: 'create-file', parent: writableTreeDirectory(treeMenu.entry) })
+          }}>新建文件</button>
+          <button type="button" role="menuitem" onClick={() => {
+            beginTreeDialog({ kind: 'create-folder', parent: writableTreeDirectory(treeMenu.entry) })
+          }}>新建文件夹</button>
+          <button type="button" role="menuitem" onClick={() => {
+            importInput.current?.click(); setTreeMenu(undefined)
+          }}>导入文件…</button>
+          <hr />
+          <button type="button" role="menuitem" disabled={!managedTreeEntry(treeMenu.entry)}
+            onClick={() => { setClipboard({ mode: 'copy', entry: treeMenu.entry }); setTreeMenu(undefined) }}>
+            复制 <kbd>Ctrl+C</kbd></button>
+          <button type="button" role="menuitem" disabled={!managedTreeEntry(treeMenu.entry)}
+            onClick={() => { setClipboard({ mode: 'cut', entry: treeMenu.entry }); setTreeMenu(undefined) }}>
+            剪切 <kbd>Ctrl+X</kbd></button>
+          <button type="button" role="menuitem" disabled={clipboard === undefined}
+            onClick={() => { void pasteEntry(writableTreeDirectory(treeMenu.entry)); setTreeMenu(undefined) }}>
+            粘贴 <kbd>Ctrl+V</kbd></button>
+          <hr />
+          <button type="button" role="menuitem" disabled={!managedTreeEntry(treeMenu.entry)}
+            onClick={() => { beginTreeDialog({ kind: 'rename', entry: treeMenu.entry }) }}>
+            重命名 <kbd>F2</kbd></button>
+          <button type="button" role="menuitem" data-danger disabled={!managedTreeEntry(treeMenu.entry)}
+            onClick={() => { setDeleteEntry(treeMenu.entry); setTreeMenu(undefined) }}>
+            移到回收目录 <kbd>Del</kbd></button>
+        </div>}
+        {clipboard !== undefined && <div className={css.clipboardStatus}>
+          {clipboard.mode === 'copy' ? '已复制' : '已剪切'}：{clipboard.entry.name}
+          <button type="button" aria-label="清除剪贴板" onClick={() => { setClipboard(undefined) }}>×</button>
+        </div>}
       </aside>}
       <section className={css.documentPane}>
         <div className={css.tabStrip} role="tablist" aria-label="已打开的知识页">
@@ -836,9 +1256,7 @@ function KnowledgeWorkbench({
               type="button"
               className={css.emptyCreate}
               onClick={() => {
-                setNewPageTitle('')
-                setCreateError('')
-                setCreating(true)
+                beginTreeDialog({ kind: 'create-file', parent: DEFAULT_KNOWLEDGE_DIRECTORY })
               }}
             >
               <span aria-hidden="true">＋</span> 新建知识页
@@ -998,52 +1416,69 @@ function KnowledgeWorkbench({
         )}
       </aside>}
       <Modal
-        open={creating}
+        open={treeDialog !== undefined}
         onClose={() => {
-          setCreating(false)
+          setTreeDialog(undefined)
+          setTreeError('')
         }}
-        title="新建知识页"
-        description="页面将作为 Markdown 文件保存到当前知识库。"
+        title={treeDialog?.kind === 'rename' ? '重命名'
+          : treeDialog?.kind === 'create-folder' ? '新建文件夹' : '新建 Markdown 文件'}
+        description={treeDialog?.kind === 'rename'
+          ? treeDialog.entry.path
+          : `位置：${treeDialog?.parent ?? DEFAULT_KNOWLEDGE_DIRECTORY}`}
         footer={
           <>
             <Button
               variant="outline"
               onClick={() => {
-                setCreating(false)
+                setTreeDialog(undefined)
+                setTreeError('')
               }}
             >
               取消
             </Button>
             <Button
               variant="primary"
-              disabled={newPageTitle.trim() === ''}
+              disabled={treeDialogValue.trim() === ''}
               onClick={() => {
-                void create()
+                void (treeDialog?.kind === 'rename' ? renameEntry() : createEntry())
               }}
             >
-              创建
+              {treeDialog?.kind === 'rename' ? '重命名' : '创建'}
             </Button>
           </>
         }
       >
         <label className={css.newPageField}>
-          页面标题
+          {treeDialog?.kind === 'create-folder' ? '文件夹名称' : '文件名称'}
           <input
             autoFocus
-            value={newPageTitle}
+            value={treeDialogValue}
             onChange={(event) => {
-              setNewPageTitle(event.currentTarget.value)
-              setCreateError('')
+              setTreeDialogValue(event.currentTarget.value)
+              setTreeError('')
             }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && newPageTitle.trim() !== '') {
+              if (event.key === 'Enter' && treeDialogValue.trim() !== '') {
                 event.preventDefault()
-                void create()
+                void (treeDialog?.kind === 'rename' ? renameEntry() : createEntry())
               }
             }}
           />
         </label>
-        {createError !== '' && <p className={css.editorError}>{createError}</p>}
+        {treeError !== '' && <p className={css.editorError}>{treeError}</p>}
+      </Modal>
+      <Modal
+        open={deleteEntry !== undefined}
+        onClose={() => { setDeleteEntry(undefined) }}
+        title="移到回收目录"
+        description={`确定删除“${deleteEntry?.name ?? ''}”吗？它会保留在当前 Vault 的隐藏回收目录中。`}
+        footer={<>
+          <Button variant="outline" onClick={() => { setDeleteEntry(undefined) }}>取消</Button>
+          <Button variant="primary" onClick={() => { void trashEntry() }}>确认删除</Button>
+        </>}
+      >
+        <p className={css.deleteHint}>文件夹中的全部内容会一起移动；打开的相关标签页将关闭。</p>
       </Modal>
     </div>
   )
@@ -1092,6 +1527,88 @@ function ReferenceMedia({ item }: { item: ReferenceAsset }) {
     description: item.description,
     tags: item.tags,
   }} mode="card" />
+}
+
+function ReferencePreviewOutline() {
+  return <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"
+    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M7 3.5H3.5V7M13 3.5h3.5V7M7 16.5H3.5V13M13 16.5h3.5V13" />
+    <circle cx="10" cy="10" r="2.6" />
+  </svg>
+}
+
+function formatReferenceBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '大小未知'
+  if (bytes < 1_024) return `${bytes} B`
+  if (bytes < 1_024 * 1_024) return `${(bytes / 1_024).toFixed(1)} KB`
+  return `${(bytes / (1_024 * 1_024)).toFixed(1)} MB`
+}
+
+function ReferencePreviewContent({ item }: { item: ReferenceAsset }) {
+  const mimeType = item.mimeType.trim().toLocaleLowerCase('en-US')
+  const resource = {
+    id: item.id,
+    title: item.title,
+    url: item.url,
+    mimeType: item.mimeType,
+    text: item.transcript,
+    description: item.description,
+    tags: item.tags,
+  }
+  if (mimeType.startsWith('image/') || mimeType.startsWith('video/')
+    || mimeType.startsWith('audio/') || mimeType.startsWith('text/'))
+    return <ReferenceContent resource={resource} mode="preview" />
+  if (item.url !== undefined && item.url !== '') return <object
+    className={css.referenceObjectPreview}
+    data={item.url}
+    type={item.mimeType || undefined}
+    aria-label={`${item.title}文件内容`}
+  >
+    <div className={css.referenceUnsupported}>
+      <span>◇</span><strong>此格式由系统预览器打开</strong>
+      <p>当前浏览器没有可用的内嵌渲染器，但资源本身仍然可以正常打开。</p>
+    </div>
+  </object>
+  return <ReferenceContent resource={resource} mode="preview" />
+}
+
+function ReferencePreviewDialog({ item, onClose }: {
+  item: ReferenceAsset
+  onClose: () => void
+}) {
+  useEffect(() => {
+    const close = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', close)
+    return () => { document.removeEventListener('keydown', close) }
+  }, [onClose])
+  return <div className={css.referencePreviewBackdrop} role="presentation" onMouseDown={(event) => {
+    if (event.target === event.currentTarget) onClose()
+  }}>
+    <section className={css.referenceViewer} role="dialog" aria-modal="true"
+      aria-label={`${item.title}资源预览`}>
+      <header>
+        <div><span>RESOURCE PREVIEW</span><strong>{item.title}</strong><small>{item.mimeType || '未知资源类型'}</small></div>
+        <button type="button" onClick={onClose} aria-label="关闭资源预览">×</button>
+      </header>
+      <div className={css.referenceViewerStage} data-media-type={item.mimeType.split('/', 1)[0]}>
+        <ReferencePreviewContent item={item} />
+      </div>
+      <footer>
+        <div className={css.referenceViewerMeta}>
+          <span>{formatReferenceBytes(item.bytes)}</span>
+          {item.durationMs === undefined ? null : <span>{Math.round(item.durationMs / 1_000)} 秒</span>}
+          <span>{item.builtIn ? '内置资源' : '自定义资源'}</span>
+        </div>
+        <div className={css.referenceViewerActions}>
+          {item.url === undefined || item.url === '' ? null : <a href={item.url}
+            target="_blank" rel="noreferrer">在新窗口打开</a>}
+          <button type="button" onClick={onClose}>完成</button>
+        </div>
+      </footer>
+    </section>
+  </div>
 }
 
 function ReferenceDraftPreview({
@@ -1202,6 +1719,7 @@ function ReferenceWorkbench({
   const [advanced, setAdvanced] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ReferenceAsset>()
+  const [previewing, setPreviewing] = useState<ReferenceAsset>()
   const [changingEnabledId, setChangingEnabledId] = useState<string>()
   const [error, setError] = useState('')
   const [nextCursor, setNextCursor] = useState(-1)
@@ -1235,6 +1753,7 @@ function ReferenceWorkbench({
     setEditing(false)
     setAdvanced(false)
     setEditingId(undefined)
+    setPreviewing(undefined)
     void Promise.all([load(), loadCatalog()])
   }, [load, loadCatalog, scope])
   useEffect(() => {
@@ -1420,6 +1939,11 @@ function ReferenceWorkbench({
             <article key={item.id} data-enabled={item.enabled || undefined}>
               <div className={css.referenceMedia}>
                 <ReferenceMedia item={item} />
+                <button type="button" className={css.referencePreviewAction}
+                  aria-label={`预览资源 ${item.title}`}
+                  onClick={() => { setPreviewing(item) }}>
+                  <ReferencePreviewOutline /><span>预览</span>
+                </button>
               </div>
               <h3>{item.title}</h3>
               <p>{item.description}</p>
@@ -1700,12 +2224,140 @@ function ReferenceWorkbench({
           </>
         }
       />
+      {previewing === undefined ? null : <ReferencePreviewDialog item={previewing}
+        onClose={() => { setPreviewing(undefined) }} />}
     </div>
   )
 }
 
-export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
+function TrashAvatar({ item }: { item: AgentVaultTrashItem }) {
+  const [failed, setFailed] = useState(false)
+  return <div className={css.trashAvatar} aria-hidden="true">
+    {item.avatar && !failed
+      ? <img src={item.avatar} alt="" onError={() => { setFailed(true) }} />
+      : item.name.trim().slice(0, 1) || '伙'}
+  </div>
+}
+
+function TrashWorkbench() {
+  const [items, setItems] = useState<readonly AgentVaultTrashItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState<string | undefined>()
+  const [error, setError] = useState('')
+  const [confirm, setConfirm] = useState<
+    { kind: 'delete'; item: AgentVaultTrashItem } | { kind: 'empty' } | undefined
+  >()
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      setItems(await post<readonly AgentVaultTrashItem[]>('vault/trash/list', {}))
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const restore = async (item: AgentVaultTrashItem): Promise<void> => {
+    setBusy(item.id)
+    try {
+      await post('vault/trash/restore', { id: item.id })
+      await companionStore.load(true)
+      await load()
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason)
+      await load()
+      setError(message)
+    } finally {
+      setBusy(undefined)
+    }
+  }
+  const remove = async (): Promise<void> => {
+    if (confirm?.kind !== 'delete') return
+    setBusy(confirm.item.id)
+    try {
+      await post('vault/trash/delete', { id: confirm.item.id })
+      setConfirm(undefined)
+      await load()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+  const empty = async (): Promise<void> => {
+    setBusy('all')
+    try {
+      await post('vault/trash/empty', {})
+      setConfirm(undefined)
+      await load()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
+  return <section className={css.trashWorkbench}>
+    <header className={css.trashHeader}>
+      <div>
+        <span className={css.trashHeadingIcon} aria-hidden="true"><IconTrashOutline16 /></span>
+        <span><small>RECOVERABLE AGENT VAULTS</small><strong>回收站</strong>
+          <p>统一管理已删除伙伴的完整资料、记忆、能力与资源。</p></span>
+      </div>
+      <button type="button" className={css.emptyTrashButton} disabled={items.length === 0 || busy !== undefined}
+        onClick={() => { setConfirm({ kind: 'empty' }) }}>清空回收站</button>
+    </header>
+    {error !== '' && <div className={css.trashError} role="alert">{error}</div>}
+    {loading ? <div className={css.trashEmpty}><span aria-hidden="true">⌛</span><strong>正在读取回收站</strong></div>
+      : items.length === 0 ? <div className={css.trashEmpty}>
+        <span aria-hidden="true"><IconTrashOutline16 /></span><strong>回收站是空的</strong>
+        <p>删除伙伴或恢复内置伙伴原版后，旧的完整 Agent Vault 会出现在这里。</p>
+      </div> : <div className={css.trashGrid}>
+        {items.map(item => <article key={item.id} data-blocked={!item.restorable || undefined}>
+          <TrashAvatar item={item} />
+          <div className={css.trashCardCopy}>
+            <div><strong>{item.name}</strong><span>{item.restorable ? '可恢复' : '同 ID 伙伴正在使用'}</span></div>
+            <code>{item.agentId}</code>
+            <p>删除于 {new Date(item.deletedAt).toLocaleString('zh-CN')}</p>
+          </div>
+          <div className={css.trashCardActions}>
+            <button type="button" disabled={!item.restorable || busy !== undefined}
+              title={item.restorable ? '恢复伙伴及完整 Agent Vault' : '当前已有相同 ID 的伙伴，不能覆盖恢复'}
+              onClick={() => { void restore(item) }}>{busy === item.id ? '处理中…' : '恢复伙伴'}</button>
+            <button type="button" data-danger disabled={busy !== undefined}
+              onClick={() => { setConfirm({ kind: 'delete', item }) }}>永久删除</button>
+          </div>
+        </article>)}
+      </div>}
+    <Modal open={confirm !== undefined} onClose={() => { if (busy === undefined) setConfirm(undefined) }}
+      title={confirm?.kind === 'empty' ? '清空回收站' : '永久删除 Vault'}
+      description={confirm?.kind === 'empty'
+        ? `将永久删除回收站中的 ${String(items.length)} 个完整 Agent Vault。此操作无法撤销。`
+        : confirm?.kind === 'delete'
+          ? `将永久删除“${confirm.item.name}”的完整 Agent Vault。此操作无法撤销。`
+          : ''}
+      footer={<>
+        <Button variant="outline" disabled={busy !== undefined} onClick={() => { setConfirm(undefined) }}>取消</Button>
+        <Button variant="primary" className={css.confirmTrashButton} disabled={busy !== undefined}
+          onClick={() => { if (confirm?.kind === 'empty') void empty(); else void remove() }}>
+          {busy === undefined ? '确认永久删除' : '正在删除…'}
+        </Button>
+      </>} />
+  </section>
+}
+
+export function KnowledgeVaultPage(props: KnowledgeVaultPageProps) {
   const list = useCompanionStore().companions
+  const subscribeOpenRequest = useCallback((listener: () => void) =>
+    props.subscribeOpenRequest?.(listener) ?? (() => undefined), [props])
+  const getOpenRequest = useCallback(() => props.getOpenRequest?.(), [props])
+  const openRequest = useSyncExternalStore(
+    subscribeOpenRequest,
+    getOpenRequest,
+    getOpenRequest,
+  )
   const [scope, setScope] = useState('public')
   const [tab, setTab] = useState<VaultTab>('knowledge')
   const [showTree, setShowTree] = useState(true)
@@ -1714,6 +2366,12 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
   useEffect(() => {
     void companionStore.load()
   }, [])
+  useEffect(() => {
+    if (openRequest === undefined) return
+    setScope(openRequest.scope)
+    setTab('knowledge')
+    setShowTree(true)
+  }, [openRequest])
   const scopes = useMemo(
     () => [
       {
@@ -1738,7 +2396,10 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
     <main className={css.page}>
       <section className={css.main}>
         <header className={css.topbar}>
-          <ScopeSwitcher options={scopes} value={scope} onChange={setScope} />
+          {tab === 'trash' ? <div className={css.trashScopeLabel}>
+            <span aria-hidden="true"><IconTrashOutline16 /></span>
+            <span><strong>统一回收站</strong><small>所有伙伴的完整 Vault 快照</small></span>
+          </div> : <ScopeSwitcher options={scopes} value={scope} onChange={setScope} />}
           <nav className={css.vaultTabs} role="tablist" aria-label="知识库内容类型">
             <button
               type="button"
@@ -1756,9 +2417,17 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
             >
               <span><ResourceGalleryOutline /></span><span><strong>资源画廊</strong><small>图片、表情与音视频</small></span>
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'trash'}
+              onClick={() => { setTab('trash') }}
+            >
+              <span><IconTrashOutline16 /></span><span><strong>回收站</strong><small>恢复或永久清理</small></span>
+            </button>
           </nav>
           <div className={css.viewControls}>
-            <small>视图</small>
+            <small>{tab === 'trash' ? '范围' : '视图'}</small>
             <div className={css.paneToggles}>
               {tab === 'knowledge' ? <>
                 <button
@@ -1775,13 +2444,13 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
                 >
                   页面信息
                 </button>
-              </> : <button
+              </> : tab === 'references' ? <button
                 type="button"
                 aria-pressed={showReferenceFilters}
                 onClick={() => { setShowReferenceFilters(value => !value) }}
               >
                 筛选栏
-              </button>}
+              </button> : <small>账户级</small>}
             </div>
           </div>
         </header>
@@ -1793,8 +2462,9 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
             showTree={showTree}
             showInfo={showInfo}
             setShowInfo={setShowInfo}
+            {...openRequest?.scope === scope ? { openRequest } : {}}
           />
-        ) : (
+        ) : tab === 'references' ? (
           <ReferenceWorkbench
             key={`reference:${scope}`}
             scope={scope}
@@ -1802,7 +2472,7 @@ export function KnowledgeVaultPage(_props: KnowledgeVaultPageProps) {
             showFilters={showReferenceFilters}
             setShowFilters={setShowReferenceFilters}
           />
-        )}
+        ) : <TrashWorkbench />}
       </section>
     </main>
   )

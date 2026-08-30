@@ -5,6 +5,11 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import LocalAgentVaultService from '@deepseek-ai/dsh-agent-vault-local'
 import { findPublicExpressions, VirtualCompanionDirectory } from '../src/index.ts'
+import {
+  DEFAULT_COMPANION_ART,
+  DEFAULT_COMPANION_ART_DARK,
+  randomDefaultCompanionArt,
+} from '../src/contracts.ts'
 
 const roots: string[] = []
 const stores: VirtualCompanionDirectory[] = []
@@ -33,6 +38,13 @@ async function fixture(): Promise<{ root: string
 }
 
 describe('VirtualCompanionDirectory', { timeout: 30_000 }, () => {
+  it('samples both bundled Huan forms from one unbiased default-art pool', () => {
+    expect(randomDefaultCompanionArt(() => 0)).toBe(DEFAULT_COMPANION_ART)
+    expect(randomDefaultCompanionArt(() => 0.499_999)).toBe(DEFAULT_COMPANION_ART)
+    expect(randomDefaultCompanionArt(() => 0.5)).toBe(DEFAULT_COMPANION_ART_DARK)
+    expect(randomDefaultCompanionArt(() => 0.999_999)).toBe(DEFAULT_COMPANION_ART_DARK)
+  })
+
   it('finds an exact public title despite mixed semantic words and non-catalog tags', async () => {
     const { vaults } = await fixture()
     const found = await findPublicExpressions(vaults, {
@@ -76,6 +88,25 @@ describe('VirtualCompanionDirectory', { timeout: 30_000 }, () => {
     expect(await readFile(marker, 'utf8')).toBe('preserve me')
   })
 
+  it('creates a complete independent Vault with bundled artwork when no image is supplied', async () => {
+    const { store, vaults } = await fixture()
+    const created = await store.create({
+      name: '无图伙伴', handle: 'DEFAULT GUIDE', status: '在线', description: '没有自定义形象。',
+      persona: '独立的虚拟伙伴。', style: '温和', speakingStyle: '清晰', behaviorLogic: '先理解用户。',
+    })
+    const companion = created.companions.find(item => item.name === '无图伙伴')
+    expect([DEFAULT_COMPANION_ART, DEFAULT_COMPANION_ART_DARK]).toContain(companion?.avatar)
+    expect(companion).toMatchObject({ portrait: companion?.avatar, builtIn: false })
+    const manifest = await vaults.manifest(companion!.id)
+    expect(manifest.agent).toEqual({ id: companion!.id, name: '无图伙伴' })
+    expect((await vaults.inspectSelf(companion!.id)).modules.find(module => module.id === 'appearance')?.details)
+      .toContain(`形象资源：${companion?.avatar}`)
+    expect((await vaults.read(companion!.id, 'vault://memory/long/index.md')).title)
+      .toBe('无图伙伴 的长期记忆')
+    expect((await vaults.read(companion!.id, 'vault://procedures/cards/index.md')).title)
+      .toBe('无图伙伴 的能力卡')
+  })
+
   it('registers one stable first-class appearance resource for an uploaded portrait', async () => {
     const { store, vaults } = await fixture()
     const bytes = Buffer.from('uploaded-companion-portrait')
@@ -102,6 +133,24 @@ describe('VirtualCompanionDirectory', { timeout: 30_000 }, () => {
       speakingStyle: profile.speakingStyle, behaviorLogic: profile.behaviorLogic,
     })
     expect((await store.appearance(profile.id))?.resource.revision).toBe(before)
+  })
+
+  it('keeps self Markdown authoritative across live projection and directory restart', async () => {
+    const { legacy, store, vaults } = await fixture()
+    const profile = store.companion('kaguya')!
+    const identity = await vaults.read(profile.id, 'vault://self/identity.md')
+    const content = identity.content.replace(profile.description, '这是直接写入 MD 正文的实时角色简介。')
+    await vaults.write(profile.id, identity.uri, content, { ...user, expectedRevision: identity.revision })
+
+    await expect.poll(() => store.companion(profile.id)?.description,
+      { timeout: 3_000, interval: 25 }).toBe('这是直接写入 MD 正文的实时角色简介。')
+    store.close()
+    const reopened = new VirtualCompanionDirectory(new Context().logger, legacy, vaults)
+    stores.push(reopened)
+    await reopened.ready
+    expect(reopened.companion(profile.id)?.description).toBe('这是直接写入 MD 正文的实时角色简介。')
+    expect((await vaults.inspectSelf(profile.id)).modules.find(module => module.id === 'identity')?.details[0])
+      .toBe('这是直接写入 MD 正文的实时角色简介。')
   })
 
   it('restores an edited built-in profile and replaces its private Vault with bundled originals', async () => {

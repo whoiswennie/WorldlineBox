@@ -424,3 +424,30 @@
   .actions { align-items: flex-end; flex-direction: column; }
   .accountCard footer { align-items: flex-start; flex-direction: column; }
 }
+
+/* Profile sheet shares the companion deck's clean, luminous illustration language. */
+.page { width: min(1040px, 100%); }
+.heading { margin-bottom: 20px; }
+.heading > div > span { color: #bd5c87; }
+.heading h2 { font-size: 28px; }
+.localBadge { color: #3a96bd; border-color: #cce7f2; background: #edf9fd; }
+.profileCard, .accountCard { border-color: rgb(190 211 222 / 70%); border-radius: 21px; box-shadow: 0 18px 48px rgb(50 81 100 / 7%); }
+.identityPanel {
+  position: relative;
+  overflow: hidden;
+  min-height: 130px;
+  background:
+    radial-gradient(circle at 8% 8%, rgb(210 240 253 / 88%), transparent 31%),
+    radial-gradient(circle at 78% 120%, rgb(255 223 240 / 58%), transparent 29%),
+    linear-gradient(110deg, #f8fcff, #fffafd);
+}
+.identityPanel::after { position: absolute; right: 25%; bottom: -76px; width: 185px; height: 140px; border: 20px solid rgb(116 187 218 / 7%); border-radius: 50%; content: ''; pointer-events: none; }
+.avatar { position: relative; z-index: 1; border-radius: 28px; box-shadow: 0 0 0 1px rgb(129 190 215 / 32%), 0 14px 32px rgb(44 92 116 / 13%); }
+.identityCopy, .avatarActions { position: relative; z-index: 1; }
+.identityCopy > span { color: #c05b87; }
+.upload { color: #338fb7; border-color: #c9e4ef; background: rgb(255 255 255 / 82%); }
+.upload:hover { background: #edf9fd; border-color: #9fd2e5; }
+.fields { background: rgb(255 255 255 / 72%); }
+.fields input, .fields textarea { border-color: #dce8ee; background: #f8fbfd; }
+.fields input:focus, .fields textarea:focus { border-color: #6bb6d5; box-shadow: 0 0 0 3px rgb(100 183 217 / 11%); }
+.save { background: linear-gradient(135deg, #50add4, #ae6ed0 62%, #dc76a7); box-shadow: 0 8px 20px rgb(117 116 202 / 20%); }

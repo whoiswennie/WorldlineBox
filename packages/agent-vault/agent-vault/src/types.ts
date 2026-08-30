@@ -32,6 +32,13 @@ export interface VaultWriteContext {
   readonly expectedRevision?: string
 }
 
+/** One durable file-native Vault change observed by Host consumers. */
+export interface AgentVaultChange {
+  readonly agentId: string
+  /** Portable paths changed by the mutation; an empty list means the whole Vault changed. */
+  readonly paths: readonly string[]
+}
+
 /** Portable package identity and format version. */
 export interface AgentVaultManifest {
   readonly format: 'worldline-agent-vault'
@@ -39,6 +46,21 @@ export interface AgentVaultManifest {
   readonly agent: { readonly id: string; readonly name: string }
   readonly createdAt: number
   readonly updatedAt: number
+}
+
+/** One complete Vault snapshot held in the account-level recoverable trash. */
+export interface AgentVaultTrashEntry {
+  /** Opaque identifier used for restore and permanent deletion. */
+  readonly id: string
+  readonly agentId: string
+  readonly name: string
+  readonly deletedAt: number
+  readonly createdAt: number
+  readonly updatedAt: number
+  /** False when an active Vault already owns the same Agent identity. */
+  readonly restorable: boolean
+  /** Whether the snapshot contains a deliverable profile appearance image. */
+  readonly hasAvatar: boolean
 }
 
 /** Lightweight filesystem or resource directory entry. */

@@ -1,4 +1,8 @@
-import { copyFile, cp, mkdir, opendir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { copyFile, cp, link, mkdir, opendir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -6,6 +10,7 @@ import { watch, type FSWatcher } from 'chokidar'
 import { WorkspaceTree } from '@deepseek-ai/dsh-host-workspace-tree'
 import type {
   WorkspaceTreeEntry, WorkspaceTreeListing, WorkspaceTreeMutation, WorkspaceTreePreview,
+  WorkspaceTreeImportResult, WorkspaceTreeReadOptions,
   WorkspaceTreeSearchListing, WorkspaceTreeSearchResult,
 } from '@deepseek-ai/dsh-host-workspace-tree'
 
@@ -21,6 +26,8 @@ export interface Config {
   maxSearchEntries: number
   /** Maximum matches returned by one Workspace search. */
   maxSearchResults: number
+  /** Maximum bytes accepted by one streamed external-file import. */
+  maxImportBytes: number
 }
 
 function inside(root: string, target: string): boolean {
@@ -60,6 +67,7 @@ export default class LocalWorkspaceTree extends WorkspaceTree {
     watchDebounceMs: z.natural().min(50).default(350),
     maxSearchEntries: z.natural().min(1).default(20_000),
     maxSearchResults: z.natural().min(1).default(200),
+    maxImportBytes: z.natural().min(1).default(128 * 1_024 * 1_024 * 1_024),
   })
 
   private readonly watchers = new Map<string, FSWatcher>()
@@ -265,19 +273,86 @@ export default class LocalWorkspaceTree extends WorkspaceTree {
         : mimeType.startsWith('video/') ? 'video'
           : TEXT.has(extension) ? 'text' : 'binary'
     const base = { path: target, name: basename(target), size: info.size, modifiedAt: info.mtimeMs, kind, mimeType }
-    if (info.size > this.config.maxPreviewBytes || kind === 'binary') return { ...base, tooLarge: info.size > this.config.maxPreviewBytes }
+    // Media is never expanded into Base64 inside the JSON RPC envelope. The
+    // gateway grants a short-lived streaming URL and Chromium requests only
+    // the byte windows it needs for playback or seeking.
+    if (kind === 'image' || kind === 'audio' || kind === 'video') {
+      return { ...base, tooLarge: false }
+    }
+    if (info.size > this.config.maxPreviewBytes || kind === 'binary') {
+      return { ...base, tooLarge: info.size > this.config.maxPreviewBytes }
+    }
     const buffer = await readFile(target)
     signal?.throwIfAborted()
-    return kind === 'text'
-      ? { ...base, tooLarge: false, encoding: 'utf8', content: buffer.toString('utf8') }
-      : { ...base, tooLarge: false, encoding: 'base64', content: buffer.toString('base64') }
+    return { ...base, tooLarge: false, encoding: 'utf8', content: buffer.toString('utf8') }
+  }
+
+  async read(
+    workspaceRoot: string,
+    path: string,
+    options: WorkspaceTreeReadOptions,
+    signal?: AbortSignal,
+  ): Promise<ReadableStream<Uint8Array>> {
+    signal?.throwIfAborted()
+    const root = await this.rootOf(workspaceRoot)
+    const target = await this.existing(root, path)
+    if (!(await stat(target)).isFile()) throw new Error(`workspace read target is not a file: ${path}`)
+    const source = createReadStream(target, {
+      ...(options.start === undefined ? {} : { start: options.start }),
+      ...(options.end === undefined ? {} : { end: options.end }),
+      ...(signal === undefined ? {} : { signal }),
+    })
+    return Readable.toWeb(source) as ReadableStream<Uint8Array>
+  }
+
+  async importFile(
+    workspaceRoot: string,
+    parent: string,
+    name: string,
+    source: AsyncIterable<Uint8Array>,
+    expectedBytes?: number,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceTreeImportResult> {
+    signal?.throwIfAborted()
+    if (expectedBytes !== undefined && expectedBytes > this.config.maxImportBytes) {
+      throw new Error(`workspace import exceeds the configured byte limit: ${String(expectedBytes)}`)
+    }
+    const root = await this.rootOf(workspaceRoot)
+    const target = await this.destination(root, parent, name)
+    const staging = join(dirname(target), `.${basename(target)}.${randomUUID()}.upload`)
+    let bytes = 0
+    const maxImportBytes = this.config.maxImportBytes
+    const limiter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        bytes += chunk.byteLength
+        callback(bytes > maxImportBytes
+          ? new Error(`workspace import exceeds the configured byte limit: ${String(bytes)}`)
+          : null, chunk)
+      },
+    })
+    try {
+      const input = Readable.from(source)
+      const output = createWriteStream(staging, { flags: 'wx', mode: 0o600 })
+      if (signal === undefined) await pipeline(input, limiter, output)
+      else await pipeline(input, limiter, output, { signal })
+      if (expectedBytes !== undefined && bytes !== expectedBytes) {
+        throw new Error(`workspace import length mismatch: expected ${String(expectedBytes)}, received ${String(bytes)}`)
+      }
+      await link(staging, target)
+      return { path: target, bytes }
+    } finally {
+      await rm(staging, { force: true })
+    }
   }
 
   async mutate(workspaceRoot: string, mutation: WorkspaceTreeMutation): Promise<{ path?: string }> {
     const root = await this.rootOf(workspaceRoot)
     if (mutation.operation === 'create-file') {
       const target = await this.destination(root, mutation.parent, mutation.name)
-      await writeFile(target, mutation.content ?? '', { flag: 'wx' })
+      const content = mutation.contentEncoding === 'base64'
+        ? Buffer.from(mutation.content ?? '', 'base64')
+        : mutation.content ?? ''
+      await writeFile(target, content, { flag: 'wx' })
       return { path: target }
     }
     if (mutation.operation === 'create-directory') {

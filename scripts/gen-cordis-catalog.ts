@@ -538,6 +538,8 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   WorkspaceTreeSearchListing: 'workspace.md',
   WorkspaceTreeMutation: 'workspace.md',
   WorkspaceTreePreview: 'workspace.md',
+  WorkspaceTreeReadOptions: 'workspace.md',
+  WorkspaceTreeImportResult: 'workspace.md',
   WebBootGraph: 'client-modules.md',
   SessionTelemetryRecord: 'session-telemetry.md',
   WorkflowRunInfo: 'workflow.md',
@@ -572,13 +574,16 @@ export const FOUNDATION_TYPE_NAMES: ReadonlySet<string> = new Set([
   'Promise',
   'Record',
   'Readonly',
+  'ReadableStream',
   'Uint8Array',
 ])
 
 /** Project types deliberately documented outside the subsystems catalog. */
 export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
   z: 'schemastery schema constructor is owned by vendor/schemastery (vendored upstream)',
+  AgentVaultChange: 'Worldline Agent Vault contract is owned by packages/agent-vault/agent-vault/README.md',
   AgentVaultManifest: 'Worldline Agent Vault contract is owned by packages/agent-vault/agent-vault/README.md',
+  AgentVaultTrashEntry: 'Worldline Agent Vault contract is owned by packages/agent-vault/agent-vault/README.md',
   CaptureMemoryInput: 'Worldline Agent Vault contract is owned by packages/agent-vault/agent-vault/README.md',
   ConsolidationJob: 'Worldline Agent Vault contract is owned by packages/agent-vault/agent-vault/README.md',
   MemoryStage: 'Worldline Agent Vault contract is owned by packages/agent-vault/agent-vault/README.md',

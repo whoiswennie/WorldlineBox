@@ -412,11 +412,6 @@
 - id: skill-filesystem
   disabled: true
 
-# The product ships one deployment-level Skill so the management catalog and
-# every preset have a visible baseline even when user and project roots are empty.
-- id: skill-badge
-  disabled: false
-
 - id: tool-skill
   disabled: true
 

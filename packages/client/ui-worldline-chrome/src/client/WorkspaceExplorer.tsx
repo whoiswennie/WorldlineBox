@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react'
+import type {
+  DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent, ReactNode,
+} from 'react'
 import type {
   DirectoryEntry, DirectoryListing, SessionId, WorkspaceTreeMutation, WorkspaceTreePreview,
   WorkspaceTreeSearchListing,
@@ -35,6 +38,20 @@ const dirname = (path: string): string => path.replace(/[\\/][^\\/]+$/, '')
 const samePath = (a: string, b: string): boolean => a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase()
 const isHtmlFile = (entry: DirectoryEntry | undefined): entry is DirectoryEntry =>
   entry?.kind === 'file' && /\.(?:html?|xhtml)$/iu.test(entry.name)
+
+async function uploadWorkspaceFile(file: File, directory: string): Promise<void> {
+  const query = new URLSearchParams({
+    parent: directory,
+    name: file.name,
+    expectedBytes: String(file.size),
+  })
+  const response = await fetch(`/api/workspace.upload?${query.toString()}`, {
+    method: 'PUT',
+    headers: { 'content-type': file.type || 'application/octet-stream' },
+    body: file,
+  })
+  if (!response.ok) throw new Error((await response.text().catch(() => '')) || '文件导入失败')
+}
 
 type FileKind =
   | 'image' | 'audio' | 'video' | 'text' | 'code' | 'data' | 'archive'
@@ -115,14 +132,18 @@ function FileGlyph({ name }: { name: string }) {
   return <span className={css.fileGlyph} data-kind={kind} aria-hidden="true">{icon}</span>
 }
 
-function TreeLevel({ directory, depth, revision, api, onMenu, onPreview, onDropEntry }: {
+function TreeLevel({ directory, depth, revision, api, selected, onSelect, onMenu, onPreview,
+  onDropEntry, onDropFiles }: {
   directory: string
   depth: number
   revision: number
   api: Pick<Injected, 'listDirectory'>
+  selected?: string
+  onSelect: (entry: DirectoryEntry) => void
   onMenu: (event: ReactMouseEvent, entry: DirectoryEntry | undefined, directory: string) => void
   onPreview: (entry: DirectoryEntry) => void
   onDropEntry: (entry: DirectoryEntry, directory: string) => void
+  onDropFiles: (files: readonly File[], directory: string) => void
 }) {
   const [listing, setListing] = useState<DirectoryListing | null>(null)
   const [error, setError] = useState('')
@@ -141,13 +162,16 @@ function TreeLevel({ directory, depth, revision, api, onMenu, onPreview, onDropE
       ? <DirectoryRow
         key={entry.path} entry={entry} depth={depth} revision={revision} api={api}
         onMenu={onMenu} onPreview={onPreview} onDropEntry={onDropEntry}
+        onSelect={onSelect} onDropFiles={onDropFiles}
+        {...(selected === undefined ? {} : { selected })}
       />
       : <li key={entry.path}>
         <button
           type="button" className={css.row} style={{ paddingLeft: 12 + depth * 17 }} title={entry.path}
+          data-selected={samePath(selected ?? '', entry.path) || undefined}
           draggable onDragStart={(event) => { event.dataTransfer.setData('application/x-worldline-workspace-entry', entry.path) }}
-          onDoubleClick={() => { onPreview(entry) }} onClick={() => { onPreview(entry) }}
-          onContextMenu={(event) => { onMenu(event, entry, directory) }}
+          onDoubleClick={() => { onPreview(entry) }} onClick={() => { onSelect(entry); onPreview(entry) }}
+          onContextMenu={(event) => { onSelect(entry); onMenu(event, entry, directory) }}
         ><span className={css.chevronSpace} /><FileGlyph name={entry.name} /><span className={css.name}>{entry.name}</span></button>
       </li>)}
     {listing.entries.length === 0 && <li className={css.note}>空文件夹</li>}
@@ -160,23 +184,32 @@ function DirectoryRow(props: {
   depth: number
   revision: number
   api: Pick<Injected, 'listDirectory'>
+  selected?: string
+  onSelect: (entry: DirectoryEntry) => void
   onMenu: (event: ReactMouseEvent, entry: DirectoryEntry | undefined, directory: string) => void
   onPreview: (entry: DirectoryEntry) => void
   onDropEntry: (entry: DirectoryEntry, directory: string) => void
+  onDropFiles: (files: readonly File[], directory: string) => void
 }) {
-  const { entry, depth, revision, api, onMenu, onPreview, onDropEntry } = props
+  const { entry, depth, revision, api, selected, onSelect, onMenu, onPreview, onDropEntry,
+    onDropFiles } = props
   const [open, setOpen] = useState(false)
   return <li>
     <button
       type="button" className={css.row} style={{ paddingLeft: 12 + depth * 17 }} title={entry.path}
-      draggable onDragStart={(event) => { event.dataTransfer.setData('application/x-worldline-workspace-entry', entry.path) }}
-      onClick={() => { setOpen(value => !value) }} onContextMenu={(event) => { onMenu(event, entry, dirname(entry.path)) }}
+      data-selected={samePath(selected ?? '', entry.path) || undefined}
+      draggable onDragStart={(event) => {
+        event.dataTransfer.setData('application/x-worldline-workspace-entry', entry.path)
+      }}
+      onClick={() => { onSelect(entry); setOpen(value => !value) }}
+      onContextMenu={(event) => { onSelect(entry); onMenu(event, entry, dirname(entry.path)) }}
       onDragOver={(event) => { event.preventDefault(); event.currentTarget.dataset.dragover = 'true' }}
       onDragLeave={(event) => { delete event.currentTarget.dataset.dragover }}
       onDrop={(event) => {
-        event.preventDefault(); delete event.currentTarget.dataset.dragover
+        event.preventDefault(); event.stopPropagation(); delete event.currentTarget.dataset.dragover
         const path = event.dataTransfer.getData('application/x-worldline-workspace-entry')
         if (path !== '') onDropEntry({ name: path.replace(/^.*[\\/]/, ''), path, hidden: false, kind: 'file' }, entry.path)
+        else if (event.dataTransfer.files.length > 0) onDropFiles([...event.dataTransfer.files], entry.path)
       }}
     >
       {open ? <IconChevronDownOutline14 /> : <IconChevronRightOutline14 />}
@@ -186,6 +219,8 @@ function DirectoryRow(props: {
     {open && <TreeLevel
       directory={entry.path} depth={depth + 1} revision={revision} api={api}
       onMenu={onMenu} onPreview={onPreview} onDropEntry={onDropEntry}
+      onSelect={onSelect} onDropFiles={onDropFiles}
+      {...(selected === undefined ? {} : { selected })}
     />}
   </li>
 }
@@ -207,6 +242,8 @@ export function WorkspaceExplorer({
   const [revision, setRevision] = useState(0)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [clipboard, setClipboard] = useState<ClipboardState | null>(null)
+  const [selected, setSelected] = useState<DirectoryEntry | null>(null)
+  const [dropActive, setDropActive] = useState(false)
   const [prompt, setPrompt] = useState<PromptState | null>(null)
   const [confirmation, setConfirmation] = useState<ConfirmState | null>(null)
   const [error, setError] = useState('')
@@ -214,6 +251,7 @@ export function WorkspaceExplorer({
   const [searchListing, setSearchListing] = useState<WorkspaceTreeSearchListing | null>(null)
   const [searching, setSearching] = useState(false)
   const changedTimer = useRef<number | null>(null)
+  const importInput = useRef<HTMLInputElement>(null)
   const api = useMemo(() => ({ listDirectory }), [listDirectory])
   const refresh = useCallback(() => { setRevision(value => value + 1) }, [])
 
@@ -223,7 +261,7 @@ export function WorkspaceExplorer({
     changedTimer.current = window.setTimeout(() => { changedTimer.current = null; refresh() }, 180)
   }), [cwd, refresh, subscribeChanges])
   useEffect(() => () => { if (changedTimer.current !== null) window.clearTimeout(changedTimer.current) }, [])
-  useEffect(() => { setError(''); refresh() }, [cwd, refresh])
+  useEffect(() => { setError(''); setSelected(null); setClipboard(null); refresh() }, [cwd, refresh])
   useEffect(() => {
     const normalized = query.trim()
     if (cwd === undefined || normalized === '') {
@@ -258,6 +296,15 @@ export function WorkspaceExplorer({
     setError('')
     void mutate(operation).then((result) => {
       workspaceEditor.applyMutation(operation, result.path)
+      const resultPath = result.path
+      if ((operation.operation === 'rename' || operation.operation === 'move')
+        && resultPath !== undefined) {
+        setSelected(current => current === null || !samePath(current.path, operation.path)
+          ? current
+          : { ...current, path: resultPath, name: resultPath.replace(/^.*[\\/]/u, '') })
+      } else if (operation.operation === 'delete') {
+        setSelected(current => current !== null && samePath(current.path, operation.path) ? null : current)
+      }
       refresh()
     }, (reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)) })
   }, [mutate, refresh])
@@ -267,6 +314,7 @@ export function WorkspaceExplorer({
   )
   const onMenu = useCallback((event: ReactMouseEvent, entry: DirectoryEntry | undefined, directory: string) => {
     event.preventDefault(); event.stopPropagation()
+    if (entry !== undefined) setSelected(entry)
     setMenu({
       x: Math.min(event.clientX, window.innerWidth - 230),
       y: Math.min(event.clientY, window.innerHeight - 330),
@@ -287,6 +335,16 @@ export function WorkspaceExplorer({
     if (samePath(entry.path, directory)) return
     run({ operation: 'move', path: entry.path, targetDirectory: directory })
   }, [run])
+  const uploadFiles = useCallback(async (files: readonly File[], directory: string) => {
+    setDropActive(false)
+    setError('')
+    try {
+      for (const file of files) await uploadWorkspaceFile(file, directory)
+      refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [refresh])
   const openWorkspaceDirectory = useCallback(() => {
     if (cwd === undefined) return
     setError('')
@@ -296,16 +354,56 @@ export function WorkspaceExplorer({
   }, [cwd, openPath])
   const menuEntry = menu?.entry
   const menuParent = menuEntry?.kind === 'directory' ? menuEntry.path : menu?.directory
+  const selectedDirectory = selected?.kind === 'directory' ? selected.path
+    : selected === null ? cwd : dirname(selected.path)
+  const requestDelete = (entry: DirectoryEntry): void => {
+    setConfirmation({
+      title: '删除工作区项目',
+      message: `确定删除“${entry.name}”吗？此操作无法撤销。`,
+      confirmLabel: '删除',
+      submit: () => { run({ operation: 'delete', path: entry.path }); setSelected(null) },
+    })
+  }
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    const target = event.target as HTMLElement
+    if (target.matches('input, textarea, [contenteditable="true"]')) return
+    const command = event.ctrlKey || event.metaKey
+    const key = event.key.toLocaleLowerCase()
+    if (command && (key === 'c' || key === 'x') && selected !== null) {
+      event.preventDefault()
+      setClipboard({ entry: selected, operation: key === 'c' ? 'copy' : 'move' })
+    } else if (command && key === 'v' && clipboard !== null && selectedDirectory !== undefined) {
+      event.preventDefault()
+      run({ operation: clipboard.operation, path: clipboard.entry.path,
+        targetDirectory: selectedDirectory })
+      if (clipboard.operation === 'move') setClipboard(null)
+    } else if (event.key === 'F2' && selected !== null) {
+      event.preventDefault()
+      showPrompt('重命名', selected.name,
+        (name) => { run({ operation: 'rename', path: selected.path, name }) })
+    } else if (event.key === 'Delete' && selected !== null) {
+      event.preventDefault()
+      requestDelete(selected)
+    }
+  }
 
   return <section
     className={css.root}
     aria-label="工作区文件资源管理器"
+    tabIndex={0}
+    onKeyDown={handleKeyDown}
     onContextMenu={(event) => { if (cwd !== undefined) onMenu(event, undefined, cwd) }}
   >
     <header><div><strong>资源管理器</strong><span>{cwd ?? '尚未选择工作区'}</span></div><button type="button" title="关闭文件面板" onClick={close}><IconCloseOutline16 /></button></header>
     <div className={css.toolbar}><strong>工作区</strong><div>
       <button type="button" title="新建文件" disabled={cwd === undefined} onClick={() => { if (cwd !== undefined) showPrompt('新建文件', '', (name) => { run({ operation: 'create-file', parent: cwd, name }) }) }}><IconPlusOutline16 /></button>
       <button type="button" title="新建文件夹" disabled={cwd === undefined} onClick={() => { if (cwd !== undefined) showPrompt('新建文件夹', '', (name) => { run({ operation: 'create-directory', parent: cwd, name }) }) }}><IconFolderOpenOutline16 /></button>
+      <button type="button" title="导入文件" disabled={cwd === undefined}
+        onClick={() => { importInput.current?.click() }}>⇧</button>
+      <input ref={importInput} type="file" hidden multiple onChange={(event) => {
+        if (selectedDirectory !== undefined) void uploadFiles([...event.currentTarget.files ?? []], selectedDirectory)
+        event.currentTarget.value = ''
+      }} />
       <button type="button" title="在文件资源管理器中打开工作区" disabled={cwd === undefined} onClick={openWorkspaceDirectory}><IconFolderOpen16 /></button>
       <button type="button" className={css.clearWorkspace} title="清空工作区" disabled={cwd === undefined} onClick={() => {
         if (cwd === undefined) return
@@ -330,7 +428,33 @@ export function WorkspaceExplorer({
       {query !== '' && <button type="button" title="清除搜索" onClick={() => { setQuery('') }}>×</button>}
     </label>
     {error !== '' && <div className={css.errorBanner}>{error}<button type="button" onClick={() => { setError('') }}>×</button></div>}
-    <div className={css.treePane}>
+    <div
+      className={css.treePane}
+      data-drop-active={dropActive || undefined}
+      onDragEnter={(event) => {
+        if (event.dataTransfer.types.includes('Files')) setDropActive(true)
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false)
+      }}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = event.dataTransfer.types.includes(
+          'application/x-worldline-workspace-entry',
+        ) ? 'move' : 'copy'
+      }}
+      onDrop={(event: ReactDragEvent<HTMLDivElement>) => {
+        event.preventDefault()
+        setDropActive(false)
+        if (selectedDirectory === undefined) return
+        const path = event.dataTransfer.getData('application/x-worldline-workspace-entry')
+        if (path !== '') onDropEntry({ name: path.replace(/^.*[\\/]/u, ''), path,
+          hidden: false, kind: 'file' }, selectedDirectory)
+        else if (event.dataTransfer.files.length > 0) {
+          void uploadFiles([...event.dataTransfer.files], selectedDirectory)
+        }
+      }}
+    >
       {cwd === undefined
         ? <div className={css.empty}>选择一个工作区后即可浏览和管理文件。</div>
         : query.trim() !== ''
@@ -355,7 +479,12 @@ export function WorkspaceExplorer({
           : <TreeLevel
             directory={cwd} depth={0} revision={revision} api={api}
             onMenu={onMenu} onPreview={onPreview} onDropEntry={onDropEntry}
+            onSelect={setSelected} onDropFiles={(files, directory) => {
+              void uploadFiles(files, directory)
+            }}
+            {...(selected === null ? {} : { selected: selected.path })}
           />}
+      {dropActive && <div className={css.dropHint}>拖到文件夹中即可复制到工作区</div>}
     </div>
     {menu !== null && <div className={css.menu} style={{ left: menu.x, top: menu.y }} role="menu" onClick={(event) => { event.stopPropagation() }}>
       {menuEntry?.kind === 'file' && <button type="button" role="menuitem" onClick={() => {
@@ -381,6 +510,12 @@ export function WorkspaceExplorer({
         showPrompt('新建文件夹', '', (name) => { run({ operation: 'create-directory', parent: menuParent, name }) })
         setMenu(null)
       }}>新建文件夹</button>}
+      {menuParent !== undefined && <button type="button" role="menuitem" onClick={() => {
+        setSelected(menuEntry ?? { name: menuParent.replace(/^.*[\\/]/u, ''), path: menuParent,
+          hidden: false, kind: 'directory' })
+        importInput.current?.click()
+        setMenu(null)
+      }}>导入文件…</button>}
       {menuEntry !== undefined && <><hr /><button type="button" role="menuitem" onClick={() => {
         showPrompt('重命名', menuEntry.name, (name) => { run({ operation: 'rename', path: menuEntry.path, name }) })
         setMenu(null)
@@ -403,14 +538,13 @@ export function WorkspaceExplorer({
         setMenu(null)
       }}>粘贴</button>}
       {menuEntry !== undefined && <><hr /><button type="button" role="menuitem" className={css.danger} onClick={() => {
-        setConfirmation({
-          title: '删除工作区项目',
-          message: `确定删除“${menuEntry.name}”吗？此操作无法撤销。`,
-          confirmLabel: '删除',
-          submit: () => { run({ operation: 'delete', path: menuEntry.path }) },
-        })
+        requestDelete(menuEntry)
         setMenu(null)
       }}><IconTrashOutline16 />删除</button></>}
+    </div>}
+    {clipboard !== null && <div className={css.clipboardStatus}>
+      {clipboard.operation === 'copy' ? '已复制' : '已剪切'}：{clipboard.entry.name}
+      <button type="button" aria-label="清除工作区剪贴板" onClick={() => { setClipboard(null) }}>×</button>
     </div>}
     {prompt !== null && <div className={css.modalBackdrop} onMouseDown={() => { setPrompt(null) }}><form className={css.prompt} onSubmit={(event) => { event.preventDefault(); const value = new FormData(event.currentTarget).get('value'); if (typeof value === 'string' && value.trim() !== '') prompt.submit(value.trim()); setPrompt(null) }} onMouseDown={(event) => { event.stopPropagation() }}><strong>{prompt.title}</strong><input name="value" autoFocus defaultValue={prompt.value} /><div><button type="button" onClick={() => { setPrompt(null) }}>取消</button><button type="submit">确定</button></div></form></div>}
     {confirmation !== null && <div className={css.modalBackdrop} onMouseDown={() => { setConfirmation(null) }}>

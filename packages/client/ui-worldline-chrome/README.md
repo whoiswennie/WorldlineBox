@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 Worldline-owned desktop chrome for workspaces, terminal sessions, runtime logs, toolchain status, the product status bar, and the desktop update surface. It fills stable UI Slots and delegates every privileged operation to authenticated Host remotes or the sandboxed Electron preload.
 
-The workspace explorer and editor share the workspace-tree capability, while terminal and runtime-log workbenches use the Host API carrier. The package contains presentation and client coordination only; it does not read the filesystem or spawn processes directly.
+The workspace explorer and editor share the workspace-tree capability, while terminal and runtime-log workbenches use the Host API carrier. The explorer exposes desktop-style create, folder, import, selection, keyboard clipboard, rename, delete, and drag-move workflows. External drops and imports send raw streams instead of using `FileReader`/Base64, so movie-sized files do not inherit a browser-memory limit. Media previews use opaque same-origin URLs and native HTTP Range seeking instead of Base64 RPC payloads, including movie-sized audio/video. The package contains presentation and client coordination only; it does not read the filesystem or spawn processes directly.
 
 On packaged Windows builds, the product status seat listens to the desktop update bridge. A newer GitHub manifest opens a release-notes dialog; dismissing it leaves a yellow status cue that reopens the dialog. Download progress is live, while hashing, durable installer caching, elevation, and installation remain owned by the Electron main process.
 

@@ -332,7 +332,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/agent-vault/agent-vault-local/src/index.ts:30`](../packages/agent-vault/agent-vault-local/src/index.ts)
+Source: [`packages/agent-vault/agent-vault-local/src/index.ts:31`](../packages/agent-vault/agent-vault-local/src/index.ts)
 
 <a id="deepseek-aidsh-attachment-local"></a>
 
@@ -469,10 +469,12 @@ Requires: `agents` · `agentVaults` · `subagents` · `webServer` · `systemProm
 export interface Config {
   /** Absolute frontend dist root that owns `/worldline-experience/*`. */
   frontendRoot?: string
+  /** Streaming resource-upload safety ceiling. Default: 128 GiB. */
+  maxResourceUploadBytes?: number
 }
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/index.ts:74`](../packages/client/ui-virtual-companion/src/index.ts)
+Source: [`packages/client/ui-virtual-companion/src/index.ts:81`](../packages/client/ui-virtual-companion/src/index.ts)
 
 <a id="deepseek-aidsh-code-runtime-worker-thread"></a>
 
@@ -932,10 +934,12 @@ export interface Config {
   maxSearchEntries: number
   /** Maximum matches returned by one Workspace search. */
   maxSearchResults: number
+  /** Maximum bytes accepted by one streamed external-file import. */
+  maxImportBytes: number
 }
 ```
 
-Source: [`packages/host/workspace-tree-local/src/index.ts:13`](../packages/host/workspace-tree-local/src/index.ts)
+Source: [`packages/host/workspace-tree-local/src/index.ts:18`](../packages/host/workspace-tree-local/src/index.ts)
 
 <a id="deepseek-aidsh-invariants"></a>
 
@@ -3482,7 +3486,6 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-session-projection` ([`packages/session/session-projection/src/index.ts`](../packages/session/session-projection/src/index.ts))
 - `@deepseek-ai/dsh-session-stats` — requires `sessionProjections` ([`packages/session/session-stats/src/index.ts`](../packages/session/session-stats/src/index.ts))
 - `@deepseek-ai/dsh-skill-agent-vault` — requires `skills` ([`packages/agent-vault/skill-agent-vault/src/index.ts`](../packages/agent-vault/skill-agent-vault/src/index.ts))
-- `@deepseek-ai/dsh-skill-badge` — requires `skills` ([`packages/skill/skill-badge/src/index.ts`](../packages/skill/skill-badge/src/index.ts))
 - `@deepseek-ai/dsh-storage` ([`packages/storage/storage/src/index.ts`](../packages/storage/storage/src/index.ts))
 - `@deepseek-ai/dsh-subagent` ([`packages/subagent/subagent/src/index.ts`](../packages/subagent/subagent/src/index.ts))
 - `@deepseek-ai/dsh-subprocess-local` ([`packages/subprocess/subprocess-local/src/index.ts`](../packages/subprocess/subprocess-local/src/index.ts))

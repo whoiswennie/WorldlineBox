@@ -1,13 +1,12 @@
 /**
- * downloads domain contract: host-only download surfaces — the GET-download
- * channel family, the mirror of the SSE-stream `events` domain. No wire
- * envelope: the carrier's GET routes answer these directly, and the browser
- * `IApiClient` never exposes them.
+ * raw-transfer domain contract: Host-only download and upload surfaces, the
+ * mirror of the SSE-stream `events` domain. No wire envelope: carrier routes
+ * answer these directly, and the browser `IApiClient` never exposes them.
  */
 
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
-/** Host-only download surfaces (no wire envelope; absent from IApiClient). */
+/** Host-only raw-transfer surfaces (no wire envelope; absent from IApiClient). */
 export interface DownloadsApi {
   /**
    * Stream one session-log ZIP — the root artifact verbatim plus each subagent
@@ -20,6 +19,29 @@ export interface DownloadsApi {
    */
   sessionLog(
     request: { sessionId: SessionId; includeDescendants?: boolean },
+    signal: AbortSignal,
+  ): Promise<Response>
+  /**
+   * Stream a media file through an opaque preview grant. Single HTTP byte
+   * ranges are supported so native audio/video controls can seek efficiently.
+   * @param request - opaque grant plus optional Range/If-Range headers.
+   * @param signal - cancellation propagated from the client connection.
+   * @returns a full, partial, or range-error media response.
+   */
+  workspaceFile(
+    request: { token: string; range?: string; ifRange?: string },
+    signal: AbortSignal,
+  ): Promise<Response>
+  /**
+   * Stream an external file into one registered Workspace directory.
+   * @param request - target directory, leaf name, and optional declared length.
+   * @param source - raw request bytes; never materialized as Base64 or JSON.
+   * @param signal - cancellation propagated from the client connection.
+   * @returns JSON containing the created path and persisted byte count.
+   */
+  workspaceFileUpload(
+    request: { parent: string; name: string; expectedBytes?: number },
+    source: AsyncIterable<Uint8Array>,
     signal: AbortSignal,
   ): Promise<Response>
 }

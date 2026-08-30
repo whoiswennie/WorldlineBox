@@ -383,6 +383,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'Host service contract for portable, file-native Agent Vaults.',
     methods: [
       {
+        signature: 'abstract subscribeChanges(listener: (change: AgentVaultChange) => void): () => void',
+        description: 'Observe durable semantic file changes. Consumers must re-read the Markdown source after a signal.',
+        parameters: [{ name: 'listener', description: 'Called after an internal write or a watched external filesystem change.' }],
+        returns: 'Subscription disposer.',
+      },
+      {
         signature: 'abstract listAgents(): Promise<readonly AgentVaultManifest[]>',
         description: 'List every Vault manifest.',
         parameters: [],
@@ -411,6 +417,36 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Move a Vault to recoverable trash.',
         parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'context', description: 'Authorized mutation context.' }],
         returns: 'Completion.',
+      },
+      {
+        signature: 'abstract listTrash(): Promise<readonly AgentVaultTrashEntry[]>',
+        description: 'List complete Vault snapshots in recoverable account trash.',
+        parameters: [],
+        returns: 'Trash entries newest first.',
+      },
+      {
+        signature: 'abstract trashAppearanceContent(trashId: string): Promise<VaultResourceContent>',
+        description: 'Resolve only the designated profile appearance from one trashed Vault.',
+        parameters: [{ name: 'trashId', description: 'Opaque trash entry identity.' }],
+        returns: 'Host-only image delivery target.',
+      },
+      {
+        signature: 'abstract restoreTrash(trashId: string): Promise<AgentVaultManifest>',
+        description: 'Restore one trashed Vault without overwriting an active Vault.',
+        parameters: [{ name: 'trashId', description: 'Opaque trash entry identity.' }],
+        returns: 'Restored manifest.',
+      },
+      {
+        signature: 'abstract deleteTrash(trashId: string): Promise<void>',
+        description: 'Permanently remove one trashed Vault.',
+        parameters: [{ name: 'trashId', description: 'Opaque trash entry identity.' }],
+        returns: 'Completion.',
+      },
+      {
+        signature: 'abstract emptyTrash(): Promise<number>',
+        description: 'Permanently remove every trashed Vault.',
+        parameters: [],
+        returns: 'Number of removed entries.',
       },
       {
         signature: 'abstract manifest(agentId: string): Promise<AgentVaultManifest>',
@@ -449,8 +485,20 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'Persisted document.',
       },
       {
+        signature: 'abstract createDirectory(agentId: string, uri: VaultUri, context: VaultWriteContext): Promise<VaultEntry>',
+        description: 'Create one portable directory.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'uri', description: 'Directory URI.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Created directory.',
+      },
+      {
+        signature: 'abstract copy(agentId: string, source: VaultUri, target: VaultUri, context: VaultWriteContext): Promise<VaultEntry>',
+        description: 'Copy one document or directory inside its semantic domain.',
+        parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'source', description: 'Source URI.' }, { name: 'target', description: 'Target URI.' }, { name: 'context', description: 'Authorized mutation context.' }],
+        returns: 'Copied entry.',
+      },
+      {
         signature: 'abstract move(agentId: string, source: VaultUri, target: VaultUri, context: VaultWriteContext): Promise<VaultEntry>',
-        description: 'Move one document.',
+        description: 'Move one document or directory inside its semantic domain.',
         parameters: [{ name: 'agentId', description: 'Vault identity.' }, { name: 'source', description: 'Source URI.' }, { name: 'target', description: 'Target URI.' }, { name: 'context', description: 'Authorized mutation context.' }],
         returns: 'Moved entry.',
       },
@@ -2745,6 +2793,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'preview metadata and optional encoded content.',
       },
       {
+        signature: 'abstract read( workspaceRoot: string, path: string, options: WorkspaceTreeReadOptions, signal?: AbortSignal, ): Promise<ReadableStream<Uint8Array>>',
+        description: 'Stream a whole file or one inclusive byte window below a registered Workspace. The provider revalidates the path so a media URL cannot escape its Workspace.',
+        parameters: [{ name: 'workspaceRoot', description: 'canonical Workspace root.' }, { name: 'path', description: 'file path previously authorized by the API gateway.' }, { name: 'options', description: 'optional inclusive byte window.' }, { name: 'signal', description: 'cancellation propagated from the HTTP connection.' }],
+        returns: 'a backpressure-aware byte stream.',
+      },
+      {
+        signature: 'abstract importFile( workspaceRoot: string, parent: string, name: string, source: AsyncIterable<Uint8Array>, expectedBytes?: number, signal?: AbortSignal, ): Promise<WorkspaceTreeImportResult>',
+        description: 'Import an external file without buffering it inside an RPC envelope.',
+        parameters: [{ name: 'workspaceRoot', description: 'canonical Workspace root.' }, { name: 'parent', description: 'target directory below the Workspace.' }, { name: 'name', description: 'validated leaf filename.' }, { name: 'source', description: 'backpressure-aware source bytes.' }, { name: 'expectedBytes', description: 'optional declared source length.' }, { name: 'signal', description: 'cancellation propagated from the upload connection.' }],
+        returns: 'the created file path and persisted byte count.',
+      },
+      {
         signature: 'abstract mutate(workspaceRoot: string, mutation: WorkspaceTreeMutation): Promise<{ path?: string }>',
         description: 'Apply one validated mutation below a registered Workspace root.',
         parameters: [{ name: 'workspaceRoot', description: 'canonical Workspace root.' }, { name: 'mutation', description: 'requested create, rename, move, delete, or write operation.' }],
@@ -3293,12 +3353,20 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type AgentStatus = \'idle\' | \'running\';',
   },
   {
+    name: 'AgentVaultChange',
+    declaration: 'export interface AgentVaultChange {\n    readonly agentId: string;\n    readonly paths: readonly string[];\n}',
+  },
+  {
     name: 'AgentVaultDomain',
     declaration: 'export type AgentVaultDomain = typeof AGENT_VAULT_DOMAINS[number];',
   },
   {
     name: 'AgentVaultManifest',
     declaration: 'export interface AgentVaultManifest {\n    readonly format: \'worldline-agent-vault\';\n    readonly formatVersion: 1;\n    readonly agent: {\n        readonly id: string;\n        readonly name: string;\n    };\n    readonly createdAt: number;\n    readonly updatedAt: number;\n}',
+  },
+  {
+    name: 'AgentVaultTrashEntry',
+    declaration: 'export interface AgentVaultTrashEntry {\n    readonly id: string;\n    readonly agentId: string;\n    readonly name: string;\n    readonly deletedAt: number;\n    readonly createdAt: number;\n    readonly updatedAt: number;\n    readonly restorable: boolean;\n    readonly hasAvatar: boolean;\n}',
   },
   {
     name: 'AllowedModelRoute',
@@ -3778,7 +3846,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'DownloadsApi',
-    declaration: 'export interface DownloadsApi {\n    sessionLog(request: {\n        sessionId: SessionId;\n        includeDescendants?: boolean;\n    }, signal: AbortSignal): Promise<Response>;\n}',
+    declaration: 'export interface DownloadsApi {\n    sessionLog(request: {\n        sessionId: SessionId;\n        includeDescendants?: boolean;\n    }, signal: AbortSignal): Promise<Response>;\n    workspaceFile(request: {\n        token: string;\n        range?: string;\n        ifRange?: string;\n    }, signal: AbortSignal): Promise<Response>;\n    workspaceFileUpload(request: {\n        parent: string;\n        name: string;\n        expectedBytes?: number;\n    }, source: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<Response>;\n}',
   },
   {
     name: 'DynamicCordisPackage',
@@ -5653,16 +5721,24 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface WorkspaceTreeEntry {\n    name: string;\n    path: string;\n    hidden: boolean;\n    kind: \'directory\' | \'file\';\n    size?: number;\n    modifiedAt?: number;\n}',
   },
   {
+    name: 'WorkspaceTreeImportResult',
+    declaration: 'export interface WorkspaceTreeImportResult {\n    path: string;\n    bytes: number;\n}',
+  },
+  {
     name: 'WorkspaceTreeListing',
     declaration: 'export interface WorkspaceTreeListing {\n    path: string;\n    entries: WorkspaceTreeEntry[];\n    truncated: boolean;\n}',
   },
   {
     name: 'WorkspaceTreeMutation',
-    declaration: 'export type WorkspaceTreeMutation = {\n    operation: \'create-file\';\n    parent: string;\n    name: string;\n    content?: string;\n} | {\n    operation: \'create-directory\';\n    parent: string;\n    name: string;\n} | {\n    operation: \'rename\';\n    path: string;\n    name: string;\n} | {\n    operation: \'copy\';\n    path: string;\n    targetDirectory: string;\n} | {\n    operation: \'move\';\n    path: string;\n    targetDirectory: string;\n} | {\n    operation: \'delete\';\n    path: string;\n} | {\n    operation: \'clear-workspace\';\n    path: string;\n} | {\n    operation: \'write\';\n    path: string;\n    content: string;\n};',
+    declaration: 'export type WorkspaceTreeMutation = {\n    operation: \'create-file\';\n    parent: string;\n    name: string;\n    content?: string;\n    contentEncoding?: \'utf8\' | \'base64\';\n} | {\n    operation: \'create-directory\';\n    parent: string;\n    name: string;\n} | {\n    operation: \'rename\';\n    path: string;\n    name: string;\n} | {\n    operation: \'copy\';\n    path: string;\n    targetDirectory: string;\n} | {\n    operation: \'move\';\n    path: string;\n    targetDirectory: string;\n} | {\n    operation: \'delete\';\n    path: string;\n} | {\n    operation: \'clear-workspace\';\n    path: string;\n} | {\n    operation: \'write\';\n    path: string;\n    content: string;\n};',
   },
   {
     name: 'WorkspaceTreePreview',
-    declaration: 'export interface WorkspaceTreePreview {\n    path: string;\n    name: string;\n    size: number;\n    modifiedAt: number;\n    kind: \'text\' | \'image\' | \'audio\' | \'video\' | \'binary\';\n    mimeType: string;\n    encoding?: \'utf8\' | \'base64\';\n    content?: string;\n    tooLarge: boolean;\n}',
+    declaration: 'export interface WorkspaceTreePreview {\n    path: string;\n    name: string;\n    size: number;\n    modifiedAt: number;\n    kind: \'text\' | \'image\' | \'audio\' | \'video\' | \'binary\';\n    mimeType: string;\n    encoding?: \'utf8\' | \'base64\';\n    content?: string;\n    streamUrl?: string;\n    tooLarge: boolean;\n}',
+  },
+  {
+    name: 'WorkspaceTreeReadOptions',
+    declaration: 'export interface WorkspaceTreeReadOptions {\n    start?: number;\n    end?: number;\n}',
   },
   {
     name: 'WorkspaceTreeSearchListing',

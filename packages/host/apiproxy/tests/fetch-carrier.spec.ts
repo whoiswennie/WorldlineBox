@@ -380,6 +380,12 @@ function fakeApi(overrides: Partial<{ muxFrames: MuxFrame[]; hostFrames: HostFra
       async sessionLog() {
         return new Response('stub', { status: 404 })
       },
+      async workspaceFile() {
+        return new Response('stub', { status: 404 })
+      },
+      async workspaceFileUpload() {
+        return new Response('stub', { status: 404 })
+      },
     },
   }
 }
@@ -673,6 +679,44 @@ describe('unary round trip (handler ⇄ client, no network)', () => {
 
 describe('handler carrier-layer statuses', () => {
   const handler = toFetchHandler(fakeApi())
+
+  it('forwards opaque media grants and byte headers without an RPC envelope', async () => {
+    const api = fakeApi()
+    const workspaceFile = vi.fn(async () => new Response(Uint8Array.from([2, 3]), {
+      status: 206,
+      headers: { 'content-range': 'bytes 2-3/8', 'content-type': 'video/mp4' },
+    }))
+    api.downloads.workspaceFile = workspaceFile
+    const media = toFetchHandler(api)
+    const token = '00000000-0000-4000-8000-000000000001'
+    const response = await media.fetch(new Request(`http://x/api/workspace.media?token=${token}`, {
+      headers: { range: 'bytes=2-3', 'if-range': '"8-1"' },
+    }))
+    expect(response.status).toBe(206)
+    expect(await response.arrayBuffer()).toEqual(Uint8Array.from([2, 3]).buffer)
+    expect(workspaceFile).toHaveBeenCalledWith({
+      token, range: 'bytes=2-3', ifRange: '"8-1"',
+    }, expect.any(AbortSignal))
+  })
+
+  it('forwards streamed Workspace uploads without a JSON or Base64 envelope', async () => {
+    const api = fakeApi()
+    const workspaceFileUpload = vi.fn(async (_request, source: AsyncIterable<Uint8Array>) => {
+      const chunks: number[] = []
+      for await (const chunk of source) chunks.push(...chunk)
+      return Response.json({ bytes: chunks.length }, { status: 201 })
+    })
+    api.downloads.workspaceFileUpload = workspaceFileUpload
+    const upload = toFetchHandler(api)
+    const response = await upload.fetch(new Request(
+      'http://x/api/workspace.upload?parent=%2Fworkspace&name=movie.mp4&expectedBytes=4',
+      { method: 'PUT', body: Uint8Array.from([0, 1, 2, 3]) },
+    ))
+    expect(response.status).toBe(201)
+    expect(workspaceFileUpload).toHaveBeenCalledWith({
+      parent: '/workspace', name: 'movie.mp4', expectedBytes: 4,
+    }, expect.anything(), expect.any(AbortSignal))
+  })
 
   it('404s unknown paths and non-POST non-stream methods', async () => {
     expect((await handler.fetch(new Request('http://x/other', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }))).status).toBe(404)

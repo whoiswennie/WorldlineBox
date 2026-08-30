@@ -170,7 +170,6 @@ const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
     'resources/zstd-dictionary.bin',
     'resources/sql/**/*.sql',
   ],
-  '@deepseek-ai/dsh-skill-badge': ['assets'],
   // Agent Vault methodology is loaded progressively from immutable package resources.
   '@deepseek-ai/dsh-skill-agent-vault': ['assets'],
   '@deepseek-ai/dsh-subprocess-local': ['scripts/ensure-spawn-helper.mjs'],

@@ -246,23 +246,29 @@ export function FunctionalityPage(props: FunctionalityPageProps): ReactNode {
   return <><main className={css.page} aria-label={props.t('title')}>
     <div className={css.shell}>
       <header className={css.header}>
-        <div>
+        <div className={css.heroCopy}>
+          <span className={css.kicker}>WORLDLINE CAPABILITY DECK</span>
           <div className={css.titleLine}>
             <h1>{props.t('title')}</h1>
             <span className={css.localBadge}>{props.t('localOnly')}</span>
           </div>
           <p>{props.t('intro')}</p>
+          <div className={css.liveStatus} aria-label={props.t('liveUpdates')}>
+            <span aria-hidden="true" />{props.t('liveUpdates')}
+          </div>
         </div>
-        <div className={css.liveStatus} aria-label={props.t('liveUpdates')}>
-          <span aria-hidden="true" />{props.t('liveUpdates')}
+        <div className={css.heroEmblem} aria-hidden="true">
+          <span>✦</span>
+          <strong>{enabledPlugins + enabledSkills}</strong>
+          <small>ACTIVE</small>
         </div>
       </header>
 
       <section className={css.summary} aria-label={props.t('summary')}>
-        <div><strong>{snapshot?.entries.length ?? '—'}</strong><span>{props.t('pluginCount')}</span></div>
-        <div><strong>{enabledPlugins}</strong><span>{props.t('enabledPlugins')}</span></div>
-        <div><strong>{snapshot?.skills.length ?? '—'}</strong><span>{props.t('skillCount')}</span></div>
-        <div><strong>{enabledSkills}</strong><span>{props.t('enabledSkills')}</span></div>
+        <div data-tone="sky"><i aria-hidden="true">◇</i><strong>{snapshot?.entries.length ?? '—'}</strong><span>{props.t('pluginCount')}</span></div>
+        <div data-tone="mint"><i aria-hidden="true">✦</i><strong>{enabledPlugins}</strong><span>{props.t('enabledPlugins')}</span></div>
+        <div data-tone="violet"><i aria-hidden="true">⌘</i><strong>{snapshot?.skills.length ?? '—'}</strong><span>{props.t('skillCount')}</span></div>
+        <div data-tone="rose"><i aria-hidden="true">♡</i><strong>{enabledSkills}</strong><span>{props.t('enabledSkills')}</span></div>
       </section>
 
       <div className={css.toolbar}>
@@ -312,6 +318,14 @@ export function FunctionalityPage(props: FunctionalityPageProps): ReactNode {
         <p>{props.t('error')}</p>
         <code>{state.message}</code>
         <button type="button" onClick={() => { void load(true) }}>{props.t('retry')}</button>
+      </div> : null}
+
+      {snapshot !== undefined ? <div className={css.deckHeading}>
+        <div>
+          <span>{tab === 'plugins' ? 'PLUGIN COLLECTION' : 'SKILL COLLECTION'}</span>
+          <h2>{props.t(tab === 'plugins' ? 'plugins' : 'skills')}</h2>
+        </div>
+        <small>{visibleCount} / {totalCount}</small>
       </div> : null}
 
       {snapshot !== undefined && tab === 'plugins' ? <section

@@ -98,8 +98,6 @@ flowchart LR
   cfg --> plugin_worldline_base_skill
   plugin_worldline_base_skill_filesystem["skill-filesystem<br/>@deepseek-ai/dsh-skill-filesystem"]
   cfg --> plugin_worldline_base_skill_filesystem
-  plugin_worldline_base_skill_badge["skill-badge<br/>@deepseek-ai/dsh-skill-badge"]
-  cfg --> plugin_worldline_base_skill_badge
   plugin_worldline_base_worldline_video["worldline-video<br/>@deepseek-ai/dsh-worldline-video"]
   cfg --> plugin_worldline_base_worldline_video
   plugin_worldline_base_tool_skill["tool-skill<br/>@deepseek-ai/dsh-tool-skill"]
@@ -227,7 +225,6 @@ flowchart LR
 | `agent-instructions` | `@deepseek-ai/dsh-agent-instructions` |
 | `skill` | `@deepseek-ai/dsh-skill` |
 | `skill-filesystem` | `@deepseek-ai/dsh-skill-filesystem` |
-| `skill-badge` | `@deepseek-ai/dsh-skill-badge` |
 | `worldline-video` | `@deepseek-ai/dsh-worldline-video` |
 | `tool-skill` | `@deepseek-ai/dsh-tool-skill` |
 | `commands` | `@deepseek-ai/dsh-commands` |

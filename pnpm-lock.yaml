@@ -1634,12 +1634,12 @@ importers:
       '@deepseek-ai/dsh-llm':
         specifier: workspace:^
         version: link:../../llm/llm
-      '@deepseek-ai/dsh-session':
-        specifier: workspace:^
-        version: link:../../core/session
       '@deepseek-ai/dsh-scope':
         specifier: workspace:^
         version: link:../../core/scope
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
       '@deepseek-ai/dsh-system-prompt':
         specifier: workspace:^
         version: link:../../core/system-prompt
@@ -1821,9 +1821,6 @@ importers:
       '@deepseek-ai/dsh-skill-agent-vault':
         specifier: workspace:^
         version: link:../../agent-vault/skill-agent-vault
-      '@deepseek-ai/dsh-skill-badge':
-        specifier: workspace:^
-        version: link:../../skill/skill-badge
       '@deepseek-ai/dsh-skill-filesystem':
         specifier: workspace:^
         version: link:../../skill/skill-filesystem
@@ -8493,18 +8490,6 @@ importers:
       '@deepseek-ai/dsh-scope':
         specifier: workspace:^
         version: link:../../core/scope
-
-  packages/skill/skill-badge:
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: workspace:^
-        version: link:../../../vendor/cordis
-      '@deepseek-ai/dsh-invariants':
-        specifier: workspace:^
-        version: link:../../runtime-diagnostics/invariants
-      '@deepseek-ai/dsh-skill':
-        specifier: workspace:^
-        version: link:../skill
 
   packages/skill/skill-filesystem:
     dependencies:

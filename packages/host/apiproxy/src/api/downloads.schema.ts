@@ -24,3 +24,19 @@ export const sessionLogQuerySchema = z
     sessionId: query.sessionId,
     ...(query.includeDescendants === 'true' ? { includeDescendants: true } : {}),
   })) satisfies z.ZodType<Parameters<DownloadsApi['sessionLog']>[0]>
+
+/** workspace.media query params → the opaque media grant request. */
+export const workspaceFileQuerySchema = z.object({
+  token: z.uuid(),
+}) satisfies z.ZodType<Pick<Parameters<DownloadsApi['workspaceFile']>[0], 'token'>>
+
+/** workspace.upload query params → one streamed Workspace import request. */
+export const workspaceFileUploadQuerySchema = z.object({
+  parent: z.string().min(1),
+  name: z.string().trim().min(1).max(255),
+  expectedBytes: z.string().regex(/^\d+$/u).optional(),
+}).transform(query => ({
+  parent: query.parent,
+  name: query.name,
+  ...(query.expectedBytes === undefined ? {} : { expectedBytes: Number(query.expectedBytes) }),
+})) satisfies z.ZodType<Parameters<DownloadsApi['workspaceFileUpload']>[0]>

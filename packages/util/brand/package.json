@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-brand",
   "description": "Type-only Branded<B> nominal-typing primitive for the Worldline",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publishConfig": {
     "access": "public"
   },

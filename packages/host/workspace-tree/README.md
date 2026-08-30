@@ -2,9 +2,9 @@
 
 English | [中文](README.zh.md)
 
-Replaceable Host service definition for the product workspace explorer. It defines bounded directory listings, filename search results, typed previews, validated mutations, and the `workspace-tree/changed` notification.
+Replaceable Host service definition for the product workspace explorer. It defines bounded directory listings, filename search results, typed previews, validated mutations, streamed external-file imports, range-readable file streams, and the `workspace-tree/changed` notification.
 
-Providers must treat the registered workspace root as the authority boundary and preserve cancellation for reads and searches. This package contains no filesystem implementation.
+Providers must treat the registered workspace root as the authority boundary and preserve cancellation for reads, imports, streams, and searches. Import bytes remain outside the JSON RPC envelope, and media metadata stays separate from byte delivery, so movie-sized files do not require whole-file browser or Host memory. This package contains no filesystem implementation.
 
 ## Model Experience
 

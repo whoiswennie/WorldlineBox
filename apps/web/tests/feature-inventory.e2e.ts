@@ -34,15 +34,15 @@ describe('web e2e: composed Feature inventory', () => {
 
     expect(await page.getByRole('button', { name: /刷新/u }).count()).toBe(0)
     await page.getByRole('tab', { name: /技能包/u }).click()
-    const badge = page.getByText('/worldline-badge', { exact: true })
-    await badge.waitFor({ timeout: 10_000 })
-    const card = badge.locator('xpath=ancestor::article')
+    const creation = page.getByText('/companion-creation', { exact: true })
+    await creation.waitFor({ timeout: 10_000 })
+    const card = creation.locator('xpath=ancestor::article')
     expect(await card.getByText('应用内置', { exact: true }).count()).toBe(1)
     expect(await card.getByRole('button', { name: '打开目录', exact: true }).count()).toBe(1)
     expect(await card.getByRole('button', { name: '删除', exact: true }).count()).toBe(0)
 
-    await page.getByRole('searchbox').fill('wlbadge')
-    await expect.poll(() => badge.count(), { timeout: 2_000 }).toBe(1)
+    await page.getByRole('searchbox').fill('companion')
+    await expect.poll(() => creation.count(), { timeout: 2_000 }).toBe(1)
     expect(tripwire.pageErrors).toEqual([])
   }, 60_000)
 

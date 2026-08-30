@@ -145,7 +145,6 @@ const SENTENCE_MODEL_EXPERIENCE: Readonly<Record<string, SentenceContract>> = {
   'packages/session/session-telemetry-otel': { kind: 'none', reason: 'The backend forwards seam records into the OTel SDK pipeline and registers nothing model-facing.' },
   'packages/identity/anonymous-user-id': { kind: 'none', reason: 'The shared identifier reaches DeepSeek only as model-hidden HTTP metadata; it registers nothing model-facing.' },
   'packages/skill/skill': { kind: 'indirect', reason: 'The provider registry delegates model rendering to worldline-tool-skill.' },
-  'packages/skill/skill-badge': { kind: 'indirect', reason: 'The bundled provider delegates model rendering to worldline-tool-skill.' },
   'packages/skill/skill-filesystem': { kind: 'indirect', reason: 'The provider backend delegates model rendering to worldline-tool-skill.' },
   'packages/spill/spill': { kind: 'indirect', reason: 'The storage seam delegates model rendering to spill consumers.' },
   'packages/spill/spill-local': { kind: 'indirect', reason: 'The storage backend delegates model rendering to spill consumers.' },

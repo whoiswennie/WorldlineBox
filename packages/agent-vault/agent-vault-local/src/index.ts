@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, createReadStream, watch, type FSWatcher } from 'node:fs'
 import {
-  access, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile,
+  access, copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile,
 } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -12,7 +12,8 @@ import { writeFileAtomic, withFileLock } from '@deepseek-ai/dsh-atomic-write'
 import { resolveWorldlineHome } from '@deepseek-ai/dsh-home-paths'
 import AgentVaultService, { AgentVaultError } from '@deepseek-ai/dsh-agent-vault'
 import type {
-  AgentVaultDomain, AgentVaultManifest, CaptureMemoryInput, ConsolidationJob, MemoryStage,
+  AgentVaultChange, AgentVaultDomain, AgentVaultManifest, AgentVaultTrashEntry, CaptureMemoryInput,
+  ConsolidationJob, MemoryStage,
   RecallQuery, RecallResult, ResourcePage, ResourceSearchInput, SelfModule, SelfSnapshot,
   VaultDocument, VaultEntry, VaultPackageReport, VaultPolicy, VaultResource, VaultUri,
   VaultResourceDraft, VaultWriteContext,
@@ -38,6 +39,7 @@ const DEFAULT_POLICY: VaultPolicy = Object.freeze({
   userEditable: true,
   fullyFrozen: false,
 })
+const PROFILE_APPEARANCE_ID = 'profile-appearance'
 
 const SELF_MODULES: readonly Omit<SelfModule, 'updatedAt' | 'revision'>[] = [
   { id: 'identity', title: '核心身份', enabled: true, autonomous: false, locked: true, stability: 'core', summary: '', details: [] },
@@ -67,12 +69,15 @@ const exists = async (path: string): Promise<boolean> => access(path).then(() =>
 const stableId = (agentId: string, path: string): string => sha256(`${agentId}\0${path}`).slice(0, 32)
 
 function serializeSelf(module: Omit<SelfModule, 'updatedAt' | 'revision'>): string {
+  const details = module.details.flatMap((value) => {
+    const [first = '', ...continuation] = value.replaceAll('\r\n', '\n').split('\n')
+    return [`- ${first}`, ...continuation.map(line => `  ${line}`)]
+  })
   return [
     '---', `id: ${JSON.stringify(module.id)}`, `title: ${JSON.stringify(module.title)}`,
     `enabled: ${String(module.enabled)}`, `autonomous: ${String(module.autonomous)}`,
     `locked: ${String(module.locked)}`, `stability: ${module.stability}`,
-    `summary: ${JSON.stringify(module.summary)}`, `details: ${JSON.stringify(module.details)}`,
-    '---', '', `# ${module.title}`, '', module.summary, '', ...module.details.map(value => `- ${value}`), '',
+    '---', '', `# ${module.title}`, '', module.summary, '', ...details, '',
   ].join('\n')
 }
 
@@ -95,14 +100,66 @@ function stringList(content: string, key: string): string[] {
   } catch { return [] }
 }
 
+function selfBody(content: string): string {
+  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/u.exec(content)
+  return frontmatter === null ? content : content.slice(frontmatter[0].length)
+}
+
+function selfBodyFields(content: string): { title?: string; summary: string; details: string[] } | undefined {
+  const body = selfBody(content)
+  if (body.trim() === '') return undefined
+  const lines = body.replaceAll('\r\n', '\n').split('\n')
+  const title = lines.find(line => /^#\s+\S/u.test(line))?.replace(/^#\s+/u, '').trim()
+  const details: string[] = []
+  const summaryParagraphs: string[] = []
+  let summaryLines: string[] = []
+  let currentDetail: number | undefined
+  let detailBreak = false
+  let fenced = false
+  const flushSummary = (): void => {
+    if (summaryLines.length > 0) summaryParagraphs.push(summaryLines.join(' '))
+    summaryLines = []
+  }
+  for (const line of lines) {
+    const value = line.trim()
+    if (/^```/u.test(value)) { flushSummary(); fenced = !fenced; continue }
+    if (fenced) continue
+    if (/^#{1,6}\s+/u.test(value)) { flushSummary(); continue }
+    const item = /^\s*[-*+]\s+(.+?)\s*$/u.exec(line)?.[1]
+    if (item !== undefined) {
+      flushSummary()
+      details.push(item)
+      currentDetail = details.length - 1
+      detailBreak = false
+      continue
+    }
+    if (value === '') {
+      if (currentDetail === undefined) flushSummary()
+      else detailBreak = true
+      continue
+    }
+    if (currentDetail !== undefined) {
+      const separator = detailBreak ? '\n\n' : '\n'
+      details[currentDetail] = `${details[currentDetail] ?? ''}${separator}${value}`
+      detailBreak = false
+    } else {
+      summaryLines.push(value)
+    }
+  }
+  flushSummary()
+  return { ...(title === undefined ? {} : { title }), summary: summaryParagraphs.join('\n\n'), details }
+}
+
 function parseSelf(content: string, fallbackId: string, updatedAt: number): SelfModule {
   const id = stringField(content, 'id', fallbackId)
   const stability = stringField(content, 'stability', 'stable')
+  const body = selfBodyFields(content)
   return {
-    id, title: stringField(content, 'title', id), enabled: bool(content, 'enabled', true),
+    id, title: body?.title ?? stringField(content, 'title', id), enabled: bool(content, 'enabled', true),
     autonomous: bool(content, 'autonomous', false), locked: bool(content, 'locked', false),
     stability: stability === 'core' || stability === 'dynamic' ? stability : 'stable',
-    summary: stringField(content, 'summary'), details: stringList(content, 'details'), updatedAt,
+    summary: body?.summary ?? stringField(content, 'summary'),
+    details: body?.details ?? stringList(content, 'details'), updatedAt,
     revision: revisionOf(content),
   }
 }
@@ -130,10 +187,12 @@ export class LocalAgentVaultService extends AgentVaultService {
   private readonly mutations = new Map<string, Promise<void>>()
   private readonly watchers = new Map<string, FSWatcher>()
   private readonly watchTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly watchedPaths = new Map<string, Set<string>>()
   private readonly suppressWatchUntil = new Map<string, number>()
   private readonly leases = new Map<string, { agentId: string; uri: VaultUri; path: string; before: string }>()
   private readonly runtimeBindings = new Map<string, string>()
   private readonly recallUsage = new Map<string, Map<string, RecallUsageEntry>>()
+  private readonly changeListeners = new Set<(change: AgentVaultChange) => void>()
   private readonly logger: Context['logger']
 
   constructor(ctx: Context, config: Config = {}) {
@@ -151,7 +210,19 @@ export class LocalAgentVaultService extends AgentVaultService {
     this.watchers.clear(); this.watchTimers.clear(); this.indexes.clear(); this.runtimeBindings.clear()
     this.leases.clear()
     this.recallUsage.clear()
-    this.suppressWatchUntil.clear(); this.mutations.clear()
+    this.suppressWatchUntil.clear(); this.watchedPaths.clear(); this.changeListeners.clear(); this.mutations.clear()
+  }
+
+  subscribeChanges(listener: (change: AgentVaultChange) => void): () => void {
+    this.changeListeners.add(listener)
+    return () => { this.changeListeners.delete(listener) }
+  }
+
+  private emitChange(agentId: string, paths: readonly string[]): void {
+    const change = { agentId, paths } satisfies AgentVaultChange
+    for (const listener of this.changeListeners) {
+      try { listener(change) } catch (error) { this.logger.warn(error) }
+    }
   }
 
   /**
@@ -204,10 +275,16 @@ export class LocalAgentVaultService extends AgentVaultService {
         const path = (filename ?? '').replaceAll('\\', '/')
         if (path.startsWith('.system/') || path.startsWith('history/')) return
         if ((this.suppressWatchUntil.get(agentId) ?? 0) >= Date.now()) return
+        const paths = this.watchedPaths.get(agentId) ?? new Set<string>()
+        if (path !== '') paths.add(path)
+        this.watchedPaths.set(agentId, paths)
         const current = this.watchTimers.get(agentId)
         if (current !== undefined) clearTimeout(current)
         this.watchTimers.set(agentId, setTimeout(() => {
           this.watchTimers.delete(agentId)
+          const changed = [...(this.watchedPaths.get(agentId) ?? [])]
+          this.watchedPaths.delete(agentId)
+          this.emitChange(agentId, changed)
           void this.rebuildIndex(agentId).catch((error: unknown) => { this.logger.warn(error) })
         }, 80))
       })
@@ -225,7 +302,7 @@ export class LocalAgentVaultService extends AgentVaultService {
     await previous
     this.suppressWatchUntil.set(agentId, Number.POSITIVE_INFINITY)
     try { return await operation() } finally {
-      this.suppressWatchUntil.set(agentId, Date.now() + 250)
+      this.suppressWatchUntil.delete(agentId)
       release()
       if (this.mutations.get(agentId) === gate) this.mutations.delete(agentId)
     }
@@ -292,6 +369,16 @@ export class LocalAgentVaultService extends AgentVaultService {
         const value = module.id === 'identity' ? { ...module, summary: `我是${name}。` } : module
         await writeFileAtomic(join(root, 'self', `${module.id}.md`), serializeSelf(value), { mode: 0o600, dirMode: 0o700 })
       }
+      await writeFileAtomic(join(root, 'memory', 'long', 'index.md'), [
+        '---', `title: ${JSON.stringify(`${name} 的长期记忆`)}`, 'tags: ["记忆", "索引"]',
+        `summary: ${JSON.stringify('尚未形成稳定长期记忆。')}`, 'sources: []', '---', '',
+        `# ${name} 的长期记忆`, '', '此目录由该伙伴的 Agent Vault 独立管理。', '',
+      ].join('\n'), { mode: 0o600, dirMode: 0o700 })
+      await writeFileAtomic(join(root, 'procedures', 'cards', 'index.md'), [
+        '---', `title: ${JSON.stringify(`${name} 的能力卡`)}`, 'tags: ["能力", "索引"]',
+        `summary: ${JSON.stringify('尚未认证专属能力。')}`, 'sources: []', '---', '',
+        `# ${name} 的能力卡`, '', '仅在真实执行测试通过后，才在此记录已认证能力。', '',
+      ].join('\n'), { mode: 0o600, dirMode: 0o700 })
       await writeFileAtomic(join(root, 'maps', 'index.md'), `# ${name} 的 Agent Vault\n\n- [[memory/long/index|长期记忆]]\n- [[procedures/cards/index|能力]]\n`, { mode: 0o600, dirMode: 0o700 })
     })
     await this.rebuildIndex(agentId)
@@ -318,6 +405,100 @@ export class LocalAgentVaultService extends AgentVaultService {
     }
   }
 
+  private async trashDirectories(): Promise<readonly { id: string; path: string }[]> {
+    const root = join(this.root, '.trash')
+    if (!await exists(root)) return []
+    return (await readdir(root, { withFileTypes: true }))
+      .filter(entry => entry.isDirectory())
+      .map(entry => ({ id: entry.name, path: join(root, entry.name) }))
+  }
+
+  private async requireTrash(trashId: string): Promise<{ id: string; path: string }> {
+    const entry = (await this.trashDirectories()).find(candidate => candidate.id === trashId)
+    if (entry === undefined) throw new AgentVaultError('Agent Vault trash entry does not exist.', 'VAULT_NOT_FOUND')
+    return entry
+  }
+
+  private async trashAppearance(root: string): Promise<VaultResource | undefined> {
+    try {
+      const resource = JSON.parse(await readFile(
+        join(root, 'resources', 'records', `${PROFILE_APPEARANCE_ID}.yml`), 'utf8',
+      )) as VaultResource
+      if (!resource.enabled || !resource.roles.includes('appearance')
+        || !resource.mimeType.startsWith('image/')) return undefined
+      if (resource.sha256 !== undefined && /^[a-f\d]{64}$/u.test(resource.sha256)) {
+        const object = join(root, 'resources', 'objects', 'sha256', resource.sha256.slice(0, 2), resource.sha256)
+        if (await exists(object)) return resource
+      }
+      return resource.externalUrl === undefined ? undefined : resource
+    } catch { return undefined }
+  }
+
+  async listTrash(): Promise<readonly AgentVaultTrashEntry[]> {
+    const values = await Promise.all((await this.trashDirectories()).map(async (entry) => {
+      try {
+        const manifest = JSON.parse(await readFile(join(entry.path, 'manifest.yml'), 'utf8')) as AgentVaultManifest
+        const agentId = validateAgentId(manifest.agent.id)
+        const removedAt = /-(\d{10,})$/u.exec(entry.id)?.[1]
+        const deletedAt = removedAt === undefined ? (await stat(entry.path)).mtimeMs : Number(removedAt)
+        const avatar = await this.trashAppearance(entry.path)
+        return {
+          id: entry.id,
+          agentId,
+          name: manifest.agent.name,
+          deletedAt,
+          createdAt: manifest.createdAt,
+          updatedAt: manifest.updatedAt,
+          restorable: !await exists(this.agentRoot(agentId)),
+          hasAvatar: avatar !== undefined,
+        } satisfies AgentVaultTrashEntry
+      } catch { return undefined }
+    }))
+    return values.filter((entry): entry is AgentVaultTrashEntry => entry !== undefined)
+      .sort((a, b) => b.deletedAt - a.deletedAt || a.name.localeCompare(b.name))
+  }
+
+  async trashAppearanceContent(trashId: string): Promise<import('@deepseek-ai/dsh-agent-vault').VaultResourceContent> {
+    const entry = await this.requireTrash(trashId)
+    const resource = await this.trashAppearance(entry.path)
+    if (resource === undefined) throw new AgentVaultError('Trashed profile appearance was not found.', 'ENTRY_NOT_FOUND')
+    if (resource.sha256 !== undefined) {
+      const path = join(entry.path, 'resources', 'objects', 'sha256', resource.sha256.slice(0, 2), resource.sha256)
+      return { type: 'file', path, mimeType: resource.mimeType, bytes: resource.bytes }
+    }
+    if (resource.externalUrl !== undefined) {
+      return { type: 'external', url: resource.externalUrl, mimeType: resource.mimeType }
+    }
+    throw new AgentVaultError('Trashed profile appearance has no deliverable content.', 'INVALID_RESOURCE')
+  }
+
+  async restoreTrash(trashId: string): Promise<AgentVaultManifest> {
+    const entry = await this.requireTrash(trashId)
+    const manifest = JSON.parse(await readFile(join(entry.path, 'manifest.yml'), 'utf8')) as AgentVaultManifest
+    const agentId = validateAgentId(manifest.agent.id)
+    const target = this.agentRoot(agentId)
+    if (await exists(target)) {
+      throw new AgentVaultError('An active Agent Vault already uses this identity.', 'REVISION_CONFLICT')
+    }
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 })
+    await rename(entry.path, target)
+    await this.rebuildIndex(agentId)
+    this.watchAgent(agentId, target)
+    this.emitChange(agentId, [])
+    return manifest
+  }
+
+  async deleteTrash(trashId: string): Promise<void> {
+    const entry = await this.requireTrash(trashId)
+    await rm(entry.path, { recursive: true, force: true })
+  }
+
+  async emptyTrash(): Promise<number> {
+    const entries = await this.trashDirectories()
+    await Promise.all(entries.map(entry => rm(entry.path, { recursive: true, force: true })))
+    return entries.length
+  }
+
   async manifest(agentId: string): Promise<AgentVaultManifest> {
     return JSON.parse(await readFile(join(await this.requireRoot(agentId), 'manifest.yml'), 'utf8')) as AgentVaultManifest
   }
@@ -328,6 +509,7 @@ export class LocalAgentVaultService extends AgentVaultService {
     const root = await this.requireRoot(agentId)
     if (context.actor.type === 'agent') throw new AgentVaultError('Agents cannot change Vault policy.', 'DOMAIN_READONLY')
     await writeFileAtomic(join(root, 'policy.yml'), json(policy), { mode: 0o600, dirMode: 0o700 })
+    this.emitChange(agentId, ['policy.yml'])
     return policy
   }
 
@@ -390,7 +572,7 @@ export class LocalAgentVaultService extends AgentVaultService {
     const domain = domainFromRelative(rel)
     await this.authorize(root, domain, context)
     if (extname(rel).toLocaleLowerCase() !== '.md') throw new AgentVaultError('Vault documents must be Markdown.', 'INVALID_URI')
-    return this.exclusive(agentId, async () => {
+    const written = await this.exclusive(agentId, async () => {
       const target = resolveInside(root, uri)
       await rejectSymlinkAncestors(root, target)
       if (await exists(target)) {
@@ -407,6 +589,76 @@ export class LocalAgentVaultService extends AgentVaultService {
       await writeFileAtomic(target, content, { mode: 0o600, dirMode: 0o700 })
       return this.indexDocument(agentId, root, uri)
     })
+    this.emitChange(agentId, [rel])
+    return written
+  }
+
+  private async entry(agentId: string, root: string, uri: VaultUri): Promise<VaultEntry> {
+    const rel = vaultRelative(uri)
+    const target = resolveInside(root, uri)
+    await rejectSymlinkAncestors(root, target)
+    let info
+    try { info = await stat(target) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new AgentVaultError('Vault entry was not found.', 'ENTRY_NOT_FOUND')
+      }
+      throw error
+    }
+    if (info.isDirectory()) {
+      return { uri, id: stableId(agentId, rel), domain: domainFromRelative(rel),
+        kind: 'directory', name: basename(rel), bytes: info.size, revision: '', updatedAt: info.mtimeMs }
+    }
+    return this.document(agentId, root, uri)
+  }
+
+  async createDirectory(agentId: string, uri: VaultUri,
+    context: VaultWriteContext): Promise<VaultEntry> {
+    const root = await this.requireRoot(agentId)
+    const rel = vaultRelative(uri)
+    await this.authorize(root, domainFromRelative(rel), context)
+    const created = await this.exclusive(agentId, async () => {
+      const target = resolveInside(root, uri)
+      await rejectSymlinkAncestors(root, target)
+      if (await exists(target)) {
+        throw new AgentVaultError('Directory target already exists.', 'REVISION_CONFLICT')
+      }
+      await mkdir(target, { recursive: true, mode: 0o700 })
+      return this.entry(agentId, root, uri)
+    })
+    this.emitChange(agentId, [rel])
+    return created
+  }
+
+  async copy(agentId: string, source: VaultUri, target: VaultUri,
+    context: VaultWriteContext): Promise<VaultEntry> {
+    const root = await this.requireRoot(agentId)
+    const sourceRel = vaultRelative(source); const targetRel = vaultRelative(target)
+    const sourceDomain = domainFromRelative(sourceRel); const targetDomain = domainFromRelative(targetRel)
+    if (sourceDomain !== targetDomain) {
+      throw new AgentVaultError('Copies cannot cross Vault domains.', 'DOMAIN_VIOLATION')
+    }
+    await this.authorize(root, sourceDomain, context)
+    const copied = await this.exclusive(agentId, async () => {
+      const current = await this.entry(agentId, root, source)
+      if (context.expectedRevision !== undefined && context.expectedRevision !== current.revision) {
+        throw new AgentVaultError('Vault entry changed before this copy.', 'REVISION_CONFLICT')
+      }
+      const sourcePath = resolveInside(root, source); const targetPath = resolveInside(root, target)
+      await rejectSymlinkAncestors(root, sourcePath)
+      await rejectSymlinkAncestors(root, targetPath)
+      if (targetRel.startsWith(`${sourceRel}/`)) {
+        throw new AgentVaultError('A directory cannot be copied inside itself.', 'INVALID_URI')
+      }
+      if (await exists(targetPath)) {
+        throw new AgentVaultError('Copy target already exists.', 'REVISION_CONFLICT')
+      }
+      await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 })
+      await cp(sourcePath, targetPath, { recursive: current.kind === 'directory', errorOnExist: true })
+      await this.rebuildIndex(agentId)
+      return this.entry(agentId, root, target)
+    })
+    this.emitChange(agentId, [sourceRel, targetRel])
+    return copied
   }
 
   async move(agentId: string, source: VaultUri, target: VaultUri, context: VaultWriteContext): Promise<VaultEntry> {
@@ -415,18 +667,25 @@ export class LocalAgentVaultService extends AgentVaultService {
     const sourceDomain = domainFromRelative(sourceRel); const targetDomain = domainFromRelative(targetRel)
     if (sourceDomain !== targetDomain) throw new AgentVaultError('Moves cannot cross Vault domains.', 'DOMAIN_VIOLATION')
     await this.authorize(root, sourceDomain, context)
-    return this.exclusive(agentId, async () => {
-      const current = await this.document(agentId, root, source)
+    const moved = await this.exclusive(agentId, async () => {
+      const current = await this.entry(agentId, root, source)
       if (context.expectedRevision !== undefined && context.expectedRevision !== current.revision) {
-        throw new AgentVaultError('Vault document changed before this move.', 'REVISION_CONFLICT')
+        throw new AgentVaultError('Vault entry changed before this move.', 'REVISION_CONFLICT')
       }
       const sourcePath = resolveInside(root, source); const targetPath = resolveInside(root, target)
+      await rejectSymlinkAncestors(root, sourcePath)
+      await rejectSymlinkAncestors(root, targetPath)
+      if (targetRel.startsWith(`${sourceRel}/`)) {
+        throw new AgentVaultError('A directory cannot be moved inside itself.', 'INVALID_URI')
+      }
       if (await exists(targetPath)) throw new AgentVaultError('Move target already exists.', 'REVISION_CONFLICT')
       await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 })
       await rename(sourcePath, targetPath)
-      this.index(agentId, root).removeDocument(sourceRel)
-      return this.indexDocument(agentId, root, target)
+      await this.rebuildIndex(agentId)
+      return this.entry(agentId, root, target)
     })
+    this.emitChange(agentId, [sourceRel, targetRel])
+    return moved
   }
 
   async history(agentId: string, uri: VaultUri, limit = 30): Promise<readonly VaultEntry[]> {

@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-`host-workspace-tree` 的本地文件系统 Provider。它通过 realpath 规范化根目录，拒绝路径穿越和逃逸 symlink，对列表、搜索和预览设定边界，并通过 Cordis 生命周期持有防抖 Chokidar watcher。
+`host-workspace-tree` 的本地文件系统 Provider。它通过 realpath 规范化根目录，拒绝路径穿越和逃逸 symlink，对列表、搜索和文本预览设定边界，并通过 Cordis 生命周期持有防抖 Chokidar watcher。图片、音频和视频在预览中只返回元数据；完整读取或闭区间 Range 读取使用有背压的文件流，因此播放容量受磁盘约束，而不是受 RPC 内存约束。外部导入会流经隐藏的暂存文件，再以不覆盖现有条目的方式原子链接到目标位置；`maxImportBytes` 默认为 128 GiB。
 
 变更操作会验证现有来源和注册根目录内的新目标。搜索忽略依赖与生成输出目录，绝不跟随 symlink，并在达到配置的扫描或结果上限时报告截断。
 

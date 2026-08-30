@@ -9,7 +9,9 @@
 import { randomUUID } from 'node:crypto'
 import type { z } from 'zod'
 import type { ApiProxy, MuxFrame, HostFrame } from '../api/index.ts'
-import { sessionLogQuerySchema } from '../api/downloads.schema.ts'
+import {
+  sessionLogQuerySchema, workspaceFileQuerySchema, workspaceFileUploadQuerySchema,
+} from '../api/downloads.schema.ts'
 import type { RequestPayload, ResponseValue, RpcMethodMap } from '../api/rpc-map.ts'
 import type { ClientRequest, RpcError, RpcRequest, RpcResponse, ServerRequest, ServerResponse } from '../api/rpc.ts'
 import { RpcId } from '../api/rpc.ts'
@@ -292,6 +294,30 @@ export function toFetchHandler(api: ApiProxy): { fetch: typeof fetch } {
         if (req.method === 'GET') return response
         await response.body?.cancel()
         return new Response(null, { status: response.status, headers: response.headers })
+      }
+      if (path === '/api/workspace.media' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const parsed = workspaceFileQuerySchema.safeParse(Object.fromEntries(url.searchParams))
+        if (!parsed.success) return new Response('missing or invalid media token', { status: 400 })
+        const range = req.headers.get('range') ?? undefined
+        const ifRange = req.headers.get('if-range') ?? undefined
+        const response = await api.downloads.workspaceFile({
+          ...parsed.data,
+          ...(range === undefined ? {} : { range }),
+          ...(ifRange === undefined ? {} : { ifRange }),
+        }, req.signal)
+        if (req.method === 'GET') return response
+        await response.body?.cancel()
+        return new Response(null, { status: response.status, headers: response.headers })
+      }
+      if (path === '/api/workspace.upload' && req.method === 'PUT') {
+        const parsed = workspaceFileUploadQuerySchema.safeParse(Object.fromEntries(url.searchParams))
+        if (!parsed.success) return new Response('missing or invalid workspace upload target', { status: 400 })
+        if (parsed.data.expectedBytes !== undefined
+          && !Number.isSafeInteger(parsed.data.expectedBytes)) {
+          return new Response('invalid workspace upload length', { status: 400 })
+        }
+        if (req.body === null) return new Response('workspace upload body is missing', { status: 400 })
+        return api.downloads.workspaceFileUpload(parsed.data, req.body, req.signal)
       }
 
       if (req.method !== 'POST' || !path.startsWith('/api/')) {

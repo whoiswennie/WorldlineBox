@@ -6,10 +6,102 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { installLibraryRuntime } from '../src/index.ts'
+import { DEFAULT_COMPANION_ART_OPTIONS } from '../src/contracts.ts'
 
 const signal = new AbortController().signal
 
 describe('ordinary Agent public reference runtime', () => {
+  it('creates a companion through the Agent-facing tool and leaves artwork optional', async () => {
+    const tools = new Map<string, ToolDefinition>()
+    const companion = {
+      id: 'created-companion', name: '新伙伴', handle: 'GUIDE',
+      avatar: '/worldline-experience/default-companion.png',
+      portrait: '/worldline-experience/default-companion.png', status: '在线', description: '简介',
+      persona: '身份', style: '温和', speakingStyle: '清晰', behaviorLogic: '边界', builtIn: false,
+      createdAt: 1, updatedAt: 1,
+    }
+    const create = vi.fn(async (_draft: Record<string, string>) => ({ companions: [companion], rooms: {} }))
+    const vaults = {
+      bindRuntimeAgent: vi.fn(() => () => undefined),
+      manifest: vi.fn(async () => ({ agent: { id: companion.id, name: companion.name } })),
+    }
+    const directory = {
+      ready: Promise.resolve(), vaults, create,
+      resourceUrl: (_agentId: string, id: string) => `/references/${id}`,
+    }
+    const ctx = {
+      systemPrompt: { context: vi.fn(() => () => undefined) },
+      tools: { register: (definition: ToolDefinition) => {
+        tools.set(definition.name, definition)
+        return () => { tools.delete(definition.name) }
+      } },
+    }
+    const dispose = installLibraryRuntime(directory as never, {
+      id: 'ordinary-agent', ctx,
+    } as unknown as Agent)
+    try {
+      const tool = tools.get('create_virtual_companion')
+      expect(tool).toBeDefined()
+      if (tool === undefined) throw new Error('companion creation tool not registered')
+      await expect(tool.execute({
+        name: companion.name, handle: companion.handle, status: companion.status,
+        description: companion.description, persona: companion.persona, style: companion.style,
+        speaking_style: companion.speakingStyle, behavior_logic: companion.behaviorLogic,
+      }, {} as never)).resolves.toEqual({
+        companion_id: companion.id, name: companion.name, avatar: companion.avatar, vault_ready: true,
+        knowledge_roots: ['self', 'memory', 'procedures', 'resources', 'skills'],
+      })
+      const createdDraft = create.mock.calls[0]?.[0]
+      expect(DEFAULT_COMPANION_ART_OPTIONS).toContain(createdDraft?.avatar)
+      expect(createdDraft?.portrait).toBe(createdDraft?.avatar)
+      expect(createdDraft?.handle).toBe('GUIDE · 在线')
+      expect(vaults.manifest).toHaveBeenCalledWith(companion.id)
+    } finally {
+      dispose()
+    }
+  })
+
+  it('selects Huan\'s bundled dark form when the Agent creation request asks for it', async () => {
+    const tools = new Map<string, ToolDefinition>()
+    const companion = {
+      id: 'dark-companion', name: '黑色形态伙伴', handle: 'DARK GUIDE',
+      avatar: '/worldline-experience/default-companion-dark.png',
+      portrait: '/worldline-experience/default-companion-dark.png', status: '在线', description: '简介',
+      persona: '身份', style: '沉稳', speakingStyle: '清晰', behaviorLogic: '边界', builtIn: false,
+      createdAt: 1, updatedAt: 1,
+    }
+    const create = vi.fn(async () => ({ companions: [companion], rooms: {} }))
+    const directory = {
+      ready: Promise.resolve(), create,
+      vaults: { bindRuntimeAgent: vi.fn(() => () => undefined), manifest: vi.fn(async () => ({})) },
+      resourceUrl: (_agentId: string, id: string) => `/references/${id}`,
+    }
+    const ctx = {
+      systemPrompt: { context: vi.fn(() => () => undefined) },
+      tools: { register: (definition: ToolDefinition) => {
+        tools.set(definition.name, definition)
+        return () => { tools.delete(definition.name) }
+      } },
+    }
+    const dispose = installLibraryRuntime(directory as never,
+      { id: 'ordinary-agent', ctx } as unknown as Agent)
+    try {
+      const tool = tools.get('create_virtual_companion')
+      if (tool === undefined) throw new Error('companion creation tool not registered')
+      await tool.execute({
+        name: companion.name, handle: companion.handle, status: companion.status,
+        description: companion.description, persona: companion.persona, style: companion.style,
+        speaking_style: companion.speakingStyle, behavior_logic: companion.behaviorLogic,
+        appearance_variant: 'dark',
+      }, {} as never)
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        avatar: companion.avatar, portrait: companion.portrait,
+      }))
+    } finally {
+      dispose()
+    }
+  })
+
   it('finds and sends a named public video despite mixed keywords and guessed tags', async () => {
     const tools = new Map<string, ToolDefinition>()
     const resource = {

@@ -1,5 +1,26 @@
 /** Shared Host/Client contracts for the virtual companion directory. */
 
+/** Bundled light-form artwork available when a companion has no supplied appearance. */
+export const DEFAULT_COMPANION_ART = '/worldline-experience/default-companion.png'
+/** Alternate bundled dark-form artwork selectable during companion creation. */
+export const DEFAULT_COMPANION_ART_DARK = '/worldline-experience/default-companion-dark.png'
+/** Complete default-art pool. A creation samples this once, then persists the selected path. */
+export const DEFAULT_COMPANION_ART_OPTIONS = [
+  DEFAULT_COMPANION_ART,
+  DEFAULT_COMPANION_ART_DARK,
+] as const
+
+/**
+ * Select one bundled appearance for a companion that did not specify artwork.
+ * @param random - Unit-interval random source; injectable for deterministic tests.
+ * @returns One stable path to persist on the newly created companion.
+ */
+export function randomDefaultCompanionArt(random: () => number = Math.random): string {
+  const value = Math.max(0, Math.min(0.999_999_999, random()))
+  return DEFAULT_COMPANION_ART_OPTIONS[Math.floor(value * DEFAULT_COMPANION_ART_OPTIONS.length)]
+    ?? DEFAULT_COMPANION_ART
+}
+
 /** One durable virtual companion profile. */
 export interface VirtualCompanion {
   readonly id: string
@@ -39,6 +60,7 @@ export interface KnowledgeTreeEntry {
   readonly children?: number
   readonly updatedAt?: number
   readonly size?: number
+  readonly revision?: string
 }
 
 /**

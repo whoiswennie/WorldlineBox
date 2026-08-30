@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-worldline-chrome/README.md
-README.md: 0093b1071f3d6bd303dfcc18d723921b92974cf4
-README.zh.md: ac8912dd00981f8848afd739bf8e5595d6436d46
+README.md: 1409a3abca73e9f83140a9c328b4e539d60c1683
+README.zh.md: b143364ee300259ecfe460c715b42867de301db2

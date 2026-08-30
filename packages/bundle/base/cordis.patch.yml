@@ -253,10 +253,6 @@
     - id: skill-filesystem
       name: '@deepseek-ai/dsh-skill-filesystem'
 
-    - id: skill-badge
-      name: '@deepseek-ai/dsh-skill-badge'
-      disabled: true
-
     # Local and online video inspection with bundled native tools. The plugin
     # contributes both the model tools and the reusable workflow skill.
     - id: worldline-video

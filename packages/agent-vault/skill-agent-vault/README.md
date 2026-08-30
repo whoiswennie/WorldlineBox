@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-Eight progressively loaded methodology skills teach Agents to orient, capture immediate short memory, consolidate bounded batches, govern long memory, recall at two speeds, develop a stable structured self, learn and test capabilities, and use resources naturally. The provider contains no model call and no embedding dependency.
+Nine progressively loaded methodology skills teach Agents to create a complete virtual companion, orient, capture immediate short memory, consolidate bounded batches, govern long memory, recall at two speeds, develop a stable structured self, learn and test capabilities, and use resources naturally. The provider contains no model call and no embedding dependency.
 
 ## Model Experience
 
@@ -10,11 +10,11 @@ Eight progressively loaded methodology skills teach Agents to orient, capture im
 
 #### What the model sees
 
-The skill catalog exposes eight stable `SKILL.md` summaries. Selecting one loads its complete workflow body for orientation, capture, consolidation, recall, self-development, capability learning, or resource use.
+The skill catalog exposes nine stable `SKILL.md` summaries. Selecting one loads its complete workflow body for companion creation, orientation, capture, consolidation, recall, self-development, capability learning, or resource use.
 
 #### Token effect
 
-Discovery has a fixed eight-summary cost; one complete, data-independent workflow body is added only when selected.
+Discovery has a fixed nine-summary cost; one complete, data-independent workflow body is added only when selected.
 
 #### KV Cache effect
 

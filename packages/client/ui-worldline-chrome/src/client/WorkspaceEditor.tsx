@@ -349,8 +349,10 @@ function TextEditor({ sessionId, document }: { sessionId: SessionId; document: O
 
 function MediaPreview({ preview }: { preview: WorkspaceTreePreview }) {
   const [failed, setFailed] = useState(false)
-  const src = preview.content === undefined ? '' : `data:${preview.mimeType};base64,${preview.content}`
-  if (preview.content === undefined || preview.encoding !== 'base64') {
+  const src = preview.streamUrl ?? (preview.content === undefined
+    ? ''
+    : `data:${preview.mimeType};base64,${preview.content}`)
+  if (src === '') {
     return <div className={css.unsupported}>预览数据不可用，请在系统中打开此文件。</div>
   }
   if (failed) {
@@ -358,8 +360,19 @@ function MediaPreview({ preview }: { preview: WorkspaceTreePreview }) {
     return <div className={css.unsupported}>{`当前 Chromium 内核无法解码此${kindLabel}格式，请在系统中打开。`}</div>
   }
   if (preview.kind === 'image') return <div className={css.media}><img src={src} alt={preview.name} onError={() => { setFailed(true) }} /></div>
-  if (preview.kind === 'audio') return <div className={css.media}><audio src={src} controls onError={() => { setFailed(true) }} /></div>
-  return <div className={css.media}><video src={src} controls onError={() => { setFailed(true) }} /></div>
+  if (preview.kind === 'audio') return <div className={css.media}><audio
+    src={src}
+    controls
+    preload="metadata"
+    onError={() => { setFailed(true) }}
+  /></div>
+  return <div className={css.media}><video
+    src={src}
+    controls
+    playsInline
+    preload="metadata"
+    onError={() => { setFailed(true) }}
+  /></div>
 }
 
 function DocumentBody({ sessionId, document }: { sessionId: SessionId; document: OpenDocument }) {

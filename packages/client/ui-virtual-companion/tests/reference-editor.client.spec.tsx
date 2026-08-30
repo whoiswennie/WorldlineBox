@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentType } from 'react'
 import {
   inferReferenceTags,
@@ -160,5 +160,73 @@ describe('reference quick add', () => {
     const searchBody = search?.init?.body
     if (typeof searchBody !== 'string') throw new Error('search body is missing')
     expect(JSON.parse(searchBody)).toMatchObject({ includeDisabled: true })
+  })
+
+  it('previews images, animation, video, audio, text and document resources in one viewer', async () => {
+    const base = {
+      scope: 'public', enabled: true, description: '', tags: [], transcript: '', bytes: 4,
+      builtIn: false, usageCount: 0, createdAt: 1, updatedAt: 1,
+    }
+    const assets = [
+      { ...base, id: 'image', title: '角色立绘', mimeType: 'image/png',
+        source: { type: 'link', url: '/portrait.png' }, url: '/portrait.png' },
+      { ...base, id: 'gif', title: '挥手动图', mimeType: 'image/gif',
+        source: { type: 'link', url: '/wave.gif' }, url: '/wave.gif' },
+      { ...base, id: 'video', title: '剧情视频', mimeType: 'video/mp4', durationMs: 4_200,
+        source: { type: 'link', url: '/story.mp4' }, url: '/story.mp4' },
+      { ...base, id: 'audio', title: '角色语音', mimeType: 'audio/mpeg',
+        source: { type: 'link', url: '/voice.mp3' }, url: '/voice.mp3' },
+      { ...base, id: 'text', title: '台词文本', mimeType: 'text/plain', transcript: '这是一段可预览台词',
+        source: { type: 'link', url: '/lines.txt' }, url: '/lines.txt' },
+      { ...base, id: 'pdf', title: '设定手册', mimeType: 'application/pdf',
+        source: { type: 'link', url: '/manual.pdf' }, url: '/manual.pdf' },
+    ]
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof Request ? input.url : input.href
+      if (url.endsWith('/api/virtual-companions'))
+        return Promise.resolve(response({ companions: [], rooms: {} }))
+      if (url.endsWith('/knowledge/tree')) return Promise.resolve(response([]))
+      if (url.endsWith('/reference/tags')) return Promise.resolve(response([]))
+      if (url.endsWith('/reference/search'))
+        return Promise.resolve(response({ items: assets, nextCursor: -1 }))
+      throw new Error(`unexpected request: ${url}`)
+    }))
+
+    const Page = KnowledgeVaultPage as ComponentType<{ activePage: string }>
+    render(<Page activePage="knowledge" />)
+    fireEvent.click(await screen.findByRole('tab', { name: /^资源画廊/u }))
+    await screen.findByRole('button', { name: '预览资源 角色立绘' })
+
+    const open = (title: string): HTMLElement => {
+      fireEvent.click(screen.getByRole('button', { name: `预览资源 ${title}` }))
+      return screen.getByRole('dialog', { name: `${title}资源预览` })
+    }
+    let dialog = open('角色立绘')
+    expect(within(dialog).getByRole('img').getAttribute('src')).toBe('/portrait.png')
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭资源预览' }))
+
+    dialog = open('挥手动图')
+    expect(within(dialog).getByRole('img').getAttribute('src')).toBe('/wave.gif')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: '挥手动图资源预览' })).toBeNull()
+
+    dialog = open('剧情视频')
+    expect(dialog.querySelector('video')?.getAttribute('src')).toBe('/story.mp4')
+    fireEvent.click(within(dialog).getByRole('button', { name: '完成' }))
+
+    dialog = open('角色语音')
+    expect(dialog.querySelector('audio')?.getAttribute('src')).toBe('/voice.mp3')
+    fireEvent.click(within(dialog).getByRole('button', { name: '完成' }))
+
+    dialog = open('台词文本')
+    expect(dialog.textContent).toContain('这是一段可预览台词')
+    fireEvent.click(within(dialog).getByRole('button', { name: '完成' }))
+
+    dialog = open('设定手册')
+    const object = dialog.querySelector('object')
+    expect(object?.getAttribute('data')).toBe('/manual.pdf')
+    expect(object?.getAttribute('type')).toBe('application/pdf')
   })
 })

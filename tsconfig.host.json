@@ -480,9 +480,6 @@
       "path": "./packages/skill/skill"
     },
     {
-      "path": "./packages/skill/skill-badge"
-    },
-    {
       "path": "./packages/skill/skill-filesystem"
     },
     {

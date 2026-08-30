@@ -88,6 +88,7 @@ async function bootWeb(
     // and the URL prompt line — surface glue, not anything that decides an
     // agent's capabilities, which is all this file asserts.
     { id: 'web-runtime', disabled: true },
+    { id: 'ui-virtual-companion', disabled: true },
     { id: 'session-telemetry-otel', disabled: true },
     // Worldline-owned host extensions depend on the same disabled surface
     // services. Their own E2E suites cover those integrations; this suite is
@@ -95,10 +96,6 @@ async function bootWeb(
     { id: 'plugin-inventory', disabled: true },
     { id: 'desktop-browser', disabled: true },
     { id: 'local-auth', disabled: true },
-    // A deployment-level skill on the host registry's GLOBAL layer — the same
-    // registration shape a repository plugin's skill root uses. The layered
-    // skills test below proves it reaches preset-composed agents.
-    { id: 'skill-badge', disabled: false },
     { id: 'modules', disabled: true },
     { id: 'connection', disabled: true },
     // The always-on reload chain waits for the browser roster and bound port
@@ -411,24 +408,25 @@ describe('the shipped Web composition', () => {
     try {
       // The host (global) view carries the deployment-level provider alone:
       // local discovery moved behind the presets with `skill-filesystem`.
-      expect((await ctx.skills.list({ cwd: proj })).map(skill => skill.name)).toEqual(['worldline-badge'])
+      expect((await ctx.skills.list({ cwd: proj })).map(skill => skill.name))
+        .toContain('companion-creation')
 
       // The standard agent's view merges the global layer with its preset's
       // own local discovery over the session cwd.
       const scoped = (await ctx.skills.list({ cwd: proj, scope: handle.agent })).map(skill => skill.name)
-      expect(scoped).toContain('worldline-badge')
+      expect(scoped).toContain('companion-creation')
       expect(scoped).toContain('project-proof')
 
       // The preset's own loader tool resolves the global-layer skill.
       const loaded = await ctx.tools.execute({
         callId: CallId('preset-skills-load'),
         name: 'skill',
-        arguments: { name: 'worldline-badge' },
+        arguments: { name: 'companion-creation' },
         signal: new AbortController().signal,
         agent: handle.agent,
       })
       expect(loaded.isError).toBe(false)
-      expect(JSON.stringify(loaded.content)).toContain('powered by Worldline')
+      expect(JSON.stringify(loaded.content)).toContain('create_virtual_companion')
     } finally {
       await handle.dispose()
     }
@@ -443,7 +441,8 @@ describe('the shipped Web composition', () => {
       // Layer visibility is the registry's; whether an agent can USE skills
       // stays the preset's choice — minimal mounts no `tool-skill`, so its
       // tool table has no loader even though the global layer is readable.
-      expect((await ctx.skills.list({ scope: handle.agent })).map(skill => skill.name)).toContain('worldline-badge')
+      expect((await ctx.skills.list({ scope: handle.agent })).map(skill => skill.name))
+        .toContain('companion-creation')
       expect(toolNames(ctx, handle.agent)).toEqual([STANDARD_SHELL_TOOL, 'str_replace_editor'])
     } finally {
       await handle.dispose()

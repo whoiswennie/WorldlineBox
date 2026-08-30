@@ -25,6 +25,11 @@ describe('virtual companion layout', () => {
     expect(pageCss).toMatch(/\.friend\s*\{\s*box-sizing:\s*border-box;/)
   })
 
+  it('keeps the portrait preview hint inside the rounded portrait safe area', () => {
+    expect(pageCss).toMatch(/\.previewHint\s*\{[^}]*top:\s*76px;[^}]*left:\s*50%;/s)
+    expect(pageCss).toMatch(/\.portraitPreviewTrigger:hover \.previewHint[^}]*transform:\s*translate\(-50%, 0\);/s)
+  })
+
   it('uses a companion-and-spark glyph instead of a heart in the primary rail', () => {
     const open = vi.fn()
     const props = {

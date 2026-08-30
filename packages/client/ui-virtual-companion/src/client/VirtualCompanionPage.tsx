@@ -1,15 +1,21 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   VirtualCompanion,
   VirtualCompanionDraft,
 } from '../contracts.ts'
+import {
+  DEFAULT_COMPANION_ART,
+  DEFAULT_COMPANION_ART_DARK,
+  randomDefaultCompanionArt,
+} from '../contracts.ts'
 import { companionStore, useCompanionStore } from './store.ts'
 import css from './VirtualCompanionPage.module.css'
 
 export interface VirtualCompanionPageInjected {
   launch(companionId: string): Promise<void>
+  openKnowledgeDocument(companionId: string, path: string): void
 }
 
 interface SelfModuleView {
@@ -51,10 +57,18 @@ export type VirtualCompanionPageProps = PropsRuntime<'worldline.main.page'>
   & PropsLocale<'virtualCompanion'>
   & InjectFace<VirtualCompanionPageInjected>
 
-const EMPTY_DRAFT: VirtualCompanionDraft = {
-  name: '', handle: '', avatar: '', portrait: '', status: '', description: '',
-  persona: '', style: '', speakingStyle: '', behaviorLogic: '',
+function emptyDraft(): VirtualCompanionDraft {
+  const artwork = randomDefaultCompanionArt()
+  return {
+    name: '', handle: '', avatar: artwork, portrait: artwork, status: '', description: '',
+    persona: '', style: '', speakingStyle: '', behaviorLogic: '',
+  }
 }
+
+const DEFAULT_ARTWORK_OPTIONS = [
+  { label: '白色形态', value: DEFAULT_COMPANION_ART },
+  { label: '黑色形态', value: DEFAULT_COMPANION_ART_DARK },
+] as const
 
 const SELF_MODULE_META: Readonly<Record<string, {
   symbol: string
@@ -126,9 +140,52 @@ function ConfirmDialog(props: {
   </div>
 }
 
+function PortraitPreview(props: { src: string; name: string; onClose: () => void }) {
+  useEffect(() => {
+    const close = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') props.onClose()
+    }
+    document.addEventListener('keydown', close)
+    return () => { document.removeEventListener('keydown', close) }
+  }, [props])
+  return <div className={css.imagePreviewBackdrop} role="presentation" onMouseDown={(event) => {
+    if (event.target === event.currentTarget) props.onClose()
+  }}>
+    <section className={css.imagePreview} role="dialog" aria-modal="true" aria-label={`${props.name}形象大图`}>
+      <button type="button" className={css.imagePreviewClose} onClick={() => { props.onClose() }} aria-label="关闭大图预览">×</button>
+      <img src={props.src} alt={`${props.name}的完整形象`} />
+      <footer><span>CHARACTER PORTRAIT</span><strong>{props.name}</strong><small>按 Esc 或点击背景关闭</small></footer>
+    </section>
+  </div>
+}
+
+function ExportPackageOutline() {
+  return <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.45"
+    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3.5 6.5 10 3l6.5 3.5v7L10 17l-6.5-3.5zM3.8 6.7 10 10l6.2-3.3M10 10v7" />
+    <path d="M12.5 4.35v3.1m0 0 1.35-1.35m-1.35 1.35-1.35-1.35" />
+  </svg>
+}
+
+function FreezeOutline() {
+  return <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.35"
+    strokeLinecap="round" aria-hidden="true">
+    <path d="M10 2.8v14.4M3.8 6.4l12.4 7.2M3.8 13.6l12.4-7.2" />
+    <path d="m7.8 4.05 2.2 1.3 2.2-1.3M7.8 15.95l2.2-1.3 2.2 1.3M4.95 8.55l2.15-1.3-.05-2.5M15.05 11.45l-2.15 1.3.05 2.5M4.95 11.45l2.15 1.3-.05 2.5M15.05 8.55l-2.15-1.3.05-2.5" />
+  </svg>
+}
+
+function RestoreOutline() {
+  return <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"
+    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4.2 6.7A6.5 6.5 0 1 1 3.8 12M4.2 6.7V3.5m0 3.2h3.2" />
+    <path d="M10 6.5V10l2.4 1.45" />
+  </svg>
+}
+
 function CompanionEditor(props: { companion?: VirtualCompanion; onClose(): void }) {
   const companion = props.companion
-  const [draft, setDraft] = useState<VirtualCompanionDraft>(() => companion ? toDraft(companion) : EMPTY_DRAFT)
+  const [draft, setDraft] = useState<VirtualCompanionDraft>(() => companion ? toDraft(companion) : emptyDraft())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const set = (key: keyof VirtualCompanionDraft, value: string): void => {
@@ -162,8 +219,17 @@ function CompanionEditor(props: { companion?: VirtualCompanion; onClose(): void 
       <div className={css.editorGrid}>
         <aside className={css.avatarEditor}>
           <span className={css.editorAvatar}>{draft.avatar ? <img src={draft.avatar} alt="" /> : '伙'}</span>
+          {companion === undefined ? <div className={css.defaultArtwork} aria-label="默认形象">
+            {DEFAULT_ARTWORK_OPTIONS.map(option => <button type="button" key={option.value}
+              aria-pressed={draft.avatar === option.value && draft.portrait === option.value}
+              onClick={() => { setDraft(current => ({ ...current, avatar: option.value, portrait: option.value })) }}>
+              <img src={option.value} alt="" /><span>{option.label}</span>
+            </button>)}
+          </div> : null}
           <label className={css.uploadButton}>上传并更换头像<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void upload(event) }} /></label>
-          <small>PNG、JPEG 或 WebP，不超过 5 MB</small>
+          <small>{companion === undefined
+            ? '可以手动选择形态；未指定时会随机采用白色或黑色形态，并在创建后固定。'
+            : '上传新图片即可替换当前形象；已设定的形象不会显示默认候选。'}</small>
         </aside>
         <div className={css.editorFields}>
           <div className={css.twoFields}>
@@ -195,9 +261,31 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
   const [error, setError] = useState<string>()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRestore, setConfirmRestore] = useState(false)
+  const [previewPortrait, setPreviewPortrait] = useState(false)
+  const actionMenuRef = useRef<HTMLDetailsElement>(null)
   const [self, setSelf] = useState<SelfSnapshotView>()
   const [policy, setPolicy] = useState<VaultPolicyView>()
   const hasWorkspace = useWorkspaces(state => state.items.length > 0)
+  const closeActionMenu = (): void => {
+    if (actionMenuRef.current !== null) actionMenuRef.current.open = false
+  }
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent): void => {
+      const menu = actionMenuRef.current
+      if (menu?.open === true && event.target instanceof Node && !menu.contains(event.target)) {
+        menu.open = false
+      }
+    }
+    const closeWithEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') closeActionMenu()
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeWithEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeWithEscape)
+    }
+  }, [])
   useEffect(() => { void companionStore.load() }, [])
   useEffect(() => {
     if (selectedId === undefined || !directory.companions.some(item => item.id === selectedId)) {
@@ -220,6 +308,35 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
       (reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : String(reason)) })
     return () => { active = false }
   }, [selectedId])
+  useEffect(() => {
+    if (selectedId === undefined || typeof EventSource === 'undefined') return
+    const events = new EventSource(`/api/virtual-companions/vault/events/${encodeURIComponent(selectedId)}`)
+    let active = true
+    events.onmessage = () => {
+      void Promise.all([
+        vaultPost<SelfSnapshotView>('vault/self', { scope: selectedId }),
+        vaultPost<VaultPolicyView>('vault/policy', { scope: selectedId }),
+        companionStore.load(true),
+      ]).then(([nextSelf, nextPolicy]) => {
+        if (active) { setSelf(nextSelf); setPolicy(nextPolicy) }
+      }, (reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : String(reason))
+      })
+    }
+    return () => { active = false; events.close() }
+  }, [selectedId])
+  const identityModule = self?.modules.find(item => item.id === 'identity')
+  const stateModule = self?.modules.find(item => item.id === 'state')
+  const appearanceModule = self?.modules.find(item => item.id === 'appearance')
+  const identityMatch = /^(.+?)（(.+)）$/u.exec(identityModule?.summary.trim() ?? '')
+  const displayName = identityMatch?.[1]?.trim() || selected?.name || ''
+  const displayHandle = identityMatch?.[2]?.trim() || identityModule?.summary.trim() || selected?.handle || ''
+  const displayDescription = identityModule?.details[0] ?? selected?.description ?? ''
+  const displayStatus = stateModule?.summary ?? selected?.status ?? ''
+  const displayAvatar = appearanceModule?.details.find(item => item.startsWith('形象资源：'))
+    ?.slice('形象资源：'.length).trim() || selected?.avatar || ''
+  const displayPortrait = appearanceModule?.details.find(item => item.startsWith('立绘资源：'))
+    ?.slice('立绘资源：'.length).trim() || selected?.portrait || displayAvatar
   const toggleSelf = async (item: SelfModuleView): Promise<void> => {
     if (selected === undefined) return
     try {
@@ -312,8 +429,12 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
       <div className={css.hero}>
         <div className={css.portrait}>
           <span className={css.portraitHalo} aria-hidden="true" />
-          <img src={selected.portrait || selected.avatar} alt={selected.name} />
-          <span className={css.portraitCaption}><i />ONLINE · {selected.handle.split('·')[0]?.trim()}</span>
+          <button type="button" className={css.portraitPreviewTrigger}
+            onClick={() => { setPreviewPortrait(true) }} aria-label={`预览${displayName}的大图`}>
+            <img src={displayPortrait} alt={displayName} />
+            <span className={css.portraitCaption}><i />ONLINE · {displayHandle.split('·')[0]?.trim()}</span>
+            <span className={css.previewHint}><b aria-hidden="true">⌗</b>查看完整形象</span>
+          </button>
         </div>
         <div className={css.identity}>
           <div className={css.badges}>
@@ -321,28 +442,29 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
             <span data-tone="online"><i />{t('online')}</span>
             {policy?.fullyFrozen === true ? <span data-tone="frozen">只读保护</span> : null}
           </div>
-          <p className={css.eyebrow}>{selected.handle}</p>
-          <h2>{selected.name}</h2>
-          <p className={css.status}>“{selected.status}”</p>
+          <p className={css.eyebrow}>{displayHandle}</p>
+          <h2>{displayName}</h2>
+          <p className={css.status}>“{displayStatus}”</p>
           <div className={css.profileActions}>
             <button type="button" className={css.launch} disabled={busy || !hasWorkspace} onClick={() => { void start() }}>
-              <span aria-hidden="true">✦</span>{busy ? t('launching') : `和${selected.name}聊天`}
+              <span aria-hidden="true">✦</span>{busy ? t('launching') : `和${displayName}聊天`}
             </button>
             <button type="button" className={css.editProfile} onClick={() => { setEditing(selected.id) }}>
               <span aria-hidden="true">✎</span>编辑资料
             </button>
-            <details className={css.actionMenu}>
+            <details className={css.actionMenu} ref={actionMenuRef}>
               <summary aria-label="更多角色操作"><span aria-hidden="true">•••</span><b>更多</b></summary>
               <div>
-                <a href={`/api/virtual-companions/vault/export/${encodeURIComponent(selected.id)}`}>
-                  <span aria-hidden="true">⇧</span><span><strong>导出角色包</strong><small>带走形象、记忆与资源</small></span>
+                <a href={`/api/virtual-companions/vault/export/${encodeURIComponent(selected.id)}`}
+                  onClick={closeActionMenu}>
+                  <span aria-hidden="true"><ExportPackageOutline /></span><span><strong>导出角色包</strong><small>带走形象、记忆与资源</small></span>
                 </a>
-                <button type="button" aria-pressed={policy?.fullyFrozen === true} onClick={() => { void toggleFreeze() }}>
-                  <span aria-hidden="true">◇</span><span><strong>{policy?.fullyFrozen === true ? '解除知识冻结' : '冻结为只读'}</strong><small>{policy?.fullyFrozen === true ? '恢复 Agent 自治写入' : '保护当前角色与知识'}</small></span>
+                <button type="button" aria-pressed={policy?.fullyFrozen === true} onClick={() => { closeActionMenu(); void toggleFreeze() }}>
+                  <span aria-hidden="true"><FreezeOutline /></span><span><strong>{policy?.fullyFrozen === true ? '解除知识冻结' : '冻结为只读'}</strong><small>{policy?.fullyFrozen === true ? '恢复 Agent 自治写入' : '保护当前角色与知识'}</small></span>
                 </button>
                 {selected.builtIn
-                  ? <button type="button" onClick={() => { setConfirmRestore(true) }}><span aria-hidden="true">↺</span><span><strong>恢复原版</strong><small>回到内置角色初始状态</small></span></button>
-                  : <button type="button" data-danger onClick={() => { setConfirmDelete(true) }}><span aria-hidden="true">×</span><span><strong>删除伙伴</strong><small>完整资料移入可恢复区</small></span></button>}
+                  ? <button type="button" onClick={() => { closeActionMenu(); setConfirmRestore(true) }}><span aria-hidden="true"><RestoreOutline /></span><span><strong>恢复原版</strong><small>回到内置角色初始状态</small></span></button>
+                  : <button type="button" data-danger onClick={() => { closeActionMenu(); setConfirmDelete(true) }}><span aria-hidden="true">×</span><span><strong>删除伙伴</strong><small>完整资料移入知识库回收站</small></span></button>}
               </div>
             </details>
           </div>
@@ -354,9 +476,12 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
         <div className={css.overviewGrid}>
           <article className={css.introCard}>
             <span className={css.cardKicker}>PROFILE NOTE</span>
-            <h3>关于 {selected.name}</h3>
-            <p>{selected.description}</p>
-            <footer><span>角色资料</span><i aria-hidden="true">♡</i></footer>
+            <h3>关于 {displayName}</h3>
+            <p>{displayDescription}</p>
+            <footer><button type="button" className={css.cardDocumentLink}
+              onClick={() => { props.openKnowledgeDocument(selected.id, 'self/identity.md') }}>
+              <span>编辑身份 MD</span><b aria-hidden="true">↗</b>
+            </button><i aria-hidden="true">♡</i></footer>
           </article>
           <article className={css.cognitionCard}>
             <span className={css.cardKicker}>COGNITIVE PULSE</span>
@@ -395,9 +520,13 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
                 : null}
               <footer>
                 <span>{STABILITY_LABEL[item.stability]}</span>
-                {item.locked
-                  ? <span>用户锁定</span>
-                  : item.autonomous ? <span>可阶段成长</span> : <span>需明确确认</span>}
+                <span className={css.moduleGovernance}>{item.locked
+                  ? '用户锁定'
+                  : item.autonomous ? '可阶段成长' : '需明确确认'}</span>
+                <button type="button" className={css.cardDocumentLink}
+                  onClick={() => { props.openKnowledgeDocument(selected.id, `self/${item.id}.md`) }}>
+                  编辑 {item.id}.md <b aria-hidden="true">↗</b>
+                </button>
               </footer>
             </section>
           })}
@@ -411,13 +540,15 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
         </p>
       </div>
     </section> : <section className={css.emptyProfile}>新增一位伙伴，开始你们的聊天。</section>}
+    {previewPortrait && selected !== undefined ? <PortraitPreview
+      src={displayPortrait} name={displayName} onClose={() => { setPreviewPortrait(false) }} /> : null}
     {editing !== undefined ? <CompanionEditor
       {...editingCompanion === undefined ? {} : { companion: editingCompanion }}
       onClose={() => { setEditing(undefined) }}
     /> : null}
     {confirmDelete && selected !== undefined && !selected.builtIn ? <ConfirmDialog
       title="删除伙伴"
-      description={`确定删除伙伴“${selected.name}”吗？她的完整 Agent Vault 会移入可恢复的回收区。`}
+      description={`确定删除伙伴“${selected.name}”吗？她的完整 Agent Vault 会移入“知识库 > 回收站”，之后仍可恢复。`}
       confirmLabel="确认删除"
       tone="danger"
       busy={busy}
@@ -426,7 +557,7 @@ export function VirtualCompanionPage(props: VirtualCompanionPageProps) {
     /> : null}
     {confirmRestore && selected !== undefined && selected.builtIn ? <ConfirmDialog
       title="恢复内置伙伴原版"
-      description={`将“${selected.name}”的人物资料和私有 Agent Vault 全部恢复为当前版本的内置原版。现有版本会先移入可恢复的回收区，此操作不会使用阻塞弹窗。`}
+      description={`将“${selected.name}”的人物资料和私有 Agent Vault 全部恢复为当前版本的内置原版。现有版本会先移入“知识库 > 回收站”，此操作不会使用阻塞弹窗。`}
       confirmLabel="恢复原版"
       tone="restore"
       busy={busy}

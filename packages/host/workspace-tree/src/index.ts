@@ -44,12 +44,32 @@ export interface WorkspaceTreePreview {
   mimeType: string
   encoding?: 'utf8' | 'base64'
   content?: string
+  /** Short-lived, same-origin URL for range-capable media delivery. */
+  streamUrl?: string
   tooLarge: boolean
+}
+
+/** Inclusive byte window requested from one Workspace file. */
+export interface WorkspaceTreeReadOptions {
+  start?: number
+  end?: number
+}
+
+/** Result of one streamed external-file import. */
+export interface WorkspaceTreeImportResult {
+  path: string
+  bytes: number
 }
 
 /** Validated filesystem mutation below a registered Workspace root. */
 export type WorkspaceTreeMutation =
-  | { operation: 'create-file'; parent: string; name: string; content?: string }
+  | {
+    operation: 'create-file'
+    parent: string
+    name: string
+    content?: string
+    contentEncoding?: 'utf8' | 'base64'
+  }
   | { operation: 'create-directory'; parent: string; name: string }
   | { operation: 'rename'; path: string; name: string }
   | { operation: 'copy'; path: string; targetDirectory: string }
@@ -102,6 +122,39 @@ export abstract class WorkspaceTree extends Service {
    * @returns preview metadata and optional encoded content.
    */
   abstract preview(workspaceRoot: string, path: string, signal?: AbortSignal): Promise<WorkspaceTreePreview>
+  /**
+   * Stream a whole file or one inclusive byte window below a registered Workspace.
+   * The provider revalidates the path so a media URL cannot escape its Workspace.
+   * @param workspaceRoot - canonical Workspace root.
+   * @param path - file path previously authorized by the API gateway.
+   * @param options - optional inclusive byte window.
+   * @param signal - cancellation propagated from the HTTP connection.
+   * @returns a backpressure-aware byte stream.
+   */
+  abstract read(
+    workspaceRoot: string,
+    path: string,
+    options: WorkspaceTreeReadOptions,
+    signal?: AbortSignal,
+  ): Promise<ReadableStream<Uint8Array>>
+  /**
+   * Import an external file without buffering it inside an RPC envelope.
+   * @param workspaceRoot - canonical Workspace root.
+   * @param parent - target directory below the Workspace.
+   * @param name - validated leaf filename.
+   * @param source - backpressure-aware source bytes.
+   * @param expectedBytes - optional declared source length.
+   * @param signal - cancellation propagated from the upload connection.
+   * @returns the created file path and persisted byte count.
+   */
+  abstract importFile(
+    workspaceRoot: string,
+    parent: string,
+    name: string,
+    source: AsyncIterable<Uint8Array>,
+    expectedBytes?: number,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceTreeImportResult>
   /**
    * Apply one validated mutation below a registered Workspace root.
    * @param workspaceRoot - canonical Workspace root.

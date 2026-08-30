@@ -3,7 +3,9 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type {
   AgentVaultErrorCode,
+  AgentVaultChange,
   AgentVaultManifest,
+  AgentVaultTrashEntry,
   CaptureMemoryInput,
   ConsolidationJob,
   MemoryStage,
@@ -48,6 +50,13 @@ export abstract class AgentVaultService extends Service {
   constructor(ctx: Context) { super(ctx, 'agentVaults') }
 
   /**
+   * Observe durable semantic file changes. Consumers must re-read the Markdown source after a signal.
+   * @param listener - Called after an internal write or a watched external filesystem change.
+   * @returns Subscription disposer.
+   */
+  abstract subscribeChanges(listener: (change: AgentVaultChange) => void): () => void
+
+  /**
    * List every Vault manifest.
    * @returns Available manifests.
    */
@@ -79,6 +88,34 @@ export abstract class AgentVaultService extends Service {
    * @returns Completion.
    */
   abstract removeAgent(agentId: string, context: VaultWriteContext): Promise<void>
+  /**
+   * List complete Vault snapshots in recoverable account trash.
+   * @returns Trash entries newest first.
+   */
+  abstract listTrash(): Promise<readonly AgentVaultTrashEntry[]>
+  /**
+   * Resolve only the designated profile appearance from one trashed Vault.
+   * @param trashId - Opaque trash entry identity.
+   * @returns Host-only image delivery target.
+   */
+  abstract trashAppearanceContent(trashId: string): Promise<VaultResourceContent>
+  /**
+   * Restore one trashed Vault without overwriting an active Vault.
+   * @param trashId - Opaque trash entry identity.
+   * @returns Restored manifest.
+   */
+  abstract restoreTrash(trashId: string): Promise<AgentVaultManifest>
+  /**
+   * Permanently remove one trashed Vault.
+   * @param trashId - Opaque trash entry identity.
+   * @returns Completion.
+   */
+  abstract deleteTrash(trashId: string): Promise<void>
+  /**
+   * Permanently remove every trashed Vault.
+   * @returns Number of removed entries.
+   */
+  abstract emptyTrash(): Promise<number>
   /**
    * Read a Vault manifest.
    * @param agentId - Vault identity.
@@ -127,7 +164,25 @@ export abstract class AgentVaultService extends Service {
    */
   abstract write(agentId: string, uri: VaultUri, content: string, context: VaultWriteContext): Promise<VaultDocument>
   /**
-   * Move one document.
+   * Create one portable directory.
+   * @param agentId - Vault identity.
+   * @param uri - Directory URI.
+   * @param context - Authorized mutation context.
+   * @returns Created directory.
+   */
+  abstract createDirectory(agentId: string, uri: VaultUri, context: VaultWriteContext): Promise<VaultEntry>
+  /**
+   * Copy one document or directory inside its semantic domain.
+   * @param agentId - Vault identity.
+   * @param source - Source URI.
+   * @param target - Target URI.
+   * @param context - Authorized mutation context.
+   * @returns Copied entry.
+   */
+  abstract copy(agentId: string, source: VaultUri, target: VaultUri,
+    context: VaultWriteContext): Promise<VaultEntry>
+  /**
+   * Move one document or directory inside its semantic domain.
    * @param agentId - Vault identity.
    * @param source - Source URI.
    * @param target - Target URI.

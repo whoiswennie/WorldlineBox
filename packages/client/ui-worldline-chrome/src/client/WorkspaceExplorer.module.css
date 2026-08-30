@@ -10,7 +10,9 @@
   color: var(--worldline-ink);
   background: var(--worldline-surface);
   font-size: 13px;
+  outline: none;
 }
+.root:focus-visible { box-shadow: inset 0 0 0 2px var(--worldline-accent-soft); }
 
 .root button { color: inherit; font: inherit; }
 .root > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 17px 18px 15px; border-bottom: 1px solid var(--worldline-border); }
@@ -39,11 +41,13 @@
 /* The tree owns all remaining panel height, so its horizontal scrollbar stays
    at the physical bottom of the resource manager instead of under the last row. */
 .treePane { min-height: 0; flex: 1 1 0; overflow: auto; padding: 7px 5px 18px; }
+.treePane[data-drop-active] { background: color-mix(in srgb, var(--worldline-accent-soft) 65%, transparent); box-shadow: inset 0 0 0 2px var(--worldline-accent); }
 .level { margin: 0; padding: 0; list-style: none; }
 .row { display: flex; align-items: center; gap: 7px; width: 100%; height: 30px; margin: 0; padding: 0 10px; overflow: hidden; background: transparent; border: 0; border-radius: 5px; text-align: left; white-space: nowrap; }
 .row { cursor: default; }
 .row:hover,
 .row[data-dragover=true] { background: color-mix(in srgb, var(--worldline-accent-soft) 78%, transparent); }
+.row[data-selected] { color: var(--worldline-accent); background: var(--worldline-accent-soft); }
 .row:focus-visible { outline: 1px solid var(--worldline-accent); outline-offset: -1px; }
 .name { overflow: hidden; text-overflow: ellipsis; }
 .row > svg { flex: 0 0 auto; color: var(--worldline-muted); }
@@ -101,3 +105,7 @@
 .confirmation footer { grid-column: 1/-1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 5px; }
 .confirmation button { min-width: 76px; padding: 8px 15px; background: transparent; border: 1px solid var(--worldline-border); border-radius: 8px; cursor: pointer; }
 .confirmation .confirmDanger { color: white; background: #d92d20; border-color: #d92d20; }
+
+.dropHint { position: sticky; z-index: 5; bottom: 4px; margin: 8px; padding: 9px; color: var(--worldline-accent); background: color-mix(in srgb, var(--worldline-surface) 94%, transparent); border: 1px dashed var(--worldline-accent); border-radius: 8px; font-size: 10px; text-align: center; pointer-events: none; }
+.clipboardStatus { position: absolute; z-index: 20; right: 10px; bottom: 10px; left: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; overflow: hidden; color: var(--worldline-accent); background: color-mix(in srgb, var(--worldline-surface) 94%, transparent); border: 1px solid var(--worldline-border); border-radius: 8px; box-shadow: 0 6px 18px rgba(24,36,50,.14); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; backdrop-filter: blur(8px); }
+.clipboardStatus button { flex: none; color: inherit; background: transparent; border: 0; cursor: pointer; }

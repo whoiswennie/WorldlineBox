@@ -20,6 +20,7 @@ const definitions = [
   ['self-development', 'Inspect or deliberately evolve structured identity, appearance, persona, emotion, state, relationships, and common cognition.'],
   ['capability-learning', 'Discover, record, test, and certify procedural methods and experience without confusing knowledge with executable ability.'],
   ['resource-expression', 'Find and use expression or source resources naturally by semantic intent without injecting the complete resource catalog.'],
+  ['companion-creation', 'Create a new virtual companion after an explicit user request, including an independent Agent Vault and safe default artwork when no image is supplied.'],
 ] as const
 
 const candidates: SkillCandidate[] = definitions.map(([name, description]) => ({

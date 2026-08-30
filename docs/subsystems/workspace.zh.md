@@ -269,6 +269,29 @@ abstract search(workspaceRoot: string, query: string, signal?: AbortSignal): Pro
 abstract preview(workspaceRoot: string, path: string, signal?: AbortSignal): Promise<WorkspaceTreePreview>
 
 /**
+ * Stream a whole file or one inclusive byte window below a registered Workspace.
+ * The provider revalidates the path so a media URL cannot escape its Workspace.
+ * @param workspaceRoot - canonical Workspace root.
+ * @param path - file path previously authorized by the API gateway.
+ * @param options - optional inclusive byte window.
+ * @param signal - cancellation propagated from the HTTP connection.
+ * @returns a backpressure-aware byte stream.
+ */
+abstract read( workspaceRoot: string, path: string, options: WorkspaceTreeReadOptions, signal?: AbortSignal, ): Promise<ReadableStream<Uint8Array>>
+
+/**
+ * Import an external file without buffering it inside an RPC envelope.
+ * @param workspaceRoot - canonical Workspace root.
+ * @param parent - target directory below the Workspace.
+ * @param name - validated leaf filename.
+ * @param source - backpressure-aware source bytes.
+ * @param expectedBytes - optional declared source length.
+ * @param signal - cancellation propagated from the upload connection.
+ * @returns the created file path and persisted byte count.
+ */
+abstract importFile( workspaceRoot: string, parent: string, name: string, source: AsyncIterable<Uint8Array>, expectedBytes?: number, signal?: AbortSignal, ): Promise<WorkspaceTreeImportResult>
+
+/**
  * Apply one validated mutation below a registered Workspace root.
  * @param workspaceRoot - canonical Workspace root.
  * @param mutation - requested create, rename, move, delete, or write operation.
@@ -277,7 +300,7 @@ abstract preview(workspaceRoot: string, path: string, signal?: AbortSignal): Pro
 abstract mutate(workspaceRoot: string, mutation: WorkspaceTreeMutation): Promise<{ path?: string }>
 ```
 
-Source: [`packages/host/workspace-tree/src/index.ts:76`](../../packages/host/workspace-tree/src/index.ts)
+Source: [`packages/host/workspace-tree/src/index.ts:96`](../../packages/host/workspace-tree/src/index.ts)
 
 <a id="workspace-tree-events"></a>
 
@@ -298,5 +321,5 @@ A lazily watched registered Workspace changed on disk.
 'workspace-tree/changed'(workspaceRoot: string): void
 ```
 
-Source: [`packages/host/workspace-tree/src/index.ts:68`](../../packages/host/workspace-tree/src/index.ts)
+Source: [`packages/host/workspace-tree/src/index.ts:88`](../../packages/host/workspace-tree/src/index.ts)
 <!-- END GENERATED cordis-surface -->

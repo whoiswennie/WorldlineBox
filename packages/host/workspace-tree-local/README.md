@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-Local-filesystem provider for `host-workspace-tree`. It canonicalizes roots through realpath, rejects traversal and escaping symlinks, bounds listings, searches, and previews, and owns debounced Chokidar watchers through the Cordis lifecycle.
+Local-filesystem provider for `host-workspace-tree`. It canonicalizes roots through realpath, rejects traversal and escaping symlinks, bounds listings, searches, and text previews, and owns debounced Chokidar watchers through the Cordis lifecycle. Images, audio, and video return metadata only through preview; full or inclusive-range reads use a backpressure-aware file stream, so playback size is bounded by storage rather than RPC memory. External imports stream through a hidden staging file and are atomically linked into place without overwriting an existing entry; `maxImportBytes` defaults to 128 GiB.
 
 Mutations validate existing sources and new destinations below the registered root. Search ignores dependency and generated-output directories, never follows symlinks, and reports truncation when configured scan or result limits are reached.
 

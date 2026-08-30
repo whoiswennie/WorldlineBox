@@ -266,6 +266,78 @@ describe('host.openPath', () => {
   })
 })
 
+describe('workspace media delivery', () => {
+  it('mints opaque preview grants and serves inclusive HTTP byte windows', async () => {
+    const { api, ctx, root } = await harness()
+    const workspacePath = stageDir(root, 'cinema')
+    expectOk(await api.workspace.create(request({ path: workspacePath })))
+    const moviePath = join(workspacePath, 'movie.mp4')
+    const read = vi.fn(async (_root: string, _path: string, options: { start?: number; end?: number }) => (
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(Uint8Array.from([options.start ?? 0, options.end ?? 7]))
+          controller.close()
+        },
+      })
+    ))
+    ctx.provide('workspaceTree', {
+      preview: async () => ({
+        path: moviePath, name: 'movie.mp4', size: 8, modifiedAt: 16,
+        kind: 'video', mimeType: 'video/mp4', tooLarge: false,
+      }),
+      read,
+    } as never)
+
+    const preview = expectOk(await api.host.previewWorkspaceFile(
+      request({ path: moviePath }), new AbortController().signal,
+    ))
+    expect(preview.streamUrl).toMatch(/^\/api\/workspace\.media\?token=/u)
+    expect(preview.streamUrl).not.toContain('movie.mp4')
+    const token = new URL(preview.streamUrl!, 'http://worldline.local').searchParams.get('token')!
+    const response = await api.downloads.workspaceFile(
+      { token, range: 'bytes=2-5' }, new AbortController().signal,
+    )
+    expect(response.status).toBe(206)
+    expect(response.headers.get('accept-ranges')).toBe('bytes')
+    expect(response.headers.get('content-range')).toBe('bytes 2-5/8')
+    expect(response.headers.get('content-length')).toBe('4')
+    expect(read).toHaveBeenCalledWith(workspacePath, moviePath, { start: 2, end: 5 }, expect.any(AbortSignal))
+
+    const invalid = await api.downloads.workspaceFile(
+      { token, range: 'bytes=20-30' }, new AbortController().signal,
+    )
+    expect(invalid.status).toBe(416)
+    expect(invalid.headers.get('content-range')).toBe('bytes */8')
+  })
+
+  it('authorizes streamed imports against a registered Workspace', async () => {
+    const { api, ctx, root } = await harness()
+    const workspacePath = stageDir(root, 'import-target')
+    expectOk(await api.workspace.create(request({ path: workspacePath })))
+    const importFile = vi.fn(async () => ({
+      path: join(workspacePath, 'movie.mp4'), bytes: 4,
+    }))
+    ctx.provide('workspaceTree', { importFile } as never)
+    async function* source(): AsyncIterable<Uint8Array> {
+      yield Uint8Array.from([0, 1, 2, 3])
+    }
+    const signal = new AbortController().signal
+    const response = await api.downloads.workspaceFileUpload({
+      parent: workspacePath, name: 'movie.mp4', expectedBytes: 4,
+    }, source(), signal)
+    expect(response.status).toBe(201)
+    expect(await response.json()).toEqual({ path: join(workspacePath, 'movie.mp4'), bytes: 4 })
+    expect(importFile).toHaveBeenCalledWith(
+      workspacePath, workspacePath, 'movie.mp4', expect.anything(), 4, signal,
+    )
+
+    const outside = await api.downloads.workspaceFileUpload({
+      parent: root, name: 'escape.mp4', expectedBytes: 4,
+    }, source(), signal)
+    expect(outside.status).toBe(403)
+  })
+})
+
 describe('workspace.create', () => {
   it('serializes concurrent creates of one path into a single registration', async () => {
     const { api, root } = await harness()

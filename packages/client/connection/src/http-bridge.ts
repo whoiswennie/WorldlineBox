@@ -4,11 +4,13 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { Readable } from 'node:stream'
 
-/** Default carrier cap for all HTTP RPC bodies: sized for the default
+/** Default carrier cap for ordinary JSON HTTP RPC bodies: sized for the default
  * aggregate image limit (200 MiB) after base64 expansion plus envelope
  * headroom (~267.7 MiB required), rounded up for slack. The bridge buffers
- * each body in memory, so this cap is also the per-request resident bound. */
+ * each such body in memory, so this cap is also its per-request resident bound.
+ * The dedicated Workspace upload route remains a raw byte stream. */
 export const DEFAULT_MAX_REQUEST_BODY_BYTES = 300 * 1024 * 1024
 
 /** Transport-independent request handler consumed by the Host HTTP bridge. */
@@ -24,7 +26,8 @@ export interface FetchHandler {
 /**
  * Bridge one node:http request to the fetch-shaped handler (client close
  * aborts; SSE bodies stream out chunk by chunk).
- * @param req - incoming node:http request (fully read before dispatch).
+ * @param req - incoming node:http request; JSON is bounded and buffered, while
+ * the dedicated Workspace upload route is passed through as a byte stream.
  * @param res - node:http response the bridge writes and owns to completion.
  * @param apiHandler - fetch-shaped API carrier the request is dispatched to.
  * @param maxRequestBodyBytes - maximum body bytes buffered before dispatch.
@@ -44,34 +47,48 @@ export async function bridge(
   res.on('close', () => {
     if (!res.writableEnded) abort.abort()
   })
-  const declaredLength = req.headers['content-length']
-  if (declaredLength !== undefined && Number(declaredLength) > maxRequestBodyBytes) {
-    res.writeHead(413, { connection: 'close' })
-    res.end()
-    req.destroy()
-    return
-  }
-  const chunks: Buffer[] = []
-  let received = 0
-  for await (const chunk of req) {
-    const buffer = chunk as Buffer
-    received += buffer.byteLength
-    if (received > maxRequestBodyBytes) {
+  const requestUrl = new URL(req.url ?? '/', 'http://worldline.internal')
+  const method = req.method ?? 'GET'
+  const streamWorkspaceUpload = method === 'PUT' && requestUrl.pathname === '/api/workspace.upload'
+  let request: Request
+  if (streamWorkspaceUpload) {
+    request = new Request(requestUrl, {
+      method,
+      headers: Object.fromEntries(Object.entries(req.headers)
+        .filter(([, value]) => typeof value === 'string') as [string, string][]),
+      body: Readable.toWeb(req) as ReadableStream<Uint8Array>,
+      duplex: 'half',
+      signal: abort.signal,
+    } as RequestInit & { duplex: 'half' })
+  } else {
+    const declaredLength = req.headers['content-length']
+    if (declaredLength !== undefined && Number(declaredLength) > maxRequestBodyBytes) {
       res.writeHead(413, { connection: 'close' })
       res.end()
       req.destroy()
       return
     }
-    chunks.push(buffer)
+    const chunks: Buffer[] = []
+    let received = 0
+    for await (const chunk of req) {
+      const buffer = chunk as Buffer
+      received += buffer.byteLength
+      if (received > maxRequestBodyBytes) {
+        res.writeHead(413, { connection: 'close' })
+        res.end()
+        req.destroy()
+        return
+      }
+      chunks.push(buffer)
+    }
+    request = new Request(requestUrl, {
+      method,
+      headers: Object.fromEntries(Object.entries(req.headers)
+        .filter(([, value]) => typeof value === 'string') as [string, string][]),
+      ...chunks.length > 0 ? { body: Buffer.concat(chunks) } : {},
+      signal: abort.signal,
+    })
   }
-  /* v8 ignore next 3 -- `??` arms: node:http always sets url/method on server
-  requests; the fields are only optional on the client-side IncomingMessage type */
-  const request = new Request(new URL(req.url ?? '/', 'http://worldline.internal'), {
-    method: req.method ?? 'GET',
-    headers: Object.fromEntries(Object.entries(req.headers).filter(([, v]) => typeof v === 'string') as [string, string][]),
-    ...chunks.length > 0 ? { body: Buffer.concat(chunks) } : {},
-    signal: abort.signal,
-  })
   const response = await apiHandler.fetch(request)
   res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
   if (response.body === null) {

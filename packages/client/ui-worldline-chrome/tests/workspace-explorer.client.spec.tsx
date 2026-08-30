@@ -26,6 +26,7 @@ describe('workspace explorer dialogs', () => {
     expect([...toolbarButtons ?? []].map(button => button.getAttribute('title'))).toEqual([
       '新建文件',
       '新建文件夹',
+      '导入文件',
       '在文件资源管理器中打开工作区',
       '清空工作区',
     ])
@@ -197,6 +198,75 @@ describe('workspace explorer dialogs', () => {
     await waitFor(() => {
       expect(previewFile).toHaveBeenCalledWith('C:\\workspace\\src\\main.ts', expect.any(AbortSignal))
       expect(selectView).toHaveBeenCalledWith(sessionId, 'workspace')
+    })
+  })
+
+  it('supports selection shortcuts and imports external files into the selected folder', async () => {
+    const sessionId = 'file-manager-session' as SessionId
+    const mutate = vi.fn(async () => ({}))
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      path: 'C:\\workspace\\target\\pixel.bin', bytes: 3,
+    }), { status: 201, headers: { 'content-type': 'application/json' } }))
+    const listDirectory = vi.fn(async (path: string) => ({
+      path,
+      truncated: false,
+      entries: path.endsWith('target') ? [] : [
+        { path: 'C:\\workspace\\target', name: 'target', kind: 'directory' as const, hidden: false },
+        { path: 'C:\\workspace\\source.txt', name: 'source.txt', kind: 'file' as const, hidden: false },
+      ],
+    }))
+    const { container } = render(<WorkspaceExplorer {...({
+      useSessions: (selector: (state: unknown) => unknown) => selector({
+        current: sessionId,
+        byId: { [sessionId]: { cwd: 'C:\\workspace' } },
+      }),
+      listDirectory,
+      searchFiles: vi.fn(),
+      previewFile: vi.fn(async () => ({
+        path: 'C:\\workspace\\source.txt', name: 'source.txt', size: 1, modifiedAt: 1,
+        kind: 'text' as const, mimeType: 'text/plain', encoding: 'utf8' as const,
+        content: 'x', tooLarge: false,
+      })),
+      mutate, openPath: vi.fn(), openInBrowser: vi.fn(), selectView: vi.fn(), close: vi.fn(),
+      subscribeChanges: vi.fn(() => () => undefined),
+    } as ComponentProps<typeof WorkspaceExplorer>)} />)
+
+    const explorer = screen.getByLabelText('工作区文件资源管理器')
+    const source = await screen.findByRole('button', { name: 'source.txt' })
+    fireEvent.click(source)
+    fireEvent.keyDown(explorer, { key: 'c', ctrlKey: true })
+    fireEvent.click(screen.getByRole('button', { name: 'target' }))
+    fireEvent.keyDown(explorer, { key: 'v', ctrlKey: true })
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledWith({
+        operation: 'copy', path: 'C:\\workspace\\source.txt',
+        targetDirectory: 'C:\\workspace\\target',
+      })
+    })
+
+    const input = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!
+    fireEvent.change(input, { target: { files: [new File([Uint8Array.from([0, 1, 2])],
+      'pixel.bin', { type: 'application/octet-stream' })] } })
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledOnce()
+    })
+    const [uploadUrl, uploadInit] = fetch.mock.calls[0]!
+    const uploadUrlText = typeof uploadUrl === 'string'
+      ? uploadUrl
+      : uploadUrl instanceof URL
+        ? uploadUrl.href
+        : uploadUrl.url
+    expect(uploadUrlText).toMatch(/^\/api\/workspace\.upload\?.*name=pixel\.bin/u)
+    expect(uploadInit).toMatchObject({ method: 'PUT' })
+    expect(uploadInit?.body).toBeInstanceOf(File)
+
+    fireEvent.click(source)
+    fireEvent.keyDown(explorer, { key: 'Delete' })
+    fireEvent.click(screen.getByRole('button', { name: '删除' }))
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledWith({
+        operation: 'delete', path: 'C:\\workspace\\source.txt',
+      })
     })
   })
 })

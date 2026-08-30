@@ -1,7 +1,7 @@
 {
   "name": "worldline-box-desktop",
   "description": "Worldline desktop application with supervised Cordis Host lifecycle",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "author": "这就是天幻呀",
   "private": true,
   "license": "MIT",

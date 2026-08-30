@@ -22,7 +22,11 @@ import {
 import type {} from './desktop-services.ts'
 import type {} from './runtime-supervisor.ts'
 import type { RuntimeLaunchRecipe } from './runtime-supervisor.ts'
-import { desktopStartupDataUrl, desktopStartupStageScript } from './startup-window.ts'
+import {
+  DESKTOP_STARTUP_WINDOW_CHROME,
+  desktopStartupDataUrl,
+  desktopStartupStageScript,
+} from './startup-window.ts'
 import {
   UPDATE_CHECK_CHANNEL,
   UPDATE_DOWNLOAD_CHANNEL,
@@ -240,6 +244,7 @@ async function createWindow(url: string, showOnReady = true, bootstrapToken?: st
 async function createStartupWindow(): Promise<BrowserWindow> {
   if (desktop === undefined) throw new Error('desktop context unavailable')
   const startup = desktop.desktopWindows.create({
+    ...DESKTOP_STARTUP_WINDOW_CHROME,
     width: 520,
     height: 420,
     minWidth: 520,

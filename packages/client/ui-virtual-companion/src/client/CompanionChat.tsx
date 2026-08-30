@@ -273,8 +273,15 @@ export function CompanionRoomHeader({ sessionId, useSession, useSessions }: Head
         details.open = false
       }
     }
+    const closeWithEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && manageRef.current !== null) manageRef.current.open = false
+    }
     document.addEventListener('pointerdown', closeOutside)
-    return () => { document.removeEventListener('pointerdown', closeOutside) }
+    document.addEventListener('keydown', closeWithEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeWithEscape)
+    }
   }, [])
   if (!enabled) return null
   const roomSessionId = subagentAddress?.parentSessionId ?? sessionId

@@ -58,11 +58,18 @@ function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }: PanelP
       <section className={css.panel} role="dialog" aria-modal="false" aria-labelledby={titleId}>
         <header className={css.pageHeader}>
           <div className={css.pageIcon}><IconSettingsOutline16 size={24} /></div>
-          <div className={css.pageHeading} id={titleId}>{renderSlot('settings.header', {})}</div>
+          <div className={css.pageHeading}>
+            <span className={css.headerKicker}>WORLDLINE PREFERENCES</span>
+            <div className={css.headingSlot} id={titleId}>{renderSlot('settings.header', {})}</div>
+          </div>
+          <div className={css.headerDecor} aria-hidden="true"><i /><i /><span>✦</span></div>
           <div className={css.actions}>{renderSlot('settings.action', {})}</div>
         </header>
         <div className={css.pageBody}>
           <nav className={css.nav} aria-label="设置分类">
+            <div className={css.navIntro} aria-hidden="true">
+              <span>✦</span><div><strong>设置导航</strong><small>让这个世界更像你</small></div>
+            </div>
             <div className={css.navList}>
               {rows.map(row => (
                 <button

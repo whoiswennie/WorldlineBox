@@ -1,8 +1,20 @@
+import type { BrowserWindowConstructorOptions } from 'electron'
+
 const STARTUP_CSP = [
   "default-src 'none'",
   'img-src data:',
   "style-src 'unsafe-inline'",
 ].join('; ')
+
+/** Native chrome policy for the temporary startup surface. */
+export const DESKTOP_STARTUP_WINDOW_CHROME = {
+  frame: false,
+  hasShadow: true,
+  roundedCorners: true,
+} as const satisfies Pick<
+  BrowserWindowConstructorOptions,
+  'frame' | 'hasShadow' | 'roundedCorners'
+>
 
 /** Render the first visible installed-app surface while the Agent Host boots. */
 export function desktopStartupDocument(logoDataUrl: string): string {
@@ -21,6 +33,8 @@ export function desktopStartupDocument(logoDataUrl: string): string {
       display: grid;
       place-items: center;
       color: #26344a;
+      user-select: none;
+      -webkit-app-region: drag;
       background:
         radial-gradient(circle at 20% 15%, rgba(153, 220, 255, .42), transparent 40%),
         radial-gradient(circle at 82% 20%, rgba(255, 174, 211, .38), transparent 42%),

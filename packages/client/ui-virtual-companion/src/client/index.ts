@@ -12,7 +12,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
 import { VirtualCompanionNavItem, type VirtualCompanionNavInjected } from './VirtualCompanionNavItem.tsx'
 import { VirtualCompanionPage, type VirtualCompanionPageInjected } from './VirtualCompanionPage.tsx'
 import { KnowledgeVaultNavItem, type KnowledgeVaultNavInjected } from './KnowledgeVaultNavItem.tsx'
-import { KnowledgeVaultPage, type KnowledgeVaultPageInjected } from './KnowledgeVaultPage.tsx'
+import {
+  KnowledgeVaultPage,
+  type KnowledgeVaultOpenRequest,
+  type KnowledgeVaultPageInjected,
+} from './KnowledgeVaultPage.tsx'
 import {
   CompanionAssistantContent,
   bindCompanionAccountIdentity,
@@ -83,6 +87,16 @@ export function apply(ctx: ClientContext): void {
     getSnapshot: () => ctx.layout.activePage(),
     subscribe: listener => ctx.layout.subscribePage(listener),
   }
+  let knowledgeOpenRequest: KnowledgeVaultOpenRequest | undefined
+  const knowledgeOpenListeners = new Set<() => void>()
+  const publishKnowledgeOpenRequest = (scope: string, path: string): void => {
+    knowledgeOpenRequest = {
+      scope,
+      path,
+      revision: (knowledgeOpenRequest?.revision ?? 0) + 1,
+    }
+    for (const listener of knowledgeOpenListeners) listener()
+  }
   const isCompanionSession = (sessionId: SessionId): boolean =>
     ctx.sessions.list.getSnapshot().byId[sessionId]?.agentPreset === PRESET_ID
   const connectAvailableWorkspace = async (): Promise<SessionId> => {
@@ -142,7 +156,7 @@ export function apply(ctx: ClientContext): void {
         || companion.handle.toLocaleLowerCase('zh-CN').includes(key)
       )).map(companion => ({
         name: companion.name,
-        description: companion.handle,
+        description: `${companion.handle} · ${companion.description}`,
         icon: 'companion' as const,
         section: '虚拟伙伴',
         value: JSON.stringify({ sessionId: session.sessionId, ids: [companion.id], names: [companion.name] }),
@@ -197,8 +211,18 @@ export function apply(ctx: ClientContext): void {
     open: () => { ctx.layout.activatePage(KNOWLEDGE_PAGE_ID) },
     hooks: { activePage },
   })
-  const knowledgePageInjected = (): KnowledgeVaultPageInjected => ({})
+  const knowledgePageInjected = (): KnowledgeVaultPageInjected => ({
+    getOpenRequest: () => knowledgeOpenRequest,
+    subscribeOpenRequest: (listener) => {
+      knowledgeOpenListeners.add(listener)
+      return () => { knowledgeOpenListeners.delete(listener) }
+    },
+  })
   const pageInjected = (): VirtualCompanionPageInjected => ({
+    openKnowledgeDocument: (companionId, path) => {
+      publishKnowledgeOpenRequest(companionId, path)
+      ctx.layout.activatePage(KNOWLEDGE_PAGE_ID)
+    },
     launch: async (companionId) => {
       const sessionId = await connectAvailableWorkspace()
       const connected = ctx.sessions.list.getSnapshot().byId[sessionId]

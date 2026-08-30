@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-llm-pi-ai",
   "description": "pi-ai-backed DeepSeek adapter for the Worldline LLM seam (design-verification twin of worldline-llm-deepseek)",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publishConfig": {
     "access": "public"
   },

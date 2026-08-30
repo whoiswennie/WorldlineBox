@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DESKTOP_STARTUP_WINDOW_CHROME,
   desktopStartupDataUrl,
   desktopStartupDocument,
   desktopStartupStageScript,
 } from '../src/startup-window.ts'
 
 describe('desktop startup window', () => {
+  it('uses a draggable frameless native surface without a distracting title bar', () => {
+    expect(DESKTOP_STARTUP_WINDOW_CHROME).toEqual({
+      frame: false,
+      hasShadow: true,
+      roundedCorners: true,
+    })
+    expect(desktopStartupDocument('data:image/png;base64,logo'))
+      .toContain('-webkit-app-region: drag')
+  })
+
   it('shows the product identity and a bounded startup status before the Host is ready', () => {
     const document = desktopStartupDocument('data:image/png;base64,logo')
 

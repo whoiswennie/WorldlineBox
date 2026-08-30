@@ -5,6 +5,35 @@ import { describe, expect, it } from 'vitest'
 import { bridge } from '../src/http-bridge.ts'
 
 describe('HTTP bridge abort', () => {
+  it('streams the dedicated Workspace upload route past the buffered JSON cap', async () => {
+    const request = Readable.from([
+      Buffer.from([0, 1]),
+      Buffer.from([2, 3]),
+    ]) as unknown as IncomingMessage
+    Object.assign(request, {
+      url: '/api/workspace.upload?parent=%2Fw&name=movie.mp4&expectedBytes=4',
+      method: 'PUT',
+      headers: { 'content-type': 'video/mp4', 'content-length': '4' },
+    })
+    let status: number | undefined
+    const response = Object.assign(new EventEmitter(), {
+      writableEnded: false,
+      writeHead(code: number) { status = code; return this },
+      write() { return true },
+      end(this: { writableEnded: boolean }) { this.writableEnded = true; return this },
+    }) as unknown as ServerResponse
+    let received: Uint8Array | undefined
+
+    await bridge(request, response, {
+      fetch: async (input) => {
+        received = new Uint8Array(await input.arrayBuffer())
+        return new Response(null, { status: 201 })
+      },
+    }, 1)
+    expect(status).toBe(201)
+    expect(received).toEqual(Uint8Array.from([0, 1, 2, 3]))
+  })
+
   it('destroys a declared-oversize request instead of draining it', async () => {
     const destroyed: true[] = []
     const request = Readable.from([]) as unknown as IncomingMessage

@@ -1068,6 +1068,40 @@ class WorkspaceNameConflictError extends Error {
   }
 }
 
+const WORKSPACE_MEDIA_GRANT_TTL_MS = 12 * 60 * 60 * 1000
+const MAX_WORKSPACE_MEDIA_GRANTS = 2048
+
+interface WorkspaceMediaGrant {
+  root: string
+  path: string
+  expiresAt: number
+}
+
+interface ByteWindow {
+  start: number
+  end: number
+}
+
+function byteWindow(value: string, size: number): ByteWindow | undefined {
+  if (size <= 0 || value.includes(',')) return undefined
+  const match = /^bytes=(\d*)-(\d*)$/u.exec(value.trim())
+  if (match === null || (match[1] === '' && match[2] === '')) return undefined
+  if (match[1] === '') {
+    const suffix = Number(match[2])
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) return undefined
+    return { start: Math.max(0, size - suffix), end: size - 1 }
+  }
+  const start = Number(match[1])
+  const requestedEnd = match[2] === '' ? size - 1 : Number(match[2])
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd)
+    || start < 0 || requestedEnd < start || start >= size) return undefined
+  return { start, end: Math.min(requestedEnd, size - 1) }
+}
+
+function workspaceMediaEtag(size: number, modifiedAt: number): string {
+  return `\"${size.toString(16)}-${Math.trunc(modifiedAt).toString(16)}\"`
+}
+
 /** Shared workspace-not-found error response of the workspace.* mutation rows. */
 function workspaceNotFound<T>(request: RpcRequest<unknown>, workspaceId: string): RpcResponse<T> {
   return err(request, {
@@ -1138,6 +1172,21 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
   const pendingApprovals = new Map<RpcId, PendingApproval>()
   const muxQueues = new Set<FrameQueue<RpcRequest<MuxFrame>>>()
   const imageAdmissionChains = new WeakMap<Agent, Promise<void>>()
+  const workspaceMediaGrants = new Map<string, WorkspaceMediaGrant>()
+  const grantWorkspaceMedia = (root: string, path: string): string => {
+    const now = Date.now()
+    for (const [token, grant] of workspaceMediaGrants) {
+      if (grant.expiresAt <= now) workspaceMediaGrants.delete(token)
+    }
+    while (workspaceMediaGrants.size >= MAX_WORKSPACE_MEDIA_GRANTS) {
+      const oldest = workspaceMediaGrants.keys().next().value
+      if (oldest === undefined) break
+      workspaceMediaGrants.delete(oldest)
+    }
+    const token = randomUUID()
+    workspaceMediaGrants.set(token, { root, path, expiresAt: now + WORKSPACE_MEDIA_GRANT_TTL_MS })
+    return `/api/workspace.media?token=${encodeURIComponent(token)}`
+  }
   interface RuntimeLogRecording {
     path: string
     stream: WriteStream
@@ -3269,7 +3318,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           details: { path: request.payload.path },
         })
         try {
-          return ok(request, await ctx.workspaceTree.preview(workspace.path, target, signal))
+          const preview = await ctx.workspaceTree.preview(workspace.path, target, signal)
+          if (preview.kind === 'image' || preview.kind === 'audio' || preview.kind === 'video') {
+            return ok(request, {
+              ...preview,
+              streamUrl: grantWorkspaceMedia(workspace.path, preview.path),
+            })
+          }
+          return ok(request, preview)
         } catch (error: unknown) {
           if (signal.aborted) return err(request, { code: 'cancelled', message: 'workspace preview was aborted', details: {} })
           return err(request, { code: 'directory-unreadable', message: error instanceof Error ? error.message : String(error), details: { path: request.payload.path } })
@@ -4127,6 +4183,88 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     },
 
     downloads: {
+      async workspaceFileUpload(request, source, signal) {
+        const target = resolve(request.parent)
+        const workspace = ctx.workspaceRegistry.list().find((candidate) => {
+          const rel = relative(resolve(candidate.path), target)
+          return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+        })
+        if (workspace === undefined) return new Response('workspace upload target is not registered', {
+          status: 403,
+        })
+        try {
+          const result = await ctx.workspaceTree.importFile(
+            workspace.path,
+            target,
+            request.name,
+            source,
+            request.expectedBytes,
+            signal,
+          )
+          return Response.json(result, { status: 201 })
+        } catch (_error: unknown) {
+          signal.throwIfAborted()
+          return new Response('workspace upload failed', { status: 400 })
+        }
+      },
+      async workspaceFile(request, signal) {
+        const grant = workspaceMediaGrants.get(request.token)
+        if (grant === undefined || grant.expiresAt <= Date.now()) {
+          if (grant !== undefined) workspaceMediaGrants.delete(request.token)
+          return new Response('media grant not found', { status: 404 })
+        }
+        const workspace = ctx.workspaceRegistry.list()
+          .find(candidate => resolve(candidate.path) === resolve(grant.root))
+        if (workspace === undefined) {
+          workspaceMediaGrants.delete(request.token)
+          return new Response('media grant not found', { status: 404 })
+        }
+        grant.expiresAt = Date.now() + WORKSPACE_MEDIA_GRANT_TTL_MS
+        workspaceMediaGrants.delete(request.token)
+        workspaceMediaGrants.set(request.token, grant)
+        try {
+          const preview = await ctx.workspaceTree.preview(workspace.path, grant.path, signal)
+          if (preview.kind !== 'image' && preview.kind !== 'audio' && preview.kind !== 'video') {
+            return new Response('file is not streamable media', { status: 415 })
+          }
+          const etag = workspaceMediaEtag(preview.size, preview.modifiedAt)
+          const rangeHeader = request.range
+          const wantsRange = rangeHeader !== undefined
+            && (request.ifRange === undefined || request.ifRange === etag)
+          const range = wantsRange ? byteWindow(rangeHeader, preview.size) : undefined
+          if (wantsRange && range === undefined) {
+            return new Response(null, {
+              status: 416,
+              headers: { 'content-range': `bytes */${String(preview.size)}` },
+            })
+          }
+          const body = await ctx.workspaceTree.read(
+            workspace.path,
+            preview.path,
+            range === undefined ? {} : range,
+            signal,
+          )
+          const contentLength = range === undefined ? preview.size : range.end - range.start + 1
+          return new Response(body, {
+            status: range === undefined ? 200 : 206,
+            headers: {
+              'accept-ranges': 'bytes',
+              'cache-control': 'private, max-age=3600',
+              'content-disposition': 'inline',
+              'content-length': String(contentLength),
+              'content-type': preview.mimeType,
+              etag,
+              'x-content-type-options': 'nosniff',
+              ...(range === undefined ? {} : {
+                'content-range': `bytes ${String(range.start)}-${String(range.end)}/${String(preview.size)}`,
+              }),
+            },
+          })
+        } catch (_error: unknown) {
+          signal.throwIfAborted()
+          return new Response('media file is unavailable', { status: 404 })
+        }
+      },
       async sessionLog(request, signal) {
         // Clean error path first: missing services answer 500 and a missing
         // root artifact 404 before any zip byte is produced. The root content

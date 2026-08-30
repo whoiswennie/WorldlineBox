@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -84,7 +84,7 @@ describe('built Web profile', () => {
       '@deepseek-ai/dsh-client-ui-netease-music',
       '@deepseek-ai/dsh-client-ui-settings-general', '@deepseek-ai/dsh-client-ui-settings-plugins',
       '@deepseek-ai/dsh-host-plugin-inventory', '@deepseek-ai/dsh-host-workspace-tree-local',
-      '@deepseek-ai/dsh-skill-badge']) {
+      '@deepseek-ai/dsh-skill-agent-vault']) {
       expect(composed).toContain(retained)
     }
     for (const removed of ['memory-hub', 'tool-memory', 'ui-memory', 'desktop-experience',
@@ -105,7 +105,8 @@ describe('built Web profile', () => {
     )) as { dependencies?: Record<string, string> }
 
     expect(web).toMatch(/id: workspace-tree-local[\s\S]*?name: '@deepseek-ai\/dsh-host-workspace-tree-local'/u)
-    expect(web).toMatch(/id: skill-badge\s+disabled: false/u)
+    expect(`${readFileSync(join(repo, 'packages/bundle/base/cordis.patch.yml'), 'utf8')}\n${web}`)
+      .toContain("name: '@deepseek-ai/dsh-skill-agent-vault'")
     expect(apiProxy).not.toContain('LocalWorkspaceTree')
     expect(apiManifest.dependencies).not.toHaveProperty('@deepseek-ai/dsh-host-workspace-tree-local')
   })
@@ -122,6 +123,10 @@ describe('built Web profile', () => {
       ['cordis', '创造模式', 'order: 4'],
       ['virtual-companion', '虚拟伙伴', 'order: 5'],
     ] as const
+    expect(readdirSync(presetRoot, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+      .sort()).toEqual(expected.map(([id]) => id).sort())
     for (const [id, name, order] of expected) {
       const metadata = readPreset(id, 'preset.yml')
       expect(metadata).toContain(`name: ${name}`)

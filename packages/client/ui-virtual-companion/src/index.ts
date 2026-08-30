@@ -8,7 +8,8 @@ import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {
-  AgentVaultService, RecallCard, SelfModule, VaultDocument, VaultEntry, VaultPolicy, VaultResource,
+  AgentVaultService, RecallCard, SelfModule, SelfSnapshot, VaultDocument, VaultEntry, VaultPolicy,
+  VaultResource, VaultResourceContent,
 } from '@deepseek-ai/dsh-agent-vault'
 import { AgentVaultError } from '@deepseek-ai/dsh-agent-vault'
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
@@ -29,7 +30,12 @@ import type {
   ReferenceDraft,
   ReferenceIntent,
 } from './contracts.ts'
-import { initialCompanionId } from './contracts.ts'
+import {
+  DEFAULT_COMPANION_ART,
+  DEFAULT_COMPANION_ART_DARK,
+  initialCompanionId,
+  randomDefaultCompanionArt,
+} from './contracts.ts'
 import { BUILT_IN_MEMES } from './builtin-memes.ts'
 import { CompanionActorRuntime } from './actor-runtime.ts'
 import { migrateLegacyCompanions } from './agent-vault-migration.ts'
@@ -60,7 +66,8 @@ function isCompanionAgent(agent: Agent): boolean {
 }
 
 // This limit applies only to JSON control requests. Resource bytes use a separate raw stream.
-const MAX_BODY_BYTES = 90 * 1_024 * 1_024
+const MAX_CONTROL_BODY_BYTES = 90 * 1_024 * 1_024
+const DEFAULT_MAX_RESOURCE_UPLOAD_BYTES = 128 * 1_024 * 1_024 * 1_024
 const MAX_IMAGE_BYTES = 5 * 1_024 * 1_024
 const YACHIYO_ID = 'yachiyo-runami'
 const YACHIYO_ART = '/worldline-experience/companion.png'
@@ -74,6 +81,8 @@ const PROFILE_APPEARANCE_ID = 'profile-appearance'
 export interface Config {
   /** Absolute frontend dist root that owns `/worldline-experience/*`. */
   frontendRoot?: string
+  /** Streaming resource-upload safety ceiling. Default: 128 GiB. */
+  maxResourceUploadBytes?: number
 }
 
 const YACHIYO_FAVORITE_SONG = {
@@ -212,6 +221,28 @@ function stringValue(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback
 }
 
+function knowledgeMutationPath(value: unknown, allowRoot = false): string {
+  const path = stringValue(value).trim().replaceAll('\\', '/').replace(/^\/+|\/+$/gu, '')
+  const parts = path.split('/')
+  if (path === '' || (!allowRoot && parts.length < 2)
+    || (parts[0] !== 'memory' && parts[0] !== 'procedures')
+    || parts.some(part => part === '' || part === '.' || part === '..' || part.startsWith('.'))) {
+    throw new CompanionRequestError('只能管理记忆与能力目录中的普通文件和文件夹', 403)
+  }
+  return path
+}
+
+function knowledgeLeafName(value: unknown, directory: boolean): string {
+  const name = stringValue(value).trim().normalize('NFKC')
+  if (name === '' || name === '.' || name === '..' || name.startsWith('.')
+    || /[<>:"/\\|?*\u0000-\u001f]/u.test(name)) {
+    throw new CompanionRequestError('文件或文件夹名称无效')
+  }
+  if (name.length > 120) throw new CompanionRequestError('文件或文件夹名称不能超过 120 个字符')
+  if (directory) return name
+  return name.toLocaleLowerCase().endsWith('.md') ? name : `${name}.md`
+}
+
 function referenceDraft(value: unknown): ReferenceDraft {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new CompanionRequestError('引用条目格式无效')
@@ -251,7 +282,7 @@ function vaultReference(value: VaultResource, url: string): import('./contracts.
 function knowledgeEntry(value: VaultEntry): import('./contracts.ts').KnowledgeTreeEntry {
   return { name: value.name, path: value.uri.slice('vault://'.length),
     kind: value.kind === 'directory' ? 'directory' : 'document', updatedAt: value.updatedAt,
-    size: value.bytes }
+    size: value.bytes, revision: value.revision }
 }
 
 function knowledgeDocument(value: VaultDocument): import('./contracts.ts').KnowledgeDocument {
@@ -460,7 +491,7 @@ function draft(value: unknown): VirtualCompanionDraft {
     throw new CompanionRequestError('伙伴资料格式无效')
   }
   const body = value as Record<string, unknown>
-  const avatar = image(body.avatar, '头像')
+  const avatar = image(body.avatar, '头像', true) || randomDefaultCompanionArt()
   return {
     name: field(body.name, '名称', 80),
     handle: field(body.handle, '身份标题', 120),
@@ -473,6 +504,33 @@ function draft(value: unknown): VirtualCompanionDraft {
     style: field(body.style, '人设性格', 6_000),
     speakingStyle: field(body.speakingStyle, '说话语气', 6_000),
     behaviorLogic: field(body.behaviorLogic, '行为逻辑', 8_000),
+  }
+}
+
+function detailWithPrefix(module: SelfModule | undefined, prefix: string): string | undefined {
+  return module?.details.find(value => value.startsWith(prefix))?.slice(prefix.length).trim()
+}
+
+/** Project the legacy runtime shape from the authoritative self Markdown modules. */
+function projectCompanion(profile: VirtualCompanion, self: SelfSnapshot): VirtualCompanion {
+  const get = (id: string): SelfModule | undefined => self.modules.find(item => item.id === id)
+  const identity = get('identity'); const appearance = get('appearance'); const persona = get('persona')
+  const identityMatch = /^(.+?)（(.+)）$/u.exec(identity?.summary.trim() ?? '')
+  const avatar = detailWithPrefix(appearance, '形象资源：') || profile.avatar || DEFAULT_COMPANION_ART
+  const portrait = detailWithPrefix(appearance, '立绘资源：') ?? avatar
+  return {
+    ...profile,
+    name: identityMatch?.[1]?.trim() || profile.name,
+    handle: identityMatch?.[2]?.trim() || identity?.summary.trim() || profile.handle,
+    avatar,
+    portrait,
+    status: get('state')?.summary ?? profile.status,
+    description: identity?.details[0] ?? profile.description,
+    persona: identity?.details[1] ?? profile.persona,
+    style: persona?.summary ?? profile.style,
+    speakingStyle: get('voice')?.summary ?? profile.speakingStyle,
+    behaviorLogic: persona?.details[1] ?? profile.behaviorLogic,
+    updatedAt: Math.max(profile.updatedAt, ...self.modules.map(module => module.updatedAt)),
   }
 }
 
@@ -500,6 +558,7 @@ export class VirtualCompanionDirectory {
    */
   readonly ready: Promise<void>
   private readonly agentVaults: AgentVaultService | undefined
+  private releaseVaultChanges: (() => void) | undefined
 
   constructor(
     private readonly logger: Context['logger'],
@@ -576,14 +635,22 @@ export class VirtualCompanionDirectory {
       vaults: this.agentVaults,
     })
     if (this.agentVaults !== undefined) {
-      for (const profile of this.data.companions) await this.syncProfile(profile)
+      await this.refreshProfilesFromVault()
+      for (const profile of this.data.companions) await this.syncAppearanceResource(profile)
       await this.seedBuiltInKnowledge()
       await this.seedBuiltInReferences()
+      this.releaseVaultChanges = this.agentVaults.subscribeChanges((change) => {
+        if (change.agentId === 'public' || !change.paths.some(path => path.startsWith('self/'))) return
+        void this.refreshProfileFromVault(change.agentId).catch((error: unknown) => {
+          this.logWarning(`Failed to refresh companion projection for ${change.agentId}.`, error)
+        })
+      })
     }
     await this.save()
   }
 
-  private async syncProfile(profile: VirtualCompanion): Promise<void> {
+  /** Write profile-editor input into the authoritative self Markdown modules. */
+  private async writeProfileToVault(profile: VirtualCompanion): Promise<void> {
     if (this.agentVaults === undefined) return
     const known = (await this.agentVaults.listAgents()).some(item => item.agent.id === profile.id)
     if (!known) await this.agentVaults.createAgent(profile.id, profile.name)
@@ -612,6 +679,39 @@ export class VirtualCompanionDirectory {
       { actor: { type: 'user', id: 'companion-profile-editor' }, reason: 'User updated companion profile.',
         expectedRevision: current.revision })
     }
+  }
+
+  private async refreshProfilesFromVault(): Promise<void> {
+    if (this.agentVaults === undefined) return
+    const known = new Set((await this.agentVaults.listAgents()).map(item => item.agent.id))
+    for (let index = 0; index < this.data.companions.length; index++) {
+      const profile = this.data.companions[index]
+      if (profile === undefined) continue
+      if (!known.has(profile.id)) await this.writeProfileToVault(profile)
+      this.data.companions[index] = projectCompanion(profile, await this.agentVaults.inspectSelf(profile.id))
+    }
+  }
+
+  /** Re-read every companion projection directly from self Markdown. */
+  async refreshProfiles(): Promise<VirtualCompanionSnapshot> {
+    await this.ready
+    return await this.exclusive(async () => {
+      await this.refreshProfilesFromVault()
+      await this.save()
+      return this.snapshot()
+    })
+  }
+
+  private async refreshProfileFromVault(agentId: string): Promise<void> {
+    const vaults = this.agentVaults
+    if (vaults === undefined) return
+    await this.exclusive(async () => {
+      const index = this.data.companions.findIndex(item => item.id === agentId)
+      const profile = this.data.companions[index]
+      if (index < 0 || profile === undefined) return
+      this.data.companions[index] = projectCompanion(profile, await vaults.inspectSelf(agentId))
+      await this.save()
+    })
   }
 
   private async appearanceSource(profile: VirtualCompanion): Promise<{
@@ -752,7 +852,8 @@ export class VirtualCompanionDirectory {
       if (agentId === 'public' || this.data.companions.some(item => item.id === agentId)) return this.snapshot()
       const self = await this.vaults.inspectSelf(agentId); const get = (id: string) => self.modules.find(item => item.id === id)
       const identity = get('identity'); const appearance = get('appearance'); const persona = get('persona')
-      const avatar = appearance?.details.find(item => item.startsWith('形象资源：'))?.slice('形象资源：'.length) ?? ''
+      const avatar = appearance?.details.find(item => item.startsWith('形象资源：'))
+        ?.slice('形象资源：'.length).trim() || DEFAULT_COMPANION_ART
       const now = Date.now(); const name = identity?.summary.split('（', 1)[0]?.trim() || agentId
       this.data.companions.push({ id: agentId, name, handle: identity?.summary ?? name,
         avatar, portrait: avatar, status: get('state')?.summary ?? '', description: identity?.details[0] ?? '',
@@ -902,7 +1003,10 @@ export class VirtualCompanionDirectory {
   /**
    * Close.
    */
-  close(): void {}
+  close(): void {
+    this.releaseVaultChanges?.()
+    this.releaseVaultChanges = undefined
+  }
 
   /**
    * Bind actor.
@@ -996,7 +1100,7 @@ export class VirtualCompanionDirectory {
         createdAt: now,
         updatedAt: now,
       }
-      await this.syncProfile(created)
+      await this.writeProfileToVault(created)
       this.data.companions.push(created)
       await this.save()
       return this.snapshot()
@@ -1029,7 +1133,7 @@ export class VirtualCompanionDirectory {
         ...input,
         updatedAt: Date.now(),
       }
-      await this.syncProfile(updated)
+      await this.writeProfileToVault(updated)
       this.data.companions[index] = updated
       await this.save()
       return this.snapshot()
@@ -1061,7 +1165,7 @@ export class VirtualCompanionDirectory {
           reason: 'User restored the built-in companion.' })
         await this.agentVaults.createAgent(id, original.name)
         const restored = this.data.companions[index]
-        await this.syncProfile(restored)
+        await this.writeProfileToVault(restored)
         await this.seedBuiltInKnowledge(id)
         await this.seedBuiltInReferences(id)
       }
@@ -1398,6 +1502,72 @@ export function installLibraryRuntime(directory: VirtualCompanionDirectory, agen
   disposers.push(agent.ctx.systemPrompt.context({ name: 'agent-vault:public-policy', order: -8,
     text: () => '你只能通过 Agent Vault 工具访问公共认知。先快速召回方向，再渐进读取；不要全量扫描，不要把普通知识检索写入 self。公共引用资料是真实可发送的图片、GIF、视频、音频或其他资源，不要用 Emoji、颜文字或互联网搜索冒充。用户点名引用资料时，先用 expression_search 按原名查找，再把返回的 asset_id 交给 express。' }))
   disposers.push(agent.ctx.tools.register(defineTool({
+    name: 'create_virtual_companion',
+    description: 'Create one independent, fully described virtual companion and its complete Agent Vault only after the user explicitly asks. Omit artwork to sample one bundled Huan form once and persist it.',
+    parameters: {
+      name: { type: 'string', required: true },
+      handle: { type: 'string', required: true,
+        description: 'Human-readable identity title shown beside the name, such as "NAHIDA · 须弥智慧之神 / 小吉祥草王". Do not provide only a lowercase slug.' },
+      status: { type: 'string', required: true },
+      description: { type: 'string', required: true },
+      persona: { type: 'string', required: true },
+      style: { type: 'string', required: true },
+      speaking_style: { type: 'string', required: true },
+      behavior_logic: { type: 'string', required: true },
+      appearance_variant: {
+        type: 'string',
+        enum: ['light', 'dark'],
+        description: 'Optional explicit bundled appearance. Omit it to choose light or dark with equal probability.',
+      },
+      avatar: { type: 'string' },
+      portrait: { type: 'string' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        companion_id: { type: 'string', required: true },
+        name: { type: 'string', required: true },
+        avatar: { type: 'string', required: true },
+        vault_ready: { type: 'boolean', required: true },
+        knowledge_roots: { type: 'array', required: true, items: { type: 'string' } },
+      } },
+      render: (_args, value) => [{ type: 'text', text:
+        `Virtual companion created: ${value.name} (${value.companion_id}); independent Agent Vault ready.` }],
+    },
+    execute: async (args) => {
+      await directory.ready
+      const defaultArtwork = args.appearance_variant === 'dark'
+        ? DEFAULT_COMPANION_ART_DARK
+        : args.appearance_variant === 'light'
+          ? DEFAULT_COMPANION_ART
+          : randomDefaultCompanionArt()
+      const handle = /^[a-z\d_.-]+$/iu.test(args.handle.trim())
+        ? `${args.handle.trim().toLocaleUpperCase('en-US')} · ${args.status.trim()}`
+        : args.handle
+      const snapshot = await directory.create({
+        name: args.name,
+        handle,
+        status: args.status,
+        description: args.description,
+        persona: args.persona,
+        style: args.style,
+        speakingStyle: args.speaking_style,
+        behaviorLogic: args.behavior_logic,
+        avatar: args.avatar ?? defaultArtwork,
+        portrait: args.portrait ?? args.avatar ?? defaultArtwork,
+      })
+      const companion = snapshot.companions.find(item => item.name === args.name && !item.builtIn)
+      if (companion === undefined) throw new Error('Created companion is missing from the directory projection.')
+      await directory.vaults.manifest(companion.id)
+      return {
+        companion_id: companion.id,
+        name: companion.name,
+        avatar: companion.avatar,
+        vault_ready: true,
+        knowledge_roots: ['self', 'memory', 'procedures', 'resources', 'skills'],
+      }
+    },
+  })))
+  disposers.push(agent.ctx.tools.register(defineTool({
     name: 'expression_search',
     description: 'Find up to five enabled public reference resources by exact title and complementary semantic keywords. Use this before express when the user names a resource.',
     parameters: {
@@ -1475,7 +1645,7 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   for await (const chunk of req as AsyncIterable<Uint8Array>) {
     const buffer = Buffer.from(chunk)
     size += buffer.length
-    if (size > MAX_BODY_BYTES) throw new CompanionRequestError('请求内容过大', 413)
+    if (size > MAX_CONTROL_BODY_BYTES) throw new CompanionRequestError('请求内容过大', 413)
     chunks.push(buffer)
   }
   if (chunks.length === 0) return {}
@@ -1497,8 +1667,56 @@ function send(res: ServerResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value))
 }
 
+async function sendResourceContent(req: IncomingMessage, res: ServerResponse,
+  content: VaultResourceContent): Promise<void> {
+  if (content.type === 'external') {
+    res.writeHead(302, { location: content.url, 'cache-control': 'private, max-age=300' })
+    res.end()
+    return
+  }
+  const requestedRange = req.headers.range
+  const range = requestedRange === undefined ? null : /^bytes=(\d*)-(\d*)$/u.exec(requestedRange)
+  let start = 0
+  let end = content.bytes - 1
+  let status = 200
+  if (requestedRange !== undefined && (range === null || requestedRange.includes(','))) {
+    res.writeHead(416, { 'content-range': `bytes */${content.bytes}` })
+    res.end()
+    return
+  }
+  if (range !== null) {
+    start = range[1] === '' ? Math.max(0, content.bytes - Number(range[2])) : Number(range[1])
+    end = range[2] === '' ? end : Number(range[2])
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start
+      || start >= content.bytes) {
+      res.writeHead(416, { 'content-range': `bytes */${content.bytes}` })
+      res.end()
+      return
+    }
+    end = Math.min(end, content.bytes - 1)
+    status = 206
+  }
+  res.writeHead(status, {
+    'content-type': content.mimeType,
+    'x-content-type-options': 'nosniff',
+    'content-length': String(end - start + 1),
+    'accept-ranges': 'bytes',
+    'cache-control': 'private, max-age=31536000, immutable',
+    ...(status === 206 ? { 'content-range': `bytes ${start}-${end}/${content.bytes}` } : {}),
+  })
+  if (req.method === 'HEAD' || content.bytes === 0) {
+    res.end()
+    return
+  }
+  await pipeline(createReadStream(content.path, { start, end }), res)
+}
+
 /** Mount persistence, HTTP CRUD, mention invitations, and dynamic room context. */
 export function apply(ctx: Context, config: Config = {}): void {
+  const maxResourceUploadBytes = config.maxResourceUploadBytes ?? DEFAULT_MAX_RESOURCE_UPLOAD_BYTES
+  if (!Number.isSafeInteger(maxResourceUploadBytes) || maxResourceUploadBytes <= 0) {
+    throw new Error('virtual companion maxResourceUploadBytes must be a positive safe integer')
+  }
   const directory = new VirtualCompanionDirectory(ctx.logger, undefined, ctx.agentVaults, config.frontendRoot)
   const actors = new CompanionActorRuntime(ctx, directory)
   const pendingReferenceUploads = new Map<string, { draft: ReferenceDraft; expiresAt: number }>()
@@ -1544,29 +1762,47 @@ export function apply(ctx: Context, config: Config = {}): void {
       const pathname = new URL(req.url ?? '/', 'http://local').pathname
       action = pathname.slice(API_PATH.length).replace(/^\//u, '')
       if (req.method === 'GET' && action === '') {
-        send(res, 200, { ok: true, value: directory.snapshot() })
+        send(res, 200, { ok: true, value: await directory.refreshProfiles() })
         return
       }
-      if (req.method === 'GET' && action.startsWith('vault/resource/')) {
+      if (req.method === 'GET' && action.startsWith('vault/events/')) {
+        const agentId = decodeURIComponent(action.slice('vault/events/'.length))
+        await directory.vaults.inspectSelf(agentId)
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-transform',
+          connection: 'keep-alive',
+          'x-accel-buffering': 'no',
+        })
+        res.write(`data: ${JSON.stringify({ agentId, paths: [] })}\n\n`)
+        const release = directory.vaults.subscribeChanges((change) => {
+          if (change.agentId !== agentId || res.destroyed) return
+          res.write(`data: ${JSON.stringify(change)}\n\n`)
+        })
+        const heartbeat = setInterval(() => {
+          if (!res.destroyed) res.write(': keep-alive\n\n')
+        }, 15_000)
+        let closed = false
+        const close = (): void => {
+          if (closed) return
+          closed = true
+          clearInterval(heartbeat)
+          release()
+        }
+        req.once('close', close)
+        res.once('close', close)
+        return
+      }
+      if ((req.method === 'GET' || req.method === 'HEAD') && action.startsWith('vault/resource/')) {
         const [, , agentId = '', resourceId = ''] = action.split('/')
         const content = await directory.vaults.resourceContent(decodeURIComponent(agentId), decodeURIComponent(resourceId))
-        if (content.type === 'external') {
-          res.writeHead(302, { location: content.url, 'cache-control': 'private, max-age=300' }); res.end(); return
-        }
-        const range = /^bytes=(\d*)-(\d*)$/u.exec(req.headers.range ?? '')
-        let start = 0; let end = content.bytes - 1; let status = 200
-        if (range !== null) {
-          start = range[1] === '' ? Math.max(0, content.bytes - Number(range[2])) : Number(range[1])
-          end = range[2] === '' ? end : Number(range[2])
-          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start
-            || start >= content.bytes) { res.writeHead(416, { 'content-range': `bytes */${content.bytes}` }); res.end(); return }
-          end = Math.min(end, content.bytes - 1); status = 206
-        }
-        res.writeHead(status, { 'content-type': content.mimeType, 'x-content-type-options': 'nosniff',
-          'content-length': String(end - start + 1), 'accept-ranges': 'bytes',
-          'cache-control': 'private, max-age=31536000, immutable',
-          ...(status === 206 ? { 'content-range': `bytes ${start}-${end}/${content.bytes}` } : {}) })
-        await pipeline(createReadStream(content.path, { start, end }), res); return
+        await sendResourceContent(req, res, content)
+        return
+      }
+      if ((req.method === 'GET' || req.method === 'HEAD') && action.startsWith('vault/trash/avatar/')) {
+        const trashId = decodeURIComponent(action.slice('vault/trash/avatar/'.length))
+        await sendResourceContent(req, res, await directory.vaults.trashAppearanceContent(trashId))
+        return
       }
       if (req.method === 'GET' && action.startsWith('vault/export/')) {
         const agentId = decodeURIComponent(action.slice('vault/export/'.length)); const transfer = join(worldlineHomePath('transfers'), `${randomUUID()}.wlvault`)
@@ -1601,14 +1837,16 @@ export function apply(ctx: Context, config: Config = {}): void {
         const expectedBytes = Number.isSafeInteger(contentLength) && contentLength >= 0
           ? contentLength
           : undefined
-        if (expectedBytes !== undefined && expectedBytes > MAX_BODY_BYTES)
+        if (expectedBytes !== undefined && expectedBytes > maxResourceUploadBytes)
           throw new CompanionRequestError('上传资源过大', 413)
         const transfer = join(worldlineHomePath('transfers'), `${randomUUID()}.resource`)
         await mkdir(worldlineHomePath('transfers'), { recursive: true })
         let bytes = 0
         const limiter = new Transform({ transform(chunk: Buffer, _encoding, callback) {
           bytes += chunk.byteLength
-          callback(bytes > MAX_BODY_BYTES ? new CompanionRequestError('上传资源过大', 413) : null, chunk)
+          callback(bytes > maxResourceUploadBytes
+            ? new CompanionRequestError('上传资源过大', 413)
+            : null, chunk)
         } })
         try {
           await pipeline(req, limiter, createWriteStream(transfer, { flags: 'wx', mode: 0o600 }))
@@ -1628,6 +1866,28 @@ export function apply(ctx: Context, config: Config = {}): void {
       const body = await readBody(req)
       requestBody = body
       const scope = typeof body.scope === 'string' ? body.scope : ''
+      if (action === 'vault/trash/list') {
+        const entries = await directory.vaults.listTrash()
+        send(res, 200, { ok: true, value: entries.map(entry => ({
+          ...entry,
+          avatar: entry.hasAvatar
+            ? `${API_PATH}/vault/trash/avatar/${encodeURIComponent(entry.id)}`
+            : '',
+        })) })
+        return
+      }
+      if (action === 'vault/trash/restore') {
+        const manifest = await directory.vaults.restoreTrash(stringValue(body.id))
+        await directory.registerImportedCompanion(manifest.agent.id)
+        send(res, 200, { ok: true, value: { manifest, directory: directory.snapshot() } }); return
+      }
+      if (action === 'vault/trash/delete') {
+        await directory.vaults.deleteTrash(stringValue(body.id))
+        send(res, 200, { ok: true, value: { removed: true } }); return
+      }
+      if (action === 'vault/trash/empty') {
+        send(res, 200, { ok: true, value: { removed: await directory.vaults.emptyTrash() } }); return
+      }
       if (action === 'vault/self') {
         send(res, 200, { ok: true, value: await directory.vaults.inspectSelf(scope) }); return
       }
@@ -1716,33 +1976,66 @@ export function apply(ctx: Context, config: Config = {}): void {
         return
       }
       if (action === 'knowledge/create') {
-        const title = stringValue(body.title).trim(); const slug = title.normalize('NFKC')
-          .replace(/[<>:"/\\|?*\u0000-\u001f]+/gu, '-').replace(/\s+/gu, '-').slice(0, 80) || randomUUID()
+        const isDirectory = body.kind === 'directory'
+        const parent = knowledgeMutationPath(body.parent ?? 'memory/long/pages', true)
+        const name = knowledgeLeafName(body.name ?? body.title, isDirectory)
+        const path = `${parent}/${name}`
+        if (isDirectory) {
+          send(res, 200, {
+            ok: true,
+            value: knowledgeEntry(await directory.vaults.createDirectory(scope, `vault://${path}`,
+              { actor: { type: 'user', id: 'vault-editor' },
+                reason: 'User created a Vault directory.' })),
+          })
+          return
+        }
+        const title = stringValue(body.title, name.replace(/\.md$/iu, '')).trim()
         const content = ['---', `title: ${JSON.stringify(title)}`, 'tags: []', `summary: ${JSON.stringify(title)}`,
           'sources: []', '---', '', `# ${title}`, ''].join('\n')
         send(res, 200, {
           ok: true,
-          value: knowledgeDocument(await directory.vaults.write(scope, `vault://memory/long/pages/${slug}.md`, content,
+          value: knowledgeDocument(await directory.vaults.write(scope, `vault://${path}`,
+            typeof body.content === 'string' ? body.content : content,
             { actor: { type: 'user', id: 'vault-editor' }, reason: 'User created a Vault document.' })),
         })
         return
       }
-      if (action === 'knowledge/move') {
+      if (action === 'knowledge/copy') {
+        const source = knowledgeMutationPath(body.source)
+        const target = knowledgeMutationPath(body.target)
         send(res, 200, {
           ok: true,
-          value: await directory.vaults.move(scope, `vault://${stringValue(body.source)}`,
-            `vault://${stringValue(body.target)}`, { actor: { type: 'user', id: 'vault-editor' },
-              reason: 'User moved a Vault document.', expectedRevision: stringValue(body.expectedRevision) }),
+          value: knowledgeEntry(await directory.vaults.copy(scope, `vault://${source}`,
+            `vault://${target}`, { actor: { type: 'user', id: 'vault-editor' },
+              reason: 'User copied a Vault entry.',
+              ...(typeof body.expectedRevision === 'string'
+                ? { expectedRevision: body.expectedRevision }
+                : {}) })),
+        })
+        return
+      }
+      if (action === 'knowledge/move') {
+        const source = knowledgeMutationPath(body.source)
+        const target = knowledgeMutationPath(body.target)
+        send(res, 200, {
+          ok: true,
+          value: knowledgeEntry(await directory.vaults.move(scope, `vault://${source}`,
+            `vault://${target}`, { actor: { type: 'user', id: 'vault-editor' },
+              reason: 'User moved a Vault entry.',
+              ...(typeof body.expectedRevision === 'string'
+                ? { expectedRevision: body.expectedRevision }
+                : {}) })),
         })
         return
       }
       if (action === 'knowledge/trash') {
-        const source = stringValue(body.path); const first = source.split('/', 1)[0]
-        if (first === 'self') throw new CompanionRequestError('印象卡模块不能从文档工作台删除', 403)
+        const source = knowledgeMutationPath(body.path); const first = source.split('/', 1)[0]
         const base = first === 'procedures' ? 'procedures/.trash' : 'memory/long/.trash'
         await directory.vaults.move(scope, `vault://${source}`, `vault://${base}/${Date.now()}-${basename(source)}`,
-          { actor: { type: 'user', id: 'vault-editor' }, reason: 'User moved a document to recoverable trash.',
-            expectedRevision: stringValue(body.expectedRevision) })
+          { actor: { type: 'user', id: 'vault-editor' }, reason: 'User moved an entry to recoverable trash.',
+            ...(typeof body.expectedRevision === 'string'
+              ? { expectedRevision: body.expectedRevision }
+              : {}) })
         send(res, 200, { ok: true, value: { removed: true } })
         return
       }

@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-base",
   "description": "The shared worldline core as a profile bundle: every profile's first patch layer, inserting the base plugin rows over the empty profile root",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publishConfig": {
     "access": "public"
   },
@@ -90,7 +90,6 @@
     "@deepseek-ai/dsh-settings-file": "workspace:^",
     "@deepseek-ai/dsh-shell-env": "workspace:^",
     "@deepseek-ai/dsh-skill": "workspace:^",
-    "@deepseek-ai/dsh-skill-badge": "workspace:^",
     "@deepseek-ai/dsh-skill-filesystem": "workspace:^",
     "@deepseek-ai/dsh-worldline-video": "workspace:^",
     "@deepseek-ai/dsh-spill-local": "workspace:^",

@@ -91,6 +91,7 @@ export const hostPreviewWorkspaceFileValueSchema = z.object({
   mimeType: z.string(),
   encoding: z.enum(['utf8', 'base64']).optional(),
   content: z.string().optional(),
+  streamUrl: z.string().optional(),
   tooLarge: z.boolean(),
 }) satisfies z.ZodType<Wire<ResponseValue<'host.previewWorkspaceFile'>>>
 
@@ -121,7 +122,8 @@ const workspaceEntryNameSchema = z.string().refine(
 
 /** All filesystem mutations supported by the replaceable Workspace-tree capability. */
 export const hostMutateWorkspaceTreeRequestSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.literal('create-file'), parent: z.string(), name: workspaceEntryNameSchema, content: z.string().optional() }),
+  z.object({ operation: z.literal('create-file'), parent: z.string(), name: workspaceEntryNameSchema,
+    content: z.string().optional(), contentEncoding: z.enum(['utf8', 'base64']).optional() }),
   z.object({ operation: z.literal('create-directory'), parent: z.string(), name: workspaceEntryNameSchema }),
   z.object({ operation: z.literal('rename'), path: z.string(), name: workspaceEntryNameSchema }),
   z.object({ operation: z.literal('copy'), path: z.string(), targetDirectory: z.string() }),

@@ -153,6 +153,20 @@ describe('central workspace editor', () => {
     expect(view.container.querySelector('video')?.getAttribute('src')).toBe('data:video/mp4;base64,BBBB')
   })
 
+  it('uses range-capable stream URLs for movie-sized media', () => {
+    const sessionId = sid('workspace-streamed-movie')
+    workspaceEditor.open(sessionId, {
+      path: 'C:\\workspace\\movie.mp4', name: 'movie.mp4', size: 8_000_000_000,
+      modifiedAt: Date.now(), kind: 'video', mimeType: 'video/mp4', tooLarge: false,
+      streamUrl: '/api/workspace.media?token=00000000-0000-4000-8000-000000000001',
+    })
+    const view = render(<WorkspaceEditor {...props(sessionId)} />)
+    const video = view.container.querySelector('video')
+    expect(video?.getAttribute('src')).toContain('/api/workspace.media?token=')
+    expect(video?.getAttribute('preload')).toBe('metadata')
+    expect(video?.playsInline).toBe(true)
+  })
+
   it('shows a readable fallback when Chromium cannot decode supported media', () => {
     const sessionId = sid('workspace-media-error')
     workspaceEditor.open(sessionId, {
