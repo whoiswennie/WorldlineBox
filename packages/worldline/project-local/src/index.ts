@@ -13,6 +13,7 @@ import {
   type ProjectTemplate,
   WWS_VERSION,
   allocateWorldlineId,
+  stableStringify,
 } from '@deepseek-ai/dsh-worldline-standard'
 import {
   type CopyEntryRequest,
@@ -30,6 +31,8 @@ import {
   type ProjectLibraryQuery,
   type ProjectLink,
   type ProjectRootView,
+  type ProjectSourceFile,
+  type ProjectSourceSnapshot,
   type ProjectSearchHit,
   type ProjectSummary,
   type ProjectTreeEntry,
@@ -42,12 +45,15 @@ import {
   type RootMigrationPlan,
   type SearchProjectRequest,
   type SetProjectRootRequest,
+  type StoreProjectBuildRequest,
   type TransferJob,
   type TrashEntryRequest,
   type TrashedEntry,
   type TrashedProject,
   type TrashProjectRequest,
   type WriteDocumentRequest,
+  type WriteProjectControlRequest,
+  type ProjectControlDocument,
   WorldlineProjectError,
   WorldlineProjects,
 } from '@deepseek-ai/dsh-worldline-project'
@@ -216,7 +222,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
       manifest,
       path,
       health: 'ready',
-      status: await exists(resolve(path, '.worldline', 'builds', 'active', 'blueprint.json'))
+      status: await exists(resolve(path, '.worldline', 'builds', 'active'))
         ? 'frozen'
         : 'draft',
       sizeBytes: await directorySize(path),
@@ -844,6 +850,106 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     return this.transfer(id)
   }
 
+  async sourceSnapshot(projectId: ProjectId): Promise<ProjectSourceSnapshot> {
+    const project = await this.projectPath(projectId)
+    const manifest = await readManifest(project)
+    const metadata = await this.metadata(project)
+    const files: ProjectSourceFile[] = []
+    for (const entry of await walk(project)) {
+      if (entry.relativePath === PROJECT_MANIFEST) continue
+      if (!entry.dirent.isFile() || !TEXT_EXTENSIONS.has(extname(entry.relativePath).toLowerCase())) continue
+      const content = await readTextBounded(resolveInside(project, entry.relativePath))
+      const sidecar = metadata.ensure(entry.relativePath)
+      files.push({
+        id: sidecar.id,
+        path: entry.relativePath,
+        content,
+        revision: revisionOf(content),
+        ...(sidecar.objectKind === undefined ? {} : { objectKind: sidecar.objectKind }),
+        tags: sidecar.tags,
+      })
+    }
+    await metadata.save()
+    files.sort((left, right) => left.path.localeCompare(right.path))
+    for (const file of files) {
+      const current = await readTextBounded(resolveInside(project, file.path))
+      if (revisionOf(current) !== file.revision) {
+        throw new WorldlineProjectError(
+          'revision-conflict',
+          `project source changed while capturing a build snapshot: ${file.path}`,
+        )
+      }
+    }
+    const currentPaths = (await walk(project))
+      .filter(entry => entry.relativePath !== PROJECT_MANIFEST && entry.dirent.isFile()
+        && TEXT_EXTENSIONS.has(extname(entry.relativePath).toLowerCase()))
+      .map(entry => entry.relativePath)
+      .sort((left, right) => left.localeCompare(right))
+    if (stableStringify(currentPaths) !== stableStringify(files.map(file => file.path))) {
+      throw new WorldlineProjectError('revision-conflict', 'project files changed while capturing a build snapshot')
+    }
+    const latestManifest = await readManifest(project)
+    if (latestManifest.id !== manifest.id || latestManifest.updatedAt !== manifest.updatedAt) {
+      throw new WorldlineProjectError('revision-conflict', 'project manifest changed during build snapshot capture')
+    }
+    return {
+      projectId,
+      manifest,
+      capturedAt: now(),
+      digest: revisionOf(stableStringify({
+        manifest,
+        files: files.map(file => ({ path: file.path, revision: file.revision })),
+      })),
+      files,
+    }
+  }
+
+  async readControl(
+    projectId: ProjectId,
+    namespace: string,
+    path: string,
+  ): Promise<ProjectControlDocument | undefined> {
+    const absolute = await this.controlPath(projectId, namespace, path)
+    if (!(await exists(absolute))) return undefined
+    const content = await readTextBounded(absolute)
+    return { content, revision: revisionOf(content) }
+  }
+
+  async writeControl(request: WriteProjectControlRequest): Promise<ProjectControlDocument> {
+    const absolute = await this.controlPath(request.projectId, request.namespace, request.path)
+    const current = await exists(absolute) ? await readTextBounded(absolute) : undefined
+    const revision = current === undefined ? undefined : revisionOf(current)
+    if (request.expectedRevision !== undefined && request.expectedRevision !== revision) {
+      throw new WorldlineProjectError('revision-conflict', 'control document changed concurrently')
+    }
+    await durableWrite(absolute, request.content)
+    return { content: request.content, revision: revisionOf(request.content) }
+  }
+
+  async storeBuild(request: StoreProjectBuildRequest): Promise<void> {
+    if (!/^[a-f0-9]{64}$/u.test(request.digest)) {
+      throw new WorldlineProjectError('path-invalid', 'build digest must be lowercase SHA-256')
+    }
+    const project = await this.projectPath(request.projectId)
+    const builds = resolve(project, CONTROL_DIRECTORY, 'builds')
+    const destination = resolve(builds, request.digest)
+    if (await exists(destination)) {
+      await durableWrite(resolve(builds, 'active'), `${request.digest}\n`)
+      return
+    }
+    const staging = resolve(builds, `.staging-${randomUUID()}`)
+    try {
+      await durableWrite(resolve(staging, 'blueprint.json'), request.blueprint)
+      await durableWrite(resolve(staging, 'certificate.json'), request.certificate)
+      await durableWrite(resolve(staging, 'source-snapshot.json'), request.sourceSnapshot)
+      await rename(staging, destination)
+      await durableWrite(resolve(builds, 'active'), `${request.digest}\n`)
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true })
+      throw error
+    }
+  }
+
   private beginJob(kind: TransferJob['kind'], totalBytes?: number): TransferJob {
     const job: TransferJob & { controller: AbortController } = {
       id: randomUUID(), kind, state: 'running', completedBytes: 0,
@@ -853,6 +959,17 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     this.jobs.set(job.id, job)
     const { controller: _controller, ...view } = job
     return view
+  }
+
+  private async controlPath(projectId: ProjectId, namespace: string, path: string): Promise<string> {
+    if (!/^[a-z][a-z0-9-]*$/u.test(namespace)) {
+      throw new WorldlineProjectError('path-invalid', `invalid control namespace: ${namespace}`)
+    }
+    const project = await this.projectPath(projectId)
+    const base = resolve(project, CONTROL_DIRECTORY, namespace)
+    const absolute = resolveInside(base, path)
+    await assertNoSymlink(base, absolute, true)
+    return absolute
   }
 
   private finishJob(id: string, completedBytes?: number, projectId?: ProjectId): TransferJob {

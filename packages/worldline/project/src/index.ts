@@ -16,6 +16,7 @@ import type {
   ProjectLibraryQuery,
   ProjectLink,
   ProjectRootView,
+  ProjectSourceSnapshot,
   ProjectSearchHit,
   ProjectSummary,
   ProjectTreeListing,
@@ -27,12 +28,15 @@ import type {
   RootMigrationPlan,
   SearchProjectRequest,
   SetProjectRootRequest,
+  StoreProjectBuildRequest,
   TransferJob,
   TrashEntryRequest,
   TrashedEntry,
   TrashedProject,
   TrashProjectRequest,
   WriteDocumentRequest,
+  WriteProjectControlRequest,
+  ProjectControlDocument,
 } from './types.ts'
 
 export * from './types.ts'
@@ -71,6 +75,19 @@ export abstract class WorldlineProjects extends TypertRemoteService {
   abstract importProject(request: ImportProjectRequest): Promise<TransferJob>
   abstract transfer(id: string): Promise<TransferJob>
   abstract cancelTransfer(id: string): Promise<TransferJob>
+
+  /** Capture all text sources at one point for a Host-side compiler. Not exported over Remote. */
+  abstract sourceSnapshot(projectId: ProjectTreeRequest['projectId']): Promise<ProjectSourceSnapshot>
+  /** Read a namespaced Host-only compiler/runtime sidecar. Not exported over Remote. */
+  abstract readControl(
+    projectId: ProjectTreeRequest['projectId'],
+    namespace: string,
+    path: string,
+  ): Promise<ProjectControlDocument | undefined>
+  /** Durably write a namespaced Host-only sidecar with optimistic concurrency. */
+  abstract writeControl(request: WriteProjectControlRequest): Promise<ProjectControlDocument>
+  /** Commit an immutable build directory and activate it only after every artifact is durable. */
+  abstract storeBuild(request: StoreProjectBuildRequest): Promise<void>
 
   @Remote('root') remoteRoot(): Promise<ProjectRootView> { return this.root() }
   @Remote('setRoot') remoteSetRoot(value: SetProjectRootRequest): Promise<RootMigrationPlan> { return this.setRoot(value) }

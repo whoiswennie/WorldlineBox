@@ -72,6 +72,12 @@
       "@deepseek-ai/dsh-worldline-standard": [
         "./packages/worldline/standard/src/index.ts"
       ],
+      "@deepseek-ai/dsh-worldline-compiler": [
+        "./packages/worldline/compiler/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-compiler/types": [
+        "./packages/worldline/compiler/src/types.ts"
+      ],
       "@deepseek-ai/dsh-worldline-project": [
         "./packages/worldline/project/src/index.ts"
       ],

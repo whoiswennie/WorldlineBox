@@ -645,6 +645,9 @@
       "path": "./packages/workspace/workspace"
     },
     {
+      "path": "./packages/worldline/compiler"
+    },
+    {
       "path": "./packages/worldline/project"
     },
     {

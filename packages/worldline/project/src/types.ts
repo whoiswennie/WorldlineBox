@@ -205,6 +205,45 @@ export interface TransferJob {
   readonly error?: string
 }
 
+/** One immutable text input captured for a Host-side compiler build. */
+export interface ProjectSourceFile {
+  readonly id: DocumentId
+  readonly path: string
+  readonly content: string
+  readonly revision: Revision
+  readonly objectKind?: CanonObjectKind
+  readonly tags: readonly string[]
+}
+
+/** Consistent compiler input; `digest` covers the ordered path/revision pairs. */
+export interface ProjectSourceSnapshot {
+  readonly projectId: ProjectId
+  readonly manifest: ProjectManifest
+  readonly capturedAt: string
+  readonly digest: string
+  readonly files: readonly ProjectSourceFile[]
+}
+
+/** Host-only compiler sidecar document, never exposed as a project source file. */
+export interface ProjectControlDocument {
+  readonly content: string
+  readonly revision: Revision
+}
+
+export interface WriteProjectControlRequest extends ProjectRef {
+  readonly namespace: string
+  readonly path: string
+  readonly content: string
+  readonly expectedRevision?: Revision
+}
+
+export interface StoreProjectBuildRequest extends ProjectRef {
+  readonly digest: string
+  readonly blueprint: string
+  readonly certificate: string
+  readonly sourceSnapshot: string
+}
+
 export type WorldlineProjectErrorCode =
   | 'root-not-configured'
   | 'root-unreadable'
