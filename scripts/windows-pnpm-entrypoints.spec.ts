@@ -28,6 +28,17 @@ describe('Windows pnpm entry points', () => {
     expect(read('start-electron.bat')).toContain('call :pnpm install --frozen-lockfile')
   })
 
+  it('assembles the production runtime only for installer packaging', () => {
+    expect(read('build-exe.bat')).toContain('call :pnpm run package:runtime')
+    expect(read('deploy.bat')).not.toContain('call :pnpm run package:runtime')
+    expect(read('start-electron.bat')).not.toContain('dist\\runtime')
+  })
+
+  it('keeps the deployed runtime probe headless', () => {
+    expect(read('scripts/verify-deployed-runtime.mjs'))
+      .toContain("[bin, 'web', '--port', '0', '--no-open']")
+  })
+
   it('runs the pre-push typecheck without a global pnpm command', () => {
     expect(read('lefthook.yml')).toContain('run: node_modules/.bin/pnpm run typecheck')
   })

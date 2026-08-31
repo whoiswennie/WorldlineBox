@@ -19,7 +19,6 @@ for %%A in (%*) do (
 set "PROJECT_NODE=%CD%\node_modules\node\bin\node.exe"
 if not exist "%PROJECT_NODE%" goto :repair
 if not exist "%CD%\apps\desktop\lib\main.mjs" goto :repair
-if not exist "%CD%\dist\runtime\lib\bin.js" goto :repair
 goto :ready
 
 :repair

@@ -44,7 +44,7 @@ if not defined PNPM_MODE (
 
 set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
 
-echo [1/5] Installing the locked workspace dependencies...
+echo [1/4] Installing the locked workspace dependencies...
 call :pnpm install --frozen-lockfile
 if errorlevel 1 goto :failed
 
@@ -76,22 +76,17 @@ if not exist "%ELECTRON_EXE%" (
 )
 
 echo.
-echo [2/5] Verifying runtime identity and removed legacy surfaces...
+echo [2/4] Verifying runtime identity and removed legacy surfaces...
 call :pnpm run verify:runtime-brand
 if errorlevel 1 goto :failed
 
 echo.
-echo [3/5] Building Host, Client, Web, CLI and Desktop...
+echo [3/4] Building Host, Client, Web, CLI and Desktop...
 call :pnpm run build
 if errorlevel 1 goto :failed
 
 echo.
-echo [4/5] Assembling and probing the deployed Cordis runtime...
-call :pnpm run package:runtime
-if errorlevel 1 goto :failed
-
-echo.
-echo [5/5] Running the Desktop smoke test...
+echo [4/4] Running the Desktop smoke test...
 call :pnpm --filter worldline-box-desktop run smoke
 if errorlevel 1 goto :failed
 

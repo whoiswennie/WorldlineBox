@@ -49,7 +49,7 @@ if (!Number.isSafeInteger(startupTimeoutMs) || startupTimeoutMs <= 0) {
 }
 const cwd = mkdtempSync(resolve(tmpdir(), 'worldline-deployed-'))
 let output = ''
-const child = spawn(process.execPath, [bin, 'web', '--port', '0'], {
+const child = spawn(process.execPath, [bin, 'web', '--port', '0', '--no-open'], {
   cwd,
   env: {
     ...process.env,
