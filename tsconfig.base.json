@@ -69,6 +69,15 @@
       "@deepseek-ai/dsh-worldline-video/invariant": [
         "./packages/video/worldline-video/src/invariant.ts"
       ],
+      "@deepseek-ai/dsh-worldline-standard": [
+        "./packages/worldline/standard/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-project": [
+        "./packages/worldline/project/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-project/types": [
+        "./packages/worldline/project/src/types.ts"
+      ],
       "@deepseek-ai/dsh-atomic-write": [
         "./packages/util/atomic-write/src/index.ts"
       ],

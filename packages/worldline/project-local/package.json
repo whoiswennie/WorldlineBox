@@ -1,14 +1,10 @@
 {
-  "name": "@deepseek-ai/dsh-worldline-standard",
-  "description": "Portable WWS contracts and validation primitives for Worldline world projects",
+  "name": "@deepseek-ai/dsh-worldline-project-local",
+  "description": "Durable local filesystem provider for Worldline projects",
   "version": "0.2.3",
-  "publishConfig": { "access": "public" },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/whoiswennie/WorldlineBox.git",
-    "directory": "packages/worldline/standard"
-  },
+  "private": true,
   "type": "module",
+  "license": "MIT",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
@@ -21,13 +17,22 @@
     "./package.json": "./package.json"
   },
   "files": ["lib/index.js", "lib/invariant.js", "lib/types/**/*.d.ts"],
-  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh-settings": "workspace:^",
+    "@deepseek-ai/dsh-worldline-project": "workspace:^",
+    "@deepseek-ai/dsh-worldline-standard": "workspace:^",
+    "@deepseek-ai/schemastery": "workspace:^",
+    "chokidar": "^4.0.3",
+    "smol-toml": "^1.7.1",
+    "tar": "^7.5.22"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
-    "@deepseek-ai/dsh-invariants": "workspace:^"
+    "@deepseek-ai/dsh-invariants": "workspace:^",
+    "@types/node": "^22.0.0"
   }
 }

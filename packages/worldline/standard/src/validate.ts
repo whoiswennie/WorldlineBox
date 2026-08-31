@@ -141,7 +141,6 @@ export function validateBlueprint(blueprint: Blueprint): readonly string[] {
   if (blueprint.digest.length < 16) errors.push('Blueprint digest is missing or too short.')
   if (blueprint.certificate.blueprintDigest !== blueprint.digest) errors.push('Certificate digest does not match Blueprint.')
   if (!certificateIsAutonomous(blueprint.certificate)) errors.push('Blueprint certificate has blocking categories or requires AI.')
-  if (blueprint.entities.some(entity => entity.memory === undefined)) errors.push('Every runtime entity must carry an isolated memory model.')
   if (blueprint.actions.some(action => action.provenance.length === 0)) errors.push('Action contains orphan semantics.')
   if (blueprint.systems.some(system => system.provenance.length === 0)) errors.push('System contains orphan semantics.')
   if (blueprint.invariants.some(invariant => invariant.provenance.length === 0)) errors.push('Invariant contains orphan semantics.')

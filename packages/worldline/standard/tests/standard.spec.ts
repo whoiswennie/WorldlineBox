@@ -51,9 +51,9 @@ describe('WWS portable contracts', () => {
       sections: [{ kind: 'identity', text: 'identity', tokens: 700, sourceIds: [], priority: 10 }],
       totalTokens: 700, droppedSourceIds: [],
     } satisfies ContextPack
-    expect(() => validateContextPack(pack)).not.toThrow()
-    expect(() => validateContextPack({ ...pack, totalTokens: 701 })).toThrow(/token total/u)
-    expect(() => validateContextPack({ ...pack, inputLimit: 900 })).toThrow(/80%/u)
+    expect(() => { validateContextPack(pack) }).not.toThrow()
+    expect(() => { validateContextPack({ ...pack, totalTokens: 701 }) }).toThrow(/token total/u)
+    expect(() => { validateContextPack({ ...pack, inputLimit: 900 }) }).toThrow(/80%/u)
   })
 
   it('detects map hierarchy and edge errors', () => {
