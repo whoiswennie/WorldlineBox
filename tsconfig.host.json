@@ -645,6 +645,9 @@
       "path": "./packages/workspace/workspace"
     },
     {
+      "path": "./packages/worldline/standard"
+    },
+    {
       "path": "./vendor/cordis"
     },
     {
