@@ -163,5 +163,8 @@ describe('Worldline Studio', () => {
     expect(screen.getByRole('navigation', { name: '已打开文档' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '关闭 alpha.md' })).toBeTruthy()
     expect(await screen.findByRole('button', { name: '关闭 beta.md' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '专用视图' }))
+    expect((await screen.findAllByText('自定义对象')).length).toBeGreaterThan(0)
+    expect(screen.getByText('真源')).toBeTruthy()
   })
 })

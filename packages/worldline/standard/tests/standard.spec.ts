@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   certificateIsAutonomous,
   contentFingerprint,
+  inferCanonObjectKind,
   isValidWorldEvent,
   stableStringify,
   validateContextPack,
@@ -15,6 +16,15 @@ describe('WWS portable contracts', () => {
     expect(stableStringify({ b: 2, a: 1 })).toBe(stableStringify({ a: 1, b: 2 }))
     expect(contentFingerprint({ b: 2, a: 1 })).toBe(contentFingerprint({ a: 1, b: 2 }))
     expect(() => worldlineId('not namespaced')).toThrow(/Invalid Worldline/u)
+  })
+
+  it('uses one portable Canon kind resolver for explicit and path-derived objects', () => {
+    expect(inferCanonObjectKind('characters/Alice.md')).toEqual({ kind: 'character' })
+    expect(inferCanonObjectKind('CANON/timeline.md')).toEqual({ kind: 'timeline-event' })
+    expect(inferCanonObjectKind('notes/idea.md', 'dream-symbol')).toEqual({
+      kind: 'custom',
+      customKind: 'dream-symbol',
+    })
   })
 
   it('rejects diagnostic-only records from the authoritative WorldEvent ledger', () => {

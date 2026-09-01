@@ -24,6 +24,7 @@ import {
   type SystemDefinition,
   type WorldMap,
   contentFingerprint,
+  inferCanonObjectKind,
   stableStringify,
   validateWorldMap,
   worldlineId,
@@ -102,34 +103,8 @@ function titleOf(file: ProjectSourceFile): string {
     ?? file.path
 }
 
-const CANON_KINDS = new Set<CanonObjectKind>([
-  'charter', 'character', 'place', 'organization', 'species', 'item', 'concept', 'rule',
-  'relation', 'fact', 'timeline-event', 'scenario', 'asset', 'custom',
-])
-
-function canonKind(value: string): { readonly kind: CanonObjectKind; readonly customKind?: string } {
-  return CANON_KINDS.has(value as CanonObjectKind)
-    ? { kind: value as CanonObjectKind }
-    : { kind: 'custom', customKind: value }
-}
-
 function kindOf(file: ProjectSourceFile): { readonly kind: CanonObjectKind; readonly customKind?: string } {
-  if (file.objectKind !== undefined) return canonKind(file.objectKind)
-  const path = file.path.toLocaleLowerCase()
-  if (path === 'canon/charter.md') return { kind: 'charter' }
-  if (path.startsWith('characters/')) return { kind: 'character' }
-  if (path.startsWith('places/') || path.startsWith('maps/')) return { kind: 'place' }
-  if (path.startsWith('organizations/') || path.startsWith('factions/')) return { kind: 'organization' }
-  if (path.startsWith('species/')) return { kind: 'species' }
-  if (path.startsWith('items/')) return { kind: 'item' }
-  if (path.startsWith('concepts/')) return { kind: 'concept' }
-  if (path.startsWith('rules/') || path.startsWith('mechanisms/')) return { kind: 'rule' }
-  if (path.startsWith('relations/')) return { kind: 'relation' }
-  if (path.startsWith('facts/')) return { kind: 'fact' }
-  if (path.includes('timeline')) return { kind: 'timeline-event' }
-  if (path.startsWith('scenarios/')) return { kind: 'scenario' }
-  if (path.startsWith('assets/')) return { kind: 'asset' }
-  return { kind: 'custom', customKind: 'document' }
+  return inferCanonObjectKind(file.path, file.objectKind)
 }
 
 function facetsOf(file: ProjectSourceFile): Readonly<Record<string, JsonValue>> {
@@ -415,7 +390,10 @@ export function compileSnapshot(
       if (proposal.target === 'invariant') invariants.push(parseInvariant(proposal.payload, source))
       if (proposal.target === 'map') maps.push(parseMap(proposal.payload, source))
       if (proposal.target === 'canon') {
-        const proposedKind = canonKind(stringValue(proposal.payload.kind, 'proposal'))
+        const proposedKind = inferCanonObjectKind(
+          'proposal',
+          stringValue(proposal.payload.kind, 'proposal'),
+        )
         canon.push({
           id: worldlineId<'entity'>(stringValue(
             proposal.payload.id,

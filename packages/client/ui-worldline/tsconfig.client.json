@@ -8,6 +8,7 @@
   "files": [
     "src/client/BuildWorkbench.tsx",
     "src/client/CanonWorkbench.tsx",
+    "src/client/CanonObjectView.tsx",
     "src/client/MarkdownEditor.tsx",
     "src/client/MapWorkbench.tsx",
     "src/client/motion.ts",

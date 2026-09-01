@@ -18,6 +18,10 @@
       "default": "./lib/invariant.js"
     },
     "./types": { "types": "./lib/types/types.d.ts", "default": "./lib/types/types.js" },
+    "./canon-kind": {
+      "types": "./lib/types/canon-kind.d.ts",
+      "default": "./lib/types/canon-kind.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },

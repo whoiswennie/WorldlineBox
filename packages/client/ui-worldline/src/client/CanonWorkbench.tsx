@@ -18,11 +18,12 @@ import type {
   ProjectTreeEntry,
 } from '@deepseek-ai/dsh-worldline-project/types'
 import { MarkdownEditor } from './MarkdownEditor.tsx'
+import { CanonObjectView } from './CanonObjectView.tsx'
 import { useWorldlineEntrance } from './motion.ts'
 import type { EditorDocumentState, ProjectClient } from './types.ts'
 import css from './CanonWorkbench.module.css'
 
-type ViewMode = 'edit' | 'preview' | 'split'
+type ViewMode = 'edit' | 'object' | 'preview' | 'split'
 type SidePanel = 'details' | 'history' | 'backlinks' | 'trash'
 
 interface CanonWorkbenchProps extends PropsLocale<'worldlineStudio'> {
@@ -170,7 +171,7 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
   const motionRoot = useRef<HTMLDivElement>(null)
   const projectId = props.project.manifest.id
   const activePath = props.activePath
-  useWorldlineEntrance(motionRoot, [activePath, sidePanel])
+  useWorldlineEntrance(motionRoot, [activePath, sidePanel, viewMode])
 
   useEffect(() => {
     const normalized = query.trim()
@@ -344,7 +345,7 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
           <div><strong>{basename(document.document.path)}</strong><small>{document.document.path}</small></div>
           <div className={css.editorActions}>
             <span data-state={document.saveState}>{props.t(document.saveState === 'error' ? 'error' : document.saveState)}</span>
-            {(['edit', 'preview', 'split'] as const).map(mode => <button
+            {(['edit', 'object', 'preview', 'split'] as const).map(mode => <button
               type="button" key={mode} data-active={viewMode === mode || undefined}
               onClick={() => { setViewMode(mode) }}
             >{props.t(mode)}</button>)}
@@ -357,13 +358,14 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
           <button type="button" onClick={() => { void props.retryLocalVersion() }}>{props.t('overwrite')}</button>
         </div>}
         <div className={css.documentSurface} data-mode={viewMode}>
-          {viewMode !== 'preview' && <MarkdownEditor
+          {viewMode !== 'preview' && viewMode !== 'object' && <MarkdownEditor
             value={document.content}
             onChange={props.editDocument}
             onSave={() => { void props.saveDocument() }}
             ariaLabel={`${props.t('edit')}: ${document.document.path}`}
           />}
-          {viewMode !== 'edit' && <article className={css.preview}><MarkdownText text={document.content} /></article>}
+          {viewMode === 'object' && <CanonObjectView path={document.document.path} content={document.content} explicitKind={document.document.objectKind} documentId={document.document.id} revision={document.document.revision} tags={document.document.tags} t={props.t} />}
+          {(viewMode === 'preview' || viewMode === 'split') && <article className={css.preview}><MarkdownText text={document.content} /></article>}
         </div>
       </>}
     </section>
