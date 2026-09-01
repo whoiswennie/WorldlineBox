@@ -68,7 +68,9 @@ describe('WWS portable contracts', () => {
       ], edges: [], provenance: [],
     } satisfies WorldMap
     expect(validateWorldMap(map)).toEqual([])
-    expect(validateWorldMap({ ...map, nodes: [{ ...map.nodes[0], parentId: root }, map.nodes[1]] })).toEqual(
+    const [rootNode, childNode] = map.nodes
+    if (rootNode === undefined || childNode === undefined) throw new Error('map fixture is incomplete')
+    expect(validateWorldMap({ ...map, nodes: [{ ...rootNode, parentId: root }, childNode] })).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: 'hierarchy-cycle' })]),
     )
   })

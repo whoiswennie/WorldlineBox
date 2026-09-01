@@ -45,7 +45,7 @@ import {
   type RestoreEntryRequest,
   type RestoreProjectRequest,
   type RestoreRevisionRequest,
-  type RootMigrationPlan,
+  type RootRelocationPlan,
   type SearchProjectRequest,
   type SetProjectRootRequest,
   type StoreProjectBuildRequest,
@@ -254,7 +254,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     }
   }
 
-  async setRoot(request: SetProjectRootRequest): Promise<RootMigrationPlan> {
+  async setRoot(request: SetProjectRootRequest): Promise<RootRelocationPlan> {
     const destination = await canonicalRoot(request.path, request.create !== false)
     const source = this.configuredRoot.trim() === '' ? undefined : await this.rootPath()
     const sourceProjects = source === undefined || source === destination ? [] : await this.scan(source)
@@ -267,7 +267,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     }))
     const conflicts = projects.filter(project => destinationNames.has(project.name.toLocaleLowerCase()))
       .map(project => project.name)
-    const plan: RootMigrationPlan = {
+    const plan: RootRelocationPlan = {
       ...(source === undefined ? {} : { source }),
       destination,
       projects,
@@ -282,7 +282,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
       })
     }
     if (source !== undefined && source !== destination) {
-      const staging = resolve(destination, '.worldline-migration', randomUUID())
+      const staging = resolve(destination, '.worldline-relocation', randomUUID())
       const committed: string[] = []
       try {
         await mkdir(staging, { recursive: true })

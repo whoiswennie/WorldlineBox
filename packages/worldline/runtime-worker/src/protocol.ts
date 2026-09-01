@@ -5,6 +5,10 @@ import type {
   CreateCheckpointRequest,
   ExplainRunEventRequest,
   RunRecordsRequest,
+  RecordAiIntentRequest,
+  RecordAiInvocationRequest,
+  RecordNarrativeBeatRequest,
+  RunChoicesRequest,
   SetActorControlRequest,
   SetAiEnabledRequest,
   SubmitRunActionRequest,
@@ -28,6 +32,7 @@ export interface WorkerInit {
 
 export type WorkerCommand =
   | { readonly type: 'view' }
+  | { readonly type: 'choices'; readonly payload: RunChoicesRequest }
   | { readonly type: 'advance'; readonly payload: AdvanceRunRequest }
   | { readonly type: 'submit-action'; readonly payload: SubmitRunActionRequest }
   | { readonly type: 'pause' }
@@ -40,6 +45,9 @@ export type WorkerCommand =
   | { readonly type: 'set-ai'; readonly payload: SetAiEnabledRequest }
   | { readonly type: 'switch-model'; readonly payload: SwitchModelPolicyRequest }
   | { readonly type: 'explain'; readonly payload: ExplainRunEventRequest }
+  | { readonly type: 'record-ai-intent'; readonly payload: RecordAiIntentRequest }
+  | { readonly type: 'record-ai-invocation'; readonly payload: RecordAiInvocationRequest }
+  | { readonly type: 'record-narrative-beat'; readonly payload: RecordNarrativeBeatRequest }
 
 export interface WorkerRequest {
   readonly type: 'request'

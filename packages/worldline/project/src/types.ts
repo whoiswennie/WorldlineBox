@@ -6,9 +6,9 @@ import type {
   ProjectTemplate,
   Revision,
   RunId,
-} from '@deepseek-ai/dsh-worldline-standard'
+} from '@deepseek-ai/dsh-worldline-standard/types'
 
-export type ProjectHealth = 'ready' | 'needs-migration' | 'damaged' | 'unavailable'
+export type ProjectHealth = 'ready' | 'damaged' | 'unavailable'
 export type ProjectBuildStatus = 'draft' | 'questions' | 'buildable' | 'frozen'
 export type ProjectSort = 'updated-desc' | 'created-desc' | 'name-asc'
 export type WorldlineEntryKind = 'directory' | 'document' | 'asset'
@@ -52,7 +52,7 @@ export interface SetProjectRootRequest {
   readonly dryRun?: boolean
 }
 
-export interface RootMigrationPlan {
+export interface RootRelocationPlan {
   readonly source?: string
   readonly destination: string
   readonly projects: readonly { readonly id: ProjectId; readonly name: string; readonly bytes: number }[]
@@ -198,7 +198,7 @@ export interface ExportProjectRequest extends ProjectRef { readonly destination:
 export interface ImportProjectRequest { readonly source: string; readonly name?: string }
 export interface TransferJob {
   readonly id: string
-  readonly kind: 'import' | 'export' | 'migration' | 'rescan'
+  readonly kind: 'import' | 'export' | 'rescan'
   readonly state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   readonly completedBytes: number
   readonly totalBytes?: number

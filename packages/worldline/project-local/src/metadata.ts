@@ -9,10 +9,10 @@ export interface DocumentMetadata {
   readonly tags: readonly string[]
 }
 
-interface MetadataDocument { readonly version: 1; readonly documents: Record<string, DocumentMetadata> }
+interface MetadataDocument { readonly documents: Record<string, DocumentMetadata> }
 
 export class ProjectMetadata {
-  private document: MetadataDocument = { version: 1, documents: {} }
+  private document: MetadataDocument = { documents: {} }
   private dirty = false
 
   constructor(private readonly projectPath: string) {}
@@ -21,10 +21,13 @@ export class ProjectMetadata {
 
   async load(): Promise<void> {
     if (!(await exists(this.path))) return
-    const parsed = JSON.parse(await readTextBounded(this.path)) as Partial<MetadataDocument>
-    if (parsed.version === 1 && parsed.documents !== undefined) {
-      this.document = { version: 1, documents: parsed.documents }
+    const parsed = JSON.parse(await readTextBounded(this.path)) as unknown
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)
+      || !('documents' in parsed) || typeof parsed.documents !== 'object'
+      || parsed.documents === null || Array.isArray(parsed.documents)) {
+      throw new Error('project metadata does not match the current Worldline schema')
     }
+    this.document = { documents: parsed.documents as Record<string, DocumentMetadata> }
   }
 
   get(path: string): DocumentMetadata | undefined { return this.document.documents[normalizeRelative(path)] }
@@ -53,7 +56,7 @@ export class ProjectMetadata {
       if (path === from || path.startsWith(`${from}/`)) next[`${to}${path.slice(from.length)}`] = metadata
       else next[path] = metadata
     }
-    this.document = { version: 1, documents: next }
+    this.document = { documents: next }
     this.dirty = true
   }
 
@@ -63,7 +66,7 @@ export class ProjectMetadata {
     for (const [key, value] of Object.entries(this.document.documents)) {
       if (key !== normalized && !key.startsWith(`${normalized}/`)) documents[key] = value
     }
-    this.document = { version: 1, documents }
+    this.document = { documents }
     this.dirty = true
   }
 

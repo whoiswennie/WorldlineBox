@@ -8,8 +8,16 @@ import type {
   CreateRunRequest,
   ExplainRunEventRequest,
   RunEventExplanation,
+  RunChoicesRequest,
+  RunChoicesView,
   RunRecordsPage,
   RunRecordsRequest,
+  RecordAiIntentRequest,
+  RecordAiIntentResult,
+  RecordAiInvocationRequest,
+  RecordAiInvocationResult,
+  RecordNarrativeBeatRequest,
+  RecordNarrativeBeatResult,
   RunRef,
   RunSummary,
   RunView,
@@ -33,6 +41,7 @@ export abstract class WorldlineRuns extends TypertRemoteService {
   abstract create(request: CreateRunRequest): Promise<RunView>
   abstract list(): Promise<readonly RunSummary[]>
   abstract view(request: RunRef): Promise<RunView>
+  abstract choices(request: RunChoicesRequest): Promise<RunChoicesView>
   abstract advance(request: AdvanceRunRequest): Promise<RunView>
   abstract submitAction(request: SubmitRunActionRequest): Promise<SubmitRunActionResult>
   abstract pause(request: RunRef): Promise<RunView>
@@ -46,10 +55,17 @@ export abstract class WorldlineRuns extends TypertRemoteService {
   abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
   abstract switchModel(request: SwitchModelPolicyRequest): Promise<RunView>
   abstract explain(request: ExplainRunEventRequest): Promise<RunEventExplanation>
+  /** Host-only: persist a model intent and its actual usage before attempting its Action. */
+  abstract recordAiIntent(request: RecordAiIntentRequest): Promise<RecordAiIntentResult>
+  /** Host-only: account every routed call, regardless of whether it yields an intent. */
+  abstract recordAiInvocation(request: RecordAiInvocationRequest): Promise<RecordAiInvocationResult>
+  /** Host-only: persist prose derived from retained events/observations without changing world state. */
+  abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<RecordNarrativeBeatResult>
 
   @Remote('create') remoteCreate(value: CreateRunRequest): Promise<RunView> { return this.create(value) }
   @Remote('list') remoteList(): Promise<readonly RunSummary[]> { return this.list() }
   @Remote('view') remoteView(value: RunRef): Promise<RunView> { return this.view(value) }
+  @Remote('choices') remoteChoices(value: RunChoicesRequest): Promise<RunChoicesView> { return this.choices(value) }
   @Remote('advance') remoteAdvance(value: AdvanceRunRequest): Promise<RunView> { return this.advance(value) }
   @Remote('submitAction') remoteSubmitAction(value: SubmitRunActionRequest): Promise<SubmitRunActionResult> { return this.submitAction(value) }
   @Remote('pause') remotePause(value: RunRef): Promise<RunView> { return this.pause(value) }

@@ -7,7 +7,7 @@ import type {
   Revision,
   SimulationPurpose,
   SourceAnchor,
-} from '@deepseek-ai/dsh-worldline-standard'
+} from '@deepseek-ai/dsh-worldline-standard/types'
 
 export type BuildDiagnosticSeverity = 'info' | 'warning' | 'blocking'
 export type BuildPhase = 'snapshot' | 'parse' | 'link' | 'mechanisms' | 'closure' | 'frozen'

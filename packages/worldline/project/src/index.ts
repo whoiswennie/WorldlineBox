@@ -27,7 +27,7 @@ import type {
   RestoreEntryRequest,
   RestoreProjectRequest,
   RestoreRevisionRequest,
-  RootMigrationPlan,
+  RootRelocationPlan,
   SearchProjectRequest,
   SetProjectRootRequest,
   StoreProjectBuildRequest,
@@ -40,7 +40,7 @@ import type {
   WriteProjectControlRequest,
   ProjectControlDocument,
 } from './types.ts'
-import type { ProjectId, RunId } from '@deepseek-ai/dsh-worldline-standard'
+import type { ProjectId, RunId } from '@deepseek-ai/dsh-worldline-standard/types'
 
 export * from './types.ts'
 
@@ -53,7 +53,7 @@ export abstract class WorldlineProjects extends TypertRemoteService {
   constructor(ctx: Context) { super(ctx, 'worldlineProjects') }
 
   abstract root(): Promise<ProjectRootView>
-  abstract setRoot(request: SetProjectRootRequest): Promise<RootMigrationPlan>
+  abstract setRoot(request: SetProjectRootRequest): Promise<RootRelocationPlan>
   abstract library(query?: ProjectLibraryQuery): Promise<ProjectLibraryPage>
   abstract rescan(): Promise<TransferJob>
   abstract create(request: CreateProjectRequest): Promise<ProjectSummary>
@@ -99,7 +99,7 @@ export abstract class WorldlineProjects extends TypertRemoteService {
   abstract runStorages(): Promise<readonly ProjectRunStorage[]>
 
   @Remote('root') remoteRoot(): Promise<ProjectRootView> { return this.root() }
-  @Remote('setRoot') remoteSetRoot(value: SetProjectRootRequest): Promise<RootMigrationPlan> { return this.setRoot(value) }
+  @Remote('setRoot') remoteSetRoot(value: SetProjectRootRequest): Promise<RootRelocationPlan> { return this.setRoot(value) }
   @Remote('library') remoteLibrary(value?: ProjectLibraryQuery): Promise<ProjectLibraryPage> { return this.library(value) }
   @Remote('rescan') remoteRescan(): Promise<TransferJob> { return this.rescan() }
   @Remote('create') remoteCreate(value: CreateProjectRequest): Promise<ProjectSummary> { return this.create(value) }

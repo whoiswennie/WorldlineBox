@@ -10108,6 +10108,40 @@ importers:
         specifier: workspace:^
         version: link:../../storage/storage-domain
 
+  packages/worldline/ai:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:^
+        version: link:../../llm/llm
+      '@deepseek-ai/dsh-token-meter':
+        specifier: workspace:^
+        version: link:../../llm/token-meter
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: workspace:^
+        version: link:../../typert/protocol
+      '@deepseek-ai/dsh-worldline-project-local':
+        specifier: workspace:^
+        version: link:../project-local
+      '@deepseek-ai/dsh-worldline-runtime':
+        specifier: workspace:^
+        version: link:../runtime
+      '@deepseek-ai/dsh-worldline-runtime-worker':
+        specifier: workspace:^
+        version: link:../runtime-worker
+      '@deepseek-ai/dsh-worldline-standard':
+        specifier: workspace:^
+        version: link:../standard
+
   packages/worldline/compiler:
     devDependencies:
       '@deepseek-ai/cordis':
@@ -10122,6 +10156,39 @@ importers:
       '@deepseek-ai/dsh-worldline-project':
         specifier: workspace:^
         version: link:../project
+      '@deepseek-ai/dsh-worldline-standard':
+        specifier: workspace:^
+        version: link:../standard
+
+  packages/worldline/narrative:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:^
+        version: link:../../llm/llm
+      '@deepseek-ai/dsh-token-meter':
+        specifier: workspace:^
+        version: link:../../llm/token-meter
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: workspace:^
+        version: link:../../typert/protocol
+      '@deepseek-ai/dsh-worldline-ai':
+        specifier: workspace:^
+        version: link:../ai
+      '@deepseek-ai/dsh-worldline-project-local':
+        specifier: workspace:^
+        version: link:../project-local
+      '@deepseek-ai/dsh-worldline-runtime':
+        specifier: workspace:^
+        version: link:../runtime
+      '@deepseek-ai/dsh-worldline-runtime-worker':
+        specifier: workspace:^
+        version: link:../runtime-worker
       '@deepseek-ai/dsh-worldline-standard':
         specifier: workspace:^
         version: link:../standard

@@ -645,6 +645,12 @@
       "path": "./packages/workspace/workspace"
     },
     {
+      "path": "./packages/worldline/ai"
+    },
+    {
+      "path": "./packages/worldline/narrative"
+    },
+    {
       "path": "./packages/worldline/compiler"
     },
     {

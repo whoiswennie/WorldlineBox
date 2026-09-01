@@ -1,17 +1,15 @@
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import type { ProjectSourceSnapshot } from '@deepseek-ai/dsh-worldline-project'
+import type { ProjectSourceSnapshot } from '@deepseek-ai/dsh-worldline-project/types'
 import type {} from '@deepseek-ai/dsh-worldline-project'
-import {
-  type Blueprint,
-  type ProjectId,
-  type Provenance,
-  type Revision,
-  WWS_VERSION,
-  stableStringify,
-  worldlineId,
-} from '@deepseek-ai/dsh-worldline-standard'
+import { WWS_VERSION, stableStringify, worldlineId } from '@deepseek-ai/dsh-worldline-standard'
+import type {
+  Blueprint,
+  ProjectId,
+  Provenance,
+  Revision,
+} from '@deepseek-ai/dsh-worldline-standard/types'
 import { compileSnapshot, type CompilationProduct } from './compile.ts'
 import type {
   AnswerQuestionRequest,

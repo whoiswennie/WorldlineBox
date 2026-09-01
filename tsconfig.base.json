@@ -72,8 +72,23 @@
       "@deepseek-ai/dsh-worldline-standard": [
         "./packages/worldline/standard/src/index.ts"
       ],
+      "@deepseek-ai/dsh-worldline-standard/types": [
+        "./packages/worldline/standard/src/types.ts"
+      ],
       "@deepseek-ai/dsh-worldline-compiler": [
         "./packages/worldline/compiler/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-ai": [
+        "./packages/worldline/ai/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-ai/types": [
+        "./packages/worldline/ai/src/types.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-narrative": [
+        "./packages/worldline/narrative/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-narrative/types": [
+        "./packages/worldline/narrative/src/types.ts"
       ],
       "@deepseek-ai/dsh-worldline-compiler/types": [
         "./packages/worldline/compiler/src/types.ts"

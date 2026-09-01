@@ -1,14 +1,19 @@
 import type {
   ActionId,
+  AiIntent,
+  AiInvocation,
   AiBudget,
   AiUsage,
   CanonWorldlineId,
   Checkpoint,
   CheckpointId,
+  ChoiceProjection,
   DecisionTrace,
   EntityId,
   JsonObject,
   ModelPolicy,
+  ModelRoute,
+  NarrativeBeat,
   Process,
   ProjectId,
   Reservation,
@@ -16,7 +21,7 @@ import type {
   RunSnapshot,
   Telemetry,
   WorldEvent,
-} from '@deepseek-ai/dsh-worldline-standard'
+} from '@deepseek-ai/dsh-worldline-standard/types'
 import type { RunStream, RunStreamRecord } from '@deepseek-ai/dsh-worldline-run-sqlite'
 
 export type RunStatus = 'starting' | 'paused' | 'running' | 'degraded' | 'stopped' | 'failed'
@@ -67,6 +72,7 @@ export interface CreateRunRequest {
 }
 
 export interface RunRef { readonly runId: RunId }
+export interface RunChoicesRequest extends RunRef { readonly actorId: EntityId }
 export interface AdvanceRunRequest extends RunRef {
   readonly duration: number
   readonly maxEvents?: number
@@ -82,6 +88,61 @@ export interface SubmitRunActionResult {
   readonly actionId: ActionId
   readonly process: Process
   readonly decision: DecisionTrace
+  readonly view: RunView
+}
+export interface RunChoicesView {
+  readonly runId: RunId
+  readonly actorId: EntityId
+  readonly sequence: number
+  readonly choices: readonly ChoiceProjection[]
+}
+
+/** Host-only handoff from the routed AI service into the authoritative Run ledger. */
+export interface RecordAiIntentRequest extends RunRef {
+  readonly actorId: EntityId
+  readonly invocationId: AiInvocation['id']
+  readonly choiceId: string
+  readonly actionType: string
+  readonly parameters: JsonObject
+  readonly rationale: string
+  readonly confidence: number
+  readonly modelRoute: ModelRoute
+  readonly contextSourceIds: readonly string[]
+}
+export interface RecordAiIntentResult {
+  readonly intent: AiIntent
+  readonly view: RunView
+}
+export interface RecordAiInvocationRequest extends RunRef {
+  readonly purpose: AiInvocation['purpose']
+  readonly actorId?: EntityId
+  readonly modelRoute: ModelRoute
+  readonly contextSourceIds: readonly string[]
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens?: number
+  readonly estimatedCost: number
+  readonly outputDigest: string
+  readonly outcome: AiInvocation['outcome']
+}
+export interface RecordAiInvocationResult {
+  readonly invocation: AiInvocation
+  readonly budgetExceeded: boolean
+  readonly view: RunView
+}
+export interface RecordNarrativeBeatRequest extends RunRef {
+  readonly invocationId?: AiInvocation['id']
+  readonly eventIds: NarrativeBeat['eventIds']
+  readonly observationIds: NarrativeBeat['observationIds']
+  readonly camera: string
+  readonly speakerId?: EntityId
+  readonly text: string
+  readonly media: NarrativeBeat['media']
+  readonly style: NarrativeBeat['style']
+  readonly modelRoute?: ModelRoute
+}
+export interface RecordNarrativeBeatResult {
+  readonly beat: NarrativeBeat
   readonly view: RunView
 }
 

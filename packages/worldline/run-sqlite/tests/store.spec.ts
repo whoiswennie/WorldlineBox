@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { worldlineId } from '@deepseek-ai/dsh-worldline-standard'
 import type { RunSnapshot } from '@deepseek-ai/dsh-worldline-standard'
@@ -30,6 +31,40 @@ afterEach(async () => {
 })
 
 describe('WorldlineRunDatabase', () => {
+  it('rejects a stale schema instead of carrying compatibility code', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'worldline-run-db-stale-'))
+    roots.push(root)
+    const path = join(root, 'world.sqlite')
+    const legacy = new DatabaseSync(path)
+    legacy.exec(`
+      PRAGMA application_id=0x5757524c;
+      PRAGMA user_version=1;
+      CREATE TABLE stream_records(
+        sequence INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL,
+        logical_time REAL NOT NULL,
+        stream TEXT NOT NULL CHECK(stream IN (
+          'world-event','decision-trace','observation','narrative-beat','telemetry'
+        )),
+        id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY(sequence, ordinal),
+        UNIQUE(stream, id)
+      ) STRICT;
+    `)
+    legacy.close()
+
+    expect(() => new WorldlineRunDatabase(path)).toThrow(/only supports the current schema/u)
+
+    const inspected = new DatabaseSync(path, { readOnly: true })
+    expect(inspected.prepare('PRAGMA user_version').get()).toEqual({ user_version: 1 })
+    const schema = inspected.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='stream_records'",
+    ).get()
+    expect(String(schema?.['sql'])).toContain('CHECK(stream')
+    inspected.close()
+  })
+
   it('commits a snapshot and separated streams atomically in WAL mode', async () => {
     const root = await mkdtemp(join(tmpdir(), 'worldline-run-db-'))
     roots.push(root)

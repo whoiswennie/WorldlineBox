@@ -6,6 +6,8 @@ import type { Checkpoint, JsonObject, RunSnapshot } from '@deepseek-ai/dsh-world
 export type RunStream =
   | 'world-event'
   | 'decision-trace'
+  | 'ai-intent'
+  | 'ai-invocation'
   | 'observation'
   | 'narrative-beat'
   | 'telemetry'
@@ -27,7 +29,40 @@ export interface RunCommit {
 }
 
 const APPLICATION_ID = 0x5757524c
-const SCHEMA_VERSION = 1
+const CURRENT_SCHEMA_VERSION = 2
+
+const CURRENT_SCHEMA = `
+  CREATE TABLE run_meta(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  ) STRICT;
+  CREATE TABLE snapshot(
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    sequence INTEGER NOT NULL,
+    logical_time REAL NOT NULL,
+    payload TEXT NOT NULL
+  ) STRICT;
+  CREATE TABLE checkpoints(
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL,
+    logical_time REAL NOT NULL,
+    label TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;
+  CREATE TABLE stream_records(
+    sequence INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    logical_time REAL NOT NULL,
+    stream TEXT NOT NULL,
+    id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY(sequence, ordinal),
+    UNIQUE(stream, id)
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS stream_records_time
+    ON stream_records(stream, logical_time, sequence);
+`
 
 function parseObject(value: unknown): JsonObject {
   const parsed = JSON.parse(String(value)) as unknown
@@ -45,50 +80,34 @@ export class WorldlineRunDatabase {
     mkdirSync(dirname(path), { recursive: true })
     this.database = new DatabaseSync(path)
     this.database.exec(`
-      PRAGMA application_id=${String(APPLICATION_ID)};
-      PRAGMA user_version=${String(SCHEMA_VERSION)};
       PRAGMA journal_mode=WAL;
       PRAGMA synchronous=FULL;
       PRAGMA foreign_keys=ON;
       PRAGMA busy_timeout=5000;
-      CREATE TABLE IF NOT EXISTS run_meta(
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS snapshot(
-        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-        sequence INTEGER NOT NULL,
-        logical_time REAL NOT NULL,
-        payload TEXT NOT NULL
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS stream_records(
-        sequence INTEGER NOT NULL,
-        ordinal INTEGER NOT NULL,
-        logical_time REAL NOT NULL,
-        stream TEXT NOT NULL CHECK(stream IN (
-          'world-event','decision-trace','observation','narrative-beat','telemetry'
-        )),
-        id TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        PRIMARY KEY(sequence, ordinal),
-        UNIQUE(stream, id)
-      ) STRICT;
-      CREATE INDEX IF NOT EXISTS stream_records_time
-        ON stream_records(stream, logical_time, sequence);
-      CREATE TABLE IF NOT EXISTS checkpoints(
-        id TEXT PRIMARY KEY,
-        sequence INTEGER NOT NULL,
-        logical_time REAL NOT NULL,
-        label TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      ) STRICT;
     `)
     const applicationId = Number(this.database.prepare('PRAGMA application_id').get()?.['application_id'])
     const version = Number(this.database.prepare('PRAGMA user_version').get()?.['user_version'])
-    if (applicationId !== APPLICATION_ID || version !== SCHEMA_VERSION) {
+    const tableCount = Number(this.database.prepare(`
+      SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'
+    `).get()?.['count'])
+    const newDatabase = applicationId === 0 && version === 0 && tableCount === 0
+    if (!newDatabase && (applicationId !== APPLICATION_ID || version !== CURRENT_SCHEMA_VERSION)) {
       this.database.close()
-      throw new Error('Worldline Run SQLite schema identity is incompatible')
+      throw new Error('Worldline Run SQLite only supports the current schema; rebuild or import the Run')
+    }
+    if (!newDatabase) return
+    try {
+      this.database.exec(`
+        BEGIN IMMEDIATE;
+        ${CURRENT_SCHEMA}
+        PRAGMA application_id=${String(APPLICATION_ID)};
+        PRAGMA user_version=${String(CURRENT_SCHEMA_VERSION)};
+        COMMIT;
+      `)
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec('ROLLBACK')
+      this.database.close()
+      throw error
     }
   }
 
@@ -202,6 +221,21 @@ export class WorldlineRunDatabase {
       id: String(row['id']),
       payload: parseObject(row['payload']),
     }))
+  }
+
+  record(stream: RunStream, id: string): RunStreamRecord | undefined {
+    const row = this.database.prepare(`
+      SELECT sequence,ordinal,logical_time,stream,id,payload
+      FROM stream_records WHERE stream=? AND id=?
+    `).get(stream, id)
+    return row === undefined ? undefined : {
+      sequence: Number(row['sequence']),
+      ordinal: Number(row['ordinal']),
+      logicalTime: Number(row['logical_time']),
+      stream: String(row['stream']) as RunStream,
+      id: String(row['id']),
+      payload: parseObject(row['payload']),
+    }
   }
 
   saveCheckpoint(checkpoint: Checkpoint, label: string): void {

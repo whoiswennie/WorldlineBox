@@ -1,0 +1,15 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "lib/types", "types": ["node"] },
+  "include": ["src"],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../runtime-diagnostics/invariants" },
+    { "path": "../../llm/llm" },
+    { "path": "../../llm/token-meter" },
+    { "path": "../../typert/protocol" },
+    { "path": "../ai" },
+    { "path": "../runtime" },
+    { "path": "../standard" }
+  ]
+}

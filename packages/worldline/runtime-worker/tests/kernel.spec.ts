@@ -3,18 +3,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { stableStringify, worldlineId } from '@deepseek-ai/dsh-worldline-standard'
+import type { Blueprint, ModelRoute } from '@deepseek-ai/dsh-worldline-standard'
 import { WorldlineKernel } from '../src/kernel.ts'
 import { testBlueprint } from './fixture.ts'
 
 const roots: string[] = []
 
-async function kernel(seed = 'deterministic-seed'): Promise<WorldlineKernel> {
+async function kernel(
+  seed = 'deterministic-seed',
+  blueprint: Blueprint = testBlueprint(),
+): Promise<WorldlineKernel> {
   const root = await mkdtemp(join(tmpdir(), 'worldline-kernel-'))
   roots.push(root)
   return new WorldlineKernel({
     projectId: worldlineId<'project'>('project:test-project-0001'),
     runId: worldlineId<'run'>(`run:${seed.replaceAll('_', '-').padEnd(8, '0')}`),
-    blueprint: testBlueprint(),
+    blueprint,
     databasePath: join(root, 'world.sqlite'),
     seed,
     startPaused: false,
@@ -132,5 +136,110 @@ describe('WorldlineKernel', () => {
     }
     expect(stableStringify(left.view().snapshot)).toBe(stableStringify(right.view().snapshot))
     left.close(); right.close()
+  })
+
+  it('preserves authored memory and records private observations for dotted stable IDs', async () => {
+    const base = testBlueprint()
+    const actorId = worldlineId<'entity'>('entity:actor.with-dot')
+    const original = base.entities[0]
+    if (original === undefined) throw new Error('test Blueprint has no actor')
+    const blueprint: Blueprint = {
+      ...base,
+      entities: [{
+        ...original,
+        id: actorId,
+        memory: {
+          ...original.memory,
+          goals: [{
+            id: worldlineId<'memory'>('memory:authored-goal-0001'),
+            actorId,
+            logicalTime: 0,
+            sourceEventIds: [],
+            importance: 1,
+            goal: 'Finish one unit of work.',
+            status: 'active',
+          }],
+        },
+      }],
+    }
+    const run = await kernel('memory-seed', blueprint)
+    const initial = run.view()
+    run.submitAction({
+      runId: initial.summary.runId,
+      actorId,
+      type: 'character.work',
+      expectedSequence: 0,
+      controller: 'agent',
+    })
+    const completed = run.advance({ runId: initial.summary.runId, duration: 10 })
+    const entity = (completed.snapshot.state['entities'] as Record<string, {
+      state: { energy: number }
+      memory: { episodic: unknown[]; experience: { outcome: string }[]; goals: unknown[] }
+    }>)[actorId]
+    expect(entity?.state.energy).toBe(1)
+    expect(entity?.memory.goals).toHaveLength(1)
+    expect(entity?.memory.episodic.length).toBeGreaterThan(0)
+    expect(entity?.memory.experience).toEqual(expect.arrayContaining([
+      expect.objectContaining({ outcome: 'completed' }),
+    ]))
+    expect(completed.snapshot.state['entities']).not.toHaveProperty('entity:actor')
+    run.close()
+  })
+
+  it('rejects forged AI audit records and accepts only a current projected choice', async () => {
+    const run = await kernel('ai-audit-seed')
+    const view = run.view()
+    const actorId = worldlineId<'entity'>('entity:actor-a1')
+    const route: ModelRoute = { provider: 'mock', model: 'planner' }
+    const choice = run.choices({ runId: view.summary.runId, actorId }).choices[0]
+    if (choice === undefined) throw new Error('test actor has no projected choice')
+    expect(() => run.recordAiInvocation({
+      runId: view.summary.runId,
+      purpose: 'character',
+      actorId,
+      modelRoute: route,
+      contextSourceIds: [choice.id],
+      inputTokens: 10,
+      outputTokens: 2,
+      estimatedCost: 0.001,
+      outputDigest: 'not-a-digest',
+      outcome: 'completed',
+    })).toThrow(/lowercase SHA-256/u)
+    const invocation = run.recordAiInvocation({
+      runId: view.summary.runId,
+      purpose: 'character',
+      actorId,
+      modelRoute: route,
+      contextSourceIds: [choice.id],
+      inputTokens: 10,
+      outputTokens: 2,
+      estimatedCost: 0.001,
+      outputDigest: 'a'.repeat(64),
+      outcome: 'completed',
+    }).invocation
+    const intent = {
+      runId: view.summary.runId,
+      actorId,
+      invocationId: invocation.id,
+      choiceId: choice.id,
+      actionType: choice.actionType,
+      parameters: choice.parameters,
+      rationale: 'I selected the current projected action.',
+      confidence: 0.75,
+      modelRoute: route,
+      contextSourceIds: [choice.id],
+    }
+    expect(() => run.recordAiIntent({ ...intent, actionType: 'forged.action' }))
+      .toThrow(/projected legal choice/u)
+    expect(() => run.recordAiIntent({
+      ...intent,
+      modelRoute: { provider: 'other', model: 'planner' },
+    })).toThrow(/matching recorded invocation/u)
+    expect(run.recordAiIntent(intent).intent).toMatchObject({
+      choiceId: choice.id,
+      actionType: choice.actionType,
+      parameters: choice.parameters,
+    })
+    run.close()
   })
 })

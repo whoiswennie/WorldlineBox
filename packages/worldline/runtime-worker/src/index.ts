@@ -18,8 +18,16 @@ import {
   type CreateRunRequest,
   type ExplainRunEventRequest,
   type RunEventExplanation,
+  type RunChoicesRequest,
+  type RunChoicesView,
   type RunRecordsPage,
   type RunRecordsRequest,
+  type RecordAiIntentRequest,
+  type RecordAiIntentResult,
+  type RecordAiInvocationRequest,
+  type RecordAiInvocationResult,
+  type RecordNarrativeBeatRequest,
+  type RecordNarrativeBeatResult,
   type RunRef,
   type RunSummary,
   type RunView,
@@ -209,6 +217,10 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
     return (await this.handle(request.runId)).call({ type: 'view' })
   }
 
+  override async choices(request: RunChoicesRequest): Promise<RunChoicesView> {
+    return (await this.handle(request.runId)).call({ type: 'choices', payload: request })
+  }
+
   override async advance(request: AdvanceRunRequest): Promise<RunView> {
     return (await this.handle(request.runId)).call({ type: 'advance', payload: request })
   }
@@ -293,6 +305,18 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
 
   override async explain(request: ExplainRunEventRequest): Promise<RunEventExplanation> {
     return (await this.handle(request.runId)).call({ type: 'explain', payload: request })
+  }
+
+  override async recordAiIntent(request: RecordAiIntentRequest): Promise<RecordAiIntentResult> {
+    return (await this.handle(request.runId)).call({ type: 'record-ai-intent', payload: request })
+  }
+
+  override async recordAiInvocation(request: RecordAiInvocationRequest): Promise<RecordAiInvocationResult> {
+    return (await this.handle(request.runId)).call({ type: 'record-ai-invocation', payload: request })
+  }
+
+  override async recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<RecordNarrativeBeatResult> {
+    return (await this.handle(request.runId)).call({ type: 'record-narrative-beat', payload: request })
   }
 
   private spawn(init: WorkerInit): WorkerRunHandle {

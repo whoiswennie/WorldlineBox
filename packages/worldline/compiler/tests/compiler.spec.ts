@@ -180,6 +180,7 @@ describe('WorldlineCompiler', () => {
       anchors: [],
     })
     const proposal = state.proposals[0]!
+    if (state.revision === undefined) throw new Error('proposal state has no persisted revision')
     const reviewed = await runtime.ctx.worldlineCompiler.reviewProposal({
       projectId: project.manifest.id,
       proposalId: proposal.id,

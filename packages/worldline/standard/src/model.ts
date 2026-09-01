@@ -100,11 +100,13 @@ export type CanonObjectKind =
   | 'timeline-event'
   | 'scenario'
   | 'asset'
-  | `custom:${string}`
+  | 'custom'
 
 export interface CanonObject {
   readonly id: EntityId
   readonly kind: CanonObjectKind
+  /** Application-defined name when `kind` is `custom`. */
+  readonly customKind?: string
   readonly documentId: DocumentId
   readonly title: string
   readonly aliases: readonly string[]
@@ -353,8 +355,8 @@ export interface Process {
 
 export interface StateDelta {
   readonly path: string
-  readonly before: JsonValue | undefined
-  readonly after: JsonValue | undefined
+  readonly before?: JsonValue
+  readonly after?: JsonValue
 }
 
 export interface WorldEvent {
@@ -387,6 +389,39 @@ export interface DecisionTrace {
   readonly details: JsonObject
 }
 
+/** Persisted model-produced intent. It is advisory until Runtime validates and commits an Action. */
+export interface AiIntent {
+  readonly id: WorldlineId<'intent'>
+  readonly invocationId: WorldlineId<'ai-invocation'>
+  readonly actorId: EntityId
+  readonly logicalTime: number
+  readonly choiceId: string
+  readonly actionType: string
+  readonly parameters: JsonObject
+  readonly rationale: string
+  readonly confidence: number
+  readonly modelRoute: ModelRoute
+  readonly contextSourceIds: readonly string[]
+  readonly recordedAt: string
+}
+
+/** Actual routed model call accounting, shared by character, narrator, summary and compiler uses. */
+export interface AiInvocation {
+  readonly id: WorldlineId<'ai-invocation'>
+  readonly purpose: ModelPurpose
+  readonly actorId?: EntityId
+  readonly logicalTime: number
+  readonly modelRoute: ModelRoute
+  readonly contextSourceIds: readonly string[]
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly estimatedCost: number
+  readonly outputDigest: string
+  readonly outcome: 'completed' | 'failed' | 'aborted'
+  readonly recordedAt: string
+}
+
 export interface Observation {
   readonly id: WorldlineId<'observation'>
   readonly observerId: EntityId
@@ -399,6 +434,7 @@ export interface Observation {
 
 export interface NarrativeBeat {
   readonly id: WorldlineId<'narrative-beat'>
+  readonly invocationId?: WorldlineId<'ai-invocation'>
   readonly eventIds: readonly EventId[]
   readonly observationIds: readonly WorldlineId<'observation'>[]
   readonly camera: string
@@ -604,6 +640,8 @@ export interface SceneFrame {
 export interface ChoiceProjection {
   readonly id: string
   readonly actionType: string
+  /** Exact Runtime-validated parameters represented by this choice. */
+  readonly parameters: JsonObject
   readonly label: string
   readonly description: string
   readonly targetIds: readonly string[]

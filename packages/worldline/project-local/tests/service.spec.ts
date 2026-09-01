@@ -184,11 +184,11 @@ describe('LocalWorldlineProjects', () => {
     await runtime.dispose()
   })
 
-  it('detects external edits and migrates libraries only after a dry-run plan', async () => {
+  it('detects external edits and relocates libraries only after a dry-run plan', async () => {
     const source = await temporaryRoot()
     const destination = await temporaryRoot()
     const runtime = await start(source)
-    const project = await runtime.ctx.worldlineProjects.create({ name: 'Migration', template: 'blank' })
+    const project = await runtime.ctx.worldlineProjects.create({ name: 'Relocation', template: 'blank' })
     const document = await runtime.ctx.worldlineProjects.read({
       projectId: project.manifest.id,
       path: 'canon/charter.md',
@@ -209,7 +209,7 @@ describe('LocalWorldlineProjects', () => {
       total: 1,
       projects: [{ manifest: { id: project.manifest.id } }],
     })
-    expect(await readFile(join(source, 'migration', 'worldline.toml'), 'utf8')).toContain(project.manifest.id)
+    expect(await readFile(join(source, 'relocation', 'worldline.toml'), 'utf8')).toContain(project.manifest.id)
     await runtime.dispose()
   })
 

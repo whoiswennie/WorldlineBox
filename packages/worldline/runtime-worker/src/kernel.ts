@@ -2,9 +2,13 @@ import { createHash } from 'node:crypto'
 import type {
   ActionDefinition,
   ActionRequest,
+  AiIntent,
+  AiInvocation,
   AiBudget,
   Blueprint,
+  CharacterMemory,
   Checkpoint,
+  ChoiceProjection,
   DecisionTrace,
   Effect,
   EntityId,
@@ -15,6 +19,7 @@ import type {
   MapNodeId,
   MovementProgress,
   Observation,
+  NarrativeBeat,
   Process,
   ProcessId,
   ProjectId,
@@ -42,9 +47,17 @@ import type {
   CreateCheckpointRequest,
   ExplainRunEventRequest,
   RunEventExplanation,
+  RunChoicesRequest,
+  RunChoicesView,
   RunHealth,
   RunRecordsPage,
   RunRecordsRequest,
+  RecordAiIntentRequest,
+  RecordAiIntentResult,
+  RecordAiInvocationRequest,
+  RecordAiInvocationResult,
+  RecordNarrativeBeatRequest,
+  RecordNarrativeBeatResult,
   RunStatus,
   RunSummary,
   RunView,
@@ -109,15 +122,61 @@ const DEFAULT_AI_BUDGET: AiBudget = {
   currency: 'USD',
 }
 
+const EMPTY_MEMORY: CharacterMemory = {
+  episodic: [],
+  beliefs: [],
+  goals: [],
+  relationships: [],
+  experience: [],
+  skills: [],
+  reflections: [],
+}
+
+const MEMORY_CATEGORY_LIMIT = 500
+
 function jsonObject(value: unknown): JsonObject {
   return JSON.parse(JSON.stringify(value)) as JsonObject
 }
 
 function stateRecord(state: JsonObject): Record<string, JsonValue> { return state }
 
+function stateDelta(path: string, before: JsonValue | undefined, after: JsonValue | undefined): StateDelta {
+  return {
+    path,
+    ...(before === undefined ? {} : { before }),
+    ...(after === undefined ? {} : { after }),
+  }
+}
+
+function pathSegments(path: string): string[] {
+  const result: string[] = []
+  let current = ''
+  let escaped = false
+  for (const character of path.replace(/^\$\.?/u, '')) {
+    if (escaped) {
+      current += character
+      escaped = false
+    } else if (character === '\\') {
+      escaped = true
+    } else if (character === '.') {
+      if (current !== '') result.push(current)
+      current = ''
+    } else {
+      current += character
+    }
+  }
+  if (escaped) current += '\\'
+  if (current !== '') result.push(current)
+  return result
+}
+
+function escapePathSegment(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('.', '\\.')
+}
+
 function getPath(root: JsonObject, path: string): JsonValue | undefined {
   let current: JsonValue = root
-  for (const segment of path.replace(/^\$\.?/u, '').split('.').filter(Boolean)) {
+  for (const segment of pathSegments(path)) {
     if (typeof current !== 'object' || current === null || Array.isArray(current)) return undefined
     current = current[segment] as JsonValue
   }
@@ -126,7 +185,7 @@ function getPath(root: JsonObject, path: string): JsonValue | undefined {
 
 function setPath(root: JsonObject, path: string, value: JsonValue): JsonObject {
   const result = structuredClone(root)
-  const parts = path.replace(/^\$\.?/u, '').split('.').filter(Boolean)
+  const parts = pathSegments(path)
   if (parts.length === 0) throw new Error('an effect cannot replace the Run state root')
   let cursor: Record<string, JsonValue> = result
   for (const segment of parts.slice(0, -1)) {
@@ -142,11 +201,16 @@ function setPath(root: JsonObject, path: string, value: JsonValue): JsonObject {
 
 function actorPath(path: string, actorId: EntityId | undefined): string {
   if (actorId === undefined || !path.startsWith('state.')) return path
-  return `entities.${actorId}.state.${path.slice('state.'.length)}`
+  return `entities.${escapePathSegment(actorId)}.state.${path.slice('state.'.length)}`
 }
 
 function processTerminal(state: Process['state']): boolean {
   return state === 'completed' || state === 'failed' || state === 'cancelled'
+}
+
+function nonNegative(value: number, integer = false): number {
+  if (!Number.isFinite(value) || value < 0) return 0
+  return integer ? Math.floor(value) : value
 }
 
 /** Deterministic discrete-event kernel. The containing Worker is its only caller and DB writer. */
@@ -222,6 +286,28 @@ export class WorldlineKernel {
       health: this.health(),
       aiUsage: this.snapshotValue.aiUsage,
       controls: Object.fromEntries(this.controls),
+    }
+  }
+
+  choices(request: RunChoicesRequest): RunChoicesView {
+    this.assertRun(request.runId)
+    const actor = this.entity(request.actorId)
+    if (actor === undefined) {
+      throw new WorldlineRuntimeError('action-invalid', `unknown actor: ${request.actorId}`)
+    }
+    const active = this.snapshotValue.processes.some(process => (
+      process.action.actorId === request.actorId && !processTerminal(process.state)
+    ))
+    const choices = active ? [] : this.init.blueprint.actions
+      .filter(definition => typeof actor['type'] === 'string'
+        && definition.actorTypes.includes(actor['type'])
+        && definition.preconditions.every(expression => evaluateExpression(expression, this.snapshotValue.state)))
+      .flatMap(definition => this.projectActionChoices(request.actorId, definition))
+    return {
+      runId: request.runId,
+      actorId: request.actorId,
+      sequence: this.snapshotValue.sequence,
+      choices,
     }
   }
 
@@ -311,6 +397,11 @@ export class WorldlineKernel {
     }
     if (!definition.preconditions.every(expression => evaluateExpression(expression, this.snapshotValue.state))) {
       throw new WorldlineRuntimeError('action-forbidden', 'action preconditions are not satisfied')
+    }
+    if (this.snapshotValue.processes.some(process => (
+      process.action.actorId === request.actorId && !processTerminal(process.state)
+    ))) {
+      throw new WorldlineRuntimeError('action-forbidden', 'actor already has an active process')
     }
     const actionId = worldlineId<'action'>(this.nextId('action'))
     const action: ActionRequest = {
@@ -445,10 +536,143 @@ export class WorldlineKernel {
     }
   }
 
+  recordAiIntent(request: RecordAiIntentRequest): RecordAiIntentResult {
+    this.assertRun(request.runId)
+    this.assertLive()
+    if (this.entity(request.actorId) === undefined) {
+      throw new WorldlineRuntimeError('action-invalid', `unknown actor: ${request.actorId}`)
+    }
+    const invocationRow = this.database.record('ai-invocation', request.invocationId)
+    const invocation = invocationRow?.payload as unknown as AiInvocation | undefined
+    if (invocation === undefined || invocation.actorId !== request.actorId
+      || stableStringify(invocation.modelRoute) !== stableStringify(request.modelRoute)) {
+      throw new WorldlineRuntimeError('action-invalid', 'AI intent has no matching recorded invocation')
+    }
+    if (stableStringify(invocation.contextSourceIds) !== stableStringify(request.contextSourceIds)) {
+      throw new WorldlineRuntimeError('action-invalid', 'AI intent does not match its invocation Context Pack')
+    }
+    const choice = this.choices(request).choices.find(item => item.id === request.choiceId)
+    if (choice === undefined || choice.actionType !== request.actionType
+      || stableStringify(choice.parameters) !== stableStringify(request.parameters)
+      || !invocation.contextSourceIds.includes(choice.id)) {
+      throw new WorldlineRuntimeError('action-invalid', 'AI intent is not a current projected legal choice')
+    }
+    const intent: AiIntent = {
+      id: worldlineId<'intent'>(this.nextId('intent')),
+      invocationId: request.invocationId,
+      actorId: request.actorId,
+      logicalTime: this.snapshotValue.logicalTime,
+      choiceId: request.choiceId,
+      actionType: request.actionType,
+      parameters: request.parameters,
+      rationale: request.rationale,
+      confidence: Math.min(1, nonNegative(request.confidence)),
+      modelRoute: request.modelRoute,
+      contextSourceIds: request.contextSourceIds,
+      recordedAt: new Date().toISOString(),
+    }
+    this.commit([this.record('ai-intent', intent.id, intent, this.snapshotValue.sequence)])
+    return { intent, view: this.view() }
+  }
+
+  recordAiInvocation(request: RecordAiInvocationRequest): RecordAiInvocationResult {
+    this.assertRun(request.runId)
+    this.assertLive()
+    if (request.actorId !== undefined && this.entity(request.actorId) === undefined) {
+      throw new WorldlineRuntimeError('action-invalid', `unknown actor: ${request.actorId}`)
+    }
+    if (!/^[a-f0-9]{64}$/u.test(request.outputDigest)) {
+      throw new WorldlineRuntimeError('action-invalid', 'AI invocation output digest must be lowercase SHA-256')
+    }
+    const invocation: AiInvocation = {
+      id: worldlineId<'ai-invocation'>(this.nextId('ai-invocation')),
+      purpose: request.purpose,
+      ...(request.actorId === undefined ? {} : { actorId: request.actorId }),
+      logicalTime: this.snapshotValue.logicalTime,
+      modelRoute: request.modelRoute,
+      contextSourceIds: request.contextSourceIds,
+      inputTokens: nonNegative(request.inputTokens, true),
+      outputTokens: nonNegative(request.outputTokens, true),
+      cacheReadTokens: nonNegative(request.cacheReadTokens ?? 0, true),
+      estimatedCost: nonNegative(request.estimatedCost),
+      outputDigest: request.outputDigest,
+      outcome: request.outcome,
+      recordedAt: new Date().toISOString(),
+    }
+    const usage = {
+      ...this.snapshotValue.aiUsage,
+      calls: this.snapshotValue.aiUsage.calls + 1,
+      inputTokens: this.snapshotValue.aiUsage.inputTokens + invocation.inputTokens,
+      outputTokens: this.snapshotValue.aiUsage.outputTokens + invocation.outputTokens,
+      cacheReadTokens: this.snapshotValue.aiUsage.cacheReadTokens + invocation.cacheReadTokens,
+      estimatedCost: this.snapshotValue.aiUsage.estimatedCost + invocation.estimatedCost,
+      cacheHits: this.snapshotValue.aiUsage.cacheHits + (invocation.cacheReadTokens > 0 ? 1 : 0),
+    }
+    const budgetExceeded = this.aiBudgetExceeded(usage)
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      aiUsage: budgetExceeded ? { ...usage, degradedReason: 'AI budget exhausted' } : usage,
+      modelPolicy: budgetExceeded
+        ? { ...this.snapshotValue.modelPolicy, aiEnabled: false }
+        : this.snapshotValue.modelPolicy,
+    }
+    this.commit([this.record('ai-invocation', invocation.id, invocation, this.snapshotValue.sequence)])
+    return { invocation, budgetExceeded, view: this.view() }
+  }
+
+  recordNarrativeBeat(request: RecordNarrativeBeatRequest): RecordNarrativeBeatResult {
+    this.assertRun(request.runId)
+    this.assertLive()
+    if (request.text.trim() === '' || request.text.length > 100_000) {
+      throw new WorldlineRuntimeError('action-invalid', 'narrative text must contain 1 to 100,000 characters')
+    }
+    const events = request.eventIds.map(id => this.database.record('world-event', id))
+    const observations = request.observationIds.map(id => this.database.record('observation', id))
+    if (events.some(item => item === undefined) || observations.some(item => item === undefined)) {
+      throw new WorldlineRuntimeError('action-invalid', 'narrative references records outside this Run')
+    }
+    if (request.style === 'llm') {
+      if (request.invocationId === undefined || request.modelRoute === undefined) {
+        throw new WorldlineRuntimeError('action-invalid', 'LLM narrative requires its recorded invocation and route')
+      }
+      const invocationPayload = this.database.record('ai-invocation', request.invocationId)?.payload
+      const invocation = invocationPayload as unknown as AiInvocation | undefined
+      if (invocation === undefined || invocation.purpose !== 'narrator'
+        || stableStringify(invocation.modelRoute) !== stableStringify(request.modelRoute)
+        || invocation.outputDigest !== createHash('sha256').update(request.text).digest('hex')) {
+        throw new WorldlineRuntimeError('action-invalid', 'narrative does not match its recorded narrator call')
+      }
+      const cited = [...request.eventIds, ...request.observationIds]
+      if (cited.some(id => !invocation.contextSourceIds.includes(id))) {
+        throw new WorldlineRuntimeError('action-invalid', 'narrative cites facts absent from its Context Pack')
+      }
+    }
+    const beat: NarrativeBeat = {
+      id: worldlineId<'narrative-beat'>(this.nextId('narrative-beat')),
+      ...(request.invocationId === undefined ? {} : { invocationId: request.invocationId }),
+      eventIds: request.eventIds,
+      observationIds: request.observationIds,
+      camera: request.camera,
+      ...(request.speakerId === undefined ? {} : { speakerId: request.speakerId }),
+      text: request.text,
+      media: request.media,
+      style: request.style,
+      ...(request.modelRoute === undefined ? {} : { modelRoute: request.modelRoute }),
+    }
+    this.commit([this.record('narrative-beat', beat.id, beat, this.snapshotValue.sequence)])
+    return { beat, view: this.view() }
+  }
+
   private initialSnapshot(): RunSnapshot {
     const entities: Record<string, JsonValue> = {}
     for (const seed of this.init.blueprint.entities) {
-      entities[seed.id] = { type: seed.type, facets: seed.facets, state: seed.state, lod: seed.lod }
+      entities[seed.id] = {
+        type: seed.type,
+        facets: seed.facets,
+        state: seed.state,
+        lod: seed.lod,
+        memory: jsonObject(seed.memory),
+      }
     }
     const futureEvents: FutureEvent[] = this.init.blueprint.systems.map((system, index) => ({
       id: `future:${contentFingerprint(`${this.init.runId}:${system.id}:initial`)}`,
@@ -619,13 +843,18 @@ export class WorldlineKernel {
     if (typeof destination !== 'string' || !this.init.blueprint.maps.some(map => map.nodes.some(node => node.id === destination))) {
       return this.failProcess(process, definition, 'teleport destination does not exist', records)
     }
-    const path = `entities.${process.action.actorId}.state.locationId`
+    const path = `entities.${escapePathSegment(process.action.actorId)}.state.locationId`
     const before = getPath(this.snapshotValue.state, path)
     const state = setPath(this.snapshotValue.state, path, destination)
     const completed: Process = { ...process, state: 'completed', startedAt: this.snapshotValue.logicalTime, progress: 1 }
     this.snapshotValue = { ...this.snapshotValue, state }
     this.putProcess(completed)
-    this.emitEvent(this.lifecycleEvent(completed, definition, 'completed', [{ path, before, after: destination }]), records)
+    this.emitEvent(this.lifecycleEvent(
+      completed,
+      definition,
+      'completed',
+      [stateDelta(path, before, destination)],
+    ), records)
     return completed
   }
 
@@ -704,7 +933,7 @@ export class WorldlineKernel {
     if (edgeIndex !== process.movement.edgeIndex) return
     const node = process.movement.route[edgeIndex + 1]
     if (node === undefined) return
-    const path = `entities.${process.action.actorId}.state.locationId`
+    const path = `entities.${escapePathSegment(process.action.actorId)}.state.locationId`
     const before = getPath(this.snapshotValue.state, path)
     const state = setPath(this.snapshotValue.state, path, node)
     const completed = edgeIndex === process.movement.route.length - 2
@@ -734,7 +963,7 @@ export class WorldlineKernel {
       next,
       definition,
       completed ? 'completed' : 'progressing',
-      [{ path, before, after: node }],
+      [stateDelta(path, before, node)],
     ), records)
   }
 
@@ -748,8 +977,9 @@ export class WorldlineKernel {
         continue
       }
       if (effect.op === 'transfer') {
-        const fromPath = `resources.${effect.resource}.holders.${effect.from}`
-        const toPath = `resources.${effect.resource}.holders.${effect.to}`
+        const resource = escapePathSegment(effect.resource)
+        const fromPath = `resources.${resource}.holders.${escapePathSegment(effect.from)}`
+        const toPath = `resources.${resource}.holders.${escapePathSegment(effect.to)}`
         const beforeFrom = Number(getPath(state, fromPath) ?? 0)
         const beforeTo = Number(getPath(state, toPath) ?? 0)
         if (beforeFrom < effect.amount) throw new WorldlineRuntimeError('action-forbidden', 'resource transfer exceeds holdings')
@@ -769,7 +999,9 @@ export class WorldlineKernel {
         state = setPath(state, path, next)
       }
       const after = getPath(state, path)
-      if (stableStringify(before) !== stableStringify(after)) deltas.push({ path, before, after })
+      if (stableStringify(before) !== stableStringify(after)) {
+        deltas.push(stateDelta(path, before, after))
+      }
     }
     return { state, deltas, cognitionChanges }
   }
@@ -828,6 +1060,89 @@ export class WorldlineKernel {
         perceived: { type: event.type, data: event.data },
       }
       records.push(this.record('observation', observation.id, observation, event.sequence))
+      this.rememberObservation(participant as EntityId, event, observation)
+    }
+    this.rememberCognition(event)
+  }
+
+  private rememberObservation(actorId: EntityId, event: WorldEvent, observation: Observation): void {
+    const memory = this.characterMemory(actorId)
+    const actor = this.entity(actorId)
+    const state = actor?.['state']
+    const locationId = typeof state === 'object' && state !== null && !Array.isArray(state)
+      && typeof state['locationId'] === 'string'
+      ? worldlineId<'map-node'>(state['locationId'])
+      : undefined
+    const participants = event.participantIds
+      .filter(id => this.entity(worldlineId<'entity'>(id)) !== undefined)
+      .map(id => worldlineId<'entity'>(id))
+    const perceivedType = observation.perceived['type']
+    const actionType = event.data['actionType']
+    const episodic = [...memory.episodic, {
+      id: worldlineId<'memory'>(this.nextId('memory')),
+      actorId,
+      logicalTime: event.logicalTime,
+      sourceEventIds: [event.id],
+      importance: event.processMilestone === 'completed' || event.processMilestone === 'failed' ? 0.8 : 0.4,
+      summary: typeof perceivedType === 'string' ? perceivedType : event.type,
+      participants,
+      ...(locationId === undefined ? {} : { placeId: locationId }),
+    }].slice(-MEMORY_CATEGORY_LIMIT)
+    const experience = event.actionId !== undefined
+      && (event.processMilestone === 'completed' || event.processMilestone === 'failed'
+        || event.processMilestone === 'cancelled')
+      ? [...memory.experience, {
+        id: worldlineId<'memory'>(this.nextId('memory')),
+        actorId,
+        logicalTime: event.logicalTime,
+        sourceEventIds: [event.id],
+        importance: 0.7,
+        actionType: typeof actionType === 'string' ? actionType : event.type,
+        outcome: event.processMilestone,
+        conditions: event.data,
+      }].slice(-MEMORY_CATEGORY_LIMIT)
+      : memory.experience
+    this.setCharacterMemory(actorId, { ...memory, episodic, experience })
+  }
+
+  private rememberCognition(event: WorldEvent): void {
+    for (const change of event.cognitionChanges) {
+      const observer = change['observer']
+      const fact = change['fact']
+      if (typeof observer !== 'string' || this.entity(worldlineId<'entity'>(observer)) === undefined
+        || typeof fact !== 'object' || fact === null || Array.isArray(fact)) continue
+      const actorId = worldlineId<'entity'>(observer)
+      const memory = this.characterMemory(actorId)
+      const factRecord = fact
+      const belief = {
+        id: worldlineId<'memory'>(this.nextId('memory')),
+        actorId,
+        logicalTime: event.logicalTime,
+        sourceEventIds: [event.id],
+        importance: typeof factRecord['importance'] === 'number' ? factRecord['importance'] : 0.6,
+        subject: typeof factRecord['subject'] === 'string' ? factRecord['subject'] : event.type,
+        value: factRecord['value'] ?? factRecord,
+        confidence: typeof factRecord['confidence'] === 'number' ? factRecord['confidence'] : 1,
+        contradictedBy: [],
+      }
+      this.setCharacterMemory(actorId, {
+        ...memory,
+        beliefs: [...memory.beliefs, belief].slice(-MEMORY_CATEGORY_LIMIT),
+      })
+    }
+  }
+
+  private characterMemory(actorId: EntityId): CharacterMemory {
+    const memory = this.entity(actorId)?.['memory']
+    if (typeof memory !== 'object' || memory === null || Array.isArray(memory)) return EMPTY_MEMORY
+    return memory as unknown as CharacterMemory
+  }
+
+  private setCharacterMemory(actorId: EntityId, memory: CharacterMemory): void {
+    const path = `entities.${escapePathSegment(actorId)}.memory`
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      state: setPath(this.snapshotValue.state, path, jsonObject(memory)),
     }
   }
 
@@ -960,7 +1275,10 @@ export class WorldlineKernel {
       ...map.nodes.map(node => [node.id, node.capacity] as const),
       ...map.edges.map(edge => [edge.id, edge.capacity] as const),
     ]).find(([id]) => id === resourceId)?.[1]
-    const stateCapacity = getPath(this.snapshotValue.state, `resources.${resourceId}.capacity`)
+    const stateCapacity = getPath(
+      this.snapshotValue.state,
+      `resources.${escapePathSegment(resourceId)}.capacity`,
+    )
     const value = mapCapacity ?? (typeof stateCapacity === 'number' ? stateCapacity : 1)
     return Number.isFinite(value) && value >= 0 ? value : 0
   }
@@ -1083,6 +1401,50 @@ export class WorldlineKernel {
     return { route, edges: routeEdges, duration: routeEdges.reduce((sum, edge) => sum + edge.baseDuration, 0) }
   }
 
+  private projectActionChoices(
+    actorId: EntityId,
+    definition: ActionDefinition,
+  ): ChoiceProjection[] {
+    if (definition.operator !== 'move' && definition.operator !== 'teleport') {
+      return [{
+        id: `choice:${contentFingerprint(`${actorId}:${definition.id}:${String(this.snapshotValue.sequence)}`)}`,
+        actionType: definition.id,
+        parameters: {},
+        label: definition.description,
+        description: definition.description,
+        targetIds: [],
+        estimatedDuration: definition.duration,
+        costs: definition.claims.map(claim => `${claim.quantity} ${claim.resource}`),
+        risks: [],
+      }]
+    }
+    const actor = this.entity(actorId)
+    const state = actor?.['state']
+    const origin = typeof state === 'object' && state !== null && !Array.isArray(state)
+      && typeof state['locationId'] === 'string'
+      ? worldlineId<'map-node'>(state['locationId'])
+      : undefined
+    if (origin === undefined) return []
+    return this.init.blueprint.maps.flatMap(map => map.nodes).flatMap((node): ChoiceProjection[] => {
+      if (node.id === origin) return []
+      const planned = definition.operator === 'teleport'
+        ? { duration: 0 }
+        : this.planMovement(origin, node.id)
+      if (planned === undefined) return []
+      return [{
+        id: `choice:${contentFingerprint(`${actorId}:${definition.id}:${node.id}:${String(this.snapshotValue.sequence)}`)}`,
+        actionType: definition.id,
+        parameters: { destination: node.id },
+        label: `${definition.description}: ${node.name}`,
+        description: `${definition.operator === 'teleport' ? 'Teleport' : 'Travel'} to ${node.name}.`,
+        targetIds: [node.id],
+        estimatedDuration: planned.duration,
+        costs: definition.claims.map(claim => `${claim.quantity} ${claim.resource}`),
+        risks: [...node.hazards],
+      }]
+    })
+  }
+
   private health(): RunHealth {
     const active = this.snapshotValue.processes.filter(item => !processTerminal(item.state))
     const longestWait = active.reduce((max, item) => (
@@ -1101,6 +1463,23 @@ export class WorldlineKernel {
       writerThread: true,
       wal: this.database.integrity().journalMode.toLowerCase() === 'wal',
     }
+  }
+
+  private aiBudgetExceeded(usage: RunSnapshot['aiUsage']): boolean {
+    const budget = this.snapshotValue.aiBudget
+    const invocations = this.database.records(-1, 5000, 'ai-invocation')
+      .map(record => record.payload as unknown as AiInvocation)
+    const logicalDay = Math.floor(this.snapshotValue.logicalTime / 86_400)
+    const callsThisLogicalDay = invocations
+      .filter(item => Math.floor(item.logicalTime / 86_400) === logicalDay).length + 1
+    const hourAgo = Date.now() - 3_600_000
+    const callsThisRealHour = invocations.filter(item => Date.parse(item.recordedAt) >= hourAgo).length + 1
+    return usage.calls > budget.maxCalls
+      || usage.inputTokens > budget.maxInputTokens
+      || usage.outputTokens > budget.maxOutputTokens
+      || usage.estimatedCost > budget.maxEstimatedCost
+      || callsThisLogicalDay > budget.maxCallsPerLogicalDay
+      || callsThisRealHour > budget.maxCallsPerRealHour
   }
 
   private schedule(kind: string, due: number, payload: JsonObject, dedupeKey?: string): void {

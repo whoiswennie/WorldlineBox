@@ -7,6 +7,7 @@ import type { WorkerCommand, WorkerInit, WorkerRequest, WorkerToHost } from './p
 
 function execute(kernel: WorldlineKernel, command: WorkerCommand): unknown {
   if (command.type === 'view') return kernel.view()
+  if (command.type === 'choices') return kernel.choices(command.payload)
   if (command.type === 'advance') return kernel.advance(command.payload)
   if (command.type === 'submit-action') return kernel.submitAction(command.payload)
   if (command.type === 'pause') return kernel.pause()
@@ -18,6 +19,9 @@ function execute(kernel: WorldlineKernel, command: WorkerCommand): unknown {
   if (command.type === 'set-ai') return kernel.setAiEnabled(command.payload)
   if (command.type === 'switch-model') return kernel.switchModel(command.payload)
   if (command.type === 'explain') return kernel.explain(command.payload)
+  if (command.type === 'record-ai-intent') return kernel.recordAiIntent(command.payload)
+  if (command.type === 'record-ai-invocation') return kernel.recordAiInvocation(command.payload)
+  if (command.type === 'record-narrative-beat') return kernel.recordNarrativeBeat(command.payload)
   const summary = kernel.summary()
   kernel.close()
   return { ...summary, status: 'stopped' }
