@@ -806,6 +806,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
 
   async exportProject(request: ExportProjectRequest): Promise<TransferJob> {
     const project = await this.projectPath(request.projectId)
+    const manifest = await readManifest(project)
     const destination = resolve(request.destination)
     const job = this.beginJob('export', await directorySize(project))
     void (async () => {
@@ -817,6 +818,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
           projectId: request.projectId,
           destination,
           includesRuns: request.includeRuns === true,
+          dependencies: manifest.dependencies,
           signal,
           onTotal: (totalBytes) => { this.updateJobTotal(job.id, totalBytes) },
           onProgress: (completedBytes) => { this.updateJobProgress(job.id, completedBytes) },
@@ -860,6 +862,9 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
         const manifest = await readManifest(extracted)
         if (manifest.id !== preflight.manifest.projectId) {
           throw new WorldlineProjectError('manifest-conflict', 'archive and project manifest identities do not match')
+        }
+        if (stableStringify(manifest.dependencies) !== stableStringify(preflight.manifest.dependencies)) {
+          throw new WorldlineProjectError('manifest-conflict', 'archive and project dependency declarations do not match')
         }
         const existing = (await this.scan()).find(project => project.manifest.id === manifest.id)
         if (existing !== undefined && conflict === 'cancel') {

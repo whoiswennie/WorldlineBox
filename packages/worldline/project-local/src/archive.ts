@@ -1,12 +1,13 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { mkdir, open, rename, stat, unlink } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
+import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { ZipFile as ZipWriter } from 'yazl'
 import { openPromise as openZip, type Entry, type ZipFile as ZipReader } from 'yauzl'
-import type { ProjectId } from '@deepseek-ai/dsh-worldline-standard'
-import { WWS_VERSION } from '@deepseek-ai/dsh-worldline-standard'
+import type { MechanismDependency, ProjectId } from '@deepseek-ai/dsh-worldline-standard'
+import { WWS_VERSION, worldlineId } from '@deepseek-ai/dsh-worldline-standard'
 import { WorldlineProjectError } from '@deepseek-ai/dsh-worldline-project'
 import {
   durableWriteStream,
@@ -20,7 +21,7 @@ import {
 const ARCHIVE_MANIFEST = 'worldline-archive.json'
 const MAX_ARCHIVE_FILES = 100_000
 const MAX_EXPANDED_BYTES = 128 * 1024 ** 3
-const MAX_MANIFEST_BYTES = 1024 * 1024
+const MAX_MANIFEST_BYTES = 32 * 1024 * 1024
 const MAX_SUSPICIOUS_RATIO = 1_000
 const RATIO_CHECK_BYTES = 100 * 1024 ** 2
 const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu
@@ -34,6 +35,14 @@ interface ProjectArchiveManifest {
   readonly fileCount: number
   readonly expandedBytes: number
   readonly includesRuns: boolean
+  readonly dependencies: readonly MechanismDependency[]
+  readonly files: readonly ArchiveFileDigest[]
+}
+
+interface ArchiveFileDigest {
+  readonly path: string
+  readonly bytes: number
+  readonly sha256: string
 }
 
 export interface ProjectArchivePreflight {
@@ -115,6 +124,57 @@ function isSymbolicLink(entry: Entry): boolean {
   return (unixMode & 0o170000) === 0o120000
 }
 
+function parseDependencies(value: unknown): readonly MechanismDependency[] {
+  if (!Array.isArray(value) || value.length > 1_000) {
+    throw new WorldlineProjectError('transfer-failed', 'archive manifest dependencies must be an array')
+  }
+  const ids = new Set<string>()
+  return value.map((item) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      throw new WorldlineProjectError('transfer-failed', 'archive dependency must be an object')
+    }
+    const dependency = item as Record<string, unknown>
+    if (typeof dependency['id'] !== 'string' || dependency['id'].trim() === ''
+      || typeof dependency['version'] !== 'string' || dependency['version'].trim() === ''
+      || typeof dependency['required'] !== 'boolean') {
+      throw new WorldlineProjectError('transfer-failed', 'archive dependency is malformed')
+    }
+    const id = dependency['id'].trim()
+    if (ids.has(id)) throw new WorldlineProjectError('transfer-failed', `archive repeats dependency: ${id}`)
+    ids.add(id)
+    return {
+      id,
+      version: dependency['version'],
+      required: dependency['required'],
+    }
+  })
+}
+
+function parseFileDigests(value: unknown): readonly ArchiveFileDigest[] {
+  if (!Array.isArray(value)) {
+    throw new WorldlineProjectError('transfer-failed', 'archive manifest files must be an array')
+  }
+  const names = new Set<string>()
+  return value.map((item) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      throw new WorldlineProjectError('transfer-failed', 'archive file digest must be an object')
+    }
+    const file = item as Record<string, unknown>
+    if (typeof file['path'] !== 'string' || file['path'].endsWith('/')
+      || !Number.isSafeInteger(file['bytes']) || Number(file['bytes']) < 0
+      || typeof file['sha256'] !== 'string' || !/^[a-f0-9]{64}$/u.test(file['sha256'])) {
+      throw new WorldlineProjectError('transfer-failed', 'archive file digest is malformed')
+    }
+    const path = archivePath(file['path'])
+    const canonical = path.toLocaleLowerCase('en-US')
+    if (names.has(canonical)) {
+      throw new WorldlineProjectError('transfer-failed', `archive manifest repeats a file: ${path}`)
+    }
+    names.add(canonical)
+    return { path, bytes: Number(file['bytes']), sha256: file['sha256'] }
+  })
+}
+
 function parseManifest(value: unknown): ProjectArchiveManifest {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new WorldlineProjectError('transfer-failed', 'archive manifest must be an object')
@@ -128,16 +188,30 @@ function parseManifest(value: unknown): ProjectArchiveManifest {
     || typeof source['includesRuns'] !== 'boolean') {
     throw new WorldlineProjectError('transfer-failed', 'archive manifest does not match the current project archive contract')
   }
+  const dependencies = parseDependencies(source['dependencies'])
+  const files = parseFileDigests(source['files'])
+  if (files.length !== Number(source['fileCount'])
+    || files.reduce((sum, file) => sum + file.bytes, 0) !== Number(source['expandedBytes'])) {
+    throw new WorldlineProjectError('transfer-failed', 'archive file digests do not match declared totals')
+  }
   return {
     format: WWS_VERSION,
     kind: 'project',
-    projectId: source['projectId'] as ProjectId,
+    projectId: worldlineId<'project'>(source['projectId']),
     rootDirectory: archivePath(source['rootDirectory']).replace(/\/$/u, ''),
     createdAt: source['createdAt'],
     fileCount: Number(source['fileCount']),
     expandedBytes: Number(source['expandedBytes']),
     includesRuns: source['includesRuns'],
+    dependencies,
+    files,
   }
+}
+
+async function sha256File(path: string, signal: AbortSignal): Promise<string> {
+  const digest = createHash('sha256')
+  for await (const chunk of abortable(createReadStream(path), signal)) digest.update(chunk)
+  return digest.digest('hex')
 }
 
 async function readEntryBounded(zip: ZipReader, entry: Entry, maxBytes: number): Promise<string> {
@@ -228,6 +302,20 @@ export async function preflightProjectArchive(
     if (payloadFiles !== manifest.fileCount || payloadBytes !== manifest.expandedBytes) {
       throw new WorldlineProjectError('transfer-failed', 'project archive size declaration does not match its ZIP directory')
     }
+    const digestFiles = new Map(manifest.files.map(file => [
+      `${payloadPrefix}${file.path}`.toLocaleLowerCase('en-US'), file,
+    ]))
+    for (const entry of files) {
+      if (entry.fileName === ARCHIVE_MANIFEST || entry.fileName.endsWith('/')) continue
+      const declared = digestFiles.get(entry.fileName.toLocaleLowerCase('en-US'))
+      if (declared === undefined || declared.bytes !== entry.uncompressedSize) {
+        throw new WorldlineProjectError('transfer-failed', `ZIP entry is not covered by its manifest: ${entry.fileName}`)
+      }
+      digestFiles.delete(entry.fileName.toLocaleLowerCase('en-US'))
+    }
+    if (digestFiles.size !== 0) {
+      throw new WorldlineProjectError('transfer-failed', 'archive manifest declares files missing from the ZIP')
+    }
     return {
       manifest,
       entries: files.map(entry => fingerprint(entry)),
@@ -244,6 +332,7 @@ export async function exportProjectArchive(options: {
   readonly projectId: ProjectId
   readonly destination: string
   readonly includesRuns: boolean
+  readonly dependencies: readonly MechanismDependency[]
   readonly signal: AbortSignal
   readonly onTotal: (totalBytes: number) => void
   readonly onProgress: (completedBytes: number) => void
@@ -260,6 +349,8 @@ export async function exportProjectArchive(options: {
     readonly size: number
     readonly mtime: Date
     readonly mode: number
+    readonly relative: string
+    readonly sha256: string
   }> = []
   let sourceBytes = 0
   for (const item of await walk(options.project, true)) {
@@ -282,6 +373,8 @@ export async function exportProjectArchive(options: {
       size: info.size,
       mtime: info.mtime,
       mode: info.mode,
+      relative: archivePath(item.relativePath),
+      sha256: await sha256File(absolute, options.signal),
     })
   }
   if (sourceEntries.length === 0 || sourceBytes < 1) {
@@ -297,6 +390,8 @@ export async function exportProjectArchive(options: {
     fileCount: sourceEntries.length,
     expandedBytes: sourceBytes,
     includesRuns: options.includesRuns,
+    dependencies: options.dependencies,
+    files: sourceEntries.map(entry => ({ path: entry.relative, bytes: entry.size, sha256: entry.sha256 })),
   }
   await mkdir(dirname(destination), { recursive: true })
   const temporary = resolve(dirname(destination), `.${basename(destination)}.${randomUUID()}.tmp`)
@@ -311,12 +406,22 @@ export async function exportProjectArchive(options: {
       compress: true,
     }, (callback) => {
       assertNotAborted(options.signal)
-      const stream = createReadStream(entry.absolute)
-      stream.on('data', (chunk: string | Buffer) => {
-        completedBytes += Buffer.byteLength(chunk)
-        options.onProgress(completedBytes)
-      })
-      callback(null, stream)
+      const digest = createHash('sha256')
+      async function* checkedSource(): AsyncIterable<Uint8Array> {
+        for await (const chunk of abortable(createReadStream(entry.absolute), options.signal)) {
+          digest.update(chunk)
+          completedBytes += chunk.byteLength
+          options.onProgress(completedBytes)
+          yield chunk
+        }
+        if (digest.digest('hex') !== entry.sha256) {
+          throw new WorldlineProjectError(
+            'revision-conflict',
+            `project file changed while exporting: ${entry.relative}`,
+          )
+        }
+      }
+      callback(null, Readable.from(checkedSource()))
     })
   }
   try {
@@ -360,6 +465,7 @@ export async function extractProjectArchive(options: {
     strictFileNames: true,
   })
   const prefix = `payload/${options.preflight.manifest.rootDirectory}/`
+  const digests = new Map(options.preflight.manifest.files.map(file => [file.path, file]))
   let completedBytes = 0
   let entryIndex = 0
   try {
@@ -386,17 +492,23 @@ export async function extractProjectArchive(options: {
       }
       const stream = await zip.openReadStreamPromise(entry)
       let crc = 0xffffffff
+      const sha256 = createHash('sha256')
       async function* checked(): AsyncIterable<Uint8Array> {
         for await (const chunk of abortable(stream, options.signal)) {
           for (const byte of chunk) {
             crc = (CRC32_TABLE[(crc ^ byte) & 0xff] ?? 0) ^ (crc >>> 8)
           }
+          sha256.update(chunk)
           yield chunk
         }
       }
       await durableWriteStream(destination, checked(), entry.uncompressedSize)
       if ((crc ^ 0xffffffff) >>> 0 !== (entry.crc32 >>> 0)) {
         throw new WorldlineProjectError('transfer-failed', `ZIP entry checksum failed: ${entry.fileName}`)
+      }
+      const declared = digests.get(relative)
+      if (declared === undefined || sha256.digest('hex') !== declared.sha256) {
+        throw new WorldlineProjectError('transfer-failed', `ZIP entry digest failed: ${entry.fileName}`)
       }
       completedBytes += entry.uncompressedSize
       options.onProgress(completedBytes)

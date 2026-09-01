@@ -1,4 +1,5 @@
 import { createWriteStream } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { WWS_VERSION, type ProjectId, type Revision } from '@deepseek-ai/dsh-worldline-standard'
 import LocalWorldlineProjects from '../src/index.ts'
-import { preflightProjectArchive } from '../src/archive.ts'
+import { extractProjectArchive, preflightProjectArchive } from '../src/archive.ts'
 import type { TransferJob } from '@deepseek-ai/dsh-worldline-project'
 
 const roots: string[] = []
@@ -347,9 +348,11 @@ describe('LocalWorldlineProjects', () => {
       projectId: 'project:01HZZZZZZZZZZZZZZZZZZZZZZZ',
       rootDirectory: 'world',
       createdAt: new Date().toISOString(),
-      fileCount: 2,
-      expandedBytes: 2,
+      fileCount: 1,
+      expandedBytes: 1,
       includesRuns: false,
+      dependencies: [],
+      files: [{ path: 'worldline.toml', bytes: 1, sha256: '0'.repeat(64) }],
     })
     await writeZip(duplicate, [
       ['worldline-archive.json', manifest],
@@ -384,5 +387,36 @@ describe('LocalWorldlineProjects', () => {
     expect(await runtime.ctx.worldlineProjects.transfer(initial.id)).toMatchObject({ state: 'cancelled' })
     expect(await readdir(archiveDirectory)).toEqual([])
     await runtime.dispose()
+  })
+
+  it('verifies every extracted payload against the manifest SHA-256', async () => {
+    const archiveDirectory = await temporaryRoot()
+    const extraction = await temporaryRoot()
+    const archive = join(archiveDirectory, 'digest.worldline.zip')
+    const payload = 'actual payload'
+    const declaredDigest = createHash('sha256').update('forged payload').digest('hex')
+    await writeZip(archive, [
+      ['worldline-archive.json', JSON.stringify({
+        format: WWS_VERSION,
+        kind: 'project',
+        projectId: 'project:01HZZZZZZZZZZZZZZZZZZZZZZZ',
+        rootDirectory: 'world',
+        createdAt: new Date().toISOString(),
+        fileCount: 1,
+        expandedBytes: Buffer.byteLength(payload),
+        includesRuns: false,
+        dependencies: [],
+        files: [{ path: 'worldline.toml', bytes: Buffer.byteLength(payload), sha256: declaredDigest }],
+      })],
+      ['payload/world/worldline.toml', payload],
+    ])
+    const preflight = await preflightProjectArchive(archive)
+    await expect(extractProjectArchive({
+      source: archive,
+      destination: extraction,
+      preflight,
+      signal: new AbortController().signal,
+      onProgress: () => undefined,
+    })).rejects.toThrow(/digest failed/u)
   })
 })
