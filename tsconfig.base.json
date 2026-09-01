@@ -93,6 +93,24 @@
       "@deepseek-ai/dsh-worldline-compiler/types": [
         "./packages/worldline/compiler/src/types.ts"
       ],
+      "@deepseek-ai/dsh-worldline-conversation-context": [
+        "./packages/worldline/conversation-context/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-conversation-context/invariant": [
+        "./packages/worldline/conversation-context/src/invariant.ts"
+      ],
+      "@deepseek-ai/dsh-skill-worldline": [
+        "./packages/worldline/skill-worldline/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-skill-worldline/invariant": [
+        "./packages/worldline/skill-worldline/src/invariant.ts"
+      ],
+      "@deepseek-ai/dsh-tool-worldline": [
+        "./packages/worldline/tool-worldline/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-tool-worldline/invariant": [
+        "./packages/worldline/tool-worldline/src/invariant.ts"
+      ],
       "@deepseek-ai/dsh-worldline-project": [
         "./packages/worldline/project/src/index.ts"
       ],
@@ -619,6 +637,9 @@
       ],
       "@deepseek-ai/dsh-client-ui-plugin-center": [
         "./packages/client/ui-plugin-center/src"
+      ],
+      "@deepseek-ai/dsh-client-ui-worldline": [
+        "./packages/client/ui-worldline/src"
       ],
       "@deepseek-ai/dsh-client-ui-virtual-companion": [
         "./packages/client/ui-virtual-companion/src"

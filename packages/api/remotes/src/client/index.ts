@@ -9,6 +9,11 @@ import pluginInventoryRemote from '@deepseek-ai/dsh-host-plugin-inventory/remote
 import messageFeedbackRemote from '@deepseek-ai/dsh-message-feedback/remote'
 import neteaseMusicRemote from '@deepseek-ai/dsh-host-netease-music/remote'
 import sessionReferencesRemote from '@deepseek-ai/dsh-session-reference/remote'
+import worldlineAiRemote from '@deepseek-ai/dsh-worldline-ai/remote'
+import worldlineCompilerRemote from '@deepseek-ai/dsh-worldline-compiler/remote'
+import worldlineNarrativeRemote from '@deepseek-ai/dsh-worldline-narrative/remote'
+import worldlineProjectsRemote from '@deepseek-ai/dsh-worldline-project/remote'
+import worldlineRunsRemote from '@deepseek-ai/dsh-worldline-runtime/remote'
 import type { TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
 
 export type { TypertClientRemote as ClientRemote } from '@deepseek-ai/dsh-typert-protocol'
@@ -34,6 +39,11 @@ export type {} from '@deepseek-ai/dsh-host-plugin-inventory/remote'
 export type {} from '@deepseek-ai/dsh-host-netease-music/remote'
 export type {} from '@deepseek-ai/dsh-message-feedback/remote'
 export type {} from '@deepseek-ai/dsh-session-reference/remote'
+export type {} from '@deepseek-ai/dsh-worldline-ai/remote'
+export type {} from '@deepseek-ai/dsh-worldline-compiler/remote'
+export type {} from '@deepseek-ai/dsh-worldline-narrative/remote'
+export type {} from '@deepseek-ai/dsh-worldline-project/remote'
+export type {} from '@deepseek-ai/dsh-worldline-runtime/remote'
 // The forwarded-event allowlist's selection seat: without it in the consumer's
 // compilation face `TypertRemoteEvent` is `never` and every `$on` call fails.
 export type { ApiRemoteForwardedEvent } from '../types.ts'
@@ -134,6 +144,8 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     for (const contribution of [
       commandsRemote, goalsRemote, dynamicRemote, fileReferencesRemote,
       pluginInventoryRemote, neteaseMusicRemote, messageFeedbackRemote, sessionReferencesRemote,
+      worldlineProjectsRemote, worldlineCompilerRemote, worldlineRunsRemote,
+      worldlineAiRemote, worldlineNarrativeRemote,
     ]) {
       disposers.push(await ctx.remote.$mount(contribution))
     }

@@ -41,7 +41,10 @@
     "@deepseek-ai/dsh-worldline-runtime": "workspace:^",
     "@deepseek-ai/dsh-worldline-standard": "workspace:^"
   },
-  "dependencies": { "@deepseek-ai/schemastery": "workspace:^" },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "workspace:^",
+    "zod": "^4.4.3"
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",

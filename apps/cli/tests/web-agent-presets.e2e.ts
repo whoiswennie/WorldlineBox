@@ -89,6 +89,7 @@ async function bootWeb(
     // agent's capabilities, which is all this file asserts.
     { id: 'web-runtime', disabled: true },
     { id: 'ui-virtual-companion', disabled: true },
+    { id: 'ui-worldline', disabled: true },
     { id: 'session-telemetry-otel', disabled: true },
     // Worldline-owned host extensions depend on the same disabled surface
     // services. Their own E2E suites cover those integrations; this suite is
@@ -229,12 +230,40 @@ describe('the shipped Web composition', () => {
     }
   })
 
-  it('supplies both shipped presets, and only those, from the system root', async () => {
+  it('supplies every shipped preset, and only those, from the system root', async () => {
     const listed = await ctx.agentPresets.list()
 
-    expect(listed.map(preset => preset.id).sort()).toEqual(['cordis', 'minimal', 'ptc', 'standard'])
+    expect(listed.map(preset => preset.id).sort()).toEqual([
+      'cordis', 'minimal', 'ptc', 'standard', 'virtual-companion', 'worldline-author',
+    ])
     expect(listed.every(preset => preset.trust === 'system')).toBe(true)
     expect(ctx.agentPresets.defaultId).toBe('standard')
+  })
+
+  it('composes the bounded Worldline author tools and exactly seven domain skills', async () => {
+    const handle = await ctx.agents.create({
+      sessionId: SessionId('preset-worldline-author'),
+      setup: agentCtx => ctx.agentPresets.mount(agentCtx, 'worldline-author').then(() => undefined),
+    })
+    try {
+      const tools = toolNames(ctx, handle.agent)
+      expect(tools).toEqual(expect.arrayContaining([
+        'worldline_project', 'worldline_query', 'worldline_edit', 'worldline_link',
+        'worldline_map', 'worldline_build', 'worldline_run', 'worldline_explain',
+        'worldline_transfer', 'skill',
+      ]))
+      expect(tools).not.toEqual(expect.arrayContaining(['read', 'write', 'edit', 'bash', 'pwsh']))
+      const skills = (await ctx.skills.list({ scope: handle.agent }))
+        .filter(skill => skill.provider === 'worldline-domain')
+        .map(skill => skill.name)
+      expect(skills).toEqual([
+        'worldline-authoring', 'worldline-build-audit', 'worldline-character-design',
+        'worldline-map-design', 'worldline-mechanism-design', 'worldline-scenario-design',
+        'worldline-simulation-analysis',
+      ])
+    } finally {
+      await handle.dispose()
+    }
   })
 
   it('composes the full agent from `standard`', async () => {

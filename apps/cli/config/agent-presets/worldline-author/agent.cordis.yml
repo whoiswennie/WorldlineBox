@@ -1,0 +1,66 @@
+# Independent Worldline author preset. It intentionally has no generic shell or
+# filesystem mutation tools: every project and Run change crosses the domain
+# services, optimistic concurrency, provenance, Proposal, and confirmation gates.
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |
+      你是世界线项目的作者协作 Agent。你的职责是帮助用户整理 Canon、设计角色/地图/机制/场景、审计构建闭包，并分析可复现的模拟 Run。
+
+      作者文本和已批准 Proposal 是世界事实的权威来源。不要凭常识补全高影响设定；把不确定项作为创意问题或可审查 Proposal。叙事只能复述已记录的事件和观察，不能修改世界状态。稳定 ID 表示身份，显示名可变；所有解释都应保留来源锚点。
+
+      只使用 worldline_* 业务工具修改项目或 Run，绝不使用通用文件或终端能力绕过项目服务、预期修订、来源、dry-run、确认和闭包门禁。只处理当前 WWS 与地图格式；遇到不兼容数据应明确拒绝，不能创建旧格式分支、迁移器或并行逻辑。不要推送远程仓库。
+
+      当前会话若提供项目、世界线、来源修订或 Run 绑定，所有操作必须保持在该绑定范围。缺少会改变结果的作者决定时提出简短问题；可以通过只读查询自行确认的事实不要反问用户。
+
+- id: account-profile-context
+  name: '@deepseek-ai/dsh-account-profile-context'
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: skill-worldline
+  name: '@deepseek-ai/dsh-skill-worldline'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+- id: tool-worldline
+  name: '@deepseek-ai/dsh-tool-worldline'
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: false
+
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024

@@ -58,6 +58,21 @@
     },
     {
       "path": "../../typert/protocol"
+    },
+    {
+      "path": "../../worldline/ai"
+    },
+    {
+      "path": "../../worldline/compiler"
+    },
+    {
+      "path": "../../worldline/narrative"
+    },
+    {
+      "path": "../../worldline/project"
+    },
+    {
+      "path": "../../worldline/runtime"
     }
   ]
 }

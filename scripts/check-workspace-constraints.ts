@@ -172,6 +172,8 @@ const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
   ],
   // Agent Vault methodology is loaded progressively from immutable package resources.
   '@deepseek-ai/dsh-skill-agent-vault': ['assets'],
+  // Worldline authoring workflows and their progressive references are immutable package resources.
+  '@deepseek-ai/dsh-skill-worldline': ['assets'],
   '@deepseek-ai/dsh-subprocess-local': ['scripts/ensure-spawn-helper.mjs'],
   // Model-selection settings are a public subpath with a standalone runtime bundle.
   '@deepseek-ai/dsh-tool-subagent': ['lib/model-selection-settings.js'],

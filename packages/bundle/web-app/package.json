@@ -109,6 +109,7 @@
     "@deepseek-ai/dsh-client-ui-auth": "workspace:^",
     "@deepseek-ai/dsh-client-ui-browser": "workspace:^",
     "@deepseek-ai/dsh-client-ui-plugin-center": "workspace:^",
+    "@deepseek-ai/dsh-client-ui-worldline": "workspace:^",
     "@deepseek-ai/dsh-client-ui-virtual-companion": "workspace:^",
     "@deepseek-ai/dsh-client-ui-worldline-chrome": "workspace:^",
     "@deepseek-ai/dsh-host-desktop-browser": "workspace:^",
@@ -123,6 +124,12 @@
     "@deepseek-ai/dsh-launch-environment": "workspace:^",
     "@deepseek-ai/dsh-session-reference": "workspace:^",
     "@deepseek-ai/dsh-subprocess": "workspace:^",
+    "@deepseek-ai/dsh-worldline-ai": "workspace:^",
+    "@deepseek-ai/dsh-worldline-compiler": "workspace:^",
+    "@deepseek-ai/dsh-worldline-conversation-context": "workspace:^",
+    "@deepseek-ai/dsh-worldline-narrative": "workspace:^",
+    "@deepseek-ai/dsh-worldline-project-local": "workspace:^",
+    "@deepseek-ai/dsh-worldline-runtime-worker": "workspace:^",
     "open": "^11.0.0"
   },
   "peerDependencies": {

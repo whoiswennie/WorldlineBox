@@ -1,0 +1,56 @@
+.workbench { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr) minmax(220px, 280px); min-height: 0; height: 100%; background: var(--dsw-alias-background-base); color: var(--dsw-alias-label-primary); }
+.treePane, .inspector { min-height: 0; overflow: auto; border-right: 1px solid var(--dsw-alias-divider); background: color-mix(in srgb, var(--dsw-alias-background-elevated) 78%, transparent); }
+.inspector { border-right: 0; border-left: 1px solid var(--dsw-alias-divider); }
+.searchBox { display: flex; align-items: center; gap: 8px; margin: 12px; padding: 7px 10px; border: 1px solid var(--dsw-alias-divider); border-radius: 10px; background: var(--dsw-alias-background-elevated); }
+.searchBox input, .createBar input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
+.treeList, .searchResults, .auditList { margin: 0; padding: 0 8px; list-style: none; }
+.treeList[data-nested] { padding-left: 17px; }
+.treeEntry { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; width: 100%; gap: 5px; padding: 6px 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.treeEntry:hover, .treeEntry[data-active] { background: var(--dsw-specific-sidebar-nav-item-active); }
+.treeEntry > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.treeEntry small { opacity: .55; }
+.treeError, .notice { margin: 12px; color: var(--dsw-alias-state-danger-primary); font-size: 12px; overflow-wrap: anywhere; }
+.createBar { position: sticky; bottom: 0; display: flex; gap: 4px; padding: 10px; border-top: 1px solid var(--dsw-alias-divider); background: var(--dsw-alias-background-elevated); }
+.createBar input { padding: 6px 8px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; }
+.createBar button, .editorActions button, .inspector button, .stackActions button { border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.editorPane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.editorHeader { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 51px; padding: 8px 14px; border-bottom: 1px solid var(--dsw-alias-divider); }
+.editorHeader > div:first-child { min-width: 0; display: flex; flex-direction: column; }
+.editorHeader small { overflow: hidden; text-overflow: ellipsis; opacity: .6; }
+.editorActions { display: flex; align-items: center; gap: 5px; }
+.editorActions span { font-size: 11px; opacity: .65; }
+.editorActions span[data-state='conflict'], .editorActions span[data-state='error'] { color: var(--dsw-alias-state-danger-primary); opacity: 1; }
+.editorActions button { padding: 5px 8px; }
+.editorActions button[data-active] { border-color: var(--dsw-alias-state-business-primary); background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent); }
+.documentSurface { min-height: 0; flex: 1; display: grid; }
+.documentSurface[data-mode='split'] { grid-template-columns: 1fr 1fr; }
+.editorSurface { min-width: 0; min-height: 0; overflow: hidden; }
+.preview { min-width: 0; min-height: 0; overflow: auto; padding: 18px 28px 64px; border-left: 1px solid var(--dsw-alias-divider); }
+.emptyEditor { display: grid; place-content: center; place-items: center; min-height: 100%; color: var(--dsw-alias-label-secondary); }
+.emptyEditor > span { font-size: 42px; }
+.conflictBanner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: color-mix(in srgb, var(--dsw-alias-state-danger-primary) 11%, transparent); font-size: 12px; }
+.conflictBanner span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.conflictBanner button { border: 0; background: transparent; color: inherit; text-decoration: underline; cursor: pointer; }
+.inspector > nav { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; padding: 10px; border-bottom: 1px solid var(--dsw-alias-divider); }
+.inspector > nav button { padding: 5px; }
+.inspector > nav button[data-active] { background: var(--dsw-specific-sidebar-nav-item-active); }
+.inspectorBody { padding: 14px; }
+.inspectorBody h3 { margin: 0 0 14px; overflow-wrap: anywhere; }
+.inspectorBody dl { display: grid; grid-template-columns: auto 1fr; gap: 8px; font-size: 12px; }
+.inspectorBody dt { color: var(--dsw-alias-label-secondary); }
+.inspectorBody dd { margin: 0; overflow-wrap: anywhere; }
+.tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.tags span { padding: 2px 6px; border-radius: 999px; background: var(--dsw-specific-sidebar-nav-item-active); font-size: 11px; }
+.stackActions { display: grid; gap: 6px; margin-top: 16px; }
+.stackActions button { padding: 7px; }
+.stackActions button[data-danger] { color: var(--dsw-alias-state-danger-primary); }
+.auditList li { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 9px 5px; border-bottom: 1px solid var(--dsw-alias-divider); }
+.auditList div, .auditList button { min-width: 0; display: flex; flex-direction: column; text-align: left; }
+.auditList button { padding: 5px 7px; }
+.auditList strong { overflow-wrap: anywhere; }
+.auditList small { opacity: .6; }
+.searchResults button { display: flex; width: 100%; flex-direction: column; gap: 3px; padding: 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.searchResults button:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }
+.searchResults span { font-size: 11px; opacity: .7; }
+@media (max-width: 900px) { .workbench { grid-template-columns: 210px minmax(0, 1fr); } .inspector { display: none; } }
+@media (max-width: 620px) { .workbench { grid-template-columns: 1fr; } .treePane { max-height: 220px; border-right: 0; border-bottom: 1px solid var(--dsw-alias-divider); } .documentSurface[data-mode='split'] { grid-template-columns: 1fr; } .preview { border-left: 0; border-top: 1px solid var(--dsw-alias-divider); } .editorHeader { align-items: flex-start; flex-direction: column; } }

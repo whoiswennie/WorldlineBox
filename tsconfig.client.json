@@ -87,6 +87,9 @@
       "path": "./packages/client/ui-plugin-center/tsconfig.client.json"
     },
     {
+      "path": "./packages/client/ui-worldline/tsconfig.client.json"
+    },
+    {
       "path": "./packages/client/ui-virtual-companion/tsconfig.client.json"
     },
     {

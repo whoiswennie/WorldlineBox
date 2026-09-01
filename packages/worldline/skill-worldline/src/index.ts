@@ -1,0 +1,74 @@
+/** Seven bundled workflows for authoring and operating the current Worldline format. */
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import type { Context } from '@deepseek-ai/cordis'
+import {
+  BUNDLED_SKILL_RANK,
+  type SkillCandidate,
+  type SkillDefinition,
+  type SkillProvider,
+} from '@deepseek-ai/dsh-skill'
+
+const PROVIDER_NAME = 'worldline-domain'
+
+export const WORLDLINE_SKILLS = [
+  ['worldline-authoring', 'Create and revise Canon sources with stable identity, provenance, and explicit author authority.'],
+  ['worldline-character-design', 'Design executable characters whose traits, relationships, resources, and actions remain source-grounded.'],
+  ['worldline-map-design', 'Design and audit structured Worldline maps, topology, travel constraints, layers, and provenance.'],
+  ['worldline-mechanism-design', 'Turn authored rules into reviewable actions, systems, invariants, budgets, and conflict semantics.'],
+  ['worldline-scenario-design', 'Design simulation scenarios, initial conditions, actors, goals, seeds, and observable success criteria.'],
+  ['worldline-build-audit', 'Compile and audit closure, diagnostics, questions, proposals, provenance coverage, and immutable freezing.'],
+  ['worldline-simulation-analysis', 'Analyze deterministic Runs, event causality, processes, reservations, deadlocks, AI audit, and branches.'],
+] as const
+
+type WorldlineSkillName = typeof WORLDLINE_SKILLS[number][0]
+
+function skillUrl(name: WorldlineSkillName): URL {
+  return new URL(`../assets/skills/${name}/SKILL.md`, import.meta.url)
+}
+
+function resourceBase(name: WorldlineSkillName) {
+  return {
+    kind: 'directory' as const,
+    path: fileURLToPath(new URL(`../assets/skills/${name}/`, import.meta.url)),
+  }
+}
+
+export const WORLDLINE_SKILL_CANDIDATES: readonly SkillCandidate[] = WORLDLINE_SKILLS.map(
+  ([name, description]) => ({
+    name,
+    description,
+    invocation: { modelInvocable: true, userInvocable: true },
+    provider: PROVIDER_NAME,
+    source: 'bundled',
+    resourceBase: resourceBase(name),
+    rank: BUNDLED_SKILL_RANK,
+    locator: skillUrl(name),
+  }),
+)
+
+const provider: SkillProvider = {
+  name: PROVIDER_NAME,
+  list: () => Promise.resolve(WORLDLINE_SKILL_CANDIDATES),
+  async get(candidate): Promise<SkillDefinition | undefined> {
+    const matched = WORLDLINE_SKILL_CANDIDATES.find(item => item.name === candidate.name)
+    if (matched === undefined || !(matched.locator instanceof URL)) return undefined
+    return {
+      name: matched.name,
+      description: matched.description,
+      invocation: matched.invocation,
+      provider: matched.provider,
+      source: matched.source,
+      ...(matched.resourceBase === undefined ? {} : { resourceBase: matched.resourceBase }),
+      content: await readFile(matched.locator, 'utf8'),
+    }
+  },
+}
+
+export const name = 'skill-worldline'
+export const inject = ['skills']
+
+/** Register one bundled provider; project `.worldline/skills` entries win through registry rank. */
+export function apply(ctx: Context): void {
+  ctx.skills.registerProvider(() => provider)
+}

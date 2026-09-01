@@ -78,6 +78,40 @@
     - id: workspace
       name: '@deepseek-ai/dsh-workspace'
 
+    # Independent Worldline authoring domain. The root intentionally starts
+    # blank so the first visit performs an explicit local-directory binding.
+    - id: worldline-projects
+      name: '@deepseek-ai/dsh-worldline-project-local'
+      config:
+        root: ''
+        maxEntries: 5000
+        maxSearchFiles: 50000
+
+    - id: worldline-compiler
+      name: '@deepseek-ai/dsh-worldline-compiler'
+
+    - id: worldline-conversation-context
+      name: '@deepseek-ai/dsh-worldline-conversation-context'
+
+    - id: worldline-runtime
+      name: '@deepseek-ai/dsh-worldline-runtime-worker'
+      config:
+        maxOldGenerationSizeMb: 512
+        requestTimeoutMs: 30000
+
+    - id: worldline-ai
+      name: '@deepseek-ai/dsh-worldline-ai'
+      config:
+        routePrices: []
+        fallbackInputPerMillion: 30
+        fallbackOutputPerMillion: 60
+        fallbackCacheReadPerMillion: 10
+        maxContextRecords: 500
+        l2MinLogicalInterval: 3600
+
+    - id: worldline-narrative
+      name: '@deepseek-ai/dsh-worldline-narrative'
+
     - id: session-projection-cache
       name: '@deepseek-ai/dsh-session-projection-cache'
       config:
@@ -257,6 +291,11 @@
       inject: [webRuntime]
       config:
         frontendRoot: !!js ctx.webRuntime.frontendRoot
+
+    # Authoring, compilation, Worker simulation, and text-play surface. Its
+    # rail item is ordered immediately after the virtual companion entry.
+    - id: ui-worldline
+      name: '@deepseek-ai/dsh-client-ui-worldline'
 
     - id: ui-sidebar
       name: '@deepseek-ai/dsh-client-ui-sidebar'

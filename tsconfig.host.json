@@ -87,6 +87,9 @@
       "path": "./packages/client/ui-plugin-center/tsconfig.host.json"
     },
     {
+      "path": "./packages/client/ui-worldline/tsconfig.host.json"
+    },
+    {
       "path": "./packages/client/ui-virtual-companion/tsconfig.host.json"
     },
     {
@@ -654,6 +657,9 @@
       "path": "./packages/worldline/compiler"
     },
     {
+      "path": "./packages/worldline/conversation-context"
+    },
+    {
       "path": "./packages/worldline/project"
     },
     {
@@ -669,7 +675,13 @@
       "path": "./packages/worldline/runtime-worker"
     },
     {
+      "path": "./packages/worldline/skill-worldline"
+    },
+    {
       "path": "./packages/worldline/standard"
+    },
+    {
+      "path": "./packages/worldline/tool-worldline"
     },
     {
       "path": "./vendor/cordis"

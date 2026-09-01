@@ -1,0 +1,17 @@
+.entry {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.entry:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }
+.entry[data-selected] { background: var(--dsw-specific-sidebar-nav-item-active); }
+.entry:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }
+.entry svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }

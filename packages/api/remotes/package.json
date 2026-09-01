@@ -77,7 +77,12 @@
     "@deepseek-ai/dsh-typert-registry": "workspace:^",
     "@deepseek-ai/dsh-host-workspace-tree": "workspace:^",
     "@deepseek-ai/dsh-file-reference": "workspace:^",
-    "@deepseek-ai/dsh-session-reference": "workspace:^"
+    "@deepseek-ai/dsh-session-reference": "workspace:^",
+    "@deepseek-ai/dsh-worldline-ai": "workspace:^",
+    "@deepseek-ai/dsh-worldline-compiler": "workspace:^",
+    "@deepseek-ai/dsh-worldline-narrative": "workspace:^",
+    "@deepseek-ai/dsh-worldline-project": "workspace:^",
+    "@deepseek-ai/dsh-worldline-runtime": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent": "workspace:^",
@@ -99,6 +104,11 @@
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-host-workspace-tree": "workspace:^",
     "@deepseek-ai/dsh-file-reference": "workspace:^",
-    "@deepseek-ai/dsh-session-reference": "workspace:^"
+    "@deepseek-ai/dsh-session-reference": "workspace:^",
+    "@deepseek-ai/dsh-worldline-ai": "workspace:^",
+    "@deepseek-ai/dsh-worldline-compiler": "workspace:^",
+    "@deepseek-ai/dsh-worldline-narrative": "workspace:^",
+    "@deepseek-ai/dsh-worldline-project": "workspace:^",
+    "@deepseek-ai/dsh-worldline-runtime": "workspace:^"
   }
 }
