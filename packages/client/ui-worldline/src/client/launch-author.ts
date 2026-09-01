@@ -1,4 +1,5 @@
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import type { RunId } from '@deepseek-ai/dsh-worldline-standard/types'
 import { BIND_PATH } from '../contract.ts'
@@ -8,7 +9,11 @@ export const WORLDLINE_AUTHOR_PRESET = 'worldline-author'
 
 /** Minimal boundary required to publish one project-bound author conversation. */
 export interface AuthorConversationLaunchPort {
-  createSession(options: { readonly cwd: string; readonly agentPreset: string }): Promise<SessionId>
+  registerWorkspace(input: { readonly path: string }): Promise<WorkspaceView>
+  createSession(options: {
+    readonly workspaceId: WorkspaceId
+    readonly agentPreset: string
+  }): Promise<SessionId>
   deleteSession(sessionId: SessionId): Promise<void>
   openSession(sessionId: SessionId): void
   showConversation(): void
@@ -31,8 +36,9 @@ export async function launchWorldlineAuthorConversation(
   project: ProjectSummary,
   runId?: RunId,
 ): Promise<void> {
+  const workspace = await port.registerWorkspace({ path: project.path })
   const sessionId = await port.createSession({
-    cwd: project.path,
+    workspaceId: workspace.workspaceId,
     agentPreset: WORLDLINE_AUTHOR_PRESET,
   })
   try {

@@ -122,7 +122,7 @@ describe('built Web profile', () => {
       ['minimal', '极简模式', 'order: 3'],
       ['cordis', '创造模式', 'order: 4'],
       ['virtual-companion', '虚拟伙伴', 'order: 5'],
-      ['worldline-author', '世界线作者', 'order: 2'],
+      ['worldline-author', '世界线 OC 创造模式', 'order: 2'],
     ] as const
     expect(readdirSync(presetRoot, { withFileTypes: true })
       .filter(entry => entry.isDirectory())
@@ -164,6 +164,8 @@ describe('built Web profile', () => {
     expect(companion).toContain('@deepseek-ai/dsh-compaction-basic')
 
     const worldline = readPreset('worldline-author', 'agent.cordis.yml')
+    expect(worldline).toContain('世界线 OC 创造模式')
+    expect(worldline).toContain('此模式与标准 Agent、虚拟伙伴及其他预设完全隔离')
     expect(worldline).toContain("name: '@deepseek-ai/dsh-tool-worldline'")
     expect(worldline).toContain("name: '@deepseek-ai/dsh-skill-worldline'")
     expect(worldline).toContain(

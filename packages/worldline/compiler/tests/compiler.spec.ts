@@ -117,6 +117,13 @@ describe('WorldlineCompiler', () => {
       createParents: true,
       objectKind: 'rule',
     })
+    await runtime.ctx.worldlineProjects.write({
+      projectId: project.manifest.id,
+      path: 'characters/tester.md',
+      content: '# 测试角色\n\n<!-- worldline-facets {"initialState":{"elapsed":0}} -->',
+      createParents: true,
+      objectKind: 'character',
+    })
     const preview = await runtime.ctx.worldlineCompiler.compile({ projectId: project.manifest.id, purpose })
     expect(preview).toMatchObject({
       canFreeze: true,
@@ -196,6 +203,45 @@ describe('WorldlineCompiler', () => {
       reviewedBy: 'stale-author',
       expectedStateRevision: state.revision,
     })).rejects.toMatchObject({ code: 'state-conflict' })
+    await runtime.dispose()
+  })
+
+  it('materializes only runtime characters and preserves concise authored memory', async () => {
+    const runtime = await start()
+    const project = await runtime.ctx.worldlineProjects.create({ name: 'Memory', template: 'blank' })
+    await runtime.ctx.worldlineProjects.write({
+      projectId: project.manifest.id,
+      path: 'mechanisms/runtime.md',
+      content: mechanismSource,
+      createParents: true,
+      objectKind: 'rule',
+    })
+    await runtime.ctx.worldlineProjects.write({
+      projectId: project.manifest.id,
+      path: 'characters/courier.md',
+      content: '# 林汐\n\n<!-- worldline-facets {"initialState":{"elapsed":0,"energy":10},"memory":{"episodic":["曾答应送回三封信"],"beliefs":{"northBeaconBroken":false},"goals":["deliver-three-letters"],"relationships":{"entity:keeper":1}}} -->',
+      createParents: true,
+      objectKind: 'character',
+    })
+    const preview = await runtime.ctx.worldlineCompiler.compile({ projectId: project.manifest.id, purpose })
+    expect(preview.canFreeze).toBe(true)
+    const frozen = await runtime.ctx.worldlineCompiler.freeze({
+      projectId: project.manifest.id,
+      purpose,
+      expectedSourceDigest: preview.sourceDigest,
+    })
+    expect(frozen.blueprint.entities).toHaveLength(1)
+    expect(frozen.blueprint.entities[0]).toMatchObject({
+      type: 'character',
+      state: { elapsed: 0, energy: 10 },
+      memory: {
+        episodic: [{ summary: '曾答应送回三封信' }],
+        beliefs: [{ subject: 'northBeaconBroken', value: false }],
+        goals: [{ goal: 'deliver-three-letters', status: 'active' }],
+        relationships: [{ otherId: 'entity:keeper', dimensions: { affinity: 1 } }],
+      },
+    })
+    expect(frozen.blueprint.entities.some(entity => entity.type === 'rule')).toBe(false)
     await runtime.dispose()
   })
 })

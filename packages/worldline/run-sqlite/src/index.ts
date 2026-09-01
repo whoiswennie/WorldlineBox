@@ -12,6 +12,7 @@ export type RunStream =
   | 'ai-invocation'
   | 'observation'
   | 'narrative-beat'
+  | 'runtime-diagnostic'
   | 'telemetry'
 
 /** Describes the run stream record value exchanged across the package boundary.

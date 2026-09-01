@@ -5,6 +5,7 @@ import type {
   ProposalTarget,
 } from '@deepseek-ai/dsh-worldline-compiler'
 import type {
+  AiBudget,
   JsonObject,
   ProjectTemplate,
   Revision,
@@ -442,12 +443,12 @@ export function apply(ctx: Context): void {
     name: 'worldline_run',
     description: 'Inspect or control deterministic Runs. Mutating operations bind an exact Run and use confirmation for actions, large advances, branches, control changes, AI changes, and stop.',
     parameters: {
-      operation: { type: 'string', required: true, enum: ['list', 'create', 'view', 'choices', 'advance', 'action', 'pause', 'resume', 'stop', 'checkpoint', 'checkpoints', 'branch', 'set-control', 'set-ai'] },
+      operation: { type: 'string', required: true, enum: ['list', 'create', 'view', 'choices', 'advance', 'action', 'pause', 'resume', 'stop', 'checkpoint', 'checkpoints', 'branch', 'set-control', 'set-ai', 'set-budget'] },
       project_id: { type: 'string' }, run_id: { type: 'string' }, actor_id: { type: 'string' }, seed: { type: 'string' },
       duration: { type: 'number' }, max_events: { type: 'integer' }, action_type: { type: 'string' },
       parameters_json: { type: 'string' }, expected_sequence: { type: 'integer' }, label: { type: 'string' },
       checkpoint_id: { type: 'string' }, mode: { type: 'string', enum: ['autonomous', 'suggestions', 'player'] },
-      enabled: { type: 'boolean' }, confirm: { type: 'boolean' },
+      enabled: { type: 'boolean' }, budget_json: { type: 'string' }, confirm: { type: 'boolean' },
     }, output: OUTPUT,
     async execute(args, exec) {
       if (args.operation === 'list') {
@@ -503,6 +504,13 @@ export function apply(ctx: Context): void {
           requireConfirmation(args.confirm, 'change Run AI state')
           if (typeof args.enabled !== 'boolean') throw new Error('enabled is required')
           return encode(await ctx.worldlineRuns.setAiEnabled({ runId: id, enabled: args.enabled }))
+        case 'set-budget':
+          requireConfirmation(args.confirm, 'change Run AI budget')
+          return encode(await ctx.worldlineRuns.setAiBudget({
+            runId: id,
+            budget: objectJson(args.budget_json, 'budget_json') as unknown as AiBudget,
+            expectedSequence: integer(args.expected_sequence, -1),
+          }))
       }
       throw new Error('create requires project_id and seed')
     },

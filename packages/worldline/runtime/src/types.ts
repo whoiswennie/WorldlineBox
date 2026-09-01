@@ -319,6 +319,11 @@ export interface SetActorControlRequest extends RunRef {
 /** Describes the set ai enabled request value exchanged across the package boundary.
  */
 export interface SetAiEnabledRequest extends RunRef { readonly enabled: boolean }
+/** Replace the bounded AI allowance for a Run after optimistic sequence validation. */
+export interface SetAiBudgetRequest extends RunRef {
+  readonly budget: AiBudget
+  readonly expectedSequence: number
+}
 /** Describes the switch model policy request value exchanged across the package boundary.
  */
 export interface SwitchModelPolicyRequest extends RunRef {

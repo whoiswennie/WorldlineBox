@@ -19,6 +19,7 @@ function execute(kernel: WorldlineKernel, command: WorkerCommand): unknown {
   if (command.type === 'checkpoints') return kernel.checkpoints()
   if (command.type === 'set-control') return kernel.setControl(command.payload)
   if (command.type === 'set-ai') return kernel.setAiEnabled(command.payload)
+  if (command.type === 'set-ai-budget') return kernel.setAiBudget(command.payload)
   if (command.type === 'switch-model') return kernel.switchModel(command.payload)
   if (command.type === 'explain') return kernel.explain(command.payload)
   if (command.type === 'record-ai-intent') return kernel.recordAiIntent(command.payload)

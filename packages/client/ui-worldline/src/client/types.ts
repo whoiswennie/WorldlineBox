@@ -67,6 +67,7 @@ import type {
   RunSummary,
   RunView,
   SetActorControlRequest,
+  SetAiBudgetRequest,
   SetAiEnabledRequest,
   SubmitRunActionRequest,
   SubmitRunActionResult,
@@ -177,6 +178,7 @@ export interface RunsClient {
   branch(request: BranchRunRequest): Promise<RunView>
   setControl(request: SetActorControlRequest): Promise<RunView>
   setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
+  setAiBudget(request: SetAiBudgetRequest): Promise<RunView>
   switchModel(request: SwitchModelPolicyRequest): Promise<RunView>
   explain(request: ExplainRunEventRequest): Promise<RunEventExplanation>
 }

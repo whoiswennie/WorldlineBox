@@ -30,6 +30,51 @@ afterEach(async () => {
 })
 
 describe('WorldlineKernel', () => {
+  it('starts with a bounded usable AI budget and updates it optimistically', async () => {
+    const run = await kernel('ai-budget-seed')
+    const initial = run.view()
+    expect(initial.snapshot.aiBudget).toMatchObject({
+      maxCalls: 100,
+      maxConcurrent: 1,
+      maxCallsPerLogicalDay: 50,
+      maxCallsPerRealHour: 20,
+      currency: 'USD',
+    })
+    expect(initial.snapshot.aiBudget.maxInputTokens).toBeGreaterThan(0)
+
+    const updated = run.setAiBudget({
+      runId: initial.summary.runId,
+      expectedSequence: initial.snapshot.sequence,
+      budget: {
+        maxCalls: 12.9,
+        maxInputTokens: 10_000.9,
+        maxOutputTokens: 2_000.9,
+        maxConcurrent: 2.9,
+        maxCallsPerLogicalDay: 8.9,
+        maxCallsPerRealHour: 4.9,
+        maxEstimatedCost: 1.5,
+        currency: ' cny ',
+      },
+    })
+    expect(updated.snapshot.aiBudget).toEqual({
+      maxCalls: 12,
+      maxInputTokens: 10_000,
+      maxOutputTokens: 2_000,
+      maxConcurrent: 2,
+      maxCallsPerLogicalDay: 8,
+      maxCallsPerRealHour: 4,
+      maxEstimatedCost: 1.5,
+      currency: 'CNY',
+    })
+    run.advance({ runId: initial.summary.runId, duration: 60 })
+    expect(() => run.setAiBudget({
+      runId: initial.summary.runId,
+      expectedSequence: initial.snapshot.sequence,
+      budget: updated.snapshot.aiBudget,
+    })).toThrow(/Run advanced/u)
+    run.close()
+  })
+
   it('projects the retained frozen Blueprint for simulation inspection', async () => {
     const run = await kernel('definition-projection-seed')
     const definition = run.definitionView()
@@ -230,6 +275,58 @@ describe('WorldlineKernel', () => {
       expect.objectContaining({ outcome: 'completed' }),
     ]))
     expect(completed.snapshot.state['entities']).not.toHaveProperty('entity:actor')
+    run.close()
+  })
+
+  it('uses the same actor scope for preconditions, effects, and invariants', async () => {
+    const base = testBlueprint()
+    const actorA = base.entities[0]
+    const actorB = base.entities[1]
+    if (actorA === undefined || actorB === undefined) throw new Error('test Blueprint needs two actors')
+    const blueprint: Blueprint = {
+      ...base,
+      entities: [
+        { ...actorA, state: { ...actorA.state, letters: 1 } },
+        actorB,
+      ],
+      actions: [{
+        id: 'letter.deliver',
+        description: '投递一封信',
+        actorTypes: ['character'],
+        preconditions: [{ op: 'gte', path: 'state.letters', value: 1 }],
+        claims: [],
+        duration: 1,
+        effects: [{ op: 'increment', path: 'state.letters', amount: -1, min: 0 }],
+        interruptible: true,
+        maxWait: 10,
+        retryBudget: 1,
+        fallbacks: [],
+        provenance: base.provenance,
+      }],
+      invariants: [{
+        id: 'letters.nonnegative',
+        description: '持有信件的角色不能出现负数',
+        expression: { op: 'gte', path: 'state.letters', value: 0 },
+        provenance: base.provenance,
+      }],
+    }
+    const run = await kernel('actor-scope-seed', blueprint)
+    const runId = run.view().summary.runId
+    expect(run.choices({ runId, actorId: actorA.id }).choices).toHaveLength(1)
+    expect(run.choices({ runId, actorId: actorB.id }).choices).toHaveLength(0)
+    const submitted = run.submitAction({
+      runId,
+      actorId: actorA.id,
+      type: 'letter.deliver',
+      expectedSequence: 0,
+      controller: 'agent',
+    })
+    const completed = run.advance({ runId, duration: 1 })
+    expect(completed.snapshot.processes.find(item => item.id === submitted.process.id)?.state)
+      .toBe('completed')
+    expect((completed.snapshot.state.entities as Record<string, { state: { letters?: number } }>)[actorA.id]?.state.letters)
+      .toBe(0)
+    expect(run.records({ runId, stream: 'runtime-diagnostic', limit: 10 }).records).toEqual([])
     run.close()
   })
 

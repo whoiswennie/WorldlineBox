@@ -748,6 +748,9 @@ abstract setControl(request: SetActorControlRequest): Promise<RunView>
  */
 abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
 
+/** Replace the explicit hard AI allowance without resetting accumulated usage. */
+abstract setAiBudget(request: SetAiBudgetRequest): Promise<RunView>
+
 /** Perform switch model through the package's public contract.
  * @param request - The request supplied by the caller.
  * @returns The result produced by the operation.
@@ -878,6 +881,9 @@ abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<Recor
  * @returns The result produced by the operation.
  */
 @Remote('setAiEnabled') remoteSetAiEnabled(value: SetAiEnabledRequest): Promise<RunView>
+
+/** Perform remote set ai budget through the package's public contract. */
+@Remote('setAiBudget') remoteSetAiBudget(value: SetAiBudgetRequest): Promise<RunView>
 
 /** Perform remote switch model through the package's public contract.
  * @param value - The value supplied by the caller.

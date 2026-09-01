@@ -4,7 +4,7 @@ import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import type { CheckpointView, RunChoicesView, RunDefinitionView, RunEventExplanation, RunRecordsPage, RunSpatialView, RunSummary, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
 import type { AiBudgetStatus, WorldlineAiCatalog } from '@deepseek-ai/dsh-worldline-ai/types'
-import type { ContextPack, EntityId, JsonObject, JsonValue, MapId, ModelPurpose } from '@deepseek-ai/dsh-worldline-standard/types'
+import type { AiBudget, ContextPack, EntityId, JsonObject, JsonValue, MapId, ModelPurpose } from '@deepseek-ai/dsh-worldline-standard/types'
 import type { AiClient, RunsClient } from './types.ts'
 import { worldlineLabel } from './presentation.ts'
 import css from './SimulationWorkbench.module.css'
@@ -39,6 +39,45 @@ function shortId(value: string): string { return value.length > 20 ? `${value.sl
 function valueLabel(value: JsonValue | undefined): string {
   if (value === undefined || value === null) return '—'
   return typeof value === 'object' ? JSON.stringify(value) : String(value)
+}
+
+const DEFAULT_AI_BUDGET: AiBudget = {
+  maxCalls: 100,
+  maxInputTokens: 1_000_000,
+  maxOutputTokens: 200_000,
+  maxConcurrent: 1,
+  maxCallsPerLogicalDay: 50,
+  maxCallsPerRealHour: 20,
+  maxEstimatedCost: 5,
+  currency: 'USD',
+}
+
+/** Advance one bounded autonomous turn without borrowing capabilities from any Agent mode. */
+export async function runAutonomyCycle(
+  runs: RunsClient,
+  runId: RunSummary['runId'],
+  definition: RunDefinitionView | undefined,
+  duration: number,
+): Promise<void> {
+  const current = await runs.view({ runId })
+  if (current.summary.status !== 'running') return
+  const actors = entityIds(current, definition)
+  for (const actorId of actors) {
+    if ((current.controls[actorId] ?? 'autonomous') !== 'autonomous') continue
+    const available = await runs.choices({ runId, actorId })
+    const choice = available.choices[0]
+    if (choice === undefined) continue
+    await runs.submitAction({
+      runId,
+      actorId,
+      type: choice.actionType,
+      parameters: choice.parameters,
+      expectedSequence: available.sequence,
+      controller: 'agent',
+    })
+    break
+  }
+  await runs.advance({ runId, duration, maxEvents: 10_000 })
 }
 
 function SpatialMap({ spatial, selectedActor }: {
@@ -109,11 +148,13 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
   const [seed, setSeed] = useState('worldline-seed')
   const [startPaused, setStartPaused] = useState(true)
   const [advanceBy, setAdvanceBy] = useState(60)
+  const [autoAdvance, setAutoAdvance] = useState(true)
   const [busy, setBusy] = useState<string>()
   const [error, setError] = useState<string>()
   const [modelPurpose, setModelPurpose] = useState<ModelPurpose>('character')
   const [modelKey, setModelKey] = useState('')
   const [reasoningEffort, setReasoningEffort] = useState('')
+  const [budgetDraft, setBudgetDraft] = useState<AiBudget>(DEFAULT_AI_BUDGET)
   const projectId = props.project.manifest.id
 
   const loadList = useCallback(async (): Promise<void> => {
@@ -140,6 +181,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
     setCheckpoints(nextCheckpoints)
     setSpatial(nextSpatial)
     setDefinition(nextDefinition)
+    setBudgetDraft(nextView.snapshot.aiBudget ?? DEFAULT_AI_BUDGET)
     setSelectedMapId(current => current !== undefined
       && nextSpatial.availableMaps.some(map => map.id === current) ? current : nextSpatial.availableMaps[0]?.id)
     const actors = entityIds(nextView, nextDefinition)
@@ -163,6 +205,22 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
     return () => { current = false }
   }, [props.runs, selectedActor, selectedId, view?.snapshot.sequence])
 
+  useEffect(() => {
+    if (!autoAdvance || selectedId === undefined || view?.summary.status !== 'running' || busy !== undefined) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await runAutonomyCycle(props.runs, selectedId, definition, advanceBy)
+          if (!cancelled) await refresh(selectedId)
+        } catch (reason) {
+          if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason))
+        }
+      })()
+    }, 1_000)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [advanceBy, autoAdvance, busy, definition, props.runs, refresh, selectedId, view?.summary.status, view?.snapshot.sequence])
+
   const mutate = async (key: string, operation: () => Promise<RunSummary['runId'] | void>): Promise<void> => {
     setBusy(key); setError(undefined)
     try { const nextRunId = await operation(); await loadList(); await refresh(nextRunId ?? selectedId) }
@@ -183,7 +241,12 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
         <label>{props.t('seed')}<input value={seed} onChange={(event) => { setSeed(event.target.value) }} /></label>
         <label className={css.check}><input type="checkbox" checked={startPaused} onChange={(event) => { setStartPaused(event.target.checked) }} />{props.t('startPaused')}</label>
         <button type="button" disabled={busy !== undefined} onClick={() => { void mutate('create', async () => {
-          const created = await props.runs.create({ projectId, seed: seed || 'worldline-seed', startPaused })
+          const created = await props.runs.create({
+            projectId,
+            seed: seed || 'worldline-seed',
+            startPaused,
+            aiBudget: budgetDraft,
+          })
           setSelectedId(created.summary.runId)
           props.onRunsChanged()
           return created.summary.runId
@@ -203,6 +266,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
             <button type="button" disabled={busy !== undefined || view.summary.status === 'running'} onClick={() => { void mutate('resume', async () => { await props.runs.resume({ runId: view.summary.runId }) }) }}>{props.t('resume')}</button>
             <input aria-label={props.t('advance')} type="number" min="0.001" value={advanceBy} onChange={(event) => { setAdvanceBy(Number(event.target.value)) }} />
             <button type="button" disabled={busy !== undefined} onClick={() => { void mutate('advance', async () => { await props.runs.advance({ runId: view.summary.runId, duration: advanceBy, maxEvents: 10_000 }) }) }}>{props.t('advance')}</button>
+            <label className={css.autoAdvance}><input type="checkbox" checked={autoAdvance} onChange={(event) => { setAutoAdvance(event.target.checked) }} />{props.t('autoAdvance')}</label>
             <button type="button" disabled={busy !== undefined} onClick={() => { void mutate('checkpoint', async () => { await props.runs.checkpoint({ runId: view.summary.runId, label: `t=${String(view.snapshot.logicalTime)}` }) }) }}>{props.t('checkpoint')}</button>
             <button type="button" disabled={busy !== undefined} onClick={() => { props.onExportRun(view.summary.runId) }}>{props.t('exportRun')}</button>
             <button type="button" data-danger disabled={busy !== undefined || view.summary.status === 'stopped'} onClick={() => { void mutate('stop', async () => { await props.runs.stop({ runId: view.summary.runId }) }) }}>{props.t('stop')}</button>
@@ -277,7 +341,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
           </section>
           <section className={`${css.panel} ${css.events}`}>
             <header><h3>{props.t('events')}</h3><select value={stream ?? ''} onChange={(event) => { setStream(event.target.value === '' ? undefined : event.target.value as typeof stream) }}>
-              <option value="">{props.t('allStreams')}</option>{['world-event', 'decision-trace', 'ai-intent', 'ai-invocation', 'observation', 'narrative-beat', 'telemetry'].map(value => <option key={value} value={value}>{worldlineLabel(value)}</option>)}
+              <option value="">{props.t('allStreams')}</option>{['world-event', 'decision-trace', 'ai-intent', 'ai-invocation', 'observation', 'narrative-beat', 'runtime-diagnostic', 'telemetry'].map(value => <option key={value} value={value}>{worldlineLabel(value)}</option>)}
             </select></header>
             <ol>{records?.records.map(item => <li key={`${String(item.sequence)}:${String(item.ordinal ?? 0)}:${item.stream}:${item.id}`}>
               <div><span>{worldlineLabel(item.stream)}</span><strong>#{item.sequence}</strong><small>t={item.logicalTime}</small><button type="button" disabled={busy !== undefined} onClick={() => { void mutate(`explain:${item.id}`, async () => { setExplanation(await props.runs.explain({ runId: view.summary.runId, eventId: item.id })) }) }}>{props.t('explain')}</button></div><pre>{JSON.stringify(item.payload, null, 2)}</pre>
@@ -308,6 +372,45 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
                   modelPolicy: { ...view.snapshot.modelPolicy, routes: { ...view.snapshot.modelPolicy.routes, [modelPurpose]: { provider: model.provider, model: model.id, ...(reasoningEffort === '' ? {} : { reasoningEffort }) } } },
                 }) })
               }}>{props.t('modelRoute')}</button>
+            </div>
+            <div className={css.budgetForm}>
+              {([
+                ['maxCalls', '最大调用'],
+                ['maxInputTokens', '输入 Token'],
+                ['maxOutputTokens', '输出 Token'],
+                ['maxConcurrent', '最大并发'],
+                ['maxCallsPerLogicalDay', '每逻辑日'],
+                ['maxCallsPerRealHour', '每现实小时'],
+                ['maxEstimatedCost', '最大费用'],
+              ] as const).map(([key, label]) => <label key={key}>{label}<input
+                type="number"
+                min="0"
+                step={key === 'maxEstimatedCost' ? '0.01' : '1'}
+                value={budgetDraft[key]}
+                onChange={(event) => { setBudgetDraft(current => ({
+                  ...current,
+                  [key]: Math.max(0, Number(event.target.value)),
+                })) }}
+              /></label>)}
+              <label>币种<input value={budgetDraft.currency} onChange={(event) => { setBudgetDraft(current => ({ ...current, currency: event.target.value })) }} /></label>
+              <button type="button" disabled={busy !== undefined} onClick={() => { void mutate('budget-save', async () => {
+                await props.runs.setAiBudget({
+                  runId: view.summary.runId,
+                  budget: budgetDraft,
+                  expectedSequence: view.snapshot.sequence,
+                })
+                setBudget(undefined)
+              }) }}>{props.t('saveBudget')}</button>
+              <button type="button" disabled={busy !== undefined} onClick={() => { setBudgetDraft({
+                maxCalls: 0,
+                maxInputTokens: 0,
+                maxOutputTokens: 0,
+                maxConcurrent: 0,
+                maxCallsPerLogicalDay: 0,
+                maxCallsPerRealHour: 0,
+                maxEstimatedCost: 0,
+                currency: budgetDraft.currency || 'USD',
+              }) }}>{props.t('deterministicBudget')}</button>
             </div>
             {selectedActor !== undefined && <div className={css.aiActions}>
               <button type="button" onClick={() => { void mutate('budget', async () => { setBudget(await props.ai.budget({ runId: view.summary.runId, actorId: selectedActor })) }) }}>{props.t('budget')}</button>

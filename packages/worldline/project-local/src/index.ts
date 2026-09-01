@@ -422,18 +422,18 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
 
   private async createTemplate(path: string, template: ProjectTemplate): Promise<void> {
     const documents: Record<string, string> = {
-      'canon/charter.md': '# World Charter\n\nState the non-negotiable truths of this world.\n',
-      'canon/timeline.md': '# Canon Timeline\n\nRecord dated events and causal links.\n',
-      'maps/world.md': '# World Map\n\nDefine hierarchical places, topology and travel edges.\n',
-      'mechanisms/core.md': '# Core Mechanisms\n\nDefine resources, actions, processes and invariants.\n',
+      'canon/charter.md': '# 世界宪章\n\n在这里写下这个世界不可违背的核心事实、边界与代价。\n',
+      'canon/timeline.md': '# 正典时间线\n\n记录有明确时间、参与者、地点和因果关系的重大事件。\n',
+      'maps/world.md': '# 世界地图\n\n定义地点层级、连接路径、移动耗时、容量与危险因素。\n',
+      'mechanisms/core.md': '# 核心机制\n\n定义资源、角色动作、持续进程、周期系统和必须始终成立的不变量。\n',
     }
     if (template === 'character-story' || template === 'playable-scenario') {
-      documents['characters/protagonist.md'] = '# Protagonist\n\nIdentity, values, goals, resources and relationships.\n'
-      documents['scenarios/opening.md'] = '# Opening Scenario\n\nInitial state, viewpoint and playable objective.\n'
+      documents['characters/protagonist.md'] = '# 主角\n\n写明身份、外观、性格、价值观、目标、能力、资源、关系、经历与初始位置。\n'
+      documents['scenarios/opening.md'] = '# 开场剧本\n\n写明初始状态、视角角色、当前冲突、可行动目标与成功或失败条件。\n'
     }
     if (template === 'social-simulation' || template === 'civilization-sandbox') {
-      documents['factions/society.md'] = '# Society\n\nInstitutions, roles, norms and resource flows.\n'
-      documents['mechanisms/economy.md'] = '# Economy\n\nProduction, exchange, scarcity and allocation rules.\n'
+      documents['factions/society.md'] = '# 社会与组织\n\n定义制度、角色分工、规范、关系网络与资源流动。\n'
+      documents['mechanisms/economy.md'] = '# 经济机制\n\n定义生产、交换、稀缺、分配、价格与异常恢复规则。\n'
     }
     const metadata = await this.metadata(path)
     for (const [relativePath, content] of Object.entries(documents)) {

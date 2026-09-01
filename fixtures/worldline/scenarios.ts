@@ -323,6 +323,10 @@ ${dragonStory}
 export function charterDocument(scenario: WorldlineAcceptanceScenario): string {
   if (scenario.slug === 'warrior-and-dragon') return `# 灰烬边境世界宪章
 
+<!-- worldline-facets ${JSON.stringify({
+    initialWorldState: { conflict: { heroWounds: 0, dragonWounds: 0 } },
+  })} -->
+
 1. 角色只能依据亲历事件与明确观察行动，不能读取未获得的秘密。
 2. 距离、行动耗时、体力与伤势必须由地图和机制结算，任何角色都不能无代价胜利。
 3. 勇士与恶龙都是拥有目标、资源和后果的独立角色；作者事实高于叙事修辞。

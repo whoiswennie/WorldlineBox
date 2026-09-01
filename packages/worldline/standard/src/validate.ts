@@ -1,15 +1,266 @@
 import type {
   Blueprint,
+  CanonObject,
   CertificateCategory,
   ClosureCertificate,
   ContextPack,
+  Effect,
+  EntityId,
   Expression,
+  InvariantDefinition,
   JsonObject,
   JsonValue,
   Process,
+  RuntimeEntitySeed,
+  StateDelta,
   WorldEvent,
   WorldMap,
 } from './model.ts'
+
+/** Actor/target identities used to resolve the scoped expression vocabulary. */
+export interface ExpressionScope {
+  readonly actorId?: EntityId
+  readonly targetId?: EntityId
+}
+
+/** The explicit scope carried by one expression/effect path. */
+export type WorldlinePathScope = 'actor' | 'target' | 'world'
+
+/** Classify a path without reading state. `state.*` is the concise actor alias. */
+export function worldlinePathScope(path: string): WorldlinePathScope {
+  if (path.startsWith('state.') || path.startsWith('actor.state.')) return 'actor'
+  if (path.startsWith('target.state.')) return 'target'
+  return 'world'
+}
+
+function escapePathSegment(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('.', '\\.')
+}
+
+/** Resolve one scoped DSL path to the single authoritative Run-state tree. */
+export function resolveWorldlinePath(path: string, scope: ExpressionScope): string | undefined {
+  if (path.startsWith('state.')) {
+    return scope.actorId === undefined
+      ? undefined
+      : `entities.${escapePathSegment(scope.actorId)}.state.${path.slice('state.'.length)}`
+  }
+  if (path.startsWith('actor.state.')) {
+    return scope.actorId === undefined
+      ? undefined
+      : `entities.${escapePathSegment(scope.actorId)}.state.${path.slice('actor.state.'.length)}`
+  }
+  if (path.startsWith('target.state.')) {
+    return scope.targetId === undefined
+      ? undefined
+      : `entities.${escapePathSegment(scope.targetId)}.state.${path.slice('target.state.'.length)}`
+  }
+  return path
+}
+
+/** Enumerate every leaf path in an expression for scope and closure auditing. */
+export function expressionPaths(expression: Expression): readonly string[] {
+  switch (expression.op) {
+    case 'and':
+    case 'or': return expression.items.flatMap(expressionPaths)
+    case 'not': return expressionPaths(expression.item)
+    default: return [expression.path]
+  }
+}
+
+/** Result of applying one deterministic, scoped effect batch. */
+export interface WorldlineEffectResult {
+  readonly state: JsonObject
+  readonly deltas: readonly StateDelta[]
+  readonly cognitionChanges: readonly JsonObject[]
+}
+
+function mergeJsonObjects(left: JsonObject, right: JsonObject): JsonObject {
+  const result = structuredClone(left)
+  for (const [key, value] of Object.entries(right)) {
+    const current = result[key]
+    result[key] = current !== null && !Array.isArray(current) && typeof current === 'object'
+      && value !== null && !Array.isArray(value) && typeof value === 'object'
+      ? mergeJsonObjects(current, value)
+      : structuredClone(value)
+  }
+  return result
+}
+
+/** Materialize the one initial Run-state shape used by freeze auditing and Run creation. */
+export function materializeInitialWorldState(
+  canon: readonly CanonObject[],
+  entities: readonly RuntimeEntitySeed[],
+): JsonObject {
+  const authored = canon.reduce<JsonObject>((state, object) => {
+    const value = object.facets.initialWorldState
+    return value !== null && !Array.isArray(value) && typeof value === 'object'
+      ? mergeJsonObjects(state, value)
+      : state
+  }, {})
+  return mergeJsonObjects({
+    world: { time: 0 },
+    entities: Object.fromEntries(entities.map(entity => [entity.id, {
+      type: entity.type,
+      facets: entity.facets,
+      state: entity.state,
+      lod: entity.lod,
+      memory: entity.memory as unknown as JsonValue,
+    }])),
+    resources: {},
+  }, authored)
+}
+
+function writePath(root: JsonObject, path: string, value: JsonValue): JsonObject {
+  const result = structuredClone(root)
+  const segments = pathSegments(path)
+  if (segments.length === 0) throw new Error('an effect cannot replace the Run state root')
+  let cursor: Record<string, JsonValue> = result
+  for (const segment of segments.slice(0, -1)) {
+    const existing = cursor[segment]
+    if (existing === null || Array.isArray(existing) || typeof existing !== 'object') {
+      cursor[segment] = {}
+    }
+    cursor = cursor[segment] as Record<string, JsonValue>
+  }
+  const leaf = segments.at(-1)
+  if (leaf === undefined) throw new Error('an effect path must identify a state field')
+  cursor[leaf] = value
+  return result
+}
+
+/** Apply the one shared effect semantics used by compiler dry-runs and the live kernel. */
+export function applyWorldlineEffects(
+  initial: JsonObject,
+  effects: readonly Effect[],
+  scope: ExpressionScope,
+): WorldlineEffectResult {
+  let state = structuredClone(initial)
+  const deltas: StateDelta[] = []
+  const cognitionChanges: JsonObject[] = []
+  for (const effect of effects) {
+    if (effect.op === 'observe') {
+      cognitionChanges.push({ observer: effect.observer, fact: effect.fact })
+      continue
+    }
+    if (effect.op === 'transfer') {
+      const resource = escapePathSegment(effect.resource)
+      const fromPath = `resources.${resource}.holders.${escapePathSegment(effect.from)}`
+      const toPath = `resources.${resource}.holders.${escapePathSegment(effect.to)}`
+      const beforeFrom = Number(readPath(state, fromPath) ?? 0)
+      const beforeTo = Number(readPath(state, toPath) ?? 0)
+      if (beforeFrom < effect.amount) throw new Error('resource transfer exceeds holdings')
+      state = writePath(state, fromPath, beforeFrom - effect.amount)
+      state = writePath(state, toPath, beforeTo + effect.amount)
+      deltas.push({ path: fromPath, before: beforeFrom, after: beforeFrom - effect.amount })
+      deltas.push({ path: toPath, before: beforeTo, after: beforeTo + effect.amount })
+      continue
+    }
+    const path = resolveWorldlinePath(effect.path, scope)
+    if (path === undefined) {
+      throw new Error(`effect path ${effect.path} requires a bound ${worldlinePathScope(effect.path)}`)
+    }
+    const before = readPath(state, path)
+    if (effect.op === 'set') state = writePath(state, path, effect.value)
+    if (effect.op === 'increment') {
+      let next = Number(before ?? 0) + effect.amount
+      if (effect.min !== undefined) next = Math.max(effect.min, next)
+      if (effect.max !== undefined) next = Math.min(effect.max, next)
+      state = writePath(state, path, next)
+    }
+    const after = readPath(state, path)
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      deltas.push({
+        path,
+        ...(before === undefined ? {} : { before }),
+        ...(after === undefined ? {} : { after }),
+      })
+    }
+  }
+  return { state, deltas, cognitionChanges }
+}
+
+/** Structured invariant failure shared by freeze auditing and live execution diagnostics. */
+export interface InvariantEvaluationFailure {
+  readonly invariantId: string
+  readonly actorId?: EntityId
+  readonly reason: string
+  readonly paths: readonly string[]
+}
+
+/** Evaluate world invariants with actor-scoped expressions applied to matching characters. */
+export function evaluateWorldlineInvariants(
+  invariants: readonly InvariantDefinition[],
+  entities: readonly RuntimeEntitySeed[],
+  state: JsonObject,
+): readonly InvariantEvaluationFailure[] {
+  const failures: InvariantEvaluationFailure[] = []
+  for (const invariant of invariants) {
+    const paths = expressionPaths(invariant.expression)
+    const actorPaths = paths.filter(path => worldlinePathScope(path) === 'actor')
+    const targetPaths = paths.filter(path => worldlinePathScope(path) === 'target')
+    if (targetPaths.length > 0) {
+      failures.push({
+        invariantId: invariant.id,
+        reason: 'target-scoped invariant has no stable target binding',
+        paths: targetPaths,
+      })
+      continue
+    }
+    if (actorPaths.length === 0) {
+      if (!evaluateScopedExpression(invariant.expression, state, {})) {
+        failures.push({ invariantId: invariant.id, reason: 'world expression is false', paths })
+      }
+      continue
+    }
+    const applicable = entities.filter(entity => (
+      entity.type === 'character'
+      && actorPaths.every((path) => {
+        const resolved = resolveWorldlinePath(path, { actorId: entity.id })
+        return resolved !== undefined && readPath(state, resolved) !== undefined
+      })
+    ))
+    if (applicable.length === 0) {
+      failures.push({
+        invariantId: invariant.id,
+        reason: 'actor-scoped invariant matches no runtime character state',
+        paths: actorPaths,
+      })
+      continue
+    }
+    for (const entity of applicable) {
+      if (evaluateScopedExpression(invariant.expression, state, { actorId: entity.id })) continue
+      failures.push({
+        invariantId: invariant.id,
+        actorId: entity.id,
+        reason: 'actor expression is false',
+        paths: actorPaths,
+      })
+    }
+  }
+  return failures
+}
+
+function pathSegments(path: string): string[] {
+  const segments: string[] = []
+  let current = ''
+  let escaped = false
+  for (const character of path.replace(/^\$\.?/u, '')) {
+    if (escaped) {
+      current += character
+      escaped = false
+    } else if (character === '\\') {
+      escaped = true
+    } else if (character === '.') {
+      if (current !== '') segments.push(current)
+      current = ''
+    } else {
+      current += character
+    }
+  }
+  if (escaped) current += '\\'
+  if (current !== '') segments.push(current)
+  return segments
+}
 
 /** WorldEvent is reserved for an authoritative difference or meaningful process boundary.
  * @param event - The event supplied by the caller.
@@ -146,13 +397,31 @@ export function evaluateExpression(expression: Expression, state: JsonObject): b
   }
 }
 
+/** Evaluate the expression language after resolving actor/target paths consistently. */
+export function evaluateScopedExpression(
+  expression: Expression,
+  state: JsonObject,
+  scope: ExpressionScope,
+): boolean {
+  switch (expression.op) {
+    case 'and': return expression.items.every(item => evaluateScopedExpression(item, state, scope))
+    case 'or': return expression.items.some(item => evaluateScopedExpression(item, state, scope))
+    case 'not': return !evaluateScopedExpression(expression.item, state, scope)
+    default: {
+      const path = resolveWorldlinePath(expression.path, scope)
+      if (path === undefined) return false
+      return evaluateExpression({ ...expression, path } as Expression, state)
+    }
+  }
+}
+
 /** Read a nested value from an unknown structure by path.
  * @param root - The root supplied by the caller.
  * @param path - The path supplied by the caller.
  * @returns The result produced by the operation.
  */
 export function readPath(root: JsonObject, path: string): JsonValue | undefined {
-  const segments = path.split('.').filter(Boolean)
+  const segments = pathSegments(path)
   let cursor: JsonValue | undefined = root
   for (const segment of segments) {
     if (cursor === null || Array.isArray(cursor) || typeof cursor !== 'object') return undefined

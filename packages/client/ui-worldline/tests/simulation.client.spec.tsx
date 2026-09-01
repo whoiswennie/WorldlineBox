@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import type { RunSpatialView, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
-import { SimulationWorkbench } from '../src/client/SimulationWorkbench.tsx'
+import { runAutonomyCycle, SimulationWorkbench } from '../src/client/SimulationWorkbench.tsx'
 import type { AiClient, RunsClient } from '../src/client/types.ts'
 import { zh } from '../src/client/locales.ts'
 
@@ -96,6 +96,7 @@ function runsClient(): RunsClient {
       choices: [{ id: 'choice:walk', actionType: 'character.move', parameters: { destination: 'map-node:end' }, label: 'Walk to Destination', description: 'Follow the connected route.', targetIds: ['map-node:end'], estimatedDuration: 12, costs: [], risks: [] }],
     })),
     submitAction: vi.fn(async () => ({})),
+    advance: vi.fn(async () => view),
     records: vi.fn(async () => ({ records: [], nextSequence: 0, nextOrdinal: 0, hasMore: false })),
     checkpoints: vi.fn(async () => []),
   } as unknown as RunsClient
@@ -104,6 +105,28 @@ function runsClient(): RunsClient {
 const t: TranslateNS<'worldlineStudio'> = key => zh[key as keyof typeof zh] ?? key
 
 describe('Worldline simulation spatial projection', () => {
+  it('runs one autonomous character action before advancing the clock', async () => {
+    const running = {
+      ...view,
+      summary: { ...view.summary, status: 'running' },
+      controls: { 'entity:charter': 'player', 'entity:traveller': 'autonomous' },
+    } as RunView
+    const runs = runsClient()
+    Object.defineProperty(runs, 'view', { value: vi.fn(async () => running) })
+
+    await runAutonomyCycle(runs, runId, undefined, 60)
+
+    expect(ownMethod(runs, 'submitAction')).toHaveBeenCalledWith({
+      runId,
+      actorId: 'entity:traveller',
+      type: 'character.move',
+      parameters: { destination: 'map-node:end' },
+      expectedSequence: 2,
+      controller: 'agent',
+    })
+    expect(ownMethod(runs, 'advance')).toHaveBeenCalledWith({ runId, duration: 60, maxEvents: 10_000 })
+  })
+
   it('shows the frozen Run map and an in-progress non-teleport movement', async () => {
     const runs = runsClient()
     render(<SimulationWorkbench

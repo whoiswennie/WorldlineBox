@@ -13,6 +13,7 @@ import type {
   Effect,
   EntityId,
   FutureEvent,
+  InvariantEvaluationFailure,
   JsonObject,
   JsonValue,
   MapEdge,
@@ -32,9 +33,12 @@ import type {
   WorldEvent,
 } from '@deepseek-ai/dsh-worldline-standard'
 import {
+  applyWorldlineEffects,
   contentFingerprint,
-  evaluateExpression,
+  evaluateScopedExpression,
+  evaluateWorldlineInvariants,
   isValidWorldEvent,
+  materializeInitialWorldState,
   stableStringify,
   validateBlueprint,
   worldlineId,
@@ -65,6 +69,7 @@ import type {
   RunSummary,
   RunView,
   SetActorControlRequest,
+  SetAiBudgetRequest,
   SetAiEnabledRequest,
   SubmitRunActionRequest,
   SubmitRunActionResult,
@@ -117,13 +122,13 @@ interface PlannedMovement {
 }
 
 const DEFAULT_AI_BUDGET: AiBudget = {
-  maxCalls: 0,
-  maxInputTokens: 0,
-  maxOutputTokens: 0,
-  maxConcurrent: 0,
-  maxCallsPerLogicalDay: 0,
-  maxCallsPerRealHour: 0,
-  maxEstimatedCost: 0,
+  maxCalls: 100,
+  maxInputTokens: 1_000_000,
+  maxOutputTokens: 200_000,
+  maxConcurrent: 1,
+  maxCallsPerLogicalDay: 50,
+  maxCallsPerRealHour: 20,
+  maxEstimatedCost: 5,
   currency: 'USD',
 }
 
@@ -204,9 +209,9 @@ function setPath(root: JsonObject, path: string, value: JsonValue): JsonObject {
   return result
 }
 
-function actorPath(path: string, actorId: EntityId | undefined): string {
-  if (actorId === undefined || !path.startsWith('state.')) return path
-  return `entities.${escapePathSegment(actorId)}.state.${path.slice('state.'.length)}`
+function targetEntityId(parameters: JsonObject): EntityId | undefined {
+  const value = parameters['targetId']
+  return typeof value === 'string' ? worldlineId<'entity'>(value) : undefined
 }
 
 function processTerminal(state: Process['state']): boolean {
@@ -432,7 +437,11 @@ export class WorldlineKernel {
     const choices = active ? [] : this.init.blueprint.actions
       .filter(definition => typeof actor['type'] === 'string'
         && definition.actorTypes.includes(actor['type'])
-        && definition.preconditions.every(expression => evaluateExpression(expression, this.snapshotValue.state)))
+        && definition.preconditions.every(expression => evaluateScopedExpression(
+          expression,
+          this.snapshotValue.state,
+          { actorId: request.actorId },
+        )))
       .flatMap(definition => this.projectActionChoices(request.actorId, definition))
     return {
       runId: request.runId,
@@ -543,7 +552,13 @@ export class WorldlineKernel {
     if (request.controller === 'agent' && control === 'player') {
       throw new WorldlineRuntimeError('action-forbidden', 'autonomous actions are paused while the player has control')
     }
-    if (!definition.preconditions.every(expression => evaluateExpression(expression, this.snapshotValue.state))) {
+    const parameters = request.parameters ?? {}
+    const targetId = targetEntityId(parameters)
+    if (!definition.preconditions.every(expression => evaluateScopedExpression(
+      expression,
+      this.snapshotValue.state,
+      { actorId: request.actorId, ...(targetId === undefined ? {} : { targetId }) },
+    ))) {
       throw new WorldlineRuntimeError('action-forbidden', 'action preconditions are not satisfied')
     }
     if (this.snapshotValue.processes.some(process => (
@@ -556,8 +571,8 @@ export class WorldlineKernel {
       id: actionId,
       type: definition.id,
       actorId: request.actorId,
-      targetIds: [],
-      parameters: request.parameters ?? {},
+      targetIds: targetId === undefined ? [] : [targetId],
+      parameters,
       requestedAt: this.snapshotValue.logicalTime,
       control: request.controller === 'player' ? 'player' : request.controller === 'system' ? 'director' : 'policy',
       idempotencyKey: `${this.snapshotValue.runId}:${String(this.snapshotValue.sequence + 1)}`,
@@ -663,6 +678,44 @@ export class WorldlineKernel {
     this.snapshotValue = {
       ...this.snapshotValue,
       modelPolicy: { ...this.snapshotValue.modelPolicy, aiEnabled: request.enabled },
+    }
+    this.commit([])
+    return this.view()
+  }
+
+  /** Replace the explicit hard AI allowance without resetting accumulated usage. */
+  setAiBudget(request: SetAiBudgetRequest): RunView {
+    this.assertRun(request.runId)
+    if (request.expectedSequence !== this.snapshotValue.sequence) {
+      throw new WorldlineRuntimeError('run-conflict', 'Run advanced before the AI budget update')
+    }
+    const numeric = [
+      request.budget.maxCalls,
+      request.budget.maxInputTokens,
+      request.budget.maxOutputTokens,
+      request.budget.maxConcurrent,
+      request.budget.maxCallsPerLogicalDay,
+      request.budget.maxCallsPerRealHour,
+      request.budget.maxEstimatedCost,
+    ]
+    if (numeric.some(value => !Number.isFinite(value) || value < 0)) {
+      throw new WorldlineRuntimeError('action-invalid', 'AI budget values must be finite and non-negative')
+    }
+    if (request.budget.currency.trim() === '') {
+      throw new WorldlineRuntimeError('action-invalid', 'AI budget currency is required')
+    }
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      aiBudget: {
+        ...request.budget,
+        maxCalls: Math.floor(request.budget.maxCalls),
+        maxInputTokens: Math.floor(request.budget.maxInputTokens),
+        maxOutputTokens: Math.floor(request.budget.maxOutputTokens),
+        maxConcurrent: Math.floor(request.budget.maxConcurrent),
+        maxCallsPerLogicalDay: Math.floor(request.budget.maxCallsPerLogicalDay),
+        maxCallsPerRealHour: Math.floor(request.budget.maxCallsPerRealHour),
+        currency: request.budget.currency.trim().toUpperCase(),
+      },
     }
     this.commit([])
     return this.view()
@@ -851,16 +904,6 @@ export class WorldlineKernel {
   }
 
   private initialSnapshot(): RunSnapshot {
-    const entities: Record<string, JsonValue> = {}
-    for (const seed of this.init.blueprint.entities) {
-      entities[seed.id] = {
-        type: seed.type,
-        facets: seed.facets,
-        state: seed.state,
-        lod: seed.lod,
-        memory: jsonObject(seed.memory),
-      }
-    }
     const futureEvents: FutureEvent[] = this.init.blueprint.systems.map((system, index) => ({
       id: `future:${contentFingerprint(`${this.init.runId}:${system.id}:initial`)}`,
       due: Math.max(0, system.nextWake),
@@ -879,7 +922,10 @@ export class WorldlineKernel {
       seed: this.init.seed,
       logicalTime: 0,
       sequence: 0,
-      state: { world: { time: 0 }, entities, resources: {} },
+      state: materializeInitialWorldState(
+        this.init.blueprint.canon,
+        this.init.blueprint.entities,
+      ),
       processes: [],
       reservations: [],
       futureEvents,
@@ -1066,9 +1112,14 @@ export class WorldlineKernel {
   private runSystem(id: string, records: RunStreamRecord[]): void {
     const system = this.init.blueprint.systems.find(item => item.id === id)
     if (system === undefined) return
-    if (system.preconditions.every(expression => evaluateExpression(expression, this.snapshotValue.state))) {
+    if (system.preconditions.every(expression => evaluateScopedExpression(
+      expression,
+      this.snapshotValue.state,
+      {},
+    ))) {
       const applied = this.applyEffects(system.effects)
-      if (this.invariantsHold(applied.state)) {
+      const invariantFailures = this.invariantFailures(applied.state)
+      if (invariantFailures.length === 0) {
         this.snapshotValue = { ...this.snapshotValue, state: applied.state }
         if (applied.deltas.length > 0 || applied.cognitionChanges.length > 0) {
           const event = this.worldEvent({
@@ -1084,6 +1135,11 @@ export class WorldlineKernel {
         }
       } else {
         this.statusValue = 'degraded'
+        records.push(this.record('runtime-diagnostic', this.nextId('runtime-diagnostic'), {
+          type: 'system.effects-rejected',
+          systemId: system.id,
+          failures: invariantFailures,
+        }, this.snapshotValue.sequence))
       }
     }
     if (system.interval !== undefined && system.interval > 0) {
@@ -1095,9 +1151,22 @@ export class WorldlineKernel {
     const process = this.process(processId)
     if (process === undefined || processTerminal(process.state)) return
     const definition = this.definition(process.action.type)
-    const applied = this.applyEffects(definition.effects, process.action.actorId)
-    if (!this.invariantsHold(applied.state)) {
-      this.failProcess(process, definition, 'action effects violate a world invariant', records)
+    const targetId = targetEntityId(process.action.parameters)
+    const applied = this.applyEffects(definition.effects, process.action.actorId, targetId)
+    const invariantFailures = this.invariantFailures(applied.state)
+    if (invariantFailures.length > 0) {
+      records.push(this.record('runtime-diagnostic', this.nextId('runtime-diagnostic'), {
+        type: 'action.effects-rejected',
+        actionId: process.action.id,
+        actorId: process.action.actorId,
+        failures: invariantFailures,
+      }, this.snapshotValue.sequence))
+      this.failProcess(
+        process,
+        definition,
+        `动作效果违反不变量：${invariantFailures.map(item => item.invariantId).join('、')}`,
+        records,
+      )
       return
     }
     this.snapshotValue = { ...this.snapshotValue, state: applied.state }
@@ -1154,47 +1223,23 @@ export class WorldlineKernel {
     ), records)
   }
 
-  private applyEffects(effects: readonly Effect[], actorId?: EntityId): EffectResult {
-    let state = structuredClone(this.snapshotValue.state)
-    const deltas: StateDelta[] = []
-    const cognitionChanges: JsonObject[] = []
-    for (const effect of effects) {
-      if (effect.op === 'observe') {
-        cognitionChanges.push({ observer: effect.observer, fact: effect.fact })
-        continue
-      }
-      if (effect.op === 'transfer') {
-        const resource = escapePathSegment(effect.resource)
-        const fromPath = `resources.${resource}.holders.${escapePathSegment(effect.from)}`
-        const toPath = `resources.${resource}.holders.${escapePathSegment(effect.to)}`
-        const beforeFrom = Number(getPath(state, fromPath) ?? 0)
-        const beforeTo = Number(getPath(state, toPath) ?? 0)
-        if (beforeFrom < effect.amount) throw new WorldlineRuntimeError('action-forbidden', 'resource transfer exceeds holdings')
-        state = setPath(state, fromPath, beforeFrom - effect.amount)
-        state = setPath(state, toPath, beforeTo + effect.amount)
-        deltas.push({ path: fromPath, before: beforeFrom, after: beforeFrom - effect.amount })
-        deltas.push({ path: toPath, before: beforeTo, after: beforeTo + effect.amount })
-        continue
-      }
-      const path = actorPath(effect.path, actorId)
-      const before = getPath(state, path)
-      if (effect.op === 'set') state = setPath(state, path, effect.value)
-      if (effect.op === 'increment') {
-        let next = Number(before ?? 0) + effect.amount
-        if (effect.min !== undefined) next = Math.max(effect.min, next)
-        if (effect.max !== undefined) next = Math.min(effect.max, next)
-        state = setPath(state, path, next)
-      }
-      const after = getPath(state, path)
-      if (stableStringify(before) !== stableStringify(after)) {
-        deltas.push(stateDelta(path, before, after))
-      }
-    }
-    return { state, deltas, cognitionChanges }
+  private applyEffects(
+    effects: readonly Effect[],
+    actorId?: EntityId,
+    targetId?: EntityId,
+  ): EffectResult {
+    return applyWorldlineEffects(this.snapshotValue.state, effects, {
+      ...(actorId === undefined ? {} : { actorId }),
+      ...(targetId === undefined ? {} : { targetId }),
+    })
   }
 
-  private invariantsHold(state: JsonObject): boolean {
-    return this.init.blueprint.invariants.every(invariant => evaluateExpression(invariant.expression, state))
+  private invariantFailures(state: JsonObject): readonly InvariantEvaluationFailure[] {
+    return evaluateWorldlineInvariants(
+      this.init.blueprint.invariants,
+      this.init.blueprint.entities,
+      state,
+    )
   }
 
   private lifecycleEvent(

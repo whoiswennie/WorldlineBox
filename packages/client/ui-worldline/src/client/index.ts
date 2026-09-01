@@ -138,6 +138,7 @@ export function apply(ctx: ClientContext): void {
       branch: async request => await invoke(ctx.remote.worldlineRuns.branch(request)),
       setControl: async request => await invoke(ctx.remote.worldlineRuns.setControl(request)),
       setAiEnabled: async request => await invoke(ctx.remote.worldlineRuns.setAiEnabled(request)),
+      setAiBudget: async request => await invoke(ctx.remote.worldlineRuns.setAiBudget(request)),
       switchModel: async request => await invoke(ctx.remote.worldlineRuns.switchModel(request)),
       explain: async request => await invoke(ctx.remote.worldlineRuns.explain(request)),
     },
@@ -162,6 +163,7 @@ export function apply(ctx: ClientContext): void {
     },
     openPath: path => ctx.workspaces.openPath(path),
     launchConversation: (project, runId) => launchWorldlineAuthorConversation({
+      registerWorkspace: input => ctx.workspaces.create(input),
       createSession: options => ctx.sessions.create(options),
       deleteSession: sessionId => ctx.sessions.delete(sessionId),
       openSession: (sessionId) => { ctx.sessions.open(sessionId) },

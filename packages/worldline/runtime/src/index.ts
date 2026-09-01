@@ -25,6 +25,7 @@ import type {
   RunSummary,
   RunView,
   SetActorControlRequest,
+  SetAiBudgetRequest,
   SetAiEnabledRequest,
   SubmitRunActionRequest,
   SubmitRunActionResult,
@@ -125,6 +126,8 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
+  /** Set the explicit bounded AI allowance for a Run. */
+  abstract setAiBudget(request: SetAiBudgetRequest): Promise<RunView>
   /** Perform switch model through the package's public contract.
    * @param request - The request supplied by the caller.
    * @returns The result produced by the operation.
@@ -235,6 +238,8 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   @Remote('setAiEnabled') remoteSetAiEnabled(value: SetAiEnabledRequest): Promise<RunView> { return this.setAiEnabled(value) }
+  /** Update the Run AI budget through the generated Remote boundary. */
+  @Remote('setAiBudget') remoteSetAiBudget(value: SetAiBudgetRequest): Promise<RunView> { return this.setAiBudget(value) }
   /** Perform remote switch model through the package's public contract.
    * @param value - The value supplied by the caller.
    * @returns The result produced by the operation.

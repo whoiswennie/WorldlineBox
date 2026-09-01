@@ -47,6 +47,54 @@ interface NarrativeSources {
   readonly observations: readonly Observation[]
 }
 
+interface TextChoice {
+  readonly id: string
+  readonly actionType: string
+  readonly label: string
+  readonly description: string
+}
+
+const INTENT_ALIASES: readonly [RegExp, RegExp][] = [
+  [/(?:^|\.)(?:move|travel|teleport)$/u, /(?:去|前往|走|移动|赶往|进入|抵达|传送|travel|move|go|walk|enter)/iu],
+  [/(?:attack|fight|combat|strike|slay)/u, /(?:攻击|战斗|迎战|打|击败|杀死|屠龙|attack|fight|strike|slay)/iu],
+  [/(?:work|craft|gather)/u, /(?:工作|劳动|干活|制作|采集|收集|work|craft|gather)/iu],
+  [/(?:speak|talk|dialog|ask)/u, /(?:说|交谈|对话|询问|告诉|talk|speak|ask)/iu],
+  [/(?:rest|sleep|wait)/u, /(?:休息|睡觉|等待|歇|rest|sleep|wait)/iu],
+]
+
+function normalizedText(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+function longestSharedTerm(input: string, candidate: string): number {
+  const shorter = input.length <= candidate.length ? input : candidate
+  const longer = input.length <= candidate.length ? candidate : input
+  for (let size = Math.min(12, shorter.length); size >= 2; size -= 1) {
+    for (let start = 0; start + size <= shorter.length; start += 1) {
+      if (longer.includes(shorter.slice(start, start + size))) return size
+    }
+  }
+  return 0
+}
+
+function intentScore(input: string, choice: TextChoice): number {
+  const text = normalizedText(input)
+  const id = normalizedText(choice.id)
+  const action = normalizedText(choice.actionType)
+  const label = normalizedText(choice.label)
+  const description = normalizedText(choice.description)
+  if (text === id || text === action || text === label) return 1_000
+  let score = 0
+  if (label.includes(text) || description.includes(text)) score += 200
+  if (text.includes(label) || text.includes(description)) score += 160
+  const shared = Math.max(longestSharedTerm(text, label), longestSharedTerm(text, description))
+  if (shared >= 2) score += shared * 20
+  for (const [actionPattern, inputPattern] of INTENT_ALIASES) {
+    if (actionPattern.test(choice.actionType) && inputPattern.test(input)) score += 30
+  }
+  return score
+}
+
 function object(value: JsonValue | undefined): JsonObject | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined
 }
@@ -252,14 +300,11 @@ export default class WorldlineNarrative extends TypertRemoteService {
    */
   @Remote('freeInput')
   async freeInput(request: FreeTextActionRequest): Promise<FreeTextActionResult> {
-    const text = request.text.trim().toLocaleLowerCase()
+    const text = request.text.trim()
     const projected = await this.context.worldlineRuns.choices(request)
-    const candidates = projected.choices.filter(choice => (
-      choice.id.toLocaleLowerCase() === text
-      || choice.actionType.toLocaleLowerCase() === text
-      || choice.label.toLocaleLowerCase().includes(text)
-      || choice.description.toLocaleLowerCase().includes(text)
-    ))
+    const scored = projected.choices.map(choice => ({ choice, score: intentScore(text, choice) }))
+    const best = Math.max(0, ...scored.map(item => item.score))
+    const candidates = scored.filter(item => item.score === best && item.score > 0).map(item => item.choice)
     if (candidates.length !== 1) {
       return { status: candidates.length === 0 ? 'unmatched' : 'ambiguous', candidates }
     }
@@ -381,10 +426,16 @@ export default class WorldlineNarrative extends TypertRemoteService {
   private template(frame: SceneFrame, sources: NarrativeSources): string {
     const latest = sources.events.at(-1)
     if (latest === undefined) {
-      return `Time ${String(frame.logicalTime)}. The scene is quiet; no new authoritative event is visible.`
+      return `世界时间 ${String(frame.logicalTime)}。四周暂时安静，没有新的可见事件发生。`
     }
-    const place = frame.placeId === undefined ? 'an unspecified place' : frame.placeId
-    return `Time ${String(frame.logicalTime)}, at ${place}: ${latest.type}.`
+    const place = frame.placeId === undefined ? '尚未标明的地点' : frame.placeId
+    const event = ({
+      'action.proposed': '有人作出了行动决定',
+      'action.started': '一项行动已经开始',
+      'action.completed': '一项行动已经完成',
+      'system.effects-committed': '世界规则推动了局势变化',
+    } as Record<string, string>)[latest.type] ?? `发生了“${latest.type}”事件`
+    return `世界时间 ${String(frame.logicalTime)}，${place}：${event}。`
   }
 
   private async narratorPack(

@@ -47,8 +47,6 @@ const FIRST_PARTY = new Set([
 
 /** Official SDK identity covered by the project's narrow owner authorization. */
 export const CLAUDE_AGENT_SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
-/** Official animation runtime explicitly selected for the Worldline product UI. */
-export const GSAP_PACKAGE = 'gsap'
 const CLAUDE_PLATFORM_PACKAGE_PREFIX = `${CLAUDE_AGENT_SDK_PACKAGE}-`
 const CLAUDE_PLATFORM_DECLARED_LICENSE = 'SEE LICENSE IN LICENSE.md'
 
@@ -59,7 +57,7 @@ const CLAUDE_PLATFORM_DECLARED_LICENSE = 'SEE LICENSE IN LICENSE.md'
  * @returns true only for an exact package identity explicitly authorized by the owner.
  */
 export function isOwnerAuthorizedRuntime(name: string): boolean {
-  return name === CLAUDE_AGENT_SDK_PACKAGE || name === GSAP_PACKAGE
+  return name === CLAUDE_AGENT_SDK_PACKAGE
 }
 
 /**
@@ -701,20 +699,6 @@ ${rows.join('\n')}
 }
 
 /**
- * Record the owner's explicit decision to ship GSAP under its own terms.
- * Keeping this separate from the dependency table makes clear that the
- * authorization does not reclassify GSAP's license as permissive.
- */
-function renderGsapDistribution(runtimeDeps: ExternalDep[]): string {
-  if (!runtimeDeps.some(dep => dep.name === GSAP_PACKAGE)) return ''
-  return `
-## GSAP runtime authorization
-
-The project owner explicitly authorizes Worldline to bundle and distribute the official [\`${GSAP_PACKAGE}\`](https://github.com/greensock/GSAP) package under GreenSock's [Standard "no charge" License](https://gsap.com/standard-license/). This identity-scoped authorization does not classify those terms as permissive and does not cover any unrelated package; a package-identity or declared-license change still requires the ordinary dependency, compatibility, terms, and notices review.
-`
-}
-
-/**
  * Render the complete notices document.
  * @returns the exact bytes `THIRD_PARTY_NOTICES.md` must hold.
  */
@@ -772,7 +756,6 @@ pnpm applies local patches to the following packages at install time, so shipped
 
 ${patchedLines.join('\n')}
 ${renderClaudeDistribution(claudeDistribution)}
-${renderGsapDistribution(runtimeDeps)}
 
 ## Development-only npm dependencies
 

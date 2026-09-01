@@ -157,6 +157,22 @@ afterEach(async () => {
 })
 
 describe('WorldlineNarrative', () => {
+  it('matches a Chinese natural-language intent to one legal action', async () => {
+    const runtime = await setup()
+    const run = await createRun(runtime.context)
+    await runtime.context.worldlineRuns.setControl({ ...run, mode: 'player' })
+    const choices = await runtime.context.worldlineRuns.choices(run)
+    const result = await runtime.context.worldlineNarrative.freeInput({
+      ...run,
+      text: '我想先工作一会儿',
+      expectedSequence: choices.sequence,
+    })
+    expect(result.status).toBe('submitted')
+    expect(result.candidates).toHaveLength(1)
+    expect(result.candidates[0]?.actionType).toBe('character.work')
+    await runtime.dispose()
+  })
+
   it('streams source-bound prose without mutating the world and retries only by branching', async () => {
     const runtime = await setup()
     const run = await createRun(runtime.context)

@@ -266,6 +266,39 @@ describe('the shipped Web composition', () => {
     }
   })
 
+  it('keeps Worldline OC authoring isolated from standard and companion sessions', async () => {
+    const worldline = await ctx.agents.create({
+      sessionId: SessionId('preset-worldline-isolation'),
+      setup: agentCtx => ctx.agentPresets.mount(agentCtx, 'worldline-author').then(() => undefined),
+    })
+    const standard = await ctx.agents.create({
+      sessionId: SessionId('preset-standard-isolation'),
+      setup: agentCtx => ctx.agentPresets.mount(agentCtx, 'standard').then(() => undefined),
+    })
+    const companion = await ctx.agents.create({
+      sessionId: SessionId('preset-companion-isolation'),
+      setup: agentCtx => ctx.agentPresets.mount(agentCtx, 'virtual-companion').then(() => undefined),
+    })
+    try {
+      const worldlineTools = toolNames(ctx, worldline.agent)
+      const standardTools = toolNames(ctx, standard.agent)
+      const companionTools = toolNames(ctx, companion.agent)
+
+      expect(worldlineTools).toContain('worldline_edit')
+      expect(worldlineTools).not.toEqual(expect.arrayContaining(['edit', 'write']))
+      expect(standardTools).toContain('edit')
+      expect(standardTools).not.toEqual(expect.arrayContaining(['worldline_edit', 'worldline_build']))
+      expect(companionTools).toContain('edit')
+      expect(companionTools).not.toEqual(expect.arrayContaining(['worldline_edit', 'worldline_build']))
+
+      await worldline.dispose()
+      expect(toolNames(ctx, standard.agent)).toContain('edit')
+      expect(toolNames(ctx, companion.agent)).toContain('edit')
+    } finally {
+      await Promise.allSettled([standard.dispose(), companion.dispose(), worldline.dispose()])
+    }
+  })
+
   it('composes the full agent from `standard`', async () => {
     const handle = await ctx.agents.create({
       sessionId: SessionId('preset-standard'),

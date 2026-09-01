@@ -127,6 +127,7 @@ export function VirtualProjectTree({
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(420)
   const generation = useRef(0)
+  const projectIdentity = useRef(project.manifest.id)
 
   const loadPage = useCallback(async (
     directory: string,
@@ -180,11 +181,14 @@ export function VirtualProjectTree({
   useEffect(() => {
     const requestGeneration = generation.current + 1
     generation.current = requestGeneration
-    setPages({})
-    setExpanded(new Set())
+    if (projectIdentity.current !== project.manifest.id) {
+      projectIdentity.current = project.manifest.id
+      setPages({})
+      setExpanded(new Set())
+    }
     setScrollTop(0)
     void loadPage('', undefined, requestGeneration)
-  }, [loadPage, revision])
+  }, [loadPage, project.manifest.id, revision])
 
   const rows = useMemo(() => {
     const result: FlatTreeRow[] = []

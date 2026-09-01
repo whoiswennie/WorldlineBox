@@ -24,6 +24,8 @@
 .controlBar input { width: 64px; padding: 6px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: transparent; color: inherit; }
 .controlBar button[data-danger] { color: var(--dsw-alias-state-danger-primary); }
 .controlBar button:disabled { opacity: .42; cursor: default; }
+.controlBar .autoAdvance { display: inline-flex; width: auto; align-items: center; gap: 5px; padding: 0 4px; color: var(--dsw-alias-label-secondary); font-size: 12px; white-space: nowrap; }
+.controlBar .autoAdvance input { width: auto; margin: 0; }
 .error { padding: 8px 14px; color: var(--dsw-alias-state-danger-primary); background: color-mix(in srgb, var(--dsw-alias-state-danger-primary) 9%, transparent); }
 .metrics { display: grid; grid-template-columns: repeat(8, minmax(90px, 1fr)); gap: 8px; padding: 14px; overflow-x: auto; }
 .metrics > div { display: flex; min-width: 84px; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid var(--dsw-alias-divider); border-radius: 9px; background: var(--dsw-alias-background-elevated); }
@@ -109,6 +111,9 @@
 .usage span { display: flex; flex-direction: column; color: var(--dsw-alias-label-secondary); font-size: 10px; }
 .usage strong { color: var(--dsw-alias-label-primary); font-size: 13px; }
 .modelForm { display: grid; grid-template-columns: .65fr 1.25fr .75fr auto; gap: 5px; padding: 0 10px 10px; }
+.budgetForm { display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); gap: 8px; padding: 10px; border-top: 1px solid var(--wl-line); }
+.budgetForm label { display: grid; gap: 4px; color: var(--wl-muted); font-size: 12px; }
+.budgetForm input { min-width: 0; }
 .aiActions { display: flex; gap: 5px; padding: 10px; border-top: 1px solid var(--dsw-alias-divider); }
 .aiPanel details { padding: 0 10px 10px; }
 .budgetStatus { display: grid; gap: 3px; margin: 0 10px 10px; padding: 9px; border-radius: 8px; background: color-mix(in srgb, var(--dsw-alias-state-danger-primary) 9%, transparent); font-size: 10px; }
@@ -118,4 +123,4 @@
 .empty span { font-size: 48px; }
 @media (max-width: 900px) { .workbench { grid-template-columns: 210px minmax(0, 1fr); } .contentGrid { grid-template-columns: 1fr; } }
 @media (max-width: 620px) { .workbench { grid-template-columns: 1fr; } .runList { max-height: 230px; border-right: 0; border-bottom: 1px solid var(--dsw-alias-divider); } .controlBar { align-items: flex-start; flex-direction: column; } }
-@media (max-width: 760px) { .modelForm { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .modelForm, .budgetForm { grid-template-columns: 1fr; } }

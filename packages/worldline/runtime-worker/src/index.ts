@@ -35,6 +35,7 @@ import {
   type RunSummary,
   type RunView,
   type SetActorControlRequest,
+  type SetAiBudgetRequest,
   type SetAiEnabledRequest,
   type SubmitRunActionRequest,
   type SubmitRunActionResult,
@@ -332,6 +333,10 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
 
   override async setAiEnabled(request: SetAiEnabledRequest): Promise<RunView> {
     return (await this.handle(request.runId)).call({ type: 'set-ai', payload: request })
+  }
+
+  override async setAiBudget(request: SetAiBudgetRequest): Promise<RunView> {
+    return (await this.handle(request.runId)).call({ type: 'set-ai-budget', payload: request })
   }
 
   override async switchModel(request: SwitchModelPolicyRequest): Promise<RunView> {

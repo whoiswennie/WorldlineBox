@@ -11,6 +11,7 @@ import type {
   RecordNarrativeBeatRequest,
   RunChoicesRequest,
   SetActorControlRequest,
+  SetAiBudgetRequest,
   SetAiEnabledRequest,
   SubmitRunActionRequest,
   SwitchModelPolicyRequest,
@@ -50,6 +51,7 @@ export type WorkerCommand =
   | { readonly type: 'checkpoints' }
   | { readonly type: 'set-control'; readonly payload: SetActorControlRequest }
   | { readonly type: 'set-ai'; readonly payload: SetAiEnabledRequest }
+  | { readonly type: 'set-ai-budget'; readonly payload: SetAiBudgetRequest }
   | { readonly type: 'switch-model'; readonly payload: SwitchModelPolicyRequest }
   | { readonly type: 'explain'; readonly payload: ExplainRunEventRequest }
   | { readonly type: 'record-ai-intent'; readonly payload: RecordAiIntentRequest }
