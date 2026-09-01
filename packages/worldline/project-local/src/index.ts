@@ -131,6 +131,23 @@ function kindOf(path: string, directory: boolean): ProjectTreeEntry['kind'] {
   return TEXT_EXTENSIONS.has(extname(path).toLowerCase()) ? 'document' : 'asset'
 }
 
+export function paginateTreeEntries<T extends { readonly name: string }>(
+  entries: readonly T[],
+  cursor: string | undefined,
+  limit: number,
+): { readonly entries: readonly T[]; readonly nextCursor?: string } {
+  const ordered = [...entries].sort((left, right) => left.name.localeCompare(right.name))
+  const start = cursor === undefined
+    ? 0
+    : ordered.findIndex(entry => entry.name.localeCompare(cursor) > 0)
+  if (start < 0) return { entries: [] }
+  const page = ordered.slice(start, start + limit)
+  const last = page.at(-1)
+  return start + page.length < ordered.length && last !== undefined
+    ? { entries: page, nextCursor: last.name }
+    : { entries: page }
+}
+
 function titleOf(path: string, content: string): string {
   const heading = /^#\s+(.+)$/m.exec(content)?.[1]?.trim()
   return heading ?? basename(path, extname(path))
@@ -487,13 +504,24 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     const directory = resolveInside(project, path)
     await assertNoSymlink(project, directory)
     const metadata = await this.metadata(project)
+    const requestedLimit = request.limit ?? 200
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+      throw new WorldlineProjectError('path-invalid', 'tree page limit must be a positive integer')
+    }
+    if (request.cursor !== undefined && (request.cursor.length > 255
+      || request.cursor.includes('/') || request.cursor.includes('\\')
+      || /[\u0000-\u001f]/u.test(request.cursor))) {
+      throw new WorldlineProjectError('path-invalid', 'tree cursor is malformed')
+    }
+    const limit = Math.min(500, this.config.maxEntries, requestedLimit)
+    const page = paginateTreeEntries(
+      (await readdir(directory, { withFileTypes: true }))
+        .filter(dirent => dirent.name !== CONTROL_DIRECTORY && !dirent.isSymbolicLink()),
+      request.cursor,
+      limit,
+    )
     const entries: ProjectTreeEntry[] = []
-    let truncated = false
-    for (const dirent of (await readdir(directory, { withFileTypes: true }))
-      .sort((left, right) => left.name.localeCompare(right.name))) {
-      if (dirent.name === CONTROL_DIRECTORY) continue
-      if (entries.length >= this.config.maxEntries) { truncated = true; break }
-      if (dirent.isSymbolicLink()) continue
+    for (const dirent of page.entries) {
       const relativePath = [path, dirent.name].filter(Boolean).join('/')
       const absolute = resolveInside(project, relativePath)
       const info = await stat(absolute)
@@ -512,7 +540,13 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
       })
     }
     await metadata.save()
-    return { projectId: request.projectId, path, entries, truncated }
+    return {
+      projectId: request.projectId,
+      path,
+      entries,
+      truncated: page.nextCursor !== undefined,
+      ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
+    }
   }
 
   async read(request: ReadDocumentRequest): Promise<DocumentView> {

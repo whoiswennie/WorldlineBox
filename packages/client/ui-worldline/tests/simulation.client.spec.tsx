@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import type { RunSpatialView, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
 import { SimulationWorkbench } from '../src/client/SimulationWorkbench.tsx'
@@ -73,7 +74,7 @@ function runsClient(): RunsClient {
   } as unknown as RunsClient
 }
 
-function t(key: keyof typeof zh): string { return zh[key] }
+const t: TranslateNS<'worldlineStudio'> = key => zh[key as keyof typeof zh] ?? key
 
 describe('Worldline simulation spatial projection', () => {
   it('shows the frozen Run map and an in-progress non-teleport movement', async () => {
@@ -84,6 +85,8 @@ describe('Worldline simulation spatial projection', () => {
       runRevision={0}
       onRunsChanged={() => {}}
       onOpenTextPlay={() => {}}
+      onImportRun={() => undefined}
+      onExportRun={() => undefined}
       t={t}
     />)
 

@@ -1,12 +1,18 @@
 .workbench { --worldline-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2); --worldline-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2); display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr) minmax(220px, 280px); min-height: 0; height: 100%; background: var(--dsw-alias-background-base); color: var(--dsw-alias-label-primary); }
 .treePane, .inspector { min-height: 0; overflow: auto; border-right: 1px solid var(--dsw-alias-divider); background: color-mix(in srgb, var(--dsw-alias-background-elevated) 78%, transparent); }
-.treePane { position: relative; }
+.treePane { position: relative; display: flex; overflow: hidden; flex-direction: column; }
 .treePane[data-importing]::after { content: ''; position: absolute; inset: 7px; z-index: 5; border: 1px dashed var(--dsw-alias-state-business-primary); border-radius: 11px; background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 7%, transparent); pointer-events: none; }
 .inspector { border-right: 0; border-left: 1px solid var(--dsw-alias-divider); }
 .searchBox { display: flex; align-items: center; gap: 8px; margin: 12px; padding: 7px 10px; border: 1px solid var(--dsw-alias-divider); border-radius: 10px; background: var(--dsw-alias-background-elevated); }
 .searchBox input, .createBar input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
 .treeList, .searchResults, .auditList { margin: 0; padding: 0 8px; list-style: none; }
+.searchResults { min-height: 0; overflow: auto; }
 .treeList[data-nested] { padding-left: 17px; }
+.treeViewport { min-height: 0; flex: 1; overflow: auto; contain: strict; }
+.treeVirtualSpace { position: relative; min-width: 100%; }
+.treeVirtualRow { position: absolute; inset: 0 0 auto; height: 31px; }
+.treeVirtualRow .treeEntry { height: 31px; }
+.treeMore { width: 100%; height: 31px; border: 0; background: transparent; color: var(--dsw-alias-state-business-primary); text-align: left; cursor: pointer; }
 .treeEntry { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; width: 100%; gap: 5px; padding: 6px 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .treeEntry:hover, .treeEntry[data-active] { background: var(--dsw-specific-sidebar-nav-item-active); }
 .treeEntry > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

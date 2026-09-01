@@ -86,7 +86,12 @@ export interface TrashedProject {
   readonly manifest?: ProjectManifest
 }
 
-export interface ProjectTreeRequest extends ProjectRef { readonly path?: string }
+export interface ProjectTreeRequest extends ProjectRef {
+  readonly path?: string
+  /** Last entry name from the preceding page; omitted for the first page. */
+  readonly cursor?: string
+  readonly limit?: number
+}
 
 export interface ProjectTreeEntry {
   readonly id: DocumentId
@@ -106,6 +111,7 @@ export interface ProjectTreeListing {
   readonly path: string
   readonly entries: readonly ProjectTreeEntry[]
   readonly truncated: boolean
+  readonly nextCursor?: string
 }
 
 export interface ReadDocumentRequest extends ProjectRef { readonly path: string }

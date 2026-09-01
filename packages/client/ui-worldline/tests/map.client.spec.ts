@@ -96,7 +96,7 @@ describe('Worldline map document projection', () => {
       ...map.nodes[0],
       id: `map-node:cluster-${String(index)}`,
       position: { x: index % 50 * 12, y: Math.floor(index / 50) * 12 },
-    })) as WorldMap['nodes']
+    })) as unknown as WorldMap['nodes']
     const pinned = nodes[17]
     if (pinned === undefined) throw new Error('cluster fixture has no pinned node')
 

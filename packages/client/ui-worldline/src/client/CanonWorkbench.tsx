@@ -2,6 +2,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -87,10 +88,25 @@ export async function uploadProjectEntry(
   }
 }
 
-function TreeBranch({
+interface TreePage {
+  readonly entries: readonly ProjectTreeEntry[]
+  readonly nextCursor?: string
+  readonly loading: boolean
+  readonly error?: string
+}
+
+type FlatTreeRow =
+  | { readonly kind: 'entry'; readonly entry: ProjectTreeEntry; readonly depth: number }
+  | { readonly kind: 'more'; readonly directory: string; readonly cursor: string; readonly depth: number }
+  | { readonly kind: 'status'; readonly directory: string; readonly text: string; readonly depth: number }
+
+const TREE_PAGE_SIZE = 200
+const TREE_ROW_HEIGHT = 31
+const TREE_OVERSCAN = 8
+
+export function VirtualProjectTree({
   project,
   projects,
-  directory,
   revision,
   active,
   onOpen,
@@ -98,59 +114,162 @@ function TreeBranch({
 }: {
   readonly project: ProjectSummary
   readonly projects: ProjectClient
-  readonly directory: string
   readonly revision: number
   readonly active?: string | undefined
   readonly onOpen: (path: string) => void
   readonly onSelect: (entry: ProjectTreeEntry) => void
 }): ReactNode {
-  const [entries, setEntries] = useState<readonly ProjectTreeEntry[]>([])
+  const [pages, setPages] = useState<Readonly<Record<string, TreePage>>>({})
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
-  const [error, setError] = useState<string>()
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(420)
+  const generation = useRef(0)
+
+  const loadPage = useCallback(async (
+    directory: string,
+    cursor: string | undefined,
+    requestGeneration = generation.current,
+  ): Promise<void> => {
+    setPages(current => ({
+      ...current,
+      [directory]: {
+        entries: cursor === undefined ? [] : current[directory]?.entries ?? [],
+        loading: true,
+        ...(cursor === undefined || current[directory]?.nextCursor === undefined
+          ? {}
+          : { nextCursor: current[directory].nextCursor }),
+      },
+    }))
+    try {
+      const value = await projects.tree({
+        projectId: project.manifest.id,
+        path: directory,
+        limit: TREE_PAGE_SIZE,
+        ...(cursor === undefined ? {} : { cursor }),
+      })
+      if (generation.current !== requestGeneration) return
+      setPages((current) => {
+        const prior = cursor === undefined ? [] : current[directory]?.entries ?? []
+        const entries = [...new Map([...prior, ...value.entries]
+          .map(entry => [entry.path, entry])).values()]
+        return {
+          ...current,
+          [directory]: {
+            entries,
+            loading: false,
+            ...(value.nextCursor === undefined ? {} : { nextCursor: value.nextCursor }),
+          },
+        }
+      })
+    } catch (reason) {
+      if (generation.current !== requestGeneration) return
+      setPages(current => ({
+        ...current,
+        [directory]: {
+          entries: current[directory]?.entries ?? [],
+          loading: false,
+          error: reason instanceof Error ? reason.message : String(reason),
+        },
+      }))
+    }
+  }, [project.manifest.id, projects])
+
   useEffect(() => {
-    let current = true
-    void projects.tree({ projectId: project.manifest.id, path: directory })
-      .then((value) => { if (current) { setEntries(value.entries); setError(undefined) } })
-      .catch((reason: unknown) => { if (current) setError(reason instanceof Error ? reason.message : String(reason)) })
-    return () => { current = false }
-  }, [directory, project.manifest.id, projects, revision])
-  if (error !== undefined) return <p className={css.treeError}>{error}</p>
-  return <ul className={css.treeList} data-nested={directory !== '' || undefined}>
-    {entries.map((entry) => {
-      const open = expanded.has(entry.path)
-      return <li key={entry.id}>
-        <button
+    const requestGeneration = generation.current + 1
+    generation.current = requestGeneration
+    setPages({})
+    setExpanded(new Set())
+    setScrollTop(0)
+    void loadPage('', undefined, requestGeneration)
+  }, [loadPage, revision])
+
+  const rows = useMemo(() => {
+    const result: FlatTreeRow[] = []
+    const visit = (directory: string, depth: number): void => {
+      const page = pages[directory]
+      if (page === undefined || (page.loading && page.entries.length === 0)) {
+        result.push({ kind: 'status', directory, text: '…', depth })
+        return
+      }
+      if (page.error !== undefined) result.push({ kind: 'status', directory, text: page.error, depth })
+      for (const entry of page.entries) {
+        result.push({ kind: 'entry', entry, depth })
+        if (entry.kind === 'directory' && expanded.has(entry.path)) visit(entry.path, depth + 1)
+      }
+      if (page.nextCursor !== undefined) {
+        result.push({ kind: 'more', directory, cursor: page.nextCursor, depth })
+      } else if (page.loading) {
+        result.push({ kind: 'status', directory, text: '…', depth })
+      }
+    }
+    visit('', 0)
+    return result
+  }, [expanded, pages])
+  const start = Math.max(0, Math.floor(scrollTop / TREE_ROW_HEIGHT) - TREE_OVERSCAN)
+  const end = Math.min(
+    rows.length,
+    Math.ceil((scrollTop + viewportHeight) / TREE_ROW_HEIGHT) + TREE_OVERSCAN,
+  )
+  return <div
+    className={css.treeViewport}
+    role="tree"
+    aria-label="Worldline project tree"
+    onScroll={(event) => {
+      setScrollTop(event.currentTarget.scrollTop)
+      setViewportHeight(Math.max(240, event.currentTarget.clientHeight))
+    }}
+  >
+    <div className={css.treeVirtualSpace} style={{ height: rows.length * TREE_ROW_HEIGHT }}>
+      {rows.slice(start, end).map((row, offset) => <div
+        className={css.treeVirtualRow}
+        key={row.kind === 'entry'
+          ? row.entry.path
+          : `${row.kind}:${row.directory}:${row.kind === 'more' ? row.cursor : row.text}`}
+        role={row.kind === 'entry' ? 'treeitem' : undefined}
+        aria-level={row.kind === 'entry' ? row.depth + 1 : undefined}
+        aria-expanded={row.kind === 'entry' && row.entry.kind === 'directory'
+          ? expanded.has(row.entry.path)
+          : undefined}
+        style={{ transform: `translateY(${String((start + offset) * TREE_ROW_HEIGHT)}px)` }}
+      >{row.kind === 'entry' ? (() => {
+          const entry = row.entry
+          const open = expanded.has(entry.path)
+          return <button
+            type="button"
+            className={css.treeEntry}
+            style={{ paddingLeft: 8 + row.depth * 15 }}
+            data-active={active === entry.path || undefined}
+            onClick={() => {
+              onSelect(entry)
+              if (entry.kind === 'directory') {
+                setExpanded((current) => {
+                  const next = new Set(current)
+                  if (next.has(entry.path)) next.delete(entry.path)
+                  else {
+                    next.add(entry.path)
+                    if (pages[entry.path] === undefined) void loadPage(entry.path, undefined)
+                  }
+                  return next
+                })
+              } else if (entry.kind === 'document') onOpen(entry.path)
+            }}
+          >
+            <span aria-hidden="true">{entry.kind === 'directory' ? (open ? '▾' : '▸') : '◇'}</span>
+            <span>{entry.name}</span>
+            {entry.tags.length > 0 && <small>{entry.tags.length}</small>}
+          </button>
+        })() : row.kind === 'more' ? <button
           type="button"
-          className={css.treeEntry}
-          data-active={active === entry.path || undefined}
-          onClick={() => {
-            onSelect(entry)
-            if (entry.kind === 'directory') {
-              setExpanded((current) => {
-                const next = new Set(current)
-                if (next.has(entry.path)) next.delete(entry.path)
-                else next.add(entry.path)
-                return next
-              })
-            } else if (entry.kind === 'document') onOpen(entry.path)
-          }}
-        >
-          <span aria-hidden="true">{entry.kind === 'directory' ? (open ? '▾' : '▸') : '◇'}</span>
-          <span>{entry.name}</span>
-          {entry.tags.length > 0 && <small>{entry.tags.length}</small>}
-        </button>
-        {entry.kind === 'directory' && open && <TreeBranch
-          project={project}
-          projects={projects}
-          directory={entry.path}
-          revision={revision}
-          active={active}
-          onOpen={onOpen}
-          onSelect={onSelect}
-        />}
-      </li>
-    })}
-  </ul>
+          className={css.treeMore}
+          style={{ paddingLeft: 26 + row.depth * 15 }}
+          disabled={pages[row.directory]?.loading === true}
+          onClick={() => { void loadPage(row.directory, row.cursor) }}
+        >{pages[row.directory]?.loading === true ? '…' : '＋'}</button> : <p
+          className={css.treeError}
+          style={{ paddingLeft: 8 + row.depth * 15 }}
+        >{row.text}</p>}</div>)}
+    </div>
+  </div>
 }
 
 export function CanonWorkbench(props: CanonWorkbenchProps) {
@@ -311,10 +430,9 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
         {searchHits.map(hit => <li key={hit.id}><button type="button" onClick={() => { void props.openPath(hit.path) }}>
           <strong>{hit.title}</strong><small>{hit.path}</small><span>{hit.excerpt}</span>
         </button></li>)}
-      </ul> : <TreeBranch
+      </ul> : <VirtualProjectTree
         project={props.project}
         projects={props.projects}
-        directory=""
         revision={props.treeRevision}
         active={activePath}
         onOpen={(path) => { void props.openPath(path) }}

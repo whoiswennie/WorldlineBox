@@ -17,7 +17,7 @@ import {
   type RunSnapshot,
 } from '@deepseek-ai/dsh-worldline-standard'
 import { WorldlineRunDatabase } from '@deepseek-ai/dsh-worldline-run-sqlite'
-import LocalWorldlineProjects from '../src/index.ts'
+import LocalWorldlineProjects, { paginateTreeEntries } from '../src/index.ts'
 import { extractProjectArchive, preflightProjectArchive } from '../src/archive.ts'
 import { preflightBlueprintArchive, preflightRunArchive } from '../src/artifact-archive.ts'
 import type { TransferJob } from '@deepseek-ai/dsh-worldline-project'
@@ -138,6 +138,55 @@ afterEach(async () => {
 })
 
 describe('LocalWorldlineProjects', () => {
+  it('paginates 50,000 metadata names without constructing an unbounded response', () => {
+    const entries = Array.from({ length: 50_000 }, (_, index) => ({
+      name: `entry-${String(index).padStart(5, '0')}`,
+    }))
+    const first = paginateTreeEntries(entries, undefined, 200)
+    const second = paginateTreeEntries(entries, first.nextCursor, 200)
+    expect(first.entries).toHaveLength(200)
+    expect(first.nextCursor).toBe('entry-00199')
+    expect(second.entries).toHaveLength(200)
+    expect(second.entries[0]?.name).toBe('entry-00200')
+    expect(second.nextCursor).toBe('entry-00399')
+  })
+
+  it('serves one directory through stable bounded cursor pages', async () => {
+    const root = await temporaryRoot()
+    const runtime = await start(root)
+    const project = await runtime.ctx.worldlineProjects.create({ name: 'Paged', template: 'blank' })
+    const directory = join(project.path, 'bulk')
+    await mkdir(directory, { recursive: true })
+    await Promise.all(Array.from({ length: 401 }, async (_, index) => {
+      await writeFile(join(directory, `note-${String(index).padStart(3, '0')}.md`), '# Note\n')
+    }))
+    const first = await runtime.ctx.worldlineProjects.tree({
+      projectId: project.manifest.id,
+      path: 'bulk',
+      limit: 200,
+    })
+    if (first.nextCursor === undefined) throw new Error('first tree page did not return a cursor')
+    const second = await runtime.ctx.worldlineProjects.tree({
+      projectId: project.manifest.id,
+      path: 'bulk',
+      limit: 200,
+      cursor: first.nextCursor,
+    })
+    if (second.nextCursor === undefined) throw new Error('second tree page did not return a cursor')
+    const third = await runtime.ctx.worldlineProjects.tree({
+      projectId: project.manifest.id,
+      path: 'bulk',
+      limit: 200,
+      cursor: second.nextCursor,
+    })
+    expect([first.entries.length, second.entries.length, third.entries.length]).toEqual([200, 200, 1])
+    expect(new Set([...first.entries, ...second.entries, ...third.entries].map(entry => entry.path)).size)
+      .toBe(401)
+    expect(third).toMatchObject({ truncated: false })
+    expect(third.nextCursor).toBeUndefined()
+    await runtime.dispose()
+  })
+
   it('imports project entries as bounded durable streams without buffering the whole file', async () => {
     const root = await temporaryRoot()
     const runtime = await start(root)
