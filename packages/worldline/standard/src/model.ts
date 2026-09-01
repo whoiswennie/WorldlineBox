@@ -480,6 +480,8 @@ export interface RuntimeEntitySeed {
 export interface ActionDefinition {
   readonly id: string
   readonly description: string
+  /** Core execution family; ordinary movement must use `move`, never a generic position write. */
+  readonly operator?: 'generic' | 'move' | 'teleport'
   readonly actorTypes: readonly string[]
   readonly preconditions: readonly Expression[]
   readonly claims: readonly ClaimTemplate[]

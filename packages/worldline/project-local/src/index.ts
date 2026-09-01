@@ -11,11 +11,13 @@ import {
   type ProjectId,
   type ProjectManifest,
   type ProjectTemplate,
+  type RunId,
   WWS_VERSION,
   allocateWorldlineId,
   stableStringify,
 } from '@deepseek-ai/dsh-worldline-standard'
 import {
+  type ActiveProjectBuild,
   type CopyEntryRequest,
   type CopyProjectRequest,
   type CreateDirectoryRequest,
@@ -31,6 +33,7 @@ import {
   type ProjectLibraryQuery,
   type ProjectLink,
   type ProjectRootView,
+  type ProjectRunStorage,
   type ProjectSourceFile,
   type ProjectSourceSnapshot,
   type ProjectSearchHit,
@@ -948,6 +951,69 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
       await rm(staging, { recursive: true, force: true })
       throw error
     }
+  }
+
+  async activeBuild(projectId: ProjectId): Promise<ActiveProjectBuild | undefined> {
+    const project = await this.projectPath(projectId)
+    const builds = resolve(project, CONTROL_DIRECTORY, 'builds')
+    const active = resolve(builds, 'active')
+    if (!(await exists(active))) return undefined
+    const digest = (await readTextBounded(active)).trim()
+    if (!/^[a-f0-9]{64}$/u.test(digest)) {
+      throw new WorldlineProjectError('project-invalid', 'active Blueprint digest is malformed')
+    }
+    const blueprintPath = resolve(builds, digest, 'blueprint.json')
+    if (!(await exists(blueprintPath))) {
+      throw new WorldlineProjectError('project-invalid', 'active Blueprint artifact is missing')
+    }
+    return { projectId, digest, blueprintPath }
+  }
+
+  async runStorage(projectId: ProjectId, runId: RunId): Promise<ProjectRunStorage> {
+    const project = await this.projectPath(projectId)
+    const directoryName = runId.replace(/[^a-zA-Z0-9._-]/g, '_')
+    const directory = resolve(project, CONTROL_DIRECTORY, 'runs', directoryName)
+    await mkdir(directory, { recursive: true })
+    const metadataPath = resolve(directory, 'run.json')
+    if (!(await exists(metadataPath))) {
+      await durableWrite(metadataPath, `${JSON.stringify({ projectId, runId }, null, 2)}\n`)
+    } else {
+      const stored = recordOf(JSON.parse(await readTextBounded(metadataPath)))
+      if (stored.projectId !== projectId || stored.runId !== runId) {
+        throw new WorldlineProjectError('manifest-conflict', 'Run storage identity collision')
+      }
+    }
+    return { projectId, runId, databasePath: resolve(directory, 'world.sqlite') }
+  }
+
+  async runStorages(): Promise<readonly ProjectRunStorage[]> {
+    const projects = await this.scan()
+    const storages: ProjectRunStorage[] = []
+    for (const project of projects) {
+      const root = resolve(project.path, CONTROL_DIRECTORY, 'runs')
+      if (!(await exists(root))) continue
+      for (const entry of await readdir(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue
+        const metadataPath = resolve(root, entry.name, 'run.json')
+        if (!(await exists(metadataPath))) continue
+        try {
+          const stored = recordOf(JSON.parse(await readTextBounded(metadataPath)))
+          if (stored.projectId !== project.manifest.id || typeof stored.runId !== 'string') continue
+          storages.push({
+            projectId: project.manifest.id,
+            runId: stored.runId as RunId,
+            databasePath: resolve(root, entry.name, 'world.sqlite'),
+          })
+        } catch (error) {
+          this.context.logger('worldline-project').warn(
+            'ignored damaged Run metadata %s: %s',
+            metadataPath,
+            messageOf(error),
+          )
+        }
+      }
+    }
+    return storages
   }
 
   private beginJob(kind: TransferJob['kind'], totalBytes?: number): TransferJob {

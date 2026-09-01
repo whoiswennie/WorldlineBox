@@ -10175,6 +10175,70 @@ importers:
         specifier: ^22.0.0
         version: 22.20.0
 
+  packages/worldline/run-sqlite:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-worldline-standard':
+        specifier: workspace:^
+        version: link:../standard
+
+  packages/worldline/runtime:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: workspace:^
+        version: link:../../typert/protocol
+      '@deepseek-ai/dsh-worldline-run-sqlite':
+        specifier: workspace:^
+        version: link:../run-sqlite
+      '@deepseek-ai/dsh-worldline-standard':
+        specifier: workspace:^
+        version: link:../standard
+
+  packages/worldline/runtime-worker:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-worldline-compiler':
+        specifier: workspace:^
+        version: link:../compiler
+      '@deepseek-ai/dsh-worldline-project':
+        specifier: workspace:^
+        version: link:../project
+      '@deepseek-ai/dsh-worldline-project-local':
+        specifier: workspace:^
+        version: link:../project-local
+      '@deepseek-ai/dsh-worldline-run-sqlite':
+        specifier: workspace:^
+        version: link:../run-sqlite
+      '@deepseek-ai/dsh-worldline-runtime':
+        specifier: workspace:^
+        version: link:../runtime
+      '@deepseek-ai/dsh-worldline-standard':
+        specifier: workspace:^
+        version: link:../standard
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.12
+
   packages/worldline/standard:
     devDependencies:
       '@deepseek-ai/cordis':

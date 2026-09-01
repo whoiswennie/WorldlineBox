@@ -1,0 +1,41 @@
+{
+  "name": "@deepseek-ai/dsh-worldline-runtime-worker",
+  "description": "Worker-thread supervisor and deterministic discrete-event Worldline kernel",
+  "version": "0.2.3",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./worker": { "types": "./lib/types/worker.d.ts", "default": "./lib/worker.cjs" },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "lib/invariant.js", "lib/worker.cjs", "lib/types/**/*.d.ts"],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-invariants": "workspace:^",
+    "@deepseek-ai/dsh-worldline-project": "workspace:^",
+    "@deepseek-ai/dsh-worldline-run-sqlite": "workspace:^",
+    "@deepseek-ai/dsh-worldline-runtime": "workspace:^",
+    "@deepseek-ai/dsh-worldline-standard": "workspace:^"
+  },
+  "dependencies": { "@deepseek-ai/schemastery": "workspace:^" },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-worldline-compiler": "workspace:^",
+    "@deepseek-ai/dsh-worldline-project-local": "workspace:^",
+    "@deepseek-ai/dsh-invariants": "workspace:^",
+    "@deepseek-ai/dsh-worldline-project": "workspace:^",
+    "@deepseek-ai/dsh-worldline-run-sqlite": "workspace:^",
+    "@deepseek-ai/dsh-worldline-runtime": "workspace:^",
+    "@deepseek-ai/dsh-worldline-standard": "workspace:^",
+    "tsx": "^4.19.2"
+  }
+}

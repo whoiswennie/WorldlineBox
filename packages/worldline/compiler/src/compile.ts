@@ -151,6 +151,9 @@ function parseAction(value: Record<string, unknown>, source: Provenance): Action
   return {
     id: stringValue(value.id, `action.${contentFingerprint(value)}`),
     description: stringValue(value.description, 'Author-defined action'),
+    ...(value.operator === 'move' || value.operator === 'teleport' || value.operator === 'generic'
+      ? { operator: value.operator }
+      : {}),
     actorTypes: Array.isArray(value.actorTypes) ? value.actorTypes.filter(item => typeof item === 'string') : ['character'],
     preconditions: expressionArray(value.preconditions),
     claims: Array.isArray(value.claims) ? value.claims.filter(isRecord).map(claim => ({
@@ -447,7 +450,7 @@ export function compileSnapshot(
     id: object.id,
     type: object.kind,
     facets: object.facets,
-    state: {},
+    state: isRecord(object.facets.initialState) ? object.facets.initialState : {},
     lod: object.kind === 'character' ? 'L2' : 'L0',
     policyIds: [],
     memory: { episodic: [], beliefs: [], goals: [], relationships: [], experience: [], skills: [], reflections: [] },

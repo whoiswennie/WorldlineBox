@@ -654,6 +654,15 @@
       "path": "./packages/worldline/project-local"
     },
     {
+      "path": "./packages/worldline/run-sqlite"
+    },
+    {
+      "path": "./packages/worldline/runtime"
+    },
+    {
+      "path": "./packages/worldline/runtime-worker"
+    },
+    {
       "path": "./packages/worldline/standard"
     },
     {

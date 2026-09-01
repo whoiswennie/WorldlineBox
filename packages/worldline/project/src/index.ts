@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type {
+  ActiveProjectBuild,
   CopyEntryRequest,
   CopyProjectRequest,
   CreateDirectoryRequest,
@@ -16,6 +17,7 @@ import type {
   ProjectLibraryQuery,
   ProjectLink,
   ProjectRootView,
+  ProjectRunStorage,
   ProjectSourceSnapshot,
   ProjectSearchHit,
   ProjectSummary,
@@ -38,6 +40,7 @@ import type {
   WriteProjectControlRequest,
   ProjectControlDocument,
 } from './types.ts'
+import type { ProjectId, RunId } from '@deepseek-ai/dsh-worldline-standard'
 
 export * from './types.ts'
 
@@ -88,6 +91,12 @@ export abstract class WorldlineProjects extends TypertRemoteService {
   abstract writeControl(request: WriteProjectControlRequest): Promise<ProjectControlDocument>
   /** Commit an immutable build directory and activate it only after every artifact is durable. */
   abstract storeBuild(request: StoreProjectBuildRequest): Promise<void>
+  /** Locate the immutable active Blueprint for a Worker without reading it on the Host event loop. */
+  abstract activeBuild(projectId: ProjectId): Promise<ActiveProjectBuild | undefined>
+  /** Allocate or locate one project-scoped Run database path. */
+  abstract runStorage(projectId: ProjectId, runId: RunId): Promise<ProjectRunStorage>
+  /** Discover persisted Run databases across the configured library. */
+  abstract runStorages(): Promise<readonly ProjectRunStorage[]>
 
   @Remote('root') remoteRoot(): Promise<ProjectRootView> { return this.root() }
   @Remote('setRoot') remoteSetRoot(value: SetProjectRootRequest): Promise<RootMigrationPlan> { return this.setRoot(value) }

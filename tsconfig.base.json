@@ -84,6 +84,18 @@
       "@deepseek-ai/dsh-worldline-project/types": [
         "./packages/worldline/project/src/types.ts"
       ],
+      "@deepseek-ai/dsh-worldline-run-sqlite": [
+        "./packages/worldline/run-sqlite/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-runtime": [
+        "./packages/worldline/runtime/src/index.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-runtime/types": [
+        "./packages/worldline/runtime/src/types.ts"
+      ],
+      "@deepseek-ai/dsh-worldline-runtime-worker": [
+        "./packages/worldline/runtime-worker/src/index.ts"
+      ],
       "@deepseek-ai/dsh-atomic-write": [
         "./packages/util/atomic-write/src/index.ts"
       ],

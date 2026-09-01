@@ -5,6 +5,7 @@ import type {
   ProjectManifest,
   ProjectTemplate,
   Revision,
+  RunId,
 } from '@deepseek-ai/dsh-worldline-standard'
 
 export type ProjectHealth = 'ready' | 'needs-migration' | 'damaged' | 'unavailable'
@@ -242,6 +243,20 @@ export interface StoreProjectBuildRequest extends ProjectRef {
   readonly blueprint: string
   readonly certificate: string
   readonly sourceSnapshot: string
+}
+
+/** Host-only locator for an immutable active build; never returned over Remote. */
+export interface ActiveProjectBuild {
+  readonly projectId: ProjectId
+  readonly digest: string
+  readonly blueprintPath: string
+}
+
+/** Host-only Run database locator used to start one single-writer Worker. */
+export interface ProjectRunStorage {
+  readonly projectId: ProjectId
+  readonly runId: RunId
+  readonly databasePath: string
 }
 
 export type WorldlineProjectErrorCode =
