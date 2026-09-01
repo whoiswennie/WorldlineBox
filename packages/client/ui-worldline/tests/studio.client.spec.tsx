@@ -108,6 +108,37 @@ describe('Worldline Studio', () => {
     expect(screen.getByText('一个可运行的星海世界')).toBeTruthy()
   })
 
+  it('copies and trashes projects through accessible recoverable dialogs', async () => {
+    const props = studioProps(configured)
+    const copyProject = vi.fn(async () => project)
+    const trashProject = vi.fn(async () => undefined)
+    Object.assign(props.projects, { copyProject, trashProject })
+    vi.stubGlobal('prompt', vi.fn(() => { throw new Error('native prompt must not be used') }))
+    vi.stubGlobal('confirm', vi.fn(() => { throw new Error('native confirm must not be used') }))
+    render(<WorldlineStudio {...props} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '创建副本' }))
+    const copyDialog = screen.getByRole('dialog', { name: '创建项目副本' })
+    fireEvent.change(within(copyDialog).getByLabelText('项目名称'), {
+      target: { value: '星海图鉴独立副本' },
+    })
+    fireEvent.click(within(copyDialog).getByRole('button', { name: '创建副本' }))
+    await waitFor(() => {
+      expect(copyProject).toHaveBeenCalledWith({
+        projectId: project.manifest.id,
+        name: '星海图鉴独立副本',
+      })
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: '移到回收站' }))
+    const trashDialog = screen.getByRole('dialog', { name: '确认移入回收站' })
+    expect(within(trashDialog).getByText(/不会立即永久删除/u)).toBeTruthy()
+    fireEvent.click(within(trashDialog).getByRole('button', { name: '移到回收站' }))
+    await waitFor(() => {
+      expect(trashProject).toHaveBeenCalledWith({ projectId: project.manifest.id })
+    })
+  })
+
   it('launches the project-bound author conversation from overview', async () => {
     const props = studioProps(configured)
     render(<WorldlineStudio {...props} />)

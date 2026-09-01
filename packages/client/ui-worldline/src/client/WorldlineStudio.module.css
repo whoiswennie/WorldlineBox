@@ -18,6 +18,7 @@
 .headerActions { display: flex; gap: 8px; }
 .headerActions button, .libraryTools button, .emptyLibrary button, .cardActions button, .dialog button, .overview button { padding: 8px 11px; border: 1px solid var(--dsw-alias-divider); border-radius: 8px; background: var(--dsw-alias-background-elevated); color: inherit; cursor: pointer; }
 .headerActions button[data-primary], .dialog button[data-primary] { border-color: transparent; background: var(--dsw-alias-state-business-primary); color: white; }
+.dialog button[data-danger] { border-color: color-mix(in srgb, var(--dsw-alias-state-danger-primary) 42%, transparent); background: color-mix(in srgb, var(--dsw-alias-state-danger-primary) 12%, transparent); color: var(--dsw-alias-state-danger-primary); }
 .libraryTools { display: flex; align-items: center; gap: 8px; max-width: 1300px; margin: 0 auto 20px; }
 .search { display: flex; min-width: 230px; flex: 1; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid var(--dsw-alias-divider); border-radius: 10px; background: var(--dsw-alias-background-elevated); }
 .search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: inherit; }
@@ -81,6 +82,8 @@
 .dialog h2 { margin: 0; font-size: 17px; }
 .dialog > header button { border: 0; background: transparent; font-size: 22px; }
 .dialog form, .trashList { display: grid; gap: 13px; margin: 0; padding: 18px; list-style: none; }
+.confirmation { display: grid; gap: 7px; padding: 13px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-danger-primary) 32%, var(--dsw-alias-divider)); border-radius: 10px; background: color-mix(in srgb, var(--dsw-alias-state-danger-primary) 7%, transparent); }
+.confirmation p { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.55; }
 .field { display: grid; gap: 5px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .field input, .field textarea, .field select { min-width: 0; padding: 8px 9px; border: 1px solid var(--dsw-alias-divider); border-radius: 8px; background: var(--dsw-alias-background-base); color: var(--dsw-alias-label-primary); font: inherit; }
 .field textarea { min-height: 80px; resize: vertical; }
