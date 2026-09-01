@@ -18,7 +18,7 @@ import type {
   WorldlineConversationBinding,
   WorldlineConversationContexts,
 } from '@deepseek-ai/dsh-worldline-conversation-context'
-import type {} from '@deepseek-ai/dsh-worldline-project'
+import type { ImportProjectRequest } from '@deepseek-ai/dsh-worldline-project'
 import type {} from '@deepseek-ai/dsh-worldline-runtime'
 
 const OUTPUT = {
@@ -510,6 +510,7 @@ export function apply(ctx: Context): void {
       operation: { type: 'string', required: true, enum: ['import', 'export', 'status', 'cancel'] },
       project_id: { type: 'string' }, source: { type: 'string' }, destination: { type: 'string' },
       name: { type: 'string' }, include_runs: { type: 'boolean' }, transfer_id: { type: 'string' },
+      conflict: { type: 'string', enum: ['copy', 'replace', 'cancel'] },
       dry_run: { type: 'boolean' }, confirm: { type: 'boolean' },
     }, output: OUTPUT,
     async execute(args, exec) {
@@ -522,7 +523,15 @@ export function apply(ctx: Context): void {
         if (exec.agent !== undefined && ctx.worldlineConversationContexts.binding(exec.agent.session) !== undefined) {
           throw new Error('a bound author Session cannot import a different project')
         }
-        const request = { source: string(args.source, 'source'), ...optionalField('name', args.name) }
+        const conflict = string(args.conflict, 'conflict')
+        if (conflict !== 'copy' && conflict !== 'replace' && conflict !== 'cancel') {
+          throw new Error('conflict must be copy, replace, or cancel')
+        }
+        const request: ImportProjectRequest = {
+          source: string(args.source, 'source'),
+          conflict,
+          ...optionalField('name', args.name),
+        }
         if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, request })
         requireConfirmation(args.confirm, 'import project')
         return encode(await ctx.worldlineProjects.importProject(request))

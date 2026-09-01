@@ -201,7 +201,12 @@ export interface ProjectLink {
 }
 
 export interface ExportProjectRequest extends ProjectRef { readonly destination: string; readonly includeRuns?: boolean }
-export interface ImportProjectRequest { readonly source: string; readonly name?: string }
+export type ProjectImportConflict = 'copy' | 'replace' | 'cancel'
+export interface ImportProjectRequest {
+  readonly source: string
+  readonly name?: string
+  readonly conflict: ProjectImportConflict
+}
 export interface TransferJob {
   readonly id: string
   readonly kind: 'import' | 'export' | 'rescan'

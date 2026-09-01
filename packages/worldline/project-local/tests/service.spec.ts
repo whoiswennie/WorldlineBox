@@ -1,10 +1,14 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pipeline } from 'node:stream/promises'
+import { ZipFile } from 'yazl'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import type { ProjectId, Revision } from '@deepseek-ai/dsh-worldline-standard'
+import { WWS_VERSION, type ProjectId, type Revision } from '@deepseek-ai/dsh-worldline-standard'
 import LocalWorldlineProjects from '../src/index.ts'
+import { preflightProjectArchive } from '../src/archive.ts'
 import type { TransferJob } from '@deepseek-ai/dsh-worldline-project'
 
 const roots: string[] = []
@@ -22,6 +26,29 @@ async function waitForTransfer(ctx: Context, initial: TransferJob): Promise<Tran
     current = await ctx.worldlineProjects.transfer(initial.id)
   }
   return current
+}
+
+async function writeZip(path: string, entries: readonly (readonly [string, string])[]): Promise<void> {
+  const zip = new ZipFile()
+  for (const [name, content] of entries) zip.addBuffer(Buffer.from(content), name)
+  const writing = pipeline(zip.outputStream, createWriteStream(path))
+  zip.end()
+  await writing
+}
+
+function replaceZipEntryName(archive: Buffer, source: string, replacement: string): Buffer {
+  expect(Buffer.byteLength(source)).toBe(Buffer.byteLength(replacement))
+  const result = Buffer.from(archive)
+  const needle = Buffer.from(source)
+  let offset = 0
+  let replacements = 0
+  while ((offset = result.indexOf(needle, offset)) >= 0) {
+    Buffer.from(replacement).copy(result, offset)
+    offset += needle.length
+    replacements += 1
+  }
+  expect(replacements).toBeGreaterThanOrEqual(2)
+  return result
 }
 
 async function start(root: string): Promise<{ ctx: Context; dispose: () => Promise<void> }> {
@@ -243,7 +270,7 @@ describe('LocalWorldlineProjects', () => {
     const source = await temporaryRoot()
     const destination = await temporaryRoot()
     const archiveDirectory = await temporaryRoot()
-    const archive = join(archiveDirectory, 'portable.worldline.tar.gz')
+    const archive = join(archiveDirectory, 'portable.worldline.zip')
     const writer = await start(source)
     const project = await writer.ctx.worldlineProjects.create({ name: 'Portable', template: 'character-story' })
     await mkdir(join(project.path, 'assets'), { recursive: true })
@@ -259,12 +286,103 @@ describe('LocalWorldlineProjects', () => {
     const reader = await start(destination)
     const imported = await waitForTransfer(
       reader.ctx,
-      await reader.ctx.worldlineProjects.importProject({ source: archive }),
+      await reader.ctx.worldlineProjects.importProject({ source: archive, conflict: 'copy' }),
     )
     expect(imported).toMatchObject({ state: 'completed', resultProjectId: project.manifest.id })
     const page = await reader.ctx.worldlineProjects.library()
     expect(page.projects[0]).toMatchObject({ manifest: { id: project.manifest.id } })
     expect(await readFile(join(page.projects[0]!.path, 'assets', 'cover.bin'))).toHaveLength(1024 * 1024)
     await reader.dispose()
+  })
+
+  it('applies explicit duplicate project policies without retaining duplicate identities', async () => {
+    const root = await temporaryRoot()
+    const archiveDirectory = await temporaryRoot()
+    const archive = join(archiveDirectory, 'conflict.worldline.zip')
+    const runtime = await start(root)
+    const project = await runtime.ctx.worldlineProjects.create({ name: 'Conflict', template: 'blank' })
+    const charter = join(project.path, 'canon', 'charter.md')
+    await waitForTransfer(runtime.ctx, await runtime.ctx.worldlineProjects.exportProject({
+      projectId: project.manifest.id,
+      destination: archive,
+    }))
+    await writeFile(charter, 'local mutation', 'utf8')
+
+    const cancelled = await waitForTransfer(runtime.ctx, await runtime.ctx.worldlineProjects.importProject({
+      source: archive,
+      conflict: 'cancel',
+    }))
+    expect(cancelled).toMatchObject({ state: 'failed' })
+    expect(await readFile(charter, 'utf8')).toBe('local mutation')
+
+    const copied = await waitForTransfer(runtime.ctx, await runtime.ctx.worldlineProjects.importProject({
+      source: archive,
+      conflict: 'copy',
+    }))
+    expect(copied.state).toBe('completed')
+    expect(copied.resultProjectId).not.toBe(project.manifest.id)
+    const afterCopy = await runtime.ctx.worldlineProjects.library()
+    expect(new Set(afterCopy.projects.map(item => item.manifest.id)).size).toBe(2)
+
+    const replaced = await waitForTransfer(runtime.ctx, await runtime.ctx.worldlineProjects.importProject({
+      source: archive,
+      conflict: 'replace',
+    }))
+    expect(replaced).toMatchObject({ state: 'completed', resultProjectId: project.manifest.id })
+    const restored = (await runtime.ctx.worldlineProjects.library()).projects
+      .find(item => item.manifest.id === project.manifest.id)
+    expect(restored).toBeDefined()
+    expect(await readFile(join(restored!.path, 'canon', 'charter.md'), 'utf8')).not.toBe('local mutation')
+    expect((await runtime.ctx.worldlineProjects.listTrashedProjects())
+      .some(item => item.manifest?.id === project.manifest.id)).toBe(true)
+    await runtime.dispose()
+  })
+
+  it('rejects duplicate and path-traversing ZIP entries during preflight', async () => {
+    const archiveDirectory = await temporaryRoot()
+    const duplicate = join(archiveDirectory, 'duplicate.worldline.zip')
+    const manifest = JSON.stringify({
+      format: WWS_VERSION,
+      kind: 'project',
+      projectId: 'project:01HZZZZZZZZZZZZZZZZZZZZZZZ',
+      rootDirectory: 'world',
+      createdAt: new Date().toISOString(),
+      fileCount: 2,
+      expandedBytes: 2,
+      includesRuns: false,
+    })
+    await writeZip(duplicate, [
+      ['worldline-archive.json', manifest],
+      ['payload/world/worldline.toml', 'a'],
+      ['payload/world/worldline.toml', 'b'],
+    ])
+    await expect(preflightProjectArchive(duplicate)).rejects.toThrow(/duplicate entry/u)
+
+    const traversal = join(archiveDirectory, 'traversal.worldline.zip')
+    await writeZip(traversal, [['aa/escape', 'outside']])
+    await writeFile(traversal, replaceZipEntryName(await readFile(traversal), 'aa/escape', '../escape'))
+    await expect(preflightProjectArchive(traversal)).rejects.toThrow(/invalid relative path|unsafe ZIP entry path/u)
+  })
+
+  it('keeps cancelled transfers cancelled and removes partial archive output', async () => {
+    const root = await temporaryRoot()
+    const archiveDirectory = await temporaryRoot()
+    const destination = join(archiveDirectory, 'cancelled.worldline.zip')
+    const runtime = await start(root)
+    const project = await runtime.ctx.worldlineProjects.create({ name: 'Cancel', template: 'blank' })
+    await mkdir(join(project.path, 'assets'), { recursive: true })
+    await writeFile(join(project.path, 'assets', 'large.bin'), Buffer.alloc(32 * 1024 * 1024, 9))
+    const initial = await runtime.ctx.worldlineProjects.exportProject({
+      projectId: project.manifest.id,
+      destination,
+    })
+    expect(await runtime.ctx.worldlineProjects.cancelTransfer(initial.id)).toMatchObject({ state: 'cancelled' })
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if ((await readdir(archiveDirectory)).length === 0) break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    expect(await runtime.ctx.worldlineProjects.transfer(initial.id)).toMatchObject({ state: 'cancelled' })
+    expect(await readdir(archiveDirectory)).toEqual([])
+    await runtime.dispose()
   })
 })

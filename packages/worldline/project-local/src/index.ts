@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { cp, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
+import { cp, mkdir, readdir, rename, rm, stat, statfs } from 'node:fs/promises'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -61,7 +61,7 @@ import {
   WorldlineProjectError,
   WorldlineProjects,
 } from '@deepseek-ai/dsh-worldline-project'
-import { create as createTar, extract as extractTar } from 'tar'
+import { exportProjectArchive, extractProjectArchive, preflightProjectArchive } from './archive.ts'
 import { readManifest, writeManifest } from './manifest.ts'
 import { ProjectMetadata } from './metadata.ts'
 import {
@@ -412,27 +412,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     const destination = resolve(root, await this.availableName(root, slugify(request.name)))
     await cp(source, destination, { recursive: true, errorOnExist: true, force: false })
     try {
-      const old = await readManifest(destination)
-      const timestamp = now()
-      await writeManifest(destination, {
-        ...old,
-        id: allocateWorldlineId<'project'>('project'),
-        name: request.name.trim(),
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      })
-      const metadata = await this.metadata(destination)
-      for (const entry of await walk(destination)) {
-        if (entry.dirent.isFile() && TEXT_EXTENSIONS.has(extname(entry.relativePath).toLowerCase())) {
-          const current = metadata.get(entry.relativePath)
-          metadata.ensure(entry.relativePath, {
-            ...(current?.objectKind === undefined ? {} : { objectKind: current.objectKind }),
-            tags: current?.tags ?? [],
-            id: allocateWorldlineId<'document'>('doc'),
-          })
-        }
-      }
-      await metadata.save()
+      await this.reidentifyProjectCopy(destination, request.name.trim())
       const result = await this.summarize(destination)
       this.projectCache.set(result.manifest.id, destination)
       return result
@@ -830,15 +810,28 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     const job = this.beginJob('export', await directorySize(project))
     void (async () => {
       try {
-        await mkdir(dirname(destination), { recursive: true })
-        await createTar({ cwd: dirname(project), file: destination, gzip: true, portable: true }, [basename(project)])
-        this.finishJob(job.id, (await stat(destination)).size)
+        const signal = this.jobs.get(job.id)?.controller?.signal
+        if (signal === undefined) throw new Error('archive transfer controller is unavailable')
+        const result = await exportProjectArchive({
+          project,
+          projectId: request.projectId,
+          destination,
+          includesRuns: request.includeRuns === true,
+          signal,
+          onTotal: (totalBytes) => { this.updateJobTotal(job.id, totalBytes) },
+          onProgress: (completedBytes) => { this.updateJobProgress(job.id, completedBytes) },
+        })
+        this.finishJob(job.id, result.sourceBytes)
       } catch (error) { this.failJob(job.id, error) }
     })()
     return job
   }
 
   async importProject(request: ImportProjectRequest): Promise<TransferJob> {
+    const conflict: unknown = request.conflict
+    if (conflict !== 'copy' && conflict !== 'replace' && conflict !== 'cancel') {
+      throw new WorldlineProjectError('manifest-conflict', 'project archive conflict policy is required')
+    }
     const root = await this.rootPath()
     const source = resolve(request.source)
     const info = await stat(source)
@@ -846,24 +839,49 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     void (async () => {
       const staging = resolve(root, '.worldline-import', job.id)
       try {
-        await mkdir(staging, { recursive: true })
-        await extractTar({ cwd: staging, file: source, gzip: true, preservePaths: false, strict: true })
-        const candidates = (await readdir(staging, { withFileTypes: true })).filter(entry => entry.isDirectory())
-        if (candidates.length !== 1) throw new Error('archive must contain exactly one project directory')
-        const [candidate] = candidates
-        if (candidate === undefined) throw new Error('archive does not contain a project directory')
-        const extracted = resolve(staging, candidate.name)
+        const signal = this.jobs.get(job.id)?.controller?.signal
+        if (signal === undefined) throw new Error('archive transfer controller is unavailable')
+        const preflight = await preflightProjectArchive(source, signal)
+        this.updateJobTotal(job.id, preflight.manifest.expandedBytes)
+        const disk = await statfs(root)
+        const availableBytes = disk.bavail * disk.bsize
+        if (availableBytes < preflight.manifest.expandedBytes * 1.05) {
+          throw new WorldlineProjectError('transfer-failed', 'not enough disk space for the declared ZIP payload')
+        }
+        const extracted = resolve(staging, 'project')
+        await mkdir(extracted, { recursive: true })
+        await extractProjectArchive({
+          source,
+          destination: extracted,
+          preflight,
+          signal,
+          onProgress: (completedBytes) => { this.updateJobProgress(job.id, completedBytes) },
+        })
         const manifest = await readManifest(extracted)
+        if (manifest.id !== preflight.manifest.projectId) {
+          throw new WorldlineProjectError('manifest-conflict', 'archive and project manifest identities do not match')
+        }
+        const existing = (await this.scan()).find(project => project.manifest.id === manifest.id)
+        if (existing !== undefined && conflict === 'cancel') {
+          throw new WorldlineProjectError('manifest-conflict', `project already exists: ${manifest.id}`)
+        }
+        if (existing !== undefined && conflict === 'replace') {
+          await this.trashProject({ projectId: manifest.id, reason: 'replaced by archive import' })
+        }
         const destinationName = await this.availableName(root, request.name === undefined
-          ? candidate.name
+          ? preflight.manifest.rootDirectory
           : slugify(request.name))
         const destination = resolve(root, destinationName)
+        if (existing !== undefined && conflict === 'copy') {
+          await this.reidentifyProjectCopy(extracted, request.name ?? `${manifest.name} Copy`)
+        } else if (request.name !== undefined) {
+          await writeManifest(extracted, { ...manifest, name: request.name, updatedAt: now() })
+        }
         await rename(extracted, destination)
-        if (request.name !== undefined) await writeManifest(destination, { ...manifest, name: request.name, updatedAt: now() })
         await rm(staging, { recursive: true, force: true })
         const summary = await this.summarize(destination)
         this.projectCache.set(summary.manifest.id, destination)
-        this.finishJob(job.id, info.size, summary.manifest.id)
+        this.finishJob(job.id, preflight.manifest.expandedBytes, summary.manifest.id)
       } catch (error) {
         await rm(staging, { recursive: true, force: true }).catch(() => undefined)
         this.failJob(job.id, error)
@@ -1075,8 +1093,10 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
   private finishJob(id: string, completedBytes?: number, projectId?: ProjectId): TransferJob {
     const current = this.jobs.get(id)
     if (current === undefined) throw new Error(`transfer disappeared: ${id}`)
+    const finalBytes = completedBytes ?? current.totalBytes ?? current.completedBytes
     const job = { ...current, state: 'completed' as const,
-      completedBytes: completedBytes ?? current.totalBytes ?? current.completedBytes,
+      completedBytes: finalBytes,
+      totalBytes: finalBytes,
       ...(projectId === undefined ? {} : { resultProjectId: projectId }) }
     this.jobs.set(id, job)
     const { controller: _controller, ...view } = job
@@ -1086,10 +1106,51 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
   private failJob(id: string, error: unknown): TransferJob {
     const current = this.jobs.get(id)
     if (current === undefined) throw new Error(`transfer disappeared: ${id}`)
+    if (current.state === 'cancelled') {
+      const { controller: _controller, ...view } = current
+      return view
+    }
     const job = { ...current, state: 'failed' as const, error: messageOf(error) }
     this.jobs.set(id, job)
     const { controller: _controller, ...view } = job
     return view
+  }
+
+  private updateJobProgress(id: string, completedBytes: number): void {
+    const current = this.jobs.get(id)
+    if (current === undefined || current.state !== 'running') return
+    this.jobs.set(id, { ...current, completedBytes })
+  }
+
+  private updateJobTotal(id: string, totalBytes: number): void {
+    const current = this.jobs.get(id)
+    if (current === undefined || current.state !== 'running') return
+    this.jobs.set(id, { ...current, totalBytes })
+  }
+
+  private async reidentifyProjectCopy(project: string, name: string): Promise<void> {
+    const previous = await readManifest(project)
+    const timestamp = now()
+    await writeManifest(project, {
+      ...previous,
+      id: allocateWorldlineId<'project'>('project'),
+      defaultWorldId: allocateWorldlineId<'world'>('world'),
+      defaultWorldlineId: allocateWorldlineId<'worldline'>('worldline'),
+      name,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    })
+    await rm(resolve(project, CONTROL_DIRECTORY, 'history'), { recursive: true, force: true })
+    await rm(resolve(project, CONTROL_DIRECTORY, 'builds'), { recursive: true, force: true })
+    await rm(resolve(project, CONTROL_DIRECTORY, 'runs'), { recursive: true, force: true })
+    await rm(resolve(project, CONTROL_DIRECTORY, 'index.json'), { force: true })
+    const metadata = await this.metadata(project)
+    for (const entry of await walk(project)) {
+      if (entry.dirent.isFile() && TEXT_EXTENSIONS.has(extname(entry.relativePath).toLowerCase())) {
+        metadata.ensure(entry.relativePath, { id: allocateWorldlineId<'document'>('doc') })
+      }
+    }
+    await metadata.save()
   }
 
   private async availableName(root: string, requested: string): Promise<string> {
