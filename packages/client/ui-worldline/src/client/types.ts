@@ -122,6 +122,7 @@ export interface ProjectClient {
   copyProject(request: CopyProjectRequest): Promise<ProjectSummary>
   trashProject(request: TrashProjectRequest): Promise<TrashedProject>
   listTrashedProjects(): Promise<readonly TrashedProject[]>
+  emptyProjectTrash(): Promise<number>
   restoreProject(request: RestoreProjectRequest): Promise<ProjectSummary>
   tree(request: ProjectTreeRequest): Promise<ProjectTreeListing>
   read(request: ReadDocumentRequest): Promise<DocumentView>

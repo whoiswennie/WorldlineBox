@@ -88,6 +88,7 @@ export function apply(ctx: ClientContext): void {
       copyProject: async request => await invoke(ctx.remote.worldlineProjects.copyProject(request)),
       trashProject: async request => await invoke(ctx.remote.worldlineProjects.trashProject(request)),
       listTrashedProjects: async () => await invoke(ctx.remote.worldlineProjects.listTrashedProjects()),
+      emptyProjectTrash: async () => await invoke(ctx.remote.worldlineProjects.emptyProjectTrash()),
       restoreProject: async request => await invoke(ctx.remote.worldlineProjects.restoreProject(request)),
       tree: async request => await invoke(ctx.remote.worldlineProjects.tree(request)),
       read: async request => await invoke(ctx.remote.worldlineProjects.read(request)),

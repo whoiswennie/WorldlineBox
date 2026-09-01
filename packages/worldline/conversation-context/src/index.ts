@@ -1,4 +1,4 @@
-/** Durable scope binding between one ordinary Session and one Worldline project revision. */
+/** Durable active-project context for one Worldline OC author Session. */
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
@@ -33,7 +33,7 @@ export interface BindWorldlineConversationRequest {
 
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
-    /** Immutable creation-time domain scope for a Worldline author conversation. */
+    /** Active project and optional Run for a Worldline OC author conversation. */
     'worldline/context-bound': WorldlineConversationBinding
   }
 }
@@ -52,9 +52,6 @@ export function resolveWorldlineConversationBinding(
   let binding: WorldlineConversationBinding | undefined
   for (const event of source.events) {
     if (event.type !== 'worldline/context-bound') continue
-    if (binding !== undefined) {
-      throw new Error('Worldline conversation contains more than one immutable project binding')
-    }
     binding = event.data
   }
   return binding
@@ -62,18 +59,18 @@ export function resolveWorldlineConversationBinding(
 
 function renderBinding(binding: WorldlineConversationBinding | undefined): string {
   if (binding === undefined) {
-    return '当前世界线作者会话尚未绑定项目。在工作室完成绑定前，所有项目创作、构建和 Run 工具都必须拒绝执行。'
+    return '当前世界线 OC 创造会话尚未选择活动项目。可以新建项目，或在首次读写时直接指定已有项目；工具会自动接入，无需用户手动绑定。'
   }
   return [
-    '当前会话的权威世界线绑定：',
+    '当前会话的世界线活动项目：',
     `- sessionId: ${binding.sessionId}`,
     `- projectId: ${binding.projectId}`,
     `- worldlineId: ${binding.worldlineId}`,
     `- sourceRevisionAtBinding: ${binding.sourceRevision}`,
     ...(binding.runId === undefined ? [] : [`- runId: ${binding.runId}`]),
-    '这是结构化 OC 世界线项目，不是普通工作区写作。先加载 worldline-authoring 技能并用 worldline_query 检查项目树；只用 worldline_* 工具在上述 projectId/Run 范围内读写。',
+    '这是结构化 OC 世界线项目，不是普通工作区写作。先加载 worldline-authoring 技能并用 worldline_query 检查项目树；只用 worldline_* 工具读写。当用户新建或明确指定另一个项目时，工具会自动切换活动项目。',
     '开放式世界观创作必须分别完善 Canon、角色、地图、机制和场景；除非用户明确只要说明文，否则单个 Markdown 总结不算完成。',
-    '声称可运行前必须完成编译预览，并实际验证冻结蓝图、创建 Run、合法动作、时间推进与事件记录。绑定后的文档预期修订和当前构建摘要始终是并发与冻结权威。',
+    '声称可运行前必须完成编译预览，并实际验证冻结蓝图、创建 Run、合法动作、时间推进与事件记录。当前活动项目的文档预期修订和构建摘要始终是并发与冻结权威。',
   ].join('\n')
 }
 
@@ -117,19 +114,15 @@ export default class WorldlineConversationContexts extends Service {
     return resolveWorldlineConversationBinding(session)
   }
 
-  /** Bind a conversation to a project and optional Run.
+  /** Select a conversation's active project and optional Run.
    * @param request - The request supplied by the caller.
    * @returns The result produced by the operation.
    */
   async bind(request: BindWorldlineConversationRequest): Promise<WorldlineConversationBinding> {
     const session = this.context.sessions.get(request.sessionId)
     if (session === undefined) throw new Error(`Session is not live: ${request.sessionId}`)
-    if (resolveWorldlineConversationBinding(session) !== undefined) {
-      throw new Error('Worldline conversation is already bound and cannot be rebound')
-    }
-    if (session.events.some(event => event.type === 'turn/start')) {
-      throw new Error('Worldline conversation must be bound before its first turn')
-    }
+    const current = resolveWorldlineConversationBinding(session)
+    if (current?.projectId === request.projectId && current.runId === request.runId) return current
     const source = await this.context.worldlineProjects.sourceSnapshot(request.projectId)
     if (request.runId !== undefined) {
       const run = await this.context.worldlineRuns.view({ runId: request.runId })

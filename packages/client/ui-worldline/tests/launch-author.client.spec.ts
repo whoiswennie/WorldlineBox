@@ -50,7 +50,7 @@ describe('Worldline author conversation launcher', () => {
     expect(order).toEqual(['register', 'create', 'bind', 'open', 'show'])
   })
 
-  it('deletes a blank Session when the immutable project binding fails', async () => {
+  it('deletes a blank Session when the initial project selection fails', async () => {
     const deleteSession = vi.fn(async () => {})
     const openSession = vi.fn()
 

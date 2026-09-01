@@ -1,5 +1,6 @@
 /** Guarded model tools over the authoritative Worldline services. */
 import type { Context } from '@deepseek-ai/cordis'
+import type { Session } from '@deepseek-ai/dsh-session'
 import type {
   CompilerProposal,
   ProposalTarget,
@@ -17,7 +18,6 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-worldline-compiler'
 import type {
   WorldlineConversationBinding,
-  WorldlineConversationContexts,
 } from '@deepseek-ai/dsh-worldline-conversation-context'
 import type { ImportProjectRequest } from '@deepseek-ai/dsh-worldline-project'
 import type {} from '@deepseek-ai/dsh-worldline-runtime'
@@ -64,27 +64,29 @@ const entityId = (value: unknown) => worldlineId<'entity'>(string(value, 'actor_
 const revision = (value: unknown, name = 'expected_revision') => string(value, name) as Revision
 
 interface BoundExecution {
-  readonly agent?: { readonly session: Parameters<WorldlineConversationContexts['binding']>[0] }
+  readonly agent?: { readonly session: Pick<Session, 'id' | 'events'> }
 }
 
-function binding(ctx: Context, exec: BoundExecution): WorldlineConversationBinding {
+async function selectProjectScope(
+  ctx: Context,
+  exec: BoundExecution,
+  id: ReturnType<typeof projectId>,
+  selectedRunId?: ReturnType<typeof runId>,
+): Promise<WorldlineConversationBinding> {
   if (exec.agent === undefined) throw new Error('Worldline tools require an Agent execution')
-  const result = ctx.worldlineConversationContexts.binding(exec.agent.session)
-  if (result === undefined) throw new Error('Worldline author Session is not bound to a project')
-  return result
-}
-
-function assertProjectScope(ctx: Context, exec: BoundExecution, id: ReturnType<typeof projectId>): WorldlineConversationBinding {
-  const result = binding(ctx, exec)
-  if (result.projectId !== id) throw new Error('project_id is outside the Session binding')
-  return result
+  const current = ctx.worldlineConversationContexts.binding(exec.agent.session)
+  if (current?.projectId === id
+    && (selectedRunId === undefined || current.runId === selectedRunId)) return current
+  return await ctx.worldlineConversationContexts.bind({
+    sessionId: exec.agent.session.id,
+    projectId: id,
+    ...(selectedRunId === undefined ? {} : { runId: selectedRunId }),
+  })
 }
 
 async function assertRunScope(ctx: Context, exec: BoundExecution, id: ReturnType<typeof runId>): Promise<void> {
-  const result = binding(ctx, exec)
-  if (result.runId !== undefined && result.runId !== id) throw new Error('run_id is outside the Session binding')
   const run = await ctx.worldlineRuns.view({ runId: id })
-  if (run.summary.projectId !== result.projectId) throw new Error('Run is outside the bound project')
+  await selectProjectScope(ctx, exec, run.summary.projectId, id)
 }
 
 function objectJson(value: unknown, name: string): JsonObject {
@@ -181,7 +183,7 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'worldline_project',
-    description: 'List, create, copy, trash, or restore Worldline projects through the project library. Destructive or duplicating operations require explicit confirmation.',
+    description: 'List, create, copy, trash, or restore Worldline projects. Creating or explicitly using a project automatically makes it the current project for this OC author Session; no manual binding is required.',
     parameters: {
       operation: { type: 'string', required: true, enum: ['list', 'create', 'copy', 'trash', 'trashed', 'restore'] },
       project_id: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' },
@@ -196,56 +198,55 @@ export function apply(ctx: Context): void {
           const page = await ctx.worldlineProjects.library({
             ...optionalField('search', args.search), limit: 100,
           })
-          if (exec.agent === undefined) return encode(page)
-          const bound = ctx.worldlineConversationContexts.binding(exec.agent.session)
-          return encode(bound === undefined ? page : {
-            ...page,
-            projects: page.projects.filter(item => item.manifest.id === bound.projectId),
-            total: page.projects.some(item => item.manifest.id === bound.projectId) ? 1 : 0,
-          })
+          const activeProjectId = exec.agent === undefined
+            ? undefined
+            : ctx.worldlineConversationContexts.binding(exec.agent.session)?.projectId
+          return encode({ ...page, ...(activeProjectId === undefined ? {} : { activeProjectId }) })
         }
-        case 'create':
-          if (exec.agent !== undefined && ctx.worldlineConversationContexts.binding(exec.agent.session) !== undefined) {
-            throw new Error('a bound author Session cannot create a different project')
-          }
-          return encode(await ctx.worldlineProjects.create({
+        case 'create': {
+          const created = await ctx.worldlineProjects.create({
             name: string(args.name, 'name'),
             ...optionalField('description', args.description),
             template: template(args.template ?? 'blank'),
             tags: strings(args.tags),
-          }))
-        case 'copy':
+          })
+          if (exec.agent !== undefined) {
+            await selectProjectScope(ctx, exec, created.manifest.id)
+          }
+          return encode(created)
+        }
+        case 'copy': {
           requireConfirmation(args.confirm, 'copy project')
-          assertProjectScope(ctx, exec, projectId(args.project_id))
-          return encode(await ctx.worldlineProjects.copyProject({
-            projectId: projectId(args.project_id), name: string(args.name, 'name'),
-          }))
+          const sourceProjectId = projectId(args.project_id)
+          await selectProjectScope(ctx, exec, sourceProjectId)
+          const copied = await ctx.worldlineProjects.copyProject({
+            projectId: sourceProjectId, name: string(args.name, 'name'),
+          })
+          await selectProjectScope(ctx, exec, copied.manifest.id)
+          return encode(copied)
+        }
         case 'trash':
           requireConfirmation(args.confirm, 'trash project')
-          assertProjectScope(ctx, exec, projectId(args.project_id))
+          await selectProjectScope(ctx, exec, projectId(args.project_id))
           return encode(await ctx.worldlineProjects.trashProject({
             projectId: projectId(args.project_id),
             ...optionalField('reason', args.reason),
           }))
         case 'trashed': {
-          const bound = binding(ctx, exec)
-          const trashed = await ctx.worldlineProjects.listTrashedProjects()
-          return encode(trashed.filter(item => item.manifest?.id === bound.projectId))
+          return encode(await ctx.worldlineProjects.listTrashedProjects())
         }
         case 'restore': {
           requireConfirmation(args.confirm, 'restore project')
-          const bound = binding(ctx, exec)
           const trashId = string(args.trash_id, 'trash_id')
           const item = (await ctx.worldlineProjects.listTrashedProjects())
             .find(candidate => candidate.trashId === trashId)
           if (item === undefined) throw new Error(`trashed project not found: ${trashId}`)
-          if (item.manifest?.id !== bound.projectId) {
-            throw new Error('trashed project is outside the Session binding')
-          }
-          return encode(await ctx.worldlineProjects.restoreProject({
+          const restored = await ctx.worldlineProjects.restoreProject({
             trashId,
             ...optionalField('name', args.name),
-          }))
+          })
+          await selectProjectScope(ctx, exec, restored.manifest.id)
+          return encode(restored)
         }
       }
     },
@@ -258,10 +259,10 @@ export function apply(ctx: Context): void {
       operation: { type: 'string', required: true, enum: ['tree', 'read', 'history', 'search', 'trash'] },
       project_id: { type: 'string', required: true }, path: { type: 'string' }, query: { type: 'string' },
       tags: { type: 'array', items: { type: 'string' } }, limit: { type: 'integer' },
-    }, output: OUTPUT, isConcurrencySafe: () => true,
+    }, output: OUTPUT,
     async execute(args, exec) {
       const id = projectId(args.project_id)
-      assertProjectScope(ctx, exec, id)
+      await selectProjectScope(ctx, exec, id)
       const limit = Math.min(200, Math.max(1, integer(args.limit, 50)))
       switch (args.operation) {
         case 'tree': return encode(await ctx.worldlineProjects.tree({
@@ -292,7 +293,7 @@ export function apply(ctx: Context): void {
     }, output: OUTPUT,
     async execute(args, exec) {
       const id = projectId(args.project_id)
-      assertProjectScope(ctx, exec, id)
+      await selectProjectScope(ctx, exec, id)
       const path = optionalString(args.path)
       const dryRun = args.dry_run !== false
       if (args.operation === 'create') {
@@ -357,10 +358,10 @@ export function apply(ctx: Context): void {
     parameters: {
       operation: { type: 'string', required: true, enum: ['backlinks', 'search'] },
       project_id: { type: 'string', required: true }, path: { type: 'string' }, query: { type: 'string' },
-    }, output: OUTPUT, isConcurrencySafe: () => true,
+    }, output: OUTPUT,
     async execute(args, exec) {
       const id = projectId(args.project_id)
-      assertProjectScope(ctx, exec, id)
+      await selectProjectScope(ctx, exec, id)
       return args.operation === 'backlinks'
         ? encode(await ctx.worldlineProjects.backlinks({ projectId: id, path: string(args.path, 'path') }))
         : encode(await ctx.worldlineProjects.search({ projectId: id, query: string(args.query, 'query'), limit: 100 }))
@@ -378,7 +379,7 @@ export function apply(ctx: Context): void {
     }, output: OUTPUT,
     async execute(args, exec) {
       const id = projectId(args.project_id)
-      assertProjectScope(ctx, exec, id)
+      await selectProjectScope(ctx, exec, id)
       const request = {
         projectId: id, target: 'map' as const,
         title: string(args.title, 'title'), rationale: string(args.rationale, 'rationale'),
@@ -407,7 +408,7 @@ export function apply(ctx: Context): void {
     }, output: OUTPUT,
     async execute(args, exec) {
       const id = projectId(args.project_id)
-      assertProjectScope(ctx, exec, id)
+      await selectProjectScope(ctx, exec, id)
       const stateRevision = optionalString(args.expected_state_revision) as Revision | undefined
       switch (args.operation) {
         case 'state': return encode(await ctx.worldlineCompiler.state(id))
@@ -441,7 +442,7 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'worldline_run',
-    description: 'Inspect or control deterministic Runs. Mutating operations bind an exact Run and use confirmation for actions, large advances, branches, control changes, AI changes, and stop.',
+    description: 'Inspect or control deterministic Runs. Explicit project and Run IDs automatically select their owning project. Mutating operations use confirmation for actions, large advances, branches, control changes, AI changes, and stop.',
     parameters: {
       operation: { type: 'string', required: true, enum: ['list', 'create', 'view', 'choices', 'advance', 'action', 'pause', 'resume', 'stop', 'checkpoint', 'checkpoints', 'branch', 'set-control', 'set-ai', 'set-budget'] },
       project_id: { type: 'string' }, run_id: { type: 'string' }, actor_id: { type: 'string' }, seed: { type: 'string' },
@@ -452,16 +453,26 @@ export function apply(ctx: Context): void {
     }, output: OUTPUT,
     async execute(args, exec) {
       if (args.operation === 'list') {
-        const bound = binding(ctx, exec)
-        return encode((await ctx.worldlineRuns.list()).filter(item => item.projectId === bound.projectId
-          && (bound.runId === undefined || item.runId === bound.runId)))
+        const requestedProjectId = optionalString(args.project_id)
+        if (requestedProjectId !== undefined) {
+          const id = projectId(requestedProjectId)
+          await selectProjectScope(ctx, exec, id)
+          return encode((await ctx.worldlineRuns.list()).filter(item => item.projectId === id))
+        }
+        const active = exec.agent === undefined
+          ? undefined
+          : ctx.worldlineConversationContexts.binding(exec.agent.session)
+        const runs = await ctx.worldlineRuns.list()
+        return encode(active === undefined ? runs : runs.filter(item => item.projectId === active.projectId))
       }
       if (args.operation === 'create') {
         const id = projectId(args.project_id)
-        assertProjectScope(ctx, exec, id)
-        return encode(await ctx.worldlineRuns.create({
+        await selectProjectScope(ctx, exec, id)
+        const created = await ctx.worldlineRuns.create({
           projectId: id, seed: string(args.seed, 'seed'), startPaused: true,
-        }))
+        })
+        await selectProjectScope(ctx, exec, id, created.summary.runId)
+        return encode(created)
       }
       const id = runId(args.run_id)
       await assertRunScope(ctx, exec, id)
@@ -522,11 +533,11 @@ export function apply(ctx: Context): void {
     parameters: {
       target: { type: 'string', required: true, enum: ['semantic', 'event'] },
       project_id: { type: 'string' }, object_id: { type: 'string' }, run_id: { type: 'string' }, event_id: { type: 'string' },
-    }, output: OUTPUT, isConcurrencySafe: () => true,
+    }, output: OUTPUT,
     async execute(args, exec) {
       if (args.target === 'semantic') {
         const id = projectId(args.project_id)
-        assertProjectScope(ctx, exec, id)
+        await selectProjectScope(ctx, exec, id)
         return encode(await ctx.worldlineCompiler.explain({ projectId: id, objectId: string(args.object_id, 'object_id') }))
       }
       const id = runId(args.run_id)
@@ -559,9 +570,6 @@ export function apply(ctx: Context): void {
       if (args.operation === 'import') {
         const source = string(args.source, 'source')
         if (artifact === 'project') {
-          if (exec.agent !== undefined && ctx.worldlineConversationContexts.binding(exec.agent.session) !== undefined) {
-            throw new Error('a bound author Session cannot import a different project')
-          }
           const conflict = string(args.conflict, 'conflict')
           if (conflict !== 'copy' && conflict !== 'replace' && conflict !== 'cancel') {
             throw new Error('conflict must be copy, replace, or cancel')
@@ -576,7 +584,7 @@ export function apply(ctx: Context): void {
           return encode(await ctx.worldlineProjects.importProject(request))
         }
         const id = projectId(args.project_id)
-        assertProjectScope(ctx, exec, id)
+        await selectProjectScope(ctx, exec, id)
         const request = { projectId: id, source }
         if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, artifact, request })
         requireConfirmation(args.confirm, `import ${artifact}`)
@@ -585,7 +593,7 @@ export function apply(ctx: Context): void {
           : await ctx.worldlineProjects.importRun(request))
       }
       const id = projectId(args.project_id)
-      assertProjectScope(ctx, exec, id)
+      await selectProjectScope(ctx, exec, id)
       const destination = string(args.destination, 'destination')
       if (artifact === 'blueprint') {
         const request = { projectId: id, destination }

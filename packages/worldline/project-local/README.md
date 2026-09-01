@@ -6,7 +6,7 @@ This package is the durable local-filesystem provider for the Worldline project 
 
 ## Contract
 
-Every resolved path stays inside the user-selected library or an explicit archive path, symlinks are rejected at trust boundaries, and durable writes use temporary files plus atomic publication. Archive preflight enforces entry, size, traversal, manifest, and content-digest bounds before extraction.
+Every resolved path stays inside the user-selected library or an explicit archive path, symlinks are rejected at trust boundaries, and durable writes use temporary files plus atomic publication. Recoverable project trash remains under that library and permanent emptying is a separate explicit operation. Archive preflight enforces entry, size, traversal, manifest, and content-digest bounds before extraction.
 
 ## Model Experience
 

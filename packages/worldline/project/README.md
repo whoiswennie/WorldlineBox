@@ -6,7 +6,7 @@ This package defines the replaceable Host capability and generated Remote surfac
 
 ## Contract
 
-The service owns project-library operations, project-scoped document mutations, frozen build references, logical Run storage references, and cancellable transfer jobs. Callers use stable project identifiers and optimistic revisions rather than direct filesystem access.
+The service owns project-library operations, recoverable project trash plus explicit permanent trash emptying, project-scoped document mutations, frozen build references, logical Run storage references, and cancellable transfer jobs. Callers use stable project identifiers and optimistic revisions rather than direct filesystem access.
 
 ## Model Experience
 

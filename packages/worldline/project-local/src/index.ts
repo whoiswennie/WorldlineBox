@@ -492,6 +492,17 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     return results.sort((left, right) => right.deletedAt.localeCompare(left.deletedAt))
   }
 
+  async emptyProjectTrash(): Promise<number> {
+    const directory = resolve(await this.rootPath(), '.worldline-trash', 'projects')
+    if (!(await exists(directory))) return 0
+    const entries = await readdir(directory, { withFileTypes: true })
+    const projectCount = entries.filter(entry => entry.isDirectory()).length
+    for (const entry of entries) {
+      await rm(resolve(directory, entry.name), { recursive: true, force: true })
+    }
+    return projectCount
+  }
+
   async restoreProject(request: RestoreProjectRequest): Promise<ProjectSummary> {
     const root = await this.rootPath()
     const source = resolve(root, '.worldline-trash', 'projects', normalizeRelative(request.trashId))

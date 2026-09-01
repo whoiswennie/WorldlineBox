@@ -156,6 +156,34 @@ describe('Worldline Studio', () => {
     })
   })
 
+  it('empties the recycle bin only after an explicit irreversible confirmation', async () => {
+    const props = studioProps(configured)
+    const trashed = [{
+      trashId: 'trash:first',
+      originalName: 'first-world',
+      deletedAt: '2026-09-01T00:00:00.000Z',
+      sizeBytes: 2048,
+      manifest: project.manifest,
+    }]
+    const emptyProjectTrash = vi.fn(async () => 1)
+    Object.assign(props.projects, {
+      listTrashedProjects: vi.fn(async () => trashed),
+      emptyProjectTrash,
+    })
+    render(<WorldlineStudio {...props} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '回收站' }))
+    const trashDialog = await screen.findByRole('dialog', { name: '回收站' })
+    fireEvent.click(within(trashDialog).getByRole('button', { name: '清空回收站' }))
+    const confirmDialog = screen.getByRole('dialog', { name: '确认清空回收站' })
+    expect(within(confirmDialog).getByText(/无法撤销或恢复/u)).toBeTruthy()
+    expect(emptyProjectTrash).not.toHaveBeenCalled()
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: '清空回收站' }))
+
+    await waitFor(() => { expect(emptyProjectTrash).toHaveBeenCalledTimes(1) })
+    expect(await screen.findByText('回收站已清空')).toBeTruthy()
+  })
+
   it('launches the project-bound author conversation from overview', async () => {
     const props = studioProps(configured)
     render(<WorldlineStudio {...props} />)

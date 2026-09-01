@@ -17,7 +17,7 @@ describe('Worldline conversation binding', () => {
     expect(resolveWorldlineConversationBinding({ events: [event] })).toEqual(binding)
   })
 
-  it('keeps independent Sessions isolated and rejects an injected rebind event', () => {
+  it('keeps independent Sessions isolated and resolves the latest active project', () => {
     const first = {
       sessionId: SessionId('session-first'),
       projectId: worldlineId<'project'>('project:first01'),
@@ -36,7 +36,6 @@ describe('Worldline conversation binding', () => {
     const secondEvent = { type: 'worldline/context-bound', seq: 0, time: 0, data: second } as SessionEvent
     expect(resolveWorldlineConversationBinding({ events: [firstEvent] })).toEqual(first)
     expect(resolveWorldlineConversationBinding({ events: [secondEvent] })).toEqual(second)
-    expect(() => resolveWorldlineConversationBinding({ events: [firstEvent, secondEvent] }))
-      .toThrow('more than one immutable project binding')
+    expect(resolveWorldlineConversationBinding({ events: [firstEvent, secondEvent] })).toEqual(second)
   })
 })

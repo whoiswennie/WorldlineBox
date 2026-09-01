@@ -7,7 +7,7 @@ import { BIND_PATH } from '../contract.ts'
 /** The only author composition used by Studio-launched Worldline conversations. */
 export const WORLDLINE_AUTHOR_PRESET = 'worldline-author'
 
-/** Minimal boundary required to publish one project-bound author conversation. */
+/** Minimal boundary required to publish one Worldline author conversation with an initial project. */
 export interface AuthorConversationLaunchPort {
   registerWorkspace(input: { readonly path: string }): Promise<WorkspaceView>
   createSession(options: {
@@ -25,10 +25,11 @@ export interface AuthorConversationLaunchPort {
 }
 
 /**
- * Atomically create the dedicated author composition, bind it before the first turn, then open it.
- * Any failed bind removes the unpublished blank Session instead of exposing a generic conversation.
+ * Atomically create the dedicated author composition, select its initial project, then open it.
+ * The Session can later switch projects through Worldline tools. A failed initial selection removes
+ * the unpublished blank Session instead of exposing a generic conversation.
  * @param port - Session, layout, and binding operations supplied by the composed client.
- * @param project - Worldline project whose directory and identity own the conversation.
+ * @param project - Worldline project initially selected by the conversation.
  * @param runId - Optional logical run to expose alongside the project authoring context.
  */
 export async function launchWorldlineAuthorConversation(

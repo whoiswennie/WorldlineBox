@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write docs/subsystems/worldline.md
-worldline.md: 49f440d6c897e7220ee77c05073742d5e328da9c
-worldline.zh.md: c9647c2bd3ea026e123b72a688bd921127038596
+worldline.md: 042696f3522b4109d32c914b925ea48e7a253e4e
+worldline.zh.md: 176d6e59b759b41ca33153e52533b9dd42270d9c

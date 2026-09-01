@@ -94,6 +94,10 @@ export abstract class WorldlineProjects extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   abstract listTrashedProjects(): Promise<readonly TrashedProject[]>
+  /** Permanently remove every project currently held in the project recycle bin.
+   * @returns The number of project entries removed.
+   */
+  abstract emptyProjectTrash(): Promise<number>
   /** Restore a project from the project recycle bin.
    * @param request - The request supplied by the caller.
    * @returns The result produced by the operation.
@@ -292,6 +296,10 @@ export abstract class WorldlineProjects extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   @Remote('listTrashedProjects') remoteListTrashedProjects(): Promise<readonly TrashedProject[]> { return this.listTrashedProjects() }
+  /** Permanently remove every project currently held in the project recycle bin.
+   * @returns The number of project entries removed.
+   */
+  @Remote('emptyProjectTrash') remoteEmptyProjectTrash(): Promise<number> { return this.emptyProjectTrash() }
   /** Perform remote restore project through the package's public contract.
    * @param value - The value supplied by the caller.
    * @returns The result produced by the operation.

@@ -6,7 +6,7 @@ This package registers the project-scoped model tools used for Worldline authori
 
 ## Contract
 
-Every execution resolves the calling author Session binding. Mutations require the relevant stable identity, provenance, optimistic revision, dry-run, or explicit confirmation, and generic filesystem or shell tools are never an alternate authority for project data.
+Every execution resolves the calling author Session's active project. Creating a project or explicitly using another stable project ID switches that context automatically, without manual binding. Mutations require the relevant stable identity, provenance, optimistic revision, dry-run, or explicit confirmation, and generic filesystem or shell tools are never an alternate authority for project data.
 
 ## Model Experience
 
@@ -26,4 +26,4 @@ The fixed schemas and system rule form a stable prefix; only tool calls and thei
 
 ## Known Limitations and Deferred Work
 
-- **Author Session required** — most operations intentionally reject execution without an unambiguous project binding, so generic unbound chat sessions cannot mutate Worldline state.
+- **Worldline OC author Session required** — only the dedicated mode mounts mutation tools; standard Agents and virtual companions cannot mutate Worldline state.

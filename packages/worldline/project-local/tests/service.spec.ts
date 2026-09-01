@@ -354,6 +354,20 @@ describe('LocalWorldlineProjects', () => {
     await runtime.dispose()
   })
 
+  it('permanently empties the project recycle bin only when explicitly requested', async () => {
+    const root = await temporaryRoot()
+    const runtime = await start(root)
+    const first = await runtime.ctx.worldlineProjects.create({ name: 'First trash', template: 'blank' })
+    const second = await runtime.ctx.worldlineProjects.create({ name: 'Second trash', template: 'blank' })
+    await runtime.ctx.worldlineProjects.trashProject({ projectId: first.manifest.id })
+    await runtime.ctx.worldlineProjects.trashProject({ projectId: second.manifest.id })
+
+    await expect(runtime.ctx.worldlineProjects.emptyProjectTrash()).resolves.toBe(2)
+    await expect(runtime.ctx.worldlineProjects.listTrashedProjects()).resolves.toEqual([])
+    await expect(runtime.ctx.worldlineProjects.emptyProjectTrash()).resolves.toBe(0)
+    await runtime.dispose()
+  })
+
   it('rejects path traversal and does not accept a stale move revision', async () => {
     const root = await temporaryRoot()
     const runtime = await start(root)
