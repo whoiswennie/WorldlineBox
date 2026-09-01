@@ -111,16 +111,22 @@ export function materializeInitialWorldState(
 }
 
 function writePath(root: JsonObject, path: string, value: JsonValue): JsonObject {
-  const result = structuredClone(root)
   const segments = pathSegments(path)
   if (segments.length === 0) throw new Error('an effect cannot replace the Run state root')
+  const result: JsonObject = { ...root }
   let cursor: Record<string, JsonValue> = result
+  let source: Record<string, JsonValue> | undefined = root
   for (const segment of segments.slice(0, -1)) {
-    const existing = cursor[segment]
-    if (existing === null || Array.isArray(existing) || typeof existing !== 'object') {
-      cursor[segment] = {}
-    }
-    cursor = cursor[segment] as Record<string, JsonValue>
+    const existing: JsonValue | undefined = source?.[segment]
+    const next: Record<string, JsonValue> = existing !== null
+      && !Array.isArray(existing) && typeof existing === 'object'
+      ? { ...existing }
+      : {}
+    cursor[segment] = next
+    cursor = next
+    source = existing !== null && !Array.isArray(existing) && typeof existing === 'object'
+      ? existing
+      : undefined
   }
   const leaf = segments.at(-1)
   if (leaf === undefined) throw new Error('an effect path must identify a state field')
@@ -134,7 +140,7 @@ export function applyWorldlineEffects(
   effects: readonly Effect[],
   scope: ExpressionScope,
 ): WorldlineEffectResult {
-  let state = structuredClone(initial)
+  let state: JsonObject = { ...initial }
   const deltas: StateDelta[] = []
   const cognitionChanges: JsonObject[] = []
   for (const effect of effects) {
@@ -410,7 +416,7 @@ export function evaluateScopedExpression(
     default: {
       const path = resolveWorldlinePath(expression.path, scope)
       if (path === undefined) return false
-      return evaluateExpression({ ...expression, path } as Expression, state)
+      return evaluateExpression({ ...expression, path }, state)
     }
   }
 }

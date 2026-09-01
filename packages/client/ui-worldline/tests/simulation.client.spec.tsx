@@ -95,6 +95,14 @@ function runsClient(): RunsClient {
       sequence: 2,
       choices: [{ id: 'choice:walk', actionType: 'character.move', parameters: { destination: 'map-node:end' }, label: 'Walk to Destination', description: 'Follow the connected route.', targetIds: ['map-node:end'], estimatedDuration: 12, costs: [], risks: [] }],
     })),
+    simulate: vi.fn(async () => ({
+      run: view,
+      cycles: 1,
+      actionsPerformed: 0,
+      actionCounts: {},
+      actorActionCounts: {},
+      actions: [],
+    })),
     submitAction: vi.fn(async () => ({})),
     advance: vi.fn(async () => view),
     records: vi.fn(async () => ({ records: [], nextSequence: 0, nextOrdinal: 0, hasMore: false })),
@@ -105,7 +113,7 @@ function runsClient(): RunsClient {
 const t: TranslateNS<'worldlineStudio'> = key => zh[key as keyof typeof zh] ?? key
 
 describe('Worldline simulation spatial projection', () => {
-  it('runs one autonomous character action before advancing the clock', async () => {
+  it('delegates one autonomous turn to the runtime scheduler', async () => {
     const running = {
       ...view,
       summary: { ...view.summary, status: 'running' },
@@ -116,15 +124,11 @@ describe('Worldline simulation spatial projection', () => {
 
     await runAutonomyCycle(runs, runId, undefined, 60)
 
-    expect(ownMethod(runs, 'submitAction')).toHaveBeenCalledWith({
+    expect(ownMethod(runs, 'simulate')).toHaveBeenCalledWith({
       runId,
-      actorId: 'entity:traveller',
-      type: 'character.move',
-      parameters: { destination: 'map-node:end' },
-      expectedSequence: 2,
-      controller: 'agent',
+      cycles: 1,
+      stepDuration: 60,
     })
-    expect(ownMethod(runs, 'advance')).toHaveBeenCalledWith({ runId, duration: 60, maxEvents: 10_000 })
   })
 
   it('shows the frozen Run map and an in-progress non-teleport movement', async () => {

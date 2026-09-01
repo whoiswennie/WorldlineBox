@@ -52,32 +52,20 @@ const DEFAULT_AI_BUDGET: AiBudget = {
   currency: 'USD',
 }
 
+function snapshotAiBudget(snapshot: { readonly aiBudget?: AiBudget }): AiBudget {
+  return snapshot.aiBudget ?? DEFAULT_AI_BUDGET
+}
+
 /** Advance one bounded autonomous turn without borrowing capabilities from any Agent mode. */
 export async function runAutonomyCycle(
   runs: RunsClient,
   runId: RunSummary['runId'],
-  definition: RunDefinitionView | undefined,
+  _definition: RunDefinitionView | undefined,
   duration: number,
 ): Promise<void> {
   const current = await runs.view({ runId })
   if (current.summary.status !== 'running') return
-  const actors = entityIds(current, definition)
-  for (const actorId of actors) {
-    if ((current.controls[actorId] ?? 'autonomous') !== 'autonomous') continue
-    const available = await runs.choices({ runId, actorId })
-    const choice = available.choices[0]
-    if (choice === undefined) continue
-    await runs.submitAction({
-      runId,
-      actorId,
-      type: choice.actionType,
-      parameters: choice.parameters,
-      expectedSequence: available.sequence,
-      controller: 'agent',
-    })
-    break
-  }
-  await runs.advance({ runId, duration, maxEvents: 10_000 })
+  await runs.simulate({ runId, cycles: 1, stepDuration: duration })
 }
 
 function SpatialMap({ spatial, selectedActor }: {
@@ -181,7 +169,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
     setCheckpoints(nextCheckpoints)
     setSpatial(nextSpatial)
     setDefinition(nextDefinition)
-    setBudgetDraft(nextView.snapshot.aiBudget ?? DEFAULT_AI_BUDGET)
+    setBudgetDraft(snapshotAiBudget(nextView.snapshot))
     setSelectedMapId(current => current !== undefined
       && nextSpatial.availableMaps.some(map => map.id === current) ? current : nextSpatial.availableMaps[0]?.id)
     const actors = entityIds(nextView, nextDefinition)

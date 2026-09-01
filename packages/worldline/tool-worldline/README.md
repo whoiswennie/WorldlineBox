@@ -6,7 +6,7 @@ This package registers the project-scoped model tools used for Worldline authori
 
 ## Contract
 
-Every execution resolves the calling author Session's active project. Creating a project or explicitly using another stable project ID switches that context automatically, without manual binding. Mutations require the relevant stable identity, provenance, optimistic revision, dry-run, or explicit confirmation, and generic filesystem or shell tools are never an alternate authority for project data.
+Every execution resolves the calling author Session's active project. Creating a project or explicitly using another stable project ID switches that context automatically, without manual binding. `worldline_map` validates and writes the one current structured map block through optimistic project revisions; the model never fabricates compiler source anchors. `worldline_build prove` is the authoritative playable-closure gate: it compiles, freezes, creates a Run, executes legal autonomous actions, advances logical time, verifies map and causal records, and creates a checkpoint. `worldline_run simulate` performs a bounded deterministic autonomous cycle. Generic filesystem or shell tools are never an alternate authority for project data.
 
 ## Model Experience
 
@@ -18,7 +18,7 @@ Nine `worldline_*` schemas documented in the generated [tool catalog](../../../d
 
 #### Token effect
 
-The schemas and short system rule are fixed while the preset is mounted; individual JSON results are bounded by each operation's project or Run query limits.
+The schemas and short system rule are fixed while the preset is mounted; individual JSON results, autonomous cycles, map projections, and Run record evidence are bounded by explicit limits.
 
 #### KV Cache effect
 

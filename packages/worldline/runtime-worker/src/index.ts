@@ -37,6 +37,8 @@ import {
   type SetActorControlRequest,
   type SetAiBudgetRequest,
   type SetAiEnabledRequest,
+  type SimulateRunRequest,
+  type SimulateRunResult,
   type SubmitRunActionRequest,
   type SubmitRunActionResult,
   type SwitchModelPolicyRequest,
@@ -138,7 +140,7 @@ class WorkerRunHandle {
     })
   }
 
-  call<T>(command: WorkerCommand): Promise<T> {
+  call<T>(command: WorkerCommand, timeoutMs = this.timeoutMs): Promise<T> {
     if (this.closed) return Promise.reject(new WorldlineRuntimeError('run-not-live', 'Run Worker is closed'))
     const id = this.requestId
     this.requestId += 1
@@ -146,7 +148,7 @@ class WorkerRunHandle {
       const timer = setTimeout(() => {
         this.pending.delete(id)
         reject(new WorldlineRuntimeError('worker-failed', `Runtime Worker request timed out: ${command.type}`))
-      }, this.timeoutMs)
+      }, timeoutMs)
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer })
       try {
         this.worker.postMessage({ type: 'request', id, command } satisfies WorkerRequest)
@@ -259,6 +261,11 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
 
   override async advance(request: AdvanceRunRequest): Promise<RunView> {
     return (await this.handle(request.runId)).call({ type: 'advance', payload: request })
+  }
+
+  override async simulate(request: SimulateRunRequest): Promise<SimulateRunResult> {
+    const timeoutMs = Math.max(this.config.requestTimeoutMs, request.cycles * 1_000)
+    return (await this.handle(request.runId)).call({ type: 'simulate', payload: request }, timeoutMs)
   }
 
   override async submitAction(request: SubmitRunActionRequest): Promise<SubmitRunActionResult> {

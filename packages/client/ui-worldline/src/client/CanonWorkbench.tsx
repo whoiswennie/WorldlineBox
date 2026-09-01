@@ -68,6 +68,21 @@ function basename(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1)
 }
 
+type InspectorIconName = 'file' | 'folder' | 'move' | 'duplicate' | 'cut' | 'copy' | 'trash'
+
+function InspectorIcon(props: { readonly name: InspectorIconName }): ReactNode {
+  const paths: Record<InspectorIconName, ReactNode> = {
+    file: <><path d="M6 3.75h7l5 5v11.5H6z"/><path d="M13 3.75v5h5"/><path d="M9 13h6M9 16.5h5"/></>,
+    folder: <path d="M3.75 7.25h6l2-2h8.5v13.5H3.75z"/>,
+    move: <><path d="M5 8V5h3M19 16v3h-3M8 5l-3 3M16 19l3-3"/><path d="M8 16 16 8"/></>,
+    duplicate: <><rect x="7" y="7" width="12" height="12" rx="2"/><path d="M5 16H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v1"/></>,
+    cut: <><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.5 8.5 11 7M8.5 15.5l11-7"/></>,
+    copy: <><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 16H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v1"/></>,
+    trash: <><path d="M4 7h16M9 3h6l1 4H8zM7 7l1 14h8l1-14"/><path d="M10 11v6M14 11v6"/></>,
+  }
+  return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[props.name]}</svg>
+}
+
 export async function uploadProjectEntry(
   projectId: ProjectSummary['manifest']['id'],
   directory: string,
@@ -499,18 +514,33 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
         {(['details', 'history', 'backlinks', 'trash'] as const).map(panel => <button
           type="button" key={panel} data-active={sidePanel === panel || undefined}
           onClick={() => { void loadSidePanel(panel) }}
-        >{panel === 'details' ? props.t('overview') : props.t(panel === 'trash' ? 'trashBin' : panel)}</button>)}
+        >{props.t(panel === 'trash' ? 'trashBin' : panel)}</button>)}
       </nav>
       {sidePanel === 'details' && <div className={css.inspectorBody}>
-        <h3>{selected?.name ?? document?.document.path ?? props.project.manifest.name}</h3>
-        {selected !== undefined && <>
-          <dl><dt>{props.t('path')}</dt><dd>{selected.path}</dd><dt>{props.t('size')}</dt><dd>{selected.sizeBytes.toLocaleString()} B</dd><dt>{props.t('updated')}</dt><dd>{new Date(selected.updatedAt).toLocaleString()}</dd></dl>
-          <div className={css.stackActions}>
-            <button type="button" onClick={() => { setOperation({ kind: 'move', entry: selected, destination: selected.path }) }}>{props.t('renameMove')}</button>
-            <button type="button" onClick={() => { setOperation({ kind: 'copy', entry: selected, destination: joinPath(parentPath(selected.path), `copy-${selected.name}`) }) }}>{props.t('duplicateEntry')}</button>
-            <div className={css.inlineActions}><button type="button" onClick={() => { setClipboard({ mode: 'cut', entry: selected }) }}>{props.t('cut')}</button><button type="button" onClick={() => { setClipboard({ mode: 'copy', entry: selected }) }}>{props.t('copy')}</button></div>
-            <button type="button" data-danger onClick={() => { setOperation({ kind: 'trash', entry: selected, destination: '' }) }}>{props.t('deleteEntry')}</button>
+        <header className={css.inspectorTitle}>
+          <span><InspectorIcon name={selected?.kind === 'directory' ? 'folder' : 'file'} /></span>
+          <div>
+            <small>{props.t(selected?.kind === 'directory' ? 'entryDirectory' : 'entryDocument')}</small>
+            <h3>{selected?.name ?? document?.document.path ?? props.project.manifest.name}</h3>
           </div>
+        </header>
+        {selected !== undefined && <>
+          <section className={css.metadataCard}>
+            <h4>{props.t('fileOverview')}</h4>
+            <dl><dt>{props.t('path')}</dt><dd>{selected.path}</dd><dt>{props.t('size')}</dt><dd>{selected.sizeBytes.toLocaleString()} B</dd><dt>{props.t('updated')}</dt><dd>{new Date(selected.updatedAt).toLocaleString()}</dd></dl>
+            {document !== undefined && <div className={css.typeRow}><span>{props.t('kind')}</span><strong>{worldlineLabel(document.document.objectKind ?? 'document')}</strong></div>}
+            {document !== undefined && document.document.tags.length > 0 && <div className={css.tags}>{document.document.tags.map(tag => <span key={tag}>#{tag}</span>)}</div>}
+          </section>
+          <section className={css.actionCard}>
+            <h4>{props.t('fileActions')}</h4>
+            <div className={css.actionGrid}>
+              <button type="button" onClick={() => { setOperation({ kind: 'move', entry: selected, destination: selected.path }) }}><InspectorIcon name="move"/><span>{props.t('renameMove')}</span></button>
+              <button type="button" onClick={() => { setOperation({ kind: 'copy', entry: selected, destination: joinPath(parentPath(selected.path), `copy-${selected.name}`) }) }}><InspectorIcon name="duplicate"/><span>{props.t('duplicateEntry')}</span></button>
+              <button type="button" onClick={() => { setClipboard({ mode: 'cut', entry: selected }) }}><InspectorIcon name="cut"/><span>{props.t('cut')}</span></button>
+              <button type="button" onClick={() => { setClipboard({ mode: 'copy', entry: selected }) }}><InspectorIcon name="copy"/><span>{props.t('copy')}</span></button>
+            </div>
+            <button className={css.dangerAction} type="button" onClick={() => { setOperation({ kind: 'trash', entry: selected, destination: '' }) }}><InspectorIcon name="trash"/><span><strong>{props.t('deleteEntry')}</strong><small>{props.t('recoverableDelete')}</small></span></button>
+          </section>
         </>}
         {clipboard !== undefined && <div className={css.clipboard}>
           <span>{props.t(clipboard.mode)}: {clipboard.entry.path}</span>
@@ -524,7 +554,6 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
           {operation.kind === 'trash' && <p>{props.t('trashConfirm')}</p>}
           <div><button type="button" onClick={() => { setOperation(undefined) }}>{props.t('cancel')}</button><button type="submit" data-danger={operation.kind === 'trash' || undefined} disabled={operation.kind !== 'trash' && operation.destination.trim() === ''}>{props.t('confirm')}</button></div>
         </form>}
-        {document !== undefined && <><p>{document.document.objectKind ?? 'document'}</p><div className={css.tags}>{document.document.tags.map(tag => <span key={tag}>{tag}</span>)}</div></>}
       </div>}
       {sidePanel === 'history' && <ul className={css.auditList}>{history.map(item => <li key={item.revision}>
         <div><strong>{item.reason}</strong><small>{new Date(item.savedAt).toLocaleString()}</small></div>

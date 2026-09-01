@@ -1,6 +1,6 @@
 /* oxlint-disable @stylistic/max-len -- Compact controls keep map editing relationships visible. */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { UIEvent } from 'react'
+import type { PointerEvent as ReactPointerEvent, UIEvent } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { MapEdge, MapLayer, MapNode, MapPoint, WorldMap } from '@deepseek-ai/dsh-worldline-standard/types'
 import { worldlineLabel } from './presentation.ts'
@@ -10,6 +10,10 @@ import css from './MapWorkbench.module.css'
 const MAP_FENCE = /```worldline-map\s*\r?\n([\s\S]*?)\r?\n```/iu
 const MAP_NODE_KINDS = ['world', 'plane', 'region', 'city', 'building', 'room', 'slot'] as const
 const SPATIAL_CELL = 320
+const CANVAS_MIN_WIDTH = 1400
+const CANVAS_MIN_HEIGHT = 860
+const CANVAS_NODE_PADDING_X = 86
+const CANVAS_NODE_PADDING_Y = 58
 
 export interface ParsedMapFence {
   readonly map?: WorldMap
@@ -40,6 +44,13 @@ export interface MapNodeCluster {
 export interface MapClusterProjection {
   readonly nodes: readonly MapNode[]
   readonly clusters: readonly MapNodeCluster[]
+}
+
+export interface MapCanvasFrame {
+  readonly offsetX: number
+  readonly offsetY: number
+  readonly width: number
+  readonly height: number
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -112,6 +123,29 @@ export function layoutWorldMap(map: WorldMap): WorldMap {
       ...item,
       position: { x: 110 + (index % columns) * 190, y: 95 + Math.floor(index / columns) * 145 },
     })),
+  }
+}
+
+/** Keep authored coordinates intact while ensuring edge nodes remain fully visible. */
+export function mapCanvasFrame(map: WorldMap | undefined): MapCanvasFrame {
+  if (map === undefined || map.nodes.length === 0) {
+    return { offsetX: 0, offsetY: 0, width: CANVAS_MIN_WIDTH, height: CANVAS_MIN_HEIGHT }
+  }
+  const minX = Math.min(...map.nodes.map(item => item.position.x))
+  const minY = Math.min(...map.nodes.map(item => item.position.y))
+  const maxX = Math.max(...map.nodes.map(item => item.position.x))
+  const maxY = Math.max(...map.nodes.map(item => item.position.y))
+  const contentWidth = maxX - minX
+  const contentHeight = maxY - minY
+  const width = Math.max(CANVAS_MIN_WIDTH, contentWidth + CANVAS_NODE_PADDING_X * 2)
+  const height = Math.max(CANVAS_MIN_HEIGHT, contentHeight + CANVAS_NODE_PADDING_Y * 2)
+  const offsetX = (width - contentWidth) / 2 - minX
+  const offsetY = (height - contentHeight) / 2 - minY
+  return {
+    offsetX,
+    offsetY,
+    width,
+    height,
   }
 }
 
@@ -237,11 +271,30 @@ export function MapWorkbench(props: MapWorkbenchProps) {
   const [selectedEdgeId, setSelectedEdgeId] = useState<MapEdge['id']>()
   const [issues, setIssues] = useState<readonly string[]>([])
   const [zoom, setZoom] = useState(1)
+  const [panning, setPanning] = useState(false)
   const [viewport, setViewport] = useState<MapViewport>({ left: 0, top: 0, right: 1600, bottom: 1000 })
   const undo = useRef<WorldMap[]>([])
   const redo = useRef<WorldMap[]>([])
   const scroller = useRef<HTMLDivElement>(null)
   const canvas = useRef<SVGSVGElement>(null)
+  const pan = useRef<{
+    pointerId: number
+    x: number
+    y: number
+    left: number
+    top: number
+  }>()
+  const nodeDrag = useRef<{
+    pointerId: number
+    nodeId: MapNode['id']
+    x: number
+    y: number
+    position: MapPoint
+    base: WorldMap
+    moved: boolean
+  }>()
+  const suppressNodeClick = useRef<MapNode['id']>()
+  const frame = useMemo(() => mapCanvasFrame(draft), [draft])
 
   useEffect(() => {
     setDraft(parsed.map)
@@ -250,6 +303,22 @@ export function MapWorkbench(props: MapWorkbenchProps) {
     setIssues(parsed.map === undefined ? [] : mapIssues(parsed.map))
     undo.current = []
     redo.current = []
+    if (parsed.map !== undefined) {
+      const nextMap = parsed.map
+      window.requestAnimationFrame(() => {
+        const target = scroller.current
+        if (target === null || nextMap.nodes.length === 0) return
+        const nextFrame = mapCanvasFrame(nextMap)
+        const centerX = (Math.min(...nextMap.nodes.map(item => item.position.x))
+          + Math.max(...nextMap.nodes.map(item => item.position.x))) / 2 + nextFrame.offsetX
+        const centerY = (Math.min(...nextMap.nodes.map(item => item.position.y))
+          + Math.max(...nextMap.nodes.map(item => item.position.y))) / 2 + nextFrame.offsetY
+        target.scrollTo({
+          left: centerX * zoom - target.clientWidth / 2,
+          top: centerY * zoom - target.clientHeight / 2,
+        })
+      })
+    }
   }, [parsed.map, props.document?.document.revision])
 
   const commit = (next: WorldMap): void => {
@@ -273,11 +342,98 @@ export function MapWorkbench(props: MapWorkbenchProps) {
     const target = event?.currentTarget ?? scroller.current
     if (target === null) return
     setViewport({
-      left: target.scrollLeft / zoom,
-      top: target.scrollTop / zoom,
-      right: (target.scrollLeft + target.clientWidth) / zoom,
-      bottom: (target.scrollTop + target.clientHeight) / zoom,
+      left: target.scrollLeft / zoom - frame.offsetX,
+      top: target.scrollTop / zoom - frame.offsetY,
+      right: (target.scrollLeft + target.clientWidth) / zoom - frame.offsetX,
+      bottom: (target.scrollTop + target.clientHeight) / zoom - frame.offsetY,
     })
+  }
+
+  const beginPan = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0 || (event.target as Element).closest('[data-map-interactive]') !== null) return
+    pan.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      left: event.currentTarget.scrollLeft,
+      top: event.currentTarget.scrollTop,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setPanning(true)
+    event.preventDefault()
+  }
+
+  const movePan = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const active = pan.current
+    if (active === undefined || active.pointerId !== event.pointerId) return
+    event.currentTarget.scrollLeft = active.left - (event.clientX - active.x)
+    event.currentTarget.scrollTop = active.top - (event.clientY - active.y)
+    updateViewport()
+  }
+
+  const endPan = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (pan.current?.pointerId !== event.pointerId) return
+    pan.current = undefined
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    setPanning(false)
+  }
+
+  const beginNodeDrag = (event: ReactPointerEvent<SVGGElement>, item: MapNode): void => {
+    if (event.button !== 0 || draft === undefined
+      || draft.layers.find(layerItem => layerItem.id === item.layerId)?.locked === true) return
+    nodeDrag.current = {
+      pointerId: event.pointerId,
+      nodeId: item.id,
+      x: event.clientX,
+      y: event.clientY,
+      position: item.position,
+      base: draft,
+      moved: false,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setSelectedNodeId(item.id)
+    setSelectedEdgeId(undefined)
+    event.stopPropagation()
+  }
+
+  const moveNodeDrag = (event: ReactPointerEvent<SVGGElement>): void => {
+    const active = nodeDrag.current
+    if (active === undefined || active.pointerId !== event.pointerId) return
+    const deltaX = (event.clientX - active.x) / zoom
+    const deltaY = (event.clientY - active.y) / zoom
+    if (!active.moved && Math.hypot(deltaX, deltaY) < 3) return
+    active.moved = true
+    const position = { x: Math.round(active.position.x + deltaX), y: Math.round(active.position.y + deltaY) }
+    setDraft({
+      ...active.base,
+      nodes: active.base.nodes.map(nodeItem => nodeItem.id === active.nodeId ? { ...nodeItem, position } : nodeItem),
+    })
+    event.stopPropagation()
+  }
+
+  const endNodeDrag = (event: ReactPointerEvent<SVGGElement>): void => {
+    const active = nodeDrag.current
+    if (active === undefined || active.pointerId !== event.pointerId) return
+    nodeDrag.current = undefined
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    if (!active.moved) return
+    const position = {
+      x: Math.round(active.position.x + (event.clientX - active.x) / zoom),
+      y: Math.round(active.position.y + (event.clientY - active.y) / zoom),
+    }
+    suppressNodeClick.current = active.nodeId
+    commit({
+      ...active.base,
+      nodes: active.base.nodes.map(nodeItem => nodeItem.id === active.nodeId ? { ...nodeItem, position } : nodeItem),
+    })
+    event.stopPropagation()
+  }
+
+  const cancelNodeDrag = (event: ReactPointerEvent<SVGGElement>): void => {
+    const active = nodeDrag.current
+    if (active === undefined || active.pointerId !== event.pointerId) return
+    nodeDrag.current = undefined
+    setDraft(active.base)
   }
 
   const index = useMemo(() => draft === undefined ? undefined : buildMapSpatialIndex(draft), [draft])
@@ -296,8 +452,7 @@ export function MapWorkbench(props: MapWorkbenchProps) {
   const selectedNode = draft.nodes.find(item => item.id === selectedNodeId)
   const selectedEdge = draft.edges.find(item => item.id === selectedEdgeId)
   const selectedLayer = draft.layers.find(item => item.id === selectedNode?.layerId)
-  const width = Math.max(780, ...draft.nodes.map(item => item.position.x + 180))
-  const height = Math.max(520, ...draft.nodes.map(item => item.position.y + 140))
+  const { width, height } = frame
   const renderedEdges = draft.edges.flatMap((item) => {
     const from = draft.nodes.find(nodeItem => nodeItem.id === item.from)
     const to = draft.nodes.find(nodeItem => nodeItem.id === item.to)
@@ -327,7 +482,24 @@ export function MapWorkbench(props: MapWorkbenchProps) {
       <div>
         <button type="button" disabled={undo.current.length === 0} onClick={() => { travel(undo, redo) }}>{props.t('undo')}</button>
         <button type="button" disabled={redo.current.length === 0} onClick={() => { travel(redo, undo) }}>{props.t('redo')}</button>
-        <button type="button" onClick={() => { commit(layoutWorldMap(draft)) }}>{props.t('autoLayout')}</button>
+        <button type="button" onClick={() => {
+          const next = layoutWorldMap(draft)
+          commit(next)
+          window.requestAnimationFrame(() => {
+            const target = scroller.current
+            if (target === null) return
+            const nextFrame = mapCanvasFrame(next)
+            const centerX = (Math.min(...next.nodes.map(item => item.position.x))
+              + Math.max(...next.nodes.map(item => item.position.x))) / 2 + nextFrame.offsetX
+            const centerY = (Math.min(...next.nodes.map(item => item.position.y))
+              + Math.max(...next.nodes.map(item => item.position.y))) / 2 + nextFrame.offsetY
+            target.scrollTo({
+              left: centerX * zoom - target.clientWidth / 2,
+              top: centerY * zoom - target.clientHeight / 2,
+              behavior: 'smooth',
+            })
+          })
+        }}>{props.t('autoLayout')}</button>
         <button type="button" onClick={() => { setIssues(mapIssues(draft)) }}>{props.t('validate')}</button>
         <button type="button" onClick={() => {
           const id = nextId('map-node', new Set(draft.nodes.map(item => item.id))) as MapNode['id']
@@ -348,32 +520,40 @@ export function MapWorkbench(props: MapWorkbenchProps) {
         <button type="button" onClick={() => { void props.saveDocument() }}>{props.t('save')}</button>
       </div>
     </header>
-    <div className={css.canvasScroller} ref={scroller} onScroll={updateViewport}>
+    <div className={css.canvasScroller} data-testid="worldline-map-canvas"
+      data-panning={panning || undefined} ref={scroller}
+      onScroll={updateViewport} onPointerDown={beginPan} onPointerMove={movePan}
+      onPointerUp={endPan} onPointerCancel={endPan}>
       <svg ref={canvas} className={css.canvas} width={width * zoom} height={height * zoom} viewBox={`0 0 ${String(width)} ${String(height)}`} role="img" aria-label={draft.name}>
         <defs><pattern id="worldline-grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" /></pattern></defs>
         <rect width="100%" height="100%" fill="url(#worldline-grid)" />
         {draft.backgroundAssetId !== undefined && <text className={css.backgroundLabel} x="18" y="30">{props.t('background')}: {draft.backgroundAssetId}</text>}
-        {edgeBatchPath !== '' && <path className={css.edgeBatch} d={edgeBatchPath} />}
-        {renderedEdges.map(({ item, from, to }) => {
-          if (batchEdges && item.id !== selectedEdgeId) return null
-          return <g key={item.id} className={css.edge} data-selected={item.id === selectedEdgeId || undefined} role="button" tabIndex={0} onClick={() => { setSelectedEdgeId(item.id); setSelectedNodeId(undefined) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { setSelectedEdgeId(item.id); setSelectedNodeId(undefined) } }}>
-            <line x1={from.position.x} y1={from.position.y} x2={to.position.x} y2={to.position.y} />
-            <text x={(from.position.x + to.position.x) / 2} y={(from.position.y + to.position.y) / 2 - 6}>{item.modes.join('/')} · {item.baseDuration}t</text>
-          </g>
-        })}
-        {clustered.clusters.map(cluster => <g key={cluster.id} className={css.cluster} transform={`translate(${String(cluster.x)} ${String(cluster.y)})`} role="button" tabIndex={0} aria-label={`${String(cluster.count)} ${props.t('clusteredNodes')}`} onClick={() => {
-          const nextZoom = Math.min(2, Math.max(.8, zoom * 1.75))
-          setZoom(nextZoom)
-          window.requestAnimationFrame(() => {
-            if (scroller.current === null) return
-            scroller.current.scrollTo({ left: cluster.x * nextZoom - scroller.current.clientWidth / 2, top: cluster.y * nextZoom - scroller.current.clientHeight / 2, behavior: 'smooth' })
-            updateViewport()
-          })
-        }}><circle r={Math.min(38, 18 + Math.log2(cluster.count) * 4)} /><text textAnchor="middle" y="4">{cluster.count}</text></g>)}
-        {clustered.nodes.map(item => <g key={item.id} className={css.node} data-selected={item.id === selectedNodeId || undefined} data-locked={draft.layers.find(layerItem => layerItem.id === item.layerId)?.locked || undefined} transform={`translate(${String(item.position.x - 58)} ${String(item.position.y - 28)})`} role="button" tabIndex={0} onClick={() => { setSelectedNodeId(item.id); setSelectedEdgeId(undefined) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { setSelectedNodeId(item.id); setSelectedEdgeId(undefined) } }}>
-          {item.polygon !== undefined && <polygon points={item.polygon.map(pointItem => `${String(pointItem.x - item.position.x + 58)},${String(pointItem.y - item.position.y + 28)}`).join(' ')} />}
-          <rect width="116" height="56" rx="14" /><text x="58" y="24" textAnchor="middle">{item.name}</text><text x="58" y="42" textAnchor="middle">{item.kind}</text>
-        </g>)}
+        <g transform={`translate(${String(frame.offsetX)} ${String(frame.offsetY)})`}>
+          {edgeBatchPath !== '' && <path className={css.edgeBatch} d={edgeBatchPath} />}
+          {renderedEdges.map(({ item, from, to }) => {
+            if (batchEdges && item.id !== selectedEdgeId) return null
+            return <g key={item.id} className={css.edge} data-map-interactive data-selected={item.id === selectedEdgeId || undefined} role="button" tabIndex={0} onClick={() => { setSelectedEdgeId(item.id); setSelectedNodeId(undefined) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { setSelectedEdgeId(item.id); setSelectedNodeId(undefined) } }}>
+              <line x1={from.position.x} y1={from.position.y} x2={to.position.x} y2={to.position.y} />
+              <text x={(from.position.x + to.position.x) / 2} y={(from.position.y + to.position.y) / 2 - 6}>{item.modes.map(worldlineLabel).join('/')} · {item.baseDuration}t</text>
+            </g>
+          })}
+          {clustered.clusters.map(cluster => <g key={cluster.id} className={css.cluster} data-map-interactive transform={`translate(${String(cluster.x)} ${String(cluster.y)})`} role="button" tabIndex={0} aria-label={`${String(cluster.count)} ${props.t('clusteredNodes')}`} onClick={() => {
+            const nextZoom = Math.min(2, Math.max(.8, zoom * 1.75))
+            setZoom(nextZoom)
+            window.requestAnimationFrame(() => {
+              if (scroller.current === null) return
+              scroller.current.scrollTo({ left: (cluster.x + frame.offsetX) * nextZoom - scroller.current.clientWidth / 2, top: (cluster.y + frame.offsetY) * nextZoom - scroller.current.clientHeight / 2, behavior: 'smooth' })
+              updateViewport()
+            })
+          }}><circle r={Math.min(38, 18 + Math.log2(cluster.count) * 4)} /><text textAnchor="middle" y="4">{cluster.count}</text></g>)}
+          {clustered.nodes.map(item => <g key={item.id} className={css.node} data-map-interactive data-selected={item.id === selectedNodeId || undefined} data-locked={draft.layers.find(layerItem => layerItem.id === item.layerId)?.locked || undefined} transform={`translate(${String(item.position.x - 58)} ${String(item.position.y - 28)})`} role="button" tabIndex={0} aria-label={`${item.name} ${worldlineLabel(item.kind)}`} onPointerDown={(event) => { beginNodeDrag(event, item) }} onPointerMove={moveNodeDrag} onPointerUp={endNodeDrag} onPointerCancel={cancelNodeDrag} onClick={() => {
+            if (suppressNodeClick.current === item.id) { suppressNodeClick.current = undefined; return }
+            setSelectedNodeId(item.id); setSelectedEdgeId(undefined)
+          }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { setSelectedNodeId(item.id); setSelectedEdgeId(undefined) } }}>
+            {item.polygon !== undefined && <polygon points={item.polygon.map(pointItem => `${String(pointItem.x - item.position.x + 58)},${String(pointItem.y - item.position.y + 28)}`).join(' ')} />}
+            <rect width="116" height="56" rx="14" /><text x="58" y="24" textAnchor="middle">{item.name}</text><text x="58" y="42" textAnchor="middle">{worldlineLabel(item.kind)}</text>
+          </g>)}
+        </g>
       </svg>
     </div>
     <aside className={css.inspector}>

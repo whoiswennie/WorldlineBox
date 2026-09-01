@@ -6,7 +6,7 @@ This package bundles seven progressively loaded skills for Canon authoring, char
 
 ## Contract
 
-The provider exposes immutable package resources by stable skill name. Skill prose teaches bounded Worldline service and tool workflows and never instructs a model to bypass project authority or edit immutable artifacts directly.
+The provider exposes immutable package resources by stable skill name. Each selected body includes its one current-format reference inline, so a Worldline-only Agent never receives an unreadable physical path or falls back to Agent Vault. Skill prose teaches bounded Worldline service and tool workflows and never instructs a model to bypass project authority or edit immutable artifacts directly.
 
 ## Model Experience
 
@@ -14,7 +14,7 @@ The provider exposes immutable package resources by stable skill name. Skill pro
 
 #### What the model sees
 
-Only the requested skill body such as `worldline-authoring` and its task-relevant referenced resources are loaded into the author Session.
+Only the requested skill body such as `worldline-authoring` and its directly associated current-format reference are loaded into the author Session as one self-contained result.
 
 #### Token effect
 

@@ -191,6 +191,25 @@ export interface AdvanceRunRequest extends RunRef {
   readonly duration: number
   readonly maxEvents?: number
 }
+/** Run many deterministic actor/day cycles inside the owning worker without model calls. */
+export interface SimulateRunRequest extends RunRef {
+  readonly cycles: number
+  readonly stepDuration: number
+  readonly preferredAction?: string
+}
+/** Bounded summary of one headless autonomous simulation. */
+export interface SimulateRunResult {
+  readonly view: RunView
+  readonly actorIds: readonly EntityId[]
+  readonly actionsPerformed: number
+  readonly actionCounts: Readonly<Record<string, number>>
+  readonly actorActionCounts: Readonly<Record<string, number>>
+  readonly sampledActions: readonly {
+    readonly actorId: EntityId
+    readonly actionType: string
+    readonly actionId: ActionId
+  }[]
+}
 /** Describes the submit run action request value exchanged across the package boundary.
  */
 export interface SubmitRunActionRequest extends RunRef {

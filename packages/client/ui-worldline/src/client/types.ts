@@ -69,6 +69,8 @@ import type {
   SetActorControlRequest,
   SetAiBudgetRequest,
   SetAiEnabledRequest,
+  SimulateRunRequest,
+  SimulateRunResult,
   SubmitRunActionRequest,
   SubmitRunActionResult,
   SwitchModelPolicyRequest,
@@ -168,6 +170,7 @@ export interface RunsClient {
   definition(request: RunRef): Promise<RunDefinitionView>
   spatial(request: RunSpatialRequest): Promise<RunSpatialView>
   choices(request: RunChoicesRequest): Promise<RunChoicesView>
+  simulate(request: SimulateRunRequest): Promise<SimulateRunResult>
   advance(request: AdvanceRunRequest): Promise<RunView>
   submitAction(request: SubmitRunActionRequest): Promise<SubmitRunActionResult>
   pause(request: RunRef): Promise<RunView>

@@ -102,9 +102,11 @@ describe('Worldline product acceptance scenarios', () => {
         canFreeze: true,
         executableCounts: {
           maps: 1,
-          actions: scenario.slug === 'warrior-and-dragon' ? 2 : 1,
-          systems: 1,
-          invariants: scenario.slug === 'warrior-and-dragon' ? 2 : 1,
+          actions: scenario.expectedExecutables?.actions
+            ?? (scenario.slug === 'warrior-and-dragon' ? 2 : 1),
+          systems: scenario.expectedExecutables?.systems ?? 1,
+          invariants: scenario.expectedExecutables?.invariants
+            ?? (scenario.slug === 'warrior-and-dragon' ? 2 : 1),
         },
       })
       const frozen = await context.worldlineCompiler.freeze({
@@ -173,6 +175,18 @@ describe('Worldline product acceptance scenarios', () => {
           state?: Record<string, unknown>
         }>)[actor.id]?.state
         expect(actorState).toMatchObject({ stamina: 4, locationId: 'map-node:dragon-lair' })
+        const actorMemory = (advanced.snapshot.state['entities'] as Record<string, {
+          memory?: {
+            beliefs?: readonly unknown[]
+            episodic?: readonly unknown[]
+            goals?: readonly unknown[]
+            skills?: readonly unknown[]
+          }
+        }>)[actor.id]?.memory
+        expect(actorMemory?.episodic).not.toHaveLength(0)
+        expect(actorMemory?.beliefs).not.toHaveLength(0)
+        expect(actorMemory?.goals).not.toHaveLength(0)
+        expect(actorMemory?.skills).not.toHaveLength(0)
         expect(records.records.some(record => (
           record.stream === 'world-event'
           && record.payload['type'] === 'action.completed'

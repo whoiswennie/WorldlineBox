@@ -13,6 +13,7 @@ import type {
   SetActorControlRequest,
   SetAiBudgetRequest,
   SetAiEnabledRequest,
+  SimulateRunRequest,
   SubmitRunActionRequest,
   SwitchModelPolicyRequest,
 } from '@deepseek-ai/dsh-worldline-runtime'
@@ -42,6 +43,7 @@ export type WorkerCommand =
   | { readonly type: 'spatial'; readonly payload: RunSpatialRequest }
   | { readonly type: 'choices'; readonly payload: RunChoicesRequest }
   | { readonly type: 'advance'; readonly payload: AdvanceRunRequest }
+  | { readonly type: 'simulate'; readonly payload: SimulateRunRequest }
   | { readonly type: 'submit-action'; readonly payload: SubmitRunActionRequest }
   | { readonly type: 'pause' }
   | { readonly type: 'resume' }

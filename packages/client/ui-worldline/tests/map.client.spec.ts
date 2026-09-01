@@ -1,13 +1,21 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render } from '@testing-library/react'
+import { createElement } from 'react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorldMap } from '@deepseek-ai/dsh-worldline-standard/types'
 import {
+  MapWorkbench,
   buildMapSpatialIndex,
   clusterMapNodes,
   layoutWorldMap,
+  mapCanvasFrame,
   parseWorldlineMapFence,
   replaceWorldlineMapFence,
   visibleMapNodes,
 } from '../src/client/MapWorkbench.tsx'
+import type { EditorDocumentState } from '../src/client/types.ts'
+
+afterEach(cleanup)
 
 const map = {
   id: 'map:test',
@@ -63,6 +71,52 @@ describe('Worldline map document projection', () => {
     expect(first).toEqual(second)
     expect(new Set(first.nodes.map(node => `${String(node.position.x)}:${String(node.position.y)}`)).size)
       .toBe(first.nodes.length)
+  })
+
+  it('pads authored edge coordinates without changing the map', () => {
+    const frame = mapCanvasFrame(map)
+
+    expect(frame.offsetX).toBeGreaterThan(58)
+    expect(frame.offsetY).toBeGreaterThan(28)
+    expect(frame.width).toBeGreaterThanOrEqual(1_400)
+    expect(frame.height).toBeGreaterThanOrEqual(860)
+    expect(map.nodes.every(node => node.position.x === 0 && node.position.y === 0)).toBe(true)
+  })
+
+  it('pans the canvas by dragging its blank background', () => {
+    const content = replaceWorldlineMapFence('# Map\n', map)
+    const document = {
+      document: {
+        projectId: 'project:test', id: 'document:test', path: 'maps/world.md', content,
+        revision: 'revision:test', updatedAt: '2026-09-01T00:00:00.000Z', tags: [],
+      },
+      content,
+      saveState: 'saved',
+    } as unknown as EditorDocumentState
+    const { getByTestId } = render(createElement(MapWorkbench, {
+      document,
+      editDocument: vi.fn(),
+      saveDocument: vi.fn(async () => undefined),
+      t: key => key,
+    }))
+    const canvas = getByTestId('worldline-map-canvas')
+    Object.assign(canvas, {
+      scrollLeft: 280,
+      scrollTop: 170,
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: vi.fn(() => true),
+      releasePointerCapture: vi.fn(),
+    })
+
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 7, clientX: 300, clientY: 220 })
+    fireEvent.pointerMove(canvas, { pointerId: 7, clientX: 180, clientY: 140 })
+
+    expect(canvas.scrollLeft).toBe(400)
+    expect(canvas.scrollTop).toBe(250)
+    expect(canvas.getAttribute('data-panning')).toBe('true')
+
+    fireEvent.pointerUp(canvas, { pointerId: 7, clientX: 180, clientY: 140 })
+    expect(canvas.hasAttribute('data-panning')).toBe(false)
   })
 
   it('uses a spatial index to clip a ten-thousand-node map by viewport and layer', () => {

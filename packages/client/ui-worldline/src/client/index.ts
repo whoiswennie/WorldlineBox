@@ -128,6 +128,7 @@ export function apply(ctx: ClientContext): void {
       definition: async request => await invoke(ctx.remote.worldlineRuns.definition(request)),
       spatial: async request => await invoke(ctx.remote.worldlineRuns.spatial(request)),
       choices: async request => await invoke(ctx.remote.worldlineRuns.choices(request)),
+      simulate: async request => await invoke(ctx.remote.worldlineRuns.simulate(request)),
       advance: async request => await invoke(ctx.remote.worldlineRuns.advance(request)),
       submitAction: async request => await invoke(ctx.remote.worldlineRuns.submitAction(request)),
       pause: async request => await invoke(ctx.remote.worldlineRuns.pause(request)),

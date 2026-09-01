@@ -236,7 +236,9 @@ export class WorldlineRunDatabase {
           throw new Error('stream record is ahead of the committed snapshot')
         }
         const ordinal = ordinals.get(record.sequence)
-          ?? Number(nextOrdinal.get(record.sequence)?.['value'] ?? 0)
+          ?? (record.sequence > current.sequence
+            ? 0
+            : Number(nextOrdinal.get(record.sequence)?.['value'] ?? 0))
         insert.run(
           record.sequence,
           ordinal,
@@ -277,7 +279,7 @@ export class WorldlineRunDatabase {
     stream?: RunStream,
     afterOrdinal = -1,
   ): readonly RunStreamRecord[] {
-    const bounded = Math.min(5000, Math.max(1, limit))
+    const bounded = Math.min(5001, Math.max(1, limit))
     const rows = stream === undefined
       ? this.database.prepare(`
           SELECT sequence,ordinal,logical_time,stream,id,payload FROM stream_records

@@ -6,15 +6,15 @@
 
 ## 权限与数据流
 
-项目服务负责一个由用户选择的项目库根目录中的可变来源文档。编译器读取固定修订的来源快照，只冻结已经闭包的世界蓝图。演算服务从冻结构建创建逻辑演算；每个打开的演算由一个工作线程和一个 SQLite 写入者负责。AI 意图、调用、观察和叙事节拍都是持久证据，绝不是权威状态变化。
+项目服务负责一个由用户选择的项目库根目录中的可变来源文档。编译器读取固定修订的来源快照，只冻结已经闭包的世界蓝图。演算服务从冻结构建创建逻辑演算；每个打开的演算由一个工作线程和一个 SQLite 写入者负责。内核的有界自治调度会通过交互游玩所使用的同一条校验动作路径推进角色、游戏历法、周期系统、记忆、关系与空间状态。AI 意图、调用、观察和叙事节拍都是持久证据，绝不是权威状态变化。
 
 ## 公共类型分组
 
 - 项目类型覆盖根目录绑定、项目库分页、项目摘要、文档读取与乐观写入、历史、回收站、来源快照、冻结构建引用、传输任务，以及显式的项目、世界蓝图或演算归档请求。
 - 编译器类型覆盖构建状态、诊断、创作问题、可审查提案、闭包证书、冻结构建和语义解释。
-- 演算类型覆盖演算创建、视图、空间投影、选项、已验证行动、控制、有序记录分页、检查点、分支、AI 证据和事件解释。
+- 演算类型覆盖演算创建、有界确定性自治推演、视图、空间投影、选项、已验证行动、控制、有序记录分页、检查点、分支、AI 证据和事件解释。
 - AI 与叙事类型覆盖模型目录、预算、有界上下文包、角色决策、流式文本、场景帧、文字行动、存档点和故事舞台渲染器。
-- 会话绑定类型为每个作者会话携带且只携带一个项目、世界线、来源修订和可选演算权限。
+- 会话上下文类型为 OC 作者会话携带可切换的当前项目、世界线、来源修订和可选演算权限。显式项目或演算标识可以自然切换当前项目，不会把会话永久钉死在一个项目上。
 
 当前声明与字段级契约位于 [`packages/worldline/standard/src`](../../packages/worldline/standard/src)、[`packages/worldline/project/src/types.ts`](../../packages/worldline/project/src/types.ts)、[`packages/worldline/compiler/src/types.ts`](../../packages/worldline/compiler/src/types.ts)、[`packages/worldline/runtime/src/types.ts`](../../packages/worldline/runtime/src/types.ts)、[`packages/worldline/ai/src/types.ts`](../../packages/worldline/ai/src/types.ts) 和 [`packages/worldline/narrative/src/types.ts`](../../packages/worldline/narrative/src/types.ts)。
 
@@ -134,7 +134,7 @@ Host owner of binding validation, persistence, lookup, and prompt projection.
  */
 binding(session: Pick<Session, 'events'>): WorldlineConversationBinding | undefined
 
-/** Bind a conversation to a project and optional Run.
+/** Select a conversation's active project and optional Run.
  * @param request - The request supplied by the caller.
  * @returns The result produced by the operation.
  */
@@ -143,7 +143,7 @@ async bind(request: BindWorldlineConversationRequest): Promise<WorldlineConversa
 
 Types: [Session](session.md)
 
-Source: [`packages/worldline/conversation-context/src/index.ts:81`](../../packages/worldline/conversation-context/src/index.ts)
+Source: [`packages/worldline/conversation-context/src/index.ts:78`](../../packages/worldline/conversation-context/src/index.ts)
 
 <a id="ctxworldlinenarrative--worldlinenarrative"></a>
 
@@ -224,7 +224,7 @@ async *narrateStream(request: NarrateRequest): AsyncIterable<NarrativeStreamChun
 @Remote('storyStage') storyStage(): StoryStageStatus
 ```
 
-Source: [`packages/worldline/narrative/src/index.ts:55`](../../packages/worldline/narrative/src/index.ts)
+Source: [`packages/worldline/narrative/src/index.ts:103`](../../packages/worldline/narrative/src/index.ts)
 
 <a id="ctxworldlineprojects--worldlineprojects-abstract-seam"></a>
 
@@ -277,6 +277,11 @@ abstract trashProject(request: TrashProjectRequest): Promise<TrashedProject>
  * @returns The result produced by the operation.
  */
 abstract listTrashedProjects(): Promise<readonly TrashedProject[]>
+
+/** Permanently remove every project currently held in the project recycle bin.
+ * @returns The number of project entries removed.
+ */
+abstract emptyProjectTrash(): Promise<number>
 
 /** Restore a project from the project recycle bin.
  * @param request - The request supplied by the caller.
@@ -505,6 +510,11 @@ abstract runStorages(): Promise<readonly ProjectRunStorage[]>
  */
 @Remote('listTrashedProjects') remoteListTrashedProjects(): Promise<readonly TrashedProject[]>
 
+/** Permanently remove every project currently held in the project recycle bin.
+ * @returns The number of project entries removed.
+ */
+@Remote('emptyProjectTrash') remoteEmptyProjectTrash(): Promise<number>
+
 /** Perform remote restore project through the package's public contract.
  * @param value - The value supplied by the caller.
  * @returns The result produced by the operation.
@@ -688,6 +698,12 @@ abstract choices(request: RunChoicesRequest): Promise<RunChoicesView>
  */
 abstract advance(request: AdvanceRunRequest): Promise<RunView>
 
+/** Run bounded deterministic actor cycles inside the owning Runtime worker.
+ * @param request - The request supplied by the caller.
+ * @returns The result produced by the operation.
+ */
+abstract simulate(request: SimulateRunRequest): Promise<SimulateRunResult>
+
 /** Apply submit action through the package's validated ownership boundary.
  * @param request - The request supplied by the caller.
  * @returns The result produced by the operation.
@@ -748,7 +764,10 @@ abstract setControl(request: SetActorControlRequest): Promise<RunView>
  */
 abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
 
-/** Replace the explicit hard AI allowance without resetting accumulated usage. */
+/** Set the explicit bounded AI allowance for a Run.
+ * @param request - The request supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 abstract setAiBudget(request: SetAiBudgetRequest): Promise<RunView>
 
 /** Perform switch model through the package's public contract.
@@ -822,6 +841,12 @@ abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<Recor
  */
 @Remote('advance') remoteAdvance(value: AdvanceRunRequest): Promise<RunView>
 
+/** Run bounded autonomous cycles without routing through an Agent or model.
+ * @param value - The value supplied by the caller.
+ * @returns The result produced by the operation.
+ */
+@Remote('simulate') remoteSimulate(value: SimulateRunRequest): Promise<SimulateRunResult>
+
 /** Perform remote submit action through the package's public contract.
  * @param value - The value supplied by the caller.
  * @returns The result produced by the operation.
@@ -882,7 +907,10 @@ abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<Recor
  */
 @Remote('setAiEnabled') remoteSetAiEnabled(value: SetAiEnabledRequest): Promise<RunView>
 
-/** Perform remote set ai budget through the package's public contract. */
+/** Update the Run AI budget through the generated Remote boundary.
+ * @param value - The value supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 @Remote('setAiBudget') remoteSetAiBudget(value: SetAiBudgetRequest): Promise<RunView>
 
 /** Perform remote switch model through the package's public contract.
@@ -898,5 +926,5 @@ abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<Recor
 @Remote('explain') remoteExplain(value: ExplainRunEventRequest): Promise<RunEventExplanation>
 ```
 
-Source: [`packages/worldline/runtime/src/index.ts:41`](../../packages/worldline/runtime/src/index.ts)
+Source: [`packages/worldline/runtime/src/index.ts:44`](../../packages/worldline/runtime/src/index.ts)
 <!-- END GENERATED cordis-surface -->

@@ -15,6 +15,8 @@ import type {
   RunRecordsRequest,
   RunSpatialRequest,
   RunSpatialView,
+  SimulateRunRequest,
+  SimulateRunResult,
   RecordAiIntentRequest,
   RecordAiIntentResult,
   RecordAiInvocationRequest,
@@ -76,6 +78,11 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   abstract advance(request: AdvanceRunRequest): Promise<RunView>
+  /** Run bounded deterministic actor cycles inside the owning Runtime worker.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
+  abstract simulate(request: SimulateRunRequest): Promise<SimulateRunResult>
   /** Apply submit action through the package's validated ownership boundary.
    * @param request - The request supplied by the caller.
    * @returns The result produced by the operation.
@@ -126,7 +133,10 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
-  /** Set the explicit bounded AI allowance for a Run. */
+  /** Set the explicit bounded AI allowance for a Run.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   abstract setAiBudget(request: SetAiBudgetRequest): Promise<RunView>
   /** Perform switch model through the package's public contract.
    * @param request - The request supplied by the caller.
@@ -188,6 +198,13 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   @Remote('advance') remoteAdvance(value: AdvanceRunRequest): Promise<RunView> { return this.advance(value) }
+  /** Run bounded autonomous cycles without routing through an Agent or model.
+   * @param value - The value supplied by the caller.
+   * @returns The result produced by the operation.
+   */
+  @Remote('simulate') remoteSimulate(value: SimulateRunRequest): Promise<SimulateRunResult> {
+    return this.simulate(value)
+  }
   /** Perform remote submit action through the package's public contract.
    * @param value - The value supplied by the caller.
    * @returns The result produced by the operation.
@@ -238,7 +255,10 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   @Remote('setAiEnabled') remoteSetAiEnabled(value: SetAiEnabledRequest): Promise<RunView> { return this.setAiEnabled(value) }
-  /** Update the Run AI budget through the generated Remote boundary. */
+  /** Update the Run AI budget through the generated Remote boundary.
+   * @param value - The value supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('setAiBudget') remoteSetAiBudget(value: SetAiBudgetRequest): Promise<RunView> { return this.setAiBudget(value) }
   /** Perform remote switch model through the package's public contract.
    * @param value - The value supplied by the caller.

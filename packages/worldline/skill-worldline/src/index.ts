@@ -1,6 +1,5 @@
 /** Seven bundled workflows for authoring and operating the current Worldline format. */
 import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   BUNDLED_SKILL_RANK,
@@ -25,15 +24,25 @@ export const WORLDLINE_SKILLS = [
 
 type WorldlineSkillName = typeof WORLDLINE_SKILLS[number][0]
 
+const WORLDLINE_SKILL_REFERENCES: Readonly<Record<WorldlineSkillName, string>> = {
+  'worldline-authoring': 'authority.md',
+  'worldline-character-design': 'character-model.md',
+  'worldline-map-design': 'map-model.md',
+  'worldline-mechanism-design': 'mechanism-checklist.md',
+  'worldline-scenario-design': 'scenario-template.md',
+  'worldline-build-audit': 'build-gates.md',
+  'worldline-simulation-analysis': 'run-diagnostics.md',
+}
+
 function skillUrl(name: WorldlineSkillName): URL {
   return new URL(`../assets/skills/${name}/SKILL.md`, import.meta.url)
 }
 
-function resourceBase(name: WorldlineSkillName) {
-  return {
-    kind: 'directory' as const,
-    path: fileURLToPath(new URL(`../assets/skills/${name}/`, import.meta.url)),
-  }
+function referenceUrl(name: WorldlineSkillName): URL {
+  return new URL(
+    `../assets/skills/${name}/references/${WORLDLINE_SKILL_REFERENCES[name]}`,
+    import.meta.url,
+  )
 }
 
 /** Identifies the package-owned worldline skill candidates value.
@@ -45,7 +54,6 @@ export const WORLDLINE_SKILL_CANDIDATES: readonly SkillCandidate[] = WORLDLINE_S
     invocation: { modelInvocable: true, userInvocable: true },
     provider: PROVIDER_NAME,
     source: 'bundled',
-    resourceBase: resourceBase(name),
     rank: BUNDLED_SKILL_RANK,
     locator: skillUrl(name),
   }),
@@ -57,14 +65,15 @@ const provider: SkillProvider = {
   async get(candidate): Promise<SkillDefinition | undefined> {
     const matched = WORLDLINE_SKILL_CANDIDATES.find(item => item.name === candidate.name)
     if (matched === undefined || !(matched.locator instanceof URL)) return undefined
+    const reference = await readFile(referenceUrl(matched.name as WorldlineSkillName), 'utf8')
     return {
       name: matched.name,
       description: matched.description,
       invocation: matched.invocation,
       provider: matched.provider,
       source: matched.source,
-      ...(matched.resourceBase === undefined ? {} : { resourceBase: matched.resourceBase }),
-      content: await readFile(matched.locator, 'utf8'),
+      content: `${await readFile(matched.locator, 'utf8').then(value => value.trimEnd())}\n\n`
+        + `## 已加载的当前格式参考\n\n${reference.trim()}\n`,
     }
   },
 }

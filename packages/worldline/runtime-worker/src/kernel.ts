@@ -37,6 +37,7 @@ import {
   contentFingerprint,
   evaluateScopedExpression,
   evaluateWorldlineInvariants,
+  expressionPaths,
   isValidWorldEvent,
   materializeInitialWorldState,
   stableStringify,
@@ -59,6 +60,8 @@ import type {
   RunRecordsRequest,
   RunSpatialRequest,
   RunSpatialView,
+  SimulateRunRequest,
+  SimulateRunResult,
   RecordAiIntentRequest,
   RecordAiIntentResult,
   RecordAiInvocationRequest,
@@ -142,7 +145,42 @@ const EMPTY_MEMORY: CharacterMemory = {
   reflections: [],
 }
 
-const MEMORY_CATEGORY_LIMIT = 500
+const MEMORY_CATEGORY_LIMIT = 100
+const RELATIONSHIP_EVIDENCE_LIMIT = 20
+const RETAINED_TERMINAL_PROCESS_LIMIT = 64
+
+function actionNeedsTarget(definition: ActionDefinition): boolean {
+  return definition.preconditions.some(expression => (
+    expressionPaths(expression).some(path => path.startsWith('target.state.'))
+  )) || definition.effects.some(effect => (
+    (effect.op === 'set' || effect.op === 'increment') && effect.path.startsWith('target.state.')
+  ))
+}
+
+function syncConfiguredCalendar(state: JsonObject, logicalTime: number): JsonObject {
+  const world = state['world']
+  if (typeof world !== 'object' || world === null || Array.isArray(world)) return state
+  const calendar = world['calendar']
+  if (typeof calendar !== 'object' || calendar === null || Array.isArray(calendar)) return state
+  const secondsPerDay = Number(calendar['secondsPerDay'])
+  const daysPerSeason = Number(calendar['daysPerSeason'])
+  const seasons = Array.isArray(calendar['seasons'])
+    ? calendar['seasons'].filter((item): item is string => typeof item === 'string' && item !== '')
+    : []
+  if (!Number.isFinite(secondsPerDay) || secondsPerDay <= 0
+    || !Number.isInteger(daysPerSeason) || daysPerSeason <= 0 || seasons.length === 0) return state
+  const dayIndex = Math.floor(logicalTime / secondsPerDay)
+  const yearLength = daysPerSeason * seasons.length
+  const seasonIndex = Math.floor((dayIndex % yearLength) / daysPerSeason)
+  return setPath(state, 'world.calendar', {
+    ...calendar,
+    absoluteDay: dayIndex + 1,
+    year: Math.floor(dayIndex / yearLength) + 1,
+    season: seasons[seasonIndex] ?? seasons[0] ?? '',
+    dayOfSeason: dayIndex % daysPerSeason + 1,
+    timeOfDaySeconds: logicalTime % secondsPerDay,
+  })
+}
 
 function jsonObject(value: unknown): JsonObject {
   return JSON.parse(JSON.stringify(value)) as JsonObject
@@ -194,14 +232,22 @@ function getPath(root: JsonObject, path: string): JsonValue | undefined {
 }
 
 function setPath(root: JsonObject, path: string, value: JsonValue): JsonObject {
-  const result = structuredClone(root)
   const parts = pathSegments(path)
   if (parts.length === 0) throw new Error('an effect cannot replace the Run state root')
+  const result: JsonObject = { ...root }
   let cursor: Record<string, JsonValue> = result
+  let source: Record<string, JsonValue> | undefined = root
   for (const segment of parts.slice(0, -1)) {
-    const existing = cursor[segment]
-    if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) cursor[segment] = {}
-    cursor = cursor[segment] as Record<string, JsonValue>
+    const existing: JsonValue | undefined = source?.[segment]
+    const next: Record<string, JsonValue> = typeof existing === 'object'
+      && existing !== null && !Array.isArray(existing)
+      ? { ...existing }
+      : {}
+    cursor[segment] = next
+    cursor = next
+    source = typeof existing === 'object' && existing !== null && !Array.isArray(existing)
+      ? existing
+      : undefined
   }
   const leaf = parts.at(-1)
   if (leaf === undefined) throw new Error('an effect path must identify a state field')
@@ -239,6 +285,9 @@ export class WorldlineKernel {
   }
   private idCounter = 0
   private stopped = false
+  private deferDatabaseCommit = false
+  private deferredRecords: RunStreamRecord[] = []
+  private readonly plannedMovementCache = new Map<string, PlannedMovement | null>()
 
   constructor(private readonly init: KernelInit) {
     const blueprintErrors = validateBlueprint(init.blueprint)
@@ -299,6 +348,18 @@ export class WorldlineKernel {
       summary: this.summary(),
       snapshot: structuredClone(this.snapshotValue),
       health: this.health(),
+      aiUsage: this.snapshotValue.aiUsage,
+      controls: Object.fromEntries(this.controls),
+    }
+  }
+
+  /** Internal batch result; the worker never publishes this reference outside the current command. */
+  private resultView(): RunView {
+    if (!this.deferDatabaseCommit) return this.view()
+    return {
+      summary: this.summary(),
+      snapshot: this.snapshotValue,
+      health: this.health(false),
       aiUsage: this.snapshotValue.aiUsage,
       controls: Object.fromEntries(this.controls),
     }
@@ -436,13 +497,17 @@ export class WorldlineKernel {
     ))
     const choices = active ? [] : this.init.blueprint.actions
       .filter(definition => typeof actor['type'] === 'string'
-        && definition.actorTypes.includes(actor['type'])
-        && definition.preconditions.every(expression => evaluateScopedExpression(
+        && definition.actorTypes.includes(actor['type']))
+      .flatMap(definition => this.projectActionChoices(request.actorId, definition))
+      .filter((choice) => {
+        const definition = this.definition(choice.actionType)
+        const targetId = targetEntityId(choice.parameters)
+        return definition.preconditions.every(expression => evaluateScopedExpression(
           expression,
           this.snapshotValue.state,
-          { actorId: request.actorId },
-        )))
-      .flatMap(definition => this.projectActionChoices(request.actorId, definition))
+          { actorId: request.actorId, ...(targetId === undefined ? {} : { targetId }) },
+        ))
+      })
     return {
       runId: request.runId,
       actorId: request.actorId,
@@ -477,7 +542,7 @@ export class WorldlineKernel {
     this.assertLive()
     this.statusValue = 'paused'
     this.commit([])
-    return this.view()
+    return this.resultView()
   }
 
   /** Apply resume through the package's validated ownership boundary.
@@ -509,7 +574,7 @@ export class WorldlineKernel {
       const next = this.sortedQueue()[0]
       if (next === undefined || next.due > target) break
       this.removeFuture(next.id)
-      this.snapshotValue = { ...this.snapshotValue, logicalTime: next.due }
+      this.snapshotValue = this.withLogicalTime(next.due)
       const before = this.snapshotValue.sequence
       this.handleFuture(next, records)
       this.healthValue.noProgressSteps = this.snapshotValue.sequence === before
@@ -521,10 +586,93 @@ export class WorldlineKernel {
     const nextAfterAdvance = this.sortedQueue()[0]
     if (processed >= maximum && nextAfterAdvance !== undefined
       && nextAfterAdvance.due <= target) this.statusValue = 'degraded'
-    else this.snapshotValue = { ...this.snapshotValue, logicalTime: target }
+    else this.snapshotValue = this.withLogicalTime(target)
     records.push(this.telemetryRecord())
     this.commit(records)
-    return this.view()
+    return this.resultView()
+  }
+
+  /** Run actor choices and time as one transaction per cycle; no model is consulted. */
+  simulate(request: SimulateRunRequest): SimulateRunResult {
+    this.assertRun(request.runId)
+    this.assertLive()
+    if (this.statusValue === 'paused') throw new WorldlineRuntimeError('run-not-live', 'resume the Run before simulating')
+    const cycles = Math.trunc(request.cycles)
+    if (!Number.isFinite(cycles) || cycles < 1 || cycles > 1_000) {
+      throw new WorldlineRuntimeError('action-invalid', 'simulation cycles must be between 1 and 1000')
+    }
+    if (!Number.isFinite(request.stepDuration) || request.stepDuration <= 0) {
+      throw new WorldlineRuntimeError('action-invalid', 'simulation step duration must be positive')
+    }
+    const actors = this.init.blueprint.entities.filter(entity => entity.type === 'character'
+      && (this.controls.get(entity.id) ?? 'autonomous') === 'autonomous')
+    const sampledActions: SimulateRunResult['sampledActions'][number][] = []
+    const actionCounts: Record<string, number> = {}
+    const actorActionCounts: Record<string, number> = Object.fromEntries(actors.map(item => [item.id, 0]))
+    const transactionCycles = 25
+    let before = this.snapshotValue
+    let beforeHealth = structuredClone(this.healthValue)
+    let beforeCounter = this.idCounter
+    for (let cycle = 0; cycle < cycles; cycle += 1) {
+      if (cycle % transactionCycles === 0) {
+        before = this.snapshotValue
+        beforeHealth = structuredClone(this.healthValue)
+        beforeCounter = this.idCounter
+        this.deferDatabaseCommit = true
+        this.deferredRecords = []
+      }
+      try {
+        for (const [actorIndex, actor] of actors.entries()) {
+          const projected = this.choices({ runId: request.runId, actorId: actor.id })
+          const actionTypes = [...new Set(projected.choices.map(item => item.actionType))]
+          const selectedType = request.preferredAction !== undefined
+            && actionTypes.includes(request.preferredAction)
+            ? request.preferredAction
+            : actionTypes[(cycle + actorIndex) % Math.max(1, actionTypes.length)]
+          const candidates = projected.choices.filter(item => item.actionType === selectedType)
+          const choice = candidates[(cycle * Math.max(1, actors.length) + actorIndex)
+            % Math.max(1, candidates.length)] ?? projected.choices[0]
+          if (choice === undefined) continue
+          const submitted = this.submitAction({
+            runId: request.runId,
+            actorId: actor.id,
+            type: choice.actionType,
+            parameters: choice.parameters,
+            expectedSequence: projected.sequence,
+            controller: 'agent',
+          })
+          actionCounts[choice.actionType] = (actionCounts[choice.actionType] ?? 0) + 1
+          actorActionCounts[actor.id] = (actorActionCounts[actor.id] ?? 0) + 1
+          if (sampledActions.length < 500) sampledActions.push({
+            actorId: actor.id,
+            actionType: choice.actionType,
+            actionId: submitted.actionId,
+          })
+        }
+        this.advance({ runId: request.runId, duration: request.stepDuration, maxEvents: 100_000 })
+        if ((cycle + 1) % transactionCycles === 0 || cycle === cycles - 1) {
+          const records = this.deferredRecords
+          this.deferredRecords = []
+          this.deferDatabaseCommit = false
+          this.commit(records)
+        }
+      } catch (error) {
+        this.snapshotValue = before
+        Object.assign(this.healthValue, beforeHealth)
+        this.idCounter = beforeCounter
+        this.deferredRecords = []
+        this.deferDatabaseCommit = false
+        throw error
+      }
+    }
+    return {
+      view: this.view(),
+      actorIds: actors.map(item => item.id),
+      actionsPerformed: Object.values(actionCounts).reduce((sum, count) => sum + count, 0),
+      actionCounts,
+      actorActionCounts,
+      sampledActions,
+    }
   }
 
   /** Apply submit action through the package's validated ownership boundary.
@@ -607,7 +755,7 @@ export class WorldlineKernel {
     process = this.admitOrWait(process, definition, records)
     this.resolveWaitCycles(records)
     this.commit(records)
-    return { actionId, process, decision, view: this.view() }
+    return { actionId, process, decision, view: this.resultView() }
   }
 
   /** Apply records through the package's validated ownership boundary.
@@ -1252,7 +1400,8 @@ export class WorldlineKernel {
     return this.worldEvent({
       type: `action.${milestone}`,
       actorId: process.action.actorId,
-      participantIds: [process.action.actorId],
+      participantIds: [process.action.actorId, ...process.action.targetIds]
+        .filter((id, index, values) => values.indexOf(id) === index),
       actionId: process.action.id,
       processId: process.id,
       ruleId: definition.id,
@@ -1298,6 +1447,8 @@ export class WorldlineKernel {
   }
 
   private rememberObservation(actorId: EntityId, event: WorldEvent, observation: Observation): void {
+    if (event.processMilestone !== 'completed' && event.processMilestone !== 'failed'
+      && event.processMilestone !== 'cancelled') return
     const memory = this.characterMemory(actorId)
     const actor = this.entity(actorId)
     const state = actor?.['state']
@@ -1321,8 +1472,6 @@ export class WorldlineKernel {
       ...(locationId === undefined ? {} : { placeId: locationId }),
     }].slice(-MEMORY_CATEGORY_LIMIT)
     const experience = event.actionId !== undefined
-      && (event.processMilestone === 'completed' || event.processMilestone === 'failed'
-        || event.processMilestone === 'cancelled')
       ? [...memory.experience, {
         id: worldlineId<'memory'>(this.nextId('memory')),
         actorId,
@@ -1334,7 +1483,32 @@ export class WorldlineKernel {
         conditions: event.data,
       }].slice(-MEMORY_CATEGORY_LIMIT)
       : memory.experience
-    this.setCharacterMemory(actorId, { ...memory, episodic, experience })
+    const relationships = event.participantIds
+      .filter(id => id !== actorId && this.entity(worldlineId<'entity'>(id)) !== undefined)
+      .reduce<CharacterMemory['relationships']>((items, other) => {
+        const otherId = worldlineId<'entity'>(other)
+        const current = items.find(item => item.otherId === otherId)
+        const next = current === undefined ? {
+          id: worldlineId<'memory'>(this.nextId('memory')),
+          actorId,
+          logicalTime: event.logicalTime,
+          sourceEventIds: [event.id],
+          importance: 0.6,
+          otherId,
+          dimensions: { affinity: 0.1, interactions: 1 },
+        } : {
+          ...current,
+          logicalTime: event.logicalTime,
+          sourceEventIds: [...current.sourceEventIds, event.id].slice(-RELATIONSHIP_EVIDENCE_LIMIT),
+          dimensions: {
+            ...current.dimensions,
+            affinity: Math.min(100, (current.dimensions['affinity'] ?? 0) + 0.1),
+            interactions: (current.dimensions['interactions'] ?? 0) + 1,
+          },
+        }
+        return [...items.filter(item => item.otherId !== otherId), next]
+      }, memory.relationships)
+    this.setCharacterMemory(actorId, { ...memory, episodic, experience, relationships })
   }
 
   private rememberCognition(event: WorldEvent): void {
@@ -1374,7 +1548,7 @@ export class WorldlineKernel {
     const path = `entities.${escapePathSegment(actorId)}.memory`
     this.snapshotValue = {
       ...this.snapshotValue,
-      state: setPath(this.snapshotValue.state, path, jsonObject(memory)),
+      state: setPath(this.snapshotValue.state, path, memory as unknown as JsonValue),
     }
   }
 
@@ -1595,6 +1769,9 @@ export class WorldlineKernel {
 
   private planMovement(origin: MapNodeId, destination: MapNodeId): PlannedMovement | undefined {
     if (origin === destination) return { route: [origin], edges: [], duration: 0 }
+    const cacheKey = `${origin}\u0000${destination}`
+    const cached = this.plannedMovementCache.get(cacheKey)
+    if (cached !== undefined) return cached ?? undefined
     const edges = this.init.blueprint.maps.flatMap(map => map.edges)
     const distances = new Map<MapNodeId, number>([[origin, 0]])
     const previous = new Map<MapNodeId, { node: MapNodeId; edge: MapEdge }>()
@@ -1619,18 +1796,30 @@ export class WorldlineKernel {
         }
       }
     }
-    if (!previous.has(destination)) return undefined
+    if (!previous.has(destination)) {
+      this.plannedMovementCache.set(cacheKey, null)
+      return undefined
+    }
     const route: MapNodeId[] = [destination]
     const routeEdges: MapEdge[] = []
     let cursor = destination
     while (cursor !== origin) {
       const step = previous.get(cursor)
-      if (step === undefined) return undefined
+      if (step === undefined) {
+        this.plannedMovementCache.set(cacheKey, null)
+        return undefined
+      }
       route.unshift(step.node)
       routeEdges.unshift(step.edge)
       cursor = step.node
     }
-    return { route, edges: routeEdges, duration: routeEdges.reduce((sum, edge) => sum + edge.baseDuration, 0) }
+    const planned = {
+      route,
+      edges: routeEdges,
+      duration: routeEdges.reduce((sum, edge) => sum + edge.baseDuration, 0),
+    }
+    this.plannedMovementCache.set(cacheKey, planned)
+    return planned
   }
 
   private projectActionChoices(
@@ -1638,6 +1827,39 @@ export class WorldlineKernel {
     definition: ActionDefinition,
   ): ChoiceProjection[] {
     if (definition.operator !== 'move' && definition.operator !== 'teleport') {
+      if (actionNeedsTarget(definition)) {
+        const actorState = this.entity(actorId)?.['state']
+        const actorLocation = typeof actorState === 'object' && actorState !== null
+          && !Array.isArray(actorState) && typeof actorState['locationId'] === 'string'
+          ? actorState['locationId']
+          : undefined
+        return this.init.blueprint.entities
+          .filter(entity => entity.type === 'character' && entity.id !== actorId)
+          .filter((target) => {
+            const targetState = this.entity(target.id)?.['state']
+            const targetLocation = typeof targetState === 'object' && targetState !== null
+              && !Array.isArray(targetState) && typeof targetState['locationId'] === 'string'
+              ? targetState['locationId']
+              : undefined
+            return actorLocation === undefined || targetLocation === undefined
+              || actorLocation === targetLocation
+          })
+          .map((target) => {
+            const targetName = this.init.blueprint.canon.find(object => object.id === target.id)?.title
+              ?? target.id
+            return {
+              id: `choice:${contentFingerprint(`${actorId}:${definition.id}:${target.id}:${String(this.snapshotValue.sequence)}`)}`,
+              actionType: definition.id,
+              parameters: { targetId: target.id },
+              label: `${definition.description}：${targetName}`,
+              description: `${definition.description}：${targetName}`,
+              targetIds: [target.id],
+              estimatedDuration: definition.duration,
+              costs: definition.claims.map(claim => `${claim.quantity} ${claim.resource}`),
+              risks: [],
+            }
+          })
+      }
       return [{
         id: `choice:${contentFingerprint(`${actorId}:${definition.id}:${String(this.snapshotValue.sequence)}`)}`,
         actionType: definition.id,
@@ -1677,7 +1899,7 @@ export class WorldlineKernel {
     })
   }
 
-  private health(): RunHealth {
+  private health(verifyStore = true): RunHealth {
     const active = this.snapshotValue.processes.filter(item => !processTerminal(item.state))
     const longestWait = active.reduce((max, item) => (
       Math.max(max, this.snapshotValue.logicalTime - item.action.requestedAt)
@@ -1693,7 +1915,7 @@ export class WorldlineKernel {
       livelocksResolved: this.healthValue.livelocksResolved,
       fairnessInterventions: this.healthValue.fairnessInterventions,
       writerThread: true,
-      wal: this.database.integrity().journalMode.toLowerCase() === 'wal',
+      wal: !verifyStore || this.database.integrity().journalMode.toLowerCase() === 'wal',
     }
   }
 
@@ -1747,11 +1969,25 @@ export class WorldlineKernel {
 
   private putProcess(process: Process): void {
     const existing = this.snapshotValue.processes.some(item => item.id === process.id)
+    const updated = existing
+      ? this.snapshotValue.processes.map(item => item.id === process.id ? process : item)
+      : [...this.snapshotValue.processes, process]
+    const active = updated.filter(item => !processTerminal(item.state))
+    const terminal = updated.filter(item => processTerminal(item.state))
+      .sort((left, right) => right.action.requestedAt - left.action.requestedAt
+        || right.id.localeCompare(left.id))
+      .slice(0, RETAINED_TERMINAL_PROCESS_LIMIT)
     this.snapshotValue = {
       ...this.snapshotValue,
-      processes: existing
-        ? this.snapshotValue.processes.map(item => item.id === process.id ? process : item)
-        : [...this.snapshotValue.processes, process],
+      processes: [...active, ...terminal],
+    }
+  }
+
+  private withLogicalTime(logicalTime: number): RunSnapshot {
+    return {
+      ...this.snapshotValue,
+      logicalTime,
+      state: syncConfiguredCalendar(this.snapshotValue.state, logicalTime),
     }
   }
 
@@ -1772,6 +2008,10 @@ export class WorldlineKernel {
   }
 
   private commit(records: readonly RunStreamRecord[]): void {
+    if (this.deferDatabaseCommit) {
+      this.deferredRecords.push(...records)
+      return
+    }
     this.updatedAt = new Date().toISOString()
     this.database.commit({
       snapshot: this.snapshotValue,

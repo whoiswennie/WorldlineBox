@@ -44,7 +44,7 @@
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`、`interrupt_agent`、`list_agents`、`send_message`、`spawn_teammate`、`team_task_create`、`team_task_get`、`team_task_list`、`team_task_update`、`wait_agent` | `ctx.tools`、`ctx.systemPrompt`、`ctx.agentTeams`、`an exact live Team member Agent` | `tool/call`、`team/member`、`team/message/queued`、`team/message/delivered`、`team/task`、`tool/result` | - | 这 10 个工具限定于隐式 Team Lead 与持久 teammate 作用域。随产品发布的 dsh-base bundle 默认禁用该包；文档中的 Agent Teams profile patch 会启用它，并禁用旧 continuable child 的同名控制工具。 |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
-| `@deepseek-ai/dsh-tool-worldline` | `worldline_build`, `worldline_edit`, `worldline_explain`, `worldline_link`, `worldline_map`, `worldline_project`, `worldline_query`, `worldline_run`, `worldline_transfer` | `ctx.tools`, `ctx.systemPrompt`, `ctx.worldlineProjects`, `ctx.worldlineCompiler`, `ctx.worldlineRuns`, `ctx.worldlineConversationContexts`, `a bound calling Agent at execution time` | `tool/call`, `project Canon/build artifacts or Run state for mutations`, `tool/result` | - | 九个项目范围工具在执行时都需要调用方作者会话绑定；变更模式携带稳定标识、来源、修订、试运行或显式确认字段，不暴露通用文件系统写入。 |
+| `@deepseek-ai/dsh-tool-worldline` | `worldline_build`, `worldline_edit`, `worldline_explain`, `worldline_link`, `worldline_map`, `worldline_project`, `worldline_query`, `worldline_run`, `worldline_transfer` | `ctx.tools`, `ctx.systemPrompt`, `ctx.worldlineProjects`, `ctx.worldlineCompiler`, `ctx.worldlineRuns`, `ctx.worldlineConversationContexts`, `a calling Worldline OC Agent at execution time` | `tool/call`, `project Canon/build artifacts or Run state for mutations`, `tool/result` | - | 九个项目范围工具会根据每个明确的项目或 Run 标识自动选择调用方 OC 作者会话的当前项目；变更模式携带稳定标识、来源、修订、试运行或显式确认字段，不暴露通用文件系统写入。 |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
 | `@deepseek-ai/dsh-worldline-video` | `video_index`, `video_probe`, `video_read` | `ctx.tools`, `ctx.skills`, `ctx.subprocess`, `packaged FFmpeg and yt-dlp at execution time` | `tool/call`, `private video cache and sampled JPEGs`, `tool/result` | - | video_probe is metadata-only for online sources; video_index chooses resumable cache or no-media-save stream mode, and video_read performs bounded timestamped sampling from the reusable manifest. |
 
@@ -2769,7 +2769,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_build`
 
-检查编译器状态、执行编译、回答问题、提交或审查提案，或冻结与当前来源摘要完全一致的构建。冻结与审查需要显式确认。
+检查或编译来源、审查作者提案、冻结构建，或证明一个完整可游玩的 OC 闭环。`prove` 会执行编译、冻结、创建 Run、自治合法动作、时间推进、地图与事件账本验证以及检查点创建；它是唯一的完成门禁。
 
 ```json
 {
@@ -2783,7 +2783,8 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
         "answer",
         "propose",
         "review",
-        "freeze"
+        "freeze",
+        "prove"
       ]
     },
     "project_id": {
@@ -2846,6 +2847,15 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     },
     "confirm": {
       "type": "boolean"
+    },
+    "seed": {
+      "type": "string"
+    },
+    "action_type": {
+      "type": "string"
+    },
+    "advance_duration": {
+      "type": "number"
     }
   },
   "required": [
@@ -2992,36 +3002,32 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_map`
 
-试运行或提交带准确来源锚点、可审查的结构化地图提案。它绝不会通过直接重写地图文档绕过审查。
+读取、校验或写入项目文档中当前唯一的 `worldline-map` JSON 结构块。写入使用项目修订校验，来源由编译器计算；不要提供来源锚点。
 
 ```json
 {
   "type": "object",
   "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "read",
+        "validate",
+        "write"
+      ]
+    },
     "project_id": {
       "type": "string"
     },
-    "title": {
-      "type": "string"
-    },
-    "rationale": {
-      "type": "string"
-    },
-    "patch_json": {
-      "type": "string"
-    },
-    "anchors_json": {
-      "type": "string"
-    },
-    "risk": {
+    "path": {
       "type": "string",
-      "enum": [
-        "low",
-        "medium",
-        "high"
-      ]
+      "description": "Map Markdown document path; defaults to maps/world.md."
     },
-    "expected_state_revision": {
+    "map_json": {
+      "type": "string",
+      "description": "One complete current WorldMap JSON object. Required for validate and write."
+    },
+    "expected_revision": {
       "type": "string"
     },
     "dry_run": {
@@ -3029,11 +3035,8 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     }
   },
   "required": [
-    "project_id",
-    "title",
-    "rationale",
-    "patch_json",
-    "anchors_json"
+    "operation",
+    "project_id"
   ]
 }
 ```
@@ -3042,7 +3045,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_project`
 
-通过项目库列出、创建、复制、回收或恢复世界线项目。破坏性或复制操作需要显式确认。
+列出、创建、复制、回收或恢复世界线项目。创建项目或明确使用项目时，会自动把它选为本 OC 作者会话的当前项目；无需手动绑定。
 
 ```json
 {
@@ -3154,7 +3157,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_run`
 
-检查或控制确定性演算。变更操作绑定准确演算，并要求确认行动、大步推进、分支、控制变更、AI 变更与停止。
+检查或控制确定性演算。明确的项目与 Run 标识会自动选中其所属项目。动作、大步推进、分支、控制变更、AI 变更和停止等变更操作使用显式确认。
 
 ```json
 {
@@ -3168,6 +3171,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
         "view",
         "choices",
         "advance",
+        "simulate",
         "action",
         "pause",
         "resume",
@@ -3176,7 +3180,8 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
         "checkpoints",
         "branch",
         "set-control",
-        "set-ai"
+        "set-ai",
+        "set-budget"
       ]
     },
     "project_id": {
@@ -3223,8 +3228,17 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     "enabled": {
       "type": "boolean"
     },
+    "budget_json": {
+      "type": "string"
+    },
     "confirm": {
       "type": "boolean"
+    },
+    "cycles": {
+      "type": "integer"
+    },
+    "step_duration": {
+      "type": "number"
     }
   },
   "required": [
@@ -3304,7 +3318,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
 
-九个项目范围工具在执行时都需要调用方作者会话绑定；变更模式携带稳定标识、来源、修订、试运行或显式确认字段，不暴露通用文件系统写入。
+九个项目范围工具在执行时会自动解析并切换调用方作者会话的当前项目；变更模式携带稳定标识、来源、修订、试运行或显式确认字段，不暴露通用文件系统写入。
 
 <a id="worldline-tool-web"></a>
 

@@ -160,7 +160,6 @@ describe('WorldlineNarrative', () => {
   it('matches a Chinese natural-language intent to one legal action', async () => {
     const runtime = await setup()
     const run = await createRun(runtime.context)
-    await runtime.context.worldlineRuns.setControl({ ...run, mode: 'player' })
     const choices = await runtime.context.worldlineRuns.choices(run)
     const result = await runtime.context.worldlineNarrative.freeInput({
       ...run,
@@ -170,6 +169,7 @@ describe('WorldlineNarrative', () => {
     expect(result.status).toBe('submitted')
     expect(result.candidates).toHaveLength(1)
     expect(result.candidates[0]?.actionType).toBe('character.work')
+    expect((await runtime.context.worldlineRuns.view(run)).controls[run.actorId]).toBe('player')
     await runtime.dispose()
   })
 
@@ -227,7 +227,10 @@ describe('WorldlineNarrative', () => {
     expect(retried.view.summary.parentRunId).toBe(run.runId)
     expect(retried.view.summary.runId).not.toBe(run.runId)
 
-    expect(runtime.context.worldlineNarrative.storyStage()).toMatchObject({ available: false })
+    expect(runtime.context.worldlineNarrative.storyStage()).toMatchObject({
+      available: true,
+      renderers: [{ id: 'worldline-text-story', name: '内置文字故事舞台' }],
+    })
     const renderer: StoryStageRenderer = {
       id: 'test-stage',
       name: 'Test stage',
@@ -237,11 +240,47 @@ describe('WorldlineNarrative', () => {
     const unregister = runtime.context.worldlineNarrative.registerRenderer(renderer)
     expect(runtime.context.worldlineNarrative.storyStage()).toMatchObject({
       available: true,
-      renderers: [{ id: 'test-stage' }],
+      renderers: [{ id: 'worldline-text-story' }, { id: 'test-stage' }],
     })
     unregister()
     expect(runtime.adapter.calls).toBe(2)
     expect(runtime.adapter.inputs.every(input => !input.includes('must-not-leak'))).toBe(true)
+    await runtime.dispose()
+  })
+
+  it('continues six model-narrated rounds from authoritative action evidence', async () => {
+    const runtime = await setup()
+    const run = await createRun(runtime.context)
+    const beats: NarrativeBeatId[] = []
+    for (let round = 0; round < 6; round += 1) {
+      const choices = await runtime.context.worldlineRuns.choices(run)
+      const work = choices.choices.find(choice => choice.actionType === 'character.work')
+      if (work === undefined) throw new Error(`round ${String(round + 1)} has no legal work action`)
+      await runtime.context.worldlineNarrative.choose({
+        ...run,
+        choiceId: work.id,
+        expectedSequence: choices.sequence,
+      })
+      await runtime.context.worldlineRuns.advance({ runId: run.runId, duration: 10 })
+      const beat = await runtime.context.worldlineNarrative.narrate(run)
+      expect(beat.style).toBe('llm')
+      expect(beat.eventIds).not.toHaveLength(0)
+      beats.push(beat.id)
+    }
+    const view = await runtime.context.worldlineRuns.view({ runId: run.runId })
+    expect(view.snapshot.aiUsage.calls).toBe(6)
+    expect(view.snapshot.logicalTime).toBe(60)
+    expect(new Set(beats).size).toBe(6)
+    expect(runtime.adapter.calls).toBe(6)
+    expect(runtime.adapter.inputs.every(input => (
+      input.includes('action.completed') && !input.includes('must-not-leak')
+    ))).toBe(true)
+    const retained = await runtime.context.worldlineRuns.records({
+      runId: run.runId,
+      stream: 'narrative-beat',
+      limit: 10,
+    })
+    expect(retained.records).toHaveLength(6)
     await runtime.dispose()
   })
 })

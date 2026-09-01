@@ -2911,7 +2911,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'async bind(request: BindWorldlineConversationRequest): Promise<WorldlineConversationBinding>',
-        description: 'Bind a conversation to a project and optional Run.',
+        description: 'Select a conversation\'s active project and optional Run.',
         parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
         returns: 'The result produced by the operation.',
       },
@@ -3048,6 +3048,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'List projects currently available for recovery.',
         parameters: [],
         returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract emptyProjectTrash(): Promise<number>',
+        description: 'Permanently remove every project currently held in the project recycle bin.',
+        parameters: [],
+        returns: 'The number of project entries removed.',
       },
       {
         signature: 'abstract restoreProject(request: RestoreProjectRequest): Promise<ProjectSummary>',
@@ -3277,6 +3283,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The result produced by the operation.',
       },
       {
+        signature: '@Remote(\'emptyProjectTrash\') remoteEmptyProjectTrash(): Promise<number>',
+        description: 'Permanently remove every project currently held in the project recycle bin.',
+        parameters: [],
+        returns: 'The number of project entries removed.',
+      },
+      {
         signature: '@Remote(\'restoreProject\') remoteRestoreProject(value: RestoreProjectRequest): Promise<ProjectSummary>',
         description: 'Perform remote restore project through the package\'s public contract.',
         parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
@@ -3458,6 +3470,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The result produced by the operation.',
       },
       {
+        signature: 'abstract simulate(request: SimulateRunRequest): Promise<SimulateRunResult>',
+        description: 'Run bounded deterministic actor cycles inside the owning Runtime worker.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
         signature: 'abstract submitAction(request: SubmitRunActionRequest): Promise<SubmitRunActionResult>',
         description: 'Apply submit action through the package\'s validated ownership boundary.',
         parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
@@ -3514,6 +3532,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       {
         signature: 'abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>',
         description: 'Enable or disable AI participation for a Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract setAiBudget(request: SetAiBudgetRequest): Promise<RunView>',
+        description: 'Set the explicit bounded AI allowance for a Run.',
         parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
         returns: 'The result produced by the operation.',
       },
@@ -3590,6 +3614,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The result produced by the operation.',
       },
       {
+        signature: '@Remote(\'simulate\') remoteSimulate(value: SimulateRunRequest): Promise<SimulateRunResult>',
+        description: 'Run bounded autonomous cycles without routing through an Agent or model.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
         signature: '@Remote(\'submitAction\') remoteSubmitAction(value: SubmitRunActionRequest): Promise<SubmitRunActionResult>',
         description: 'Perform remote submit action through the package\'s public contract.',
         parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
@@ -3646,6 +3676,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       {
         signature: '@Remote(\'setAiEnabled\') remoteSetAiEnabled(value: SetAiEnabledRequest): Promise<RunView>',
         description: 'Perform remote set ai enabled through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'setAiBudget\') remoteSetAiBudget(value: SetAiBudgetRequest): Promise<RunView>',
+        description: 'Update the Run AI budget through the generated Remote boundary.',
         parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
         returns: 'The result produced by the operation.',
       },
@@ -6101,7 +6137,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RunStream',
-    declaration: 'export type RunStream = \'world-event\' | \'decision-trace\' | \'ai-intent\' | \'ai-invocation\' | \'observation\' | \'narrative-beat\' | \'telemetry\';',
+    declaration: 'export type RunStream = \'world-event\' | \'decision-trace\' | \'ai-intent\' | \'ai-invocation\' | \'observation\' | \'narrative-beat\' | \'runtime-diagnostic\' | \'telemetry\';',
   },
   {
     name: 'RunStreamRecord',
@@ -6464,6 +6500,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SetActorControlRequest extends RunRef {\n    readonly actorId: EntityId;\n    readonly mode: ActorControlMode;\n}',
   },
   {
+    name: 'SetAiBudgetRequest',
+    declaration: 'export interface SetAiBudgetRequest extends RunRef {\n    readonly budget: AiBudget;\n    readonly expectedSequence: number;\n}',
+  },
+  {
     name: 'SetAiEnabledRequest',
     declaration: 'export interface SetAiEnabledRequest extends RunRef {\n    readonly enabled: boolean;\n}',
   },
@@ -6526,6 +6566,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ShellSandboxInfo',
     declaration: 'export interface ShellSandboxInfo {\n    mode: SandboxMode;\n    denied: boolean;\n    enforcement?: SandboxEnforcement;\n    runnerFailed?: boolean;\n}',
+  },
+  {
+    name: 'SimulateRunRequest',
+    declaration: 'export interface SimulateRunRequest extends RunRef {\n    readonly cycles: number;\n    readonly stepDuration: number;\n    readonly preferredAction?: string;\n}',
+  },
+  {
+    name: 'SimulateRunResult',
+    declaration: 'export interface SimulateRunResult {\n    readonly view: RunView;\n    readonly actorIds: readonly EntityId[];\n    readonly actionsPerformed: number;\n    readonly actionCounts: Readonly<Record<string, number>>;\n    readonly actorActionCounts: Readonly<Record<string, number>>;\n    readonly sampledActions: readonly {\n        readonly actorId: EntityId;\n        readonly actionType: string;\n        readonly actionId: ActionId;\n    }[];\n}',
   },
   {
     name: 'SimulationPurpose',

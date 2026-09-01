@@ -171,7 +171,7 @@ function authoredMemory(object: CanonObject): CharacterMemory {
       return {
         ...memoryBase(object.id, 'belief', index),
         subject: detail === undefined ? subject : stringValue(detail.subject, subject),
-        value: detail?.value as JsonValue ?? value as JsonValue,
+        value: detail?.value ?? value,
         confidence: Math.min(1, Math.max(0, numberValue(detail?.confidence, 1))),
         contradictedBy: [],
       }

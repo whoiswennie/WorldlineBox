@@ -11,6 +11,7 @@ function execute(kernel: WorldlineKernel, command: WorkerCommand): unknown {
   if (command.type === 'spatial') return kernel.spatial(command.payload)
   if (command.type === 'choices') return kernel.choices(command.payload)
   if (command.type === 'advance') return kernel.advance(command.payload)
+  if (command.type === 'simulate') return kernel.simulate(command.payload)
   if (command.type === 'submit-action') return kernel.submitAction(command.payload)
   if (command.type === 'pause') return kernel.pause()
   if (command.type === 'resume') return kernel.resume()

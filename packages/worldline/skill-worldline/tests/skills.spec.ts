@@ -15,7 +15,11 @@ describe('Worldline bundled skills', () => {
       const skill = await ctx.skills.get(name)
       expect(skill?.content).toContain('## 权限边界')
       expect(skill?.content).toContain('## 工作步骤')
+      expect(skill?.content).toContain('## 已加载的当前格式参考')
+      expect(skill?.resourceBase).toBeUndefined()
     }
+    expect((await ctx.skills.get('worldline-map-design'))?.content).toContain('```json')
+    expect((await ctx.skills.get('worldline-mechanism-design'))?.content).toContain('worldline-action')
   })
 
   it('lets a project-ranked provider replace a bundled name without compatibility branches', async () => {

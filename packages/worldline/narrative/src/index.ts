@@ -128,7 +128,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
    */
   @Remote('scene')
   async scene(request: TextPlayRequest): Promise<SceneFrame> {
-    const view = await this.context.worldlineRuns.view({ runId: request.runId })
+    const [view, spatial] = await Promise.all([
+      this.context.worldlineRuns.view({ runId: request.runId }),
+      this.context.worldlineRuns.spatial({ runId: request.runId }),
+    ])
     const entities = object(view.snapshot.state['entities'])
     const actor = object(entities?.[request.actorId])
     if (actor === undefined) throw new Error(`unknown actor: ${request.actorId}`)
@@ -152,6 +155,9 @@ export default class WorldlineNarrative extends TypertRemoteService {
       }]
     }))
     const visibleIds = new Set(presentEntityIds)
+    const placeName = place === undefined
+      ? undefined
+      : spatial.map?.nodes.find(node => node.id === place)?.name
     return {
       logicalTime: view.snapshot.logicalTime,
       ...(place === undefined ? {} : { placeId: place }),
@@ -159,6 +165,7 @@ export default class WorldlineNarrative extends TypertRemoteService {
       visibleState: {
         self: { id: request.actorId, type: actor['type'] ?? 'entity', state: actorState },
         present,
+        ...(place === undefined ? {} : { place: { id: place, name: placeName ?? place } }),
       },
       activeProcesses: view.snapshot.processes.filter(process => (
         process.action.actorId === request.actorId || visibleIds.has(process.action.actorId)
@@ -281,9 +288,14 @@ export default class WorldlineNarrative extends TypertRemoteService {
   @Remote('choose')
   async choose(request: ChooseTextActionRequest): Promise<SubmitRunActionResult> {
     const projected = await this.context.worldlineRuns.choices(request)
-    if (projected.sequence !== request.expectedSequence) throw new Error('choices are stale; refresh the scene')
+    if (projected.sequence !== request.expectedSequence) throw new Error('行动选项已经变化，请刷新当前场景。')
     const choice = projected.choices.find(item => item.id === request.choiceId)
-    if (choice === undefined) throw new Error('choice is not legal in the current Run state')
+    if (choice === undefined) throw new Error('这个行动在当前世界状态中不可执行。')
+    await this.context.worldlineRuns.setControl({
+      runId: request.runId,
+      actorId: request.actorId,
+      mode: 'player',
+    })
     return this.context.worldlineRuns.submitAction({
       runId: request.runId,
       actorId: request.actorId,
@@ -389,17 +401,21 @@ export default class WorldlineNarrative extends TypertRemoteService {
    */
   @Remote('storyStage')
   storyStage(): StoryStageStatus {
-    const renderers = [...this.renderers.values()].map(renderer => ({
+    const renderers = [{
+      id: 'worldline-text-story',
+      name: '内置文字故事舞台',
+      capabilities: [] as readonly string[],
+    }, ...[...this.renderers.values()].map(renderer => ({
       id: renderer.id,
       name: renderer.name,
       capabilities: [...renderer.capabilities],
-    }))
+    }))]
     return {
-      available: renderers.length > 0,
+      available: true,
       renderers,
-      message: renderers.length === 0
-        ? 'Visual novel staging is not implemented. StoryStageRenderer and media mapping are stable extension seams.'
-        : 'One or more external StoryStage renderers are available.',
+      message: this.renderers.size === 0
+        ? '内置中文文字故事舞台已就绪；可随时继续接入立绘、背景和音频演出器。'
+        : '内置文字故事舞台与扩展演出器均已就绪。',
     }
   }
 
@@ -428,7 +444,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     if (latest === undefined) {
       return `世界时间 ${String(frame.logicalTime)}。四周暂时安静，没有新的可见事件发生。`
     }
-    const place = frame.placeId === undefined ? '尚未标明的地点' : frame.placeId
+    const placeState = object(frame.visibleState['place'])
+    const place = typeof placeState?.['name'] === 'string'
+      ? placeState['name']
+      : frame.placeId === undefined ? '尚未标明的地点' : frame.placeId
     const event = ({
       'action.proposed': '有人作出了行动决定',
       'action.started': '一项行动已经开始',

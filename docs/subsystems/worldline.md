@@ -6,15 +6,15 @@ The Worldline subsystem turns user-authored Canon into provenance-preserving fro
 
 ## Authority and data flow
 
-The project service owns mutable source documents under one user-selected library root. The compiler reads a revision-pinned source snapshot and freezes only a closed Blueprint. The runtime service creates logical Runs from frozen builds; one worker and one SQLite writer own each open Run. AI intents, invocations, observations, and narrative beats are durable evidence, never authoritative state changes.
+The project service owns mutable source documents under one user-selected library root. The compiler reads a revision-pinned source snapshot and freezes only a closed Blueprint. The runtime service creates logical Runs from frozen builds; one worker and one SQLite writer own each open Run. Its bounded autonomous scheduler advances actors, game-calendar time, systems, memories, relationships, and spatial state through the same validated action path used by interactive play. AI intents, invocations, observations, and narrative beats are durable evidence, never authoritative state changes.
 
 ## Public type groups
 
 - Project types cover root binding, library pages, project summaries, document reads and optimistic writes, history, trash, source snapshots, frozen build references, transfer jobs, and explicit project, Blueprint, or Run archive requests.
 - Compiler types cover build state, diagnostics, creative questions, reviewable proposals, closure certificates, frozen builds, and semantic explanations.
-- Runtime types cover Run creation, views, spatial projections, choices, validated actions, controls, ordered record pages, checkpoints, branches, AI evidence, and event explanations.
+- Runtime types cover Run creation, bounded deterministic simulation, views, spatial projections, choices, validated actions, controls, ordered record pages, checkpoints, branches, AI evidence, and event explanations.
 - AI and narrative types cover model catalogs, budgets, bounded context packs, actor decisions, streamed text, scene frames, text actions, savepoints, and StoryStage renderers.
-- Conversation-binding types carry exactly one project, worldline, source revision, and optional Run authority per author Session.
+- Conversation-context types carry a switchable active project, worldline, source revision, and optional Run authority for an OC author Session. An explicit project or Run identifier may select another project without permanently pinning the Session to it.
 
 The current declarations and field-level contracts live in [`packages/worldline/standard/src`](../../packages/worldline/standard/src), [`packages/worldline/project/src/types.ts`](../../packages/worldline/project/src/types.ts), [`packages/worldline/compiler/src/types.ts`](../../packages/worldline/compiler/src/types.ts), [`packages/worldline/runtime/src/types.ts`](../../packages/worldline/runtime/src/types.ts), [`packages/worldline/ai/src/types.ts`](../../packages/worldline/ai/src/types.ts), and [`packages/worldline/narrative/src/types.ts`](../../packages/worldline/narrative/src/types.ts).
 
@@ -134,7 +134,7 @@ Host owner of binding validation, persistence, lookup, and prompt projection.
  */
 binding(session: Pick<Session, 'events'>): WorldlineConversationBinding | undefined
 
-/** Bind a conversation to a project and optional Run.
+/** Select a conversation's active project and optional Run.
  * @param request - The request supplied by the caller.
  * @returns The result produced by the operation.
  */
@@ -143,7 +143,7 @@ async bind(request: BindWorldlineConversationRequest): Promise<WorldlineConversa
 
 Types: [Session](session.md)
 
-Source: [`packages/worldline/conversation-context/src/index.ts:81`](../../packages/worldline/conversation-context/src/index.ts)
+Source: [`packages/worldline/conversation-context/src/index.ts:78`](../../packages/worldline/conversation-context/src/index.ts)
 
 <a id="ctxworldlinenarrative--worldlinenarrative"></a>
 
@@ -224,7 +224,7 @@ async *narrateStream(request: NarrateRequest): AsyncIterable<NarrativeStreamChun
 @Remote('storyStage') storyStage(): StoryStageStatus
 ```
 
-Source: [`packages/worldline/narrative/src/index.ts:55`](../../packages/worldline/narrative/src/index.ts)
+Source: [`packages/worldline/narrative/src/index.ts:103`](../../packages/worldline/narrative/src/index.ts)
 
 <a id="ctxworldlineprojects--worldlineprojects-abstract-seam"></a>
 
@@ -277,6 +277,11 @@ abstract trashProject(request: TrashProjectRequest): Promise<TrashedProject>
  * @returns The result produced by the operation.
  */
 abstract listTrashedProjects(): Promise<readonly TrashedProject[]>
+
+/** Permanently remove every project currently held in the project recycle bin.
+ * @returns The number of project entries removed.
+ */
+abstract emptyProjectTrash(): Promise<number>
 
 /** Restore a project from the project recycle bin.
  * @param request - The request supplied by the caller.
@@ -505,6 +510,11 @@ abstract runStorages(): Promise<readonly ProjectRunStorage[]>
  */
 @Remote('listTrashedProjects') remoteListTrashedProjects(): Promise<readonly TrashedProject[]>
 
+/** Permanently remove every project currently held in the project recycle bin.
+ * @returns The number of project entries removed.
+ */
+@Remote('emptyProjectTrash') remoteEmptyProjectTrash(): Promise<number>
+
 /** Perform remote restore project through the package's public contract.
  * @param value - The value supplied by the caller.
  * @returns The result produced by the operation.
@@ -688,6 +698,12 @@ abstract choices(request: RunChoicesRequest): Promise<RunChoicesView>
  */
 abstract advance(request: AdvanceRunRequest): Promise<RunView>
 
+/** Run bounded deterministic actor cycles inside the owning Runtime worker.
+ * @param request - The request supplied by the caller.
+ * @returns The result produced by the operation.
+ */
+abstract simulate(request: SimulateRunRequest): Promise<SimulateRunResult>
+
 /** Apply submit action through the package's validated ownership boundary.
  * @param request - The request supplied by the caller.
  * @returns The result produced by the operation.
@@ -748,7 +764,10 @@ abstract setControl(request: SetActorControlRequest): Promise<RunView>
  */
 abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
 
-/** Replace the explicit hard AI allowance without resetting accumulated usage. */
+/** Set the explicit bounded AI allowance for a Run.
+ * @param request - The request supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 abstract setAiBudget(request: SetAiBudgetRequest): Promise<RunView>
 
 /** Perform switch model through the package's public contract.
@@ -822,6 +841,12 @@ abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<Recor
  */
 @Remote('advance') remoteAdvance(value: AdvanceRunRequest): Promise<RunView>
 
+/** Run bounded autonomous cycles without routing through an Agent or model.
+ * @param value - The value supplied by the caller.
+ * @returns The result produced by the operation.
+ */
+@Remote('simulate') remoteSimulate(value: SimulateRunRequest): Promise<SimulateRunResult>
+
 /** Perform remote submit action through the package's public contract.
  * @param value - The value supplied by the caller.
  * @returns The result produced by the operation.
@@ -882,7 +907,10 @@ abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<Recor
  */
 @Remote('setAiEnabled') remoteSetAiEnabled(value: SetAiEnabledRequest): Promise<RunView>
 
-/** Perform remote set ai budget through the package's public contract. */
+/** Update the Run AI budget through the generated Remote boundary.
+ * @param value - The value supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 @Remote('setAiBudget') remoteSetAiBudget(value: SetAiBudgetRequest): Promise<RunView>
 
 /** Perform remote switch model through the package's public contract.
@@ -898,5 +926,5 @@ abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<Recor
 @Remote('explain') remoteExplain(value: ExplainRunEventRequest): Promise<RunEventExplanation>
 ```
 
-Source: [`packages/worldline/runtime/src/index.ts:41`](../../packages/worldline/runtime/src/index.ts)
+Source: [`packages/worldline/runtime/src/index.ts:44`](../../packages/worldline/runtime/src/index.ts)
 <!-- END GENERATED cordis-surface -->

@@ -11,8 +11,9 @@ import type {
   ProjectTemplate,
   Revision,
   SourceAnchor,
+  WorldMap,
 } from '@deepseek-ai/dsh-worldline-standard'
-import { worldlineId } from '@deepseek-ai/dsh-worldline-standard'
+import { validateWorldMap, worldlineId } from '@deepseek-ai/dsh-worldline-standard'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-worldline-compiler'
@@ -55,6 +56,11 @@ function optionalField<Key extends string>(key: Key, value: unknown): {} | Recor
   return resolved === undefined ? {} : { [key]: resolved }
 }
 const integer = (value: unknown, fallback: number): number => Number.isSafeInteger(value) ? Number(value) : fallback
+const positiveDuration = (value: unknown, fallback: number, name: string): number => {
+  const resolved = value === undefined ? fallback : Number(value)
+  if (!Number.isFinite(resolved) || resolved <= 0) throw new Error(`${name} must be positive`)
+  return Math.min(3_600, resolved)
+}
 const strings = (value: unknown): string[] => Array.isArray(value)
   ? value.filter((item): item is string => typeof item === 'string').slice(0, 128)
   : []
@@ -62,6 +68,7 @@ const projectId = (value: unknown) => worldlineId<'project'>(string(value, 'proj
 const runId = (value: unknown) => worldlineId<'run'>(string(value, 'run_id'))
 const entityId = (value: unknown) => worldlineId<'entity'>(string(value, 'actor_id'))
 const revision = (value: unknown, name = 'expected_revision') => string(value, name) as Revision
+const MAP_FENCE = /```worldline-map\s*\r?\n([\s\S]*?)\r?\n```/iu
 
 interface BoundExecution {
   readonly agent?: { readonly session: Pick<Session, 'id' | 'events'> }
@@ -120,6 +127,100 @@ function anchorsJson(value: unknown): SourceAnchor[] {
       ...optionalField('contextAfter', anchor['contextAfter']),
     }
   })
+}
+
+function worldMapJson(value: unknown): WorldMap {
+  const parsed = objectJson(value, 'map_json') as JsonRecord
+  if (parsed['version'] !== 1) throw new Error('map_json.version 必须是当前格式 1')
+  if (!Array.isArray(parsed['layers']) || !Array.isArray(parsed['nodes']) || !Array.isArray(parsed['edges'])) {
+    throw new Error('map_json 必须包含 layers、nodes 和 edges 数组')
+  }
+  const map = { ...parsed, provenance: [] } as unknown as WorldMap
+  worldlineId<'map'>(string(map.id, 'map_json.id'))
+  worldlineId<'map-node'>(string(map.rootNodeId, 'map_json.rootNodeId'))
+  if (typeof map.name !== 'string' || map.name.trim() === '') throw new Error('map_json.name 不能为空')
+  for (const [index, layer] of map.layers.entries()) {
+    if (typeof layer.id !== 'string' || layer.id === '' || typeof layer.name !== 'string'
+      || typeof layer.visible !== 'boolean' || typeof layer.locked !== 'boolean'
+      || !Number.isFinite(layer.order)) throw new Error(`map_json.layers[${String(index)}] 缺少当前格式字段`)
+  }
+  for (const [index, node] of map.nodes.entries()) {
+    worldlineId<'map-node'>(string(node.id, `map_json.nodes[${String(index)}].id`))
+    if (node.parentId !== undefined) worldlineId<'map-node'>(node.parentId)
+    if (typeof node.name !== 'string' || node.name.trim() === '' || typeof node.layerId !== 'string'
+      || !['world', 'plane', 'region', 'city', 'building', 'room', 'slot'].includes(node.kind)
+      || !Array.isArray(node.permissions) || !Array.isArray(node.hazards)
+      || !Array.isArray(node.entryNodeIds)) {
+      throw new Error(`map_json.nodes[${String(index)}] 缺少当前格式字段`)
+    }
+  }
+  for (const [index, edge] of map.edges.entries()) {
+    worldlineId<'map-edge'>(string(edge.id, `map_json.edges[${String(index)}].id`))
+    worldlineId<'map-node'>(string(edge.from, `map_json.edges[${String(index)}].from`))
+    worldlineId<'map-node'>(string(edge.to, `map_json.edges[${String(index)}].to`))
+    if (typeof edge.bidirectional !== 'boolean' || !Number.isFinite(edge.distance)
+      || !Number.isFinite(edge.baseDuration) || !Array.isArray(edge.modes)
+      || !Array.isArray(edge.permissions) || !Array.isArray(edge.hazards)) {
+      throw new Error(`map_json.edges[${String(index)}] 缺少当前格式字段`)
+    }
+  }
+  const issues = validateWorldMap(map)
+  if (issues.length > 0) {
+    throw new Error(`地图校验失败：${issues.map(issue => issue.message).join('；')}`)
+  }
+  const geometryCells = new Map<string, typeof map.nodes[number][]>()
+  for (const node of map.nodes) {
+    const cellX = Math.floor(node.position.x / 124)
+    const cellY = Math.floor(node.position.y / 64)
+    for (let x = cellX - 1; x <= cellX + 1; x += 1) {
+      for (let y = cellY - 1; y <= cellY + 1; y += 1) {
+        const overlapping = (geometryCells.get(`${node.layerId}:${String(x)}:${String(y)}`) ?? [])
+          .find(other => Math.abs(other.position.x - node.position.x) < 124
+            && Math.abs(other.position.y - node.position.y) < 64)
+        if (overlapping !== undefined) {
+          throw new Error(`地图校验失败：节点 ${overlapping.name} 与 ${node.name} 在同一图层重叠，请重新排布坐标`)
+        }
+      }
+    }
+    const key = `${node.layerId}:${String(cellX)}:${String(cellY)}`
+    const bucket = geometryCells.get(key) ?? []
+    bucket.push(node)
+    geometryCells.set(key, bucket)
+  }
+  return map
+}
+
+function replaceMapFence(content: string, map: WorldMap): string {
+  const { provenance: _provenance, ...sourceMap } = map
+  const block = `\`\`\`worldline-map\n${JSON.stringify(sourceMap, null, 2)}\n\`\`\``
+  if (MAP_FENCE.test(content)) return content.replace(MAP_FENCE, block)
+  const source = content.trimEnd()
+  return `${source === '' ? `# ${map.name}` : source}\n\n${block}\n`
+}
+
+export async function simulateAutonomousCycles(
+  ctx: Context,
+  id: ReturnType<typeof runId>,
+  cycles: number,
+  stepDuration: number,
+  preferredAction?: string,
+) {
+  let view = await ctx.worldlineRuns.view({ runId: id })
+  if (view.summary.status === 'paused') view = await ctx.worldlineRuns.resume({ runId: id })
+  const simulated = await ctx.worldlineRuns.simulate({
+    runId: id,
+    cycles,
+    stepDuration,
+    ...(preferredAction === undefined ? {} : { preferredAction }),
+  })
+  return {
+    view: simulated.view,
+    actors: simulated.actorIds.map(actorId => ({ id: actorId })),
+    actions: simulated.sampledActions,
+    actionsPerformed: simulated.actionsPerformed,
+    actionCounts: simulated.actionCounts,
+    actorActionCounts: simulated.actorActionCounts,
+  }
 }
 
 /** Perform require confirmation through the package's public contract.
@@ -370,41 +471,65 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'worldline_map',
-    description: 'Dry-run or submit a reviewable structured map Proposal with exact source anchors. It never bypasses review by rewriting a map document directly.',
+    description: 'Read, validate, or write the one current worldline-map JSON block in a project document. Writing uses project revision checks and computes provenance during compilation; never provide source anchors.',
     parameters: {
-      project_id: { type: 'string', required: true }, title: { type: 'string', required: true },
-      rationale: { type: 'string', required: true }, patch_json: { type: 'string', required: true },
-      anchors_json: { type: 'string', required: true }, risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-      expected_state_revision: { type: 'string' }, dry_run: { type: 'boolean' },
+      operation: { type: 'string', required: true, enum: ['read', 'validate', 'write'] },
+      project_id: { type: 'string', required: true },
+      path: { type: 'string', description: 'Map Markdown document path; defaults to maps/world.md.' },
+      map_json: { type: 'string', description: 'One complete current WorldMap JSON object. Required for validate and write.' },
+      expected_revision: { type: 'string' }, dry_run: { type: 'boolean' },
     }, output: OUTPUT,
     async execute(args, exec) {
       const id = projectId(args.project_id)
       await selectProjectScope(ctx, exec, id)
+      const path = optionalString(args.path) ?? 'maps/world.md'
+      if (args.operation === 'read') {
+        const document = await ctx.worldlineProjects.read({ projectId: id, path })
+        const match = MAP_FENCE.exec(document.content)
+        if (match?.[1] === undefined) throw new Error(`地图文档 ${path} 中没有 worldline-map JSON 代码块`)
+        return encode({ document: { id: document.id, path, revision: document.revision }, map: worldMapJson(match[1]) })
+      }
+      const map = worldMapJson(args.map_json)
+      if (args.operation === 'validate') return encode({ valid: true, map, diagnostics: [] })
+      let current: Awaited<ReturnType<typeof ctx.worldlineProjects.read>> | undefined
+      try {
+        current = await ctx.worldlineProjects.read({ projectId: id, path })
+      } catch (error) {
+        if ((error as { code?: unknown }).code !== 'entry-not-found') throw error
+      }
+      const suppliedRevision = optionalString(args.expected_revision) as Revision | undefined
+      if (suppliedRevision !== undefined && current?.revision !== suppliedRevision) {
+        throw new Error('expected_revision 与当前地图文档不一致，请重新读取后再写入')
+      }
       const request = {
-        projectId: id, target: 'map' as const,
-        title: string(args.title, 'title'), rationale: string(args.rationale, 'rationale'),
-        risk: proposalRisk(args.risk), payload: objectJson(args.patch_json, 'patch_json'),
-        anchors: anchorsJson(args.anchors_json),
-        ...(optionalString(args.expected_state_revision) === undefined ? {} : {
-          expectedStateRevision: revision(args.expected_state_revision, 'expected_state_revision'),
+        projectId: id,
+        path,
+        content: replaceMapFence(current?.content ?? '', map),
+        ...(current === undefined ? { createParents: true, objectKind: 'place' as const } : {
+          expectedRevision: current.revision,
+          documentId: current.id,
+          objectKind: current.objectKind ?? 'place' as const,
+          tags: current.tags,
         }),
       }
-      return args.dry_run !== false ? encode({ dryRun: true, request })
-        : encode(await ctx.worldlineCompiler.submitProposal(request))
+      return args.dry_run !== false
+        ? encode({ dryRun: true, valid: true, request: { ...request, content: undefined }, map })
+        : encode({ map, document: await ctx.worldlineProjects.write(request) })
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'worldline_build',
-    description: 'Inspect compiler state, compile, answer a question, submit/review a Proposal, or freeze the exact current source digest. Freeze and review require confirmation.',
+    description: 'Inspect or compile source, review author Proposals, freeze, or prove a complete playable OC loop. prove compiles, freezes, creates a Run, executes autonomous legal actions, advances time, verifies the map/event ledger, and checkpoints; it is the only completion gate.',
     parameters: {
-      operation: { type: 'string', required: true, enum: ['state', 'compile', 'answer', 'propose', 'review', 'freeze'] },
+      operation: { type: 'string', required: true, enum: ['state', 'compile', 'answer', 'propose', 'review', 'freeze', 'prove'] },
       project_id: { type: 'string', required: true }, question_id: { type: 'string' }, answer: { type: 'string' },
       target: { type: 'string', enum: ['canon', 'action', 'system', 'invariant', 'map'] },
       title: { type: 'string' }, rationale: { type: 'string' }, risk: { type: 'string', enum: ['low', 'medium', 'high'] },
       payload_json: { type: 'string' }, anchors_json: { type: 'string' }, proposal_id: { type: 'string' },
       decision: { type: 'string', enum: ['approved', 'rejected'] }, reviewed_by: { type: 'string' },
       expected_state_revision: { type: 'string' }, expected_source_digest: { type: 'string' }, confirm: { type: 'boolean' },
+      seed: { type: 'string' }, action_type: { type: 'string' }, advance_duration: { type: 'number' },
     }, output: OUTPUT,
     async execute(args, exec) {
       const id = projectId(args.project_id)
@@ -436,6 +561,75 @@ export function apply(ctx: Context): void {
           return encode(await ctx.worldlineCompiler.freeze({
             projectId: id, expectedSourceDigest: string(args.expected_source_digest, 'expected_source_digest'),
           }))
+        case 'prove': {
+          requireConfirmation(args.confirm, 'prove complete Worldline loop')
+          const duration = positiveDuration(args.advance_duration, 60, 'advance_duration')
+          const preview = await ctx.worldlineCompiler.compile({ projectId: id })
+          if (!preview.canFreeze) {
+            return encode({
+              complete: false,
+              stage: 'compile',
+              message: '世界线尚未形成可运行闭环，请修复所有阻断项后再次证明。',
+              executableCounts: preview.executableCounts,
+              diagnostics: preview.diagnostics,
+              questions: preview.questions.filter(item => item.status === 'open'),
+              certificate: preview.certificate.results.filter(item => item.status === 'blocking'),
+            })
+          }
+          const frozen = await ctx.worldlineCompiler.freeze({
+            projectId: id,
+            expectedSourceDigest: preview.sourceDigest,
+          })
+          const run = await ctx.worldlineRuns.create({
+            projectId: id,
+            seed: optionalString(args.seed) ?? 'worldline-oc-proof',
+            startPaused: false,
+          })
+          await selectProjectScope(ctx, exec, id, run.summary.runId)
+          const simulated = await simulateAutonomousCycles(
+            ctx,
+            run.summary.runId,
+            1,
+            duration,
+            optionalString(args.action_type),
+          )
+          const spatial = await ctx.worldlineRuns.spatial({ runId: run.summary.runId, maxNodes: 10_000 })
+          const records = await ctx.worldlineRuns.records({ runId: run.summary.runId, limit: 500 })
+          const checkpoint = await ctx.worldlineRuns.checkpoint({
+            runId: run.summary.runId,
+            label: 'OC 闭环验收',
+          })
+          const mapNodeCount = spatial.map?.totalNodes ?? 0
+          const worldEvents = records.records.filter(record => record.stream === 'world-event')
+          const complete = mapNodeCount > 0
+            && simulated.actions.length > 0
+            && simulated.view.snapshot.logicalTime >= duration
+            && worldEvents.length > 0
+          return encode({
+            complete,
+            stage: complete ? 'verified' : 'runtime',
+            message: complete
+              ? '世界线已通过结构化地图、合法动作、逻辑时间、因果事件与检查点闭环验收。'
+              : '蓝图已冻结，但运行证据不完整；不得宣称项目完成。',
+            projectId: id,
+            sourceDigest: preview.sourceDigest,
+            blueprintDigest: frozen.blueprint.digest,
+            executableCounts: preview.executableCounts,
+            runId: run.summary.runId,
+            actorCount: simulated.actors.length,
+            actions: simulated.actions,
+            logicalTime: simulated.view.snapshot.logicalTime,
+            sequence: simulated.view.snapshot.sequence,
+            map: spatial.map === undefined ? undefined : {
+              id: spatial.map.id,
+              name: spatial.map.name,
+              nodes: spatial.map.totalNodes,
+              edges: spatial.map.totalEdges,
+            },
+            worldEventCount: worldEvents.length,
+            checkpointId: checkpoint.checkpoint.id,
+          })
+        }
       }
     },
   }))
@@ -444,12 +638,13 @@ export function apply(ctx: Context): void {
     name: 'worldline_run',
     description: 'Inspect or control deterministic Runs. Explicit project and Run IDs automatically select their owning project. Mutating operations use confirmation for actions, large advances, branches, control changes, AI changes, and stop.',
     parameters: {
-      operation: { type: 'string', required: true, enum: ['list', 'create', 'view', 'choices', 'advance', 'action', 'pause', 'resume', 'stop', 'checkpoint', 'checkpoints', 'branch', 'set-control', 'set-ai', 'set-budget'] },
+      operation: { type: 'string', required: true, enum: ['list', 'create', 'view', 'choices', 'advance', 'simulate', 'action', 'pause', 'resume', 'stop', 'checkpoint', 'checkpoints', 'branch', 'set-control', 'set-ai', 'set-budget'] },
       project_id: { type: 'string' }, run_id: { type: 'string' }, actor_id: { type: 'string' }, seed: { type: 'string' },
       duration: { type: 'number' }, max_events: { type: 'integer' }, action_type: { type: 'string' },
       parameters_json: { type: 'string' }, expected_sequence: { type: 'integer' }, label: { type: 'string' },
       checkpoint_id: { type: 'string' }, mode: { type: 'string', enum: ['autonomous', 'suggestions', 'player'] },
       enabled: { type: 'boolean' }, budget_json: { type: 'string' }, confirm: { type: 'boolean' },
+      cycles: { type: 'integer' }, step_duration: { type: 'number' },
     }, output: OUTPUT,
     async execute(args, exec) {
       if (args.operation === 'list') {
@@ -486,6 +681,32 @@ export function apply(ctx: Context): void {
           return encode(await ctx.worldlineRuns.advance({
             runId: id, duration, maxEvents: Math.min(100_000, Math.max(1, integer(args.max_events, 10_000))),
           }))
+        }
+        case 'simulate': {
+          requireConfirmation(args.confirm, 'run autonomous simulation')
+          const cycles = Math.min(1_000, Math.max(1, integer(args.cycles, 1)))
+          const stepDuration = positiveDuration(args.step_duration, 60, 'step_duration')
+          const simulated = await simulateAutonomousCycles(
+            ctx,
+            id,
+            cycles,
+            stepDuration,
+            optionalString(args.action_type),
+          )
+          const spatial = await ctx.worldlineRuns.spatial({ runId: id, maxNodes: 10_000 })
+          const records = await ctx.worldlineRuns.records({ runId: id, limit: 500 })
+          return encode({
+            autonomous: true,
+            cycles,
+            actors: simulated.actors.map(item => item.id),
+            actions: simulated.actions,
+            actionsPerformed: simulated.actionsPerformed,
+            actionCounts: simulated.actionCounts,
+            actorActionCounts: simulated.actorActionCounts,
+            view: simulated.view,
+            map: spatial.map,
+            worldEvents: records.records.filter(record => record.stream === 'world-event'),
+          })
         }
         case 'action':
           requireConfirmation(args.confirm, 'submit Run action')

@@ -26,6 +26,11 @@ function actors(view: RunView | undefined): EntityId[] {
   return Object.keys(record(view?.snapshot.state['entities']) ?? {}) as EntityId[]
 }
 
+function scenePlace(play: TextPlayView): string {
+  const place = record(play.frame.visibleState['place'])
+  return typeof place?.['name'] === 'string' ? place['name'] : play.frame.placeId ?? '—'
+}
+
 export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
   const [runs, setRuns] = useState<readonly RunSummary[]>([])
   const [runId, setRunId] = useState<RunSummary['runId'] | undefined>(props.preferredRunId)
@@ -82,6 +87,15 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
     finally { setBusy(undefined) }
   }
 
+  const advanceStory = async (targetRunId: RunSummary['runId'], duration: number): Promise<void> => {
+    const current = await props.runs.view({ runId: targetRunId })
+    const active = current.summary.status === 'paused'
+      ? await props.runs.resume({ runId: targetRunId })
+      : current
+    if (active.summary.status !== 'running') throw new Error('当前演算已经结束，无法继续推进故事。')
+    await props.runs.advance({ runId: targetRunId, duration: Math.max(1, duration), maxEvents: 10_000 })
+  }
+
   const narrate = (): void => {
     if (runId === undefined || actorId === undefined) return
     setStreamingText('')
@@ -113,7 +127,7 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
       <main className={css.story}>
         <section className={css.sceneMeta}>
           <div><small>{props.t('logicalTime')}</small><strong>{play.frame.logicalTime.toLocaleString()}</strong></div>
-          <div><small>{props.t('place')}</small><strong>{play.frame.placeId ?? '—'}</strong></div>
+          <div><small>{props.t('place')}</small><strong>{scenePlace(play)}</strong></div>
           <div><small>{props.t('presentActors')}</small><strong>{play.frame.presentEntityIds.length}</strong></div>
           <button type="button" disabled={busy !== undefined} onClick={narrate}>{busy === 'narrate' ? '…' : props.t('narrate')}</button>
           <label><input type="checkbox" checked={templateOnly} onChange={(event) => { setTemplateOnly(event.target.checked) }} />{props.t('templateNarration')}</label>
@@ -128,7 +142,10 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
           {streamingText !== '' && <article data-streaming data-latest><header><span>{worldlineLabel(camera)}</span><small>{props.t('streaming')}</small></header><MarkdownText text={streamingText} streaming /></article>}
         </div>
         <section className={css.composer}>
-          <div className={css.choices}>{play.choices.choices.map(choice => <button type="button" key={choice.id} disabled={busy !== undefined} onClick={() => { void mutate(`choice:${choice.id}`, async () => { await props.narrative.choose({ runId: play.run.summary.runId, actorId: play.choices.actorId, choiceId: choice.id, expectedSequence: play.choices.sequence, camera }) }) }}>
+          <div className={css.choices}>{play.choices.choices.map(choice => <button type="button" key={choice.id} disabled={busy !== undefined} onClick={() => { void mutate(`choice:${choice.id}`, async () => {
+            await props.narrative.choose({ runId: play.run.summary.runId, actorId: play.choices.actorId, choiceId: choice.id, expectedSequence: play.choices.sequence, camera })
+            await advanceStory(play.run.summary.runId, choice.estimatedDuration)
+          }) }}>
             <strong>{choice.label}</strong><span>{choice.description}</span><small>{choice.estimatedDuration}t{choice.risks.length === 0 ? '' : ` · ${choice.risks.join(', ')}`}</small>
           </button>)}</div>
           <form onSubmit={(event) => {
@@ -137,7 +154,10 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
             if (text === '') return
             void mutate('free', async () => {
               const result = await props.narrative.freeInput({ runId: play.run.summary.runId, actorId: play.choices.actorId, text, expectedSequence: play.choices.sequence, camera })
-              if (result.status !== 'submitted') throw new Error(`${result.status}: ${result.candidates.map(item => item.label).join(', ')}`)
+              if (result.status === 'unmatched') throw new Error('当前输入无法对应到可执行行动，请选择上方行动，或换一种更明确的说法。')
+              if (result.status === 'ambiguous') throw new Error(`这句话可能对应多个行动：${result.candidates.map(item => item.label).join('、')}。请说得更具体一些。`)
+              const duration = result.candidates[0]?.estimatedDuration
+              if (duration !== undefined) await advanceStory(play.run.summary.runId, duration)
               setFreeText('')
             })
           }}><textarea value={freeText} onChange={(event) => { setFreeText(event.target.value) }} placeholder={props.t('freeInput')} /><button type="submit" disabled={busy !== undefined}>{props.t('submit')}</button></form>
@@ -159,10 +179,12 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
           if (actorId === undefined || retryChoiceId === '') return
           void mutate(`retry:${save.checkpoint.id}`, async () => {
             const result = await props.narrative.retry({ runId: play.run.summary.runId, actorId, checkpointId: save.checkpoint.id, choiceId: retryChoiceId, camera })
+            const duration = play.choices.choices.find(choice => choice.id === retryChoiceId)?.estimatedDuration
+            if (duration !== undefined) await advanceStory(result.view.summary.runId, duration)
             setRunId(result.view.summary.runId)
           })
         }}>{props.t('retry')}</button></div></li>)}</ul></section>
-        <section data-unavailable={stage?.available === false || undefined}><h3>{props.t('storyStage')} <span>{stage?.available ? stage.renderers.length : props.t('unavailable')}</span></h3><p>{stage?.message ?? '…'}</p>{stage?.renderers.map(renderer => <div key={renderer.id}><strong>{renderer.name}</strong><small>{renderer.capabilities.join(' · ')}</small></div>)}</section>
+        <section data-unavailable={stage?.available === false || undefined}><h3>{props.t('storyStage')} <span>{stage?.available ? stage.renderers.length : props.t('unavailable')}</span></h3><p>{stage?.message ?? '…'}</p>{stage?.renderers.map(renderer => <div key={renderer.id}><strong>{renderer.name}</strong>{renderer.capabilities.length > 0 && <small>{renderer.capabilities.join(' · ')}</small>}</div>)}</section>
         <section><h3>{props.t('advancedData')}</h3><pre>{JSON.stringify(play.frame, null, 2)}</pre></section>
       </aside>
     </div>}

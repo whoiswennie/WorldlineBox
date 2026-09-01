@@ -636,7 +636,7 @@ const TOOL_PACKAGES: ToolPackage[] = [
     source: 'packages/worldline/tool-worldline/src/index.ts',
     requires: [
       'ctx.tools', 'ctx.systemPrompt', 'ctx.worldlineProjects', 'ctx.worldlineCompiler',
-      'ctx.worldlineRuns', 'ctx.worldlineConversationContexts', 'a bound calling Agent at execution time',
+      'ctx.worldlineRuns', 'ctx.worldlineConversationContexts', 'a calling Worldline OC Agent at execution time',
     ],
     writes: ['tool/call', 'project Canon/build artifacts or Run state for mutations', 'tool/result'],
     async mount(ctx) {
@@ -647,7 +647,7 @@ const TOOL_PACKAGES: ToolPackage[] = [
       await ctx.plugin(ToolWorldline)
     },
     note:
-      'The nine project-scoped tools require the calling author Session binding at execution time; mutation schemas carry stable identity, provenance, revision, dry-run, or explicit-confirmation fields instead of exposing generic filesystem writes.',
+      'The nine project-scoped tools automatically select the calling OC author Session\'s active project from each explicit project or Run ID; mutation schemas carry stable identity, provenance, revision, dry-run, or explicit-confirmation fields instead of exposing generic filesystem writes.',
   },
   {
     pkg: '@deepseek-ai/dsh-tool-web',

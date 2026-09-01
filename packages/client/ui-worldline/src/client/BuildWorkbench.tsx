@@ -71,7 +71,9 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
   const proposals = preview?.proposals ?? state?.proposals ?? []
   return <div className={css.page}>
     <header className={css.hero}>
-      <div><span>正典设定 → 可运行蓝图</span><h2>{props.t('build')}</h2><p>{props.t('noBuild')}</p></div>
+      <div><span>正典设定 → 可运行蓝图</span><h2>{props.t('build')}</h2><p>{preview === undefined
+        ? props.t('noBuild')
+        : preview.canFreeze ? props.t('freezeReady') : props.t('freezeBlocked')}</p></div>
       <div className={css.heroActions}>
         <button type="button" disabled={busy !== undefined} onClick={props.onImportBlueprint}>{props.t('importBlueprint')}</button>
         <button type="button" disabled={busy !== undefined} onClick={props.onExportBlueprint}>{props.t('exportBlueprint')}</button>

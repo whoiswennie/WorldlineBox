@@ -42,7 +42,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`, `interrupt_agent`, `list_agents`, `send_message`, `spawn_teammate`, `team_task_create`, `team_task_get`, `team_task_list`, `team_task_update`, `wait_agent` | `ctx.tools`, `ctx.systemPrompt`, `ctx.agentTeams`, `an exact live Team member Agent` | `tool/call`, `team/member`, `team/message/queued`, `team/message/delivered`, `team/task`, `tool/result` | - | All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names. |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
-| `@deepseek-ai/dsh-tool-worldline` | `worldline_build`, `worldline_edit`, `worldline_explain`, `worldline_link`, `worldline_map`, `worldline_project`, `worldline_query`, `worldline_run`, `worldline_transfer` | `ctx.tools`, `ctx.systemPrompt`, `ctx.worldlineProjects`, `ctx.worldlineCompiler`, `ctx.worldlineRuns`, `ctx.worldlineConversationContexts`, `a bound calling Agent at execution time` | `tool/call`, `project Canon/build artifacts or Run state for mutations`, `tool/result` | - | The nine project-scoped tools require the calling author Session binding at execution time; mutation schemas carry stable identity, provenance, revision, dry-run, or explicit-confirmation fields instead of exposing generic filesystem writes. |
+| `@deepseek-ai/dsh-tool-worldline` | `worldline_build`, `worldline_edit`, `worldline_explain`, `worldline_link`, `worldline_map`, `worldline_project`, `worldline_query`, `worldline_run`, `worldline_transfer` | `ctx.tools`, `ctx.systemPrompt`, `ctx.worldlineProjects`, `ctx.worldlineCompiler`, `ctx.worldlineRuns`, `ctx.worldlineConversationContexts`, `a calling Worldline OC Agent at execution time` | `tool/call`, `project Canon/build artifacts or Run state for mutations`, `tool/result` | - | The nine project-scoped tools automatically select the calling OC author Session's active project from each explicit project or Run ID; mutation schemas carry stable identity, provenance, revision, dry-run, or explicit-confirmation fields instead of exposing generic filesystem writes. |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
 | `@deepseek-ai/dsh-worldline-video` | `video_index`, `video_probe`, `video_read` | `ctx.tools`, `ctx.skills`, `ctx.subprocess`, `packaged FFmpeg and yt-dlp at execution time` | `tool/call`, `private video cache and sampled JPEGs`, `tool/result` | - | video_probe is metadata-only for online sources; video_index chooses resumable cache or no-media-save stream mode, and video_read performs bounded timestamped sampling from the reusable manifest. |
 
@@ -2766,7 +2766,7 @@ Source: [`packages/workflow/tool-workflow/src/index.ts`](../packages/workflow/to
 
 ### `worldline_build`
 
-Inspect compiler state, compile, answer a question, submit/review a Proposal, or freeze the exact current source digest. Freeze and review require confirmation.
+Inspect or compile source, review author Proposals, freeze, or prove a complete playable OC loop. prove compiles, freezes, creates a Run, executes autonomous legal actions, advances time, verifies the map/event ledger, and checkpoints; it is the only completion gate.
 
 ```json
 {
@@ -2780,7 +2780,8 @@ Inspect compiler state, compile, answer a question, submit/review a Proposal, or
         "answer",
         "propose",
         "review",
-        "freeze"
+        "freeze",
+        "prove"
       ]
     },
     "project_id": {
@@ -2843,6 +2844,15 @@ Inspect compiler state, compile, answer a question, submit/review a Proposal, or
     },
     "confirm": {
       "type": "boolean"
+    },
+    "seed": {
+      "type": "string"
+    },
+    "action_type": {
+      "type": "string"
+    },
+    "advance_duration": {
+      "type": "number"
     }
   },
   "required": [
@@ -2989,36 +2999,32 @@ Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline
 
 ### `worldline_map`
 
-Dry-run or submit a reviewable structured map Proposal with exact source anchors. It never bypasses review by rewriting a map document directly.
+Read, validate, or write the one current worldline-map JSON block in a project document. Writing uses project revision checks and computes provenance during compilation; never provide source anchors.
 
 ```json
 {
   "type": "object",
   "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "read",
+        "validate",
+        "write"
+      ]
+    },
     "project_id": {
       "type": "string"
     },
-    "title": {
-      "type": "string"
-    },
-    "rationale": {
-      "type": "string"
-    },
-    "patch_json": {
-      "type": "string"
-    },
-    "anchors_json": {
-      "type": "string"
-    },
-    "risk": {
+    "path": {
       "type": "string",
-      "enum": [
-        "low",
-        "medium",
-        "high"
-      ]
+      "description": "Map Markdown document path; defaults to maps/world.md."
     },
-    "expected_state_revision": {
+    "map_json": {
+      "type": "string",
+      "description": "One complete current WorldMap JSON object. Required for validate and write."
+    },
+    "expected_revision": {
       "type": "string"
     },
     "dry_run": {
@@ -3026,11 +3032,8 @@ Dry-run or submit a reviewable structured map Proposal with exact source anchors
     }
   },
   "required": [
-    "project_id",
-    "title",
-    "rationale",
-    "patch_json",
-    "anchors_json"
+    "operation",
+    "project_id"
   ]
 }
 ```
@@ -3039,7 +3042,7 @@ Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline
 
 ### `worldline_project`
 
-List, create, copy, trash, or restore Worldline projects through the project library. Destructive or duplicating operations require explicit confirmation.
+List, create, copy, trash, or restore Worldline projects. Creating or explicitly using a project automatically makes it the current project for this OC author Session; no manual binding is required.
 
 ```json
 {
@@ -3151,7 +3154,7 @@ Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline
 
 ### `worldline_run`
 
-Inspect or control deterministic Runs. Mutating operations bind an exact Run and use confirmation for actions, large advances, branches, control changes, AI changes, and stop.
+Inspect or control deterministic Runs. Explicit project and Run IDs automatically select their owning project. Mutating operations use confirmation for actions, large advances, branches, control changes, AI changes, and stop.
 
 ```json
 {
@@ -3165,6 +3168,7 @@ Inspect or control deterministic Runs. Mutating operations bind an exact Run and
         "view",
         "choices",
         "advance",
+        "simulate",
         "action",
         "pause",
         "resume",
@@ -3173,7 +3177,8 @@ Inspect or control deterministic Runs. Mutating operations bind an exact Run and
         "checkpoints",
         "branch",
         "set-control",
-        "set-ai"
+        "set-ai",
+        "set-budget"
       ]
     },
     "project_id": {
@@ -3220,8 +3225,17 @@ Inspect or control deterministic Runs. Mutating operations bind an exact Run and
     "enabled": {
       "type": "boolean"
     },
+    "budget_json": {
+      "type": "string"
+    },
     "confirm": {
       "type": "boolean"
+    },
+    "cycles": {
+      "type": "integer"
+    },
+    "step_duration": {
+      "type": "number"
     }
   },
   "required": [
@@ -3301,7 +3315,7 @@ Dry-run or start current-format project, frozen Blueprint, or logical Run archiv
 
 Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
 
-The nine project-scoped tools require the calling author Session binding at execution time; mutation schemas carry stable identity, provenance, revision, dry-run, or explicit-confirmation fields instead of exposing generic filesystem writes.
+The nine project-scoped tools automatically select the calling OC author Session's active project from each explicit project or Run ID; mutation schemas carry stable identity, provenance, revision, dry-run, or explicit-confirmation fields instead of exposing generic filesystem writes.
 
 <a id="deepseek-ai-dsh-tool-web"></a>
 
