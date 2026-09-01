@@ -12,6 +12,7 @@
     { "path": "../../runtime-diagnostics/invariants" },
     { "path": "../../settings/settings" },
     { "path": "../project" },
+    { "path": "../run-sqlite" },
     { "path": "../standard" }
   ]
 }

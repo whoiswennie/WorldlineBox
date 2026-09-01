@@ -505,11 +505,12 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'worldline_transfer',
-    description: 'Dry-run or start project import/export. Paths remain inside the Host project service; import/export never touches a remote repository.',
+    description: 'Dry-run or start current-format project, frozen Blueprint, or logical Run archive transfer. Paths remain inside the Host project service; transfer never touches a remote repository.',
     parameters: {
       operation: { type: 'string', required: true, enum: ['import', 'export', 'status', 'cancel'] },
+      artifact: { type: 'string', enum: ['project', 'blueprint', 'run'] },
       project_id: { type: 'string' }, source: { type: 'string' }, destination: { type: 'string' },
-      name: { type: 'string' }, include_runs: { type: 'boolean' }, transfer_id: { type: 'string' },
+      run_id: { type: 'string' }, name: { type: 'string' }, include_runs: { type: 'boolean' }, transfer_id: { type: 'string' },
       conflict: { type: 'string', enum: ['copy', 'replace', 'cancel'] },
       dry_run: { type: 'boolean' }, confirm: { type: 'boolean' },
     }, output: OUTPUT,
@@ -519,31 +520,59 @@ export function apply(ctx: Context): void {
         requireConfirmation(args.confirm, 'cancel transfer')
         return encode(await ctx.worldlineProjects.cancelTransfer(string(args.transfer_id, 'transfer_id')))
       }
+      const artifact = string(args.artifact, 'artifact')
+      if (artifact !== 'project' && artifact !== 'blueprint' && artifact !== 'run') {
+        throw new Error('artifact must be project, blueprint, or run')
+      }
       if (args.operation === 'import') {
-        if (exec.agent !== undefined && ctx.worldlineConversationContexts.binding(exec.agent.session) !== undefined) {
-          throw new Error('a bound author Session cannot import a different project')
+        const source = string(args.source, 'source')
+        if (artifact === 'project') {
+          if (exec.agent !== undefined && ctx.worldlineConversationContexts.binding(exec.agent.session) !== undefined) {
+            throw new Error('a bound author Session cannot import a different project')
+          }
+          const conflict = string(args.conflict, 'conflict')
+          if (conflict !== 'copy' && conflict !== 'replace' && conflict !== 'cancel') {
+            throw new Error('conflict must be copy, replace, or cancel')
+          }
+          const request: ImportProjectRequest = {
+            source,
+            conflict,
+            ...optionalField('name', args.name),
+          }
+          if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, artifact, request })
+          requireConfirmation(args.confirm, 'import project')
+          return encode(await ctx.worldlineProjects.importProject(request))
         }
-        const conflict = string(args.conflict, 'conflict')
-        if (conflict !== 'copy' && conflict !== 'replace' && conflict !== 'cancel') {
-          throw new Error('conflict must be copy, replace, or cancel')
-        }
-        const request: ImportProjectRequest = {
-          source: string(args.source, 'source'),
-          conflict,
-          ...optionalField('name', args.name),
-        }
-        if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, request })
-        requireConfirmation(args.confirm, 'import project')
-        return encode(await ctx.worldlineProjects.importProject(request))
+        const id = projectId(args.project_id)
+        assertProjectScope(ctx, exec, id)
+        const request = { projectId: id, source }
+        if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, artifact, request })
+        requireConfirmation(args.confirm, `import ${artifact}`)
+        return encode(artifact === 'blueprint'
+          ? await ctx.worldlineProjects.importBlueprint(request)
+          : await ctx.worldlineProjects.importRun(request))
       }
       const id = projectId(args.project_id)
       assertProjectScope(ctx, exec, id)
+      const destination = string(args.destination, 'destination')
+      if (artifact === 'blueprint') {
+        const request = { projectId: id, destination }
+        if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, artifact, request })
+        requireConfirmation(args.confirm, 'export Blueprint')
+        return encode(await ctx.worldlineProjects.exportBlueprint(request))
+      }
+      if (artifact === 'run') {
+        const request = { projectId: id, runId: runId(args.run_id), destination }
+        if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, artifact, request })
+        requireConfirmation(args.confirm, 'export Run')
+        return encode(await ctx.worldlineProjects.exportRun(request))
+      }
       const request = {
         projectId: id,
-        destination: string(args.destination, 'destination'),
+        destination,
         includeRuns: args.include_runs === true,
       }
-      if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, request })
+      if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, artifact, request })
       requireConfirmation(args.confirm, 'export project')
       return encode(await ctx.worldlineProjects.exportProject(request))
     },

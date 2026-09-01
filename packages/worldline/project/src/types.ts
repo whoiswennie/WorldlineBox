@@ -207,13 +207,32 @@ export interface ImportProjectRequest {
   readonly name?: string
   readonly conflict: ProjectImportConflict
 }
+export interface ExportBlueprintRequest extends ProjectRef {
+  readonly destination: string
+  readonly digest?: string
+}
+export interface ImportBlueprintRequest extends ProjectRef { readonly source: string }
+export interface ExportRunRequest extends ProjectRef {
+  readonly runId: RunId
+  readonly destination: string
+}
+export interface ImportRunRequest extends ProjectRef { readonly source: string }
 export interface TransferJob {
   readonly id: string
-  readonly kind: 'import' | 'export' | 'rescan'
+  readonly kind:
+    | 'import'
+    | 'export'
+    | 'import-blueprint'
+    | 'export-blueprint'
+    | 'import-run'
+    | 'export-run'
+    | 'rescan'
   readonly state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   readonly completedBytes: number
   readonly totalBytes?: number
   readonly resultProjectId?: ProjectId
+  readonly resultBlueprintDigest?: string
+  readonly resultRunId?: RunId
   readonly error?: string
 }
 

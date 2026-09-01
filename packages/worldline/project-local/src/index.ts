@@ -24,10 +24,14 @@ import {
   type CreateProjectRequest,
   type DocumentHistoryEntry,
   type DocumentView,
+  type ExportBlueprintRequest,
   type ExportProjectRequest,
+  type ExportRunRequest,
   type HistoryRequest,
+  type ImportBlueprintRequest,
   type ImportProjectRequest,
   type ImportProjectEntryRequest,
+  type ImportRunRequest,
   type MoveEntryRequest,
   type MutationResult,
   type ProjectLibraryPage,
@@ -62,6 +66,14 @@ import {
   WorldlineProjects,
 } from '@deepseek-ai/dsh-worldline-project'
 import { exportProjectArchive, extractProjectArchive, preflightProjectArchive } from './archive.ts'
+import {
+  exportBlueprintArchive,
+  exportRunArchive,
+  extractAndImportRunArchive,
+  extractAndVerifyBlueprintArchive,
+  preflightBlueprintArchive,
+  preflightRunArchive,
+} from './artifact-archive.ts'
 import { readManifest, writeManifest } from './manifest.ts'
 import { ProjectMetadata } from './metadata.ts'
 import {
@@ -886,9 +898,163 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
         await rm(staging, { recursive: true, force: true })
         const summary = await this.summarize(destination)
         this.projectCache.set(summary.manifest.id, destination)
-        this.finishJob(job.id, preflight.manifest.expandedBytes, summary.manifest.id)
+        this.finishJob(job.id, preflight.manifest.expandedBytes, {
+          resultProjectId: summary.manifest.id,
+        })
       } catch (error) {
         await rm(staging, { recursive: true, force: true }).catch(() => undefined)
+        this.failJob(job.id, error)
+      }
+    })()
+    return job
+  }
+
+  async exportBlueprint(request: ExportBlueprintRequest): Promise<TransferJob> {
+    const project = await this.projectPath(request.projectId)
+    const digest = request.digest ?? (await this.activeBuild(request.projectId))?.digest
+    if (digest === undefined || !/^[a-f0-9]{64}$/u.test(digest)) {
+      throw new WorldlineProjectError('entry-not-found', 'no frozen Blueprint is available to export')
+    }
+    const buildDirectory = resolve(project, CONTROL_DIRECTORY, 'builds', digest)
+    if (!(await exists(resolve(buildDirectory, 'blueprint.json')))) {
+      throw new WorldlineProjectError('entry-not-found', `frozen Blueprint not found: ${digest}`)
+    }
+    const job = this.beginJob('export-blueprint')
+    void (async () => {
+      try {
+        const signal = this.jobs.get(job.id)?.controller?.signal
+        if (signal === undefined) throw new Error('archive transfer controller is unavailable')
+        const result = await exportBlueprintArchive({
+          buildDirectory,
+          destination: resolve(request.destination),
+          signal,
+          onTotal: (totalBytes) => { this.updateJobTotal(job.id, totalBytes) },
+          onProgress: (completedBytes) => { this.updateJobProgress(job.id, completedBytes) },
+        })
+        this.finishJob(job.id, result.sourceBytes, { resultBlueprintDigest: digest })
+      } catch (error) { this.failJob(job.id, error) }
+    })()
+    return job
+  }
+
+  async importBlueprint(request: ImportBlueprintRequest): Promise<TransferJob> {
+    const project = await this.projectPath(request.projectId)
+    const source = resolve(request.source)
+    const info = await stat(source)
+    const job = this.beginJob('import-blueprint', info.size)
+    void (async () => {
+      const staging = resolve(project, CONTROL_DIRECTORY, 'transfers', job.id)
+      try {
+        const signal = this.jobs.get(job.id)?.controller?.signal
+        if (signal === undefined) throw new Error('archive transfer controller is unavailable')
+        const preflight = await preflightBlueprintArchive(source, signal)
+        if (preflight.manifest.projectId !== request.projectId) {
+          throw new WorldlineProjectError('manifest-conflict', 'Blueprint belongs to another project')
+        }
+        this.updateJobTotal(job.id, preflight.manifest.expandedBytes)
+        const disk = await statfs(project)
+        if (disk.bavail * disk.bsize < preflight.manifest.expandedBytes * 1.05) {
+          throw new WorldlineProjectError('transfer-failed', 'not enough disk space for the Blueprint archive')
+        }
+        await mkdir(staging, { recursive: true })
+        const artifacts = await extractAndVerifyBlueprintArchive({
+          source,
+          destination: staging,
+          preflight,
+          signal,
+          onProgress: (completedBytes) => { this.updateJobProgress(job.id, completedBytes) },
+        })
+        await this.storeBuild({
+          projectId: request.projectId,
+          digest: artifacts.blueprint.digest,
+          blueprint: artifacts.blueprintText,
+          certificate: artifacts.certificateText,
+          sourceSnapshot: artifacts.sourceSnapshotText,
+        })
+        await rm(staging, { recursive: true, force: true })
+        this.finishJob(job.id, preflight.manifest.expandedBytes, {
+          resultBlueprintDigest: artifacts.blueprint.digest,
+        })
+      } catch (error) {
+        await rm(staging, { recursive: true, force: true }).catch(() => undefined)
+        this.failJob(job.id, error)
+      }
+    })()
+    return job
+  }
+
+  async exportRun(request: ExportRunRequest): Promise<TransferJob> {
+    const storage = (await this.runStorages()).find(item => item.projectId === request.projectId
+      && item.runId === request.runId)
+    if (storage === undefined) {
+      throw new WorldlineProjectError('entry-not-found', `Run not found: ${request.runId}`)
+    }
+    const job = this.beginJob('export-run')
+    void (async () => {
+      try {
+        const signal = this.jobs.get(job.id)?.controller?.signal
+        if (signal === undefined) throw new Error('archive transfer controller is unavailable')
+        const result = await exportRunArchive({
+          runDirectory: dirname(storage.databasePath),
+          projectId: request.projectId,
+          runId: request.runId,
+          destination: resolve(request.destination),
+          signal,
+          onTotal: (totalBytes) => { this.updateJobTotal(job.id, totalBytes) },
+          onProgress: (completedBytes) => { this.updateJobProgress(job.id, completedBytes) },
+        })
+        this.finishJob(job.id, result.sourceBytes, { resultRunId: request.runId })
+      } catch (error) { this.failJob(job.id, error) }
+    })()
+    return job
+  }
+
+  async importRun(request: ImportRunRequest): Promise<TransferJob> {
+    const project = await this.projectPath(request.projectId)
+    const source = resolve(request.source)
+    const info = await stat(source)
+    const job = this.beginJob('import-run', info.size)
+    void (async () => {
+      const staging = resolve(project, CONTROL_DIRECTORY, 'transfers', job.id)
+      let createdRunDirectory: string | undefined
+      try {
+        const signal = this.jobs.get(job.id)?.controller?.signal
+        if (signal === undefined) throw new Error('archive transfer controller is unavailable')
+        const preflight = await preflightRunArchive(source, signal)
+        if (preflight.manifest.projectId !== request.projectId) {
+          throw new WorldlineProjectError('manifest-conflict', 'Run belongs to another project')
+        }
+        this.updateJobTotal(job.id, preflight.manifest.expandedBytes)
+        const disk = await statfs(project)
+        if (disk.bavail * disk.bsize < preflight.manifest.expandedBytes * 2.1) {
+          throw new WorldlineProjectError('transfer-failed', 'not enough disk space to import the logical Run ledger')
+        }
+        const directoryName = preflight.manifest.runId.replace(/[^a-zA-Z0-9._-]/gu, '_')
+        const runDirectory = resolve(project, CONTROL_DIRECTORY, 'runs', directoryName)
+        if (await exists(runDirectory)) {
+          throw new WorldlineProjectError('entry-exists', `Run already exists: ${preflight.manifest.runId}`)
+        }
+        await mkdir(staging, { recursive: true })
+        const storage = await this.runStorage(request.projectId, preflight.manifest.runId)
+        createdRunDirectory = dirname(storage.databasePath)
+        await extractAndImportRunArchive({
+          source,
+          destination: staging,
+          preflight,
+          databasePath: storage.databasePath,
+          retainedBlueprintPath: resolve(createdRunDirectory, 'blueprint.json'),
+          signal,
+          onProgress: (completedBytes) => { this.updateJobProgress(job.id, completedBytes) },
+        })
+        await rm(staging, { recursive: true, force: true })
+        this.finishJob(job.id, preflight.manifest.expandedBytes, {
+          resultRunId: preflight.manifest.runId,
+        })
+      } catch (error) {
+        await rm(staging, { recursive: true, force: true }).catch(() => undefined)
+        if (createdRunDirectory !== undefined) {
+          await rm(createdRunDirectory, { recursive: true, force: true }).catch(() => undefined)
+        }
         this.failJob(job.id, error)
       }
     })()
@@ -1095,14 +1261,18 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     return absolute
   }
 
-  private finishJob(id: string, completedBytes?: number, projectId?: ProjectId): TransferJob {
+  private finishJob(
+    id: string,
+    completedBytes?: number,
+    result: Pick<TransferJob, 'resultProjectId' | 'resultBlueprintDigest' | 'resultRunId'> = {},
+  ): TransferJob {
     const current = this.jobs.get(id)
     if (current === undefined) throw new Error(`transfer disappeared: ${id}`)
     const finalBytes = completedBytes ?? current.totalBytes ?? current.completedBytes
     const job = { ...current, state: 'completed' as const,
       completedBytes: finalBytes,
       totalBytes: finalBytes,
-      ...(projectId === undefined ? {} : { resultProjectId: projectId }) }
+      ...result }
     this.jobs.set(id, job)
     const { controller: _controller, ...view } = job
     return view

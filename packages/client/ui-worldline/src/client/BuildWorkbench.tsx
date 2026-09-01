@@ -11,6 +11,8 @@ interface BuildWorkbenchProps extends PropsLocale<'worldlineStudio'> {
   readonly project: ProjectSummary
   readonly compiler: CompilerClient
   readonly onFrozen: () => void
+  readonly onImportBlueprint: () => void
+  readonly onExportBlueprint: () => void
 }
 
 function percent(value: number): string { return `${String(Math.round(value * 100))}%` }
@@ -73,6 +75,8 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
     <header className={css.hero} data-worldline-hero>
       <div><span>CANON → BLUEPRINT</span><h2>{props.t('build')}</h2><p>{props.t('noBuild')}</p></div>
       <div className={css.heroActions}>
+        <button type="button" disabled={busy !== undefined} onClick={props.onImportBlueprint}>{props.t('importBlueprint')}</button>
+        <button type="button" disabled={busy !== undefined} onClick={props.onExportBlueprint}>{props.t('exportBlueprint')}</button>
         <button type="button" disabled={busy !== undefined} onClick={compile}>{busy === 'compile' ? props.t('loading') : props.t('compile')}</button>
         <button type="button" data-primary disabled={preview?.canFreeze !== true || busy !== undefined} onClick={() => {
           if (preview === undefined) return

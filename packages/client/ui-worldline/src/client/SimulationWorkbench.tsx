@@ -16,6 +16,8 @@ interface SimulationWorkbenchProps extends PropsLocale<'worldlineStudio'> {
   readonly runRevision: number
   readonly onRunsChanged: () => void
   readonly onOpenTextPlay: (runId: RunSummary['runId'], actorId?: EntityId) => void
+  readonly onImportRun: () => void
+  readonly onExportRun: (runId: RunSummary['runId']) => void
 }
 
 function record(value: JsonValue | undefined): JsonObject | undefined {
@@ -146,7 +148,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
 
   return <div ref={motionRoot} className={css.workbench}>
     <aside className={css.runList} data-worldline-reveal>
-      <header><div><span>WORKER RUNTIME</span><h2>{props.t('runs')}</h2></div><button type="button" onClick={() => { void loadList() }}>↻</button></header>
+      <header><div><span>WORKER RUNTIME</span><h2>{props.t('runs')}</h2></div><div><button type="button" onClick={props.onImportRun}>{props.t('importRun')}</button><button type="button" onClick={() => { void loadList() }}>↻</button></div></header>
       <div className={css.newRun}>
         <label>{props.t('seed')}<input value={seed} onChange={(event) => { setSeed(event.target.value) }} /></label>
         <label className={css.check}><input type="checkbox" checked={startPaused} onChange={(event) => { setStartPaused(event.target.checked) }} />{props.t('startPaused')}</label>
@@ -172,6 +174,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
             <input aria-label={props.t('advance')} type="number" min="0.001" value={advanceBy} onChange={(event) => { setAdvanceBy(Number(event.target.value)) }} />
             <button type="button" disabled={busy !== undefined} onClick={() => { void mutate('advance', async () => { await props.runs.advance({ runId: view.summary.runId, duration: advanceBy, maxEvents: 10_000 }) }) }}>{props.t('advance')}</button>
             <button type="button" disabled={busy !== undefined} onClick={() => { void mutate('checkpoint', async () => { await props.runs.checkpoint({ runId: view.summary.runId, label: `t=${String(view.snapshot.logicalTime)}` }) }) }}>{props.t('checkpoint')}</button>
+            <button type="button" disabled={busy !== undefined} onClick={() => { props.onExportRun(view.summary.runId) }}>{props.t('exportRun')}</button>
             <button type="button" data-danger disabled={busy !== undefined || view.summary.status === 'stopped'} onClick={() => { void mutate('stop', async () => { await props.runs.stop({ runId: view.summary.runId }) }) }}>{props.t('stop')}</button>
           </div>
         </header>

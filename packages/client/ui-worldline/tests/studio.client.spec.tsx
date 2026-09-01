@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { DocumentView, ProjectRootView, ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import { WorldlineStudio, type WorldlineStudioProps } from '../src/client/WorldlineStudio.tsx'
 import { uploadProjectEntry } from '../src/client/CanonWorkbench.tsx'
@@ -116,6 +116,41 @@ describe('Worldline Studio', () => {
     await waitFor(() => {
       expect(ownMethod(props, 'launchConversation')).toHaveBeenCalledWith(project)
     })
+  })
+
+  it('exposes current Blueprint and logical Run archive workflows in their workbenches', async () => {
+    const props = studioProps(configured)
+    Object.assign(props.projects, {
+      importBlueprint: vi.fn(async () => ({
+        id: 'transfer:blueprint',
+        kind: 'import-blueprint',
+        state: 'completed',
+        completedBytes: 10,
+        totalBytes: 10,
+      })),
+    })
+    Object.assign(props.compiler, { state: vi.fn(async () => ({ questions: [], proposals: [] })) })
+    Object.assign(props.runs, { list: vi.fn(async () => []) })
+    Object.assign(props.ai, { catalog: vi.fn(async () => ({ models: [] })) })
+    render(<WorldlineStudio {...props} />)
+    fireEvent.click(await screen.findByRole('button', { name: '打开 星海图鉴' }))
+    fireEvent.click(screen.getByRole('button', { name: '构建' }))
+    fireEvent.click(await screen.findByRole('button', { name: '导入 Blueprint' }))
+    const blueprintDialog = screen.getByRole('dialog', { name: '导入 Blueprint' })
+    fireEvent.change(within(blueprintDialog).getByLabelText('归档路径'), {
+      target: { value: 'C:\\Worlds\\frozen.worldline-blueprint.zip' },
+    })
+    fireEvent.click(within(blueprintDialog).getByRole('button', { name: '导入 Blueprint' }))
+    await waitFor(() => {
+      expect(ownMethod(props.projects, 'importBlueprint')).toHaveBeenCalledWith({
+        projectId: project.manifest.id,
+        source: 'C:\\Worlds\\frozen.worldline-blueprint.zip',
+      })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟' }))
+    fireEvent.click(await screen.findByRole('button', { name: '导入 Run 存档' }))
+    expect(screen.getByText(/不包含 SQLite 缓存数据库/u)).toBeTruthy()
   })
 
   it('keeps multiple canon documents open in one current tabbed editor', async () => {

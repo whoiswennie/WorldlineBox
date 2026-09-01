@@ -5,9 +5,13 @@ import type {
   CreateProjectRequest,
   DocumentHistoryEntry,
   DocumentView,
+  ExportBlueprintRequest,
   ExportProjectRequest,
+  ExportRunRequest,
   HistoryRequest,
+  ImportBlueprintRequest,
   ImportProjectRequest,
+  ImportRunRequest,
   MoveEntryRequest,
   MutationResult,
   ProjectLibraryPage,
@@ -126,6 +130,10 @@ export interface ProjectClient {
   backlinks(request: ReadDocumentRequest): Promise<readonly ProjectLink[]>
   exportProject(request: ExportProjectRequest): Promise<TransferJob>
   importProject(request: ImportProjectRequest): Promise<TransferJob>
+  exportBlueprint(request: ExportBlueprintRequest): Promise<TransferJob>
+  importBlueprint(request: ImportBlueprintRequest): Promise<TransferJob>
+  exportRun(request: ExportRunRequest): Promise<TransferJob>
+  importRun(request: ImportRunRequest): Promise<TransferJob>
   transfer(id: string): Promise<TransferJob>
   cancelTransfer(id: string): Promise<TransferJob>
 }

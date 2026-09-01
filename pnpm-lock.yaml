@@ -10393,6 +10393,9 @@ importers:
       '@deepseek-ai/dsh-worldline-project':
         specifier: workspace:^
         version: link:../project
+      '@deepseek-ai/dsh-worldline-run-sqlite':
+        specifier: workspace:^
+        version: link:../run-sqlite
       '@deepseek-ai/dsh-worldline-standard':
         specifier: workspace:^
         version: link:../standard

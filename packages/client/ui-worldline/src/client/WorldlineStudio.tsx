@@ -22,7 +22,17 @@ import type { EditorDocumentState, WorldlineStudioInjected } from './types.ts'
 import css from './WorldlineStudio.module.css'
 
 type StudioTab = 'overview' | 'canon' | 'map' | 'build' | 'simulation' | 'textPlay'
-type Dialog = 'create' | 'trash' | 'import' | 'export' | 'root' | undefined
+type Dialog =
+  | 'create'
+  | 'trash'
+  | 'import'
+  | 'export'
+  | 'root'
+  | 'import-blueprint'
+  | 'export-blueprint'
+  | 'import-run'
+  | 'export-run'
+  | undefined
 
 export type WorldlineStudioProps = PropsRuntime<'worldline.main.page'>
   & PropsLocale<'worldlineStudio'>
@@ -75,6 +85,7 @@ export function WorldlineStudio(props: WorldlineStudioProps) {
   const [runRevision, setRunRevision] = useState(0)
   const [preferredRun, setPreferredRun] = useState<RunId>()
   const [preferredActor, setPreferredActor] = useState<EntityId>()
+  const [archiveRunId, setArchiveRunId] = useState<RunId>()
   const saveTimers = useRef(new Map<string, number>())
   const motionRoot = useRef<HTMLElement>(null)
   const documentsRef = useRef(documents)
@@ -331,11 +342,15 @@ export function WorldlineStudio(props: WorldlineStudioProps) {
       {tab === 'overview' && <Overview project={project} t={props.t} openFolder={() => props.openPath(project.path)} launchConversation={() => props.launchConversation(project)} navigate={setTab} />}
       {tab === 'canon' && <CanonWorkbench {...props} project={project} openDocuments={documents} activePath={activeDocumentPath} openPath={openPath} activatePath={setActiveDocumentPath} closePath={closeDocument} editDocument={editDocument} saveDocument={() => saveDocument()} useDiskVersion={useDiskVersion} retryLocalVersion={retryLocalVersion} treeRevision={treeRevision} refreshTree={() => { setTreeRevision(value => value + 1) }} />}
       {tab === 'map' && <MapWorkbench t={props.t} document={document} editDocument={editDocument} saveDocument={saveDocument} />}
-      {tab === 'build' && <BuildWorkbench t={props.t} project={project} compiler={props.compiler} onFrozen={() => { setRunRevision(value => value + 1); void loadLibrary('').then((page) => { setProject(current => page.projects.find(item => item.manifest.id === current?.manifest.id) ?? current) }) }} />}
-      {tab === 'simulation' && <SimulationWorkbench t={props.t} project={project} runs={props.runs} ai={props.ai} runRevision={runRevision} onRunsChanged={() => { setRunRevision(value => value + 1) }} onOpenTextPlay={(runId, actorId) => { setPreferredRun(runId); setPreferredActor(actorId); setTab('textPlay') }} />}
+      {tab === 'build' && <BuildWorkbench t={props.t} project={project} compiler={props.compiler} onImportBlueprint={() => { setSourcePath(''); setTransfer(undefined); setDialog('import-blueprint') }} onExportBlueprint={() => { setDestinationPath(`${project.path}.worldline-blueprint.zip`); setTransfer(undefined); setDialog('export-blueprint') }} onFrozen={() => { setRunRevision(value => value + 1); void loadLibrary('').then((page) => { setProject(current => page.projects.find(item => item.manifest.id === current?.manifest.id) ?? current) }) }} />}
+      {tab === 'simulation' && <SimulationWorkbench t={props.t} project={project} runs={props.runs} ai={props.ai} runRevision={runRevision} onRunsChanged={() => { setRunRevision(value => value + 1) }} onImportRun={() => { setSourcePath(''); setTransfer(undefined); setDialog('import-run') }} onExportRun={(runId) => { setArchiveRunId(runId); setDestinationPath(`${project.path}.${runId.replace(/[^a-zA-Z0-9._-]/gu, '_')}.worldline-run.zip`); setTransfer(undefined); setDialog('export-run') }} onOpenTextPlay={(runId, actorId) => { setPreferredRun(runId); setPreferredActor(actorId); setTab('textPlay') }} />}
       {tab === 'textPlay' && <TextPlayWorkbench t={props.t} project={project} runs={props.runs} narrative={props.narrative} preferredRunId={preferredRun} preferredActorId={preferredActor} />}
     </section>
     <DialogSurface open={dialog === 'export'} title={props.t('exportProject')} close={() => { setDialog(undefined) }}><form onSubmit={(event) => { event.preventDefault(); void action('export', async () => { await pollTransfer(await props.projects.exportProject({ projectId: project.manifest.id, destination: destinationPath.trim(), includeRuns })); setDialog(undefined); setNotice(destinationPath.trim()) }) }}><Field label={props.t('destinationPath')}><input required value={destinationPath} onChange={(event) => { setDestinationPath(event.target.value) }} /></Field><label className={css.checkbox}><input type="checkbox" checked={includeRuns} onChange={(event) => { setIncludeRuns(event.target.checked) }} />{props.t('includeRuns')}</label><TransferProgress transfer={transfer} /><DialogActions cancel={() => { setDialog(undefined) }} submit={props.t('exportProject')} busy={busy !== undefined} /></form></DialogSurface>
+    <DialogSurface open={dialog === 'import-blueprint'} title={props.t('importBlueprint')} close={() => { setDialog(undefined) }}><form onSubmit={(event) => { event.preventDefault(); void action('import-blueprint', async () => { await pollTransfer(await props.projects.importBlueprint({ projectId: project.manifest.id, source: sourcePath.trim() })); setDialog(undefined); setRunRevision(value => value + 1); setNotice(props.t('importBlueprint')) }) }}><p>{props.t('blueprintArchiveHint')}</p><Field label={props.t('sourcePath')}><input required value={sourcePath} onChange={(event) => { setSourcePath(event.target.value) }} placeholder="C:\\Worlds\\frozen.worldline-blueprint.zip" /></Field><TransferProgress transfer={transfer} /><DialogActions cancel={() => { setDialog(undefined) }} submit={props.t('importBlueprint')} busy={busy !== undefined} /></form></DialogSurface>
+    <DialogSurface open={dialog === 'export-blueprint'} title={props.t('exportBlueprint')} close={() => { setDialog(undefined) }}><form onSubmit={(event) => { event.preventDefault(); void action('export-blueprint', async () => { await pollTransfer(await props.projects.exportBlueprint({ projectId: project.manifest.id, destination: destinationPath.trim() })); setDialog(undefined); setNotice(destinationPath.trim()) }) }}><p>{props.t('blueprintArchiveHint')}</p><Field label={props.t('destinationPath')}><input required value={destinationPath} onChange={(event) => { setDestinationPath(event.target.value) }} /></Field><TransferProgress transfer={transfer} /><DialogActions cancel={() => { setDialog(undefined) }} submit={props.t('exportBlueprint')} busy={busy !== undefined} /></form></DialogSurface>
+    <DialogSurface open={dialog === 'import-run'} title={props.t('importRun')} close={() => { setDialog(undefined) }}><form onSubmit={(event) => { event.preventDefault(); void action('import-run', async () => { await pollTransfer(await props.projects.importRun({ projectId: project.manifest.id, source: sourcePath.trim() })); setDialog(undefined); setRunRevision(value => value + 1); setNotice(props.t('importRun')) }) }}><p>{props.t('runArchiveHint')}</p><Field label={props.t('sourcePath')}><input required value={sourcePath} onChange={(event) => { setSourcePath(event.target.value) }} placeholder="C:\\Worlds\\play.worldline-run.zip" /></Field><TransferProgress transfer={transfer} /><DialogActions cancel={() => { setDialog(undefined) }} submit={props.t('importRun')} busy={busy !== undefined} /></form></DialogSurface>
+    <DialogSurface open={dialog === 'export-run'} title={props.t('exportRun')} close={() => { setDialog(undefined) }}><form onSubmit={(event) => { event.preventDefault(); if (archiveRunId === undefined) return; void action('export-run', async () => { await pollTransfer(await props.projects.exportRun({ projectId: project.manifest.id, runId: archiveRunId, destination: destinationPath.trim() })); setDialog(undefined); setNotice(destinationPath.trim()) }) }}><p>{props.t('runArchiveHint')}</p><Field label={props.t('destinationPath')}><input required value={destinationPath} onChange={(event) => { setDestinationPath(event.target.value) }} /></Field><TransferProgress transfer={transfer} /><DialogActions cancel={() => { setDialog(undefined) }} submit={props.t('exportRun')} busy={busy !== undefined || archiveRunId === undefined} /></form></DialogSurface>
     {notice !== undefined && <button type="button" className={css.toast} onClick={() => { setNotice(undefined) }}>{notice}</button>}
     {error !== undefined && <button type="button" className={`${css.toast} ${css.toastError}`} onClick={() => { setError(undefined) }}>{props.t('error')}: {error}</button>}
   </main>

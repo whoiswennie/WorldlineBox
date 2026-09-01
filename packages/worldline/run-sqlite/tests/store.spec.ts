@@ -125,4 +125,34 @@ describe('WorldlineRunDatabase', () => {
     ])
     store.close()
   })
+
+  it('streams a stable logical view from a read-only WAL snapshot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'worldline-run-db-reader-'))
+    roots.push(root)
+    const path = join(root, 'world.sqlite')
+    const writer = new WorldlineRunDatabase(path)
+    writer.initialize(snapshot())
+    writer.commit({
+      snapshot: snapshot(1),
+      records: [{
+        sequence: 1,
+        logicalTime: 10,
+        stream: 'telemetry',
+        id: 'telemetry:reader-000001',
+        payload: { queueDepth: 1 },
+      }],
+      metadata: { status: 'running', runtimeState: '{}' },
+    })
+
+    const reader = new WorldlineRunDatabase(path, { readOnly: true })
+    reader.beginConsistentRead()
+    expect(reader.snapshot()).toMatchObject({ sequence: 1 })
+    expect([...reader.allRecords()]).toEqual([
+      expect.objectContaining({ id: 'telemetry:reader-000001', ordinal: 0 }),
+    ])
+    expect(reader.metadata()).toMatchObject({ status: 'running', runtimeState: '{}' })
+    reader.endConsistentRead()
+    reader.close()
+    writer.close()
+  })
 })

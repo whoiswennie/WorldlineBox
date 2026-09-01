@@ -7,9 +7,19 @@ import { pipeline } from 'node:stream/promises'
 import { ZipFile } from 'yazl'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { WWS_VERSION, type ProjectId, type Revision } from '@deepseek-ai/dsh-worldline-standard'
+import {
+  WWS_VERSION,
+  stableStringify,
+  worldlineId,
+  type Blueprint,
+  type ProjectId,
+  type Revision,
+  type RunSnapshot,
+} from '@deepseek-ai/dsh-worldline-standard'
+import { WorldlineRunDatabase } from '@deepseek-ai/dsh-worldline-run-sqlite'
 import LocalWorldlineProjects from '../src/index.ts'
 import { extractProjectArchive, preflightProjectArchive } from '../src/archive.ts'
+import { preflightBlueprintArchive, preflightRunArchive } from '../src/artifact-archive.ts'
 import type { TransferJob } from '@deepseek-ai/dsh-worldline-project'
 
 const roots: string[] = []
@@ -61,6 +71,66 @@ async function start(root: string): Promise<{ ctx: Context; dispose: () => Promi
   })
   await fiber.await()
   return { ctx, dispose: () => fiber.dispose() }
+}
+
+function frozenBlueprint(projectId: ProjectId): Blueprint {
+  const digest = 'b'.repeat(64)
+  return {
+    id: worldlineId<'blueprint'>(`blueprint:${digest}`),
+    digest,
+    format: WWS_VERSION,
+    projectId,
+    worldId: worldlineId<'world'>('world:archive-test'),
+    worldlineId: worldlineId<'worldline'>('worldline:archive-test'),
+    projectRevision: 'sha256:archive-test' as Revision,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    purpose: {
+      summary: 'archive',
+      scope: [],
+      duration: 10,
+      resolution: 1,
+      detail: 'L2',
+      hardExpectations: [],
+      statisticalExpectations: [],
+      antiPatterns: [],
+    },
+    canon: [], links: [], maps: [], entities: [], actions: [], systems: [], invariants: [],
+    provenance: [],
+    modelPolicy: { routes: {}, aiEnabled: false, revision: 'sha256:model' as Revision },
+    certificate: {
+      blueprintDigest: digest,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceCoverage: {
+        author: 1,
+        'approved-supplement': 0,
+        'mechanism-pack': 0,
+        import: 0,
+        'agent-proposal': 0,
+        'runtime-proposal': 0,
+      },
+      results: [],
+      deterministicWithoutAi: true,
+      knownLimits: [],
+      performance: {},
+    },
+  }
+}
+
+function runSnapshot(blueprint: Blueprint): RunSnapshot {
+  return {
+    runId: worldlineId<'run'>('run:archive-test'),
+    blueprintId: blueprint.id,
+    blueprintDigest: blueprint.digest,
+    branchId: worldlineId<'worldline'>('worldline:archive-run'),
+    seed: 'archive-seed',
+    logicalTime: 10,
+    sequence: 1,
+    state: { place: 'harbor' },
+    processes: [], reservations: [], futureEvents: [], randomState: 'archive-random',
+    modelPolicy: blueprint.modelPolicy,
+    aiBudget: { maxCalls: 0, maxInputTokens: 0, maxOutputTokens: 0, maxConcurrent: 0, maxCallsPerLogicalDay: 0, maxCallsPerRealHour: 0, maxEstimatedCost: 0, currency: 'USD' },
+    aiUsage: { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, estimatedCost: 0, cacheHits: 0 },
+  }
 }
 
 afterEach(async () => {
@@ -418,5 +488,109 @@ describe('LocalWorldlineProjects', () => {
       signal: new AbortController().signal,
       onProgress: () => undefined,
     })).rejects.toThrow(/digest failed/u)
+  })
+
+  it('round-trips frozen Blueprint and logical Run archives through transfer jobs', async () => {
+    const root = await temporaryRoot()
+    const archiveDirectory = await temporaryRoot()
+    const runtime = await start(root)
+    const project = await runtime.ctx.worldlineProjects.create({ name: 'Artifacts', template: 'blank' })
+    const blueprint = frozenBlueprint(project.manifest.id)
+    const sourceDigest = 'a'.repeat(64)
+    await runtime.ctx.worldlineProjects.storeBuild({
+      projectId: project.manifest.id,
+      digest: blueprint.digest,
+      blueprint: `${JSON.stringify(blueprint, null, 2)}\n`,
+      certificate: `${JSON.stringify(blueprint.certificate, null, 2)}\n`,
+      sourceSnapshot: `${JSON.stringify({
+        projectId: project.manifest.id,
+        capturedAt: '2026-01-01T00:00:00.000Z',
+        digest: sourceDigest,
+        files: [],
+      }, null, 2)}\n`,
+    })
+    const blueprintArchive = join(archiveDirectory, 'frozen.worldline-blueprint.zip')
+    const exportedBlueprint = await waitForTransfer(runtime.ctx,
+      await runtime.ctx.worldlineProjects.exportBlueprint({
+        projectId: project.manifest.id,
+        destination: blueprintArchive,
+      }))
+    expect(exportedBlueprint).toMatchObject({
+      state: 'completed',
+      resultBlueprintDigest: blueprint.digest,
+    })
+    expect((await preflightBlueprintArchive(blueprintArchive)).manifest.files.map(file => file.path).sort())
+      .toEqual(['blueprint.json', 'certificate.json', 'source-snapshot.json'])
+    await rm(join(project.path, '.worldline', 'builds'), { recursive: true, force: true })
+    const importedBlueprint = await waitForTransfer(runtime.ctx,
+      await runtime.ctx.worldlineProjects.importBlueprint({
+        projectId: project.manifest.id,
+        source: blueprintArchive,
+      }))
+    expect(importedBlueprint).toMatchObject({
+      state: 'completed',
+      resultBlueprintDigest: blueprint.digest,
+    })
+    await expect(runtime.ctx.worldlineProjects.activeBuild(project.manifest.id))
+      .resolves.toMatchObject({ digest: blueprint.digest })
+
+    const snapshot = runSnapshot(blueprint)
+    const storage = await runtime.ctx.worldlineProjects.runStorage(project.manifest.id, snapshot.runId)
+    await writeFile(join(storage.databasePath, '..', 'blueprint.json'), JSON.stringify(blueprint))
+    const database = new WorldlineRunDatabase(storage.databasePath)
+    database.initialize(snapshot)
+    database.commit({
+      snapshot,
+      records: [{
+        sequence: 1,
+        logicalTime: 10,
+        stream: 'world-event',
+        id: 'event:archive-000001',
+        payload: { type: 'arrival' },
+      }],
+    })
+    const checkpoint = {
+      id: worldlineId<'checkpoint'>('checkpoint:archive-000001'),
+      runId: snapshot.runId,
+      sequence: snapshot.sequence,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      snapshot,
+      digest: createHash('sha256').update(stableStringify(snapshot)).digest('hex'),
+    }
+    database.saveCheckpoint(checkpoint, 'Arrival')
+    database.close()
+
+    const runArchive = join(archiveDirectory, 'play.worldline-run.zip')
+    const exportedRun = await waitForTransfer(runtime.ctx,
+      await runtime.ctx.worldlineProjects.exportRun({
+        projectId: project.manifest.id,
+        runId: snapshot.runId,
+        destination: runArchive,
+      }))
+    expect(exportedRun).toMatchObject({ state: 'completed', resultRunId: snapshot.runId })
+    const runManifest = (await preflightRunArchive(runArchive)).manifest
+    expect(runManifest).toMatchObject({ recordCount: 1, checkpointCount: 1 })
+    expect(runManifest.files.map(file => file.path)).not.toContain('world.sqlite')
+    await expect(preflightBlueprintArchive(runArchive)).rejects.toThrow(/current blueprint archive contract/iu)
+    await rm(join(storage.databasePath, '..'), { recursive: true, force: true })
+    const importedRun = await waitForTransfer(runtime.ctx,
+      await runtime.ctx.worldlineProjects.importRun({
+        projectId: project.manifest.id,
+        source: runArchive,
+      }))
+    expect(importedRun).toMatchObject({ state: 'completed', resultRunId: snapshot.runId })
+    const restored = (await runtime.ctx.worldlineProjects.runStorages())
+      .find(item => item.runId === snapshot.runId)
+    expect(restored).toBeDefined()
+    const restoredDatabase = new WorldlineRunDatabase(restored!.databasePath)
+    expect(restoredDatabase.snapshot()).toMatchObject({ runId: snapshot.runId, sequence: 1 })
+    expect(restoredDatabase.records()).toEqual([
+      expect.objectContaining({ id: 'event:archive-000001' }),
+    ])
+    expect(restoredDatabase.checkpoints()).toHaveLength(1)
+    restoredDatabase.close()
+    expect(JSON.parse(await readFile(join(restored!.databasePath, '..', 'blueprint.json'), 'utf8')))
+      .toMatchObject({ digest: blueprint.digest })
+    await runtime.dispose()
   })
 })

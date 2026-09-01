@@ -20,6 +20,7 @@
   "dependencies": {
     "@deepseek-ai/dsh-settings": "workspace:^",
     "@deepseek-ai/dsh-worldline-project": "workspace:^",
+    "@deepseek-ai/dsh-worldline-run-sqlite": "workspace:^",
     "@deepseek-ai/dsh-worldline-standard": "workspace:^",
     "@deepseek-ai/schemastery": "workspace:^",
     "chokidar": "^4.0.3",

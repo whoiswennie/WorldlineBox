@@ -8,10 +8,14 @@ import type {
   CreateProjectRequest,
   DocumentHistoryEntry,
   DocumentView,
+  ExportBlueprintRequest,
   ExportProjectRequest,
+  ExportRunRequest,
   HistoryRequest,
+  ImportBlueprintRequest,
   ImportProjectRequest,
   ImportProjectEntryRequest,
+  ImportRunRequest,
   MoveEntryRequest,
   MutationResult,
   ProjectLibraryPage,
@@ -82,6 +86,10 @@ export abstract class WorldlineProjects extends TypertRemoteService {
   abstract backlinks(request: ReadDocumentRequest): Promise<readonly ProjectLink[]>
   abstract exportProject(request: ExportProjectRequest): Promise<TransferJob>
   abstract importProject(request: ImportProjectRequest): Promise<TransferJob>
+  abstract exportBlueprint(request: ExportBlueprintRequest): Promise<TransferJob>
+  abstract importBlueprint(request: ImportBlueprintRequest): Promise<TransferJob>
+  abstract exportRun(request: ExportRunRequest): Promise<TransferJob>
+  abstract importRun(request: ImportRunRequest): Promise<TransferJob>
   abstract transfer(id: string): Promise<TransferJob>
   abstract cancelTransfer(id: string): Promise<TransferJob>
 
@@ -128,6 +136,10 @@ export abstract class WorldlineProjects extends TypertRemoteService {
   @Remote('backlinks') remoteBacklinks(value: ReadDocumentRequest): Promise<readonly ProjectLink[]> { return this.backlinks(value) }
   @Remote('exportProject') remoteExportProject(value: ExportProjectRequest): Promise<TransferJob> { return this.exportProject(value) }
   @Remote('importProject') remoteImportProject(value: ImportProjectRequest): Promise<TransferJob> { return this.importProject(value) }
+  @Remote('exportBlueprint') remoteExportBlueprint(value: ExportBlueprintRequest): Promise<TransferJob> { return this.exportBlueprint(value) }
+  @Remote('importBlueprint') remoteImportBlueprint(value: ImportBlueprintRequest): Promise<TransferJob> { return this.importBlueprint(value) }
+  @Remote('exportRun') remoteExportRun(value: ExportRunRequest): Promise<TransferJob> { return this.exportRun(value) }
+  @Remote('importRun') remoteImportRun(value: ImportRunRequest): Promise<TransferJob> { return this.importRun(value) }
   @Remote('transfer') remoteTransfer(value: string): Promise<TransferJob> { return this.transfer(value) }
   @Remote('cancelTransfer') remoteCancelTransfer(value: string): Promise<TransferJob> { return this.cancelTransfer(value) }
 }

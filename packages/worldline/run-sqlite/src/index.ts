@@ -75,11 +75,16 @@ function parseObject(value: unknown): JsonObject {
 /** SQLite store owned by exactly one Runtime worker for its entire lifetime. */
 export class WorldlineRunDatabase {
   readonly database: DatabaseSync
+  readonly readOnly: boolean
 
-  constructor(readonly path: string) {
-    mkdirSync(dirname(path), { recursive: true })
-    this.database = new DatabaseSync(path)
-    this.database.exec(`
+  constructor(readonly path: string, options: { readonly readOnly?: boolean } = {}) {
+    this.readOnly = options.readOnly === true
+    if (!this.readOnly) mkdirSync(dirname(path), { recursive: true })
+    this.database = new DatabaseSync(path, { readOnly: this.readOnly })
+    this.database.exec(this.readOnly ? `
+      PRAGMA query_only=ON;
+      PRAGMA busy_timeout=5000;
+    ` : `
       PRAGMA journal_mode=WAL;
       PRAGMA synchronous=FULL;
       PRAGMA foreign_keys=ON;
@@ -94,6 +99,10 @@ export class WorldlineRunDatabase {
     if (!newDatabase && (applicationId !== APPLICATION_ID || version !== CURRENT_SCHEMA_VERSION)) {
       this.database.close()
       throw new Error('Worldline Run SQLite only supports the current schema; rebuild or import the Run')
+    }
+    if (newDatabase && this.readOnly) {
+      this.database.close()
+      throw new Error('Worldline Run SQLite archive source is empty')
     }
     if (!newDatabase) return
     try {
@@ -113,6 +122,17 @@ export class WorldlineRunDatabase {
 
   close(): void { this.database.close() }
 
+  /** Hold one WAL read snapshot while a logical archive is streamed. */
+  beginConsistentRead(): void {
+    if (!this.readOnly) throw new Error('consistent archive reads require a read-only Run connection')
+    if (this.database.isTransaction) throw new Error('a consistent Run read is already active')
+    this.database.exec('BEGIN')
+  }
+
+  endConsistentRead(): void {
+    if (this.database.isTransaction) this.database.exec('ROLLBACK')
+  }
+
   meta(key: string): string | undefined {
     const row = this.database.prepare('SELECT value FROM run_meta WHERE key=?').get(key)
     return row === undefined ? undefined : String(row['value'])
@@ -123,6 +143,11 @@ export class WorldlineRunDatabase {
       INSERT INTO run_meta(key,value) VALUES(?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value
     `).run(key, value)
+  }
+
+  metadata(): Readonly<Record<string, string>> {
+    return Object.fromEntries(this.database.prepare('SELECT key,value FROM run_meta ORDER BY key')
+      .all().map(row => [String(row['key']), String(row['value'])]))
   }
 
   initialize(snapshot: RunSnapshot): void {
@@ -221,6 +246,23 @@ export class WorldlineRunDatabase {
       id: String(row['id']),
       payload: parseObject(row['payload']),
     }))
+  }
+
+  *allRecords(): Iterable<RunStreamRecord> {
+    const rows = this.database.prepare(`
+      SELECT sequence,ordinal,logical_time,stream,id,payload
+      FROM stream_records ORDER BY sequence,ordinal
+    `).iterate()
+    for (const row of rows) {
+      yield {
+        sequence: Number(row['sequence']),
+        ordinal: Number(row['ordinal']),
+        logicalTime: Number(row['logical_time']),
+        stream: String(row['stream']) as RunStream,
+        id: String(row['id']),
+        payload: parseObject(row['payload']),
+      }
+    }
   }
 
   record(stream: RunStream, id: string): RunStreamRecord | undefined {
