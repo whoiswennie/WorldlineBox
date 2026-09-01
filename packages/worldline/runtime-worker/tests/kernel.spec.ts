@@ -30,6 +30,21 @@ afterEach(async () => {
 })
 
 describe('WorldlineKernel', () => {
+  it('projects the retained frozen Blueprint for simulation inspection', async () => {
+    const run = await kernel('definition-projection-seed')
+    const definition = run.definitionView()
+    expect(definition).toMatchObject({
+      blueprintDigest: 'a'.repeat(64),
+      purpose: { detail: 'L2' },
+      systems: [{ id: 'world.clock' }],
+      invariants: [{ id: 'world.time.nonnegative' }],
+    })
+    expect(definition.actions.map(action => action.id)).toContain('character.move')
+    expect(definition.entities).toHaveLength(2)
+    expect(definition.entities[0]).not.toHaveProperty('memory')
+    run.close()
+  })
+
   it('advances through a Future Event Queue without tick heartbeat events', async () => {
     const run = await kernel()
     const view = run.advance({ runId: run.view().summary.runId, duration: 300 })

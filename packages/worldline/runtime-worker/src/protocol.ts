@@ -33,6 +33,7 @@ export interface WorkerInit {
 
 export type WorkerCommand =
   | { readonly type: 'view' }
+  | { readonly type: 'definition' }
   | { readonly type: 'spatial'; readonly payload: RunSpatialRequest }
   | { readonly type: 'choices'; readonly payload: RunChoicesRequest }
   | { readonly type: 'advance'; readonly payload: AdvanceRunRequest }

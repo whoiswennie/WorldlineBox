@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
-import type { CheckpointView, RunEventExplanation, RunRecordsPage, RunSpatialView, RunSummary, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
+import type { CheckpointView, RunChoicesView, RunDefinitionView, RunEventExplanation, RunRecordsPage, RunSpatialView, RunSummary, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
 import type { AiBudgetStatus, WorldlineAiCatalog } from '@deepseek-ai/dsh-worldline-ai/types'
 import type { ContextPack, EntityId, JsonObject, JsonValue, MapId, ModelPurpose } from '@deepseek-ai/dsh-worldline-standard/types'
 import type { AiClient, RunsClient } from './types.ts'
@@ -30,6 +30,11 @@ function entityIds(view: RunView | undefined): EntityId[] {
 }
 
 function shortId(value: string): string { return value.length > 20 ? `${value.slice(0, 9)}…${value.slice(-7)}` : value }
+
+function valueLabel(value: JsonValue | undefined): string {
+  if (value === undefined || value === null) return '—'
+  return typeof value === 'object' ? JSON.stringify(value) : String(value)
+}
 
 function SpatialMap({ spatial, selectedActor }: {
   readonly spatial: RunSpatialView
@@ -83,6 +88,10 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
   const [selectedId, setSelectedId] = useState<RunSummary['runId']>()
   const [view, setView] = useState<RunView>()
   const [records, setRecords] = useState<RunRecordsPage>()
+  const [observations, setObservations] = useState<RunRecordsPage>()
+  const [definition, setDefinition] = useState<RunDefinitionView>()
+  const [choices, setChoices] = useState<RunChoicesView>()
+  const [selectedChoiceId, setSelectedChoiceId] = useState<string>()
   const [spatial, setSpatial] = useState<RunSpatialView>()
   const [selectedMapId, setSelectedMapId] = useState<MapId>()
   const [checkpoints, setCheckpoints] = useState<readonly CheckpointView[]>([])
@@ -113,15 +122,17 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
   }, [projectId, props.runs])
 
   const refresh = useCallback(async (runId = selectedId): Promise<void> => {
-    if (runId === undefined) { setView(undefined); setRecords(undefined); setSpatial(undefined); setCheckpoints([]); return }
-    const [nextView, nextRecords, nextCheckpoints, nextSpatial] = await Promise.all([
+    if (runId === undefined) { setView(undefined); setRecords(undefined); setObservations(undefined); setSpatial(undefined); setDefinition(undefined); setCheckpoints([]); return }
+    const [nextView, nextRecords, nextObservations, nextCheckpoints, nextSpatial] = await Promise.all([
       props.runs.view({ runId }),
       props.runs.records({ runId, limit: 200, ...(stream === undefined ? {} : { stream }) }),
+      props.runs.records({ runId, limit: 100, stream: 'observation' }),
       props.runs.checkpoints({ runId }),
       props.runs.spatial({ runId, ...(selectedMapId === undefined ? {} : { mapId: selectedMapId }), maxNodes: 1_500 }),
     ])
     setView(nextView)
     setRecords(nextRecords)
+    setObservations(nextObservations)
     setCheckpoints(nextCheckpoints)
     setSpatial(nextSpatial)
     setSelectedMapId(current => current !== undefined
@@ -133,6 +144,27 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
   useEffect(() => { void loadList().catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)) }) }, [loadList, props.runRevision])
   useEffect(() => { void refresh().catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)) }) }, [refresh])
   useEffect(() => { void props.ai.catalog().then(setCatalog).catch(() => {}) }, [props.ai])
+  useEffect(() => {
+    if (selectedId === undefined) { setDefinition(undefined); return }
+    let current = true
+    void props.runs.definition({ runId: selectedId })
+      .then((value) => { if (current) setDefinition(value) })
+      .catch((reason: unknown) => { if (current) setError(reason instanceof Error ? reason.message : String(reason)) })
+    return () => { current = false }
+  }, [props.runs, selectedId])
+  useEffect(() => {
+    if (selectedId === undefined || selectedActor === undefined || view === undefined) {
+      setChoices(undefined); setSelectedChoiceId(undefined); return
+    }
+    let current = true
+    void props.runs.choices({ runId: selectedId, actorId: selectedActor }).then((value) => {
+      if (!current) return
+      setChoices(value)
+      setSelectedChoiceId(selected => value.choices.some(choice => choice.id === selected)
+        ? selected : value.choices[0]?.id)
+    }).catch((reason: unknown) => { if (current) setError(reason instanceof Error ? reason.message : String(reason)) })
+    return () => { current = false }
+  }, [props.runs, selectedActor, selectedId, view?.snapshot.sequence])
 
   const mutate = async (key: string, operation: () => Promise<RunSummary['runId'] | void>): Promise<void> => {
     setBusy(key); setError(undefined)
@@ -143,6 +175,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
 
   const actors = entityIds(view)
   const selectedEntity = record(record(view?.snapshot.state['entities'])?.[selectedActor ?? ''])
+  const selectedChoice = choices?.choices.find(choice => choice.id === selectedChoiceId)
   const model = catalog?.models.find(item => `${item.provider}/${item.id}` === modelKey)
   const usage = view?.aiUsage
 
@@ -206,9 +239,44 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
               <button type="button" onClick={() => { props.onOpenTextPlay(view.summary.runId, selectedActor) }}>{props.t('textPlay')}</button>
             </div>}
           </section>
+          <section className={`${css.panel} ${css.interventionPanel}`}>
+            <header><div><h3>{props.t('interventions')}</h3><small>{props.t('legalInterventionHint')}</small></div><span>{choices?.choices.length ?? 0}</span></header>
+            {selectedActor === undefined ? <p className={css.panelEmpty}>{props.t('selectActorFirst')}</p> : choices?.choices.length === 0 ? <p className={css.panelEmpty}>{props.t('noLegalInterventions')}</p> : <>
+              <select value={selectedChoiceId ?? ''} onChange={(event) => { setSelectedChoiceId(event.target.value) }}>{choices?.choices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}</select>
+              {selectedChoice !== undefined && <div className={css.choiceCard}><strong>{selectedChoice.label}</strong><p>{selectedChoice.description}</p><dl><dt>{props.t('action')}</dt><dd>{selectedChoice.actionType}</dd><dt>{props.t('duration')}</dt><dd>{selectedChoice.estimatedDuration}</dd><dt>{props.t('targets')}</dt><dd>{selectedChoice.targetIds.join(', ') || '—'}</dd></dl>{selectedChoice.costs.length > 0 && <small>{props.t('costs')}: {selectedChoice.costs.join(' · ')}</small>}{selectedChoice.risks.length > 0 && <small data-danger>{props.t('risks')}: {selectedChoice.risks.join(' · ')}</small>}<pre>{JSON.stringify(selectedChoice.parameters, null, 2)}</pre></div>}
+              <button type="button" data-primary disabled={busy !== undefined || selectedChoice === undefined || choices === undefined} onClick={() => {
+                if (selectedChoice === undefined || choices === undefined) return
+                void mutate('intervene', async () => { await props.runs.submitAction({
+                  runId: view.summary.runId,
+                  actorId: selectedActor,
+                  type: selectedChoice.actionType,
+                  parameters: selectedChoice.parameters,
+                  expectedSequence: choices.sequence,
+                  controller: 'system',
+                }) })
+              }}>{props.t('applyIntervention')}</button>
+            </>}
+          </section>
+          <section className={`${css.panel} ${css.systemsPanel}`}>
+            <header><div><h3>{props.t('systems')}</h3><small>{definition?.purpose.summary ?? '—'}</small></div><span>{definition?.systems.length ?? 0}</span></header>
+            <div className={css.definitionSummary}><span>{definition?.actions.length ?? 0} {props.t('actions')}</span><span>{definition?.invariants.length ?? 0} {props.t('invariants')}</span><span>{definition?.entities.length ?? 0} {props.t('entities')}</span></div>
+            <div className={css.systemList}>{definition?.systems.map((system) => {
+              const scheduled = view.snapshot.futureEvents.find(event => event.kind === 'system-wake' && event.payload['systemId'] === system.id)?.due
+              return <details key={system.id}><summary><span><strong>{system.id}</strong><small>{system.description}</small></span><i>{props.t('nextWake')} {scheduled ?? '—'}</i></summary><dl><dt>{props.t('interval')}</dt><dd>{system.interval ?? '—'}</dd><dt>{props.t('effects')}</dt><dd>{system.effects.length}</dd><dt>{props.t('preconditions')}</dt><dd>{system.preconditions.length}</dd></dl><pre>{JSON.stringify({ preconditions: system.preconditions, effects: system.effects }, null, 2)}</pre></details>
+            })}</div>
+            <details className={css.definitionDetails}><summary>{props.t('actions')} / {props.t('invariants')}</summary><pre>{JSON.stringify({ actions: definition?.actions ?? [], invariants: definition?.invariants ?? [] }, null, 2)}</pre></details>
+          </section>
+          <section className={`${css.panel} ${css.observationsPanel}`}>
+            <header><div><h3>{props.t('observations')}</h3><small>{props.t('limitedPerspective')}</small></div><span>{observations?.records.length ?? 0}</span></header>
+            {observations?.records.length === 0 ? <p className={css.panelEmpty}>{props.t('noObservations')}</p> : <ol>{observations?.records.map(item => <li key={`${String(item.sequence)}:${String(item.ordinal ?? 0)}:${item.id}`}><details><summary><span><strong>{valueLabel(item.payload['observerId'])}</strong><small>{valueLabel(item.payload['eventType'] ?? item.payload['type'] ?? item.id)}</small></span><i>#{item.sequence} · t={item.logicalTime}</i></summary><pre>{JSON.stringify(item.payload, null, 2)}</pre></details></li>)}</ol>}
+          </section>
           <section className={css.panel}>
             <header><h3>{props.t('processes')} / {props.t('reservations')}</h3></header>
             <pre>{JSON.stringify({ processes: view.snapshot.processes, reservations: view.snapshot.reservations }, null, 2)}</pre>
+          </section>
+          <section className={`${css.panel} ${css.diagnosticsPanel}`}>
+            <header><h3>{props.t('diagnostics')}</h3><span data-healthy={view.summary.status !== 'degraded' || undefined}>{view.summary.status}</span></header>
+            <dl><dt>{props.t('longestWait')}</dt><dd>{view.health.longestWait}</dd><dt>{props.t('noProgress')}</dt><dd>{view.health.noProgressSteps}</dd><dt>SQLite WAL</dt><dd>{view.health.wal ? props.t('healthy') : props.t('unavailable')}</dd><dt>{props.t('writer')}</dt><dd>{props.t('healthy')}</dd></dl>
           </section>
           <section className={`${css.panel} ${css.events}`}>
             <header><h3>{props.t('events')}</h3><select value={stream ?? ''} onChange={(event) => { setStream(event.target.value === '' ? undefined : event.target.value as typeof stream) }}>

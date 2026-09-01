@@ -8,7 +8,7 @@
 .newRun label { display: grid; gap: 4px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .newRun input { min-width: 0; padding: 7px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: var(--dsw-alias-background-base); color: inherit; }
 .newRun .check { display: flex; align-items: center; }
-.newRun button, .controlBar button, .actorActions button, .aiPanel button { padding: 7px 9px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.newRun button, .controlBar button, .actorActions button, .aiPanel button, .interventionPanel > button { padding: 7px 9px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
 .runList ul { margin: 0; padding: 8px; list-style: none; }
 .runList li button { display: grid; grid-template-columns: 9px minmax(0, 1fr); width: 100%; gap: 4px 7px; padding: 9px; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .runList li button[data-active], .runList li button:hover { background: var(--dsw-specific-sidebar-nav-item-active); }
@@ -55,6 +55,40 @@
 .mapNotice { margin: 0; padding: 6px 12px; color: var(--dsw-alias-state-warning-primary); font-size: 10px; }
 .mapEmpty { display: grid; min-height: 270px; place-items: center; color: var(--dsw-alias-label-secondary); }
 .actorActions { display: flex; justify-content: flex-end; gap: 6px; padding: 10px; border-top: 1px solid var(--dsw-alias-divider); }
+.interventionPanel, .systemsPanel, .observationsPanel { min-height: 310px; }
+.interventionPanel > header > div, .systemsPanel > header > div, .observationsPanel > header > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.interventionPanel > header small, .systemsPanel > header small, .observationsPanel > header small { overflow: hidden; color: var(--dsw-alias-label-secondary); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.interventionPanel > select, .interventionPanel > button { width: calc(100% - 20px); margin: 10px 10px 0; }
+.interventionPanel > button[data-primary] { border-color: transparent; background: var(--dsw-alias-state-business-primary); color: white; }
+.interventionPanel > button:disabled { opacity: .45; cursor: default; }
+.choiceCard { display: grid; gap: 7px; margin: 10px; padding: 11px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 35%, var(--dsw-alias-divider)); border-radius: 9px; background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 6%, transparent); }
+.choiceCard p, .choiceCard dl, .choiceCard pre { margin: 0; }
+.choiceCard p, .choiceCard small { color: var(--dsw-alias-label-secondary); font-size: 10px; }
+.choiceCard small[data-danger] { color: var(--dsw-alias-state-danger-primary); }
+.choiceCard dl, .diagnosticsPanel dl, .systemList dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; font-size: 10px; }
+.choiceCard dd, .diagnosticsPanel dd, .systemList dd { margin: 0; text-align: right; }
+.choiceCard pre { max-height: 90px; padding: 8px; border-radius: 6px; background: var(--dsw-alias-background-base); }
+.panelEmpty { margin: 0; padding: 18px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.definitionSummary { display: flex; flex-wrap: wrap; gap: 5px; padding: 10px; }
+.definitionSummary span { padding: 4px 7px; border-radius: 999px; background: var(--dsw-specific-sidebar-nav-item-active); font-size: 9px; }
+.systemList { max-height: 310px; overflow: auto; }
+.systemList details, .definitionDetails { border-top: 1px solid var(--dsw-alias-divider); }
+.systemList summary, .definitionDetails summary { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 9px 11px; cursor: pointer; }
+.systemList summary > span { display: flex; min-width: 0; flex-direction: column; }
+.systemList summary small { white-space: normal; }
+.systemList summary i { color: var(--dsw-alias-state-business-primary); font-size: 9px; font-style: normal; }
+.systemList dl { padding: 0 12px; }
+.systemList pre, .definitionDetails pre { max-height: 180px; padding-top: 3px; }
+.observationsPanel ol { max-height: 390px; overflow: auto; margin: 0; padding: 0; list-style: none; }
+.observationsPanel li { border-bottom: 1px solid var(--dsw-alias-divider); }
+.observationsPanel summary { display: flex; justify-content: space-between; gap: 8px; padding: 10px 12px; cursor: pointer; }
+.observationsPanel summary span { display: flex; min-width: 0; flex-direction: column; }
+.observationsPanel summary small, .observationsPanel summary i { color: var(--dsw-alias-label-secondary); font-size: 9px; font-style: normal; }
+.observationsPanel li pre { max-height: 150px; padding-top: 0; }
+.diagnosticsPanel { min-height: 220px; }
+.diagnosticsPanel > header span { color: var(--dsw-alias-state-danger-primary); font-size: 10px; text-transform: uppercase; }
+.diagnosticsPanel > header span[data-healthy] { color: #34c98f; }
+.diagnosticsPanel dl { padding: 12px; font-size: 11px; }
 .events ol { max-height: 480px; overflow: auto; margin: 0; padding: 0; list-style: none; }
 .events li { display: grid; grid-template-columns: 115px 1fr; border-bottom: 1px solid var(--dsw-alias-divider); }
 .events li > div { display: flex; flex-direction: column; gap: 3px; padding: 9px; }

@@ -49,6 +49,7 @@ import type {
   RunEventExplanation,
   RunChoicesRequest,
   RunChoicesView,
+  RunDefinitionView,
   RunHealth,
   RunRecordsPage,
   RunRecordsRequest,
@@ -288,6 +289,23 @@ export class WorldlineKernel {
       health: this.health(),
       aiUsage: this.snapshotValue.aiUsage,
       controls: Object.fromEntries(this.controls),
+    }
+  }
+
+  definitionView(): RunDefinitionView {
+    return {
+      runId: this.snapshotValue.runId,
+      blueprintDigest: this.init.blueprint.digest,
+      purpose: structuredClone(this.init.blueprint.purpose),
+      entities: this.init.blueprint.entities.map(entity => ({
+        id: entity.id,
+        type: entity.type,
+        lod: entity.lod,
+        policyIds: [...entity.policyIds],
+      })),
+      actions: structuredClone(this.init.blueprint.actions),
+      systems: structuredClone(this.init.blueprint.systems),
+      invariants: structuredClone(this.init.blueprint.invariants),
     }
   }
 

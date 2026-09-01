@@ -4,6 +4,7 @@ import type {
   AiInvocation,
   AiBudget,
   AiUsage,
+  ActionDefinition,
   CanonWorldlineId,
   Checkpoint,
   CheckpointId,
@@ -22,6 +23,9 @@ import type {
   Process,
   ProjectId,
   Reservation,
+  SimulationPurpose,
+  SystemDefinition,
+  InvariantDefinition,
   RunId,
   RunSnapshot,
   Telemetry,
@@ -66,6 +70,24 @@ export interface RunView {
   readonly health: RunHealth
   readonly aiUsage: AiUsage
   readonly controls: Readonly<Record<string, ActorControlMode>>
+}
+
+export interface RunEntityDefinition {
+  readonly id: EntityId
+  readonly type: string
+  readonly lod: 'L0' | 'L1' | 'L2' | 'L3'
+  readonly policyIds: readonly string[]
+}
+
+/** Stable read-only projection of the frozen Blueprint retained by one Run. */
+export interface RunDefinitionView {
+  readonly runId: RunId
+  readonly blueprintDigest: string
+  readonly purpose: SimulationPurpose
+  readonly entities: readonly RunEntityDefinition[]
+  readonly actions: readonly ActionDefinition[]
+  readonly systems: readonly SystemDefinition[]
+  readonly invariants: readonly InvariantDefinition[]
 }
 
 export interface RunSpatialViewport {

@@ -151,6 +151,13 @@ describe('WorkerWorldlineRuns integration', () => {
       seed: 'integration-seed',
       startPaused: false,
     })
+    const definition = await first.context.worldlineRuns.definition({ runId: created.summary.runId })
+    expect(definition).toMatchObject({
+      blueprintDigest: frozen.blueprint.digest,
+      systems: [{ id: 'world.clock' }],
+      invariants: [{ id: 'world.time.nonnegative' }],
+    })
+    expect(definition.actions.map(action => action.id)).toContain('character.move')
     const submitted = await first.context.worldlineRuns.submitAction({
       runId: created.summary.runId,
       actorId: actor.id,

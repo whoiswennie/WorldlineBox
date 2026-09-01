@@ -7,6 +7,7 @@ import type { WorkerCommand, WorkerInit, WorkerRequest, WorkerToHost } from './p
 
 function execute(kernel: WorldlineKernel, command: WorkerCommand): unknown {
   if (command.type === 'view') return kernel.view()
+  if (command.type === 'definition') return kernel.definitionView()
   if (command.type === 'spatial') return kernel.spatial(command.payload)
   if (command.type === 'choices') return kernel.choices(command.payload)
   if (command.type === 'advance') return kernel.advance(command.payload)

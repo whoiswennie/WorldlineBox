@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import type { RunSpatialView, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
@@ -9,6 +9,10 @@ import type { AiClient, RunsClient } from '../src/client/types.ts'
 import { zh } from '../src/client/locales.ts'
 
 afterEach(cleanup)
+
+function ownMethod(target: object, name: string): unknown {
+  return Object.getOwnPropertyDescriptor(target, name)?.value
+}
 
 const runId = 'run:simulation-map-test' as RunView['summary']['runId']
 const project = {
@@ -32,6 +36,7 @@ const view = {
     state: { entities: { 'entity:traveller': { state: { locationId: 'map-node:start' } } } },
     processes: [],
     reservations: [],
+    futureEvents: [{ id: 'future:clock', due: 60, order: 0, kind: 'system-wake', payload: { systemId: 'world.clock' } }],
     modelPolicy: { aiEnabled: false, routes: {} },
   },
   health: {
@@ -68,7 +73,23 @@ function runsClient(): RunsClient {
   return {
     list: vi.fn(async () => [view.summary]),
     view: vi.fn(async () => view),
+    definition: vi.fn(async () => ({
+      runId,
+      blueprintDigest: view.summary.blueprintDigest,
+      purpose: { summary: 'Town runtime', scope: [], duration: 100, resolution: 1, detail: 'L2', hardExpectations: [], statisticalExpectations: [], antiPatterns: [] },
+      entities: [{ id: 'entity:traveller', type: 'character', lod: 'L2', policyIds: [] }],
+      actions: [{ id: 'character.move', description: 'Walk to a connected place' }],
+      systems: [{ id: 'world.clock', description: 'Advance town time', nextWake: 60, interval: 60, preconditions: [], effects: [], provenance: [] }],
+      invariants: [{ id: 'world.safe', description: 'Town remains safe', expression: { op: 'literal', value: true }, provenance: [] }],
+    })),
     spatial: vi.fn(async () => spatial),
+    choices: vi.fn(async () => ({
+      runId,
+      actorId: 'entity:traveller',
+      sequence: 2,
+      choices: [{ id: 'choice:walk', actionType: 'character.move', parameters: { destination: 'map-node:end' }, label: 'Walk to Destination', description: 'Follow the connected route.', targetIds: ['map-node:end'], estimatedDuration: 12, costs: [], risks: [] }],
+    })),
+    submitAction: vi.fn(async () => ({})),
     records: vi.fn(async () => ({ records: [], nextSequence: 0, nextOrdinal: 0, hasMore: false })),
     checkpoints: vi.fn(async () => []),
   } as unknown as RunsClient
@@ -78,9 +99,10 @@ const t: TranslateNS<'worldlineStudio'> = key => zh[key as keyof typeof zh] ?? k
 
 describe('Worldline simulation spatial projection', () => {
   it('shows the frozen Run map and an in-progress non-teleport movement', async () => {
+    const runs = runsClient()
     render(<SimulationWorkbench
       project={project}
-      runs={runsClient()}
+      runs={runs}
       ai={{ catalog: vi.fn(async () => ({ providers: [], models: [] })) } as unknown as AiClient}
       runRevision={0}
       onRunsChanged={() => {}}
@@ -94,5 +116,19 @@ describe('Worldline simulation spatial projection', () => {
     expect(screen.getByText('Start')).toBeTruthy()
     expect(screen.getByText('Destination')).toBeTruthy()
     expect(screen.getByText(/35% · 8 剩余时间/u)).toBeTruthy()
+    expect(await screen.findByText('world.clock')).toBeTruthy()
+    expect(screen.getByText('角色观察')).toBeTruthy()
+    expect((await screen.findAllByText('Walk to Destination')).length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: '执行干预' }))
+    await waitFor(() => {
+      expect(ownMethod(runs, 'submitAction')).toHaveBeenCalledWith({
+        runId,
+        actorId: 'entity:traveller',
+        type: 'character.move',
+        parameters: { destination: 'map-node:end' },
+        expectedSequence: 2,
+        controller: 'system',
+      })
+    })
   })
 })

@@ -57,6 +57,7 @@ import type {
   ExplainRunEventRequest,
   RunChoicesRequest,
   RunChoicesView,
+  RunDefinitionView,
   RunEventExplanation,
   RunRecordsPage,
   RunRecordsRequest,
@@ -152,6 +153,7 @@ export interface RunsClient {
   create(request: CreateRunRequest): Promise<RunView>
   list(): Promise<readonly RunSummary[]>
   view(request: RunRef): Promise<RunView>
+  definition(request: RunRef): Promise<RunDefinitionView>
   spatial(request: RunSpatialRequest): Promise<RunSpatialView>
   choices(request: RunChoicesRequest): Promise<RunChoicesView>
   advance(request: AdvanceRunRequest): Promise<RunView>
