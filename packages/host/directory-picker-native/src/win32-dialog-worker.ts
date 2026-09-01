@@ -10,11 +10,12 @@
  */
 
 import { loadWin32DialogBindings } from './win32-dialog-bindings.ts'
-import { runFolderDialog } from './win32-dialog-logic.ts'
+import { runPathDialog } from './win32-dialog-logic.ts'
 import { createDialogMessenger } from './win32-dialog-messenger.ts'
+import type { PathPickerRequest } from '@deepseek-ai/dsh-host-directory-picker'
 
 /** The driver-to-child payload: the dialog title (passed via env). */
-export interface Win32DialogWorkerData { title: string }
+export interface Win32DialogWorkerData { request: PathPickerRequest }
 
 /** One notice or outcome posted back to the driver. */
 export type Win32DialogWorkerMessage =
@@ -22,8 +23,9 @@ export type Win32DialogWorkerMessage =
   | { kind: 'done'; path: string | null }
   | { kind: 'error'; message: string }
 
-const title = process.env.WORLDLINE_DIALOG_TITLE ?? ''
-if (title === '') throw new Error('win32-dialog-worker: WORLDLINE_DIALOG_TITLE is required')
+const encodedRequest = process.env.WORLDLINE_DIALOG_REQUEST ?? ''
+if (encodedRequest === '') throw new Error('win32-dialog-worker: WORLDLINE_DIALOG_REQUEST is required')
+const request = JSON.parse(encodedRequest) as PathPickerRequest
 if (process.send === undefined) throw new Error('win32-dialog-worker must run as a child process with an IPC channel')
 const messenger = createDialogMessenger({
   get connected() { return process.connected },
@@ -42,7 +44,7 @@ process.on('disconnect', () => process.exit(0))
 void (async () => {
   try {
     const bindings = await loadWin32DialogBindings()
-    const path = runFolderDialog(bindings, title, (threadId) => {
+    const path = runPathDialog(bindings, request, (threadId) => {
       messenger.progress({ kind: 'showing', threadId })
     })
     messenger.terminal({ kind: 'done', path })

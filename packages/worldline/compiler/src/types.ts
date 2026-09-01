@@ -9,9 +9,15 @@ import type {
   SourceAnchor,
 } from '@deepseek-ai/dsh-worldline-standard/types'
 
+/** Describes the build diagnostic severity value exchanged across the package boundary.
+ */
 export type BuildDiagnosticSeverity = 'info' | 'warning' | 'blocking'
+/** Describes the build phase value exchanged across the package boundary.
+ */
 export type BuildPhase = 'snapshot' | 'parse' | 'link' | 'mechanisms' | 'closure' | 'frozen'
 
+/** Describes the build diagnostic value exchanged across the package boundary.
+ */
 export interface BuildDiagnostic {
   readonly code: string
   readonly severity: BuildDiagnosticSeverity
@@ -21,6 +27,8 @@ export interface BuildDiagnostic {
   readonly remediation?: string
 }
 
+/** Describes the creative question value exchanged across the package boundary.
+ */
 export interface CreativeQuestion {
   readonly id: string
   readonly prompt: string
@@ -32,7 +40,11 @@ export interface CreativeQuestion {
   readonly answeredAt?: string
 }
 
+/** Describes the proposal target value exchanged across the package boundary.
+ */
 export type ProposalTarget = 'canon' | 'action' | 'system' | 'invariant' | 'map'
+/** Describes the compiler proposal value exchanged across the package boundary.
+ */
 export interface CompilerProposal {
   readonly id: string
   readonly target: ProposalTarget
@@ -47,17 +59,23 @@ export interface CompilerProposal {
   readonly reviewedBy?: string
 }
 
+/** Describes the compiler state value exchanged across the package boundary.
+ */
 export interface CompilerState {
   readonly revision?: Revision
   readonly questions: readonly CreativeQuestion[]
   readonly proposals: readonly CompilerProposal[]
 }
 
+/** Describes the compile world request value exchanged across the package boundary.
+ */
 export interface CompileWorldRequest {
   readonly projectId: ProjectId
   readonly purpose?: SimulationPurpose
 }
 
+/** Describes the build preview value exchanged across the package boundary.
+ */
 export interface BuildPreview {
   readonly projectId: ProjectId
   readonly phase: BuildPhase
@@ -78,6 +96,8 @@ export interface BuildPreview {
   readonly canFreeze: boolean
 }
 
+/** Describes the answer question request value exchanged across the package boundary.
+ */
 export interface AnswerQuestionRequest {
   readonly projectId: ProjectId
   readonly questionId: string
@@ -85,6 +105,8 @@ export interface AnswerQuestionRequest {
   readonly expectedStateRevision?: Revision
 }
 
+/** Describes the submit proposal request value exchanged across the package boundary.
+ */
 export interface SubmitProposalRequest {
   readonly projectId: ProjectId
   readonly target: ProposalTarget
@@ -96,6 +118,8 @@ export interface SubmitProposalRequest {
   readonly expectedStateRevision?: Revision
 }
 
+/** Describes the review proposal request value exchanged across the package boundary.
+ */
 export interface ReviewProposalRequest {
   readonly projectId: ProjectId
   readonly proposalId: string
@@ -104,17 +128,25 @@ export interface ReviewProposalRequest {
   readonly expectedStateRevision?: Revision
 }
 
+/** Describes the freeze world request value exchanged across the package boundary.
+ */
 export interface FreezeWorldRequest extends CompileWorldRequest {
   readonly expectedSourceDigest: string
 }
 
+/** Describes the frozen build value exchanged across the package boundary.
+ */
 export interface FrozenBuild {
   readonly blueprint: Blueprint
   readonly certificate: ClosureCertificate
   readonly activatedAt: string
 }
 
+/** Describes the explain semantics request value exchanged across the package boundary.
+ */
 export interface ExplainSemanticsRequest { readonly projectId: ProjectId; readonly objectId: string }
+/** Describes the semantics explanation value exchanged across the package boundary.
+ */
 export interface SemanticsExplanation {
   readonly objectId: string
   readonly summary: string
@@ -122,6 +154,8 @@ export interface SemanticsExplanation {
   readonly diagnostics: readonly BuildDiagnostic[]
 }
 
+/** Describes the worldline compiler error code value exchanged across the package boundary.
+ */
 export type WorldlineCompilerErrorCode =
   | 'question-not-found'
   | 'proposal-not-found'
@@ -129,6 +163,8 @@ export type WorldlineCompilerErrorCode =
   | 'closure-blocked'
   | 'state-conflict'
 
+/** Owns the worldline compiler error capability and its lifecycle.
+ */
 export class WorldlineCompilerError extends Error {
   constructor(readonly code: WorldlineCompilerErrorCode, message: string) {
     super(message)

@@ -33,9 +33,15 @@ import type {
 } from '@deepseek-ai/dsh-worldline-standard/types'
 import type { RunStream, RunStreamRecord } from '@deepseek-ai/dsh-worldline-run-sqlite'
 
+/** Describes the run status value exchanged across the package boundary.
+ */
 export type RunStatus = 'starting' | 'paused' | 'running' | 'degraded' | 'stopped' | 'failed'
+/** Describes the actor control mode value exchanged across the package boundary.
+ */
 export type ActorControlMode = 'autonomous' | 'suggestions' | 'player'
 
+/** Describes the run summary value exchanged across the package boundary.
+ */
 export interface RunSummary {
   readonly runId: RunId
   readonly projectId: ProjectId
@@ -50,6 +56,8 @@ export interface RunSummary {
   readonly forkSequence?: number
 }
 
+/** Describes the run health value exchanged across the package boundary.
+ */
 export interface RunHealth {
   readonly futureQueueDepth: number
   readonly activeProcesses: number
@@ -64,6 +72,8 @@ export interface RunHealth {
   readonly wal: boolean
 }
 
+/** Describes the run view value exchanged across the package boundary.
+ */
 export interface RunView {
   readonly summary: RunSummary
   readonly snapshot: RunSnapshot
@@ -72,6 +82,8 @@ export interface RunView {
   readonly controls: Readonly<Record<string, ActorControlMode>>
 }
 
+/** Describes the run entity definition value exchanged across the package boundary.
+ */
 export interface RunEntityDefinition {
   readonly id: EntityId
   readonly type: string
@@ -90,6 +102,8 @@ export interface RunDefinitionView {
   readonly invariants: readonly InvariantDefinition[]
 }
 
+/** Describes the run spatial viewport value exchanged across the package boundary.
+ */
 export interface RunSpatialViewport {
   readonly left: number
   readonly top: number
@@ -97,6 +111,8 @@ export interface RunSpatialViewport {
   readonly bottom: number
 }
 
+/** Describes the run spatial request value exchanged across the package boundary.
+ */
 export interface RunSpatialRequest extends RunRef {
   readonly mapId?: MapId
   readonly viewport?: RunSpatialViewport
@@ -104,6 +120,8 @@ export interface RunSpatialRequest extends RunRef {
   readonly maxNodes?: number
 }
 
+/** Describes the run spatial map value exchanged across the package boundary.
+ */
 export interface RunSpatialMap {
   readonly id: MapId
   readonly name: string
@@ -117,11 +135,15 @@ export interface RunSpatialMap {
   readonly truncated: boolean
 }
 
+/** Describes the run actor position value exchanged across the package boundary.
+ */
 export interface RunActorPosition {
   readonly actorId: EntityId
   readonly nodeId: MapNodeId
 }
 
+/** Describes the run movement projection value exchanged across the package boundary.
+ */
 export interface RunMovementProjection {
   readonly processId: Process['id']
   readonly actorId: EntityId
@@ -147,6 +169,8 @@ export interface RunSpatialView {
   readonly movements: readonly RunMovementProjection[]
 }
 
+/** Describes the create run request value exchanged across the package boundary.
+ */
 export interface CreateRunRequest {
   readonly projectId: ProjectId
   readonly seed: string
@@ -155,12 +179,20 @@ export interface CreateRunRequest {
   readonly startPaused?: boolean
 }
 
+/** Describes the run ref value exchanged across the package boundary.
+ */
 export interface RunRef { readonly runId: RunId }
+/** Describes the run choices request value exchanged across the package boundary.
+ */
 export interface RunChoicesRequest extends RunRef { readonly actorId: EntityId }
+/** Describes the advance run request value exchanged across the package boundary.
+ */
 export interface AdvanceRunRequest extends RunRef {
   readonly duration: number
   readonly maxEvents?: number
 }
+/** Describes the submit run action request value exchanged across the package boundary.
+ */
 export interface SubmitRunActionRequest extends RunRef {
   readonly actorId: EntityId
   readonly type: string
@@ -168,12 +200,16 @@ export interface SubmitRunActionRequest extends RunRef {
   readonly expectedSequence: number
   readonly controller: 'agent' | 'player' | 'system'
 }
+/** Describes the submit run action result value exchanged across the package boundary.
+ */
 export interface SubmitRunActionResult {
   readonly actionId: ActionId
   readonly process: Process
   readonly decision: DecisionTrace
   readonly view: RunView
 }
+/** Describes the run choices view value exchanged across the package boundary.
+ */
 export interface RunChoicesView {
   readonly runId: RunId
   readonly actorId: EntityId
@@ -193,10 +229,14 @@ export interface RecordAiIntentRequest extends RunRef {
   readonly modelRoute: ModelRoute
   readonly contextSourceIds: readonly string[]
 }
+/** Describes the record ai intent result value exchanged across the package boundary.
+ */
 export interface RecordAiIntentResult {
   readonly intent: AiIntent
   readonly view: RunView
 }
+/** Describes the record ai invocation request value exchanged across the package boundary.
+ */
 export interface RecordAiInvocationRequest extends RunRef {
   readonly purpose: AiInvocation['purpose']
   readonly actorId?: EntityId
@@ -209,11 +249,15 @@ export interface RecordAiInvocationRequest extends RunRef {
   readonly outputDigest: string
   readonly outcome: AiInvocation['outcome']
 }
+/** Describes the record ai invocation result value exchanged across the package boundary.
+ */
 export interface RecordAiInvocationResult {
   readonly invocation: AiInvocation
   readonly budgetExceeded: boolean
   readonly view: RunView
 }
+/** Describes the record narrative beat request value exchanged across the package boundary.
+ */
 export interface RecordNarrativeBeatRequest extends RunRef {
   readonly invocationId?: AiInvocation['id']
   readonly eventIds: NarrativeBeat['eventIds']
@@ -225,17 +269,23 @@ export interface RecordNarrativeBeatRequest extends RunRef {
   readonly style: NarrativeBeat['style']
   readonly modelRoute?: ModelRoute
 }
+/** Describes the record narrative beat result value exchanged across the package boundary.
+ */
 export interface RecordNarrativeBeatResult {
   readonly beat: NarrativeBeat
   readonly view: RunView
 }
 
+/** Describes the run records request value exchanged across the package boundary.
+ */
 export interface RunRecordsRequest extends RunRef {
   readonly afterSequence?: number
   readonly afterOrdinal?: number
   readonly limit?: number
   readonly stream?: RunStream
 }
+/** Describes the run records page value exchanged across the package boundary.
+ */
 export interface RunRecordsPage {
   readonly records: readonly RunStreamRecord[]
   readonly nextSequence: number
@@ -243,27 +293,43 @@ export interface RunRecordsPage {
   readonly hasMore: boolean
 }
 
+/** Describes the create checkpoint request value exchanged across the package boundary.
+ */
 export interface CreateCheckpointRequest extends RunRef { readonly label: string }
+/** Describes the checkpoint view value exchanged across the package boundary.
+ */
 export interface CheckpointView {
   readonly checkpoint: Checkpoint
   readonly label: string
   readonly createdAt: string
 }
+/** Describes the branch run request value exchanged across the package boundary.
+ */
 export interface BranchRunRequest {
   readonly runId: RunId
   readonly checkpointId: CheckpointId
   readonly seed?: string
 }
+/** Describes the set actor control request value exchanged across the package boundary.
+ */
 export interface SetActorControlRequest extends RunRef {
   readonly actorId: EntityId
   readonly mode: ActorControlMode
 }
+/** Describes the set ai enabled request value exchanged across the package boundary.
+ */
 export interface SetAiEnabledRequest extends RunRef { readonly enabled: boolean }
+/** Describes the switch model policy request value exchanged across the package boundary.
+ */
 export interface SwitchModelPolicyRequest extends RunRef {
   readonly modelPolicy: ModelPolicy
   readonly expectedSequence: number
 }
+/** Describes the explain run event request value exchanged across the package boundary.
+ */
 export interface ExplainRunEventRequest extends RunRef { readonly eventId: string }
+/** Describes the run event explanation value exchanged across the package boundary.
+ */
 export interface RunEventExplanation {
   readonly event?: WorldEvent
   readonly decisions: readonly DecisionTrace[]
@@ -273,6 +339,8 @@ export interface RunEventExplanation {
   readonly summary: string
 }
 
+/** Describes the worldline runtime error code value exchanged across the package boundary.
+ */
 export type WorldlineRuntimeErrorCode =
   | 'run-not-found'
   | 'run-not-live'
@@ -283,6 +351,8 @@ export type WorldlineRuntimeErrorCode =
   | 'blueprint-not-frozen'
   | 'worker-failed'
 
+/** Owns the worldline runtime error capability and its lifecycle.
+ */
 export class WorldlineRuntimeError extends Error {
   constructor(readonly code: WorldlineRuntimeErrorCode, message: string) {
     super(message)

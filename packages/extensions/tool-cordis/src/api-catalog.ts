@@ -2812,6 +2812,857 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
     ],
   },
+  {
+    key: 'worldlineAi',
+    summary: 'Bounded one-shot model planner.',
+    description: 'Bounded one-shot model planner. Runtime remains the only authority that can change world state.',
+    methods: [
+      {
+        signature: '@Remote(\'catalog\') async catalog(): Promise<WorldlineAiCatalog>',
+        description: 'Return the configured model catalog visible to Worldline routing.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'contextPack\') async contextPack(request: ContextPackRequest): Promise<ContextPack>',
+        description: 'Perform context pack through the package\'s public contract.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'budget\') async budget(request: AiBudgetRequest): Promise<AiBudgetStatus>',
+        description: 'Return the current AI budget state for a Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'decide\') async decide(request: DecideForActorRequest): Promise<AiDecisionResult>',
+        description: 'Route one actor decision through policy, budget, and validation gates.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'async *streamText(request: StreamWorldlineTextRequest): AsyncIterable<WorldlineTextChunk>',
+        description: 'Host-only streaming primitive used by authority-constrained narrative and summary services.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+    ],
+  },
+  {
+    key: 'worldlineCompiler',
+    summary: 'Host compiler gateway.',
+    description: 'Host compiler gateway. All model-generated semantics enter through reviewable proposals.',
+    methods: [
+      {
+        signature: '@Remote(\'state\') async state(projectId: ProjectId): Promise<CompilerState>',
+        description: 'Return the latest compiler state for a project.',
+        parameters: [{ name: 'projectId', description: 'The project id supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'compile\') async compile(request: CompileWorldRequest): Promise<BuildPreview>',
+        description: 'Compile a project snapshot and persist its diagnostics and draft output.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'answerQuestion\') async answerQuestion(request: AnswerQuestionRequest): Promise<CompilerState>',
+        description: 'Perform answer question through the package\'s public contract.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'submitProposal\') async submitProposal(request: SubmitProposalRequest): Promise<CompilerState>',
+        description: 'Apply submit proposal through the package\'s validated ownership boundary.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'reviewProposal\') async reviewProposal(request: ReviewProposalRequest): Promise<CompilerState>',
+        description: 'Perform review proposal through the package\'s public contract.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'freeze\') async freeze(request: FreezeWorldRequest): Promise<FrozenBuild>',
+        description: 'Freeze the latest valid draft into an immutable blueprint.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'explain\') async explain(request: ExplainSemanticsRequest): Promise<SemanticsExplanation>',
+        description: 'Explain one compiler diagnostic using stable source references.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+    ],
+  },
+  {
+    key: 'worldlineConversationContexts',
+    summary: 'Host owner of binding validation, persistence, lookup, and prompt projection.',
+    description: 'Host owner of binding validation, persistence, lookup, and prompt projection.',
+    methods: [
+      {
+        signature: 'binding(session: Pick<Session, \'events\'>): WorldlineConversationBinding | undefined',
+        description: 'Return the active Worldline binding for a conversation.',
+        parameters: [{ name: 'session', description: 'The session supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'async bind(request: BindWorldlineConversationRequest): Promise<WorldlineConversationBinding>',
+        description: 'Bind a conversation to a project and optional Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+    ],
+  },
+  {
+    key: 'worldlineNarrative',
+    summary: 'Text-play projection.',
+    description: 'Text-play projection. It can phrase retained facts but has no world mutation primitive of its own.',
+    methods: [
+      {
+        signature: 'registerRenderer(renderer: StoryStageRenderer): () => void',
+        description: 'Perform register renderer through the package\'s public contract.',
+        parameters: [{ name: 'renderer', description: 'The renderer supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'scene\') async scene(request: TextPlayRequest): Promise<SceneFrame>',
+        description: 'Return the current text-play scene.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'open\') async open(request: TextPlayRequest): Promise<TextPlayView>',
+        description: 'Open a text-play session for a Run and actor.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'narrate\') async narrate(request: NarrateRequest): Promise<NarrativeBeat>',
+        description: 'Produce the next narration from authoritative Run records.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'async *narrateStream(request: NarrateRequest): AsyncIterable<NarrativeStreamChunk>',
+        description: 'Perform narrate stream through the package\'s public contract.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'choose\') async choose(request: ChooseTextActionRequest): Promise<SubmitRunActionResult>',
+        description: 'Submit one listed text-play choice.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'freeInput\') async freeInput(request: FreeTextActionRequest): Promise<FreeTextActionResult>',
+        description: 'Perform free input through the package\'s public contract.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'rephrase\') async rephrase(request: RephraseRequest): Promise<NarrativeBeat>',
+        description: 'Rephrase presentation text without changing Run state.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'save\') save(request: SaveTextPlayRequest): Promise<CheckpointView>',
+        description: 'Save the current text-play scene as a checkpoint.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'branch\') branch(request: BranchTextPlayRequest): Promise<RunView>',
+        description: 'Branch text play from a saved checkpoint.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'retry\') async retry(request: RetryTextActionRequest): Promise<SubmitRunActionResult>',
+        description: 'Retry narration from the latest authoritative Run state.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'storyStage\') storyStage(): StoryStageStatus',
+        description: 'Perform story stage through the package\'s public contract.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+    ],
+  },
+  {
+    key: 'worldlineProjects',
+    summary: 'Host-owned project storage contract; clients see only its generated Remote face.',
+    description: 'Host-owned project storage contract; clients see only its generated Remote face.',
+    methods: [
+      {
+        signature: 'abstract root(): Promise<ProjectRootView>',
+        description: 'Return the active project-library root and its storage status.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract setRoot(request: SetProjectRootRequest): Promise<RootRelocationPlan>',
+        description: 'Relocate the project library root through the Host-owned storage boundary.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract library(query?: ProjectLibraryQuery): Promise<ProjectLibraryPage>',
+        description: 'Query the paginated project library.',
+        parameters: [{ name: 'query', description: 'The query supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract rescan(): Promise<TransferJob>',
+        description: 'Rescan the active project root and refresh the library index.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract create(request: CreateProjectRequest): Promise<ProjectSummary>',
+        description: 'Create a project in the active project library.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract copyProject(request: CopyProjectRequest): Promise<ProjectSummary>',
+        description: 'Copy a project while preserving the source project.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract trashProject(request: TrashProjectRequest): Promise<TrashedProject>',
+        description: 'Move a project into the recoverable project recycle bin.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract listTrashedProjects(): Promise<readonly TrashedProject[]>',
+        description: 'List projects currently available for recovery.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract restoreProject(request: RestoreProjectRequest): Promise<ProjectSummary>',
+        description: 'Restore a project from the project recycle bin.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract tree(request: ProjectTreeRequest): Promise<ProjectTreeListing>',
+        description: 'List one project directory from the authoritative Host store.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract read(request: ReadDocumentRequest): Promise<DocumentView>',
+        description: 'Read a project document from the authoritative Host store.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract write(request: WriteDocumentRequest): Promise<DocumentView>',
+        description: 'Persist a project document through the Host-owned storage boundary.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract importEntry( request: ImportProjectEntryRequest, source: AsyncIterable<Uint8Array>, ): Promise<MutationResult>',
+        description: 'Stream one browser-owned file without placing its bytes in Remote JSON or Host memory.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }, { name: 'source', description: 'The source supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract createDirectory(request: CreateDirectoryRequest): Promise<MutationResult>',
+        description: 'Create a directory inside a project.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract move(request: MoveEntryRequest): Promise<MutationResult>',
+        description: 'Move or rename an entry inside a project.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract copyEntry(request: CopyEntryRequest): Promise<MutationResult>',
+        description: 'Copy an entry while preserving the source entry.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract trashEntry(request: TrashEntryRequest): Promise<TrashedEntry>',
+        description: 'Move a project entry into the recoverable entry recycle bin.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract listTrashedEntries(projectId: TrashEntryRequest[\'projectId\']): Promise<readonly TrashedEntry[]>',
+        description: 'List recoverable entries for a project.',
+        parameters: [{ name: 'projectId', description: 'The project id supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract restoreEntry(request: RestoreEntryRequest): Promise<MutationResult>',
+        description: 'Restore an entry from the project recycle bin.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract history(request: HistoryRequest): Promise<readonly DocumentHistoryEntry[]>',
+        description: 'Read the revision history of a project document.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract restoreRevision(request: RestoreRevisionRequest): Promise<DocumentView>',
+        description: 'Restore a historical document revision as the current content.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract search(request: SearchProjectRequest): Promise<readonly ProjectSearchHit[]>',
+        description: 'Search indexed content inside one project.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract backlinks(request: ReadDocumentRequest): Promise<readonly ProjectLink[]>',
+        description: 'Find documents that link to the requested document.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract exportProject(request: ExportProjectRequest): Promise<TransferJob>',
+        description: 'Export a project to a user-selected archive path.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract importProject(request: ImportProjectRequest): Promise<TransferJob>',
+        description: 'Import a project archive selected by the user.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract exportBlueprint(request: ExportBlueprintRequest): Promise<TransferJob>',
+        description: 'Export a compiled blueprint to a user-selected archive path.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract importBlueprint(request: ImportBlueprintRequest): Promise<TransferJob>',
+        description: 'Import a compiled blueprint archive selected by the user.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract exportRun(request: ExportRunRequest): Promise<TransferJob>',
+        description: 'Export a Run archive to a user-selected path.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract importRun(request: ImportRunRequest): Promise<TransferJob>',
+        description: 'Import a Run archive selected by the user.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract transfer(id: string): Promise<TransferJob>',
+        description: 'Read the current state of an import or export transfer.',
+        parameters: [{ name: 'id', description: 'The id supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract cancelTransfer(id: string): Promise<TransferJob>',
+        description: 'Apply cancel transfer through the package\'s validated ownership boundary.',
+        parameters: [{ name: 'id', description: 'The id supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract sourceSnapshot(projectId: ProjectTreeRequest[\'projectId\']): Promise<ProjectSourceSnapshot>',
+        description: 'Capture all text sources at one point for a Host-side compiler. Not exported over Remote.',
+        parameters: [{ name: 'projectId', description: 'The project id supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract readControl( projectId: ProjectTreeRequest[\'projectId\'], namespace: string, path: string, ): Promise<ProjectControlDocument | undefined>',
+        description: 'Read a namespaced Host-only compiler/runtime sidecar. Not exported over Remote.',
+        parameters: [{ name: 'projectId', description: 'The project id supplied by the caller.' }, { name: 'namespace', description: 'The namespace supplied by the caller.' }, { name: 'path', description: 'The path supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract writeControl(request: WriteProjectControlRequest): Promise<ProjectControlDocument>',
+        description: 'Durably write a namespaced Host-only sidecar with optimistic concurrency.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract storeBuild(request: StoreProjectBuildRequest): Promise<void>',
+        description: 'Commit an immutable build directory and activate it only after every artifact is durable.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+      },
+      {
+        signature: 'abstract activeBuild(projectId: ProjectId): Promise<ActiveProjectBuild | undefined>',
+        description: 'Locate the immutable active Blueprint for a Worker without reading it on the Host event loop.',
+        parameters: [{ name: 'projectId', description: 'The project id supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract runStorage(projectId: ProjectId, runId: RunId): Promise<ProjectRunStorage>',
+        description: 'Allocate or locate one project-scoped Run database path.',
+        parameters: [{ name: 'projectId', description: 'The project id supplied by the caller.' }, { name: 'runId', description: 'The run id supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract runStorages(): Promise<readonly ProjectRunStorage[]>',
+        description: 'Discover persisted Run databases across the configured library.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'root\') remoteRoot(): Promise<ProjectRootView>',
+        description: 'Perform remote root through the package\'s public contract.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'setRoot\') remoteSetRoot(value: SetProjectRootRequest): Promise<RootRelocationPlan>',
+        description: 'Perform remote set root through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'library\') remoteLibrary(value?: ProjectLibraryQuery): Promise<ProjectLibraryPage>',
+        description: 'Perform remote library through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'rescan\') remoteRescan(): Promise<TransferJob>',
+        description: 'Perform remote rescan through the package\'s public contract.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'create\') remoteCreate(value: CreateProjectRequest): Promise<ProjectSummary>',
+        description: 'Perform remote create through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'copyProject\') remoteCopyProject(value: CopyProjectRequest): Promise<ProjectSummary>',
+        description: 'Perform remote copy project through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'trashProject\') remoteTrashProject(value: TrashProjectRequest): Promise<TrashedProject>',
+        description: 'Perform remote trash project through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'listTrashedProjects\') remoteListTrashedProjects(): Promise<readonly TrashedProject[]>',
+        description: 'Perform remote list trashed projects through the package\'s public contract.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'restoreProject\') remoteRestoreProject(value: RestoreProjectRequest): Promise<ProjectSummary>',
+        description: 'Perform remote restore project through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'tree\') remoteTree(value: ProjectTreeRequest): Promise<ProjectTreeListing>',
+        description: 'Perform remote tree through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'read\') remoteRead(value: ReadDocumentRequest): Promise<DocumentView>',
+        description: 'Perform remote read through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'write\') remoteWrite(value: WriteDocumentRequest): Promise<DocumentView>',
+        description: 'Perform remote write through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'createDirectory\') remoteCreateDirectory(value: CreateDirectoryRequest): Promise<MutationResult>',
+        description: 'Perform remote create directory through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'move\') remoteMove(value: MoveEntryRequest): Promise<MutationResult>',
+        description: 'Perform remote move through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'copyEntry\') remoteCopyEntry(value: CopyEntryRequest): Promise<MutationResult>',
+        description: 'Perform remote copy entry through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'trashEntry\') remoteTrashEntry(value: TrashEntryRequest): Promise<TrashedEntry>',
+        description: 'Perform remote trash entry through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'listTrashedEntries\') remoteListTrashedEntries(value: TrashEntryRequest[\'projectId\']): Promise<readonly TrashedEntry[]>',
+        description: 'Perform remote list trashed entries through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'restoreEntry\') remoteRestoreEntry(value: RestoreEntryRequest): Promise<MutationResult>',
+        description: 'Perform remote restore entry through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'history\') remoteHistory(value: HistoryRequest): Promise<readonly DocumentHistoryEntry[]>',
+        description: 'Perform remote history through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'restoreRevision\') remoteRestoreRevision(value: RestoreRevisionRequest): Promise<DocumentView>',
+        description: 'Perform remote restore revision through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'search\') remoteSearch(value: SearchProjectRequest): Promise<readonly ProjectSearchHit[]>',
+        description: 'Perform remote search through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'backlinks\') remoteBacklinks(value: ReadDocumentRequest): Promise<readonly ProjectLink[]>',
+        description: 'Perform remote backlinks through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'exportProject\') remoteExportProject(value: ExportProjectRequest): Promise<TransferJob>',
+        description: 'Perform remote export project through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'importProject\') remoteImportProject(value: ImportProjectRequest): Promise<TransferJob>',
+        description: 'Perform remote import project through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'exportBlueprint\') remoteExportBlueprint(value: ExportBlueprintRequest): Promise<TransferJob>',
+        description: 'Perform remote export blueprint through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'importBlueprint\') remoteImportBlueprint(value: ImportBlueprintRequest): Promise<TransferJob>',
+        description: 'Perform remote import blueprint through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'exportRun\') remoteExportRun(value: ExportRunRequest): Promise<TransferJob>',
+        description: 'Perform remote export run through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'importRun\') remoteImportRun(value: ImportRunRequest): Promise<TransferJob>',
+        description: 'Perform remote import run through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'transfer\') remoteTransfer(value: string): Promise<TransferJob>',
+        description: 'Perform remote transfer through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'cancelTransfer\') remoteCancelTransfer(value: string): Promise<TransferJob>',
+        description: 'Perform remote cancel transfer through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+    ],
+  },
+  {
+    key: 'worldlineRuns',
+    summary: 'Replaceable Host Run supervisor; the generated Remote face never exposes paths or Worker handles.',
+    description: 'Replaceable Host Run supervisor; the generated Remote face never exposes paths or Worker handles.',
+    methods: [
+      {
+        signature: 'abstract create(request: CreateRunRequest): Promise<RunView>',
+        description: 'Create a Run from a validated compiled blueprint.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract list(): Promise<readonly RunSummary[]>',
+        description: 'List Runs from the authoritative Host registry.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract view(request: RunRef): Promise<RunView>',
+        description: 'Return the current authoritative view of a Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract definition(request: RunRef): Promise<RunDefinitionView>',
+        description: 'Return the immutable definition used to create a Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract spatial(request: RunSpatialRequest): Promise<RunSpatialView>',
+        description: 'Return the current spatial state of a Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract choices(request: RunChoicesRequest): Promise<RunChoicesView>',
+        description: 'Return the actions currently available to the controlled actor.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract advance(request: AdvanceRunRequest): Promise<RunView>',
+        description: 'Advance deterministic simulation time for a Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract submitAction(request: SubmitRunActionRequest): Promise<SubmitRunActionResult>',
+        description: 'Apply submit action through the package\'s validated ownership boundary.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract pause(request: RunRef): Promise<RunView>',
+        description: 'Pause a running Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract resume(request: RunRef): Promise<RunView>',
+        description: 'Resume a paused Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract stop(request: RunRef): Promise<RunSummary>',
+        description: 'Stop a Run and release its worker resources.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract records(request: RunRecordsRequest): Promise<RunRecordsPage>',
+        description: 'Read a filtered page from the append-only Run record stream.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract checkpoint(request: CreateCheckpointRequest): Promise<CheckpointView>',
+        description: 'Create a named checkpoint for the current Run state.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract checkpoints(request: RunRef): Promise<readonly CheckpointView[]>',
+        description: 'List checkpoints stored for a Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract branch(request: BranchRunRequest): Promise<RunView>',
+        description: 'Branch a new Run from an existing checkpoint.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract setControl(request: SetActorControlRequest): Promise<RunView>',
+        description: 'Change an actor\'s control mode through the Run supervisor.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>',
+        description: 'Enable or disable AI participation for a Run.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract switchModel(request: SwitchModelPolicyRequest): Promise<RunView>',
+        description: 'Perform switch model through the package\'s public contract.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract explain(request: ExplainRunEventRequest): Promise<RunEventExplanation>',
+        description: 'Explain a recorded Run event from authoritative inputs.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract recordAiIntent(request: RecordAiIntentRequest): Promise<RecordAiIntentResult>',
+        description: 'Host-only: persist a model intent and its actual usage before attempting its Action.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract recordAiInvocation(request: RecordAiInvocationRequest): Promise<RecordAiInvocationResult>',
+        description: 'Host-only: account every routed call, regardless of whether it yields an intent.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<RecordNarrativeBeatResult>',
+        description: 'Host-only: persist prose derived from retained events/observations without changing world state.',
+        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'create\') remoteCreate(value: CreateRunRequest): Promise<RunView>',
+        description: 'Perform remote create through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'list\') remoteList(): Promise<readonly RunSummary[]>',
+        description: 'Perform remote list through the package\'s public contract.',
+        parameters: [],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'view\') remoteView(value: RunRef): Promise<RunView>',
+        description: 'Perform remote view through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'definition\') remoteDefinition(value: RunRef): Promise<RunDefinitionView>',
+        description: 'Perform remote definition through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'spatial\') remoteSpatial(value: RunSpatialRequest): Promise<RunSpatialView>',
+        description: 'Perform remote spatial through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'choices\') remoteChoices(value: RunChoicesRequest): Promise<RunChoicesView>',
+        description: 'Perform remote choices through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'advance\') remoteAdvance(value: AdvanceRunRequest): Promise<RunView>',
+        description: 'Perform remote advance through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'submitAction\') remoteSubmitAction(value: SubmitRunActionRequest): Promise<SubmitRunActionResult>',
+        description: 'Perform remote submit action through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'pause\') remotePause(value: RunRef): Promise<RunView>',
+        description: 'Perform remote pause through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'resume\') remoteResume(value: RunRef): Promise<RunView>',
+        description: 'Perform remote resume through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'stop\') remoteStop(value: RunRef): Promise<RunSummary>',
+        description: 'Perform remote stop through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'records\') remoteRecords(value: RunRecordsRequest): Promise<RunRecordsPage>',
+        description: 'Perform remote records through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'checkpoint\') remoteCheckpoint(value: CreateCheckpointRequest): Promise<CheckpointView>',
+        description: 'Perform remote checkpoint through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'checkpoints\') remoteCheckpoints(value: RunRef): Promise<readonly CheckpointView[]>',
+        description: 'Perform remote checkpoints through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'branch\') remoteBranch(value: BranchRunRequest): Promise<RunView>',
+        description: 'Perform remote branch through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'setControl\') remoteSetControl(value: SetActorControlRequest): Promise<RunView>',
+        description: 'Perform remote set control through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'setAiEnabled\') remoteSetAiEnabled(value: SetAiEnabledRequest): Promise<RunView>',
+        description: 'Perform remote set ai enabled through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'switchModel\') remoteSwitchModel(value: SwitchModelPolicyRequest): Promise<RunView>',
+        description: 'Perform remote switch model through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'explain\') remoteExplain(value: ExplainRunEventRequest): Promise<RunEventExplanation>',
+        description: 'Perform remote explain through the package\'s public contract.',
+        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
+        returns: 'The result produced by the operation.',
+      },
+    ],
+  },
 ]
 
 /** Every harness event, sorted by name. */
@@ -3313,8 +4164,44 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface AccountProfileSnapshot {\n    id: number;\n    username: string;\n    createdAt: number;\n    lastLoginAt: number | null;\n    displayName: string;\n    avatar: string;\n    avatarPath?: string;\n    bio: string;\n}',
   },
   {
+    name: 'ActionDefinition',
+    declaration: 'export interface ActionDefinition {\n    readonly id: string;\n    readonly description: string;\n    readonly operator?: \'generic\' | \'move\' | \'teleport\';\n    readonly actorTypes: readonly string[];\n    readonly preconditions: readonly Expression[];\n    readonly claims: readonly ClaimTemplate[];\n    readonly duration: number;\n    readonly effects: readonly Effect[];\n    readonly interruptible: boolean;\n    readonly maxWait: number;\n    readonly retryBudget: number;\n    readonly fallbacks: readonly string[];\n    readonly provenance: readonly Provenance[];\n}',
+  },
+  {
+    name: 'ActionExperience',
+    declaration: 'export interface ActionExperience extends MemoryBase {\n    readonly actionType: string;\n    readonly outcome: ActionTerminalState;\n    readonly conditions: JsonObject;\n}',
+  },
+  {
+    name: 'ActionId',
+    declaration: 'export type ActionId = WorldlineId<\'action\'>;',
+  },
+  {
+    name: 'ActionLifecycleState',
+    declaration: 'export type ActionLifecycleState = \'proposed\' | \'admitted\' | \'reserved\' | \'started\' | \'progressing\' | ActionTerminalState;',
+  },
+  {
+    name: 'ActionRequest',
+    declaration: 'export interface ActionRequest {\n    readonly id: ActionId;\n    readonly type: string;\n    readonly actorId: EntityId;\n    readonly targetIds: readonly string[];\n    readonly parameters: JsonObject;\n    readonly requestedAt: number;\n    readonly control: \'policy\' | \'player\' | \'director\' | \'external\';\n    readonly idempotencyKey: string;\n}',
+  },
+  {
+    name: 'ActionTerminalState',
+    declaration: 'export type ActionTerminalState = \'completed\' | \'failed\' | \'cancelled\';',
+  },
+  {
+    name: 'ActiveProjectBuild',
+    declaration: 'export interface ActiveProjectBuild {\n    readonly projectId: ProjectId;\n    readonly digest: string;\n    readonly blueprintPath: string;\n}',
+  },
+  {
+    name: 'ActorControlMode',
+    declaration: 'export type ActorControlMode = \'autonomous\' | \'suggestions\' | \'player\';',
+  },
+  {
     name: 'AdapterRegistrationHandle',
     declaration: 'export interface AdapterRegistrationHandle {\n    (): void;\n    replace(providers: string[]): void;\n}',
+  },
+  {
+    name: 'AdvanceRunRequest',
+    declaration: 'export interface AdvanceRunRequest extends RunRef {\n    readonly duration: number;\n    readonly maxEvents?: number;\n}',
   },
   {
     name: 'Agent',
@@ -3369,8 +4256,40 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface AgentVaultTrashEntry {\n    readonly id: string;\n    readonly agentId: string;\n    readonly name: string;\n    readonly deletedAt: number;\n    readonly createdAt: number;\n    readonly updatedAt: number;\n    readonly restorable: boolean;\n    readonly hasAvatar: boolean;\n}',
   },
   {
+    name: 'AiBudget',
+    declaration: 'export interface AiBudget {\n    readonly maxCalls: number;\n    readonly maxInputTokens: number;\n    readonly maxOutputTokens: number;\n    readonly maxConcurrent: number;\n    readonly maxCallsPerLogicalDay: number;\n    readonly maxCallsPerRealHour: number;\n    readonly maxEstimatedCost: number;\n    readonly currency: string;\n}',
+  },
+  {
+    name: 'AiBudgetRequest',
+    declaration: 'export interface AiBudgetRequest extends ContextPackRequest {\n    readonly contextPack?: ContextPack;\n}',
+  },
+  {
+    name: 'AiBudgetStatus',
+    declaration: 'export interface AiBudgetStatus {\n    readonly runId: RunId;\n    readonly allowed: boolean;\n    readonly reasons: readonly string[];\n    readonly route?: ModelRoute;\n    readonly activeCalls: number;\n    readonly callsRemaining: number;\n    readonly inputTokensRemaining: number;\n    readonly outputTokensRemaining: number;\n    readonly logicalDayCallsRemaining: number;\n    readonly realHourCallsRemaining: number;\n    readonly estimatedNextCost: number;\n    readonly estimatedCostRemaining: number;\n    readonly pricing: \'route\' | \'conservative-fallback\';\n}',
+  },
+  {
+    name: 'AiDecisionResult',
+    declaration: 'export interface AiDecisionResult {\n    readonly status: \'submitted\' | \'deterministic-only\' | \'no-legal-choice\' | \'budget-blocked\' | \'model-failed\' | \'invalid-output\' | \'conflict\';\n    readonly message: string;\n    readonly contextPack?: ContextPack;\n    readonly budget?: AiBudgetStatus;\n    readonly invocation?: AiInvocation;\n    readonly intent?: AiIntent;\n    readonly action?: SubmitRunActionResult;\n}',
+  },
+  {
+    name: 'AiIntent',
+    declaration: 'export interface AiIntent {\n    readonly id: WorldlineId<\'intent\'>;\n    readonly invocationId: WorldlineId<\'ai-invocation\'>;\n    readonly actorId: EntityId;\n    readonly logicalTime: number;\n    readonly choiceId: string;\n    readonly actionType: string;\n    readonly parameters: JsonObject;\n    readonly rationale: string;\n    readonly confidence: number;\n    readonly modelRoute: ModelRoute;\n    readonly contextSourceIds: readonly string[];\n    readonly recordedAt: string;\n}',
+  },
+  {
+    name: 'AiInvocation',
+    declaration: 'export interface AiInvocation {\n    readonly id: WorldlineId<\'ai-invocation\'>;\n    readonly purpose: ModelPurpose;\n    readonly actorId?: EntityId;\n    readonly logicalTime: number;\n    readonly modelRoute: ModelRoute;\n    readonly contextSourceIds: readonly string[];\n    readonly inputTokens: number;\n    readonly outputTokens: number;\n    readonly cacheReadTokens: number;\n    readonly estimatedCost: number;\n    readonly outputDigest: string;\n    readonly outcome: \'completed\' | \'failed\' | \'aborted\';\n    readonly recordedAt: string;\n}',
+  },
+  {
+    name: 'AiUsage',
+    declaration: 'export interface AiUsage {\n    readonly calls: number;\n    readonly inputTokens: number;\n    readonly outputTokens: number;\n    readonly cacheReadTokens: number;\n    readonly estimatedCost: number;\n    readonly cacheHits: number;\n    readonly degradedReason?: string;\n}',
+  },
+  {
     name: 'AllowedModelRoute',
     declaration: 'export interface AllowedModelRoute {\n    readonly provider: string;\n    readonly model: string;\n}',
+  },
+  {
+    name: 'AnswerQuestionRequest',
+    declaration: 'export interface AnswerQuestionRequest {\n    readonly projectId: ProjectId;\n    readonly questionId: string;\n    readonly answer: string;\n    readonly expectedStateRevision?: Revision;\n}',
   },
   {
     name: 'ApiKeyRecord',
@@ -3427,6 +4346,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'AssembledSection',
     declaration: 'export interface AssembledSection {\n    name: string;\n    text: string;\n}',
+  },
+  {
+    name: 'AssetId',
+    declaration: 'export type AssetId = WorldlineId<\'asset\'>;',
   },
   {
     name: 'AssistantMessage',
@@ -3505,6 +4428,30 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface BashEnvVariableInfo extends BashEnvVariable {\n    contributor: string;\n    key: WorldlineEnvironmentKey;\n}',
   },
   {
+    name: 'Belief',
+    declaration: 'export interface Belief extends MemoryBase {\n    readonly subject: string;\n    readonly value: JsonValue;\n    readonly confidence: number;\n    readonly contradictedBy: readonly EventId[];\n}',
+  },
+  {
+    name: 'BindWorldlineConversationRequest',
+    declaration: 'export interface BindWorldlineConversationRequest {\n    readonly sessionId: SessionId;\n    readonly projectId: ProjectId;\n    readonly runId?: RunId;\n}',
+  },
+  {
+    name: 'Blueprint',
+    declaration: 'export interface Blueprint {\n    readonly id: BlueprintId;\n    readonly digest: string;\n    readonly format: typeof WWS_VERSION;\n    readonly projectId: ProjectId;\n    readonly worldId: WorldId;\n    readonly worldlineId: CanonWorldlineId;\n    readonly projectRevision: Revision;\n    readonly createdAt: string;\n    readonly purpose: SimulationPurpose;\n    readonly canon: readonly CanonObject[];\n    readonly links: readonly CanonLink[];\n    readonly maps: readonly WorldMap[];\n    readonly entities: readonly RuntimeEntitySeed[];\n    readonly actions: readonly ActionDefinition[];\n    readonly systems: readonly SystemDefinition[];\n    readonly invariants: readonly InvariantDefinition[];\n    readonly provenance: readonly Provenance[];\n    readonly modelPolicy: ModelPolicy;\n    readonly certificate: ClosureCertificate;\n}',
+  },
+  {
+    name: 'BlueprintId',
+    declaration: 'export type BlueprintId = WorldlineId<\'blueprint\'>;',
+  },
+  {
+    name: 'BranchRunRequest',
+    declaration: 'export interface BranchRunRequest {\n    readonly runId: RunId;\n    readonly checkpointId: CheckpointId;\n    readonly seed?: string;\n}',
+  },
+  {
+    name: 'BranchTextPlayRequest',
+    declaration: 'export interface BranchTextPlayRequest extends TextPlayRequest {\n    readonly checkpointId: CheckpointId;\n    readonly seed?: string;\n}',
+  },
+  {
     name: 'Branded',
     declaration: 'export type Branded<B extends string> = string & {\n    readonly [BRAND]: B;\n};',
   },
@@ -3529,16 +4476,92 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface BrowserTabSnapshot {\n    id: string;\n    url: string;\n    title?: string;\n    active: boolean;\n    loading: boolean;\n    canGoBack: boolean;\n    canGoForward: boolean;\n    devToolsOpen: boolean;\n}',
   },
   {
+    name: 'BuildDiagnostic',
+    declaration: 'export interface BuildDiagnostic {\n    readonly code: string;\n    readonly severity: BuildDiagnosticSeverity;\n    readonly message: string;\n    readonly path?: string;\n    readonly objectId?: string;\n    readonly remediation?: string;\n}',
+  },
+  {
+    name: 'BuildDiagnosticSeverity',
+    declaration: 'export type BuildDiagnosticSeverity = \'info\' | \'warning\' | \'blocking\';',
+  },
+  {
+    name: 'BuildPhase',
+    declaration: 'export type BuildPhase = \'snapshot\' | \'parse\' | \'link\' | \'mechanisms\' | \'closure\' | \'frozen\';',
+  },
+  {
+    name: 'BuildPreview',
+    declaration: 'export interface BuildPreview {\n    readonly projectId: ProjectId;\n    readonly phase: BuildPhase;\n    readonly sourceDigest: string;\n    readonly purpose: SimulationPurpose;\n    readonly canon: readonly CanonObject[];\n    readonly executableCounts: {\n        readonly maps: number;\n        readonly actions: number;\n        readonly systems: number;\n        readonly invariants: number;\n    };\n    readonly sourceCoverage: number;\n    readonly diagnostics: readonly BuildDiagnostic[];\n    readonly questions: readonly CreativeQuestion[];\n    readonly proposals: readonly CompilerProposal[];\n    readonly certificate: ClosureCertificate;\n    readonly canFreeze: boolean;\n}',
+  },
+  {
     name: 'CancelOptions',
     declaration: 'export interface CancelOptions {\n    keepInbox?: boolean | undefined;\n}',
+  },
+  {
+    name: 'CanonLink',
+    declaration: 'export interface CanonLink {\n    readonly id: WorldlineId<\'link\'>;\n    readonly from: EntityId;\n    readonly to: EntityId;\n    readonly predicate: string;\n    readonly directed: boolean;\n    readonly provenance: readonly Provenance[];\n}',
+  },
+  {
+    name: 'CanonObject',
+    declaration: 'export interface CanonObject {\n    readonly id: EntityId;\n    readonly kind: CanonObjectKind;\n    readonly customKind?: string;\n    readonly documentId: DocumentId;\n    readonly title: string;\n    readonly aliases: readonly string[];\n    readonly tags: readonly string[];\n    readonly status: CanonStatus;\n    readonly worldIds: readonly WorldId[];\n    readonly worldlineIds: readonly CanonWorldlineId[];\n    readonly validFrom?: number;\n    readonly validTo?: number;\n    readonly facets: Readonly<Record<string, JsonValue>>;\n    readonly provenance: readonly Provenance[];\n}',
+  },
+  {
+    name: 'CanonObjectKind',
+    declaration: 'export type CanonObjectKind = \'charter\' | \'character\' | \'place\' | \'organization\' | \'species\' | \'item\' | \'concept\' | \'rule\' | \'relation\' | \'fact\' | \'timeline-event\' | \'scenario\' | \'asset\' | \'custom\';',
+  },
+  {
+    name: 'CanonStatus',
+    declaration: 'export type CanonStatus = \'draft\' | \'canon\' | \'deprecated\';',
+  },
+  {
+    name: 'CanonWorldlineId',
+    declaration: 'export type CanonWorldlineId = WorldlineId<\'worldline\'>;',
   },
   {
     name: 'CaptureMemoryInput',
     declaration: 'export interface CaptureMemoryInput {\n    readonly agentId: string;\n    readonly title: string;\n    readonly content: string;\n    readonly tags?: readonly string[];\n    readonly aliases?: readonly string[];\n    readonly sources?: readonly string[];\n    readonly importance?: 1 | 2 | 3 | 4 | 5;\n    readonly occurredAt?: number;\n}',
   },
   {
+    name: 'CertificateCategory',
+    declaration: 'export type CertificateCategory = \'state\' | \'time\' | \'space\' | \'actions\' | \'cognition\' | \'causality\' | \'safety\' | \'liveness\' | \'fairness\' | \'event-validity\' | \'behavioral-validity\' | \'replay\' | \'provenance\';',
+  },
+  {
+    name: 'CertificateResult',
+    declaration: 'export interface CertificateResult {\n    readonly category: CertificateCategory;\n    readonly status: \'pass\' | \'warning\' | \'blocking\';\n    readonly summary: string;\n    readonly evidence: readonly string[];\n    readonly reproduction?: string;\n}',
+  },
+  {
+    name: 'CharacterMemory',
+    declaration: 'export interface CharacterMemory {\n    readonly episodic: readonly EpisodicMemory[];\n    readonly beliefs: readonly Belief[];\n    readonly goals: readonly GoalCommitment[];\n    readonly relationships: readonly RelationshipEvidence[];\n    readonly experience: readonly ActionExperience[];\n    readonly skills: readonly SkillExperience[];\n    readonly reflections: readonly Reflection[];\n}',
+  },
+  {
+    name: 'Checkpoint',
+    declaration: 'export interface Checkpoint {\n    readonly id: CheckpointId;\n    readonly runId: RunId;\n    readonly sequence: number;\n    readonly createdAt: string;\n    readonly snapshot: RunSnapshot;\n    readonly digest: string;\n}',
+  },
+  {
+    name: 'CheckpointId',
+    declaration: 'export type CheckpointId = WorldlineId<\'checkpoint\'>;',
+  },
+  {
+    name: 'CheckpointView',
+    declaration: 'export interface CheckpointView {\n    readonly checkpoint: Checkpoint;\n    readonly label: string;\n    readonly createdAt: string;\n}',
+  },
+  {
+    name: 'ChoiceProjection',
+    declaration: 'export interface ChoiceProjection {\n    readonly id: string;\n    readonly actionType: string;\n    readonly parameters: JsonObject;\n    readonly label: string;\n    readonly description: string;\n    readonly targetIds: readonly string[];\n    readonly estimatedDuration: number;\n    readonly costs: readonly string[];\n    readonly risks: readonly string[];\n}',
+  },
+  {
+    name: 'ChooseTextActionRequest',
+    declaration: 'export interface ChooseTextActionRequest extends TextPlayRequest {\n    readonly choiceId: string;\n    readonly expectedSequence: number;\n}',
+  },
+  {
+    name: 'ClaimTemplate',
+    declaration: 'export interface ClaimTemplate {\n    readonly resource: string;\n    readonly quantity: number;\n    readonly mode: ResourceClaim[\'mode\'];\n    readonly duration: number;\n}',
+  },
+  {
     name: 'ClientResponse',
     declaration: 'export interface ClientResponse {\n    type: \'client-response\';\n    rpcId: RpcId;\n    result: RpcResult<unknown>;\n}',
+  },
+  {
+    name: 'ClosureCertificate',
+    declaration: 'export interface ClosureCertificate {\n    readonly blueprintDigest: string;\n    readonly createdAt: string;\n    readonly sourceCoverage: Readonly<Record<ProvenanceKind, number>>;\n    readonly results: readonly CertificateResult[];\n    readonly deterministicWithoutAi: boolean;\n    readonly knownLimits: readonly string[];\n    readonly performance: JsonObject;\n}',
   },
   {
     name: 'CodeBindingErrorClass',
@@ -3613,6 +4636,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type CompactionTrigger = \'pressure\' | \'context-overflow\';',
   },
   {
+    name: 'CompilerProposal',
+    declaration: 'export interface CompilerProposal {\n    readonly id: string;\n    readonly target: ProposalTarget;\n    readonly title: string;\n    readonly rationale: string;\n    readonly risk: \'low\' | \'medium\' | \'high\';\n    readonly payload: JsonObject;\n    readonly anchors: readonly SourceAnchor[];\n    readonly status: \'pending\' | \'approved\' | \'rejected\';\n    readonly submittedAt: string;\n    readonly reviewedAt?: string;\n    readonly reviewedBy?: string;\n}',
+  },
+  {
+    name: 'CompilerState',
+    declaration: 'export interface CompilerState {\n    readonly revision?: Revision;\n    readonly questions: readonly CreativeQuestion[];\n    readonly proposals: readonly CompilerProposal[];\n}',
+  },
+  {
+    name: 'CompileWorldRequest',
+    declaration: 'export interface CompileWorldRequest {\n    readonly projectId: ProjectId;\n    readonly purpose?: SimulationPurpose;\n}',
+  },
+  {
     name: 'ConfinedArgv',
     declaration: 'export interface ConfinedArgv {\n    argv: string[];\n    enforcement: SandboxEnforcement;\n    denialSignatures: readonly string[];\n    runnerFailureRules: readonly RunnerFailureRule[];\n}',
   },
@@ -3653,6 +4688,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type ContextFormed = {\n    readonly form?: never;\n} | {\n    readonly form: \'instructions\';\n} | {\n    readonly form: \'catalog\';\n} | {\n    readonly form: \'snapshot\';\n    readonly sections: readonly ContextSnapshotSection[];\n} | {\n    readonly form: \'notice\';\n    readonly summary: string;\n} | {\n    readonly form: \'relay\';\n} | {\n    readonly form: \'recall\';\n};',
   },
   {
+    name: 'ContextPack',
+    declaration: 'export interface ContextPack {\n    readonly actorId: EntityId;\n    readonly model: ModelRoute;\n    readonly contextWindow: number;\n    readonly inputLimit: number;\n    readonly reservedOutputTokens: number;\n    readonly reservedToolTokens: number;\n    readonly sections: readonly ContextPackSection[];\n    readonly totalTokens: number;\n    readonly droppedSourceIds: readonly string[];\n}',
+  },
+  {
+    name: 'ContextPackRequest',
+    declaration: 'export interface ContextPackRequest {\n    readonly runId: RunId;\n    readonly actorId: EntityId;\n    readonly purpose?: \'character\' | \'narrator\' | \'summary\';\n    readonly maxOutputTokens?: number;\n    readonly reservedToolTokens?: number;\n}',
+  },
+  {
+    name: 'ContextPackSection',
+    declaration: 'export interface ContextPackSection {\n    readonly kind: \'identity\' | \'constraints\' | \'observation\' | \'goal\' | \'memory\' | \'background\' | \'actions\';\n    readonly text: string;\n    readonly tokens: number;\n    readonly sourceIds: readonly string[];\n    readonly priority: number;\n}',
+  },
+  {
     name: 'ContextSnapshotSection',
     declaration: 'export interface ContextSnapshotSection {\n    readonly name: string;\n    readonly text: string;\n}',
   },
@@ -3679,6 +4726,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ContinuableSubagentDescriptorData',
     declaration: 'export interface ContinuableSubagentDescriptorData extends SubagentDescriptorBase {\n    readonly mode: \'continuable\';\n    readonly label: string;\n    readonly agentProvider?: string;\n    readonly agentModel?: string;\n    readonly agentReasoningEffort?: ReasoningEffortId;\n    readonly persona?: string;\n    readonly toolFilter?: ToolRestriction;\n}',
+  },
+  {
+    name: 'CopyEntryRequest',
+    declaration: 'export interface CopyEntryRequest extends ProjectRef {\n    readonly source: string;\n    readonly destination: string;\n}',
+  },
+  {
+    name: 'CopyProjectRequest',
+    declaration: 'export interface CopyProjectRequest {\n    readonly projectId: ProjectId;\n    readonly name: string;\n}',
   },
   {
     name: 'CordisDynamicPackageId',
@@ -3713,6 +4768,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface CreateAgentOptions {\n    readonly sessionId: SessionId;\n    readonly meta?: {\n        readonly cwd?: string;\n        readonly parentSession?: SessionId;\n        readonly seedLength?: number;\n        readonly origin?: \'subagent\';\n        readonly delegationDepth?: number;\n        readonly agentPreset?: string;\n    };\n    readonly seed?: readonly SessionEvent[];\n    readonly agentOptions?: AgentOptions;\n    readonly signal?: AbortSignal;\n    readonly setup?: AgentSetup;\n}',
   },
   {
+    name: 'CreateCheckpointRequest',
+    declaration: 'export interface CreateCheckpointRequest extends RunRef {\n    readonly label: string;\n}',
+  },
+  {
+    name: 'CreateDirectoryRequest',
+    declaration: 'export interface CreateDirectoryRequest extends ProjectRef {\n    readonly path: string;\n}',
+  },
+  {
     name: 'CreateGoalRequest',
     declaration: 'export interface CreateGoalRequest {\n    readonly objective: string;\n    readonly maxGoalRounds?: number;\n}',
   },
@@ -3721,12 +4784,24 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface CreateGoalResult {\n    readonly ref: GoalRef;\n}',
   },
   {
+    name: 'CreateProjectRequest',
+    declaration: 'export interface CreateProjectRequest {\n    readonly name: string;\n    readonly description?: string;\n    readonly template: ProjectTemplate;\n    readonly tags?: readonly string[];\n    readonly author?: string;\n}',
+  },
+  {
+    name: 'CreateRunRequest',
+    declaration: 'export interface CreateRunRequest {\n    readonly projectId: ProjectId;\n    readonly seed: string;\n    readonly modelPolicy?: ModelPolicy;\n    readonly aiBudget?: AiBudget;\n    readonly startPaused?: boolean;\n}',
+  },
+  {
     name: 'CreateSessionOptions',
     declaration: 'export interface CreateSessionOptions {\n    readonly seed?: readonly SessionEvent[];\n    readonly meta?: {\n        readonly cwd?: string;\n        readonly parentSession?: SessionId;\n        readonly createdAt?: number;\n        readonly seedLength?: number;\n        readonly origin?: \'subagent\';\n        readonly delegationDepth?: number;\n        readonly agentPreset?: string;\n    };\n}',
   },
   {
     name: 'CreateTeamTaskRequest',
     declaration: 'export interface CreateTeamTaskRequest {\n    readonly subject: string;\n    readonly description: string;\n    readonly blockedBy?: readonly TeamTaskId[];\n    readonly writeScopes?: readonly string[];\n}',
+  },
+  {
+    name: 'CreativeQuestion',
+    declaration: 'export interface CreativeQuestion {\n    readonly id: string;\n    readonly prompt: string;\n    readonly rationale: string;\n    readonly impact: \'low\' | \'medium\' | \'high\';\n    readonly status: \'open\' | \'answered\' | \'dismissed\';\n    readonly sourcePaths: readonly string[];\n    readonly answer?: string;\n    readonly answeredAt?: string;\n}',
   },
   {
     name: 'CredentialInfo',
@@ -3751,6 +4826,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'CredentialRef',
     declaration: 'export type CredentialRef = Branded<\'CredentialRef\'>;',
+  },
+  {
+    name: 'DecideForActorRequest',
+    declaration: 'export interface DecideForActorRequest {\n    readonly runId: RunId;\n    readonly actorId: EntityId;\n}',
+  },
+  {
+    name: 'DecisionTrace',
+    declaration: 'export interface DecisionTrace {\n    readonly id: WorldlineId<\'decision-trace\'>;\n    readonly logicalTime: number;\n    readonly actorId?: EntityId;\n    readonly actionId?: ActionId;\n    readonly type: \'proposed\' | \'rejected\' | \'waiting\' | \'replanned\' | \'deadlock-resolved\' | \'livelock-resolved\';\n    readonly reason: string;\n    readonly details: JsonObject;\n}',
   },
   {
     name: 'DeepSeekLlmApiExtensionMap',
@@ -3782,7 +4865,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'DirectoryPickerBrowseCapability',
-    declaration: 'export interface DirectoryPickerBrowseCapability {\n    kind: \'browse\';\n    list(path?: string, signal?: AbortSignal, options?: DirectoryListOptions): Promise<DirectoryListing>;\n    createDirectory(path: string, name: string): Promise<string>;\n}',
+    declaration: 'export interface DirectoryPickerBrowseCapability {\n    kind: \'browse\';\n    list(path?: string, signal?: AbortSignal, options?: DirectoryListOptions): Promise<DirectoryListing>;\n    createDirectory(path: string, name: string): Promise<string>;\n    resolveFile(path: string, name: string): Promise<string>;\n}',
   },
   {
     name: 'DirectoryPickerCapabilities',
@@ -3794,11 +4877,23 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'DirectoryPickerNativeCapability',
-    declaration: 'export interface DirectoryPickerNativeCapability {\n    kind: \'native\';\n    pick(signal: AbortSignal): Promise<string | null>;\n}',
+    declaration: 'export interface DirectoryPickerNativeCapability {\n    kind: \'native\';\n    pick(request: PathPickerRequest, signal: AbortSignal): Promise<string | null>;\n}',
   },
   {
     name: 'DirectoryRegistrationHandle',
     declaration: 'export interface DirectoryRegistrationHandle {\n    (): void;\n    replace(entries: readonly LlmConfigurableProvider[]): void;\n}',
+  },
+  {
+    name: 'DocumentHistoryEntry',
+    declaration: 'export interface DocumentHistoryEntry {\n    readonly revision: Revision;\n    readonly savedAt: string;\n    readonly sizeBytes: number;\n    readonly reason: \'autosave\' | \'manual\' | \'external\' | \'restore\';\n}',
+  },
+  {
+    name: 'DocumentId',
+    declaration: 'export type DocumentId = WorldlineId<\'document\'>;',
+  },
+  {
+    name: 'DocumentView',
+    declaration: 'export interface DocumentView {\n    readonly projectId: ProjectId;\n    readonly id: DocumentId;\n    readonly path: string;\n    readonly content: string;\n    readonly revision: Revision;\n    readonly updatedAt: string;\n    readonly objectKind?: CanonObjectKind;\n    readonly tags: readonly string[];\n}',
   },
   {
     name: 'Domain',
@@ -3869,12 +4964,52 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface EditGoalRequest {\n    readonly objective?: string;\n    readonly maxGoalRounds?: number;\n}',
   },
   {
+    name: 'Effect',
+    declaration: 'export type Effect = {\n    readonly op: \'set\';\n    readonly path: string;\n    readonly value: JsonValue;\n} | {\n    readonly op: \'increment\';\n    readonly path: string;\n    readonly amount: number;\n    readonly min?: number;\n    readonly max?: number;\n} | {\n    readonly op: \'transfer\';\n    readonly resource: string;\n    readonly from: string;\n    readonly to: string;\n    readonly amount: number;\n} | {\n    readonly op: \'observe\';\n    readonly observer: string;\n    readonly fact: JsonObject;\n};',
+  },
+  {
     name: 'EncodedImageAttachment',
     declaration: 'export interface EncodedImageAttachment {\n    mediaType: ImageMediaType;\n    data: string;\n    name?: string;\n}',
   },
   {
+    name: 'EntityId',
+    declaration: 'export type EntityId = WorldlineId<\'entity\'>;',
+  },
+  {
+    name: 'EpisodicMemory',
+    declaration: 'export interface EpisodicMemory extends MemoryBase {\n    readonly summary: string;\n    readonly participants: readonly EntityId[];\n    readonly placeId?: MapNodeId;\n}',
+  },
+  {
     name: 'EpochHeader',
     declaration: 'export interface EpochHeader {\n    config: LlmCallConfig;\n    adapterDefaults?: LlmCallConfigAdapterDefaults;\n    system?: string;\n    tools?: ToolSchema[];\n}',
+  },
+  {
+    name: 'EventId',
+    declaration: 'export type EventId = WorldlineId<\'event\'>;',
+  },
+  {
+    name: 'ExplainRunEventRequest',
+    declaration: 'export interface ExplainRunEventRequest extends RunRef {\n    readonly eventId: string;\n}',
+  },
+  {
+    name: 'ExplainSemanticsRequest',
+    declaration: 'export interface ExplainSemanticsRequest {\n    readonly projectId: ProjectId;\n    readonly objectId: string;\n}',
+  },
+  {
+    name: 'ExportBlueprintRequest',
+    declaration: 'export interface ExportBlueprintRequest extends ProjectRef {\n    readonly destination: string;\n    readonly digest?: string;\n}',
+  },
+  {
+    name: 'ExportProjectRequest',
+    declaration: 'export interface ExportProjectRequest extends ProjectRef {\n    readonly destination: string;\n    readonly includeRuns?: boolean;\n}',
+  },
+  {
+    name: 'ExportRunRequest',
+    declaration: 'export interface ExportRunRequest extends ProjectRef {\n    readonly runId: RunId;\n    readonly destination: string;\n}',
+  },
+  {
+    name: 'Expression',
+    declaration: 'export type Expression = {\n    readonly op: \'eq\' | \'neq\' | \'gt\' | \'gte\' | \'lt\' | \'lte\';\n    readonly path: string;\n    readonly value: JsonValue;\n} | {\n    readonly op: \'exists\';\n    readonly path: string;\n} | {\n    readonly op: \'and\' | \'or\';\n    readonly items: readonly Expression[];\n} | {\n    readonly op: \'not\';\n    readonly item: Expression;\n};',
   },
   {
     name: 'FileDiff',
@@ -3895,6 +5030,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'FinishReasonMap',
     declaration: 'export interface FinishReasonMap {\n    \'stop\': {\n        kind: \'stop\';\n    };\n    \'tool-calls\': {\n        kind: \'tool-calls\';\n    };\n    \'max-tokens\': {\n        kind: \'max-tokens\';\n    };\n    \'aborted\': {\n        kind: \'aborted\';\n        failure: LlmFailure;\n    };\n    \'error\': {\n        kind: \'error\';\n        failure: LlmFailure;\n    };\n}',
+  },
+  {
+    name: 'FreeTextActionRequest',
+    declaration: 'export interface FreeTextActionRequest extends TextPlayRequest {\n    readonly text: string;\n    readonly expectedSequence: number;\n}',
+  },
+  {
+    name: 'FreeTextActionResult',
+    declaration: 'export interface FreeTextActionResult {\n    readonly status: \'submitted\' | \'ambiguous\' | \'unmatched\';\n    readonly candidates: readonly ChoiceProjection[];\n    readonly action?: SubmitRunActionResult;\n}',
+  },
+  {
+    name: 'FreezeWorldRequest',
+    declaration: 'export interface FreezeWorldRequest extends CompileWorldRequest {\n    readonly expectedSourceDigest: string;\n}',
+  },
+  {
+    name: 'FrozenBuild',
+    declaration: 'export interface FrozenBuild {\n    readonly blueprint: Blueprint;\n    readonly certificate: ClosureCertificate;\n    readonly activatedAt: string;\n}',
   },
   {
     name: 'FsDirEntry',
@@ -3941,6 +5092,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface FsWriteOutcome {\n    operation: \'create\' | \'update\';\n    version: FsVersion;\n    before: string | null;\n    after: string;\n}',
   },
   {
+    name: 'FutureEvent',
+    declaration: 'export interface FutureEvent {\n    readonly id: string;\n    readonly due: number;\n    readonly order: number;\n    readonly kind: string;\n    readonly payload: JsonObject;\n    readonly dedupeKey?: string;\n}',
+  },
+  {
     name: 'GenerateOptions',
     declaration: 'export interface GenerateOptions {\n    provider: string;\n    model: string;\n    reasoningEffort?: ReasoningEffortId;\n    messages: Message[];\n    system?: string;\n    tools?: ToolSchema[];\n    temperature?: number;\n    maxTokens?: number;\n    stop?: string[];\n    signal?: AbortSignal;\n    sessionId?: Branded<\'SessionId\'>;\n    purpose?: \'compaction\' | \'session-title\';\n}',
   },
@@ -3965,6 +5120,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface GoalChanged {\n    readonly operation: GoalOperation;\n    readonly ref: GoalRef;\n    readonly goal?: GoalView;\n}',
   },
   {
+    name: 'GoalCommitment',
+    declaration: 'export interface GoalCommitment extends MemoryBase {\n    readonly goal: string;\n    readonly status: \'active\' | \'met\' | \'failed\' | \'abandoned\';\n    readonly deadline?: number;\n    readonly promisedTo?: EntityId;\n}',
+  },
+  {
     name: 'GoalOperation',
     declaration: 'export type GoalOperation = \'create\' | \'edit\' | \'pause\' | \'resume\' | \'complete\' | \'block\' | \'clear\';',
   },
@@ -3983,6 +5142,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'GrantRecord',
     declaration: 'export interface GrantRecord {\n    readonly kind: \'grant\';\n    readonly payload: unknown;\n}',
+  },
+  {
+    name: 'HistoryRequest',
+    declaration: 'export interface HistoryRequest extends ProjectRef {\n    readonly path: string;\n    readonly limit?: number;\n}',
   },
   {
     name: 'HostConnectionRpc',
@@ -4013,6 +5176,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type ImageVariantId = Branded<\'ImageVariantId\'>;',
   },
   {
+    name: 'ImportBlueprintRequest',
+    declaration: 'export interface ImportBlueprintRequest extends ProjectRef {\n    readonly source: string;\n}',
+  },
+  {
+    name: 'ImportProjectEntryRequest',
+    declaration: 'export interface ImportProjectEntryRequest extends ProjectRef {\n    readonly path: string;\n    readonly expectedBytes: number;\n}',
+  },
+  {
+    name: 'ImportProjectRequest',
+    declaration: 'export interface ImportProjectRequest {\n    readonly source: string;\n    readonly name?: string;\n    readonly conflict: ProjectImportConflict;\n}',
+  },
+  {
+    name: 'ImportRunRequest',
+    declaration: 'export interface ImportRunRequest extends ProjectRef {\n    readonly source: string;\n}',
+  },
+  {
     name: 'Inbox',
     declaration: 'export class Inbox {\n    constructor(private readonly session: Session, private readonly notifications: InboxNotifications);\n    get nextTurn(): readonly UserMessage[];\n    get nextStep(): readonly UserMessage[];\n    get hasPending(): boolean;\n    clear(): void;\n    claim(target: InboxTarget, turn: number): UserMessage[];\n    append(target: InboxTarget, message: UserMessage): void;\n    prepend(target: InboxTarget, message: UserMessage): void;\n    replace(messageId: MessageId, newMessage: UserMessage): boolean;\n    remove(messageId: MessageId): boolean;\n    splice(target: InboxTarget, start: number, deleteCount: number, inserted: UserMessage[]): UserMessage[];\n}',
   },
@@ -4031,6 +5210,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'IndexInjectionPlacement',
     declaration: 'export type IndexInjectionPlacement = \'head\' | \'body\';',
+  },
+  {
+    name: 'InvariantDefinition',
+    declaration: 'export interface InvariantDefinition {\n    readonly id: string;\n    readonly description: string;\n    readonly expression: Expression;\n    readonly provenance: readonly Provenance[];\n}',
   },
   {
     name: 'InvariantFailure',
@@ -4101,6 +5284,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type JobStatus = \'running\' | \'stopping\' | \'completed\' | \'killed\' | \'failed\';',
   },
   {
+    name: 'JsonObject',
+    declaration: 'export type JsonObject = {\n    [key: string]: JsonValue;\n};',
+  },
+  {
     name: 'JsonSchemaNode',
     declaration: 'export interface JsonSchemaNode {\n    type?: JsonSchemaType;\n    oneOf?: JsonSchemaNode[];\n    properties?: Record<string, JsonSchemaNode>;\n    required?: string[];\n    additionalProperties?: boolean;\n    items?: JsonSchemaNode;\n    enum?: JsonSchemaScalar[];\n    const?: JsonSchemaScalar;\n    description?: string;\n    title?: string;\n    default?: JsonValue;\n    examples?: JsonValue;\n}',
   },
@@ -4111,10 +5298,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'JsonSchemaType',
     declaration: 'export type JsonSchemaType = \'object\' | \'array\' | \'string\' | \'number\' | \'integer\' | \'boolean\' | \'null\';',
-  },
-  {
-    name: 'JsonValue',
-    declaration: 'export type JsonValue = null | boolean | number | string | JsonValue[] | {\n    [key: string]: JsonValue;\n};',
   },
   {
     name: 'KnobState',
@@ -4245,6 +5428,46 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ManualCompactAgentContext extends CompactionAgentContext {\n    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;\n}',
   },
   {
+    name: 'MapEdge',
+    declaration: 'export interface MapEdge {\n    readonly id: WorldlineId<\'map-edge\'>;\n    readonly from: MapNodeId;\n    readonly to: MapNodeId;\n    readonly bidirectional: boolean;\n    readonly distance: number;\n    readonly baseDuration: number;\n    readonly capacity?: number;\n    readonly modes: readonly string[];\n    readonly permissions: readonly string[];\n    readonly hazards: readonly string[];\n    readonly dynamicCondition?: string;\n}',
+  },
+  {
+    name: 'MapId',
+    declaration: 'export type MapId = WorldlineId<\'map\'>;',
+  },
+  {
+    name: 'MapLayer',
+    declaration: 'export interface MapLayer {\n    readonly id: string;\n    readonly name: string;\n    readonly visible: boolean;\n    readonly locked: boolean;\n    readonly order: number;\n}',
+  },
+  {
+    name: 'MapNode',
+    declaration: 'export interface MapNode {\n    readonly id: MapNodeId;\n    readonly entityId?: EntityId;\n    readonly parentId?: MapNodeId;\n    readonly layerId: string;\n    readonly kind: MapNodeKind;\n    readonly name: string;\n    readonly position: MapPoint;\n    readonly polygon?: readonly MapPoint[];\n    readonly capacity?: number;\n    readonly permissions: readonly string[];\n    readonly hazards: readonly string[];\n    readonly entryNodeIds: readonly MapNodeId[];\n}',
+  },
+  {
+    name: 'MapNodeId',
+    declaration: 'export type MapNodeId = WorldlineId<\'map-node\'>;',
+  },
+  {
+    name: 'MapNodeKind',
+    declaration: 'export type MapNodeKind = \'world\' | \'plane\' | \'region\' | \'city\' | \'building\' | \'room\' | \'slot\';',
+  },
+  {
+    name: 'MapPoint',
+    declaration: 'export interface MapPoint {\n    readonly x: number;\n    readonly y: number;\n}',
+  },
+  {
+    name: 'MechanismDependency',
+    declaration: 'export interface MechanismDependency {\n    readonly id: string;\n    readonly version: string;\n    readonly required: boolean;\n}',
+  },
+  {
+    name: 'MediaCue',
+    declaration: 'export interface MediaCue {\n    readonly type: \'background\' | \'portrait\' | \'expression\' | \'bgm\' | \'sfx\' | \'voice\' | \'transition\';\n    readonly assetId?: AssetId;\n    readonly entityId?: EntityId;\n    readonly variant?: string;\n}',
+  },
+  {
+    name: 'MemoryBase',
+    declaration: 'export interface MemoryBase {\n    readonly id: WorldlineId<\'memory\'>;\n    readonly actorId: EntityId;\n    readonly logicalTime: number;\n    readonly sourceEventIds: readonly EventId[];\n    readonly importance: number;\n}',
+  },
+  {
     name: 'MemoryStage',
     declaration: 'export type MemoryStage = \'short\' | \'medium\' | \'long\';',
   },
@@ -4353,12 +5576,52 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ModelModalityMap {\n    text: \'text\';\n    image: \'image\';\n}',
   },
   {
+    name: 'ModelPolicy',
+    declaration: 'export interface ModelPolicy {\n    readonly routes: Readonly<Partial<Record<ModelPurpose, ModelRoute>>>;\n    readonly aiEnabled: boolean;\n    readonly revision: Revision;\n}',
+  },
+  {
+    name: 'ModelPurpose',
+    declaration: 'export type ModelPurpose = \'compiler\' | \'character\' | \'creative\' | \'narrator\' | \'summary\';',
+  },
+  {
+    name: 'ModelRoute',
+    declaration: 'export interface ModelRoute {\n    readonly provider: string;\n    readonly model: string;\n    readonly reasoningEffort?: string;\n}',
+  },
+  {
+    name: 'MoveEntryRequest',
+    declaration: 'export interface MoveEntryRequest extends ProjectRef {\n    readonly source: string;\n    readonly destination: string;\n    readonly expectedRevision?: Revision;\n}',
+  },
+  {
+    name: 'MovementProgress',
+    declaration: 'export interface MovementProgress {\n    readonly origin: MapNodeId;\n    readonly destination: MapNodeId;\n    readonly route: readonly MapNodeId[];\n    readonly edgeIndex: number;\n    readonly edgeFraction: number;\n    readonly departedAt: number;\n    readonly estimatedArrival: number;\n    readonly remainingDuration: number;\n    readonly mode: string;\n}',
+  },
+  {
+    name: 'MutationResult',
+    declaration: 'export interface MutationResult {\n    readonly projectId: ProjectId;\n    readonly path: string;\n    readonly revision?: Revision;\n    readonly id?: DocumentId;\n}',
+  },
+  {
+    name: 'NarrateRequest',
+    declaration: 'export interface NarrateRequest extends TextPlayRequest {\n    readonly eventIds?: readonly string[];\n    readonly observationIds?: readonly string[];\n    readonly templateOnly?: boolean;\n}',
+  },
+  {
+    name: 'NarrativeBeat',
+    declaration: 'export interface NarrativeBeat {\n    readonly id: WorldlineId<\'narrative-beat\'>;\n    readonly invocationId?: WorldlineId<\'ai-invocation\'>;\n    readonly eventIds: readonly EventId[];\n    readonly observationIds: readonly WorldlineId<\'observation\'>[];\n    readonly camera: string;\n    readonly speakerId?: EntityId;\n    readonly text: string;\n    readonly media: readonly MediaCue[];\n    readonly style: \'template\' | \'llm\';\n    readonly modelRoute?: ModelRoute;\n}',
+  },
+  {
+    name: 'NarrativeStreamChunk',
+    declaration: 'export type NarrativeStreamChunk = {\n    readonly type: \'text-delta\';\n    readonly text: string;\n} | {\n    readonly type: \'replace\';\n    readonly text: string;\n} | {\n    readonly type: \'beat\';\n    readonly beat: NarrativeBeat;\n};',
+  },
+  {
     name: 'ObjectJsonSchema',
     declaration: 'export type ObjectJsonSchema = JsonSchemaNode & {\n    type: \'object\';\n};',
   },
   {
     name: 'OneShotSubagentDescriptorData',
     declaration: 'export interface OneShotSubagentDescriptorData extends SubagentDescriptorBase {\n    readonly mode: \'one-shot\';\n    readonly label?: string;\n}',
+  },
+  {
+    name: 'PathPickerRequest',
+    declaration: 'export type PathPickerRequest = {\n    mode: \'directory\';\n    title: string;\n} | {\n    mode: \'open-file\';\n    title: string;\n    extensions: readonly string[];\n} | {\n    mode: \'save-file\';\n    title: string;\n    suggestedName: string;\n    extensions: readonly string[];\n};',
   },
   {
     name: 'PermissionSelect',
@@ -4409,6 +5672,34 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type PreToolDecision = {\n    kind: \'allow\';\n} | {\n    kind: \'deny\';\n    reason: string;\n} | {\n    kind: \'ask\';\n    reason?: string;\n};',
   },
   {
+    name: 'Process',
+    declaration: 'export interface Process {\n    readonly id: ProcessId;\n    readonly action: ActionRequest;\n    readonly state: ActionLifecycleState;\n    readonly startedAt?: number;\n    readonly nextWakeAt?: number;\n    readonly deadline?: number;\n    readonly progress: number;\n    readonly progressMeasure: number;\n    readonly movement?: MovementProgress;\n    readonly reservationIds: readonly WorldlineId<\'reservation\'>[];\n    readonly retryBudget: number;\n    readonly retryCount: number;\n    readonly blockedReason?: string;\n    readonly wakeConditions: readonly string[];\n    readonly fallbacks: readonly string[];\n    readonly failure?: string;\n}',
+  },
+  {
+    name: 'ProcessId',
+    declaration: 'export type ProcessId = WorldlineId<\'process\'>;',
+  },
+  {
+    name: 'ProjectBuildStatus',
+    declaration: 'export type ProjectBuildStatus = \'draft\' | \'questions\' | \'buildable\' | \'frozen\';',
+  },
+  {
+    name: 'ProjectControlDocument',
+    declaration: 'export interface ProjectControlDocument {\n    readonly content: string;\n    readonly revision: Revision;\n}',
+  },
+  {
+    name: 'ProjectHealth',
+    declaration: 'export type ProjectHealth = \'ready\' | \'damaged\' | \'unavailable\';',
+  },
+  {
+    name: 'ProjectId',
+    declaration: 'export type ProjectId = WorldlineId<\'project\'>;',
+  },
+  {
+    name: 'ProjectImportConflict',
+    declaration: 'export type ProjectImportConflict = \'copy\' | \'replace\' | \'cancel\';',
+  },
+  {
     name: 'ProjectionChangeListener',
     declaration: 'export type ProjectionChangeListener = (session: Session, key: Extract<keyof SessionProjectionMap, string>, value: unknown, seq: number) => void;',
   },
@@ -4429,6 +5720,70 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ProjectionSnapshot {\n    asOfSeq: number;\n    values: Partial<SessionProjectionMap>;\n}',
   },
   {
+    name: 'ProjectLibraryPage',
+    declaration: 'export interface ProjectLibraryPage {\n    readonly root: ProjectRootView;\n    readonly projects: readonly ProjectSummary[];\n    readonly total: number;\n}',
+  },
+  {
+    name: 'ProjectLibraryQuery',
+    declaration: 'export interface ProjectLibraryQuery {\n    readonly search?: string;\n    readonly tags?: readonly string[];\n    readonly template?: ProjectTemplate;\n    readonly sort?: ProjectSort;\n    readonly offset?: number;\n    readonly limit?: number;\n}',
+  },
+  {
+    name: 'ProjectLink',
+    declaration: 'export interface ProjectLink {\n    readonly sourceId: DocumentId;\n    readonly sourcePath: string;\n    readonly targetId?: DocumentId;\n    readonly target: string;\n    readonly kind: \'id\' | \'path\' | \'markdown\';\n    readonly broken: boolean;\n}',
+  },
+  {
+    name: 'ProjectManifest',
+    declaration: 'export interface ProjectManifest {\n    readonly format: typeof WWS_VERSION;\n    readonly id: ProjectId;\n    readonly name: string;\n    readonly description: string;\n    readonly createdAt: string;\n    readonly updatedAt: string;\n    readonly defaultWorldId: WorldId;\n    readonly defaultWorldlineId: CanonWorldlineId;\n    readonly cover?: string;\n    readonly author?: string;\n    readonly license?: string;\n    readonly template: ProjectTemplate;\n    readonly tags: readonly string[];\n    readonly dependencies: readonly MechanismDependency[];\n}',
+  },
+  {
+    name: 'ProjectRef',
+    declaration: 'export interface ProjectRef {\n    readonly projectId: ProjectId;\n}',
+  },
+  {
+    name: 'ProjectRootView',
+    declaration: 'export interface ProjectRootView {\n    readonly configured: boolean;\n    readonly path?: string;\n    readonly writable: boolean;\n    readonly projectCount: number;\n    readonly scannedAt?: string;\n}',
+  },
+  {
+    name: 'ProjectRunStorage',
+    declaration: 'export interface ProjectRunStorage {\n    readonly projectId: ProjectId;\n    readonly runId: RunId;\n    readonly databasePath: string;\n}',
+  },
+  {
+    name: 'ProjectSearchHit',
+    declaration: 'export interface ProjectSearchHit {\n    readonly id: DocumentId;\n    readonly path: string;\n    readonly title: string;\n    readonly excerpt: string;\n    readonly score: number;\n    readonly objectKind?: CanonObjectKind;\n    readonly tags: readonly string[];\n}',
+  },
+  {
+    name: 'ProjectSort',
+    declaration: 'export type ProjectSort = \'updated-desc\' | \'created-desc\' | \'name-asc\';',
+  },
+  {
+    name: 'ProjectSourceFile',
+    declaration: 'export interface ProjectSourceFile {\n    readonly id: DocumentId;\n    readonly path: string;\n    readonly content: string;\n    readonly revision: Revision;\n    readonly objectKind?: CanonObjectKind;\n    readonly tags: readonly string[];\n}',
+  },
+  {
+    name: 'ProjectSourceSnapshot',
+    declaration: 'export interface ProjectSourceSnapshot {\n    readonly projectId: ProjectId;\n    readonly manifest: ProjectManifest;\n    readonly capturedAt: string;\n    readonly digest: string;\n    readonly files: readonly ProjectSourceFile[];\n}',
+  },
+  {
+    name: 'ProjectSummary',
+    declaration: 'export interface ProjectSummary {\n    readonly manifest: ProjectManifest;\n    readonly path: string;\n    readonly health: ProjectHealth;\n    readonly status: ProjectBuildStatus;\n    readonly sizeBytes: number;\n    readonly documentCount: number;\n    readonly warning?: string;\n}',
+  },
+  {
+    name: 'ProjectTemplate',
+    declaration: 'export type ProjectTemplate = \'blank\' | \'world-encyclopedia\' | \'character-story\' | \'social-simulation\' | \'civilization-sandbox\' | \'playable-scenario\';',
+  },
+  {
+    name: 'ProjectTreeEntry',
+    declaration: 'export interface ProjectTreeEntry {\n    readonly id: DocumentId;\n    readonly name: string;\n    readonly path: string;\n    readonly kind: WorldlineEntryKind;\n    readonly sizeBytes: number;\n    readonly updatedAt: string;\n    readonly revision?: Revision;\n    readonly objectKind?: CanonObjectKind;\n    readonly tags: readonly string[];\n    readonly trashed?: boolean;\n}',
+  },
+  {
+    name: 'ProjectTreeListing',
+    declaration: 'export interface ProjectTreeListing {\n    readonly projectId: ProjectId;\n    readonly path: string;\n    readonly entries: readonly ProjectTreeEntry[];\n    readonly truncated: boolean;\n    readonly nextCursor?: string;\n}',
+  },
+  {
+    name: 'ProjectTreeRequest',
+    declaration: 'export interface ProjectTreeRequest extends ProjectRef {\n    readonly path?: string;\n    readonly cursor?: string;\n    readonly limit?: number;\n}',
+  },
+  {
     name: 'PromptAssembly',
     declaration: 'export interface PromptAssembly {\n    sections: AssembledSection[];\n    contexts: AssembledContext[];\n    tools: ToolSchema[];\n    variables: Record<string, string | undefined>;\n}',
   },
@@ -4439,6 +5794,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PromptSection',
     declaration: 'export interface PromptSection {\n    readonly name: string;\n    readonly order: number;\n    readonly text: string | ((context: AssembleContext) => string);\n    readonly complete?: boolean;\n}',
+  },
+  {
+    name: 'ProposalTarget',
+    declaration: 'export type ProposalTarget = \'canon\' | \'action\' | \'system\' | \'invariant\' | \'map\';',
+  },
+  {
+    name: 'Provenance',
+    declaration: 'export interface Provenance {\n    readonly kind: ProvenanceKind;\n    readonly anchors: readonly SourceAnchor[];\n    readonly mechanism?: {\n        readonly id: string;\n        readonly version: string;\n    };\n    readonly proposalId?: WorldlineId<\'proposal\'>;\n    readonly compilerVersion?: string;\n    readonly modelRoute?: ModelRoute;\n    readonly approvedBy?: string;\n    readonly confidence?: number;\n}',
+  },
+  {
+    name: 'ProvenanceKind',
+    declaration: 'export type ProvenanceKind = \'author\' | \'approved-supplement\' | \'mechanism-pack\' | \'import\' | \'agent-proposal\' | \'runtime-proposal\';',
   },
   {
     name: 'ProviderRequestId',
@@ -4455,6 +5822,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PtcDispatchLog',
     declaration: 'export interface PtcDispatchLog {\n    readonly exec: ToolExecution;\n    readonly agent?: Agent;\n    readonly subCallId: CallId;\n    readonly name: string;\n    readonly isError: boolean;\n    readonly content: ContentBlock[];\n}',
+  },
+  {
+    name: 'ReadDocumentRequest',
+    declaration: 'export interface ReadDocumentRequest extends ProjectRef {\n    readonly path: string;\n}',
   },
   {
     name: 'ReadFileLine',
@@ -4489,8 +5860,44 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface RecallResult {\n    readonly cards: readonly RecallCard[];\n    readonly continuation?: string;\n    readonly elapsedMs: number;\n    readonly indexRevision: number;\n}',
   },
   {
+    name: 'RecordAiIntentRequest',
+    declaration: 'export interface RecordAiIntentRequest extends RunRef {\n    readonly actorId: EntityId;\n    readonly invocationId: AiInvocation[\'id\'];\n    readonly choiceId: string;\n    readonly actionType: string;\n    readonly parameters: JsonObject;\n    readonly rationale: string;\n    readonly confidence: number;\n    readonly modelRoute: ModelRoute;\n    readonly contextSourceIds: readonly string[];\n}',
+  },
+  {
+    name: 'RecordAiIntentResult',
+    declaration: 'export interface RecordAiIntentResult {\n    readonly intent: AiIntent;\n    readonly view: RunView;\n}',
+  },
+  {
+    name: 'RecordAiInvocationRequest',
+    declaration: 'export interface RecordAiInvocationRequest extends RunRef {\n    readonly purpose: AiInvocation[\'purpose\'];\n    readonly actorId?: EntityId;\n    readonly modelRoute: ModelRoute;\n    readonly contextSourceIds: readonly string[];\n    readonly inputTokens: number;\n    readonly outputTokens: number;\n    readonly cacheReadTokens?: number;\n    readonly estimatedCost: number;\n    readonly outputDigest: string;\n    readonly outcome: AiInvocation[\'outcome\'];\n}',
+  },
+  {
+    name: 'RecordAiInvocationResult',
+    declaration: 'export interface RecordAiInvocationResult {\n    readonly invocation: AiInvocation;\n    readonly budgetExceeded: boolean;\n    readonly view: RunView;\n}',
+  },
+  {
+    name: 'RecordNarrativeBeatRequest',
+    declaration: 'export interface RecordNarrativeBeatRequest extends RunRef {\n    readonly invocationId?: AiInvocation[\'id\'];\n    readonly eventIds: NarrativeBeat[\'eventIds\'];\n    readonly observationIds: NarrativeBeat[\'observationIds\'];\n    readonly camera: string;\n    readonly speakerId?: EntityId;\n    readonly text: string;\n    readonly media: NarrativeBeat[\'media\'];\n    readonly style: NarrativeBeat[\'style\'];\n    readonly modelRoute?: ModelRoute;\n}',
+  },
+  {
+    name: 'RecordNarrativeBeatResult',
+    declaration: 'export interface RecordNarrativeBeatResult {\n    readonly beat: NarrativeBeat;\n    readonly view: RunView;\n}',
+  },
+  {
     name: 'RedactedSecret',
     declaration: 'export interface RedactedSecret {\n    path: string[];\n    set: boolean;\n}',
+  },
+  {
+    name: 'Reflection',
+    declaration: 'export interface Reflection extends MemoryBase {\n    readonly text: string;\n    readonly modelRoute?: ModelRoute;\n}',
+  },
+  {
+    name: 'RelationshipEvidence',
+    declaration: 'export interface RelationshipEvidence extends MemoryBase {\n    readonly otherId: EntityId;\n    readonly dimensions: Readonly<Record<string, number>>;\n}',
+  },
+  {
+    name: 'RephraseRequest',
+    declaration: 'export interface RephraseRequest extends TextPlayRequest {\n    readonly beatId: NarrativeBeat[\'id\'];\n}',
   },
   {
     name: 'ReplayEnvelope',
@@ -4517,6 +5924,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type RequestRunOutcome = \'approved\' | \'completed\' | \'rejected\' | \'cancelled\' | \'failed\';',
   },
   {
+    name: 'Reservation',
+    declaration: 'export interface Reservation {\n    readonly id: WorldlineId<\'reservation\'>;\n    readonly processId: ProcessId;\n    readonly claims: readonly ResourceClaim[];\n    readonly acquiredAt: number;\n    readonly expiresAt: number;\n    readonly queuePosition: number;\n}',
+  },
+  {
     name: 'ResolvedAlwaysRetryPolicy',
     declaration: 'export interface ResolvedAlwaysRetryPolicy extends ResolvedRetryBackoff {\n    readonly mode: \'always\';\n}',
   },
@@ -4541,6 +5952,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ResolvedSubagentStartRequest extends SubagentStartRequest {\n    readonly descriptor: SubagentDescriptorData;\n}',
   },
   {
+    name: 'ResourceClaim',
+    declaration: 'export interface ResourceClaim {\n    readonly resourceId: string;\n    readonly quantity: number;\n    readonly mode: \'shared\' | \'exclusive\' | \'capacity\';\n    readonly start: number;\n    readonly end: number;\n}',
+  },
+  {
     name: 'ResourcePage',
     declaration: 'export interface ResourcePage {\n    readonly items: readonly VaultResource[];\n    readonly nextCursor: number;\n}',
   },
@@ -4553,8 +5968,36 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface RestoredSessionOptions {\n    readonly seed: SessionEvent[];\n    readonly meta: SessionHeader;\n    readonly seedSource: \'persistence\';\n}',
   },
   {
+    name: 'RestoreEntryRequest',
+    declaration: 'export interface RestoreEntryRequest extends ProjectRef {\n    readonly trashId: string;\n    readonly destination?: string;\n}',
+  },
+  {
+    name: 'RestoreProjectRequest',
+    declaration: 'export interface RestoreProjectRequest {\n    readonly trashId: string;\n    readonly name?: string;\n}',
+  },
+  {
+    name: 'RestoreRevisionRequest',
+    declaration: 'export interface RestoreRevisionRequest extends ProjectRef {\n    readonly path: string;\n    readonly revision: Revision;\n    readonly expectedRevision: Revision;\n}',
+  },
+  {
     name: 'ResumeAgentOptions',
     declaration: 'export interface ResumeAgentOptions {\n    readonly resumeSessionId: SessionId;\n    readonly agentOptions?: AgentOptions;\n    readonly signal?: AbortSignal;\n    readonly setup?: AgentSetup;\n}',
+  },
+  {
+    name: 'RetryTextActionRequest',
+    declaration: 'export interface RetryTextActionRequest extends BranchTextPlayRequest {\n    readonly choiceId: string;\n}',
+  },
+  {
+    name: 'ReviewProposalRequest',
+    declaration: 'export interface ReviewProposalRequest {\n    readonly projectId: ProjectId;\n    readonly proposalId: string;\n    readonly decision: \'approved\' | \'rejected\';\n    readonly reviewedBy: string;\n    readonly expectedStateRevision?: Revision;\n}',
+  },
+  {
+    name: 'Revision',
+    declaration: 'export type Revision = Branded<\'WorldlineRevision\'>;',
+  },
+  {
+    name: 'RootRelocationPlan',
+    declaration: 'export interface RootRelocationPlan {\n    readonly source?: string;\n    readonly destination: string;\n    readonly projects: readonly {\n        readonly id: ProjectId;\n        readonly name: string;\n        readonly bytes: number;\n    }[];\n    readonly conflicts: readonly string[];\n    readonly requiredBytes: number;\n    readonly dryRun: boolean;\n}',
   },
   {
     name: 'RpcError',
@@ -4566,7 +6009,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RpcErrorDetailsMap',
-    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n        sessionId: SessionId;\n        requestedPreset: string;\n        existingPreset?: string;\n    };\n    \'agent-preset-not-found\': {\n        agentPreset: string;\n      /* …truncated — full shape in source */',
+    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'file-name-invalid\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n        sessionId: SessionId;\n        requestedPreset: string;\n        existingPreset?: string;\n    };\n    \'agent /* …truncated — full shape in source */',
   },
   {
     name: 'RpcId',
@@ -4581,8 +6024,100 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type RpcResult<T> = {\n    ok: true;\n    value: T;\n} | {\n    ok: false;\n    error: RpcError;\n};',
   },
   {
+    name: 'RunActorPosition',
+    declaration: 'export interface RunActorPosition {\n    readonly actorId: EntityId;\n    readonly nodeId: MapNodeId;\n}',
+  },
+  {
+    name: 'RunChoicesRequest',
+    declaration: 'export interface RunChoicesRequest extends RunRef {\n    readonly actorId: EntityId;\n}',
+  },
+  {
+    name: 'RunChoicesView',
+    declaration: 'export interface RunChoicesView {\n    readonly runId: RunId;\n    readonly actorId: EntityId;\n    readonly sequence: number;\n    readonly choices: readonly ChoiceProjection[];\n}',
+  },
+  {
+    name: 'RunDefinitionView',
+    declaration: 'export interface RunDefinitionView {\n    readonly runId: RunId;\n    readonly blueprintDigest: string;\n    readonly purpose: SimulationPurpose;\n    readonly entities: readonly RunEntityDefinition[];\n    readonly actions: readonly ActionDefinition[];\n    readonly systems: readonly SystemDefinition[];\n    readonly invariants: readonly InvariantDefinition[];\n}',
+  },
+  {
+    name: 'RunEntityDefinition',
+    declaration: 'export interface RunEntityDefinition {\n    readonly id: EntityId;\n    readonly type: string;\n    readonly lod: \'L0\' | \'L1\' | \'L2\' | \'L3\';\n    readonly policyIds: readonly string[];\n}',
+  },
+  {
+    name: 'RunEventExplanation',
+    declaration: 'export interface RunEventExplanation {\n    readonly event?: WorldEvent;\n    readonly decisions: readonly DecisionTrace[];\n    readonly processes: readonly Process[];\n    readonly reservations: readonly Reservation[];\n    readonly telemetry: readonly Telemetry[];\n    readonly summary: string;\n}',
+  },
+  {
+    name: 'RunHealth',
+    declaration: 'export interface RunHealth {\n    readonly futureQueueDepth: number;\n    readonly activeProcesses: number;\n    readonly waitingProcesses: number;\n    readonly reservations: number;\n    readonly longestWait: number;\n    readonly noProgressSteps: number;\n    readonly deadlocksResolved: number;\n    readonly livelocksResolved: number;\n    readonly fairnessInterventions: number;\n    readonly writerThread: true;\n    readonly wal: boolean;\n}',
+  },
+  {
+    name: 'RunId',
+    declaration: 'export type RunId = WorldlineId<\'run\'>;',
+  },
+  {
+    name: 'RunMovementProjection',
+    declaration: 'export interface RunMovementProjection {\n    readonly processId: Process[\'id\'];\n    readonly actorId: EntityId;\n    readonly state: Process[\'state\'];\n    readonly origin: MapNodeId;\n    readonly destination: MapNodeId;\n    readonly route: readonly MapNodeId[];\n    readonly edgeIndex: number;\n    readonly edgeFraction: number;\n    readonly remainingDuration: number;\n    readonly estimatedArrival: number;\n    readonly mode: string;\n}',
+  },
+  {
     name: 'RunnerFailureRule',
     declaration: 'export interface RunnerFailureRule {\n    allowedExitCodes?: readonly number[];\n    fatalSignatures: readonly string[];\n    informationalLines?: readonly string[];\n}',
+  },
+  {
+    name: 'RunRecordsPage',
+    declaration: 'export interface RunRecordsPage {\n    readonly records: readonly RunStreamRecord[];\n    readonly nextSequence: number;\n    readonly nextOrdinal: number;\n    readonly hasMore: boolean;\n}',
+  },
+  {
+    name: 'RunRecordsRequest',
+    declaration: 'export interface RunRecordsRequest extends RunRef {\n    readonly afterSequence?: number;\n    readonly afterOrdinal?: number;\n    readonly limit?: number;\n    readonly stream?: RunStream;\n}',
+  },
+  {
+    name: 'RunRef',
+    declaration: 'export interface RunRef {\n    readonly runId: RunId;\n}',
+  },
+  {
+    name: 'RunSnapshot',
+    declaration: 'export interface RunSnapshot {\n    readonly runId: RunId;\n    readonly blueprintId: BlueprintId;\n    readonly blueprintDigest: string;\n    readonly branchId: CanonWorldlineId;\n    readonly parentRunId?: RunId;\n    readonly forkSequence?: number;\n    readonly seed: string;\n    readonly logicalTime: number;\n    readonly sequence: number;\n    readonly state: JsonObject;\n    readonly processes: readonly Process[];\n    readonly reservations: readonly Reservation[];\n    readonly futureEvents: readonly FutureEvent[];\n    readonly randomState: string;\n    readonly modelPolicy: ModelPolicy;\n    readonly aiBudget: AiBudget;\n    readonly aiUsage: AiUsage;\n}',
+  },
+  {
+    name: 'RunSpatialMap',
+    declaration: 'export interface RunSpatialMap {\n    readonly id: MapId;\n    readonly name: string;\n    readonly rootNodeId: MapNodeId;\n    readonly backgroundAssetId?: string;\n    readonly layers: readonly MapLayer[];\n    readonly nodes: readonly MapNode[];\n    readonly edges: readonly MapEdge[];\n    readonly totalNodes: number;\n    readonly totalEdges: number;\n    readonly truncated: boolean;\n}',
+  },
+  {
+    name: 'RunSpatialRequest',
+    declaration: 'export interface RunSpatialRequest extends RunRef {\n    readonly mapId?: MapId;\n    readonly viewport?: RunSpatialViewport;\n    readonly visibleLayerIds?: readonly string[];\n    readonly maxNodes?: number;\n}',
+  },
+  {
+    name: 'RunSpatialView',
+    declaration: 'export interface RunSpatialView {\n    readonly runId: RunId;\n    readonly sequence: number;\n    readonly logicalTime: number;\n    readonly availableMaps: readonly {\n        readonly id: MapId;\n        readonly name: string;\n        readonly nodeCount: number;\n    }[];\n    readonly map?: RunSpatialMap;\n    readonly actors: readonly RunActorPosition[];\n    readonly movements: readonly RunMovementProjection[];\n}',
+  },
+  {
+    name: 'RunSpatialViewport',
+    declaration: 'export interface RunSpatialViewport {\n    readonly left: number;\n    readonly top: number;\n    readonly right: number;\n    readonly bottom: number;\n}',
+  },
+  {
+    name: 'RunStatus',
+    declaration: 'export type RunStatus = \'starting\' | \'paused\' | \'running\' | \'degraded\' | \'stopped\' | \'failed\';',
+  },
+  {
+    name: 'RunStream',
+    declaration: 'export type RunStream = \'world-event\' | \'decision-trace\' | \'ai-intent\' | \'ai-invocation\' | \'observation\' | \'narrative-beat\' | \'telemetry\';',
+  },
+  {
+    name: 'RunStreamRecord',
+    declaration: 'export interface RunStreamRecord {\n    readonly sequence: number;\n    readonly ordinal?: number;\n    readonly logicalTime: number;\n    readonly stream: RunStream;\n    readonly id: string;\n    readonly payload: JsonObject;\n}',
+  },
+  {
+    name: 'RunSummary',
+    declaration: 'export interface RunSummary {\n    readonly runId: RunId;\n    readonly projectId: ProjectId;\n    readonly branchId: CanonWorldlineId;\n    readonly blueprintDigest: string;\n    readonly status: RunStatus;\n    readonly logicalTime: number;\n    readonly sequence: number;\n    readonly createdAt: string;\n    readonly updatedAt: string;\n    readonly parentRunId?: RunId;\n    readonly forkSequence?: number;\n}',
+  },
+  {
+    name: 'RuntimeEntitySeed',
+    declaration: 'export interface RuntimeEntitySeed {\n    readonly id: EntityId;\n    readonly type: string;\n    readonly facets: Readonly<Record<string, JsonValue>>;\n    readonly state: JsonObject;\n    readonly lod: \'L0\' | \'L1\' | \'L2\' | \'L3\';\n    readonly policyIds: readonly string[];\n    readonly memory: CharacterMemory;\n}',
+  },
+  {
+    name: 'RunView',
+    declaration: 'export interface RunView {\n    readonly summary: RunSummary;\n    readonly snapshot: RunSnapshot;\n    readonly health: RunHealth;\n    readonly aiUsage: AiUsage;\n    readonly controls: Readonly<Record<string, ActorControlMode>>;\n}',
   },
   {
     name: 'SandboxEnforcement',
@@ -4609,8 +6144,16 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SaveImageAttachment {\n    data: Uint8Array;\n    mediaType: ImageMediaType;\n    name?: string;\n}',
   },
   {
+    name: 'SaveTextPlayRequest',
+    declaration: 'export interface SaveTextPlayRequest extends TextPlayRequest {\n    readonly label: string;\n}',
+  },
+  {
     name: 'SaveTextSpill',
     declaration: 'export interface SaveTextSpill {\n    owner: SpillOwner;\n    source: SpillSource;\n    suggestedName: string;\n    content: string;\n}',
+  },
+  {
+    name: 'SceneFrame',
+    declaration: 'export interface SceneFrame {\n    readonly logicalTime: number;\n    readonly placeId?: MapNodeId;\n    readonly presentEntityIds: readonly EntityId[];\n    readonly visibleState: JsonObject;\n    readonly activeProcesses: readonly Process[];\n    readonly media: readonly MediaCue[];\n}',
   },
   {
     name: 'ScheduledToolDispatch',
@@ -4645,6 +6188,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SearchPathsResultView {\n    card: \'search\';\n    shape: \'paths\';\n    title?: string;\n    paths: string[];\n    truncated: boolean;\n    total: number;\n}',
   },
   {
+    name: 'SearchProjectRequest',
+    declaration: 'export interface SearchProjectRequest extends ProjectRef {\n    readonly query: string;\n    readonly path?: string;\n    readonly tags?: readonly string[];\n    readonly kinds?: readonly CanonObjectKind[];\n    readonly limit?: number;\n}',
+  },
+  {
     name: 'SearchResultView',
     declaration: 'export type SearchResultView = SearchMatchesResultView | SearchPathsResultView;',
   },
@@ -4655,6 +6202,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SelfSnapshot',
     declaration: 'export interface SelfSnapshot {\n    readonly agentId: string;\n    readonly modules: readonly SelfModule[];\n    readonly compiled: string;\n    readonly revision: string;\n}',
+  },
+  {
+    name: 'SemanticsExplanation',
+    declaration: 'export interface SemanticsExplanation {\n    readonly objectId: string;\n    readonly summary: string;\n    readonly anchors: readonly SourceAnchor[];\n    readonly diagnostics: readonly BuildDiagnostic[];\n}',
   },
   {
     name: 'SendTeamMessageRequest',
@@ -4909,6 +6460,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionTitleUserMessage {\n    readonly seq: number;\n    readonly text: string;\n}',
   },
   {
+    name: 'SetActorControlRequest',
+    declaration: 'export interface SetActorControlRequest extends RunRef {\n    readonly actorId: EntityId;\n    readonly mode: ActorControlMode;\n}',
+  },
+  {
+    name: 'SetAiEnabledRequest',
+    declaration: 'export interface SetAiEnabledRequest extends RunRef {\n    readonly enabled: boolean;\n}',
+  },
+  {
+    name: 'SetProjectRootRequest',
+    declaration: 'export interface SetProjectRootRequest {\n    readonly path: string;\n    readonly create?: boolean;\n    readonly dryRun?: boolean;\n}',
+  },
+  {
     name: 'SettingsApplies',
     declaration: 'export type SettingsApplies = \'live\' | \'restart\';',
   },
@@ -4965,6 +6528,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ShellSandboxInfo {\n    mode: SandboxMode;\n    denied: boolean;\n    enforcement?: SandboxEnforcement;\n    runnerFailed?: boolean;\n}',
   },
   {
+    name: 'SimulationPurpose',
+    declaration: 'export interface SimulationPurpose {\n    readonly summary: string;\n    readonly scope: readonly string[];\n    readonly duration: number;\n    readonly resolution: number;\n    readonly detail: \'L0\' | \'L1\' | \'L2\' | \'L3\';\n    readonly hardExpectations: readonly string[];\n    readonly statisticalExpectations: readonly string[];\n    readonly antiPatterns: readonly string[];\n}',
+  },
+  {
     name: 'SkillCandidate',
     declaration: 'export interface SkillCandidate extends SkillSummary {\n    readonly rank: number;\n    readonly locator: unknown;\n    readonly path?: string;\n    readonly metadata?: Readonly<Record<string, unknown>>;\n}',
   },
@@ -4975,6 +6542,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SkillDefinition',
     declaration: 'export interface SkillDefinition extends SkillSummary {\n    readonly content: string;\n    readonly path?: string;\n    readonly metadata?: Readonly<Record<string, unknown>>;\n}',
+  },
+  {
+    name: 'SkillExperience',
+    declaration: 'export interface SkillExperience extends MemoryBase {\n    readonly skill: string;\n    readonly level: number;\n    readonly evidence: readonly EventId[];\n}',
   },
   {
     name: 'SkillInvocationPolicy',
@@ -5017,6 +6588,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SkillViewOptions extends SkillLookupOptions {\n    readonly scope?: ScopeKey | undefined;\n    readonly includeDisabled?: boolean | undefined;\n}',
   },
   {
+    name: 'SourceAnchor',
+    declaration: 'export interface SourceAnchor {\n    readonly id: WorldlineId<\'source-anchor\'>;\n    readonly documentId: DocumentId;\n    readonly revision: Revision;\n    readonly heading?: string;\n    readonly startOffset: number;\n    readonly endOffset: number;\n    readonly excerptHash: string;\n    readonly contextBefore?: string;\n    readonly contextAfter?: string;\n}',
+  },
+  {
     name: 'SpawnTeammateRequest',
     declaration: 'export interface SpawnTeammateRequest {\n    readonly name: string;\n    readonly description: string;\n    readonly prompt: ContentBlock[];\n    readonly context: \'fresh\' | \'fork\';\n    readonly provider: string;\n    readonly signal: AbortSignal;\n}',
   },
@@ -5041,6 +6616,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SpillSource {\n    toolName: string;\n    callId: CallId;\n    label: string;\n}',
   },
   {
+    name: 'StateDelta',
+    declaration: 'export interface StateDelta {\n    readonly path: string;\n    readonly before?: JsonValue;\n    readonly after?: JsonValue;\n}',
+  },
+  {
     name: 'StorageBackend',
     declaration: 'export interface StorageBackend {\n    readonly kv?: KvFacet;\n    close(): Promise<void>;\n}',
   },
@@ -5053,8 +6632,24 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface StoredImageAttachment {\n    ref: ImageAttachmentRef;\n    data: Uint8Array;\n}',
   },
   {
+    name: 'StoreProjectBuildRequest',
+    declaration: 'export interface StoreProjectBuildRequest extends ProjectRef {\n    readonly digest: string;\n    readonly blueprint: string;\n    readonly certificate: string;\n    readonly sourceSnapshot: string;\n}',
+  },
+  {
+    name: 'StoryStageRenderer',
+    declaration: 'export interface StoryStageRenderer {\n    readonly id: string;\n    readonly name: string;\n    readonly capabilities: readonly MediaCue[\'type\'][];\n    render(frame: SceneFrame, beats: readonly NarrativeBeat[]): unknown;\n}',
+  },
+  {
+    name: 'StoryStageStatus',
+    declaration: 'export interface StoryStageStatus {\n    readonly available: boolean;\n    readonly renderers: readonly {\n        readonly id: string;\n        readonly name: string;\n        readonly capabilities: readonly string[];\n    }[];\n    readonly message: string;\n}',
+  },
+  {
     name: 'StreamChunk',
     declaration: 'export type StreamChunk = {\n    type: \'block-start\';\n    index: number;\n    blockType: ContentBlockType;\n} | {\n    type: \'text-delta\';\n    index: number;\n    text: string;\n} | {\n    type: \'reasoning-delta\';\n    index: number;\n    text: string;\n} | {\n    type: \'tool-call-delta\';\n    index: number;\n    id: CallId;\n    name?: string;\n    argumentsDelta: string;\n} | {\n    type: \'block-end\';\n    index: number;\n    block: ContentBlock;\n} | {\n    type: \'usage\';\n    usage: TokenUsage;\n} | {\n    type: \'finish\';\n    reason: FinishReason;\n    replayState?: ReplayEnvelope;\n};',
+  },
+  {
+    name: 'StreamWorldlineTextRequest',
+    declaration: 'export interface StreamWorldlineTextRequest {\n    readonly runId: RunId;\n    readonly actorId: EntityId;\n    readonly purpose: \'narrator\' | \'summary\' | \'creative\';\n    readonly contextPack: ContextPack;\n    readonly temperature?: number;\n}',
   },
   {
     name: 'SubagentCapabilities',
@@ -5129,6 +6724,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SubagentStopReasonMap {\n    completed: \'completed\';\n    aborted: \'aborted\';\n    error: \'error\';\n    \'max-tokens\': \'max-tokens\';\n    refusal: \'refusal\';\n}',
   },
   {
+    name: 'SubmitProposalRequest',
+    declaration: 'export interface SubmitProposalRequest {\n    readonly projectId: ProjectId;\n    readonly target: ProposalTarget;\n    readonly title: string;\n    readonly rationale: string;\n    readonly risk: CompilerProposal[\'risk\'];\n    readonly payload: JsonObject;\n    readonly anchors: readonly SourceAnchor[];\n    readonly expectedStateRevision?: Revision;\n}',
+  },
+  {
+    name: 'SubmitRunActionRequest',
+    declaration: 'export interface SubmitRunActionRequest extends RunRef {\n    readonly actorId: EntityId;\n    readonly type: string;\n    readonly parameters?: JsonObject;\n    readonly expectedSequence: number;\n    readonly controller: \'agent\' | \'player\' | \'system\';\n}',
+  },
+  {
+    name: 'SubmitRunActionResult',
+    declaration: 'export interface SubmitRunActionResult {\n    readonly actionId: ActionId;\n    readonly process: Process;\n    readonly decision: DecisionTrace;\n    readonly view: RunView;\n}',
+  },
+  {
     name: 'SubprocessCollect',
     declaration: 'export interface SubprocessCollect {\n    maxBytes: number;\n    spill?: {\n        maxBytes: number;\n    };\n}',
   },
@@ -5197,6 +6804,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SurfaceOp = \'append\' | {\n    op: \'replace\';\n    start: number;\n    end: number;\n};',
   },
   {
+    name: 'SwitchModelPolicyRequest',
+    declaration: 'export interface SwitchModelPolicyRequest extends RunRef {\n    readonly modelPolicy: ModelPolicy;\n    readonly expectedSequence: number;\n}',
+  },
+  {
+    name: 'SystemDefinition',
+    declaration: 'export interface SystemDefinition {\n    readonly id: string;\n    readonly description: string;\n    readonly nextWake: number;\n    readonly interval?: number;\n    readonly preconditions: readonly Expression[];\n    readonly effects: readonly Effect[];\n    readonly provenance: readonly Provenance[];\n}',
+  },
+  {
     name: 'SystemPrompt',
     declaration: 'export class SystemPrompt extends Service {\n    static Config: z<Config>;\n    constructor(ctx: Context, config: Config);\n    section(section: PromptSection): () => void;\n    context(context: PromptContext): () => void;\n    suppressRuntimeContext(): () => void;\n    tools(provider: (context: AssembleContext) => ToolProviderResult): () => void;\n    variable(name: string, provider: (context: AssembleContext) => string | undefined): () => void;\n    async assemble(context: AssembleContext = {}): Promise<PromptAssembly>;\n}',
   },
@@ -5243,6 +6858,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'TeamWaitResult',
     declaration: 'export interface TeamWaitResult {\n    readonly timedOut: boolean;\n}',
+  },
+  {
+    name: 'Telemetry',
+    declaration: 'export interface Telemetry {\n    readonly logicalTime: number;\n    readonly queueDepth: number;\n    readonly activeProcesses: number;\n    readonly longestWait: number;\n    readonly eventRate: number;\n    readonly ai: AiUsage;\n}',
   },
   {
     name: 'TerminalBackend',
@@ -5327,6 +6946,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'TerminalWaitReason',
     declaration: 'export type TerminalWaitReason = \'stdin_read\' | \'inferred_idle\' | \'timeout\' | \'session_exit\';',
+  },
+  {
+    name: 'TextPlayRequest',
+    declaration: 'export interface TextPlayRequest {\n    readonly runId: RunId;\n    readonly actorId: EntityId;\n    readonly camera?: string;\n}',
+  },
+  {
+    name: 'TextPlayView',
+    declaration: 'export interface TextPlayView {\n    readonly run: RunView;\n    readonly frame: SceneFrame;\n    readonly beats: readonly NarrativeBeat[];\n    readonly choices: RunChoicesView;\n    readonly saves: readonly CheckpointView[];\n}',
   },
   {
     name: 'TodoItem',
@@ -5455,6 +7082,26 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ToolSchema',
     declaration: 'export interface ToolSchema {\n    name: string;\n    description: string;\n    parameters: Record<string, unknown>;\n}',
+  },
+  {
+    name: 'TransferJob',
+    declaration: 'export interface TransferJob {\n    readonly id: string;\n    readonly kind: \'import\' | \'export\' | \'import-blueprint\' | \'export-blueprint\' | \'import-run\' | \'export-run\' | \'rescan\';\n    readonly state: \'queued\' | \'running\' | \'completed\' | \'failed\' | \'cancelled\';\n    readonly completedBytes: number;\n    readonly totalBytes?: number;\n    readonly resultProjectId?: ProjectId;\n    readonly resultBlueprintDigest?: string;\n    readonly resultRunId?: RunId;\n    readonly error?: string;\n}',
+  },
+  {
+    name: 'TrashedEntry',
+    declaration: 'export interface TrashedEntry {\n    readonly trashId: string;\n    readonly originalPath: string;\n    readonly deletedAt: string;\n    readonly kind: WorldlineEntryKind;\n    readonly sizeBytes: number;\n}',
+  },
+  {
+    name: 'TrashedProject',
+    declaration: 'export interface TrashedProject {\n    readonly trashId: string;\n    readonly originalName: string;\n    readonly deletedAt: string;\n    readonly sizeBytes: number;\n    readonly manifest?: ProjectManifest;\n}',
+  },
+  {
+    name: 'TrashEntryRequest',
+    declaration: 'export interface TrashEntryRequest extends ProjectRef {\n    readonly path: string;\n    readonly expectedRevision?: Revision;\n}',
+  },
+  {
+    name: 'TrashProjectRequest',
+    declaration: 'export interface TrashProjectRequest extends ProjectRef {\n    readonly reason?: string;\n}',
   },
   {
     name: 'TurnEndCancelCause',
@@ -5749,12 +7396,56 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface WorkspaceTreeSearchResult {\n    name: string;\n    path: string;\n    relativePath: string;\n    size: number;\n    modifiedAt: number;\n}',
   },
   {
+    name: 'WorldEvent',
+    declaration: 'export interface WorldEvent {\n    readonly id: EventId;\n    readonly sequence: number;\n    readonly logicalTime: number;\n    readonly type: string;\n    readonly actorId?: EntityId;\n    readonly participantIds: readonly string[];\n    readonly causedBy: readonly EventId[];\n    readonly actionId?: ActionId;\n    readonly processId?: ProcessId;\n    readonly ruleId?: string;\n    readonly deltas: readonly StateDelta[];\n    readonly persistentFacts: readonly JsonObject[];\n    readonly cognitionChanges: readonly JsonObject[];\n    readonly processMilestone?: ActionLifecycleState;\n    readonly visibleTo: readonly string[];\n    readonly provenance: readonly Provenance[];\n    readonly data: JsonObject;\n}',
+  },
+  {
+    name: 'WorldId',
+    declaration: 'export type WorldId = WorldlineId<\'world\'>;',
+  },
+  {
+    name: 'WorldlineAiCatalog',
+    declaration: 'export interface WorldlineAiCatalog {\n    readonly models: readonly WorldlineAiModel[];\n}',
+  },
+  {
+    name: 'WorldlineAiModel',
+    declaration: 'export interface WorldlineAiModel {\n    readonly provider: string;\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly contextWindow?: number;\n    readonly maxOutputTokens?: number;\n    readonly reasoningEfforts: readonly string[];\n}',
+  },
+  {
+    name: 'WorldlineConversationBinding',
+    declaration: 'export interface WorldlineConversationBinding {\n    readonly sessionId: SessionId;\n    readonly projectId: ProjectId;\n    readonly worldlineId: CanonWorldlineId;\n    readonly sourceRevision: Revision;\n    readonly boundAt: string;\n    readonly runId?: RunId;\n}',
+  },
+  {
+    name: 'WorldlineEntryKind',
+    declaration: 'export type WorldlineEntryKind = \'directory\' | \'document\' | \'asset\';',
+  },
+  {
     name: 'WorldlineEnvironment',
     declaration: 'export type WorldlineEnvironment = Readonly<Record<WorldlineEnvironmentKey, string>>;',
   },
   {
     name: 'WorldlineEnvironmentKey',
     declaration: 'export type WorldlineEnvironmentKey = `${typeof WORLDLINE_ENV_PREFIX}${string}`;',
+  },
+  {
+    name: 'WorldlineId',
+    declaration: 'export type WorldlineId<Kind extends string> = Branded<`WorldlineId:${Kind}`>;',
+  },
+  {
+    name: 'WorldlineTextChunk',
+    declaration: 'export type WorldlineTextChunk = {\n    readonly type: \'text-delta\';\n    readonly text: string;\n} | {\n    readonly type: \'finish\';\n    readonly invocation: AiInvocation;\n    readonly budgetExceeded: boolean;\n} | {\n    readonly type: \'blocked\';\n    readonly budget: AiBudgetStatus;\n};',
+  },
+  {
+    name: 'WorldMap',
+    declaration: 'export interface WorldMap {\n    readonly id: MapId;\n    readonly version: 1;\n    readonly name: string;\n    readonly rootNodeId: MapNodeId;\n    readonly backgroundAssetId?: AssetId;\n    readonly layers: readonly MapLayer[];\n    readonly nodes: readonly MapNode[];\n    readonly edges: readonly MapEdge[];\n    readonly provenance: readonly Provenance[];\n}',
+  },
+  {
+    name: 'WriteDocumentRequest',
+    declaration: 'export interface WriteDocumentRequest extends ProjectRef {\n    readonly path: string;\n    readonly content: string;\n    readonly expectedRevision?: Revision;\n    readonly documentId?: DocumentId;\n    readonly objectKind?: CanonObjectKind;\n    readonly tags?: readonly string[];\n    readonly createParents?: boolean;\n}',
+  },
+  {
+    name: 'WriteProjectControlRequest',
+    declaration: 'export interface WriteProjectControlRequest extends ProjectRef {\n    readonly namespace: string;\n    readonly path: string;\n    readonly content: string;\n    readonly expectedRevision?: Revision;\n}',
   },
 ]
 

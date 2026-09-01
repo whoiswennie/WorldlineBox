@@ -1,10 +1,10 @@
 /* oxlint-disable @stylistic/max-len -- JSX keeps each compact diagnostic row structurally visible. */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BuildPreview, CompilerState, SemanticsExplanation } from '@deepseek-ai/dsh-worldline-compiler/types'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
+import { worldlineLabel } from './presentation.ts'
 import type { CompilerClient } from './types.ts'
-import { useWorldlineEntrance } from './motion.ts'
 import css from './BuildWorkbench.module.css'
 
 interface BuildWorkbenchProps extends PropsLocale<'worldlineStudio'> {
@@ -24,9 +24,7 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
   const [error, setError] = useState<string>()
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [explanation, setExplanation] = useState<SemanticsExplanation>()
-  const motionRoot = useRef<HTMLDivElement>(null)
   const projectId = props.project.manifest.id
-  useWorldlineEntrance(motionRoot, [preview?.sourceDigest])
 
   useEffect(() => {
     let current = true
@@ -71,9 +69,9 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
 
   const questions = preview?.questions ?? state?.questions ?? []
   const proposals = preview?.proposals ?? state?.proposals ?? []
-  return <div ref={motionRoot} className={css.page}>
-    <header className={css.hero} data-worldline-hero>
-      <div><span>CANON → BLUEPRINT</span><h2>{props.t('build')}</h2><p>{props.t('noBuild')}</p></div>
+  return <div className={css.page}>
+    <header className={css.hero}>
+      <div><span>正典设定 → 可运行蓝图</span><h2>{props.t('build')}</h2><p>{props.t('noBuild')}</p></div>
       <div className={css.heroActions}>
         <button type="button" disabled={busy !== undefined} onClick={props.onImportBlueprint}>{props.t('importBlueprint')}</button>
         <button type="button" disabled={busy !== undefined} onClick={props.onExportBlueprint}>{props.t('exportBlueprint')}</button>
@@ -89,14 +87,14 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
       </div>
     </header>
     {error !== undefined && <div className={css.error} role="alert">{props.t('error')}: {error}</div>}
-    {preview === undefined ? <div className={css.empty} data-worldline-hero><span>⌁</span><p>{props.t('noBuild')}</p><button type="button" onClick={compile}>{props.t('compile')}</button></div> : <>
-      <section className={css.metrics} data-worldline-stagger>
+    {preview === undefined ? <div className={css.empty}><span>⌁</span><p>{props.t('noBuild')}</p><button type="button" onClick={compile}>{props.t('compile')}</button></div> : <>
+      <section className={css.metrics}>
         <div><small>{props.t('sourceCoverage')}</small><strong>{percent(preview.sourceCoverage)}</strong><i><span style={{ width: percent(preview.sourceCoverage) }} /></i></div>
-        <div><small>Canon</small><strong>{preview.canon.length}</strong><span>{preview.phase}</span></div>
-        <div><small>Executable</small><strong>{Object.values(preview.executableCounts).reduce((sum, value) => sum + value, 0)}</strong><span>{Object.entries(preview.executableCounts).map(([key, value]) => `${key} ${String(value)}`).join(' · ')}</span></div>
-        <div data-ready={preview.canFreeze || undefined}><small>Closure</small><strong>{preview.canFreeze ? 'READY' : 'BLOCKED'}</strong><span>{preview.canFreeze ? props.t('freezeReady') : props.t('freezeBlocked')}</span></div>
+        <div><small>{props.t('canonCount')}</small><strong>{preview.canon.length}</strong><span>{worldlineLabel(preview.phase)}</span></div>
+        <div><small>{props.t('executableCount')}</small><strong>{Object.values(preview.executableCounts).reduce((sum, value) => sum + value, 0)}</strong><span>{Object.entries(preview.executableCounts).map(([key, value]) => `${worldlineLabel(key)} ${String(value)}`).join(' · ')}</span></div>
+        <div data-ready={preview.canFreeze || undefined}><small>{props.t('closureState')}</small><strong>{preview.canFreeze ? props.t('ready') : props.t('blocked')}</strong><span>{preview.canFreeze ? props.t('freezeReady') : props.t('freezeBlocked')}</span></div>
       </section>
-      <div className={css.columns} data-worldline-stagger>
+      <div className={css.columns}>
         <section className={css.panel}>
           <header><h3>{props.t('diagnostics')}</h3><span>{preview.diagnostics.length}</span></header>
           <ul>{preview.diagnostics.map(item => <li key={`${item.code}:${item.path ?? ''}:${item.objectId ?? ''}`} data-severity={item.severity}>
@@ -106,7 +104,7 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
         <section className={css.panel}>
           <header><h3>{props.t('questions')}</h3><span>{questions.filter(item => item.status === 'open').length}</span></header>
           <ul>{questions.map(question => <li key={question.id} data-resolved={question.status !== 'open' || undefined}>
-            <div><strong>{question.prompt}</strong><small>{question.impact} · {question.status}</small></div><p>{question.rationale}</p>
+            <div><strong>{question.prompt}</strong><small>{worldlineLabel(question.impact)} · {worldlineLabel(question.status)}</small></div><p>{question.rationale}</p>
             {question.status === 'open' && <div className={css.answer}><textarea value={answers[question.id] ?? ''} onChange={(event) => { setAnswers(current => ({ ...current, [question.id]: event.target.value })) }} /><button type="button" disabled={busy !== undefined} onClick={() => { answer(question.id) }}>{props.t('answer')}</button></div>}
             {question.answer !== undefined && <blockquote>{question.answer}</blockquote>}
           </li>)}</ul>
@@ -114,22 +112,22 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
         <section className={css.panel}>
           <header><h3>{props.t('proposals')}</h3><span>{proposals.filter(item => item.status === 'pending').length}</span></header>
           <ul>{proposals.map(proposal => <li key={proposal.id} data-resolved={proposal.status !== 'pending' || undefined}>
-            <div><strong>{proposal.title}</strong><small>{proposal.target} · {proposal.risk} · {proposal.status}</small></div><p>{proposal.rationale}</p>
-            <details><summary>Payload</summary><pre>{JSON.stringify(proposal.payload, null, 2)}</pre></details>
+            <div><strong>{proposal.title}</strong><small>{proposal.target} · {worldlineLabel(proposal.risk)} · {worldlineLabel(proposal.status)}</small></div><p>{proposal.rationale}</p>
+            <details><summary>{props.t('payload')}</summary><pre>{JSON.stringify(proposal.payload, null, 2)}</pre></details>
             {proposal.status === 'pending' && <div className={css.rowActions}><button type="button" onClick={() => { review(proposal.id, 'approved') }}>{props.t('approve')}</button><button type="button" onClick={() => { review(proposal.id, 'rejected') }}>{props.t('reject')}</button></div>}
           </li>)}</ul>
         </section>
         <section className={css.panel}>
           <header><h3>{props.t('certificate')}</h3><span>{preview.certificate.results.filter(item => item.status === 'pass').length}/{preview.certificate.results.length}</span></header>
           <ul>{preview.certificate.results.map(result => <li key={result.category} data-severity={result.status}>
-            <div><strong>{result.category}</strong><small>{result.status}</small></div><p>{result.summary}</p><details><summary>Evidence</summary><ul>{result.evidence.map(value => <li key={value}>{value}</li>)}</ul></details>
+            <div><strong>{worldlineLabel(result.category)}</strong><small>{worldlineLabel(result.status)}</small></div><p>{result.summary}</p><details><summary>{props.t('evidence')}</summary><ul>{result.evidence.map(value => <li key={value}>{value}</li>)}</ul></details>
           </li>)}</ul>
         </section>
       </div>
-      <section className={css.canonTable} data-worldline-reveal>
-        <header><h3>Canon & provenance</h3><span>{preview.canon.length}</span></header>
+      <section className={css.canonTable}>
+        <header><h3>{props.t('canonProvenance')}</h3><span>{preview.canon.length}</span></header>
         {preview.canon.map(item => <button type="button" key={item.id} onClick={() => { void run(`explain:${item.id}`, async () => { setExplanation(await props.compiler.explain({ projectId, objectId: item.id })) }) }}>
-          <span>{item.kind}</span><strong>{item.title}</strong><small>{item.provenance.flatMap(value => value.anchors).length} anchors</small>
+          <span>{worldlineLabel(item.kind)}</span><strong>{item.title}</strong><small>{item.provenance.flatMap(value => value.anchors).length} {props.t('sourceAnchors')}</small>
         </button>)}
       </section>
     </>}

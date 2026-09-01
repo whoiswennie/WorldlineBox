@@ -69,7 +69,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('worldline.workspace.right', () => ctx.slots.register({
     name: 'worldline.workspace.right', priority: 0,
     inject: () => ({
-      listDirectory: (path: string, signal: AbortSignal) => ctx.workspaces.listDirectory(path, signal, true),
+      listDirectory: (path: string, signal: AbortSignal) => ctx.workspaces.listDirectory(path, signal, { includeFiles: true }),
       searchFiles: (path: string, query: string, signal: AbortSignal) =>
         ctx.workspaces.searchFiles(path, query, signal),
       previewFile: (path: string, signal: AbortSignal) => ctx.workspaces.previewFile(path, signal),

@@ -124,39 +124,40 @@ function stageDir(root: string, name: string): string {
   return path
 }
 
-describe('host.pickDirectory', () => {
+describe('host.pickPath', () => {
+  const pickerRequest = { mode: 'directory', title: 'Pick directory' } as const
   it('returns a selected path or explicit cancellation from the native capability', async () => {
     const selected = await harness(undefined, { kind: 'native', pick: async () => '/tmp/project' })
-    expect((await selected.api.host.pickDirectory(request({}), new AbortController().signal)).result)
+    expect((await selected.api.host.pickPath(request(pickerRequest), new AbortController().signal)).result)
       .toEqual({ ok: true, value: { path: '/tmp/project' } })
 
     const cancelled = await harness(undefined, { kind: 'native', pick: async () => null })
-    expect((await cancelled.api.host.pickDirectory(request({}), new AbortController().signal)).result)
+    expect((await cancelled.api.host.pickPath(request(pickerRequest), new AbortController().signal)).result)
       .toEqual({ ok: true, value: { path: null } })
   })
 
   it('propagates abort into the native capability as a cancelled RPC error', async () => {
     const { api } = await harness(undefined, {
       kind: 'native',
-      pick: signal => new Promise((_resolve, reject) => {
+      pick: (_request, signal) => new Promise((_resolve, reject) => {
         signal.addEventListener('abort', () => { reject(new Error('aborted')) }, { once: true })
       }),
     })
     const abort = new AbortController()
-    const pending = api.host.pickDirectory(request({}), abort.signal)
+    const pending = api.host.pickPath(request(pickerRequest), abort.signal)
     abort.abort()
     expect((await pending).result).toMatchObject({ ok: false, error: { code: 'cancelled' } })
   })
 
   it('folds a non-abort native-chooser failure into an internal error', async () => {
     const { api } = await harness(undefined, { kind: 'native', pick: async () => { throw new Error('no chooser installed') } })
-    const response = await api.host.pickDirectory(request({}), new AbortController().signal)
+    const response = await api.host.pickPath(request(pickerRequest), new AbortController().signal)
     expect(response.result).toMatchObject({ ok: false, error: { code: 'internal' } })
   })
 
   it('refuses the native RPC under a browse composition', async () => {
     const { api } = await harness(undefined, BROWSE_STUB)
-    const response = await api.host.pickDirectory(request({}), new AbortController().signal)
+    const response = await api.host.pickPath(request(pickerRequest), new AbortController().signal)
     expect(response.result).toMatchObject({
       ok: false,
       error: { code: 'directory-picker-unavailable', details: { capability: 'browse' } },
@@ -183,6 +184,7 @@ const BROWSE_STUB: DirectoryPickerCapability = {
     if (name === 'unwritable') throw new Error('disk detached')
     return `${path}/${name}`
   },
+  resolveFile: async (path, name) => join(path, name),
 }
 
 describe('host.listDirectory / host.createDirectory', () => {
@@ -194,6 +196,8 @@ describe('host.listDirectory / host.createDirectory', () => {
     expect(listed.result).toMatchObject({ ok: true, value: { path: '/home/user/projects' } })
     const created = await api.host.createDirectory(request({ path: '/home/user', name: 'fresh' }))
     expect(created.result).toEqual({ ok: true, value: { path: '/home/user/fresh' } })
+    const resolved = await api.host.resolveDirectoryFile(request({ path: '/home/user', name: 'world.worldline.zip' }))
+    expect(resolved.result).toEqual({ ok: true, value: { path: join('/home/user', 'world.worldline.zip') } })
   })
 
   it('maps typed picker failures onto the wire error codes and folds unknown throws to internal', async () => {
@@ -216,6 +220,7 @@ describe('host.listDirectory / host.createDirectory', () => {
         signal?.addEventListener('abort', () => { reject(new Error('scan aborted')) }, { once: true })
       }),
       createDirectory: async () => '/never',
+      resolveFile: async () => '/never',
     })
     const abort = new AbortController()
     const pending = api.host.listDirectory(request({}), abort.signal)
@@ -229,6 +234,9 @@ describe('host.listDirectory / host.createDirectory', () => {
       ok: false, error: { code: 'directory-picker-unavailable', details: { capability: 'native' } },
     })
     expect((await api.host.createDirectory(request({ path: '/x', name: 'y' }))).result).toMatchObject({
+      ok: false, error: { code: 'directory-picker-unavailable', details: { capability: 'native' } },
+    })
+    expect((await api.host.resolveDirectoryFile(request({ path: '/x', name: 'y.zip' }))).result).toMatchObject({
       ok: false, error: { code: 'directory-picker-unavailable', details: { capability: 'native' } },
     })
   })

@@ -44,7 +44,7 @@ describe('Worldline map document projection', () => {
     const parsed = parseWorldlineMapFence('```worldline-map\n{"version":0}\n```')
 
     expect(parsed.map).toBeUndefined()
-    expect(parsed.error).toContain('current WorldMap schema')
+    expect(parsed.error).toContain('当前 WorldMap 格式')
   })
 
   it('rejects malformed nested objects on the one current parser path', () => {
@@ -53,7 +53,7 @@ describe('Worldline map document projection', () => {
     const parsed = parseWorldlineMapFence(`\`\`\`worldline-map\n${JSON.stringify(malformed)}\n\`\`\``)
 
     expect(parsed.map).toBeUndefined()
-    expect(parsed.error).toContain('current WorldMap schema')
+    expect(parsed.error).toContain('当前 WorldMap 格式')
   })
 
   it('lays out every node deterministically', () => {

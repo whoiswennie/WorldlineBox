@@ -33,7 +33,10 @@ const view = {
   snapshot: {
     logicalTime: 4,
     sequence: 2,
-    state: { entities: { 'entity:traveller': { state: { locationId: 'map-node:start' } } } },
+    state: { entities: {
+      'entity:charter': { state: {} },
+      'entity:traveller': { state: { locationId: 'map-node:start' } },
+    } },
     processes: [],
     reservations: [],
     futureEvents: [{ id: 'future:clock', due: 60, order: 0, kind: 'system-wake', payload: { systemId: 'world.clock' } }],
@@ -77,8 +80,11 @@ function runsClient(): RunsClient {
       runId,
       blueprintDigest: view.summary.blueprintDigest,
       purpose: { summary: 'Town runtime', scope: [], duration: 100, resolution: 1, detail: 'L2', hardExpectations: [], statisticalExpectations: [], antiPatterns: [] },
-      entities: [{ id: 'entity:traveller', type: 'character', lod: 'L2', policyIds: [] }],
-      actions: [{ id: 'character.move', description: 'Walk to a connected place' }],
+      entities: [
+        { id: 'entity:charter', type: 'charter', lod: 'L0', policyIds: [] },
+        { id: 'entity:traveller', type: 'character', lod: 'L2', policyIds: [] },
+      ],
+      actions: [{ id: 'character.move', description: 'Walk to a connected place', actorTypes: ['character'] }],
       systems: [{ id: 'world.clock', description: 'Advance town time', nextWake: 60, interval: 60, preconditions: [], effects: [], provenance: [] }],
       invariants: [{ id: 'world.safe', description: 'Town remains safe', expression: { op: 'literal', value: true }, provenance: [] }],
     })),
@@ -117,7 +123,7 @@ describe('Worldline simulation spatial projection', () => {
     expect(screen.getByText('Destination')).toBeTruthy()
     expect(screen.getByText(/35% · 8 剩余时间/u)).toBeTruthy()
     expect(await screen.findByText('world.clock')).toBeTruthy()
-    expect(screen.getByText('角色观察')).toBeTruthy()
+    expect(screen.getAllByText('角色观察').length).toBeGreaterThan(0)
     expect((await screen.findAllByText('Walk to Destination')).length).toBeGreaterThan(0)
     fireEvent.click(screen.getByRole('button', { name: '执行干预' }))
     await waitFor(() => {

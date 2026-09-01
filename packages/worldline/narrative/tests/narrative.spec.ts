@@ -23,6 +23,7 @@ const disposers: Array<() => Promise<void>> = []
 
 class NarratorAdapter extends LlmAdapter {
   calls = 0
+  readonly inputs: string[] = []
 
   override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     return Promise.resolve({
@@ -34,8 +35,10 @@ class NarratorAdapter extends LlmAdapter {
     })
   }
 
-  override async * stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.calls += 1
+    this.inputs.push(options.messages.flatMap(message => message.content)
+      .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n'))
     const text = 'The traveller completes the recorded task.'
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'text-delta', index: 0, text: text.slice(0, 15) }
@@ -222,6 +225,7 @@ describe('WorldlineNarrative', () => {
     })
     unregister()
     expect(runtime.adapter.calls).toBe(2)
+    expect(runtime.adapter.inputs.every(input => !input.includes('must-not-leak'))).toBe(true)
     await runtime.dispose()
   })
 })

@@ -1,12 +1,12 @@
 /* oxlint-disable @stylistic/max-len -- JSX keeps dense runtime controls structurally visible. */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import type { CheckpointView, RunChoicesView, RunDefinitionView, RunEventExplanation, RunRecordsPage, RunSpatialView, RunSummary, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
 import type { AiBudgetStatus, WorldlineAiCatalog } from '@deepseek-ai/dsh-worldline-ai/types'
 import type { ContextPack, EntityId, JsonObject, JsonValue, MapId, ModelPurpose } from '@deepseek-ai/dsh-worldline-standard/types'
 import type { AiClient, RunsClient } from './types.ts'
-import { useWorldlineEntrance } from './motion.ts'
+import { worldlineLabel } from './presentation.ts'
 import css from './SimulationWorkbench.module.css'
 
 interface SimulationWorkbenchProps extends PropsLocale<'worldlineStudio'> {
@@ -24,9 +24,14 @@ function record(value: JsonValue | undefined): JsonObject | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined
 }
 
-function entityIds(view: RunView | undefined): EntityId[] {
+function entityIds(view: RunView | undefined, definition?: RunDefinitionView): EntityId[] {
   const entities = record(view?.snapshot.state['entities'])
-  return Object.keys(entities ?? {}) as EntityId[]
+  const all = Object.keys(entities ?? {}) as EntityId[]
+  const actorTypes = new Set(definition?.actions.flatMap(action => action.actorTypes) ?? [])
+  if (actorTypes.size === 0) return all
+  const entityTypes = new Map(definition?.entities.map(entity => [entity.id, entity.type]) ?? [])
+  const controllable = all.filter(id => actorTypes.has(entityTypes.get(id) ?? ''))
+  return controllable.length === 0 ? all : controllable
 }
 
 function shortId(value: string): string { return value.length > 20 ? `${value.slice(0, 9)}…${value.slice(-7)}` : value }
@@ -41,7 +46,7 @@ function SpatialMap({ spatial, selectedActor }: {
   readonly selectedActor?: EntityId | undefined
 }) {
   const map = spatial.map
-  if (map === undefined || map.nodes.length === 0) return <div className={css.mapEmpty}>No map projection</div>
+  if (map === undefined || map.nodes.length === 0) return <div className={css.mapEmpty}>尚无可显示的运行地图</div>
   const xs = map.nodes.map(node => node.position.x)
   const ys = map.nodes.map(node => node.position.y)
   const minX = Math.min(...xs); const maxX = Math.max(...xs)
@@ -109,9 +114,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
   const [modelPurpose, setModelPurpose] = useState<ModelPurpose>('character')
   const [modelKey, setModelKey] = useState('')
   const [reasoningEffort, setReasoningEffort] = useState('')
-  const motionRoot = useRef<HTMLDivElement>(null)
   const projectId = props.project.manifest.id
-  useWorldlineEntrance(motionRoot, [selectedId])
 
   const loadList = useCallback(async (): Promise<void> => {
     const all = await props.runs.list()
@@ -123,35 +126,29 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
 
   const refresh = useCallback(async (runId = selectedId): Promise<void> => {
     if (runId === undefined) { setView(undefined); setRecords(undefined); setObservations(undefined); setSpatial(undefined); setDefinition(undefined); setCheckpoints([]); return }
-    const [nextView, nextRecords, nextObservations, nextCheckpoints, nextSpatial] = await Promise.all([
+    const [nextView, nextRecords, nextObservations, nextCheckpoints, nextSpatial, nextDefinition] = await Promise.all([
       props.runs.view({ runId }),
       props.runs.records({ runId, limit: 200, ...(stream === undefined ? {} : { stream }) }),
       props.runs.records({ runId, limit: 100, stream: 'observation' }),
       props.runs.checkpoints({ runId }),
       props.runs.spatial({ runId, ...(selectedMapId === undefined ? {} : { mapId: selectedMapId }), maxNodes: 1_500 }),
+      props.runs.definition({ runId }),
     ])
     setView(nextView)
     setRecords(nextRecords)
     setObservations(nextObservations)
     setCheckpoints(nextCheckpoints)
     setSpatial(nextSpatial)
+    setDefinition(nextDefinition)
     setSelectedMapId(current => current !== undefined
       && nextSpatial.availableMaps.some(map => map.id === current) ? current : nextSpatial.availableMaps[0]?.id)
-    const actors = entityIds(nextView)
+    const actors = entityIds(nextView, nextDefinition)
     setSelectedActor(current => current !== undefined && actors.includes(current) ? current : actors[0])
   }, [props.runs, selectedId, selectedMapId, stream])
 
   useEffect(() => { void loadList().catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)) }) }, [loadList, props.runRevision])
   useEffect(() => { void refresh().catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)) }) }, [refresh])
   useEffect(() => { void props.ai.catalog().then(setCatalog).catch(() => {}) }, [props.ai])
-  useEffect(() => {
-    if (selectedId === undefined) { setDefinition(undefined); return }
-    let current = true
-    void props.runs.definition({ runId: selectedId })
-      .then((value) => { if (current) setDefinition(value) })
-      .catch((reason: unknown) => { if (current) setError(reason instanceof Error ? reason.message : String(reason)) })
-    return () => { current = false }
-  }, [props.runs, selectedId])
   useEffect(() => {
     if (selectedId === undefined || selectedActor === undefined || view === undefined) {
       setChoices(undefined); setSelectedChoiceId(undefined); return
@@ -173,15 +170,15 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
     finally { setBusy(undefined) }
   }
 
-  const actors = entityIds(view)
+  const actors = entityIds(view, definition)
   const selectedEntity = record(record(view?.snapshot.state['entities'])?.[selectedActor ?? ''])
   const selectedChoice = choices?.choices.find(choice => choice.id === selectedChoiceId)
   const model = catalog?.models.find(item => `${item.provider}/${item.id}` === modelKey)
   const usage = view?.aiUsage
 
-  return <div ref={motionRoot} className={css.workbench}>
-    <aside className={css.runList} data-worldline-reveal>
-      <header><div><span>WORKER RUNTIME</span><h2>{props.t('runs')}</h2></div><div><button type="button" onClick={props.onImportRun}>{props.t('importRun')}</button><button type="button" onClick={() => { void loadList() }}>↻</button></div></header>
+  return <div className={css.workbench}>
+    <aside className={css.runList}>
+      <header><div><span>{props.t('runtimeConsole')}</span><h2>{props.t('runs')}</h2></div><div><button type="button" onClick={props.onImportRun}>{props.t('importRun')}</button><button type="button" aria-label={props.t('rescan')} onClick={() => { void loadList() }}>↻</button></div></header>
       <div className={css.newRun}>
         <label>{props.t('seed')}<input value={seed} onChange={(event) => { setSeed(event.target.value) }} /></label>
         <label className={css.check}><input type="checkbox" checked={startPaused} onChange={(event) => { setStartPaused(event.target.checked) }} />{props.t('startPaused')}</label>
@@ -193,14 +190,14 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
         }) }}>{props.t('newRun')}</button>
       </div>
       <ul>{summaries.map(run => <li key={run.runId}><button type="button" data-active={selectedId === run.runId || undefined} onClick={() => { setSelectedId(run.runId) }}>
-        <span data-status={run.status} /><strong>{shortId(run.runId)}</strong><small>{run.status} · t={run.logicalTime.toLocaleString()}</small>
+        <span data-status={run.status} /><strong>{shortId(run.runId)}</strong><small>{worldlineLabel(run.status)} · t={run.logicalTime.toLocaleString()}</small>
       </button></li>)}</ul>
     </aside>
 
-    <main className={css.main} data-worldline-hero>
+    <main className={css.main}>
       {view === undefined ? <div className={css.empty}><span>◉</span><h2>{props.t('simulation')}</h2><p>{props.t('newRun')}</p></div> : <>
         <header className={css.controlBar}>
-          <div><strong>{shortId(view.summary.runId)}</strong><small>{view.summary.status} · {view.summary.blueprintDigest.slice(0, 12)}</small></div>
+          <div><strong>{shortId(view.summary.runId)}</strong><small>{worldlineLabel(view.summary.status)} · {view.summary.blueprintDigest.slice(0, 12)}</small></div>
           <div>
             <button type="button" disabled={busy !== undefined || view.summary.status === 'paused'} onClick={() => { void mutate('pause', async () => { await props.runs.pause({ runId: view.summary.runId }) }) }}>{props.t('pause')}</button>
             <button type="button" disabled={busy !== undefined || view.summary.status === 'running'} onClick={() => { void mutate('resume', async () => { await props.runs.resume({ runId: view.summary.runId }) }) }}>{props.t('resume')}</button>
@@ -212,7 +209,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
           </div>
         </header>
         {error !== undefined && <div className={css.error} role="alert">{props.t('error')}: {error}</div>}
-        <section className={css.metrics} data-worldline-stagger>
+        <section className={css.metrics}>
           <div><small>{props.t('logicalTime')}</small><strong>{view.snapshot.logicalTime.toLocaleString()}</strong></div>
           <div><small>{props.t('sequence')}</small><strong>{view.snapshot.sequence.toLocaleString()}</strong></div>
           <div><small>{props.t('queue')}</small><strong>{view.health.futureQueueDepth}</strong></div>
@@ -222,19 +219,19 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
           <div><small>{props.t('deadlocks')}</small><strong>{view.health.deadlocksResolved}</strong></div>
           <div><small>{props.t('livelocks')}</small><strong>{view.health.livelocksResolved}</strong></div>
         </section>
-        <div className={css.contentGrid} data-worldline-stagger>
+        <div className={css.contentGrid}>
           {spatial !== undefined && <section className={`${css.panel} ${css.spatialPanel}`}>
             <header><div><h3>{props.t('runtimeMap')}</h3><small>{spatial.map === undefined ? '—' : `${String(spatial.map.nodes.length)}/${String(spatial.map.totalNodes)} ${props.t('visibleNodes')}`}</small></div><select value={selectedMapId ?? ''} onChange={(event) => { setSelectedMapId(event.target.value as MapId) }}>{spatial.availableMaps.map(map => <option key={map.id} value={map.id}>{map.name} · {map.nodeCount}</option>)}</select></header>
             <SpatialMap spatial={spatial} selectedActor={selectedActor} />
             {spatial.map?.truncated === true && <p className={css.mapNotice}>{props.t('mapProjectionClipped')}</p>}
-            <ul className={css.movementList}>{spatial.movements.map(item => <li key={item.processId}><strong>{shortId(item.actorId)}</strong><span>{item.origin} → {item.destination}</span><small>{item.mode} · {Math.round(item.edgeFraction * 100)}% · {item.remainingDuration.toLocaleString()} {props.t('remaining')}</small></li>)}</ul>
+            <ul className={css.movementList}>{spatial.movements.map(item => <li key={item.processId}><strong>{shortId(item.actorId)}</strong><span>{item.origin} → {item.destination}</span><small>{worldlineLabel(item.mode)} · {Math.round(item.edgeFraction * 100)}% · {item.remainingDuration.toLocaleString()} {props.t('remaining')}</small></li>)}</ul>
           </section>}
           <section className={css.panel}>
             <header><h3>{props.t('entities')}</h3><select value={selectedActor ?? ''} onChange={(event) => { setSelectedActor(event.target.value as EntityId) }}>{actors.map(id => <option key={id}>{id}</option>)}</select></header>
             <pre>{JSON.stringify(selectedEntity ?? {}, null, 2)}</pre>
             {selectedActor !== undefined && <div className={css.actorActions}>
               <select value={view.controls[selectedActor] ?? 'autonomous'} onChange={(event) => { void mutate('control', async () => { await props.runs.setControl({ runId: view.summary.runId, actorId: selectedActor, mode: event.target.value as 'autonomous' | 'suggestions' | 'player' }) }) }}>
-                <option value="autonomous">autonomous</option><option value="suggestions">suggestions</option><option value="player">player</option>
+                <option value="autonomous">{worldlineLabel('autonomous')}</option><option value="suggestions">{worldlineLabel('suggestions')}</option><option value="player">{worldlineLabel('player')}</option>
               </select>
               <button type="button" onClick={() => { props.onOpenTextPlay(view.summary.runId, selectedActor) }}>{props.t('textPlay')}</button>
             </div>}
@@ -275,15 +272,15 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
             <pre>{JSON.stringify({ processes: view.snapshot.processes, reservations: view.snapshot.reservations }, null, 2)}</pre>
           </section>
           <section className={`${css.panel} ${css.diagnosticsPanel}`}>
-            <header><h3>{props.t('diagnostics')}</h3><span data-healthy={view.summary.status !== 'degraded' || undefined}>{view.summary.status}</span></header>
-            <dl><dt>{props.t('longestWait')}</dt><dd>{view.health.longestWait}</dd><dt>{props.t('noProgress')}</dt><dd>{view.health.noProgressSteps}</dd><dt>SQLite WAL</dt><dd>{view.health.wal ? props.t('healthy') : props.t('unavailable')}</dd><dt>{props.t('writer')}</dt><dd>{props.t('healthy')}</dd></dl>
+            <header><h3>{props.t('diagnostics')}</h3><span data-healthy={view.summary.status !== 'degraded' || undefined}>{worldlineLabel(view.summary.status)}</span></header>
+            <dl><dt>{props.t('longestWait')}</dt><dd>{view.health.longestWait}</dd><dt>{props.t('noProgress')}</dt><dd>{view.health.noProgressSteps}</dd><dt>{props.t('writeAheadLog')}</dt><dd>{view.health.wal ? props.t('healthy') : props.t('unavailable')}</dd><dt>{props.t('writer')}</dt><dd>{props.t('healthy')}</dd></dl>
           </section>
           <section className={`${css.panel} ${css.events}`}>
             <header><h3>{props.t('events')}</h3><select value={stream ?? ''} onChange={(event) => { setStream(event.target.value === '' ? undefined : event.target.value as typeof stream) }}>
-              <option value="">all streams</option>{['world-event', 'decision-trace', 'ai-intent', 'ai-invocation', 'observation', 'narrative-beat', 'telemetry'].map(value => <option key={value}>{value}</option>)}
+              <option value="">{props.t('allStreams')}</option>{['world-event', 'decision-trace', 'ai-intent', 'ai-invocation', 'observation', 'narrative-beat', 'telemetry'].map(value => <option key={value} value={value}>{worldlineLabel(value)}</option>)}
             </select></header>
             <ol>{records?.records.map(item => <li key={`${String(item.sequence)}:${String(item.ordinal ?? 0)}:${item.stream}:${item.id}`}>
-              <div><span>{item.stream}</span><strong>#{item.sequence}</strong><small>t={item.logicalTime}</small><button type="button" disabled={busy !== undefined} onClick={() => { void mutate(`explain:${item.id}`, async () => { setExplanation(await props.runs.explain({ runId: view.summary.runId, eventId: item.id })) }) }}>{props.t('explain')}</button></div><pre>{JSON.stringify(item.payload, null, 2)}</pre>
+              <div><span>{worldlineLabel(item.stream)}</span><strong>#{item.sequence}</strong><small>t={item.logicalTime}</small><button type="button" disabled={busy !== undefined} onClick={() => { void mutate(`explain:${item.id}`, async () => { setExplanation(await props.runs.explain({ runId: view.summary.runId, eventId: item.id })) }) }}>{props.t('explain')}</button></div><pre>{JSON.stringify(item.payload, null, 2)}</pre>
             </li>)}</ol>
             {explanation !== undefined && <div className={css.explanation}><header><strong>{props.t('causalExplanation')}</strong><button type="button" onClick={() => { setExplanation(undefined) }}>×</button></header><p>{explanation.summary}</p><pre>{JSON.stringify({ event: explanation.event, decisions: explanation.decisions, processes: explanation.processes, reservations: explanation.reservations, telemetry: explanation.telemetry }, null, 2)}</pre></div>}
           </section>
@@ -297,7 +294,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
           <section className={`${css.panel} ${css.aiPanel}`}>
             <header><h3>{props.t('ai')}</h3><button type="button" data-enabled={view.snapshot.modelPolicy.aiEnabled || undefined} onClick={() => { void mutate('ai-toggle', async () => { await props.runs.setAiEnabled({ runId: view.summary.runId, enabled: !view.snapshot.modelPolicy.aiEnabled }) }) }}>{view.snapshot.modelPolicy.aiEnabled ? props.t('aiEnabled') : props.t('aiDisabled')}</button></header>
             <div className={css.usage}>
-              <span>Calls <strong>{usage?.calls ?? 0}</strong></span><span>Input <strong>{usage?.inputTokens.toLocaleString() ?? 0}</strong></span><span>Output <strong>{usage?.outputTokens.toLocaleString() ?? 0}</strong></span><span>Cost <strong>{usage?.estimatedCost.toFixed(4) ?? '0'}</strong></span>
+              <span>{props.t('callCount')} <strong>{usage?.calls ?? 0}</strong></span><span>{props.t('inputTokens')} <strong>{usage?.inputTokens.toLocaleString() ?? 0}</strong></span><span>{props.t('outputTokens')} <strong>{usage?.outputTokens.toLocaleString() ?? 0}</strong></span><span>{props.t('estimatedCost')} <strong>{usage?.estimatedCost.toFixed(4) ?? '0'}</strong></span>
             </div>
             <div className={css.modelForm}>
               <select value={modelPurpose} onChange={(event) => { setModelPurpose(event.target.value as ModelPurpose) }}>{['character', 'narrator', 'summary', 'creative', 'compiler'].map(value => <option key={value}>{value}</option>)}</select>
@@ -317,7 +314,7 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
               <button type="button" onClick={() => { void mutate('context', async () => { setContextPack(await props.ai.contextPack({ runId: view.summary.runId, actorId: selectedActor })) }) }}>{props.t('context')}</button>
               <button type="button" onClick={() => { void mutate('decide', async () => { await props.ai.decide({ runId: view.summary.runId, actorId: selectedActor }) }) }}>{props.t('decide')}</button>
             </div>}
-            {budget !== undefined && <div className={css.budgetStatus} data-allowed={budget.allowed || undefined}><strong>{budget.allowed ? props.t('budgetAvailable') : props.t('budgetBlocked')}</strong><span>{budget.callsRemaining} calls · {budget.inputTokensRemaining.toLocaleString()} input · {budget.outputTokensRemaining.toLocaleString()} output · {budget.estimatedCostRemaining.toFixed(4)} remaining</span>{budget.reasons.map(reason => <small key={reason}>{reason}</small>)}</div>}
+            {budget !== undefined && <div className={css.budgetStatus} data-allowed={budget.allowed || undefined}><strong>{budget.allowed ? props.t('budgetAvailable') : props.t('budgetBlocked')}</strong><span>剩余 {budget.callsRemaining} 次调用 · 输入 {budget.inputTokensRemaining.toLocaleString()} · 输出 {budget.outputTokensRemaining.toLocaleString()} · 费用 {budget.estimatedCostRemaining.toFixed(4)}</span>{budget.reasons.map(reason => <small key={reason}>{reason}</small>)}</div>}
             {contextPack !== undefined && <details open><summary>{props.t('context')} · {contextPack.totalTokens}/{contextPack.inputLimit}</summary><pre>{JSON.stringify(contextPack, null, 2)}</pre></details>}
           </section>
         </div>

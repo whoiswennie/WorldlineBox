@@ -237,4 +237,11 @@ describe('BrowseDirectoryPicker', () => {
     const missingParent = await capability.createDirectory(join(root, 'no-such-dir'), 'child').catch((error: unknown) => error)
     expect((missingParent as DirectoryPickerError).code).toBe('directory-create-failed')
   })
+
+  it('resolves a save file on the host and rejects names that could escape the chosen directory', async () => {
+    await expect(capability.resolveFile(root, '星港.worldline.zip'))
+      .resolves.toBe(join(root, '星港.worldline.zip'))
+    await expect(capability.resolveFile(root, '../escape.worldline.zip'))
+      .rejects.toMatchObject({ code: 'file-name-invalid' })
+  })
 })

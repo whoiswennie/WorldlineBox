@@ -4353,9 +4353,6 @@ importers:
       '@codemirror/view':
         specifier: ^6.43.9
         version: 6.43.9
-      gsap:
-        specifier: ^3.15.0
-        version: 3.15.0
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:^
@@ -4384,6 +4381,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-slots':
         specifier: workspace:^
         version: link:../ui-slots
+      '@deepseek-ai/dsh-client-ui-workspace':
+        specifier: workspace:^
+        version: link:../ui-workspace
       '@deepseek-ai/dsh-host-webserver':
         specifier: workspace:^
         version: link:../../host/webserver
@@ -4417,6 +4417,9 @@ importers:
       '@types/react':
         specifier: ~18.3.1
         version: 18.3.31
+      '@types/react-dom':
+        specifier: ~18.3.0
+        version: 18.3.7(@types/react@18.3.31)
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -10371,6 +10374,10 @@ importers:
         version: link:../standard
 
   packages/worldline/project:
+    dependencies:
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:^
@@ -10444,6 +10451,10 @@ importers:
         version: link:../standard
 
   packages/worldline/runtime:
+    dependencies:
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:^
@@ -10512,6 +10523,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-brand':
+        specifier: workspace:^
+        version: link:../../util/brand
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
@@ -10788,6 +10802,9 @@ importers:
       '@deepseek-ai/dsh-skill-filesystem':
         specifier: workspace:^
         version: link:../../packages/skill/skill-filesystem
+      '@deepseek-ai/dsh-skill-worldline':
+        specifier: workspace:^
+        version: link:../../packages/worldline/skill-worldline
       '@deepseek-ai/dsh-spill':
         specifier: workspace:^
         version: link:../../packages/spill/spill
@@ -10887,6 +10904,9 @@ importers:
       '@deepseek-ai/dsh-tool-workflow':
         specifier: workspace:^
         version: link:../../packages/workflow/tool-workflow
+      '@deepseek-ai/dsh-tool-worldline':
+        specifier: workspace:^
+        version: link:../../packages/worldline/tool-worldline
       '@deepseek-ai/dsh-tools':
         specifier: workspace:^
         version: link:../../packages/core/tools
@@ -10923,6 +10943,24 @@ importers:
       '@deepseek-ai/dsh-workflow-worker-thread':
         specifier: workspace:^
         version: link:../../packages/workflow/workflow-worker-thread
+      '@deepseek-ai/dsh-worldline-compiler':
+        specifier: workspace:^
+        version: link:../../packages/worldline/compiler
+      '@deepseek-ai/dsh-worldline-conversation-context':
+        specifier: workspace:^
+        version: link:../../packages/worldline/conversation-context
+      '@deepseek-ai/dsh-worldline-project':
+        specifier: workspace:^
+        version: link:../../packages/worldline/project
+      '@deepseek-ai/dsh-worldline-run-sqlite':
+        specifier: workspace:^
+        version: link:../../packages/worldline/run-sqlite
+      '@deepseek-ai/dsh-worldline-runtime':
+        specifier: workspace:^
+        version: link:../../packages/worldline/runtime
+      '@deepseek-ai/dsh-worldline-standard':
+        specifier: workspace:^
+        version: link:../../packages/worldline/standard
       '@deepseek-ai/schemastery':
         specifier: link:../../vendor/schemastery
         version: link:../../vendor/schemastery
@@ -15205,9 +15243,6 @@ packages:
 
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
-
-  gsap@3.15.0:
-    resolution: {integrity: sha512-dMW4CWBTUK1AEEDeZc1g4xpPGIrSf9fJF960qbTZmN/QwZIWY5wgliS6JWl9/25fpTGJrMRtSjGtOmPnfjZB+A==}
 
   hachure-fill@0.5.2:
     resolution: {integrity: sha512-3GKBOn+m2LX9iq+JC1064cSFprJY4jL1jCXTcpnfER5HYE2l/4EfWSGzkPa/ZDBmYI0ZOEj5VHV/eKnPGkHuOg==}
@@ -21688,8 +21723,6 @@ snapshots:
       responselike: 2.0.1
 
   graceful-fs@4.2.11: {}
-
-  gsap@3.15.0: {}
 
   hachure-fill@0.5.2: {}
 

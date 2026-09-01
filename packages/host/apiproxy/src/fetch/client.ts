@@ -15,7 +15,8 @@ import { rpcReceiptSchema, serverRequestSchema, serverResponseSchema } from '../
 import { hostFrameSchema, muxFrameSchema } from '../api/events.schema.ts'
 import {
   hostCreateDirectoryValueSchema, hostDescribeValueSchema,
-  hostListDirectoryValueSchema, hostOpenPathValueSchema, hostPickDirectoryValueSchema,
+  hostListDirectoryValueSchema, hostOpenPathValueSchema, hostPickPathValueSchema,
+  hostResolveDirectoryFileValueSchema,
   hostPreviewWorkspaceFileValueSchema, hostMutateWorkspaceTreeValueSchema,
   hostSearchWorkspaceFilesValueSchema,
   hostInterruptTerminalValueSchema, hostKillTerminalValueSchema,
@@ -117,9 +118,10 @@ export interface IApiClient {
   }
   host: {
     describe(payload: RequestPayload<'host.describe'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'host.describe'>>>
-    pickDirectory(payload: RequestPayload<'host.pickDirectory'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'host.pickDirectory'>>>
+    pickPath(payload: RequestPayload<'host.pickPath'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'host.pickPath'>>>
     listDirectory(payload: RequestPayload<'host.listDirectory'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'host.listDirectory'>>>
     createDirectory(payload: RequestPayload<'host.createDirectory'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'host.createDirectory'>>>
+    resolveDirectoryFile(payload: RequestPayload<'host.resolveDirectoryFile'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'host.resolveDirectoryFile'>>>
     openPath(payload: RequestPayload<'host.openPath'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'host.openPath'>>>
     previewWorkspaceFile(payload: RequestPayload<'host.previewWorkspaceFile'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'host.previewWorkspaceFile'>>>
     searchWorkspaceFiles(payload: RequestPayload<'host.searchWorkspaceFiles'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'host.searchWorkspaceFiles'>>>
@@ -213,9 +215,10 @@ const UNARY_VALUE_SCHEMAS: { [K in keyof RpcMethodMap]: z.ZodType<Wire<ResponseV
   'subagent.prompt': subagentPromptValueSchema,
   'subagent.interrupt': subagentInterruptValueSchema,
   'host.describe': hostDescribeValueSchema,
-  'host.pickDirectory': hostPickDirectoryValueSchema,
+  'host.pickPath': hostPickPathValueSchema,
   'host.listDirectory': hostListDirectoryValueSchema,
   'host.createDirectory': hostCreateDirectoryValueSchema,
+  'host.resolveDirectoryFile': hostResolveDirectoryFileValueSchema,
   'host.openPath': hostOpenPathValueSchema,
   'host.previewWorkspaceFile': hostPreviewWorkspaceFileValueSchema,
   'host.searchWorkspaceFiles': hostSearchWorkspaceFilesValueSchema,
@@ -477,11 +480,12 @@ export abstract class AbstractApiClient implements IApiClient {
     describe: (payload, signal) => this.callUnary('host.describe', payload, signal),
     // A native system dialog is user-paced and may legitimately stay open
     // longer than the normal unary deadline. Caller/connection aborts remain.
-    pickDirectory: (payload, signal) => this.callUnary(
-      'host.pickDirectory', payload, signal, 'caller-signal-only',
+    pickPath: (payload, signal) => this.callUnary(
+      'host.pickPath', payload, signal, 'caller-signal-only',
     ),
     listDirectory: (payload, signal) => this.callUnary('host.listDirectory', payload, signal),
     createDirectory: (payload, signal) => this.callUnary('host.createDirectory', payload, signal),
+    resolveDirectoryFile: (payload, signal) => this.callUnary('host.resolveDirectoryFile', payload, signal),
     openPath: (payload, signal) => this.callUnary('host.openPath', payload, signal),
     previewWorkspaceFile: (payload, signal) => this.callUnary('host.previewWorkspaceFile', payload, signal),
     searchWorkspaceFiles: (payload, signal) => this.callUnary('host.searchWorkspaceFiles', payload, signal),

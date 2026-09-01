@@ -12,7 +12,7 @@
  * object's first pointer.
  */
 
-import type { Win32DialogBindings, Win32FolderDialog } from './win32-dialog-logic.ts'
+import type { Win32DialogBindings, Win32PathDialog } from './win32-dialog-logic.ts'
 
 interface KoffiFunction { (...args: unknown[]): unknown }
 interface KoffiLibrary { func(convention: string, name: string, result: string, args: string[]): KoffiFunction }
@@ -61,6 +61,7 @@ const SLOT_RELEASE = 2
 const SLOT_SHOW = 3
 const SLOT_SET_OPTIONS = 9
 const SLOT_SET_TITLE = 17
+const SLOT_SET_FILE_NAME = 15
 const SLOT_GET_RESULT = 20
 /** IShellItem vtable slot for `GetDisplayName`. */
 const SLOT_GET_DISPLAY_NAME = 5
@@ -82,10 +83,12 @@ function guidBytes(text: string): Buffer {
 
 const CLSID_FILE_OPEN_DIALOG = guidBytes('dc1c5a9c-e88a-4dde-a5a1-60f82a20aef7')
 const IID_IFILE_OPEN_DIALOG = guidBytes('d57c7288-d4ad-4768-be02-9d969532d960')
+const CLSID_FILE_SAVE_DIALOG = guidBytes('c0b4e2f3-ba21-4773-8dba-335ec946eb8b')
+const IID_IFILE_SAVE_DIALOG = guidBytes('84bccd23-5fde-4cdb-aea4-af64b83d78ab')
 
 /**
  * Load koffi and expose the dialog bindings for this thread.
- * @returns the bindings {@link runFolderDialog} sequences against.
+ * @returns the bindings {@link runPathDialog} sequences against.
  */
 export async function loadWin32DialogBindings(): Promise<Win32DialogBindings> {
   const koffi = (await import('koffi')).default as unknown as Koffi
@@ -105,6 +108,7 @@ export async function loadWin32DialogBindings(): Promise<Win32DialogBindings> {
   const protoShow = koffi.proto('int32 __stdcall WorldlineDialogShow(void *self, void *owner)')
   const protoSetOptions = koffi.proto('int32 __stdcall WorldlineDialogSetOptions(void *self, uint32 options)')
   const protoSetTitle = koffi.proto('int32 __stdcall WorldlineDialogSetTitle(void *self, str16 title)')
+  const protoSetFileName = koffi.proto('int32 __stdcall WorldlineDialogSetFileName(void *self, str16 name)')
   const protoGetResult = koffi.proto('int32 __stdcall WorldlineDialogGetResult(void *self, _Out_ void **item)')
   const protoGetDisplayName = koffi.proto('int32 __stdcall WorldlineItemGetDisplayName(void *self, int32 form, _Out_ void **name)')
   const protoRelease = koffi.proto('uint32 __stdcall WorldlineComRelease(void *self)')
@@ -140,14 +144,22 @@ export async function loadWin32DialogBindings(): Promise<Win32DialogBindings> {
       coUninitialize()
     },
     currentThreadId: () => getCurrentThreadId() as number,
-    createFolderDialog: (): Win32FolderDialog => {
+    createPathDialog: (mode): Win32PathDialog => {
       const out = Buffer.alloc(pointerSize)
-      const created = coCreateInstance(CLSID_FILE_OPEN_DIALOG, null, CLSCTX_INPROC_SERVER, IID_IFILE_OPEN_DIALOG, out) as number
-      if (created < 0) throw new Error(`CoCreateInstance(FileOpenDialog) failed: HRESULT 0x${(created >>> 0).toString(16)}`)
+      const saving = mode === 'save-file'
+      const created = coCreateInstance(
+        saving ? CLSID_FILE_SAVE_DIALOG : CLSID_FILE_OPEN_DIALOG,
+        null,
+        CLSCTX_INPROC_SERVER,
+        saving ? IID_IFILE_SAVE_DIALOG : IID_IFILE_OPEN_DIALOG,
+        out,
+      ) as number
+      if (created < 0) throw new Error(`CoCreateInstance(FileDialog) failed: HRESULT 0x${(created >>> 0).toString(16)}`)
       const dialog = koffi.decode(out, 'void *')
       return {
         setOptions: options => method(dialog, SLOT_SET_OPTIONS, protoSetOptions)(options),
         setTitle: title => method(dialog, SLOT_SET_TITLE, protoSetTitle)(title),
+        setFileName: name => method(dialog, SLOT_SET_FILE_NAME, protoSetFileName)(name),
         show: () => method(dialog, SLOT_SHOW, protoShow)(null),
         resultPath: () => {
           const itemOut: unknown[] = [null]

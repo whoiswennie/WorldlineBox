@@ -29,6 +29,10 @@ function dateString(value: unknown, field: string): string {
   return text
 }
 
+/** Read and validate a project manifest from local storage.
+ * @param projectPath - The project path supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function readManifest(projectPath: string): Promise<ProjectManifest> {
   let raw: Record<string, unknown>
   try {
@@ -75,6 +79,11 @@ export async function readManifest(projectPath: string): Promise<ProjectManifest
   }
 }
 
+/** Persist a validated project manifest atomically.
+ * @param projectPath - The project path supplied by the caller.
+ * @param manifest - The manifest supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function writeManifest(projectPath: string, manifest: ProjectManifest): Promise<void> {
   const document: Record<string, unknown> = {
     format: manifest.format,

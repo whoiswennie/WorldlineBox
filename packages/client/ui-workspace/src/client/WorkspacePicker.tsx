@@ -158,6 +158,7 @@ export function WorkspacePickFlow({
 
   /** Owner side of the flow conversation: adopt keeps the flow open (busy) until the Host answers. */
   const flowOwner: DirectoryFlowOwnerProps = {
+    request: { mode: 'directory', title: t('menu.addWorkspace') },
     open: flowOpen,
     busy: pickingFolder,
     onPicked: (path) => {

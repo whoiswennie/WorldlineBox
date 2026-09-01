@@ -92,6 +92,8 @@ import {
   walk,
 } from './storage.ts'
 
+/** Describes the config value exchanged across the package boundary.
+ */
 export interface Config {
   /** Initial library root; the settings namespace supersedes it when available. */
   root: string
@@ -131,6 +133,12 @@ function kindOf(path: string, directory: boolean): ProjectTreeEntry['kind'] {
   return TEXT_EXTENSIONS.has(extname(path).toLowerCase()) ? 'document' : 'asset'
 }
 
+/** Perform paginate tree entries through the package's public contract.
+ * @param entries - The entries supplied by the caller.
+ * @param cursor - The cursor supplied by the caller.
+ * @param limit - The limit supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function paginateTreeEntries<T extends { readonly name: string }>(
   entries: readonly T[],
   cursor: string | undefined,

@@ -151,6 +151,21 @@ describe('WorkerWorldlineRuns integration', () => {
       seed: 'integration-seed',
       startPaused: false,
     })
+    const liveHandles = (first.context.worldlineRuns as unknown as {
+      readonly handles: Map<string, { readonly worker: { terminate: () => Promise<number> } }>
+    }).handles
+    const crashedHandle = liveHandles.get(created.summary.runId)
+    if (crashedHandle === undefined) throw new Error('created Run has no live Worker handle')
+    await crashedHandle.worker.terminate()
+    const recoveredAfterCrash = await first.context.worldlineRuns.view({ runId: created.summary.runId })
+    expect(recoveredAfterCrash.snapshot).toMatchObject({
+      runId: created.summary.runId,
+      logicalTime: created.snapshot.logicalTime,
+      blueprintDigest: frozen.blueprint.digest,
+    })
+    expect(recoveredAfterCrash.summary.status).toBe('paused')
+    expect(liveHandles.get(created.summary.runId)).not.toBe(crashedHandle)
+    await first.context.worldlineRuns.resume({ runId: created.summary.runId })
     const definition = await first.context.worldlineRuns.definition({ runId: created.summary.runId })
     expect(definition).toMatchObject({
       blueprintDigest: frozen.blueprint.digest,

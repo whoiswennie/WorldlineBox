@@ -744,13 +744,17 @@ describe('remaining branches', () => {
     expect(session.getSnapshot().running).toBe(true)
   })
 
-  it('create passes cwd and a preallocated id, folds transport throws, and deduplicates the echo', async () => {
+  it('create atomically passes cwd, preset, and a preallocated id before publishing the row', async () => {
     const api = new FakeApiClient()
-    api.onCreate = () => Promise.resolve(ok({ sessionId: S1 }))
+    api.onCreate = () => Promise.resolve(ok({ sessionId: S1, agentPreset: 'worldline-author' }))
     const manager = new SessionManager(api, fakeRemote())
-    await manager.create({ cwd: '/tmp/w', sessionId: S1 })
-    expect(api.callsOf('session.create')).toEqual([{ cwd: '/tmp/w', sessionId: S1 }])
-    expect(manager.getListSnapshot().items[0]).toMatchObject({ sessionId: S1, cwd: '/tmp/w' })
+    await manager.create({ cwd: '/tmp/w', sessionId: S1, agentPreset: 'worldline-author' })
+    expect(api.callsOf('session.create')).toEqual([{
+      cwd: '/tmp/w', sessionId: S1, agentPreset: 'worldline-author',
+    }])
+    expect(manager.getListSnapshot().items[0]).toMatchObject({
+      sessionId: S1, cwd: '/tmp/w', agentPreset: 'worldline-author',
+    })
     await manager.create({ cwd: '/tmp/w' }) // same id returned: no duplicate row
     expect(manager.getListSnapshot().items).toHaveLength(1)
     api.onCreate = () => Promise.reject(new Error('create wire down'))

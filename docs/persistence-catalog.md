@@ -404,7 +404,7 @@ Source: [`packages/compaction/compaction/src/types.ts:32`](../packages/compactio
 'companion/expression-intent': CompanionExpressionIntentEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:217`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:239`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionreference--log-only"></a>
 
@@ -415,7 +415,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:217`](../package
 'companion/reference': CompanionReferenceEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:219`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:241`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionroom-membership--log-only"></a>
 
@@ -426,7 +426,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:219`](../package
 'companion/room-membership': CompanionRoomMembershipEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:221`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:243`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionstream-delta--log-only"></a>
 
@@ -437,7 +437,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:221`](../package
 'companion/stream-delta': CompanionStreamDeltaEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:225`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:247`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionstream-end--log-only"></a>
 
@@ -448,7 +448,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:225`](../package
 'companion/stream-end': CompanionStreamEndEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:227`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:249`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 <a id="companionstream-start--log-only"></a>
 
@@ -459,7 +459,7 @@ Source: [`packages/client/ui-virtual-companion/src/contracts.ts:227`](../package
 'companion/stream-start': CompanionStreamStartEventData
 ```
 
-Source: [`packages/client/ui-virtual-companion/src/contracts.ts:223`](../packages/client/ui-virtual-companion/src/contracts.ts)
+Source: [`packages/client/ui-virtual-companion/src/contracts.ts:245`](../packages/client/ui-virtual-companion/src/contracts.ts)
 
 ### `feedback/*`
 
@@ -1118,3 +1118,16 @@ Source: [`packages/core/session/src/types.ts:263`](../packages/core/session/src/
 ```
 
 Source: [`packages/web/web-search-deepseek/src/provider.ts:83`](../packages/web/web-search-deepseek/src/provider.ts)
+
+### `worldline/*`
+
+<a id="worldlinecontext-bound--log-only"></a>
+
+#### `worldline/context-bound` — log-only
+
+```ts persistence-catalog
+/** Immutable creation-time domain scope for a Worldline author conversation. */
+'worldline/context-bound': WorldlineConversationBinding
+```
+
+Source: [`packages/worldline/conversation-context/src/index.ts:37`](../packages/worldline/conversation-context/src/index.ts)

@@ -20,8 +20,9 @@ import type {
 } from '@deepseek-ai/dsh-worldline-project/types'
 import { MarkdownEditor } from './MarkdownEditor.tsx'
 import { CanonObjectView } from './CanonObjectView.tsx'
-import { useWorldlineEntrance } from './motion.ts'
+import { worldlineLabel } from './presentation.ts'
 import type { EditorDocumentState, ProjectClient } from './types.ts'
+import { PROJECT_UPLOAD_PATH } from '../contract.ts'
 import css from './CanonWorkbench.module.css'
 
 type ViewMode = 'edit' | 'object' | 'preview' | 'split'
@@ -77,7 +78,7 @@ export async function uploadProjectEntry(
     path: joinPath(directory, file.name),
     expectedBytes: String(file.size),
   })
-  const response = await fetch(`/api/worldline/project/upload?${query.toString()}`, {
+  const response = await fetch(`${PROJECT_UPLOAD_PATH}?${query.toString()}`, {
     method: 'PUT',
     headers: { 'content-type': file.type || 'application/octet-stream' },
     body: file,
@@ -109,6 +110,7 @@ export function VirtualProjectTree({
   projects,
   revision,
   active,
+  label,
   onOpen,
   onSelect,
 }: {
@@ -116,6 +118,7 @@ export function VirtualProjectTree({
   readonly projects: ProjectClient
   readonly revision: number
   readonly active?: string | undefined
+  readonly label: string
   readonly onOpen: (path: string) => void
   readonly onSelect: (entry: ProjectTreeEntry) => void
 }): ReactNode {
@@ -213,7 +216,7 @@ export function VirtualProjectTree({
   return <div
     className={css.treeViewport}
     role="tree"
-    aria-label="Worldline project tree"
+    aria-label={label}
     onScroll={(event) => {
       setScrollTop(event.currentTarget.scrollTop)
       setViewportHeight(Math.max(240, event.currentTarget.clientHeight))
@@ -287,10 +290,8 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
   const [importing, setImporting] = useState(0)
   const [notice, setNotice] = useState<string>()
   const searchGeneration = useRef(0)
-  const motionRoot = useRef<HTMLDivElement>(null)
   const projectId = props.project.manifest.id
   const activePath = props.activePath
-  useWorldlineEntrance(motionRoot, [activePath, sidePanel, viewMode])
 
   useEffect(() => {
     const normalized = query.trim()
@@ -420,8 +421,8 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
   }
 
   const document = props.openDocuments.find(item => item.document.path === activePath)
-  return <div ref={motionRoot} className={css.workbench}>
-    <aside className={css.treePane} aria-label={props.t('files')} data-worldline-reveal data-importing={importing > 0 || undefined} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDrop={dropFiles}>
+  return <div className={css.workbench}>
+    <aside className={css.treePane} aria-label={props.t('files')} data-importing={importing > 0 || undefined} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDrop={dropFiles}>
       <div className={css.searchBox}>
         <span aria-hidden="true">⌕</span>
         <input value={query} onChange={(event) => { setQuery(event.target.value) }} placeholder={props.t('searchInProject')} />
@@ -435,6 +436,7 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
         projects={props.projects}
         revision={props.treeRevision}
         active={activePath}
+        label={props.t('files')}
         onOpen={(path) => { void props.openPath(path) }}
         onSelect={setSelected}
       />}
@@ -447,11 +449,11 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
       {importing > 0 && <div className={css.dropStatus} role="status">{props.t('importingFiles')} · {importing}</div>}
     </aside>
 
-    <section className={css.editorPane} data-worldline-hero>
+    <section className={css.editorPane}>
       {document === undefined ? <div className={css.emptyEditor}>
         <span aria-hidden="true">◇</span><h2>{props.t('files')}</h2><p>{props.t('autosave')}</p>
       </div> : <>
-        <nav className={css.documentTabs} aria-label={props.t('openDocuments')} data-worldline-stagger>
+        <nav className={css.documentTabs} aria-label={props.t('openDocuments')}>
           {props.openDocuments.map(item => <div key={item.document.path} data-active={item.document.path === activePath || undefined}>
             <button type="button" onClick={() => { props.activatePath(item.document.path) }}>
               <span>{basename(item.document.path)}</span><i data-state={item.saveState}>{item.saveState === 'saved' ? '' : '●'}</i>
@@ -488,7 +490,7 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
       </>}
     </section>
 
-    <aside className={css.inspector} data-worldline-reveal>
+    <aside className={css.inspector}>
       <nav>
         {(['details', 'history', 'backlinks', 'trash'] as const).map(panel => <button
           type="button" key={panel} data-active={sidePanel === panel || undefined}
@@ -529,7 +531,7 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
         }}>{props.t('restore')}</button>
       </li>)}</ul>}
       {sidePanel === 'backlinks' && <ul className={css.auditList}>{backlinks.map(link => <li key={`${link.sourceId}:${link.target}`}>
-        <button type="button" onClick={() => { void props.openPath(link.sourcePath) }}><strong>{link.sourcePath}</strong><small>{link.kind}{link.broken ? ' · broken' : ''}</small></button>
+        <button type="button" onClick={() => { void props.openPath(link.sourcePath) }}><strong>{link.sourcePath}</strong><small>{worldlineLabel(link.kind)}{link.broken ? ' · 已失效' : ''}</small></button>
       </li>)}</ul>}
       {sidePanel === 'trash' && <ul className={css.auditList}>{trash.map(item => <li key={item.trashId}>
         <div><strong>{item.originalPath}</strong><small>{new Date(item.deletedAt).toLocaleString()}</small></div>

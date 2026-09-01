@@ -59,7 +59,22 @@ function studioProps(root: ProjectRootView, overrides: Record<string, unknown> =
     runs: {},
     ai: {},
     narrative: {},
-    pickDirectory: vi.fn(async () => 'C:\\Worlds'),
+    renderSlot: (_key: string, owner: {
+      open: boolean
+      request: { mode: string; extensions?: readonly string[]; suggestedName?: string }
+      onPicked(path: string): void
+    }) => owner.open
+      ? <button type="button" onClick={() => {
+        const path = owner.request.mode === 'directory'
+          ? 'C:\\Worlds'
+          : owner.request.mode === 'save-file'
+            ? `C:\\Archives\\${owner.request.suggestedName ?? 'archive.zip'}`
+            : owner.request.extensions?.includes('worldline-blueprint.zip') === true
+              ? 'C:\\Archives\\frozen.worldline-blueprint.zip'
+              : 'C:\\Archives\\archive.worldline.zip'
+        owner.onPicked(path)
+      }}>选择测试路径</button>
+      : null,
     openPath: vi.fn(async () => {}),
     launchConversation: vi.fn(async () => {}),
     ...overrides,
@@ -87,9 +102,9 @@ describe('Worldline Studio', () => {
     render(<WorldlineStudio {...props} />)
 
     fireEvent.click(await screen.findByRole('button', { name: '选择目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: '选择测试路径' }))
 
     await waitFor(() => {
-      expect(ownMethod(props, 'pickDirectory')).toHaveBeenCalledOnce()
       expect(ownMethod(props.projects, 'setRoot'))
         .toHaveBeenCalledWith({ path: 'C:\\Worlds', create: true })
     })
@@ -100,11 +115,11 @@ describe('Worldline Studio', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '打开 星海图鉴' }))
 
-    expect(await screen.findByRole('button', { name: '设定' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '地图' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '构建' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '模拟' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '文本游玩' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: '创作设定' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '世界地图' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '构建验证' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '实时演算' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '故事舞台' })).toBeTruthy()
     expect(screen.getByText('一个可运行的星海世界')).toBeTruthy()
   })
 
@@ -119,6 +134,8 @@ describe('Worldline Studio', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '创建副本' }))
     const copyDialog = screen.getByRole('dialog', { name: '创建项目副本' })
+    expect(copyDialog.parentElement?.parentElement).toBe(document.body)
+    expect(document.body.style.overflow).toBe('hidden')
     fireEvent.change(within(copyDialog).getByLabelText('项目名称'), {
       target: { value: '星海图鉴独立副本' },
     })
@@ -149,7 +166,7 @@ describe('Worldline Studio', () => {
     })
   })
 
-  it('exposes current Blueprint and logical Run archive workflows in their workbenches', async () => {
+  it('exposes current world-blueprint and logical simulation archive workflows', async () => {
     const props = studioProps(configured)
     Object.assign(props.projects, {
       importBlueprint: vi.fn(async () => ({
@@ -165,23 +182,22 @@ describe('Worldline Studio', () => {
     Object.assign(props.ai, { catalog: vi.fn(async () => ({ models: [] })) })
     render(<WorldlineStudio {...props} />)
     fireEvent.click(await screen.findByRole('button', { name: '打开 星海图鉴' }))
-    fireEvent.click(screen.getByRole('button', { name: '构建' }))
-    fireEvent.click(await screen.findByRole('button', { name: '导入 Blueprint' }))
-    const blueprintDialog = screen.getByRole('dialog', { name: '导入 Blueprint' })
-    fireEvent.change(within(blueprintDialog).getByLabelText('归档路径'), {
-      target: { value: 'C:\\Worlds\\frozen.worldline-blueprint.zip' },
-    })
-    fireEvent.click(within(blueprintDialog).getByRole('button', { name: '导入 Blueprint' }))
+    fireEvent.click(screen.getByRole('button', { name: '构建验证' }))
+    fireEvent.click(await screen.findByRole('button', { name: '导入世界蓝图' }))
+    const blueprintDialog = screen.getByRole('dialog', { name: '导入世界蓝图' })
+    fireEvent.click(within(blueprintDialog).getByRole('button', { name: '选择归档文件' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择测试路径' }))
+    fireEvent.click(within(blueprintDialog).getByRole('button', { name: '导入世界蓝图' }))
     await waitFor(() => {
       expect(ownMethod(props.projects, 'importBlueprint')).toHaveBeenCalledWith({
         projectId: project.manifest.id,
-        source: 'C:\\Worlds\\frozen.worldline-blueprint.zip',
+        source: 'C:\\Archives\\frozen.worldline-blueprint.zip',
       })
     })
 
-    fireEvent.click(screen.getByRole('button', { name: '模拟' }))
-    fireEvent.click(await screen.findByRole('button', { name: '导入 Run 存档' }))
-    expect(screen.getByText(/不包含 SQLite 缓存数据库/u)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '实时演算' }))
+    fireEvent.click(await screen.findByRole('button', { name: '导入演算存档' }))
+    expect(screen.getByText(/不包含本地缓存数据库/u)).toBeTruthy()
   })
 
   it('keeps multiple canon documents open in one current tabbed editor', async () => {
@@ -220,7 +236,7 @@ describe('Worldline Studio', () => {
     })
     render(<WorldlineStudio {...props} />)
     fireEvent.click(await screen.findByRole('button', { name: '打开 星海图鉴' }))
-    fireEvent.click(screen.getByRole('button', { name: '设定' }))
+    fireEvent.click(screen.getByRole('button', { name: '创作设定' }))
 
     fireEvent.click(await screen.findByRole('button', { name: /alpha\.md/u }))
     await screen.findByRole('button', { name: '关闭 alpha.md' })
@@ -231,6 +247,6 @@ describe('Worldline Studio', () => {
     expect(await screen.findByRole('button', { name: '关闭 beta.md' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '专用视图' }))
     expect((await screen.findAllByText('自定义对象')).length).toBeGreaterThan(0)
-    expect(screen.getByText('真源')).toBeTruthy()
+    expect(screen.getByText('权威真源')).toBeTruthy()
   })
 })

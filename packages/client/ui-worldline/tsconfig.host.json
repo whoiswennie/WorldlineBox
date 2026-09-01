@@ -5,7 +5,7 @@
     "outDir": "lib/types",
     "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
   },
-  "files": ["src/index.ts", "src/invariant.ts"],
+  "files": ["src/contract.ts", "src/index.ts", "src/invariant.ts"],
   "references": [
     { "path": "../../../vendor/cordis" },
     { "path": "../../runtime-diagnostics/invariants" },

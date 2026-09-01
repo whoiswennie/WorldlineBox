@@ -44,6 +44,7 @@
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`、`interrupt_agent`、`list_agents`、`send_message`、`spawn_teammate`、`team_task_create`、`team_task_get`、`team_task_list`、`team_task_update`、`wait_agent` | `ctx.tools`、`ctx.systemPrompt`、`ctx.agentTeams`、`an exact live Team member Agent` | `tool/call`、`team/member`、`team/message/queued`、`team/message/delivered`、`team/task`、`tool/result` | - | 这 10 个工具限定于隐式 Team Lead 与持久 teammate 作用域。随产品发布的 dsh-base bundle 默认禁用该包；文档中的 Agent Teams profile patch 会启用它，并禁用旧 continuable child 的同名控制工具。 |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
+| `@deepseek-ai/dsh-tool-worldline` | `worldline_build`, `worldline_edit`, `worldline_explain`, `worldline_link`, `worldline_map`, `worldline_project`, `worldline_query`, `worldline_run`, `worldline_transfer` | `ctx.tools`, `ctx.systemPrompt`, `ctx.worldlineProjects`, `ctx.worldlineCompiler`, `ctx.worldlineRuns`, `ctx.worldlineConversationContexts`, `a bound calling Agent at execution time` | `tool/call`, `project Canon/build artifacts or Run state for mutations`, `tool/result` | - | 九个项目范围工具在执行时都需要调用方作者会话绑定；变更模式携带稳定标识、来源、修订、试运行或显式确认字段，不暴露通用文件系统写入。 |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
 | `@deepseek-ai/dsh-worldline-video` | `video_index`, `video_probe`, `video_read` | `ctx.tools`, `ctx.skills`, `ctx.subprocess`, `packaged FFmpeg and yt-dlp at execution time` | `tool/call`, `private video cache and sampled JPEGs`, `tool/result` | - | video_probe is metadata-only for online sources; video_index chooses resumable cache or no-media-save stream mode, and video_read performs bounded timestamped sampling from the reusable manifest. |
 
@@ -2761,6 +2762,549 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 ```
 
 来源：[`packages/workflow/tool-workflow/src/index.ts`](../packages/workflow/tool-workflow/src/index.ts)
+
+<a id="deepseek-ai-dsh-tool-worldline"></a>
+
+## `@deepseek-ai/dsh-tool-worldline`
+
+### `worldline_build`
+
+检查编译器状态、执行编译、回答问题、提交或审查提案，或冻结与当前来源摘要完全一致的构建。冻结与审查需要显式确认。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "state",
+        "compile",
+        "answer",
+        "propose",
+        "review",
+        "freeze"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "question_id": {
+      "type": "string"
+    },
+    "answer": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string",
+      "enum": [
+        "canon",
+        "action",
+        "system",
+        "invariant",
+        "map"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "risk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "payload_json": {
+      "type": "string"
+    },
+    "anchors_json": {
+      "type": "string"
+    },
+    "proposal_id": {
+      "type": "string"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected"
+      ]
+    },
+    "reviewed_by": {
+      "type": "string"
+    },
+    "expected_state_revision": {
+      "type": "string"
+    },
+    "expected_source_digest": {
+      "type": "string"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation",
+    "project_id"
+  ]
+}
+```
+
+来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_edit`
+
+试运行或执行一次项目范围的文档或目录变更。已有文档必须携带准确预期修订；文本编辑只替换唯一匹配片段。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "create",
+        "replace",
+        "mkdir",
+        "move",
+        "copy",
+        "trash",
+        "restore"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "document_id": {
+      "type": "string"
+    },
+    "expected_revision": {
+      "type": "string"
+    },
+    "before": {
+      "type": "string"
+    },
+    "after": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "trash_id": {
+      "type": "string"
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation",
+    "project_id"
+  ]
+}
+```
+
+来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_explain`
+
+使用权威来源与因果记录解释一个已编译语义对象或一个保留的演算事件。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "target": {
+      "type": "string",
+      "enum": [
+        "semantic",
+        "event"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "object_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "event_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "target"
+  ]
+}
+```
+
+来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_link`
+
+检查一个项目文档的入站链接，或在编辑引用前搜索稳定标识与路径。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "backlinks",
+        "search"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "query": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation",
+    "project_id"
+  ]
+}
+```
+
+来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_map`
+
+试运行或提交带准确来源锚点、可审查的结构化地图提案。它绝不会通过直接重写地图文档绕过审查。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "project_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "patch_json": {
+      "type": "string"
+    },
+    "anchors_json": {
+      "type": "string"
+    },
+    "risk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "expected_state_revision": {
+      "type": "string"
+    },
+    "dry_run": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "project_id",
+    "title",
+    "rationale",
+    "patch_json",
+    "anchors_json"
+  ]
+}
+```
+
+来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_project`
+
+通过项目库列出、创建、复制、回收或恢复世界线项目。破坏性或复制操作需要显式确认。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "list",
+        "create",
+        "copy",
+        "trash",
+        "trashed",
+        "restore"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "template": {
+      "type": "string",
+      "enum": [
+        "blank",
+        "world-encyclopedia",
+        "character-story",
+        "social-simulation",
+        "civilization-sandbox",
+        "playable-scenario"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "search": {
+      "type": "string"
+    },
+    "trash_id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation"
+  ]
+}
+```
+
+来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_query`
+
+读取有界项目树、单个文档、文档历史、项目搜索结果或项目回收站。此工具绝不写入。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "tree",
+        "read",
+        "history",
+        "search",
+        "trash"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "query": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limit": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operation",
+    "project_id"
+  ]
+}
+```
+
+来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_run`
+
+检查或控制确定性演算。变更操作绑定准确演算，并要求确认行动、大步推进、分支、控制变更、AI 变更与停止。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "list",
+        "create",
+        "view",
+        "choices",
+        "advance",
+        "action",
+        "pause",
+        "resume",
+        "stop",
+        "checkpoint",
+        "checkpoints",
+        "branch",
+        "set-control",
+        "set-ai"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "actor_id": {
+      "type": "string"
+    },
+    "seed": {
+      "type": "string"
+    },
+    "duration": {
+      "type": "number"
+    },
+    "max_events": {
+      "type": "integer"
+    },
+    "action_type": {
+      "type": "string"
+    },
+    "parameters_json": {
+      "type": "string"
+    },
+    "expected_sequence": {
+      "type": "integer"
+    },
+    "label": {
+      "type": "string"
+    },
+    "checkpoint_id": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "autonomous",
+        "suggestions",
+        "player"
+      ]
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation"
+  ]
+}
+```
+
+来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_transfer`
+
+试运行或启动当前格式的项目、冻结世界蓝图或逻辑演算归档传输。路径始终由 Host 项目服务控制；传输绝不接触远程仓库。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "import",
+        "export",
+        "status",
+        "cancel"
+      ]
+    },
+    "artifact": {
+      "type": "string",
+      "enum": [
+        "project",
+        "blueprint",
+        "run"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "include_runs": {
+      "type": "boolean"
+    },
+    "transfer_id": {
+      "type": "string"
+    },
+    "conflict": {
+      "type": "string",
+      "enum": [
+        "copy",
+        "replace",
+        "cancel"
+      ]
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation"
+  ]
+}
+```
+
+来源： [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+九个项目范围工具在执行时都需要调用方作者会话绑定；变更模式携带稳定标识、来源、修订、试运行或显式确认字段，不暴露通用文件系统写入。
 
 <a id="worldline-tool-web"></a>
 

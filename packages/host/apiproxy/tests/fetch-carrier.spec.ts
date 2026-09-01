@@ -150,7 +150,7 @@ function fakeApi(overrides: Partial<{ muxFrames: MuxFrame[]; hostFrames: HostFra
           },
         }
       },
-      async pickDirectory(request) {
+      async pickPath(request) {
         return { rpcId: request.rpcId, result: { ok: true, value: { path: null } } }
       },
       async listDirectory(request) {
@@ -158,6 +158,9 @@ function fakeApi(overrides: Partial<{ muxFrames: MuxFrame[]; hostFrames: HostFra
       },
       async createDirectory(request) {
         return { rpcId: request.rpcId, result: { ok: true, value: { path: '/w/new' } } }
+      },
+      async resolveDirectoryFile(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: { path: '/w/archive.zip' } } }
       },
       async openPath(request) {
         return { rpcId: request.rpcId, result: { ok: true, value: { opened: true as const } } }
@@ -484,11 +487,11 @@ describe('unary round trip (handler ⇄ client, no network)', () => {
 
   it('round-trips the native picker without the default unary timeout', async () => {
     const api = fakeApi()
-    api.host.pickDirectory = async (request) => {
+    api.host.pickPath = async (request) => {
       await new Promise(resolve => setTimeout(resolve, 15))
       return { rpcId: request.rpcId, result: { ok: true, value: { path: '/tmp/project' } } }
     }
-    const response = await client(api, 1).host.pickDirectory({})
+    const response = await client(api, 1).host.pickPath({ mode: 'directory', title: 'Pick directory' })
     expect(response.result).toEqual({ ok: true, value: { path: '/tmp/project' } })
   })
 
@@ -523,7 +526,7 @@ describe('unary round trip (handler ⇄ client, no network)', () => {
     expect(skills.result).toEqual({ ok: true, value: { skills: [{ name: 'commit-helper', description: 'Git commits', modelInvocable: true }] } })
   })
 
-  it('lets host.pickDirectory finish after the 30-second default unary deadline', async () => {
+  it('lets host.pickPath finish after the 30-second default unary deadline', async () => {
     vi.useFakeTimers()
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
       const controller = new AbortController()
@@ -534,11 +537,11 @@ describe('unary round trip (handler ⇄ client, no network)', () => {
     })
     try {
       const api = fakeApi()
-      api.host.pickDirectory = async (request) => {
+      api.host.pickPath = async (request) => {
         await new Promise(resolve => setTimeout(resolve, 30_001))
         return { rpcId: request.rpcId, result: { ok: true, value: { path: '/tmp/slow' } } }
       }
-      const execution = client(api).host.pickDirectory({})
+      const execution = client(api).host.pickPath({ mode: 'directory', title: 'Pick directory' })
       const assertion = expect(execution).resolves.toMatchObject({
         result: { ok: true, value: { path: '/tmp/slow' } },
       })
@@ -579,7 +582,7 @@ describe('unary round trip (handler ⇄ client, no network)', () => {
   it('keeps caller and connection aborts on a deadline-exempt unary', async () => {
     const api = fakeApi()
     const started = Promise.withResolvers<AbortSignal>()
-    api.host.pickDirectory = async (request, signal) => {
+    api.host.pickPath = async (request, signal) => {
       started.resolve(signal)
       if (!signal.aborted) {
         await new Promise<void>((resolve) => {
@@ -592,7 +595,7 @@ describe('unary round trip (handler ⇄ client, no network)', () => {
       }
     }
     const controller = new AbortController()
-    const execution = client(api).host.pickDirectory({}, controller.signal)
+    const execution = client(api).host.pickPath({ mode: 'directory', title: 'Pick directory' }, controller.signal)
     const handlerSignal = await started.promise
 
     controller.abort(new Error('connection closed'))
@@ -652,9 +655,9 @@ describe('unary round trip (handler ⇄ client, no network)', () => {
     expect(parsed.result.error?.code).toBe('cancelled')
   })
 
-  it('propagates the carrier Request signal into host.pickDirectory', async () => {
+  it('propagates the carrier Request signal into host.pickPath', async () => {
     const api = fakeApi()
-    api.host.pickDirectory = async (request, signal) => {
+    api.host.pickPath = async (request, signal) => {
       if (!signal.aborted) {
         await new Promise<void>((resolve) => {
           signal.addEventListener('abort', () => { resolve() }, { once: true })
@@ -667,8 +670,8 @@ describe('unary round trip (handler ⇄ client, no network)', () => {
     }
     const handler = toFetchHandler(api)
     const controller = new AbortController()
-    const body = JSON.stringify({ type: 'client-request', rpcId: 'r-picker', method: 'host.pickDirectory', payload: {} })
-    const pending = handler.fetch(new Request('http://x/api/host.pickDirectory', {
+    const body = JSON.stringify({ type: 'client-request', rpcId: 'r-picker', method: 'host.pickPath', payload: { mode: 'directory', title: 'Pick directory' } })
+    const pending = handler.fetch(new Request('http://x/api/host.pickPath', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: controller.signal,
     }))
     controller.abort()

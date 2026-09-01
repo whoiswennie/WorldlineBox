@@ -96,8 +96,12 @@ import type {
 } from '@deepseek-ai/dsh-worldline-narrative/types'
 import type { ContextPack, NarrativeBeat, ProjectId, RunId, SceneFrame } from '@deepseek-ai/dsh-worldline-standard/types'
 
+/** Describes the document save state value exchanged across the package boundary.
+ */
 export type DocumentSaveState = 'saved' | 'dirty' | 'saving' | 'conflict' | 'error'
 
+/** Describes the editor document state value exchanged across the package boundary.
+ */
 export interface EditorDocumentState {
   readonly document: DocumentView
   readonly content: string
@@ -106,6 +110,8 @@ export interface EditorDocumentState {
   readonly diskVersion?: DocumentView
 }
 
+/** Describes the project client value exchanged across the package boundary.
+ */
 export interface ProjectClient {
   root(): Promise<ProjectRootView>
   setRoot(request: SetProjectRootRequest): Promise<RootRelocationPlan>
@@ -139,6 +145,8 @@ export interface ProjectClient {
   cancelTransfer(id: string): Promise<TransferJob>
 }
 
+/** Describes the compiler client value exchanged across the package boundary.
+ */
 export interface CompilerClient {
   state(projectId: ProjectId): Promise<CompilerState>
   compile(request: CompileWorldRequest): Promise<BuildPreview>
@@ -149,6 +157,8 @@ export interface CompilerClient {
   explain(request: ExplainSemanticsRequest): Promise<SemanticsExplanation>
 }
 
+/** Describes the runs client value exchanged across the package boundary.
+ */
 export interface RunsClient {
   create(request: CreateRunRequest): Promise<RunView>
   list(): Promise<readonly RunSummary[]>
@@ -171,6 +181,8 @@ export interface RunsClient {
   explain(request: ExplainRunEventRequest): Promise<RunEventExplanation>
 }
 
+/** Describes the ai client value exchanged across the package boundary.
+ */
 export interface AiClient {
   catalog(): Promise<WorldlineAiCatalog>
   contextPack(request: ContextPackRequest): Promise<ContextPack>
@@ -178,6 +190,8 @@ export interface AiClient {
   decide(request: DecideForActorRequest): Promise<AiDecisionResult>
 }
 
+/** Describes the narrative client value exchanged across the package boundary.
+ */
 export interface NarrativeClient {
   open(request: TextPlayRequest): Promise<TextPlayView>
   scene(request: TextPlayRequest): Promise<SceneFrame>
@@ -192,13 +206,14 @@ export interface NarrativeClient {
   storyStage(): Promise<StoryStageStatus>
 }
 
+/** Describes the worldline studio injected value exchanged across the package boundary.
+ */
 export interface WorldlineStudioInjected {
   readonly projects: ProjectClient
   readonly compiler: CompilerClient
   readonly runs: RunsClient
   readonly ai: AiClient
   readonly narrative: NarrativeClient
-  pickDirectory(): Promise<string | null>
   openPath(path: string): Promise<void>
   launchConversation(project: ProjectSummary, runId?: RunId): Promise<void>
 }

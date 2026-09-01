@@ -538,12 +538,14 @@ export class SessionManager {
       workspaceId?: WorkspaceId
       cwd?: string
       sessionId?: SessionId
+      agentPreset?: string
       reuseWorkspaceBlank?: true
     } = {},
   ): Promise<RpcResult<{ sessionId: SessionId }>> {
     try {
       const shared = {
         ...(opts.sessionId === undefined ? {} : { sessionId: opts.sessionId }),
+        ...(opts.agentPreset === undefined ? {} : { agentPreset: opts.agentPreset }),
         ...(opts.reuseWorkspaceBlank === undefined ? {} : { reuseWorkspaceBlank: opts.reuseWorkspaceBlank }),
       }
       const payload = opts.workspaceId !== undefined
@@ -554,7 +556,9 @@ export class SessionManager {
         this.recordMutation({ kind: 'upsert', summary: {
           sessionId: result.value.sessionId, updatedAt: Date.now(), running: false, blank: true,
           ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-          ...(result.value.agentPreset !== undefined ? { agentPreset: result.value.agentPreset } : {}),
+          ...(result.value.agentPreset !== undefined
+            ? { agentPreset: result.value.agentPreset }
+            : opts.agentPreset === undefined ? {} : { agentPreset: opts.agentPreset }),
         } })
       } else {
         const publishedSessionId = workspaceAttachSessionId(result.error)

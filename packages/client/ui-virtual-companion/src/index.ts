@@ -692,7 +692,9 @@ export class VirtualCompanionDirectory {
     }
   }
 
-  /** Re-read every companion projection directly from self Markdown. */
+  /** Re-read every companion projection directly from self Markdown.
+   * @returns The result produced by the operation.
+   */
   async refreshProfiles(): Promise<VirtualCompanionSnapshot> {
     await this.ready
     return await this.exclusive(async () => {

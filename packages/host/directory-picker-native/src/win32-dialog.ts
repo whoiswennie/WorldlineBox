@@ -8,6 +8,7 @@
 
 import { closeThreadWindows as hostCloseThreadWindows, spawnDialogWorker } from './win32-dialog-host.ts'
 import type { Win32DialogWorkerData, Win32DialogWorkerMessage } from './win32-dialog-worker.ts'
+import type { PathPickerRequest } from '@deepseek-ai/dsh-host-directory-picker'
 
 /** The child-process surface the driver drives (satisfied by `node:child_process`). */
 export interface Win32DialogWorkerLike {
@@ -43,8 +44,6 @@ export interface Win32DialogInternals {
 }
 
 /** The dialog title every host shows. */
-export const DIALOG_TITLE = 'Select Workspace Directory'
-
 /** `WM_CLOSE` re-post cadence while an abort waits for the worker to unwind. */
 const CLOSE_RETRY_MS = 150
 /** Abort-service attempts before force-terminating the worker. */
@@ -62,8 +61,10 @@ function assertNever(value: never): never {
  * @param signal - caller lifetime; abort closes the dialog and rejects.
  * @param internals - Worker/window hooks for deterministic tests.
  * @returns the selected path, or null when the user cancels.
+ * @param request - The request supplied by the caller.
  */
-export async function pickWin32Directory(
+export async function pickWin32Path(
+  request: PathPickerRequest,
   signal: AbortSignal,
   internals: Win32DialogInternals = {},
 ): Promise<string | null> {
@@ -72,7 +73,7 @@ export async function pickWin32Directory(
   const closeWindows = internals.closeThreadWindows ?? hostCloseThreadWindows
   const closeRetryMs = internals.closeRetryMs ?? CLOSE_RETRY_MS
 
-  const worker: Win32DialogWorkerLike = spawnWorker({ title: DIALOG_TITLE })
+  const worker: Win32DialogWorkerLike = spawnWorker({ request })
   let dialogThreadId: number | undefined
   let closeTimer: NodeJS.Timeout | undefined
   let settled = false

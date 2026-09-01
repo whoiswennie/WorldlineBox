@@ -90,6 +90,45 @@ describe('WorldlineRunDatabase', () => {
     reopened.close()
   })
 
+  it('leaves no partial state when initialization or a later disk write fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'worldline-run-db-write-failure-'))
+    roots.push(root)
+    const store = new WorldlineRunDatabase(join(root, 'world.sqlite'))
+    store.database.exec(`
+      CREATE TEMP TRIGGER fail_blueprint_meta
+      BEFORE INSERT ON run_meta WHEN NEW.key='blueprintDigest'
+      BEGIN SELECT RAISE(ABORT, 'simulated persistent write failure'); END;
+    `)
+    expect(() => { store.initialize(snapshot()) }).toThrow(/simulated persistent write failure/u)
+    expect(store.snapshot()).toBeUndefined()
+    expect(store.metadata()).toEqual({})
+    expect(store.database.isTransaction).toBe(false)
+
+    store.database.exec('DROP TRIGGER fail_blueprint_meta')
+    store.initialize(snapshot())
+    store.database.exec('PRAGMA query_only=ON')
+    expect(() => {
+      store.commit({
+        snapshot: snapshot(1),
+        records: [{
+          sequence: 1,
+          logicalTime: 10,
+          stream: 'telemetry',
+          id: 'telemetry:write-failure-000001',
+          payload: { queueDepth: 1 },
+        }],
+      })
+    }).toThrow()
+    store.database.exec('PRAGMA query_only=OFF')
+    expect(store.snapshot()).toMatchObject({ sequence: 0, logicalTime: 0 })
+    expect(store.records()).toEqual([])
+    expect(store.database.isTransaction).toBe(false)
+
+    store.commit({ snapshot: snapshot(1), records: [] })
+    expect(store.snapshot()).toMatchObject({ sequence: 1, logicalTime: 10 })
+    store.close()
+  })
+
   it('refuses to move a persisted snapshot sequence backwards', async () => {
     const root = await mkdtemp(join(tmpdir(), 'worldline-run-db-order-'))
     roots.push(root)

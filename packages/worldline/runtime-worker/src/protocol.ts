@@ -16,6 +16,8 @@ import type {
   SwitchModelPolicyRequest,
 } from '@deepseek-ai/dsh-worldline-runtime'
 
+/** Describes the worker init value exchanged across the package boundary.
+ */
 export interface WorkerInit {
   readonly projectId: ProjectId
   readonly runId: RunId
@@ -31,6 +33,8 @@ export interface WorkerInit {
   readonly controls?: Readonly<Record<string, ActorControlMode>>
 }
 
+/** Describes the worker command value exchanged across the package boundary.
+ */
 export type WorkerCommand =
   | { readonly type: 'view' }
   | { readonly type: 'definition' }
@@ -52,12 +56,16 @@ export type WorkerCommand =
   | { readonly type: 'record-ai-invocation'; readonly payload: RecordAiInvocationRequest }
   | { readonly type: 'record-narrative-beat'; readonly payload: RecordNarrativeBeatRequest }
 
+/** Describes the worker request value exchanged across the package boundary.
+ */
 export interface WorkerRequest {
   readonly type: 'request'
   readonly id: number
   readonly command: WorkerCommand
 }
 
+/** Describes the worker to host value exchanged across the package boundary.
+ */
 export type WorkerToHost =
   | { readonly type: 'ready'; readonly value: unknown }
   | { readonly type: 'response'; readonly id: number; readonly ok: true; readonly value: unknown }

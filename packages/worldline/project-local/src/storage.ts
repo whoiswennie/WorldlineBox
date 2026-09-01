@@ -17,18 +17,35 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
 import type { Revision } from '@deepseek-ai/dsh-worldline-standard'
 import { WorldlineProjectError } from '@deepseek-ai/dsh-worldline-project'
 
+/** Identifies the package-owned control directory value.
+ */
 export const CONTROL_DIRECTORY = '.worldline'
+/** Identifies the package-owned max text bytes value.
+ */
 export const MAX_TEXT_BYTES = 20 * 1024 * 1024
 
+/** Perform message of through the package's public contract.
+ * @param error - The error supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Perform is inside through the package's public contract.
+ * @param root - The root supplied by the caller.
+ * @param candidate - The candidate supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function isInside(root: string, candidate: string): boolean {
   const path = relative(root, candidate)
   return path === '' || (!path.startsWith('..') && !isAbsolute(path))
 }
 
+/** Perform normalize relative through the package's public contract.
+ * @param path - The path supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function normalizeRelative(path: string): string {
   const value = path.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
   if (value === '') return ''
@@ -41,6 +58,11 @@ export function normalizeRelative(path: string): string {
   return value
 }
 
+/** Read resolve inside from the package-owned authoritative state.
+ * @param root - The root supplied by the caller.
+ * @param path - The path supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function resolveInside(root: string, path: string): string {
   const normalized = normalizeRelative(path)
   const target = resolve(root, ...normalized.split('/').filter(Boolean))
@@ -50,6 +72,12 @@ export function resolveInside(root: string, path: string): string {
   return target
 }
 
+/** Perform assert no symlink through the package's public contract.
+ * @param root - The root supplied by the caller.
+ * @param target - The target supplied by the caller.
+ * @param allowMissingLeaf - The allow missing leaf supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function assertNoSymlink(root: string, target: string, allowMissingLeaf = false): Promise<void> {
   const rel = relative(root, target)
   if (!isInside(root, target)) {
@@ -73,10 +101,19 @@ export async function assertNoSymlink(root: string, target: string, allowMissing
   }
 }
 
+/** Perform revision of through the package's public contract.
+ * @param content - The content supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function revisionOf(content: string | Uint8Array): Revision {
   return `sha256:${createHash('sha256').update(content).digest('hex')}` as Revision
 }
 
+/** Perform durable write through the package's public contract.
+ * @param path - The path supplied by the caller.
+ * @param content - The content supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function durableWrite(path: string, content: string | Uint8Array): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temporary = resolve(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`)
@@ -101,6 +138,12 @@ export async function durableWrite(path: string, content: string | Uint8Array): 
   }
 }
 
+/** Perform durable write stream through the package's public contract.
+ * @param path - The path supplied by the caller.
+ * @param source - The source supplied by the caller.
+ * @param expectedBytes - The expected bytes supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function durableWriteStream(
   path: string,
   source: AsyncIterable<Uint8Array>,
@@ -143,6 +186,10 @@ export async function durableWriteStream(
   }
 }
 
+/** Read bounded UTF-8 text from the authoritative local project store.
+ * @param path - The path supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function readTextBounded(path: string): Promise<string> {
   const info = await stat(path).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -157,10 +204,19 @@ export async function readTextBounded(path: string): Promise<string> {
   return readFile(path, 'utf8')
 }
 
+/** Perform exists through the package's public contract.
+ * @param path - The path supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function exists(path: string): Promise<boolean> {
   return access(path, constants.F_OK).then(() => true, () => false)
 }
 
+/** Copy a file durably without exposing partial destination content.
+ * @param source - The source supplied by the caller.
+ * @param destination - The destination supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function copyFileDurable(source: string, destination: string): Promise<void> {
   await mkdir(dirname(destination), { recursive: true })
   await copyFile(source, destination)
@@ -168,8 +224,15 @@ export async function copyFileDurable(source: string, destination: string): Prom
   try { await file.sync() } finally { await file.close() }
 }
 
+/** Describes the walk entry value exchanged across the package boundary.
+ */
 export interface WalkEntry { readonly relativePath: string; readonly dirent: Dirent }
 
+/** Perform walk through the package's public contract.
+ * @param root - The root supplied by the caller.
+ * @param includeControl - The include control supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function walk(root: string, includeControl = false): Promise<WalkEntry[]> {
   const entries: WalkEntry[] = []
   const visit = async (directory: string): Promise<void> => {
@@ -188,6 +251,10 @@ export async function walk(root: string, includeControl = false): Promise<WalkEn
   return entries
 }
 
+/** Perform directory size through the package's public contract.
+ * @param root - The root supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function directorySize(root: string): Promise<number> {
   let bytes = 0
   for (const entry of await walk(root, true)) {
@@ -196,6 +263,11 @@ export async function directorySize(root: string): Promise<number> {
   return bytes
 }
 
+/** Perform canonical root through the package's public contract.
+ * @param path - The path supplied by the caller.
+ * @param create - The create supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function canonicalRoot(path: string, create = true): Promise<string> {
   const root = resolve(path)
   if (!isAbsolute(root)) throw new WorldlineProjectError('root-unreadable', 'root must be absolute')

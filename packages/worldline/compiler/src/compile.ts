@@ -35,6 +35,8 @@ import type {
   CreativeQuestion,
 } from './types.ts'
 
+/** Describes the compilation product value exchanged across the package boundary.
+ */
 export interface CompilationProduct {
   readonly snapshot: ProjectSourceSnapshot
   readonly purpose: SimulationPurpose
@@ -303,7 +305,13 @@ function proposalProvenance(proposal: CompilerProposal): Provenance {
   }
 }
 
-/** Compile one immutable source snapshot without IO or model calls. */
+/** Compile one immutable source snapshot without IO or model calls.
+ * @param snapshot - The snapshot supplied by the caller.
+ * @param requestedPurpose - The requested purpose supplied by the caller.
+ * @param previousQuestions - The previous questions supplied by the caller.
+ * @param proposals - The proposals supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function compileSnapshot(
   snapshot: ProjectSourceSnapshot,
   requestedPurpose: SimulationPurpose | undefined,

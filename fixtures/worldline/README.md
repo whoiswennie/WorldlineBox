@@ -1,12 +1,10 @@
 # Worldline acceptance scenarios
 
-These source fixtures exercise the current Worldline implementation as real file-source projects. The
-runtime acceptance suite writes them through the project service, compiles and freezes a Blueprint, starts
-an isolated Worker Run, submits a projected legal action, advances logical time, and inspects retained
-records.
+English | [中文](README.zh.md)
 
-- `twenty-five-person-town`: 25 independently seeded L2 OC residents, advanced through the full
-  ninety-day fixture duration by the acceptance suite.
+These source fixtures exercise the current Worldline implementation as real file-source projects. The runtime acceptance suite writes them through the project service, compiles and freezes a Blueprint, starts an isolated Worker Run, submits a projected legal action, advances logical time, and inspects retained records.
+
+- `twenty-five-person-town`: 25 independently seeded L2 OC residents, advanced through the full ninety-day fixture duration by the acceptance suite.
 - `oc-hero-journey`: one character-focused journey.
 - `rural-life`: a small household and seasonal-work setting.
 - `alternate-history`: institutions and political allegiances.

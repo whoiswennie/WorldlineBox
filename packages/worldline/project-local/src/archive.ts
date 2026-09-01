@@ -23,6 +23,8 @@ interface ProjectArchiveManifest extends ArchiveManifestBase {
   readonly dependencies: readonly MechanismDependency[]
 }
 
+/** Describes the project archive preflight value exchanged across the package boundary.
+ */
 export type ProjectArchivePreflight = ArchivePreflight<ProjectArchiveManifest>
 
 function parseDependencies(value: unknown): readonly MechanismDependency[] {
@@ -85,6 +87,11 @@ function validateProjectLayout(
   }
 }
 
+/** Perform preflight project archive through the package's public contract.
+ * @param source - The source supplied by the caller.
+ * @param signal - The signal supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function preflightProjectArchive(
   source: string,
   signal?: AbortSignal,
@@ -98,6 +105,10 @@ export function preflightProjectArchive(
   })
 }
 
+/** Export a project as a deterministic, validated archive.
+ * @param options - The options supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function exportProjectArchive(options: {
   readonly project: string
   readonly projectId: ProjectId
@@ -145,6 +156,10 @@ export async function exportProjectArchive(options: {
   })
 }
 
+/** Perform extract project archive through the package's public contract.
+ * @param options - The options supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function extractProjectArchive(options: {
   readonly source: string
   readonly destination: string

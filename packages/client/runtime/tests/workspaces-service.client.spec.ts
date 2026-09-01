@@ -336,13 +336,14 @@ describe('WorkspaceRuntime', () => {
     const api = new FakeApiClient()
     const sessions = new SessionRuntime(ctx, api, fakeRemote())
     const workspaces = new WorkspaceRuntime(ctx, api, sessions)
-    api.onPickDirectory = () => Promise.resolve(ok({ path: '/w/alpha' }))
-    await expect(workspaces.pickDirectory()).resolves.toBe('/w/alpha')
-    api.onPickDirectory = () => Promise.resolve(ok({ path: null }))
-    await expect(workspaces.pickDirectory()).resolves.toBeNull()
-    expect(api.callsOf('host.pickDirectory')).toEqual([{}, {}])
-    api.onPickDirectory = () => Promise.resolve(err({ code: 'internal', message: 'no chooser', details: {} }))
-    await expect(workspaces.pickDirectory()).rejects.toThrow(/no chooser/)
+    api.onPickPath = () => Promise.resolve(ok({ path: '/w/alpha' }))
+    const request = { mode: 'open-file', title: '选择世界包', extensions: ['worldline.zip'] } as const
+    await expect(workspaces.pickPath(request)).resolves.toBe('/w/alpha')
+    api.onPickPath = () => Promise.resolve(ok({ path: null }))
+    await expect(workspaces.pickPath(request)).resolves.toBeNull()
+    expect(api.callsOf('host.pickPath')).toEqual([request, request])
+    api.onPickPath = () => Promise.resolve(err({ code: 'internal', message: 'no chooser', details: {} }))
+    await expect(workspaces.pickPath(request)).rejects.toThrow(/no chooser/)
   })
 
   it('passes listings and creation through the browse wire, wrapping business failures', async () => {
@@ -364,6 +365,10 @@ describe('WorkspaceRuntime', () => {
     expect(api.callsOf('host.createDirectory')).toEqual([{ path: '/home/u', name: 'fresh' }])
     api.onCreateDirectory = () => Promise.resolve(err({ code: 'directory-exists', message: 'taken', details: { path: '/home/u/fresh' } }))
     await expect(workspaces.createDirectory('/home/u', 'fresh')).rejects.toMatchObject({ rpcError: { code: 'directory-exists' } })
+
+    await expect(workspaces.resolveDirectoryFile('/home/u', 'world.worldline.zip'))
+      .resolves.toBe('/home/u/world.worldline.zip')
+    expect(api.callsOf('host.resolveDirectoryFile')).toEqual([{ path: '/home/u', name: 'world.worldline.zip' }])
   })
 
   it('opens a filesystem path through the host without local state', async () => {

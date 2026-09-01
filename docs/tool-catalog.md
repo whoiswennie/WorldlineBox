@@ -42,6 +42,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`, `interrupt_agent`, `list_agents`, `send_message`, `spawn_teammate`, `team_task_create`, `team_task_get`, `team_task_list`, `team_task_update`, `wait_agent` | `ctx.tools`, `ctx.systemPrompt`, `ctx.agentTeams`, `an exact live Team member Agent` | `tool/call`, `team/member`, `team/message/queued`, `team/message/delivered`, `team/task`, `tool/result` | - | All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names. |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
+| `@deepseek-ai/dsh-tool-worldline` | `worldline_build`, `worldline_edit`, `worldline_explain`, `worldline_link`, `worldline_map`, `worldline_project`, `worldline_query`, `worldline_run`, `worldline_transfer` | `ctx.tools`, `ctx.systemPrompt`, `ctx.worldlineProjects`, `ctx.worldlineCompiler`, `ctx.worldlineRuns`, `ctx.worldlineConversationContexts`, `a bound calling Agent at execution time` | `tool/call`, `project Canon/build artifacts or Run state for mutations`, `tool/result` | - | The nine project-scoped tools require the calling author Session binding at execution time; mutation schemas carry stable identity, provenance, revision, dry-run, or explicit-confirmation fields instead of exposing generic filesystem writes. |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
 | `@deepseek-ai/dsh-worldline-video` | `video_index`, `video_probe`, `video_read` | `ctx.tools`, `ctx.skills`, `ctx.subprocess`, `packaged FFmpeg and yt-dlp at execution time` | `tool/call`, `private video cache and sampled JPEGs`, `tool/result` | - | video_probe is metadata-only for online sources; video_index chooses resumable cache or no-media-save stream mode, and video_read performs bounded timestamped sampling from the reusable manifest. |
 
@@ -2758,6 +2759,549 @@ Constraints: concurrency and total-agent caps apply; no filesystem, network, tim
 ```
 
 Source: [`packages/workflow/tool-workflow/src/index.ts`](../packages/workflow/tool-workflow/src/index.ts)
+
+<a id="deepseek-ai-dsh-tool-worldline"></a>
+
+## `@deepseek-ai/dsh-tool-worldline`
+
+### `worldline_build`
+
+Inspect compiler state, compile, answer a question, submit/review a Proposal, or freeze the exact current source digest. Freeze and review require confirmation.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "state",
+        "compile",
+        "answer",
+        "propose",
+        "review",
+        "freeze"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "question_id": {
+      "type": "string"
+    },
+    "answer": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string",
+      "enum": [
+        "canon",
+        "action",
+        "system",
+        "invariant",
+        "map"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "risk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "payload_json": {
+      "type": "string"
+    },
+    "anchors_json": {
+      "type": "string"
+    },
+    "proposal_id": {
+      "type": "string"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected"
+      ]
+    },
+    "reviewed_by": {
+      "type": "string"
+    },
+    "expected_state_revision": {
+      "type": "string"
+    },
+    "expected_source_digest": {
+      "type": "string"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation",
+    "project_id"
+  ]
+}
+```
+
+Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_edit`
+
+Dry-run or apply one project-scoped document/directory mutation. Existing documents use an exact expected revision; text edits replace one unique fragment.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "create",
+        "replace",
+        "mkdir",
+        "move",
+        "copy",
+        "trash",
+        "restore"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "document_id": {
+      "type": "string"
+    },
+    "expected_revision": {
+      "type": "string"
+    },
+    "before": {
+      "type": "string"
+    },
+    "after": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "trash_id": {
+      "type": "string"
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation",
+    "project_id"
+  ]
+}
+```
+
+Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_explain`
+
+Explain one compiled semantic object or one retained Run event with authoritative provenance and causality records.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "target": {
+      "type": "string",
+      "enum": [
+        "semantic",
+        "event"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "object_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "event_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "target"
+  ]
+}
+```
+
+Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_link`
+
+Inspect incoming links for one project document or search stable IDs/paths before editing references.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "backlinks",
+        "search"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "query": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation",
+    "project_id"
+  ]
+}
+```
+
+Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_map`
+
+Dry-run or submit a reviewable structured map Proposal with exact source anchors. It never bypasses review by rewriting a map document directly.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "project_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "patch_json": {
+      "type": "string"
+    },
+    "anchors_json": {
+      "type": "string"
+    },
+    "risk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "expected_state_revision": {
+      "type": "string"
+    },
+    "dry_run": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "project_id",
+    "title",
+    "rationale",
+    "patch_json",
+    "anchors_json"
+  ]
+}
+```
+
+Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_project`
+
+List, create, copy, trash, or restore Worldline projects through the project library. Destructive or duplicating operations require explicit confirmation.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "list",
+        "create",
+        "copy",
+        "trash",
+        "trashed",
+        "restore"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "template": {
+      "type": "string",
+      "enum": [
+        "blank",
+        "world-encyclopedia",
+        "character-story",
+        "social-simulation",
+        "civilization-sandbox",
+        "playable-scenario"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "search": {
+      "type": "string"
+    },
+    "trash_id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation"
+  ]
+}
+```
+
+Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_query`
+
+Read a bounded project tree, one document, document history, project search results, or project trash. This tool never writes.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "tree",
+        "read",
+        "history",
+        "search",
+        "trash"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "query": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limit": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operation",
+    "project_id"
+  ]
+}
+```
+
+Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_run`
+
+Inspect or control deterministic Runs. Mutating operations bind an exact Run and use confirmation for actions, large advances, branches, control changes, AI changes, and stop.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "list",
+        "create",
+        "view",
+        "choices",
+        "advance",
+        "action",
+        "pause",
+        "resume",
+        "stop",
+        "checkpoint",
+        "checkpoints",
+        "branch",
+        "set-control",
+        "set-ai"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "actor_id": {
+      "type": "string"
+    },
+    "seed": {
+      "type": "string"
+    },
+    "duration": {
+      "type": "number"
+    },
+    "max_events": {
+      "type": "integer"
+    },
+    "action_type": {
+      "type": "string"
+    },
+    "parameters_json": {
+      "type": "string"
+    },
+    "expected_sequence": {
+      "type": "integer"
+    },
+    "label": {
+      "type": "string"
+    },
+    "checkpoint_id": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "autonomous",
+        "suggestions",
+        "player"
+      ]
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation"
+  ]
+}
+```
+
+Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+### `worldline_transfer`
+
+Dry-run or start current-format project, frozen Blueprint, or logical Run archive transfer. Paths remain inside the Host project service; transfer never touches a remote repository.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "import",
+        "export",
+        "status",
+        "cancel"
+      ]
+    },
+    "artifact": {
+      "type": "string",
+      "enum": [
+        "project",
+        "blueprint",
+        "run"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "include_runs": {
+      "type": "boolean"
+    },
+    "transfer_id": {
+      "type": "string"
+    },
+    "conflict": {
+      "type": "string",
+      "enum": [
+        "copy",
+        "replace",
+        "cancel"
+      ]
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "confirm": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "operation"
+  ]
+}
+```
+
+Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts)
+
+The nine project-scoped tools require the calling author Session binding at execution time; mutation schemas carry stable identity, provenance, revision, dry-run, or explicit-confirmation fields instead of exposing generic filesystem writes.
 
 <a id="deepseek-ai-dsh-tool-web"></a>
 

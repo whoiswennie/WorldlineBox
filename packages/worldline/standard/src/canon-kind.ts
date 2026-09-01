@@ -17,12 +17,18 @@ const CANON_KINDS = new Set<CanonObjectKind>([
   'custom',
 ])
 
+/** Describes the canon kind resolution value exchanged across the package boundary.
+ */
 export interface CanonKindResolution {
   readonly kind: CanonObjectKind
   readonly customKind?: string
 }
 
-/** Resolve the one current Canon object classification shared by compiler and clients. */
+/** Resolve the one current Canon object classification shared by compiler and clients.
+ * @param path - The path supplied by the caller.
+ * @param explicit - The explicit supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function inferCanonObjectKind(path: string, explicit?: string): CanonKindResolution {
   if (explicit !== undefined) {
     return CANON_KINDS.has(explicit as CanonObjectKind)

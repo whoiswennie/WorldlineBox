@@ -1,15 +1,24 @@
 /** Stable portable identities used by WWS documents and runs. */
+import type { Branded } from '@deepseek-ai/dsh-brand'
 
-export type WorldlineId<Kind extends string> = string & { readonly __worldlineKind: Kind }
+/** Describes the worldline id value exchanged across the package boundary.
+ */
+export type WorldlineId<Kind extends string> = Branded<`WorldlineId:${Kind}`>
 
 const ID_PATTERN = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*:[a-zA-Z0-9][a-zA-Z0-9._~-]{5,127}$/u
 
-/** Validate a namespaced stable identifier without treating a display name as identity. */
+/** Validate a namespaced stable identifier without treating a display name as identity.
+ * @param value - The value supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function isWorldlineId(value: unknown): value is WorldlineId<string> {
   return typeof value === 'string' && ID_PATTERN.test(value)
 }
 
-/** Assert and brand one external identifier. */
+/** Assert and brand one external identifier.
+ * @param value - The value supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function worldlineId<Kind extends string>(value: string): WorldlineId<Kind> {
   if (!isWorldlineId(value)) {
     throw new TypeError(`Invalid Worldline stable id: ${value}`)
@@ -17,7 +26,10 @@ export function worldlineId<Kind extends string>(value: string): WorldlineId<Kin
   return value as WorldlineId<Kind>
 }
 
-/** Allocate a collision-resistant project-local identity. */
+/** Allocate a collision-resistant project-local identity.
+ * @param namespace - The namespace supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function allocateWorldlineId<Kind extends string>(namespace: string): WorldlineId<Kind> {
   if (!/^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/u.test(namespace)) {
     throw new TypeError(`Invalid Worldline id namespace: ${namespace}`)
@@ -25,7 +37,10 @@ export function allocateWorldlineId<Kind extends string>(namespace: string): Wor
   return worldlineId<Kind>(`${namespace}:${crypto.randomUUID()}`)
 }
 
-/** Stable, deterministic JSON used for hashes, replay comparisons, and revisions. */
+/** Stable, deterministic JSON used for hashes, replay comparisons, and revisions.
+ * @param value - The value supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
@@ -35,7 +50,10 @@ export function stableStringify(value: unknown): string {
   )).join(',')}}`
 }
 
-/** Synchronous portable content fingerprint (FNV-1a 64-bit, not a security digest). */
+/** Synchronous portable content fingerprint (FNV-1a 64-bit, not a security digest).
+ * @param value - The value supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function contentFingerprint(value: unknown): string {
   const source = typeof value === 'string' ? value : stableStringify(value)
   let hash = 0xcbf29ce484222325n

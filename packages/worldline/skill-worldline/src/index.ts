@@ -11,6 +11,8 @@ import {
 
 const PROVIDER_NAME = 'worldline-domain'
 
+/** Identifies the package-owned worldline skills value.
+ */
 export const WORLDLINE_SKILLS = [
   ['worldline-authoring', 'Create and revise Canon sources with stable identity, provenance, and explicit author authority.'],
   ['worldline-character-design', 'Design executable characters whose traits, relationships, resources, and actions remain source-grounded.'],
@@ -34,6 +36,8 @@ function resourceBase(name: WorldlineSkillName) {
   }
 }
 
+/** Identifies the package-owned worldline skill candidates value.
+ */
 export const WORLDLINE_SKILL_CANDIDATES: readonly SkillCandidate[] = WORLDLINE_SKILLS.map(
   ([name, description]) => ({
     name,

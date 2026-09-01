@@ -742,6 +742,7 @@
     "apps/web/tests/onboarding-usable-provider.e2e.ts",
     "apps/web/tests/remote-welcome.e2e.ts",
     "apps/web/tests/workspace-management.e2e.ts",
+    "apps/web/tests/worldline-studio.e2e.ts",
     "apps/web/tests/replay-round-trip.e2e.ts",
     "apps/web/tests/hmr-live.e2e.ts",
     "apps/web/tests/seeded-history.e2e.ts",

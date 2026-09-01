@@ -573,7 +573,8 @@ describe('workspaces action face', () => {
     expect(created.title).toBe('/tmp/alpha')
     const registered = await ws.create({ path: '/tmp/beta' })
     expect(registered.path).toBe('/tmp/beta')
-    await expect(ws.pickDirectory()).resolves.toBeNull()
+    const pathRequest = { mode: 'directory', title: 'Pick directory' } as const
+    await expect(ws.pickPath(pathRequest)).resolves.toBeNull()
     const renamed = await ws.rename('w1' as WorkspaceId, 'Renamed')
     expect(renamed.title).toBe('Renamed')
     await ws.delete('w1' as WorkspaceId)
@@ -589,10 +590,10 @@ describe('workspaces action face', () => {
     await ws.archiveSession('s1' as SessionId)
     expect(ws.list.getSnapshot().archivedSessionIds).toEqual(['s1'])
     expect(ws.calls.map(c => c.method)).toEqual(
-      ['create', 'create', 'pickDirectory', 'rename', 'delete', 'openPath', 'searchFiles', 'insertBefore', 'insertSessionBefore', 'archiveSession'])
+      ['create', 'create', 'pickPath', 'rename', 'delete', 'openPath', 'searchFiles', 'insertBefore', 'insertSessionBefore', 'archiveSession'])
 
     ws.stub('create', () => Promise.resolve({ workspaceId: 'ws-x', title: 'X', path: '/x', sessionIds: [] } as never))
-    ws.stub('pickDirectory', () => Promise.resolve('/picked'))
+    ws.stub('pickPath', () => Promise.resolve('/picked'))
     ws.stub('rename', () => Promise.resolve({ workspaceId: 'w1', title: 'S', path: '/s', sessionIds: [] } as never))
     ws.stub('delete', () => Promise.resolve())
     ws.stub('openPath', () => Promise.resolve())
@@ -601,7 +602,7 @@ describe('workspaces action face', () => {
     ws.stub('insertSessionBefore', () => Promise.resolve({ workspaceId: 'w1', title: '', path: '', sessionIds: [] } as never))
     ws.stub('archiveSession', () => Promise.resolve())
     expect((await ws.create({ path: '/y' })).title).toBe('X')
-    await expect(ws.pickDirectory()).resolves.toBe('/picked')
+    await expect(ws.pickPath(pathRequest)).resolves.toBe('/picked')
     expect((await ws.rename('w1' as WorkspaceId, 'z')).title).toBe('S')
     await ws.delete('w1' as WorkspaceId)
     await ws.openPath('/other')

@@ -39,6 +39,8 @@ export interface ISessions {
     workspaceId?: WorkspaceId
     cwd?: string
     sessionId?: SessionId
+    /** Composition installed before the Session is published. */
+    agentPreset?: string
     reuseWorkspaceBlank?: true
   }): Promise<SessionId>
   /**

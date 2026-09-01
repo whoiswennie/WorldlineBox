@@ -1,29 +1,74 @@
+import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { WorldlineId } from './ids.ts'
 
+/** Describes the json primitive value exchanged across the package boundary.
+ */
 export type JsonPrimitive = string | number | boolean | null
+/** Describes the json value value exchanged across the package boundary.
+ */
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
+/** Describes the json object value exchanged across the package boundary.
+ */
 export type JsonObject = { [key: string]: JsonValue }
 
+/** Describes the project id value exchanged across the package boundary.
+ */
 export type ProjectId = WorldlineId<'project'>
+/** Describes the world id value exchanged across the package boundary.
+ */
 export type WorldId = WorldlineId<'world'>
+/** Describes the canon worldline id value exchanged across the package boundary.
+ */
 export type CanonWorldlineId = WorldlineId<'worldline'>
+/** Describes the entity id value exchanged across the package boundary.
+ */
 export type EntityId = WorldlineId<'entity'>
+/** Describes the document id value exchanged across the package boundary.
+ */
 export type DocumentId = WorldlineId<'document'>
+/** Describes the asset id value exchanged across the package boundary.
+ */
 export type AssetId = WorldlineId<'asset'>
+/** Describes the map id value exchanged across the package boundary.
+ */
 export type MapId = WorldlineId<'map'>
+/** Describes the map node id value exchanged across the package boundary.
+ */
 export type MapNodeId = WorldlineId<'map-node'>
+/** Describes the action id value exchanged across the package boundary.
+ */
 export type ActionId = WorldlineId<'action'>
+/** Describes the process id value exchanged across the package boundary.
+ */
 export type ProcessId = WorldlineId<'process'>
+/** Describes the event id value exchanged across the package boundary.
+ */
 export type EventId = WorldlineId<'event'>
+/** Describes the run id value exchanged across the package boundary.
+ */
 export type RunId = WorldlineId<'run'>
+/** Describes the checkpoint id value exchanged across the package boundary.
+ */
 export type CheckpointId = WorldlineId<'checkpoint'>
+/** Describes the blueprint id value exchanged across the package boundary.
+ */
 export type BlueprintId = WorldlineId<'blueprint'>
-export type Revision = string & { readonly __revision: true }
+/** Describes the revision value exchanged across the package boundary.
+ */
+export type Revision = Branded<'WorldlineRevision'>
 
+/** Identifies the package-owned wws version value.
+ */
 export const WWS_VERSION = '0.1.0' as const
+/** Identifies the package-owned project manifest value.
+ */
 export const PROJECT_MANIFEST = 'worldline.toml' as const
 
+/** Describes the canon status value exchanged across the package boundary.
+ */
 export type CanonStatus = 'draft' | 'canon' | 'deprecated'
+/** Describes the provenance kind value exchanged across the package boundary.
+ */
 export type ProvenanceKind =
   | 'author'
   | 'approved-supplement'
@@ -32,6 +77,8 @@ export type ProvenanceKind =
   | 'agent-proposal'
   | 'runtime-proposal'
 
+/** Describes the source anchor value exchanged across the package boundary.
+ */
 export interface SourceAnchor {
   readonly id: WorldlineId<'source-anchor'>
   readonly documentId: DocumentId
@@ -44,6 +91,8 @@ export interface SourceAnchor {
   readonly contextAfter?: string
 }
 
+/** Describes the provenance value exchanged across the package boundary.
+ */
 export interface Provenance {
   readonly kind: ProvenanceKind
   readonly anchors: readonly SourceAnchor[]
@@ -55,6 +104,8 @@ export interface Provenance {
   readonly confidence?: number
 }
 
+/** Describes the project manifest value exchanged across the package boundary.
+ */
 export interface ProjectManifest {
   readonly format: typeof WWS_VERSION
   readonly id: ProjectId
@@ -72,6 +123,8 @@ export interface ProjectManifest {
   readonly dependencies: readonly MechanismDependency[]
 }
 
+/** Describes the project template value exchanged across the package boundary.
+ */
 export type ProjectTemplate =
   | 'blank'
   | 'world-encyclopedia'
@@ -80,12 +133,16 @@ export type ProjectTemplate =
   | 'civilization-sandbox'
   | 'playable-scenario'
 
+/** Describes the mechanism dependency value exchanged across the package boundary.
+ */
 export interface MechanismDependency {
   readonly id: string
   readonly version: string
   readonly required: boolean
 }
 
+/** Describes the canon object kind value exchanged across the package boundary.
+ */
 export type CanonObjectKind =
   | 'charter'
   | 'character'
@@ -102,6 +159,8 @@ export type CanonObjectKind =
   | 'asset'
   | 'custom'
 
+/** Describes the canon object value exchanged across the package boundary.
+ */
 export interface CanonObject {
   readonly id: EntityId
   readonly kind: CanonObjectKind
@@ -120,6 +179,8 @@ export interface CanonObject {
   readonly provenance: readonly Provenance[]
 }
 
+/** Describes the canon link value exchanged across the package boundary.
+ */
 export interface CanonLink {
   readonly id: WorldlineId<'link'>
   readonly from: EntityId
@@ -129,6 +190,8 @@ export interface CanonLink {
   readonly provenance: readonly Provenance[]
 }
 
+/** Describes the world map value exchanged across the package boundary.
+ */
 export interface WorldMap {
   readonly id: MapId
   readonly version: 1
@@ -141,6 +204,8 @@ export interface WorldMap {
   readonly provenance: readonly Provenance[]
 }
 
+/** Describes the map layer value exchanged across the package boundary.
+ */
 export interface MapLayer {
   readonly id: string
   readonly name: string
@@ -149,10 +214,16 @@ export interface MapLayer {
   readonly order: number
 }
 
+/** Describes the map node kind value exchanged across the package boundary.
+ */
 export type MapNodeKind = 'world' | 'plane' | 'region' | 'city' | 'building' | 'room' | 'slot'
 
+/** Describes the map point value exchanged across the package boundary.
+ */
 export interface MapPoint { readonly x: number; readonly y: number }
 
+/** Describes the map node value exchanged across the package boundary.
+ */
 export interface MapNode {
   readonly id: MapNodeId
   readonly entityId?: EntityId
@@ -168,6 +239,8 @@ export interface MapNode {
   readonly entryNodeIds: readonly MapNodeId[]
 }
 
+/** Describes the map edge value exchanged across the package boundary.
+ */
 export interface MapEdge {
   readonly id: WorldlineId<'map-edge'>
   readonly from: MapNodeId
@@ -182,20 +255,28 @@ export interface MapEdge {
   readonly dynamicCondition?: string
 }
 
+/** Describes the model purpose value exchanged across the package boundary.
+ */
 export type ModelPurpose = 'compiler' | 'character' | 'creative' | 'narrator' | 'summary'
 
+/** Describes the model route value exchanged across the package boundary.
+ */
 export interface ModelRoute {
   readonly provider: string
   readonly model: string
   readonly reasoningEffort?: string
 }
 
+/** Describes the model policy value exchanged across the package boundary.
+ */
 export interface ModelPolicy {
   readonly routes: Readonly<Partial<Record<ModelPurpose, ModelRoute>>>
   readonly aiEnabled: boolean
   readonly revision: Revision
 }
 
+/** Describes the ai budget value exchanged across the package boundary.
+ */
 export interface AiBudget {
   readonly maxCalls: number
   readonly maxInputTokens: number
@@ -207,6 +288,8 @@ export interface AiBudget {
   readonly currency: string
 }
 
+/** Describes the ai usage value exchanged across the package boundary.
+ */
 export interface AiUsage {
   readonly calls: number
   readonly inputTokens: number
@@ -217,6 +300,8 @@ export interface AiUsage {
   readonly degradedReason?: string
 }
 
+/** Describes the context pack section value exchanged across the package boundary.
+ */
 export interface ContextPackSection {
   readonly kind: 'identity' | 'constraints' | 'observation' | 'goal' | 'memory' | 'background' | 'actions'
   readonly text: string
@@ -225,6 +310,8 @@ export interface ContextPackSection {
   readonly priority: number
 }
 
+/** Describes the context pack value exchanged across the package boundary.
+ */
 export interface ContextPack {
   readonly actorId: EntityId
   readonly model: ModelRoute
@@ -237,6 +324,8 @@ export interface ContextPack {
   readonly droppedSourceIds: readonly string[]
 }
 
+/** Describes the character memory value exchanged across the package boundary.
+ */
 export interface CharacterMemory {
   readonly episodic: readonly EpisodicMemory[]
   readonly beliefs: readonly Belief[]
@@ -247,6 +336,8 @@ export interface CharacterMemory {
   readonly reflections: readonly Reflection[]
 }
 
+/** Describes the memory base value exchanged across the package boundary.
+ */
 export interface MemoryBase {
   readonly id: WorldlineId<'memory'>
   readonly actorId: EntityId
@@ -255,45 +346,65 @@ export interface MemoryBase {
   readonly importance: number
 }
 
+/** Describes the episodic memory value exchanged across the package boundary.
+ */
 export interface EpisodicMemory extends MemoryBase {
   readonly summary: string
   readonly participants: readonly EntityId[]
   readonly placeId?: MapNodeId
 }
+/** Describes the belief value exchanged across the package boundary.
+ */
 export interface Belief extends MemoryBase {
   readonly subject: string
   readonly value: JsonValue
   readonly confidence: number
   readonly contradictedBy: readonly EventId[]
 }
+/** Describes the goal commitment value exchanged across the package boundary.
+ */
 export interface GoalCommitment extends MemoryBase {
   readonly goal: string
   readonly status: 'active' | 'met' | 'failed' | 'abandoned'
   readonly deadline?: number
   readonly promisedTo?: EntityId
 }
+/** Describes the relationship evidence value exchanged across the package boundary.
+ */
 export interface RelationshipEvidence extends MemoryBase {
   readonly otherId: EntityId
   readonly dimensions: Readonly<Record<string, number>>
 }
+/** Describes the action experience value exchanged across the package boundary.
+ */
 export interface ActionExperience extends MemoryBase {
   readonly actionType: string
   readonly outcome: ActionTerminalState
   readonly conditions: JsonObject
 }
+/** Describes the skill experience value exchanged across the package boundary.
+ */
 export interface SkillExperience extends MemoryBase {
   readonly skill: string
   readonly level: number
   readonly evidence: readonly EventId[]
 }
+/** Describes the reflection value exchanged across the package boundary.
+ */
 export interface Reflection extends MemoryBase {
   readonly text: string
   readonly modelRoute?: ModelRoute
 }
 
+/** Describes the action lifecycle state value exchanged across the package boundary.
+ */
 export type ActionLifecycleState = 'proposed' | 'admitted' | 'reserved' | 'started' | 'progressing' | ActionTerminalState
+/** Describes the action terminal state value exchanged across the package boundary.
+ */
 export type ActionTerminalState = 'completed' | 'failed' | 'cancelled'
 
+/** Describes the action request value exchanged across the package boundary.
+ */
 export interface ActionRequest {
   readonly id: ActionId
   readonly type: string
@@ -305,6 +416,8 @@ export interface ActionRequest {
   readonly idempotencyKey: string
 }
 
+/** Describes the resource claim value exchanged across the package boundary.
+ */
 export interface ResourceClaim {
   readonly resourceId: string
   readonly quantity: number
@@ -313,6 +426,8 @@ export interface ResourceClaim {
   readonly end: number
 }
 
+/** Describes the reservation value exchanged across the package boundary.
+ */
 export interface Reservation {
   readonly id: WorldlineId<'reservation'>
   readonly processId: ProcessId
@@ -322,6 +437,8 @@ export interface Reservation {
   readonly queuePosition: number
 }
 
+/** Describes the movement progress value exchanged across the package boundary.
+ */
 export interface MovementProgress {
   readonly origin: MapNodeId
   readonly destination: MapNodeId
@@ -334,6 +451,8 @@ export interface MovementProgress {
   readonly mode: string
 }
 
+/** Describes the process value exchanged across the package boundary.
+ */
 export interface Process {
   readonly id: ProcessId
   readonly action: ActionRequest
@@ -353,12 +472,16 @@ export interface Process {
   readonly failure?: string
 }
 
+/** Describes the state delta value exchanged across the package boundary.
+ */
 export interface StateDelta {
   readonly path: string
   readonly before?: JsonValue
   readonly after?: JsonValue
 }
 
+/** Describes the world event value exchanged across the package boundary.
+ */
 export interface WorldEvent {
   readonly id: EventId
   readonly sequence: number
@@ -379,6 +502,8 @@ export interface WorldEvent {
   readonly data: JsonObject
 }
 
+/** Describes the decision trace value exchanged across the package boundary.
+ */
 export interface DecisionTrace {
   readonly id: WorldlineId<'decision-trace'>
   readonly logicalTime: number
@@ -422,6 +547,8 @@ export interface AiInvocation {
   readonly recordedAt: string
 }
 
+/** Describes the observation value exchanged across the package boundary.
+ */
 export interface Observation {
   readonly id: WorldlineId<'observation'>
   readonly observerId: EntityId
@@ -432,6 +559,8 @@ export interface Observation {
   readonly perceived: JsonObject
 }
 
+/** Describes the narrative beat value exchanged across the package boundary.
+ */
 export interface NarrativeBeat {
   readonly id: WorldlineId<'narrative-beat'>
   readonly invocationId?: WorldlineId<'ai-invocation'>
@@ -445,6 +574,8 @@ export interface NarrativeBeat {
   readonly modelRoute?: ModelRoute
 }
 
+/** Describes the media cue value exchanged across the package boundary.
+ */
 export interface MediaCue {
   readonly type: 'background' | 'portrait' | 'expression' | 'bgm' | 'sfx' | 'voice' | 'transition'
   readonly assetId?: AssetId
@@ -452,6 +583,8 @@ export interface MediaCue {
   readonly variant?: string
 }
 
+/** Describes the telemetry value exchanged across the package boundary.
+ */
 export interface Telemetry {
   readonly logicalTime: number
   readonly queueDepth: number
@@ -461,6 +594,8 @@ export interface Telemetry {
   readonly ai: AiUsage
 }
 
+/** Describes the future event value exchanged across the package boundary.
+ */
 export interface FutureEvent {
   readonly id: string
   readonly due: number
@@ -470,6 +605,8 @@ export interface FutureEvent {
   readonly dedupeKey?: string
 }
 
+/** Describes the blueprint value exchanged across the package boundary.
+ */
 export interface Blueprint {
   readonly id: BlueprintId
   readonly digest: string
@@ -492,6 +629,8 @@ export interface Blueprint {
   readonly certificate: ClosureCertificate
 }
 
+/** Describes the simulation purpose value exchanged across the package boundary.
+ */
 export interface SimulationPurpose {
   readonly summary: string
   readonly scope: readonly string[]
@@ -503,6 +642,8 @@ export interface SimulationPurpose {
   readonly antiPatterns: readonly string[]
 }
 
+/** Describes the runtime entity seed value exchanged across the package boundary.
+ */
 export interface RuntimeEntitySeed {
   readonly id: EntityId
   readonly type: string
@@ -513,6 +654,8 @@ export interface RuntimeEntitySeed {
   readonly memory: CharacterMemory
 }
 
+/** Describes the action definition value exchanged across the package boundary.
+ */
 export interface ActionDefinition {
   readonly id: string
   readonly description: string
@@ -530,6 +673,8 @@ export interface ActionDefinition {
   readonly provenance: readonly Provenance[]
 }
 
+/** Describes the claim template value exchanged across the package boundary.
+ */
 export interface ClaimTemplate {
   readonly resource: string
   readonly quantity: number
@@ -537,18 +682,24 @@ export interface ClaimTemplate {
   readonly duration: number
 }
 
+/** Describes the expression value exchanged across the package boundary.
+ */
 export type Expression =
   | { readonly op: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte'; readonly path: string; readonly value: JsonValue }
   | { readonly op: 'exists'; readonly path: string }
   | { readonly op: 'and' | 'or'; readonly items: readonly Expression[] }
   | { readonly op: 'not'; readonly item: Expression }
 
+/** Describes the effect value exchanged across the package boundary.
+ */
 export type Effect =
   | { readonly op: 'set'; readonly path: string; readonly value: JsonValue }
   | { readonly op: 'increment'; readonly path: string; readonly amount: number; readonly min?: number; readonly max?: number }
   | { readonly op: 'transfer'; readonly resource: string; readonly from: string; readonly to: string; readonly amount: number }
   | { readonly op: 'observe'; readonly observer: string; readonly fact: JsonObject }
 
+/** Describes the system definition value exchanged across the package boundary.
+ */
 export interface SystemDefinition {
   readonly id: string
   readonly description: string
@@ -559,6 +710,8 @@ export interface SystemDefinition {
   readonly provenance: readonly Provenance[]
 }
 
+/** Describes the invariant definition value exchanged across the package boundary.
+ */
 export interface InvariantDefinition {
   readonly id: string
   readonly description: string
@@ -566,6 +719,8 @@ export interface InvariantDefinition {
   readonly provenance: readonly Provenance[]
 }
 
+/** Describes the certificate category value exchanged across the package boundary.
+ */
 export type CertificateCategory =
   | 'state'
   | 'time'
@@ -581,6 +736,8 @@ export type CertificateCategory =
   | 'replay'
   | 'provenance'
 
+/** Describes the certificate result value exchanged across the package boundary.
+ */
 export interface CertificateResult {
   readonly category: CertificateCategory
   readonly status: 'pass' | 'warning' | 'blocking'
@@ -589,6 +746,8 @@ export interface CertificateResult {
   readonly reproduction?: string
 }
 
+/** Describes the closure certificate value exchanged across the package boundary.
+ */
 export interface ClosureCertificate {
   readonly blueprintDigest: string
   readonly createdAt: string
@@ -599,6 +758,8 @@ export interface ClosureCertificate {
   readonly performance: JsonObject
 }
 
+/** Describes the run snapshot value exchanged across the package boundary.
+ */
 export interface RunSnapshot {
   readonly runId: RunId
   readonly blueprintId: BlueprintId
@@ -619,6 +780,8 @@ export interface RunSnapshot {
   readonly aiUsage: AiUsage
 }
 
+/** Describes the checkpoint value exchanged across the package boundary.
+ */
 export interface Checkpoint {
   readonly id: CheckpointId
   readonly runId: RunId
@@ -628,6 +791,8 @@ export interface Checkpoint {
   readonly digest: string
 }
 
+/** Describes the scene frame value exchanged across the package boundary.
+ */
 export interface SceneFrame {
   readonly logicalTime: number
   readonly placeId?: MapNodeId
@@ -637,6 +802,8 @@ export interface SceneFrame {
   readonly media: readonly MediaCue[]
 }
 
+/** Describes the choice projection value exchanged across the package boundary.
+ */
 export interface ChoiceProjection {
   readonly id: string
   readonly actionType: string
@@ -650,6 +817,8 @@ export interface ChoiceProjection {
   readonly risks: readonly string[]
 }
 
+/** Describes the story stage renderer value exchanged across the package boundary.
+ */
 export interface StoryStageRenderer {
   readonly id: string
   readonly name: string

@@ -13,7 +13,13 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 
-/** The native interaction: one OS directory chooser on the host display. */
+/** One user-paced filesystem choice. */
+export type PathPickerRequest =
+  | { mode: 'directory'; title: string }
+  | { mode: 'open-file'; title: string; extensions: readonly string[] }
+  | { mode: 'save-file'; title: string; suggestedName: string; extensions: readonly string[] }
+
+/** The native interaction: one OS path chooser on the host display. */
 export interface DirectoryPickerNativeCapability {
   kind: 'native'
   /**
@@ -21,7 +27,7 @@ export interface DirectoryPickerNativeCapability {
    * @param signal - caller/connection lifetime; abort terminates the chooser.
    * @returns the chosen absolute path, or null when the operator cancels.
    */
-  pick(signal: AbortSignal): Promise<string | null>
+  pick(request: PathPickerRequest, signal: AbortSignal): Promise<string | null>
 }
 
 /** One directory row: a listing child or a breadcrumb ancestor. */
@@ -92,6 +98,8 @@ export interface DirectoryPickerBrowseCapability {
    * `directory-create-failed` for a parent that is not fully qualified or any other failure.
    */
   createDirectory(path: string, name: string): Promise<string>
+  /** Validate one plain file name and resolve it below an absolute directory. */
+  resolveFile(path: string, name: string): Promise<string>
 }
 
 /**
@@ -108,7 +116,11 @@ export interface DirectoryPickerCapabilities {
 export type DirectoryPickerCapability = DirectoryPickerCapabilities[keyof DirectoryPickerCapabilities]
 
 /** Closed failure vocabulary of the browse primitives (mirrored onto the wire by consumers). */
-export type DirectoryPickerErrorCode = 'directory-unreadable' | 'directory-exists' | 'directory-create-failed'
+export type DirectoryPickerErrorCode =
+  | 'directory-unreadable'
+  | 'directory-exists'
+  | 'directory-create-failed'
+  | 'file-name-invalid'
 
 /** Typed failure thrown by browse primitives so consumers can map business codes without string matching. */
 export class DirectoryPickerError extends Error {

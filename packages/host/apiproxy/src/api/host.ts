@@ -4,6 +4,8 @@
  */
 
 import type { RpcRequest, RpcResponse } from './rpc.ts'
+import type { PathPickerRequest } from '@deepseek-ai/dsh-host-directory-picker'
+export type { PathPickerRequest } from '@deepseek-ai/dsh-host-directory-picker'
 import type {
   WorkspaceTreeMutation, WorkspaceTreePreview, WorkspaceTreeSearchListing,
 } from '@deepseek-ai/dsh-host-workspace-tree'
@@ -123,11 +125,11 @@ export interface HostApi {
   }>>
 
   /**
-   * Open the operating system's single-directory picker; cancellation returns
-   * null. Only served under the `native` capability.
+   * Open the operating system's directory/open/save picker; cancellation
+   * returns null. Only served under the `native` capability.
    */
-  pickDirectory(
-    request: RpcRequest<{}>,
+  pickPath(
+    request: RpcRequest<PathPickerRequest>,
     signal: AbortSignal,
   ): Promise<RpcResponse<{ path: string | null }>>
 
@@ -139,7 +141,7 @@ export interface HostApi {
    * on disconnect or timeout.
    */
   listDirectory(
-    request: RpcRequest<{ path?: string; includeFiles?: boolean }>,
+    request: RpcRequest<{ path?: string; includeFiles?: boolean; hostFilesystem?: boolean }>,
     signal: AbortSignal,
   ): Promise<RpcResponse<DirectoryListing>>
 
@@ -150,6 +152,11 @@ export interface HostApi {
    * `directory-create-failed`.
    */
   createDirectory(
+    request: RpcRequest<{ path: string; name: string }>,
+  ): Promise<RpcResponse<{ path: string }>>
+
+  /** Resolve a user-entered file name inside a browsed host directory. */
+  resolveDirectoryFile(
     request: RpcRequest<{ path: string; name: string }>,
   ): Promise<RpcResponse<{ path: string }>>
 

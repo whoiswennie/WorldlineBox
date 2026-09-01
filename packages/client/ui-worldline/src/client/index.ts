@@ -2,24 +2,29 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
-import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
 import { WorldlineNavItem, type WorldlineNavInjected } from './WorldlineNavItem.tsx'
 import { WorldlineStudio } from './WorldlineStudio.tsx'
 import type { WorldlineStudioInjected } from './types.ts'
 import { en, zh } from './locales.ts'
+import { STREAM_PATH } from '../contract.ts'
+import {
+  bindWorldlineConversation,
+  launchWorldlineAuthorConversation,
+} from './launch-author.ts'
 
 export type { WorldlineStudioInjected } from './types.ts'
 export type { WorldlineLocaleKey } from './locales.ts'
 
+/** Identifies the package-owned ns value.
+ */
 export const NS = 'worldlineStudio'
 export const inject = [
   'slots', 'layout', 'locale', 'remote', 'remote.worldlineProjects',
   'remote.worldlineCompiler', 'remote.worldlineRuns', 'remote.worldlineAi',
   'remote.worldlineNarrative', 'workspaces',
-  'connection', 'sessions',
+  'sessions',
 ]
 const PAGE_ID = 'worldline-studio'
-const AUTHOR_PRESET = 'worldline-author'
 
 interface RemoteEnvelope<T> {
   readonly ok: boolean
@@ -39,7 +44,7 @@ async function narrateStream(
   request: import('@deepseek-ai/dsh-worldline-narrative/types').NarrateRequest,
   onChunk: (chunk: import('@deepseek-ai/dsh-worldline-narrative/types').NarrativeStreamChunk) => void,
 ): Promise<import('@deepseek-ai/dsh-worldline-standard/types').NarrativeBeat> {
-  const response = await fetch('/api/worldline/narrative/stream', {
+  const response = await fetch(STREAM_PATH, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
     body: JSON.stringify(request),
@@ -72,7 +77,6 @@ async function narrateStream(
 }
 
 export function apply(ctx: ClientContext): void {
-  const { api } = ctx.get('connection') as ConnectionHandle
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-worldline: dictionaries')
   const studioInjected = (): WorldlineStudioInjected => ({
     projects: {
@@ -156,30 +160,14 @@ export function apply(ctx: ClientContext): void {
       retry: async request => await invoke(ctx.remote.worldlineNarrative.retry(request)),
       storyStage: async () => await invoke(ctx.remote.worldlineNarrative.storyStage()),
     },
-    pickDirectory: () => ctx.workspaces.pickDirectory(),
     openPath: path => ctx.workspaces.openPath(path),
-    launchConversation: async (project, runId) => {
-      const sessionId = await ctx.sessions.create({ cwd: project.path })
-      try {
-        const selected = await api.agentPresets.select({ sessionId, agentPreset: AUTHOR_PRESET })
-        if (!selected.result.ok) throw new Error(selected.result.error.message)
-        ctx.sessions.noteAgentPreset(sessionId, selected.result.value.agentPreset)
-        const response = await fetch('/api/worldline/conversation/bind', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', accept: 'application/json' },
-          body: JSON.stringify({ sessionId, projectId: project.manifest.id, ...(runId === undefined ? {} : { runId }) }),
-        })
-        if (!response.ok) {
-          const result = await response.json().catch(() => ({})) as { error?: string }
-          throw new Error(result.error ?? `conversation binding failed: HTTP ${String(response.status)}`)
-        }
-      } catch (error) {
-        await ctx.sessions.delete(sessionId).catch(() => undefined)
-        throw error
-      }
-      ctx.sessions.open(sessionId)
-      ctx.layout.activatePage('conversation')
-    },
+    launchConversation: (project, runId) => launchWorldlineAuthorConversation({
+      createSession: options => ctx.sessions.create(options),
+      deleteSession: sessionId => ctx.sessions.delete(sessionId),
+      openSession: (sessionId) => { ctx.sessions.open(sessionId) },
+      showConversation: () => { ctx.layout.activatePage('conversation') },
+      bind: bindWorldlineConversation,
+    }, project, runId),
   })
   const navInjected = (): WorldlineNavInjected => ({
     pageId: PAGE_ID,
@@ -192,6 +180,7 @@ export function apply(ctx: ClientContext): void {
   }, WorldlineNavItem))
   ctx.slots.inject('worldline.main.page', () => ctx.slots.register({
     name: 'worldline.main.page', priority: 21,
+    children: { 'host.directoryFlow': { kind: 'single', scope: 'root' } },
     select: owner => owner.activePage === PAGE_ID ? {} : null,
     locale: NS,
     inject: studioInjected,

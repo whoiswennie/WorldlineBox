@@ -9,15 +9,26 @@
 /** `HRESULT_FROM_WIN32(ERROR_CANCELLED)`: the user dismissed the dialog. */
 export const HRESULT_CANCELLED = 0x800704c7 | 0
 
+import type { PathPickerRequest } from '@deepseek-ai/dsh-host-directory-picker'
+
 /** `FOS_PICKFOLDERS`: the dialog selects directories, not files. */
 export const FOS_PICKFOLDERS = 0x20
 /** `FOS_FORCEFILESYSTEM`: only results with a filesystem path can be chosen. */
 export const FOS_FORCEFILESYSTEM = 0x40
 /** `FOS_NOCHANGEDIR`: never mutate the process working directory. */
 export const FOS_NOCHANGEDIR = 0x8
+/** Identifies the package-owned fos overwriteprompt value.
+ */
+export const FOS_OVERWRITEPROMPT = 0x2
+/** Identifies the package-owned fos filemustexist value.
+ */
+export const FOS_FILEMUSTEXIST = 0x1000
+/** Identifies the package-owned fos pathmustexist value.
+ */
+export const FOS_PATHMUSTEXIST = 0x800
 
 /** One created folder dialog: the vtable calls the sequencing needs. */
-export interface Win32FolderDialog {
+export interface Win32PathDialog {
   /**
    * `IFileDialog::SetOptions`.
    * @param options - the `FOS_*` flag union to apply.
@@ -30,6 +41,8 @@ export interface Win32FolderDialog {
    * @returns the call's HRESULT.
    */
   setTitle(title: string): number
+  /** Seed the save dialog with the suggested archive file name. */
+  setFileName(name: string): number
   /**
    * `IModalWindow::Show` with no owner window; blocks the calling thread
    * until the user selects or dismisses.
@@ -72,7 +85,7 @@ export interface Win32DialogBindings {
    * `CoCreateInstance(CLSID_FileOpenDialog)`.
    * @returns the created dialog surface; throws when creation fails.
    */
-  createFolderDialog(): Win32FolderDialog
+  createPathDialog(mode: PathPickerRequest['mode']): Win32PathDialog
   /**
    * `GetCurrentThreadId` — the native id a driver needs to close this
    * thread's windows from outside.
@@ -93,18 +106,18 @@ function check(hr: number, what: string): number {
 }
 
 /**
- * Run one modal folder-picker conversation on the calling thread: DPI opt-in,
+ * Run one modal path-picker conversation on the calling thread: DPI opt-in,
  * STA init, dialog creation, `Show`, and result extraction, releasing the
  * dialog on every path.
  * @param bindings - the native surface (koffi-backed in production, fakes in tests).
- * @param title - the dialog title text.
+ * @param request - picker mode, title, filters, and optional suggested file name.
  * @param onShowing - called with the native thread id immediately before the
  *   blocking `Show`, so a driver on another thread can close the dialog.
  * @returns the selected filesystem path, or null when the user cancels.
  */
-export function runFolderDialog(
+export function runPathDialog(
   bindings: Win32DialogBindings,
-  title: string,
+  request: PathPickerRequest,
   onShowing: (threadId: number) => void,
 ): string | null {
   bindings.setThreadDpiAwareness()
@@ -112,10 +125,15 @@ export function runFolderDialog(
   // From here the apartment is initialized (S_OK or S_FALSE) and must be
   // uninitialized exactly once on every path.
   try {
-    const dialog = bindings.createFolderDialog()
+    const dialog = bindings.createPathDialog(request.mode)
     try {
-      check(dialog.setOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR), 'SetOptions')
-      check(dialog.setTitle(title), 'SetTitle')
+      const options = FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR | FOS_PATHMUSTEXIST
+        | (request.mode === 'directory' ? FOS_PICKFOLDERS : 0)
+        | (request.mode === 'open-file' ? FOS_FILEMUSTEXIST : 0)
+        | (request.mode === 'save-file' ? FOS_OVERWRITEPROMPT : 0)
+      check(dialog.setOptions(options), 'SetOptions')
+      check(dialog.setTitle(request.title), 'SetTitle')
+      if (request.mode === 'save-file') check(dialog.setFileName(request.suggestedName), 'SetFileName')
       onShowing(bindings.currentThreadId())
       const shown = dialog.show()
       if (shown === HRESULT_CANCELLED) return null

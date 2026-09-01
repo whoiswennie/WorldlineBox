@@ -3,6 +3,8 @@ import type { CanonObjectKind, DocumentId } from '@deepseek-ai/dsh-worldline-sta
 import { allocateWorldlineId } from '@deepseek-ai/dsh-worldline-standard'
 import { durableWrite, exists, normalizeRelative, readTextBounded } from './storage.ts'
 
+/** Describes the document metadata value exchanged across the package boundary.
+ */
 export interface DocumentMetadata {
   readonly id: DocumentId
   readonly objectKind?: CanonObjectKind
@@ -11,6 +13,8 @@ export interface DocumentMetadata {
 
 interface MetadataDocument { readonly documents: Record<string, DocumentMetadata> }
 
+/** Owns the project metadata capability and its lifecycle.
+ */
 export class ProjectMetadata {
   private document: MetadataDocument = { documents: {} }
   private dirty = false
@@ -19,6 +23,9 @@ export class ProjectMetadata {
 
   private get path(): string { return resolve(this.projectPath, '.worldline', 'index.json') }
 
+  /** Perform load through the package's public contract.
+   * @returns The result produced by the operation.
+   */
   async load(): Promise<void> {
     if (!(await exists(this.path))) return
     const parsed = JSON.parse(await readTextBounded(this.path)) as unknown
@@ -30,8 +37,17 @@ export class ProjectMetadata {
     this.document = { documents: parsed.documents as Record<string, DocumentMetadata> }
   }
 
+  /** Read get from the package-owned authoritative state.
+   * @param path - The path supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   get(path: string): DocumentMetadata | undefined { return this.document.documents[normalizeRelative(path)] }
 
+  /** Perform ensure through the package's public contract.
+   * @param path - The path supplied by the caller.
+   * @param patch - The patch supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   ensure(path: string, patch?: Partial<Omit<DocumentMetadata, 'id'>> & { id?: DocumentId }): DocumentMetadata {
     const normalized = normalizeRelative(path)
     const current = this.document.documents[normalized]
@@ -48,6 +64,10 @@ export class ProjectMetadata {
     return next
   }
 
+  /** Apply move through the package's validated ownership boundary.
+   * @param source - The source supplied by the caller.
+   * @param destination - The destination supplied by the caller.
+   */
   move(source: string, destination: string): void {
     const from = normalizeRelative(source)
     const to = normalizeRelative(destination)
@@ -60,6 +80,9 @@ export class ProjectMetadata {
     this.dirty = true
   }
 
+  /** Perform remove through the package's public contract.
+   * @param path - The path supplied by the caller.
+   */
   remove(path: string): void {
     const normalized = normalizeRelative(path)
     const documents: Record<string, DocumentMetadata> = {}
@@ -70,6 +93,10 @@ export class ProjectMetadata {
     this.dirty = true
   }
 
+  /** Create clone through the package's validated ownership boundary.
+   * @param source - The source supplied by the caller.
+   * @param destination - The destination supplied by the caller.
+   */
   clone(source: string, destination: string): void {
     const from = normalizeRelative(source)
     const to = normalizeRelative(destination)
@@ -84,12 +111,20 @@ export class ProjectMetadata {
     this.dirty = true
   }
 
+  /** Perform save through the package's public contract.
+   * @returns The result produced by the operation.
+   */
   async save(): Promise<void> {
     if (!this.dirty) return
     await durableWrite(this.path, `${JSON.stringify(this.document, null, 2)}\n`)
     this.dirty = false
   }
 
+  /** Read history path from the package-owned authoritative state.
+   * @param id - The id supplied by the caller.
+   * @param revision - The revision supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   historyPath(id: DocumentId, revision: string): string {
     const idPath = id.replace(/[^a-zA-Z0-9._-]/g, '_')
     const revisionPath = revision.replace(/[^a-zA-Z0-9._-]/g, '_')

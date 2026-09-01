@@ -48,7 +48,7 @@ export type {
   SessionListMetadata, SessionProjectionsBlock, SessionSearchItem, SessionsApi, SessionSummary,
 } from './sessions.ts'
 export type {
-  DirectoryEntry, DirectoryListing, HostApi, WorkspaceTreeMutation, WorkspaceTreePreview,
+  DirectoryEntry, DirectoryListing, HostApi, PathPickerRequest, WorkspaceTreeMutation, WorkspaceTreePreview,
   WorkspaceTreeSearchListing, WorkspaceTreeSearchResult, TerminalReadView, TerminalSendView,
   TerminalRawReadView, TerminalSessionView, TerminalStatusView,
   RuntimeLogEntry, RuntimeLogLevel, RuntimeLogSnapshot,

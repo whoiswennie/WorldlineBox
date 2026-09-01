@@ -84,6 +84,10 @@ export default class WorldlineCompiler extends TypertRemoteService {
     this.context = ctx
   }
 
+  /** Return the latest compiler state for a project.
+   * @param projectId - The project id supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('state')
   async state(projectId: ProjectId): Promise<CompilerState> {
     const document = await this.context.worldlineProjects.readControl(projectId, 'compiler', 'state.json')
@@ -92,6 +96,10 @@ export default class WorldlineCompiler extends TypertRemoteService {
     return { revision: document.revision, questions: parsed.questions ?? [], proposals: parsed.proposals ?? [] }
   }
 
+  /** Compile a project snapshot and persist its diagnostics and draft output.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('compile')
   async compile(request: CompileWorldRequest): Promise<BuildPreview> {
     const snapshot = await this.context.worldlineProjects.sourceSnapshot(request.projectId)
@@ -103,6 +111,10 @@ export default class WorldlineCompiler extends TypertRemoteService {
     return previewOf(product)
   }
 
+  /** Perform answer question through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('answerQuestion')
   async answerQuestion(request: AnswerQuestionRequest): Promise<CompilerState> {
     const state = await this.state(request.projectId)
@@ -119,6 +131,10 @@ export default class WorldlineCompiler extends TypertRemoteService {
     }, state.revision)
   }
 
+  /** Apply submit proposal through the package's validated ownership boundary.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('submitProposal')
   async submitProposal(request: SubmitProposalRequest): Promise<CompilerState> {
     const state = await this.state(request.projectId)
@@ -141,6 +157,10 @@ export default class WorldlineCompiler extends TypertRemoteService {
     }, state.revision)
   }
 
+  /** Perform review proposal through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('reviewProposal')
   async reviewProposal(request: ReviewProposalRequest): Promise<CompilerState> {
     const state = await this.state(request.projectId)
@@ -157,6 +177,10 @@ export default class WorldlineCompiler extends TypertRemoteService {
     }, state.revision)
   }
 
+  /** Freeze the latest valid draft into an immutable blueprint.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('freeze')
   async freeze(request: FreezeWorldRequest): Promise<FrozenBuild> {
     const snapshot = await this.context.worldlineProjects.sourceSnapshot(request.projectId)
@@ -179,6 +203,10 @@ export default class WorldlineCompiler extends TypertRemoteService {
     return { blueprint, certificate: blueprint.certificate, activatedAt: now() }
   }
 
+  /** Explain one compiler diagnostic using stable source references.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('explain')
   async explain(request: ExplainSemanticsRequest): Promise<SemanticsExplanation> {
     const snapshot = await this.context.worldlineProjects.sourceSnapshot(request.projectId)

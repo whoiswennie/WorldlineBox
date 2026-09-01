@@ -34,6 +34,7 @@ describe('Worldline virtual project tree', () => {
       project={project}
       projects={{ tree } as unknown as ProjectClient}
       revision={0}
+      label="文件"
       onOpen={() => undefined}
       onSelect={() => undefined}
     />)

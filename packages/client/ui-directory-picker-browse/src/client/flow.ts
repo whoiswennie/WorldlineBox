@@ -10,13 +10,16 @@ import type { Translate } from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: the owner contract of the directory-flow holes.
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import { DirectoryBrowser } from './DirectoryBrowser.tsx'
+import { PathBrowser } from './PathBrowser.tsx'
 
 /** Injected face: the browse wire calls and copy the dialog drives (bound in apply's closure). */
 export interface BrowseFlowInjected {
   /** List one directory level (absent path = the Host home directory); the signal aborts a superseded scan. */
-  listDirectory: (path?: string, signal?: AbortSignal) => Promise<DirectoryListing>
+  listDirectory: (path?: string, signal?: AbortSignal, includeFiles?: boolean) => Promise<DirectoryListing>
   /** Create one child directory under an existing parent. */
   createDirectory: (path: string, name: string) => Promise<string>
+  /** Resolve a save file name on the host without client-side path joining. */
+  resolveFile: (path: string, name: string) => Promise<string>
   /** Localized dialog copy (this package's namespace). */
   t: Translate
 }
@@ -31,10 +34,22 @@ export interface BrowseFlowInjected {
  * @returns the dialog element (renders nothing while closed).
  */
 export function BrowseDirectoryFlow(props: DirectoryFlowOwnerProps & BrowseFlowInjected): ReactElement {
+  if (props.request.mode !== 'directory') {
+    return createElement(PathBrowser, {
+      open: props.open,
+      busy: props.busy,
+      request: props.request,
+      listDirectory: (path, signal) => props.listDirectory(path, signal, true),
+      resolveFile: props.resolveFile,
+      t: props.t,
+      onOpen: props.onPicked,
+      onClose: props.onCancel,
+    })
+  }
   return createElement(DirectoryBrowser, {
     open: props.open,
     busy: props.busy,
-    listDirectory: props.listDirectory,
+    listDirectory: (path, signal) => props.listDirectory(path, signal, false),
     createDirectory: props.createDirectory,
     t: props.t,
     onOpen: props.onPicked,

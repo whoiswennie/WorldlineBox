@@ -75,9 +75,10 @@ function scriptedApi(overrides: {
       describe: r => ok(r, {
         version: '0-test', cwd: '/t', attachedSessions: 0, home: '/h', canOpenPath: true,
       }),
-      pickDirectory: r => ok(r, { path: null }),
+      pickPath: r => ok(r, { path: null }),
       listDirectory: r => ok(r, { path: '/t', home: '/t', crumbs: [], entries: [], truncated: false }),
       createDirectory: r => ok(r, { path: '/t/new' }),
+      resolveDirectoryFile: r => ok(r, { path: '/t/archive.zip' }),
       openPath: r => ok(r, { opened: true as const }),
       previewWorkspaceFile: err,
       searchWorkspaceFiles: err,

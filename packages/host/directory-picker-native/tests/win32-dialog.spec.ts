@@ -8,7 +8,7 @@
 
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { pickWin32Directory, type Win32DialogInternals, type Win32DialogWorkerLike } from '../src/win32-dialog.ts'
+import { pickWin32Path as openWin32PathDialog, type Win32DialogInternals, type Win32DialogWorkerLike } from '../src/win32-dialog.ts'
 import type { Win32DialogWorkerMessage } from '../src/win32-dialog-worker.ts'
 
 class FakeWorker extends EventEmitter implements Win32DialogWorkerLike {
@@ -40,42 +40,45 @@ function harness(overrides: Partial<Win32DialogInternals> = {}): Harness {
 }
 
 const live = (): AbortSignal => new AbortController().signal
+const directoryRequest = { mode: 'directory', title: '选择工作区目录' } as const
+const pickWin32Path = (signal: AbortSignal, internals?: Win32DialogInternals) =>
+  openWin32PathDialog(directoryRequest, signal, internals)
 
-describe('pickWin32Directory', () => {
+describe('pickWin32Path', () => {
   it('resolves the selected path and the cancellation null', async () => {
     const first = harness()
-    const picked = pickWin32Directory(live(), first.internals)
+    const picked = pickWin32Path(live(), first.internals)
     first.worker.post({ kind: 'showing', threadId: 7 })
     first.worker.post({ kind: 'done', path: 'C:\\picked' })
     await expect(picked).resolves.toBe('C:\\picked')
     expect(first.close).not.toHaveBeenCalled()
 
     const second = harness()
-    const cancelled = pickWin32Directory(live(), second.internals)
+    const cancelled = pickWin32Path(live(), second.internals)
     second.worker.post({ kind: 'done', path: null })
     await expect(cancelled).resolves.toBeNull()
   })
 
   it('rejects on a reported dialog failure, a worker crash, and a silent exit', async () => {
     const reported = harness()
-    const failing = pickWin32Directory(live(), reported.internals)
+    const failing = pickWin32Path(live(), reported.internals)
     reported.worker.post({ kind: 'error', message: 'CoCreateInstance failed' })
     await expect(failing).rejects.toThrow('win32 folder dialog failed: CoCreateInstance failed')
 
     const crashed = harness()
-    const crashing = pickWin32Directory(live(), crashed.internals)
+    const crashing = pickWin32Path(live(), crashed.internals)
     crashed.worker.emit('error', new Error('worker blew up'))
     await expect(crashing).rejects.toThrow('worker blew up')
 
     const silent = harness()
-    const exiting = pickWin32Directory(live(), silent.internals)
+    const exiting = pickWin32Path(live(), silent.internals)
     silent.worker.emit('exit', 0)
     await expect(exiting).rejects.toThrow('exited before reporting a result')
   })
 
   it('settles once: a late exit after the result is inert', async () => {
     const { worker, internals } = harness()
-    const picked = pickWin32Directory(live(), internals)
+    const picked = pickWin32Path(live(), internals)
     worker.post({ kind: 'done', path: 'C:\\once' })
     worker.emit('exit', 0)
     await expect(picked).resolves.toBe('C:\\once')
@@ -85,7 +88,7 @@ describe('pickWin32Directory', () => {
     const spawnWorker = vi.fn()
     const controller = new AbortController()
     controller.abort()
-    await expect(pickWin32Directory(controller.signal, { spawnWorker, closeThreadWindows: async () => undefined }))
+    await expect(pickWin32Path(controller.signal, { spawnWorker, closeThreadWindows: async () => undefined }))
       .rejects.toThrow('native directory picker aborted')
     expect(spawnWorker).not.toHaveBeenCalled()
   })
@@ -96,7 +99,7 @@ describe('pickWin32Directory', () => {
     // Attach the expectation BEFORE driving the race: on a fast host the
     // close budget can exhaust (and reject) between waitFor ticks, and a
     // rejection with no listener yet would count as unhandled.
-    const picked = expect(pickWin32Directory(controller.signal, internals)).rejects.toThrow('native directory picker aborted')
+    const picked = expect(pickWin32Path(controller.signal, internals)).rejects.toThrow('native directory picker aborted')
     worker.post({ kind: 'showing', threadId: 99 })
     controller.abort()
     await vi.waitFor(() => {
@@ -111,7 +114,7 @@ describe('pickWin32Directory', () => {
     const { worker, internals } = harness({ closeThreadWindows: closeFailures })
     const controller = new AbortController()
     // Attached before the race for the same unhandled-rejection reason above.
-    const picked = expect(pickWin32Directory(controller.signal, internals)).rejects.toThrow('native directory picker aborted')
+    const picked = expect(pickWin32Path(controller.signal, internals)).rejects.toThrow('native directory picker aborted')
     controller.abort()
     expect(closeFailures).not.toHaveBeenCalled()
     worker.post({ kind: 'showing', threadId: 12 })
@@ -127,7 +130,7 @@ describe('pickWin32Directory', () => {
     // worker hung before `showing` cannot dangle the pick.
     const { worker, internals, close } = harness()
     const controller = new AbortController()
-    const picked = expect(pickWin32Directory(controller.signal, internals)).rejects.toThrow('dialog unresponsive; worker killed')
+    const picked = expect(pickWin32Path(controller.signal, internals)).rejects.toThrow('dialog unresponsive; worker killed')
     controller.abort()
     await picked
     expect(worker.kill).toHaveBeenCalledOnce()
@@ -137,7 +140,7 @@ describe('pickWin32Directory', () => {
   it('kills an unresponsive worker after the close budget', async () => {
     const { worker, internals, close } = harness()
     const controller = new AbortController()
-    const picked = pickWin32Directory(controller.signal, internals)
+    const picked = pickWin32Path(controller.signal, internals)
     worker.post({ kind: 'showing', threadId: 5 })
     controller.abort()
     await expect(picked).rejects.toThrow('dialog unresponsive; worker killed')
@@ -148,7 +151,7 @@ describe('pickWin32Directory', () => {
   // POSIX hosts exercise the REAL default plumbing end to end: the tsx-bootstrapped
   // worker spawns, loads koffi, fails to load ole32.dll, and reports the error.
   it.skipIf(process.platform === 'win32')('rejects through the real worker where the Win32 surface is unavailable', async () => {
-    await expect(pickWin32Directory(live())).rejects.toThrow('win32 folder dialog failed')
+    await expect(pickWin32Path(live())).rejects.toThrow('win32 folder dialog failed')
   }, 30_000)
 
   // win32 hosts run the true COM smoke instead: a real dialog opens briefly
@@ -158,6 +161,6 @@ describe('pickWin32Directory', () => {
     setTimeout(() => {
       controller.abort()
     }, 400)
-    await expect(pickWin32Directory(controller.signal)).rejects.toThrow('native directory picker aborted')
+    await expect(pickWin32Path(controller.signal)).rejects.toThrow('native directory picker aborted')
   }, 30_000)
 })

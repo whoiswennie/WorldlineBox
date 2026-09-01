@@ -24,7 +24,7 @@ const nodeRequire = createRequire(import.meta.url)
  * @returns the spawned child process.
  */
 export function spawnDialogWorker(data: Win32DialogWorkerData): ReturnType<typeof spawn> {
-  const env = { ...process.env, WORLDLINE_DIALOG_TITLE: data.title }
+  const env = { ...process.env, WORLDLINE_DIALOG_REQUEST: JSON.stringify(data.request) }
   const stdio: StdioOptions = ['ignore', 'inherit', 'inherit', 'ipc']
   /* v8 ignore next 3 -- the built-output arm: tests always run unbuilt (src/) */
   if (!import.meta.url.endsWith('.ts')) {

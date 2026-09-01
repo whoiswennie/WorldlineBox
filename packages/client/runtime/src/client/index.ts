@@ -68,6 +68,7 @@ export type {
   WorkspaceTreeSearchListing, WorkspaceTreeSearchResult,
 } from '@deepseek-ai/dsh-client-connection/client'
 export type { WorkspaceTreeMutation, WorkspaceTreePreview } from '@deepseek-ai/dsh-host-apiproxy/api'
+export type { PathPickerRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
 // Runtime owns the snapshot store; web-react only binds it to React.
 export { createSnapshotStore, defineStore, shallowEqual } from './contract/store.ts'
 export type {

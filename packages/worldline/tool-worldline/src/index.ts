@@ -26,6 +26,8 @@ const OUTPUT = {
   render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }],
 }
 
+/** Identifies the package-owned worldline tool names value.
+ */
 export const WORLDLINE_TOOL_NAMES = [
   'worldline_project',
   'worldline_query',
@@ -117,10 +119,20 @@ function anchorsJson(value: unknown): SourceAnchor[] {
   })
 }
 
+/** Perform require confirmation through the package's public contract.
+ * @param confirmed - The confirmed supplied by the caller.
+ * @param operation - The operation supplied by the caller.
+ */
 export function requireConfirmation(confirmed: unknown, operation: string): void {
   if (confirmed !== true) throw new Error(`${operation} requires explicit confirm=true`)
 }
 
+/** Perform apply unique replacement through the package's public contract.
+ * @param content - The content supplied by the caller.
+ * @param before - The before supplied by the caller.
+ * @param after - The after supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function applyUniqueReplacement(content: string, before: string, after: string): string {
   if (before === '') throw new Error('before must not be empty')
   const first = content.indexOf(before)
@@ -214,14 +226,26 @@ export function apply(ctx: Context): void {
             projectId: projectId(args.project_id),
             ...optionalField('reason', args.reason),
           }))
-        case 'trashed': return encode(await ctx.worldlineProjects.listTrashedProjects())
-        case 'restore':
+        case 'trashed': {
+          const bound = binding(ctx, exec)
+          const trashed = await ctx.worldlineProjects.listTrashedProjects()
+          return encode(trashed.filter(item => item.manifest?.id === bound.projectId))
+        }
+        case 'restore': {
           requireConfirmation(args.confirm, 'restore project')
-          binding(ctx, exec)
+          const bound = binding(ctx, exec)
+          const trashId = string(args.trash_id, 'trash_id')
+          const item = (await ctx.worldlineProjects.listTrashedProjects())
+            .find(candidate => candidate.trashId === trashId)
+          if (item === undefined) throw new Error(`trashed project not found: ${trashId}`)
+          if (item.manifest?.id !== bound.projectId) {
+            throw new Error('trashed project is outside the Session binding')
+          }
           return encode(await ctx.worldlineProjects.restoreProject({
-            trashId: string(args.trash_id, 'trash_id'),
+            trashId,
             ...optionalField('name', args.name),
           }))
+        }
       }
     },
   }))

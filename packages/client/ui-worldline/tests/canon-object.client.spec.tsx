@@ -32,7 +32,7 @@ Alice 来自 [[place:harbor01]]。
 
     expect(screen.getByRole('heading', { name: 'Alice' })).toBeTruthy()
     expect(screen.getAllByText('角色')).toHaveLength(2)
-    expect(screen.getByText('Belief')).toBeTruthy()
+    expect(screen.getByText('认知')).toBeTruthy()
     expect(screen.getByText('找到原点')).toBeTruthy()
     expect(screen.getByText('place:harbor01')).toBeTruthy()
     expect(screen.getByText('entity:partner01')).toBeTruthy()

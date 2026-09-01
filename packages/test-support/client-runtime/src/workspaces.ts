@@ -161,10 +161,10 @@ export class TestWorkspaces implements IWorkspaces {
    * Directory picker (recorded). The default cancels (null); stub to select.
    * @returns the picked path, or null.
    */
-  async pickDirectory(): Promise<string | null> {
-    this.calls.push({ method: 'pickDirectory', args: [] })
-    const stub = this.stubs.get('pickDirectory')
-    if (stub !== undefined) return await (stub() as Promise<string | null>)
+  async pickPath(request: import('@deepseek-ai/dsh-client-runtime/client').PathPickerRequest): Promise<string | null> {
+    this.calls.push({ method: 'pickPath', args: [request] })
+    const stub = this.stubs.get('pickPath')
+    if (stub !== undefined) return await (stub(request) as Promise<string | null>)
     return null
   }
 
@@ -195,6 +195,13 @@ export class TestWorkspaces implements IWorkspaces {
       entries: [],
       truncated: false,
     }
+  }
+
+  async resolveDirectoryFile(path: string, name: string): Promise<string> {
+    this.calls.push({ method: 'resolveDirectoryFile', args: [path, name] })
+    const stub = this.stubs.get('resolveDirectoryFile')
+    if (stub !== undefined) return await (stub(path, name) as Promise<string>)
+    return `${path}/${name}`
   }
 
   /**

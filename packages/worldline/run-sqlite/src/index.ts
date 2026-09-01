@@ -3,6 +3,8 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { Checkpoint, JsonObject, RunSnapshot } from '@deepseek-ai/dsh-worldline-standard'
 
+/** Describes the run stream value exchanged across the package boundary.
+ */
 export type RunStream =
   | 'world-event'
   | 'decision-trace'
@@ -12,6 +14,8 @@ export type RunStream =
   | 'narrative-beat'
   | 'telemetry'
 
+/** Describes the run stream record value exchanged across the package boundary.
+ */
 export interface RunStreamRecord {
   readonly sequence: number
   /** Stable cursor component assigned by SQLite within one authoritative sequence. */
@@ -22,10 +26,18 @@ export interface RunStreamRecord {
   readonly payload: JsonObject
 }
 
+/** Describes the run commit value exchanged across the package boundary.
+ */
 export interface RunCommit {
   readonly snapshot: RunSnapshot
   readonly records: readonly RunStreamRecord[]
   readonly metadata?: Readonly<Record<string, string>>
+}
+
+/** Configures one authoritative Run database connection. */
+export interface Config {
+  /** Open the database in query-only mode without creating parent directories. */
+  readonly readOnly?: boolean
 }
 
 const APPLICATION_ID = 0x5757524c
@@ -74,10 +86,12 @@ function parseObject(value: unknown): JsonObject {
 
 /** SQLite store owned by exactly one Runtime worker for its entire lifetime. */
 export class WorldlineRunDatabase {
+  /** Owned SQLite connection; writable mode has exactly one runtime-worker owner. */
   readonly database: DatabaseSync
+  /** Whether this connection rejects every mutation path. */
   readonly readOnly: boolean
 
-  constructor(readonly path: string, options: { readonly readOnly?: boolean } = {}) {
+  constructor(readonly path: string, options: Config = {}) {
     this.readOnly = options.readOnly === true
     if (!this.readOnly) mkdirSync(dirname(path), { recursive: true })
     this.database = new DatabaseSync(path, { readOnly: this.readOnly })
@@ -120,6 +134,7 @@ export class WorldlineRunDatabase {
     }
   }
 
+  /** Close the owned SQLite connection. */
   close(): void { this.database.close() }
 
   /** Hold one WAL read snapshot while a logical archive is streamed. */
@@ -129,15 +144,24 @@ export class WorldlineRunDatabase {
     this.database.exec('BEGIN')
   }
 
+  /** End the active consistent-read snapshot without mutating the Run. */
   endConsistentRead(): void {
     if (this.database.isTransaction) this.database.exec('ROLLBACK')
   }
 
+  /** Read one Run metadata value.
+   * @param key - The key supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   meta(key: string): string | undefined {
     const row = this.database.prepare('SELECT value FROM run_meta WHERE key=?').get(key)
     return row === undefined ? undefined : String(row['value'])
   }
 
+  /** Persist one metadata value in the authoritative Run database.
+   * @param key - The key supplied by the caller.
+   * @param value - The value supplied by the caller.
+   */
   setMeta(key: string, value: string): void {
     this.database.prepare(`
       INSERT INTO run_meta(key,value) VALUES(?,?)
@@ -145,11 +169,17 @@ export class WorldlineRunDatabase {
     `).run(key, value)
   }
 
+  /** Read all Run metadata as an immutable record.
+   * @returns The result produced by the operation.
+   */
   metadata(): Readonly<Record<string, string>> {
     return Object.fromEntries(this.database.prepare('SELECT key,value FROM run_meta ORDER BY key')
       .all().map(row => [String(row['key']), String(row['value'])]))
   }
 
+  /** Initialize an empty Run database from a validated snapshot.
+   * @param snapshot - The snapshot supplied by the caller.
+   */
   initialize(snapshot: RunSnapshot): void {
     const existing = this.snapshot()
     if (existing !== undefined) {
@@ -158,20 +188,33 @@ export class WorldlineRunDatabase {
       }
       return
     }
-    this.database.prepare(`
-      INSERT INTO snapshot(singleton,sequence,logical_time,payload) VALUES(1,?,?,?)
-    `).run(snapshot.sequence, snapshot.logicalTime, JSON.stringify(snapshot))
-    this.database.prepare('INSERT INTO run_meta(key,value) VALUES(?,?)').run('runId', snapshot.runId)
-    this.database.prepare('INSERT INTO run_meta(key,value) VALUES(?,?)')
-      .run('blueprintDigest', snapshot.blueprintDigest)
-    this.setMeta('status', 'paused')
+    try {
+      this.database.exec('BEGIN IMMEDIATE')
+      this.database.prepare(`
+        INSERT INTO snapshot(singleton,sequence,logical_time,payload) VALUES(1,?,?,?)
+      `).run(snapshot.sequence, snapshot.logicalTime, JSON.stringify(snapshot))
+      this.database.prepare('INSERT INTO run_meta(key,value) VALUES(?,?)').run('runId', snapshot.runId)
+      this.database.prepare('INSERT INTO run_meta(key,value) VALUES(?,?)')
+        .run('blueprintDigest', snapshot.blueprintDigest)
+      this.setMeta('status', 'paused')
+      this.database.exec('COMMIT')
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec('ROLLBACK')
+      throw error
+    }
   }
 
+  /** Reconstruct the latest authoritative Run snapshot.
+   * @returns The result produced by the operation.
+   */
   snapshot(): RunSnapshot | undefined {
     const row = this.database.prepare('SELECT payload FROM snapshot WHERE singleton=1').get()
     return row === undefined ? undefined : parseObject(row['payload']) as unknown as RunSnapshot
   }
 
+  /** Commit the next Run snapshot and append-only records atomically.
+   * @param value - The value supplied by the caller.
+   */
   commit(value: RunCommit): void {
     const current = this.snapshot()
     if (current === undefined) throw new Error('Run database is not initialized')
@@ -184,8 +227,8 @@ export class WorldlineRunDatabase {
       SELECT COALESCE(MAX(ordinal), -1) + 1 AS value
       FROM stream_records WHERE sequence=?
     `)
-    this.database.exec('BEGIN IMMEDIATE')
     try {
+      this.database.exec('BEGIN IMMEDIATE')
       const ordinals = new Map<number, number>()
       for (const record of value.records) {
         if (record.sequence > value.snapshot.sequence) {
@@ -215,11 +258,18 @@ export class WorldlineRunDatabase {
       }
       this.database.exec('COMMIT')
     } catch (error) {
-      this.database.exec('ROLLBACK')
+      if (this.database.isTransaction) this.database.exec('ROLLBACK')
       throw error
     }
   }
 
+  /** Read a filtered page from the append-only record stream.
+   * @param afterSequence - The after sequence supplied by the caller.
+   * @param limit - The limit supplied by the caller.
+   * @param stream - The stream supplied by the caller.
+   * @param afterOrdinal - The after ordinal supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   records(
     afterSequence = -1,
     limit = 500,
@@ -248,6 +298,9 @@ export class WorldlineRunDatabase {
     }))
   }
 
+  /** Perform all records through the package's public contract.
+   * @returns The result produced by the operation.
+   */
   *allRecords(): Iterable<RunStreamRecord> {
     const rows = this.database.prepare(`
       SELECT sequence,ordinal,logical_time,stream,id,payload
@@ -265,6 +318,11 @@ export class WorldlineRunDatabase {
     }
   }
 
+  /** Read one append-only record by its stable identifier.
+   * @param stream - The stream supplied by the caller.
+   * @param id - The id supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   record(stream: RunStream, id: string): RunStreamRecord | undefined {
     const row = this.database.prepare(`
       SELECT sequence,ordinal,logical_time,stream,id,payload
@@ -280,6 +338,10 @@ export class WorldlineRunDatabase {
     }
   }
 
+  /** Perform save checkpoint through the package's public contract.
+   * @param checkpoint - The checkpoint supplied by the caller.
+   * @param label - The label supplied by the caller.
+   */
   saveCheckpoint(checkpoint: Checkpoint, label: string): void {
     this.database.prepare(`
       INSERT INTO checkpoints(id,sequence,logical_time,label,payload,created_at)
@@ -294,6 +356,9 @@ export class WorldlineRunDatabase {
     )
   }
 
+  /** List the checkpoints stored for this Run.
+   * @returns The result produced by the operation.
+   */
   checkpoints(): readonly { readonly checkpoint: Checkpoint; readonly label: string; readonly createdAt: string }[] {
     return this.database.prepare(`
       SELECT label,payload,created_at FROM checkpoints ORDER BY sequence DESC
@@ -304,11 +369,18 @@ export class WorldlineRunDatabase {
     }))
   }
 
+  /** Persist a named checkpoint for the current Run snapshot.
+   * @param id - The id supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   checkpoint(id: string): Checkpoint | undefined {
     const row = this.database.prepare('SELECT payload FROM checkpoints WHERE id=?').get(id)
     return row === undefined ? undefined : parseObject(row['payload']) as unknown as Checkpoint
   }
 
+  /** Execute SQLite integrity validation and return every reported issue.
+   * @returns The result produced by the operation.
+   */
   integrity(): { readonly ok: boolean; readonly journalMode: string; readonly detail: string } {
     const detail = String(this.database.prepare('PRAGMA integrity_check').get()?.['integrity_check'] ?? '')
     const journalMode = String(this.database.prepare('PRAGMA journal_mode').get()?.['journal_mode'] ?? '')

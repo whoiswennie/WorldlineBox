@@ -72,6 +72,8 @@ import type {
 } from '@deepseek-ai/dsh-worldline-runtime'
 import { WorldlineRuntimeError } from '@deepseek-ai/dsh-worldline-runtime'
 
+/** Describes the kernel init value exchanged across the package boundary.
+ */
 export interface KernelInit {
   readonly projectId: ProjectId
   readonly runId: RunId
@@ -274,6 +276,8 @@ export class WorldlineKernel {
     this.database.setMeta('runtimeState', JSON.stringify(this.runtimeState()))
   }
 
+  /** Perform close through the package's public contract.
+   */
   close(): void {
     if (this.stopped) return
     this.statusValue = 'stopped'
@@ -282,6 +286,9 @@ export class WorldlineKernel {
     this.database.close()
   }
 
+  /** Read view from the package-owned authoritative state.
+   * @returns The result produced by the operation.
+   */
   view(): RunView {
     return {
       summary: this.summary(),
@@ -292,6 +299,9 @@ export class WorldlineKernel {
     }
   }
 
+  /** Perform definition view through the package's public contract.
+   * @returns The result produced by the operation.
+   */
   definitionView(): RunDefinitionView {
     return {
       runId: this.snapshotValue.runId,
@@ -309,6 +319,10 @@ export class WorldlineKernel {
     }
   }
 
+  /** Perform spatial through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   spatial(request: RunSpatialRequest): RunSpatialView {
     this.assertRun(request.runId)
     const availableMaps = this.init.blueprint.maps.map(map => ({
@@ -402,6 +416,10 @@ export class WorldlineKernel {
     return projection
   }
 
+  /** Perform choices through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   choices(request: RunChoicesRequest): RunChoicesView {
     this.assertRun(request.runId)
     const actor = this.entity(request.actorId)
@@ -424,6 +442,9 @@ export class WorldlineKernel {
     }
   }
 
+  /** Perform summary through the package's public contract.
+   * @returns The result produced by the operation.
+   */
   summary(): RunSummary {
     return {
       runId: this.snapshotValue.runId,
@@ -440,6 +461,9 @@ export class WorldlineKernel {
     }
   }
 
+  /** Apply pause through the package's validated ownership boundary.
+   * @returns The result produced by the operation.
+   */
   pause(): RunView {
     this.assertLive()
     this.statusValue = 'paused'
@@ -447,6 +471,9 @@ export class WorldlineKernel {
     return this.view()
   }
 
+  /** Apply resume through the package's validated ownership boundary.
+   * @returns The result produced by the operation.
+   */
   resume(): RunView {
     this.assertLive()
     this.statusValue = 'running'
@@ -454,6 +481,10 @@ export class WorldlineKernel {
     return this.view()
   }
 
+  /** Apply advance through the package's validated ownership boundary.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   advance(request: AdvanceRunRequest): RunView {
     this.assertRun(request.runId)
     this.assertLive()
@@ -487,6 +518,10 @@ export class WorldlineKernel {
     return this.view()
   }
 
+  /** Apply submit action through the package's validated ownership boundary.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   submitAction(request: SubmitRunActionRequest): SubmitRunActionResult {
     this.assertRun(request.runId)
     this.assertLive()
@@ -560,6 +595,10 @@ export class WorldlineKernel {
     return { actionId, process, decision, view: this.view() }
   }
 
+  /** Apply records through the package's validated ownership boundary.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   records(request: RunRecordsRequest): RunRecordsPage {
     this.assertRun(request.runId)
     const limit = Math.min(5000, Math.max(1, request.limit ?? 500))
@@ -578,6 +617,10 @@ export class WorldlineKernel {
     }
   }
 
+  /** Perform checkpoint through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   checkpoint(request: CreateCheckpointRequest): CheckpointView {
     this.assertRun(request.runId)
     const checkpoint: Checkpoint = {
@@ -592,8 +635,15 @@ export class WorldlineKernel {
     return { checkpoint, label: request.label, createdAt: checkpoint.createdAt }
   }
 
+  /** Read checkpoints from the package-owned authoritative state.
+   * @returns The result produced by the operation.
+   */
   checkpoints(): readonly CheckpointView[] { return this.database.checkpoints() }
 
+  /** Change an actor's control mode within the isolated Run kernel.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   setControl(request: SetActorControlRequest): RunView {
     this.assertRun(request.runId)
     if (this.entity(request.actorId) === undefined) {
@@ -604,6 +654,10 @@ export class WorldlineKernel {
     return this.view()
   }
 
+  /** Enable or disable AI participation inside the isolated Run kernel.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   setAiEnabled(request: SetAiEnabledRequest): RunView {
     this.assertRun(request.runId)
     this.snapshotValue = {
@@ -614,6 +668,10 @@ export class WorldlineKernel {
     return this.view()
   }
 
+  /** Perform switch model through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   switchModel(request: SwitchModelPolicyRequest): RunView {
     this.assertRun(request.runId)
     if (request.expectedSequence !== this.snapshotValue.sequence) {
@@ -624,6 +682,10 @@ export class WorldlineKernel {
     return this.view()
   }
 
+  /** Perform explain through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   explain(request: ExplainRunEventRequest): RunEventExplanation {
     this.assertRun(request.runId)
     const all = this.database.records(-1, 5000)
@@ -649,6 +711,10 @@ export class WorldlineKernel {
     }
   }
 
+  /** Apply record ai intent through the package's validated ownership boundary.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   recordAiIntent(request: RecordAiIntentRequest): RecordAiIntentResult {
     this.assertRun(request.runId)
     this.assertLive()
@@ -688,6 +754,10 @@ export class WorldlineKernel {
     return { intent, view: this.view() }
   }
 
+  /** Apply record ai invocation through the package's validated ownership boundary.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   recordAiInvocation(request: RecordAiInvocationRequest): RecordAiInvocationResult {
     this.assertRun(request.runId)
     this.assertLive()
@@ -733,6 +803,10 @@ export class WorldlineKernel {
     return { invocation, budgetExceeded, view: this.view() }
   }
 
+  /** Apply record narrative beat through the package's validated ownership boundary.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   recordNarrativeBeat(request: RecordNarrativeBeatRequest): RecordNarrativeBeatResult {
     this.assertRun(request.runId)
     this.assertLive()

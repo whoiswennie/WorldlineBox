@@ -2652,7 +2652,12 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
       // Deterministic native pick: the keyless lanes drive the full
       // pick-then-adopt path without an OS chooser (design-mock content,
       // same tree the browse primitives serve).
-      pickDirectory: request => ok(request, { path: `${FIXTURE_HOME}/Documents/project` }),
+      pickPath: request => ok(request, { path: `${FIXTURE_HOME}/Documents/project` }),
+      resolveDirectoryFile: request => ok(request, {
+        path: request.payload.path === '/'
+          ? `/${request.payload.name}`
+          : `${request.payload.path}/${request.payload.name}`,
+      }),
       listDirectory: (request) => {
         const target = request.payload.path ?? FIXTURE_HOME
         const children = childrenOf(target)
@@ -3321,9 +3326,10 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'subagent.prompt': return this.api.subagents.prompt(request, signal)
       case 'subagent.interrupt': return this.api.subagents.interrupt(request)
       case 'host.describe': return this.api.host.describe(request)
-      case 'host.pickDirectory': return this.api.host.pickDirectory(request, new AbortController().signal)
+      case 'host.pickPath': return this.api.host.pickPath(request, new AbortController().signal)
       case 'host.listDirectory': return this.api.host.listDirectory(request, new AbortController().signal)
       case 'host.createDirectory': return this.api.host.createDirectory(request)
+      case 'host.resolveDirectoryFile': return this.api.host.resolveDirectoryFile(request)
       case 'host.openPath': return this.api.host.openPath(request, new AbortController().signal)
       case 'host.previewWorkspaceFile': return this.api.host.previewWorkspaceFile(request, signal)
       case 'host.searchWorkspaceFiles': return this.api.host.searchWorkspaceFiles(request, signal)

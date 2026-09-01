@@ -166,6 +166,15 @@ describe('built Web profile', () => {
     const worldline = readPreset('worldline-author', 'agent.cordis.yml')
     expect(worldline).toContain("name: '@deepseek-ai/dsh-tool-worldline'")
     expect(worldline).toContain("name: '@deepseek-ai/dsh-skill-worldline'")
+    expect(worldline).toContain(
+      '这是一项完整的世界线项目任务，不是普通文档写作',
+    )
+    expect(worldline).toContain(
+      '不得用单个 Markdown 总结代替结构化项目',
+    )
+    expect(worldline).toContain(
+      '创建 Run、投射合法选择、执行至少一个与故事目标相关的动作',
+    )
     expect(worldline).not.toContain("name: '@deepseek-ai/dsh-tool-fs'")
     expect(worldline).not.toContain("name: '@deepseek-ai/dsh-tool-bash'")
   })

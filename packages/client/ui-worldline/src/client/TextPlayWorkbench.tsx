@@ -1,13 +1,13 @@
 /* oxlint-disable @stylistic/max-len -- JSX keeps each compact story action structurally visible. */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import type { RunSummary, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
 import type { TextPlayView, StoryStageStatus } from '@deepseek-ai/dsh-worldline-narrative/types'
 import type { EntityId, JsonObject, JsonValue, NarrativeBeat } from '@deepseek-ai/dsh-worldline-standard/types'
+import { worldlineLabel } from './presentation.ts'
 import type { NarrativeClient, RunsClient } from './types.ts'
-import { useWorldlineEntrance, useWorldlinePulse } from './motion.ts'
 import css from './TextPlayWorkbench.module.css'
 
 interface TextPlayWorkbenchProps extends PropsLocale<'worldlineStudio'> {
@@ -40,11 +40,7 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
   const [streamingText, setStreamingText] = useState('')
   const [busy, setBusy] = useState<string>()
   const [error, setError] = useState<string>()
-  const motionRoot = useRef<HTMLDivElement>(null)
-  const transcript = useRef<HTMLDivElement>(null)
   const projectId = props.project.manifest.id
-  useWorldlineEntrance(motionRoot, [runId])
-  useWorldlinePulse(transcript, '[data-latest]', [play?.beats.length, streamingText === '' ? 0 : 1])
 
   const loadRuns = useCallback(async (): Promise<void> => {
     const next = (await props.runs.list()).filter(item => item.projectId === projectId)
@@ -103,33 +99,33 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
     void mutate(`rephrase:${beat.id}`, async () => { await props.narrative.rephrase({ runId, actorId, beatId: beat.id, camera }) })
   }
 
-  return <div ref={motionRoot} className={css.page}>
-    <header className={css.header} data-worldline-reveal>
-      <div><span>STORY PROJECTION</span><h2>{props.t('textPlay')}</h2></div>
+  return <div className={css.page}>
+    <header className={css.header}>
+      <div><span>文字叙事投影</span><h2>{props.t('textPlay')}</h2></div>
       <div className={css.selectors}>
-        <label>Run<select value={runId ?? ''} onChange={(event) => { setRunId(event.target.value as RunSummary['runId']) }}>{runs.map(item => <option key={item.runId} value={item.runId}>{item.runId.slice(-12)} · {item.status}</option>)}</select></label>
+        <label>{props.t('run')}<select value={runId ?? ''} onChange={(event) => { setRunId(event.target.value as RunSummary['runId']) }}>{runs.map(item => <option key={item.runId} value={item.runId}>{item.runId.slice(-12)} · {worldlineLabel(item.status)}</option>)}</select></label>
         <label>{props.t('actor')}<select value={actorId ?? ''} onChange={(event) => { setActorId(event.target.value as EntityId) }}>{actors(runView).map(id => <option key={id}>{id}</option>)}</select></label>
-        <label>Camera<select value={camera} onChange={(event) => { setCamera(event.target.value) }}><option>limited-third-person</option><option>first-person</option><option>objective</option></select></label>
+        <label>{props.t('camera')}<select value={camera} onChange={(event) => { setCamera(event.target.value) }}><option value="limited-third-person">{worldlineLabel('limited-third-person')}</option><option value="first-person">{worldlineLabel('first-person')}</option><option value="objective">{worldlineLabel('objective')}</option></select></label>
       </div>
     </header>
     {error !== undefined && <div className={css.error} role="alert">{props.t('error')}: {error}</div>}
-    {play === undefined ? <div className={css.empty} data-worldline-hero><span>❧</span><p>{runs.length === 0 ? props.t('newRun') : props.t('actor')}</p></div> : <div className={css.layout}>
-      <main className={css.story} data-worldline-hero>
+    {play === undefined ? <div className={css.empty}><span>❧</span><p>{runs.length === 0 ? props.t('newRun') : props.t('actor')}</p></div> : <div className={css.layout}>
+      <main className={css.story}>
         <section className={css.sceneMeta}>
           <div><small>{props.t('logicalTime')}</small><strong>{play.frame.logicalTime.toLocaleString()}</strong></div>
-          <div><small>Place</small><strong>{play.frame.placeId ?? '—'}</strong></div>
-          <div><small>Present</small><strong>{play.frame.presentEntityIds.length}</strong></div>
+          <div><small>{props.t('place')}</small><strong>{play.frame.placeId ?? '—'}</strong></div>
+          <div><small>{props.t('presentActors')}</small><strong>{play.frame.presentEntityIds.length}</strong></div>
           <button type="button" disabled={busy !== undefined} onClick={narrate}>{busy === 'narrate' ? '…' : props.t('narrate')}</button>
           <label><input type="checkbox" checked={templateOnly} onChange={(event) => { setTemplateOnly(event.target.checked) }} />{props.t('templateNarration')}</label>
         </section>
-        <div ref={transcript} className={css.transcript} aria-live="polite">
-          {play.beats.length === 0 && streamingText === '' && <p className={css.quiet}>The world is waiting to be narrated.</p>}
+        <div className={css.transcript} aria-live="polite">
+          {play.beats.length === 0 && streamingText === '' && <p className={css.quiet}>{props.t('waitingNarration')}</p>}
           {play.beats.map((beat, index) => <article key={beat.id} data-style={beat.style} data-latest={index === play.beats.length - 1 || undefined}>
-            <header><span>{beat.camera}</span><small>{beat.style}{beat.modelRoute === undefined ? '' : ` · ${beat.modelRoute.provider}/${beat.modelRoute.model}`}</small></header>
+            <header><span>{worldlineLabel(beat.camera)}</span><small>{worldlineLabel(beat.style)}{beat.modelRoute === undefined ? '' : ` · ${beat.modelRoute.provider}/${beat.modelRoute.model}`}</small></header>
             <MarkdownText text={beat.text} />
-            <footer><span>{beat.eventIds.length} events · {beat.observationIds.length} observations</span><button type="button" onClick={() => { rephrase(beat) }}>{props.t('rephrase')}</button></footer>
+            <footer><span>{beat.eventIds.length} {props.t('eventCount')} · {beat.observationIds.length} {props.t('observationCount')}</span><button type="button" onClick={() => { rephrase(beat) }}>{props.t('rephrase')}</button></footer>
           </article>)}
-          {streamingText !== '' && <article data-streaming data-latest><header><span>{camera}</span><small>streaming</small></header><MarkdownText text={streamingText} streaming /></article>}
+          {streamingText !== '' && <article data-streaming data-latest><header><span>{worldlineLabel(camera)}</span><small>{props.t('streaming')}</small></header><MarkdownText text={streamingText} streaming /></article>}
         </div>
         <section className={css.composer}>
           <div className={css.choices}>{play.choices.choices.map(choice => <button type="button" key={choice.id} disabled={busy !== undefined} onClick={() => { void mutate(`choice:${choice.id}`, async () => { await props.narrative.choose({ runId: play.run.summary.runId, actorId: play.choices.actorId, choiceId: choice.id, expectedSequence: play.choices.sequence, camera }) }) }}>
@@ -147,10 +143,10 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
           }}><textarea value={freeText} onChange={(event) => { setFreeText(event.target.value) }} placeholder={props.t('freeInput')} /><button type="submit" disabled={busy !== undefined}>{props.t('submit')}</button></form>
         </section>
       </main>
-      <aside className={css.sidebar} data-worldline-reveal>
+      <aside className={css.sidebar}>
         <section><h3>{props.t('savePoint')}</h3><button type="button" disabled={runId === undefined || actorId === undefined} onClick={() => {
           if (runId === undefined || actorId === undefined) return
-          void mutate('save', async () => { await props.narrative.save({ runId, actorId, label: `Text play · t=${String(play.frame.logicalTime)}`, camera }) })
+          void mutate('save', async () => { await props.narrative.save({ runId, actorId, label: `故事舞台 · t=${String(play.frame.logicalTime)}`, camera }) })
         }}>{props.t('savePoint')}</button>
         {play.saves.length > 0 && <label className={css.retryChoice}>{props.t('retryChoice')}<select value={retryChoiceId} onChange={(event) => { setRetryChoiceId(event.target.value) }}>{play.choices.choices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}</select></label>}
         <ul>{play.saves.map(save => <li key={save.checkpoint.id}><div><strong>{save.label}</strong><small>#{save.checkpoint.sequence}</small></div><div className={css.saveActions}><button type="button" disabled={busy !== undefined} onClick={() => {
@@ -167,7 +163,7 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
           })
         }}>{props.t('retry')}</button></div></li>)}</ul></section>
         <section data-unavailable={stage?.available === false || undefined}><h3>{props.t('storyStage')} <span>{stage?.available ? stage.renderers.length : props.t('unavailable')}</span></h3><p>{stage?.message ?? '…'}</p>{stage?.renderers.map(renderer => <div key={renderer.id}><strong>{renderer.name}</strong><small>{renderer.capabilities.join(' · ')}</small></div>)}</section>
-        <section><h3>SceneFrame</h3><pre>{JSON.stringify(play.frame, null, 2)}</pre></section>
+        <section><h3>{props.t('advancedData')}</h3><pre>{JSON.stringify(play.frame, null, 2)}</pre></section>
       </aside>
     </div>}
   </div>

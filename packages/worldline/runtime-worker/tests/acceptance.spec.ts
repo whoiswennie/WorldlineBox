@@ -5,8 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import {
   acceptanceScenarios,
+  charterDocument,
   characterDocument,
+  mapDocument,
   mechanismDocument,
+  openingScenarioDocument,
+  timelineDocument,
 } from '../../../../fixtures/worldline/scenarios.ts'
 import WorldlineCompiler from '../../compiler/src/index.ts'
 import LocalWorldlineProjects from '../../project-local/src/index.ts'
@@ -38,11 +42,38 @@ describe('Worldline product acceptance scenarios', () => {
     await runs.await()
 
     try {
-      const project = await context.worldlineProjects.create({ name: scenario.name, template: 'blank' })
+      const project = await context.worldlineProjects.create({
+        name: scenario.name,
+        template: scenario.slug === 'warrior-and-dragon' ? 'playable-scenario' : 'blank',
+      })
+      await context.worldlineProjects.write({
+        projectId: project.manifest.id,
+        path: 'canon/charter.md',
+        content: charterDocument(scenario),
+        createParents: true,
+        objectKind: 'charter',
+      })
+      await context.worldlineProjects.write({
+        projectId: project.manifest.id,
+        path: 'canon/timeline.md',
+        content: timelineDocument(scenario),
+        createParents: true,
+        objectKind: 'timeline-event',
+      })
+      await context.worldlineProjects.write({
+        projectId: project.manifest.id,
+        path: 'scenarios/opening.md',
+        content: openingScenarioDocument(scenario),
+        createParents: true,
+        objectKind: 'scenario',
+      })
       for (const [index, character] of scenario.characters.entries()) {
+        const characterPath = scenario.slug === 'warrior-and-dragon'
+          ? index === 0 ? 'characters/protagonist.md' : 'characters/dragon.md'
+          : `characters/${String(index + 1).padStart(2, '0')}-${character.name.toLocaleLowerCase().replace(/[^a-z0-9]+/gu, '-')}.md`
         await context.worldlineProjects.write({
           projectId: project.manifest.id,
-          path: `characters/${String(index + 1).padStart(2, '0')}-${character.name.toLocaleLowerCase().replace(/[^a-z0-9]+/gu, '-')}.md`,
+          path: characterPath,
           content: characterDocument(scenario, character),
           createParents: true,
           objectKind: 'character',
@@ -55,6 +86,13 @@ describe('Worldline product acceptance scenarios', () => {
         createParents: true,
         objectKind: 'rule',
       })
+      await context.worldlineProjects.write({
+        projectId: project.manifest.id,
+        path: 'maps/world.md',
+        content: mapDocument(scenario),
+        createParents: true,
+        objectKind: 'place',
+      })
 
       const preview = await context.worldlineCompiler.compile({
         projectId: project.manifest.id,
@@ -62,7 +100,12 @@ describe('Worldline product acceptance scenarios', () => {
       })
       expect(preview).toMatchObject({
         canFreeze: true,
-        executableCounts: { maps: 1, actions: 1, systems: 1, invariants: 1 },
+        executableCounts: {
+          maps: 1,
+          actions: scenario.slug === 'warrior-and-dragon' ? 2 : 1,
+          systems: 1,
+          invariants: scenario.slug === 'warrior-and-dragon' ? 2 : 1,
+        },
       })
       const frozen = await context.worldlineCompiler.freeze({
         projectId: project.manifest.id,
@@ -78,13 +121,17 @@ describe('Worldline product acceptance scenarios', () => {
         seed: `${scenario.slug}-seed`,
         startPaused: false,
       })
-      const actor = frozen.blueprint.entities.find(entity => entity.type === 'character')
+      const actor = frozen.blueprint.entities.find(entity => entity.type === 'character'
+        && (scenario.slug !== 'warrior-and-dragon' || entity.id === frozen.blueprint.canon
+          .find(object => object.title === '勇士艾琳')?.id))
       if (actor === undefined) throw new Error('acceptance scenario compiled without a character')
       const choices = await context.worldlineRuns.choices({
         runId: created.summary.runId,
         actorId: actor.id,
       })
-      const choice = choices.choices[0]
+      const choice = scenario.acceptanceAction === undefined
+        ? choices.choices[0]
+        : choices.choices.find(item => item.actionType === scenario.acceptanceAction)
       if (choice === undefined) throw new Error('acceptance scenario projected no legal action')
       await context.worldlineRuns.submitAction({
         runId: created.summary.runId,
@@ -115,6 +162,23 @@ describe('Worldline product acceptance scenarios', () => {
 
       const definition = await context.worldlineRuns.definition({ runId: created.summary.runId })
       expect(definition.purpose.summary).toBe(scenario.purpose.summary)
+      if (scenario.slug === 'warrior-and-dragon') {
+        expect(frozen.blueprint.entities.filter(entity => entity.type === 'character')).toHaveLength(2)
+        expect(frozen.blueprint.actions.map(action => action.id)).toEqual(expect.arrayContaining([
+          'battle.strike', 'battle.guard',
+        ]))
+        const conflict = advanced.snapshot.state['conflict']
+        expect(conflict).toMatchObject({ dragonWounds: 1, heroWounds: 4 })
+        const actorState = (advanced.snapshot.state['entities'] as Record<string, {
+          state?: Record<string, unknown>
+        }>)[actor.id]?.state
+        expect(actorState).toMatchObject({ stamina: 4, locationId: 'map-node:dragon-lair' })
+        expect(records.records.some(record => (
+          record.stream === 'world-event'
+          && record.payload['type'] === 'action.completed'
+          && record.payload['ruleId'] === 'battle.strike'
+        ))).toBe(true)
+      }
       if (scenario.slug === 'nested-map') {
         const spatial = await context.worldlineRuns.spatial({ runId: created.summary.runId, maxNodes: 100 })
         expect(spatial.map?.nodes).toHaveLength(6)

@@ -114,7 +114,7 @@ export class FakeApiClient implements IApiClient {
     () => Promise.resolve(ok({
       version: '0-fake', cwd: '/f', attachedSessions: 0, home: '/h', canOpenPath: true,
     }))
-  onPickDirectory: (payload: unknown) => Promise<RpcResponse<{ path: string | null }>> =
+  onPickPath: (payload: unknown) => Promise<RpcResponse<{ path: string | null }>> =
     () => Promise.resolve(ok({ path: null }))
   onOpenPath: (payload: unknown) => Promise<RpcResponse<{ opened: true }>> =
     () => Promise.resolve(ok({ opened: true as const }))
@@ -130,6 +130,8 @@ export class FakeApiClient implements IApiClient {
 
   onCreateDirectory: (payload: unknown) => Promise<RpcResponse<{ path: string }>> =
     () => Promise.resolve(ok({ path: '/home/fake/new' }))
+  onResolveDirectoryFile: (payload: unknown) => Promise<RpcResponse<{ path: string }>> =
+    payload => Promise.resolve(ok({ path: `${(payload as { path: string }).path}/${(payload as { name: string }).name}` }))
 
   private readonly muxConns: StreamConn<MuxFrame>[] = []
   private readonly hostConns: StreamConn<HostFrame>[] = []
@@ -180,9 +182,12 @@ export class FakeApiClient implements IApiClient {
 
   readonly host: IApiClient['host'] = {
     describe: (payload: unknown) => this.record('host.describe', payload, this.onDescribe(payload)),
-    pickDirectory: (payload: unknown) => this.record('host.pickDirectory', payload, this.onPickDirectory(payload)),
+    pickPath: (payload: unknown) => this.record('host.pickPath', payload, this.onPickPath(payload)),
     listDirectory: (payload: unknown) => this.record('host.listDirectory', payload, this.onListDirectory(payload)),
     createDirectory: (payload: unknown) => this.record('host.createDirectory', payload, this.onCreateDirectory(payload)),
+    resolveDirectoryFile: (payload: unknown) => this.record(
+      'host.resolveDirectoryFile', payload, this.onResolveDirectoryFile(payload),
+    ),
     openPath: (payload: unknown) => this.record('host.openPath', payload, this.onOpenPath(payload)),
     previewWorkspaceFile: (payload: { path: string }) => this.record(
       'host.previewWorkspaceFile', payload, Promise.resolve(ok({

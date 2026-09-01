@@ -3413,6 +3413,100 @@ export interface Config {
 
 Source: [`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages/workflow/workflow-worker-thread/src/index.ts)
 
+<a id="deepseek-aidsh-worldline-ai"></a>
+
+## `@deepseek-ai/dsh-worldline-ai`
+
+Requires: `llm` · `tokenMeter` · `worldlineRuns`
+
+```ts config-catalog
+/** Describes the config value exchanged across the package boundary.
+ */
+export interface Config {
+  /** Exact provider/model price rows used before the fallback prices. */
+  readonly routePrices: readonly RoutePrice[]
+  /** Input-token fallback price per million when a route has no exact row. */
+  readonly fallbackInputPerMillion: number
+  /** Output-token fallback price per million when a route has no exact row. */
+  readonly fallbackOutputPerMillion: number
+  /** Cache-read fallback price per million when a route has no exact row. */
+  readonly fallbackCacheReadPerMillion: number
+  /** Maximum durable Run records considered when assembling one context pack. */
+  readonly maxContextRecords: number
+  /** Minimum logical-time distance before L2 memory is included again. */
+  readonly l2MinLogicalInterval: number
+}
+
+/** Describes the route price value exchanged across the package boundary.
+ */
+export interface RoutePrice {
+  /** Provider identifier matched against the selected model route. */
+  readonly provider: string
+  /** Provider model identifier matched against the selected model route. */
+  readonly model: string
+  /** Price per million uncached input tokens in the configured currency. */
+  readonly inputPerMillion: number
+  /** Price per million generated output tokens in the configured currency. */
+  readonly outputPerMillion: number
+  /** Price per million cache-read input tokens in the configured currency. */
+  readonly cacheReadPerMillion: number
+}
+```
+
+Source: [`packages/worldline/ai/src/index.ts:61`](../packages/worldline/ai/src/index.ts)
+
+<a id="deepseek-aidsh-worldline-project-local"></a>
+
+## `@deepseek-ai/dsh-worldline-project-local`
+
+```ts config-catalog
+/** Describes the config value exchanged across the package boundary.
+ */
+export interface Config {
+  /** Initial library root; the settings namespace supersedes it when available. */
+  root: string
+  /** Bound for one directory listing. */
+  maxEntries: number
+  /** Bound for one project-wide text search. */
+  maxSearchFiles: number
+}
+```
+
+Source: [`packages/worldline/project-local/src/index.ts:97`](../packages/worldline/project-local/src/index.ts)
+
+<a id="deepseek-aidsh-worldline-run-sqlite"></a>
+
+## `@deepseek-ai/dsh-worldline-run-sqlite`
+
+```ts config-catalog
+/** Configures one authoritative Run database connection. */
+export interface Config {
+  /** Open the database in query-only mode without creating parent directories. */
+  readonly readOnly?: boolean
+}
+```
+
+Source: [`packages/worldline/run-sqlite/src/index.ts:38`](../packages/worldline/run-sqlite/src/index.ts)
+
+<a id="deepseek-aidsh-worldline-runtime-worker"></a>
+
+## `@deepseek-ai/dsh-worldline-runtime-worker`
+
+Requires: `worldlineProjects`
+
+```ts config-catalog
+/** Describes the config value exchanged across the package boundary.
+ */
+export interface Config {
+  /** V8 old-generation heap ceiling applied independently to each Run worker. */
+  readonly maxOldGenerationSizeMb: number
+  /** Maximum milliseconds allowed for one Host-to-worker request. */
+  readonly requestTimeoutMs: number
+}
+```
+
+Source: [`packages/worldline/runtime-worker/src/index.ts:51`](../packages/worldline/runtime-worker/src/index.ts)
+
 ## Loadable plugins with no config
 
 These load from a `cordis.yml` entry with no `config:` block; they declare no configuration API.
@@ -3462,6 +3556,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-client-ui-user-questions` ([`packages/client/ui-user-questions/src/index.ts`](../packages/client/ui-user-questions/src/index.ts))
 - `@deepseek-ai/dsh-client-ui-workflow-run` ([`packages/client/ui-workflow-run/src/index.ts`](../packages/client/ui-workflow-run/src/index.ts))
 - `@deepseek-ai/dsh-client-ui-workspace` ([`packages/client/ui-workspace/src/index.ts`](../packages/client/ui-workspace/src/index.ts))
+- `@deepseek-ai/dsh-client-ui-worldline` — requires `webServer` · `worldlineNarrative` · `worldlineConversationContexts` · `worldlineProjects` ([`packages/client/ui-worldline/src/index.ts`](../packages/client/ui-worldline/src/index.ts))
 - `@deepseek-ai/dsh-client-ui-worldline-chrome` ([`packages/client/ui-worldline-chrome/src/index.ts`](../packages/client/ui-worldline-chrome/src/index.ts))
 - `@deepseek-ai/dsh-command-compact` — requires `commands` · `compaction` ([`packages/compaction/command-compact/src/index.ts`](../packages/compaction/command-compact/src/index.ts))
 - `@deepseek-ai/dsh-command-feedback` — requires `commands` ([`packages/feedback/command-feedback/src/index.ts`](../packages/feedback/command-feedback/src/index.ts))
@@ -3486,6 +3581,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-session-projection` ([`packages/session/session-projection/src/index.ts`](../packages/session/session-projection/src/index.ts))
 - `@deepseek-ai/dsh-session-stats` — requires `sessionProjections` ([`packages/session/session-stats/src/index.ts`](../packages/session/session-stats/src/index.ts))
 - `@deepseek-ai/dsh-skill-agent-vault` — requires `skills` ([`packages/agent-vault/skill-agent-vault/src/index.ts`](../packages/agent-vault/skill-agent-vault/src/index.ts))
+- `@deepseek-ai/dsh-skill-worldline` — requires `skills` ([`packages/worldline/skill-worldline/src/index.ts`](../packages/worldline/skill-worldline/src/index.ts))
 - `@deepseek-ai/dsh-storage` ([`packages/storage/storage/src/index.ts`](../packages/storage/storage/src/index.ts))
 - `@deepseek-ai/dsh-subagent` ([`packages/subagent/subagent/src/index.ts`](../packages/subagent/subagent/src/index.ts))
 - `@deepseek-ai/dsh-subprocess-local` ([`packages/subprocess/subprocess-local/src/index.ts`](../packages/subprocess/subprocess-local/src/index.ts))
@@ -3495,8 +3591,12 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-tool-call-timeout-policy` — requires `tools` ([`packages/guard/timeout-policy/src/index.ts`](../packages/guard/timeout-policy/src/index.ts))
 - `@deepseek-ai/dsh-tool-cordis` — requires `tools` · `systemPrompt` · `dynamicCordisRunner` · `cordisInspect` ([`packages/extensions/tool-cordis/src/index.ts`](../packages/extensions/tool-cordis/src/index.ts))
 - `@deepseek-ai/dsh-tool-subagent-control` — requires `tools` · `subagents` ([`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts))
+- `@deepseek-ai/dsh-tool-worldline` — requires `tools` · `systemPrompt` · `worldlineProjects` · `worldlineCompiler` · `worldlineRuns` · `worldlineConversationContexts` ([`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline/tool-worldline/src/index.ts))
 - `@deepseek-ai/dsh-user-questions` ([`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts))
 - `@deepseek-ai/dsh-workspace` — requires `storageDomain` · `sessionPersistence` ([`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts))
+- `@deepseek-ai/dsh-worldline-compiler` — requires `worldlineProjects` ([`packages/worldline/compiler/src/index.ts`](../packages/worldline/compiler/src/index.ts))
+- `@deepseek-ai/dsh-worldline-conversation-context` — requires `agents` · `sessions` · `worldlineProjects` · `worldlineRuns` ([`packages/worldline/conversation-context/src/index.ts`](../packages/worldline/conversation-context/src/index.ts))
+- `@deepseek-ai/dsh-worldline-narrative` — requires `worldlineRuns` · `worldlineAi` · `llm` · `tokenMeter` ([`packages/worldline/narrative/src/index.ts`](../packages/worldline/narrative/src/index.ts))
 - `@deepseek-ai/dsh-worldline-video` — requires `tools` · `skills` · `subprocess` ([`packages/video/worldline-video/src/index.ts`](../packages/video/worldline-video/src/index.ts))
 
 ## Seam packages (not directly loadable)
@@ -3521,6 +3621,8 @@ Abstract service classes — a deployment loads a concrete implementation packag
 - `@deepseek-ai/dsh-spill` — abstract `SpillStore` ([`packages/spill/spill/src/index.ts`](../packages/spill/spill/src/index.ts))
 - `@deepseek-ai/dsh-subprocess` — abstract `SubprocessRuntime` ([`packages/subprocess/subprocess/src/index.ts`](../packages/subprocess/subprocess/src/index.ts))
 - `@deepseek-ai/dsh-workflow` — abstract `WorkflowEngine` ([`packages/workflow/workflow/src/index.ts`](../packages/workflow/workflow/src/index.ts))
+- `@deepseek-ai/dsh-worldline-project` — abstract `WorldlineProjects` ([`packages/worldline/project/src/index.ts`](../packages/worldline/project/src/index.ts))
+- `@deepseek-ai/dsh-worldline-runtime` — abstract `WorldlineRuns` ([`packages/worldline/runtime/src/index.ts`](../packages/worldline/runtime/src/index.ts))
 
 ## Library packages (no plugin entry)
 
@@ -3561,3 +3663,4 @@ Imported as libraries by other packages; a `cordis.yml` cannot load them.
 - `@deepseek-ai/dsh-typert-generator` ([`packages/typert/generator/src/index.ts`](../packages/typert/generator/src/index.ts))
 - `@deepseek-ai/dsh-typert-protocol` ([`packages/typert/protocol/src/index.ts`](../packages/typert/protocol/src/index.ts))
 - `@deepseek-ai/dsh-typert-registry` ([`packages/typert/registry/src/index.ts`](../packages/typert/registry/src/index.ts))
+- `@deepseek-ai/dsh-worldline-standard` ([`packages/worldline/standard/src/index.ts`](../packages/worldline/standard/src/index.ts))

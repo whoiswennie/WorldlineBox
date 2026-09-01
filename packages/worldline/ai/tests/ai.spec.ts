@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -24,6 +24,9 @@ const disposers: Array<() => Promise<void>> = []
 
 class ChoiceAdapter extends LlmAdapter {
   calls = 0
+  failNext = false
+  readonly inputs: string[] = []
+  readonly credential = 'sk-provider-owned-worldline-test-secret'
 
   override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     return Promise.resolve([{ provider, id: 'planner', name: 'Planner' }])
@@ -47,6 +50,11 @@ class ChoiceAdapter extends LlmAdapter {
     this.calls += 1
     const input = options.messages.flatMap(message => message.content)
       .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    this.inputs.push(input)
+    if (this.failNext) {
+      this.failNext = false
+      throw new Error('simulated provider outage')
+    }
     const choiceId = /"id":"(choice:[^"]+)"/u.exec(input)?.[1]
     if (choiceId === undefined) throw new Error('Context Pack contains no projected choice')
     const text = JSON.stringify({ choiceId, rationale: 'The listed action advances my goal.', confidence: 0.8 })
@@ -135,9 +143,14 @@ async function harness(): Promise<Harness> {
   }
 }
 
-async function createRun(context: Context, runBudget: AiBudget = budget): Promise<{
+async function createRun(
+  context: Context,
+  runBudget: AiBudget = budget,
+  privateMarker?: string,
+): Promise<{
   readonly runId: Awaited<ReturnType<Context['worldlineRuns']['create']>>['summary']['runId']
   readonly actorId: Blueprint['entities'][number]['id']
+  readonly projectPath: string
 }> {
   const project = await context.worldlineProjects.create({ name: 'AI World', template: 'blank' })
   const base = testBlueprint()
@@ -145,7 +158,13 @@ async function createRun(context: Context, runBudget: AiBudget = budget): Promis
     ...base,
     projectId: project.manifest.id,
     modelPolicy: policy,
-    entities: base.entities.map(entity => ({ ...entity, lod: 'L3' as const })),
+    entities: base.entities.map((entity, index) => ({
+      ...entity,
+      lod: 'L3' as const,
+      facets: index === 1 && privateMarker !== undefined
+        ? { ...entity.facets, privateMarker }
+        : entity.facets,
+    })),
   }
   await context.worldlineProjects.storeBuild({
     projectId: project.manifest.id,
@@ -163,7 +182,17 @@ async function createRun(context: Context, runBudget: AiBudget = budget): Promis
   })
   const actor = blueprint.entities[0]
   if (actor === undefined) throw new Error('AI fixture has no actor')
-  return { runId: run.summary.runId, actorId: actor.id }
+  return { runId: run.summary.runId, actorId: actor.id, projectPath: project.path }
+}
+
+async function treeContains(root: string, needle: string): Promise<boolean> {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name)
+    if (entry.isDirectory()) {
+      if (await treeContains(path, needle)) return true
+    } else if (entry.isFile() && (await readFile(path)).includes(Buffer.from(needle))) return true
+  }
+  return false
 }
 
 afterEach(async () => {
@@ -205,6 +234,7 @@ describe('WorldlineAi', () => {
       cacheReadTokens: 20,
       cacheHits: 1,
     })
+    expect(await treeContains(run.projectPath, runtime.adapter.credential)).toBe(false)
     await runtime.dispose()
   })
 
@@ -215,6 +245,43 @@ describe('WorldlineAi', () => {
     expect(result).toMatchObject({ status: 'budget-blocked' })
     expect(result.budget?.reasons).toContain('Call budget is exhausted.')
     expect(runtime.adapter.calls).toBe(0)
+    await runtime.dispose()
+  })
+
+  it('keeps another actor private and never accumulates unrelated context', async () => {
+    const runtime = await harness()
+    const marker = 'OTHER_ACTOR_PRIVATE_CONTEXT_MUST_NOT_LEAK'
+    const run = await createRun(runtime.context, budget, marker)
+    const pack = await runtime.context.worldlineAi.contextPack(run)
+    expect(stableStringify(pack)).not.toContain(marker)
+
+    const result = await runtime.context.worldlineAi.decide(run)
+    expect(result.status).toBe('submitted')
+    expect(runtime.adapter.inputs).toHaveLength(1)
+    expect(runtime.adapter.inputs[0]).not.toContain(marker)
+    await runtime.dispose()
+  })
+
+  it('records a provider outage while deterministic time keeps advancing', async () => {
+    const runtime = await harness()
+    const run = await createRun(runtime.context)
+    const before = await runtime.context.worldlineRuns.view({ runId: run.runId })
+    runtime.adapter.failNext = true
+
+    const result = await runtime.context.worldlineAi.decide(run)
+    expect(result).toMatchObject({ status: 'model-failed' })
+    expect(result.message).toContain('deterministic Runtime remains active')
+    const invocations = await runtime.context.worldlineRuns.records({
+      runId: run.runId,
+      stream: 'ai-invocation',
+      limit: 10,
+    })
+    expect(invocations.records).toHaveLength(1)
+    expect(invocations.records[0]?.payload['outcome']).toBe('failed')
+
+    const advanced = await runtime.context.worldlineRuns.advance({ runId: run.runId, duration: 10 })
+    expect(advanced.snapshot.logicalTime).toBeGreaterThan(before.snapshot.logicalTime)
+    expect(advanced.summary.status).toBe('running')
     await runtime.dispose()
   })
 })

@@ -759,6 +759,7 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
       // createWorkspace to land after an apparent cancel.
       onClose={() => { if (folderDraft === null && !busy) onClose() }}
       title={t('browser.title')}
+      rootClassName={css.modalLayer as string}
       className={clsx(css.dialog)}
       headless
     >
@@ -998,6 +999,7 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
         open={folderDraft !== null}
         onClose={() => { if (!creatingFolder) setFolderDraft(null) }}
         title={t('browser.newFolder')}
+        rootClassName={css.nestedModalLayer as string}
         className={clsx(css.createDialog)}
         headless
       >

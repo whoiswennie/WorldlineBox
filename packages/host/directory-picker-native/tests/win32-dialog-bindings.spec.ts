@@ -9,7 +9,10 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { HRESULT_CANCELLED, runFolderDialog } from '../src/win32-dialog-logic.ts'
+import { HRESULT_CANCELLED, runPathDialog as openPathDialog, type Win32DialogBindings } from '../src/win32-dialog-logic.ts'
+
+const runPathDialog = (bindings: Win32DialogBindings, title: string, onShowing: (threadId: number) => void) =>
+  openPathDialog(bindings, { mode: 'directory', title }, onShowing)
 
 const E_FAIL = 0x80004005 | 0
 const WM_CLOSE = 0x10
@@ -67,6 +70,7 @@ function installFakeKoffi(world: ComWorld): void {
       switch (slot) {
         case 9: world.options.push(args[0] as number); return 0
         case 17: world.titles.push(args[0] as string); return 0
+        case 15: return 0
         case 3: return world.showHr
         case 20: {
           if (world.getResultHr < 0) return world.getResultHr
@@ -171,7 +175,7 @@ describe('loadWin32DialogBindings over the fake COM world', () => {
     const bindings = await loadWin32DialogBindings()
     const showing = vi.fn()
 
-    expect(runFolderDialog(bindings, '选择工作区目录', showing)).toBe('C:\\选中\\directory')
+    expect(runPathDialog(bindings, '选择工作区目录', showing)).toBe('C:\\选中\\directory')
     expect(world.dpiContexts).toEqual([-4])
     expect(world.titles).toEqual(['选择工作区目录'])
     expect(world.options).toHaveLength(1)
@@ -186,7 +190,7 @@ describe('loadWin32DialogBindings over the fake COM world', () => {
     installFakeKoffi(world)
     const { loadWin32DialogBindings } = await loadBindingsModule()
     const bindings = await loadWin32DialogBindings()
-    expect(runFolderDialog(bindings, 'Pick', vi.fn())).toBeNull()
+    expect(runPathDialog(bindings, 'Pick', vi.fn())).toBeNull()
     expect(world.released).toEqual(['dialog'])
     expect(world.uninitialized).toBe(1)
   })
@@ -195,7 +199,7 @@ describe('loadWin32DialogBindings over the fake COM world', () => {
     const world = comWorld({ supportedDpiContexts: [-3] })
     installFakeKoffi(world)
     const bindings = await (await loadBindingsModule()).loadWin32DialogBindings()
-    expect(runFolderDialog(bindings, 'Pick', vi.fn())).toBe('C:\\选中\\directory')
+    expect(runPathDialog(bindings, 'Pick', vi.fn())).toBe('C:\\选中\\directory')
     expect(world.dpiContexts).toEqual([-4, -3])
   })
 
@@ -204,7 +208,7 @@ describe('loadWin32DialogBindings over the fake COM world', () => {
     const rejecting = comWorld({ supportedDpiContexts: [] })
     installFakeKoffi(rejecting)
     let bindings = await (await loadBindingsModule()).loadWin32DialogBindings()
-    expect(runFolderDialog(bindings, 'Pick', vi.fn())).toBe('C:\\选中\\directory')
+    expect(runPathDialog(bindings, 'Pick', vi.fn())).toBe('C:\\选中\\directory')
     expect(rejecting.dpiContexts).toEqual([-4, -3, -2])
 
     vi.doUnmock('koffi')
@@ -212,7 +216,7 @@ describe('loadWin32DialogBindings over the fake COM world', () => {
     const preThreadDpi = comWorld({ hasThreadDpi: false })
     installFakeKoffi(preThreadDpi)
     bindings = await (await loadBindingsModule()).loadWin32DialogBindings()
-    expect(runFolderDialog(bindings, 'Pick', vi.fn())).toBe('C:\\选中\\directory')
+    expect(runPathDialog(bindings, 'Pick', vi.fn())).toBe('C:\\选中\\directory')
     expect(preThreadDpi.dpiContexts).toEqual([])
   })
 
@@ -220,14 +224,14 @@ describe('loadWin32DialogBindings over the fake COM world', () => {
     const creationWorld = comWorld({ coCreateHr: E_FAIL })
     installFakeKoffi(creationWorld)
     let bindings = await (await loadBindingsModule()).loadWin32DialogBindings()
-    expect(() => bindings.createFolderDialog()).toThrow('CoCreateInstance(FileOpenDialog) failed: HRESULT 0x80004005')
+    expect(() => bindings.createPathDialog('open-file')).toThrow('CoCreateInstance(FileDialog) failed: HRESULT 0x80004005')
 
     vi.doUnmock('koffi')
     vi.resetModules()
     const resultWorld = comWorld({ getResultHr: E_FAIL })
     installFakeKoffi(resultWorld)
     bindings = await (await loadBindingsModule()).loadWin32DialogBindings()
-    expect(() => runFolderDialog(bindings, 'Pick', vi.fn())).toThrow('GetResult failed')
+    expect(() => runPathDialog(bindings, 'Pick', vi.fn())).toThrow('GetResult failed')
     expect(resultWorld.released).toEqual(['dialog'])
 
     vi.doUnmock('koffi')
@@ -235,7 +239,7 @@ describe('loadWin32DialogBindings over the fake COM world', () => {
     const nameWorld = comWorld({ getDisplayNameHr: E_FAIL })
     installFakeKoffi(nameWorld)
     bindings = await (await loadBindingsModule()).loadWin32DialogBindings()
-    expect(() => runFolderDialog(bindings, 'Pick', vi.fn())).toThrow('GetResult failed')
+    expect(() => runPathDialog(bindings, 'Pick', vi.fn())).toThrow('GetResult failed')
     // The shell item is released even when its display name cannot be read.
     expect(nameWorld.released).toEqual(['item', 'dialog'])
     expect(nameWorld.freed).toHaveLength(0)
@@ -267,11 +271,11 @@ describe('closeThreadWindows over the fake COM world', () => {
 
 describe('the worker entry over a mocked process boundary', () => {
   const originalSend = process.send?.bind(process)
-  const originalTitle = process.env.WORLDLINE_DIALOG_TITLE
+  const originalRequest = process.env.WORLDLINE_DIALOG_REQUEST
 
   const installBoundary = (): { posted: { kind: string; message?: string }[] } => {
     const posted: { kind: string; message?: string }[] = []
-    process.env.WORLDLINE_DIALOG_TITLE = 'Pick'
+    process.env.WORLDLINE_DIALOG_REQUEST = JSON.stringify({ mode: 'directory', title: 'Pick' })
     // Never invoke the post callback: it runs the worker's disconnect(), and
     // this process is IPC-connected under the forks pool — severing vitest's
     // own channel would kill the test worker. The real close lifecycle
@@ -286,8 +290,8 @@ describe('the worker entry over a mocked process boundary', () => {
   afterEach(() => {
     delete (process as { send?: unknown }).send
     if (originalSend !== undefined) (process as { send?: unknown }).send = originalSend
-    if (originalTitle === undefined) delete process.env.WORLDLINE_DIALOG_TITLE
-    else process.env.WORLDLINE_DIALOG_TITLE = originalTitle
+    if (originalRequest === undefined) delete process.env.WORLDLINE_DIALOG_REQUEST
+    else process.env.WORLDLINE_DIALOG_REQUEST = originalRequest
     vi.doUnmock('../src/win32-dialog-bindings.ts')
     vi.resetModules()
   })
@@ -300,9 +304,10 @@ describe('the worker entry over a mocked process boundary', () => {
         coInitializeSta: () => 0,
         coUninitialize: () => undefined,
         currentThreadId: () => 11,
-        createFolderDialog: () => ({
+        createPathDialog: () => ({
           setOptions: () => 0,
           setTitle: () => 0,
+          setFileName: () => 0,
           show: () => 0,
           resultPath: () => ({ hr: 0, path: 'C:\\from-worker' }),
           release: () => undefined,
@@ -341,14 +346,14 @@ describe('the worker entry over a mocked process boundary', () => {
     }
   })
 
-  it('refuses to run without the dialog title', async () => {
-    delete process.env.WORLDLINE_DIALOG_TITLE
+  it('refuses to run without a picker request', async () => {
+    delete process.env.WORLDLINE_DIALOG_REQUEST
     ;(process as { send?: unknown }).send = () => true
-    await expect(import('../src/win32-dialog-worker.ts')).rejects.toThrow('WORLDLINE_DIALOG_TITLE is required')
+    await expect(import('../src/win32-dialog-worker.ts')).rejects.toThrow('WORLDLINE_DIALOG_REQUEST is required')
   })
 
   it('refuses to run outside a child process', async () => {
-    process.env.WORLDLINE_DIALOG_TITLE = 'Pick'
+    process.env.WORLDLINE_DIALOG_REQUEST = JSON.stringify({ mode: 'directory', title: 'Pick' })
     delete (process as { send?: unknown }).send
     await expect(import('../src/win32-dialog-worker.ts')).rejects.toThrow('must run as a child process')
   })

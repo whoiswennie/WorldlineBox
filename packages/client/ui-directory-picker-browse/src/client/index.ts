@@ -1,6 +1,6 @@
 /**
  * Browser half of the browse directory-picker backend: fills ui-workspace's
- * two directory-flow holes with the in-app Select Workspace Directory dialog
+ * directory-flow holes with the in-app Select Workspace Directory dialog
  * (figma `Harness` 813-23126 family), driving the node half's
  * `host.listDirectory`/`host.createDirectory` primitives. Mounting this
  * package therefore composes both sides of the browse interaction with one
@@ -21,8 +21,8 @@ export const inject = ['slots', 'workspaces', 'locale']
 
 /**
  * Client plugin body: register the dialog's dictionaries and the browse flow
- * into both directory-flow holes through `slots.inject()` because the
- * ui-workspace entries may activate later or replace their declarations.
+ * into every directory-flow hole through `slots.inject()` because owners may
+ * activate later or replace their declarations.
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
@@ -46,6 +46,13 @@ export function apply(ctx: ClientContext): void {
         'browser.loading': '加载中…',
         'browser.truncated': '文件夹过多，仅显示开头部分。',
         'browser.showHidden': '显示隐藏文件',
+        'path.openTitle': '选择归档文件',
+        'path.saveTitle': '选择归档保存位置',
+        'path.fileName': '文件名',
+        'path.choose': '选择',
+        'path.save': '保存到这里',
+        'path.noFiles': '此文件夹中没有匹配的归档文件。',
+        'path.extensionHint': '文件名需要以 {extensions} 结尾。',
       }],
       ['en', {
         'browser.title': 'Select Workspace Directory',
@@ -61,6 +68,13 @@ export function apply(ctx: ClientContext): void {
         'browser.loading': 'Loading…',
         'browser.truncated': 'Too many folders to list; only the beginning is shown.',
         'browser.showHidden': 'Show hidden files',
+        'path.openTitle': 'Select archive file',
+        'path.saveTitle': 'Choose archive destination',
+        'path.fileName': 'File name',
+        'path.choose': 'Choose',
+        'path.save': 'Save here',
+        'path.noFiles': 'No matching archive files in this folder.',
+        'path.extensionHint': 'File name must end in {extensions}.',
       }],
     ]
     try {
@@ -73,20 +87,29 @@ export function apply(ctx: ClientContext): void {
   }, 'directory-picker-browse: dialog dictionaries')
 
   const injected = (): BrowseFlowInjected => ({
-    listDirectory: (path, signal) => ctx.workspaces.listDirectory(path, signal),
+    listDirectory: (path, signal, includeFiles) => ctx.workspaces.listDirectory(
+      path,
+      signal,
+      includeFiles ? { includeFiles: true, hostFilesystem: true } : undefined,
+    ),
     createDirectory: (path, name) => ctx.workspaces.createDirectory(path, name),
+    resolveFile: (path, name) => ctx.workspaces.resolveDirectoryFile(path, name),
     t: ctx.locale.bind(LOCALE_NS),
   })
-  // Both declaration lifetimes must be live before the pair installs; the
-  // generator makes the two registrations one transactional effect. The
-  // outer/inner nesting order is arbitrary; neither hole has precedence.
+  // All declaration lifetimes must be live before the group installs; the
+  // generator makes the registrations one transactional effect. The nesting
+  // order is arbitrary; no consumer hole has precedence.
   ctx.slots.inject('conversation.hero.workspace.directoryFlow', () =>
-    ctx.slots.inject('sidebar.workspaces.directoryFlow', function* () {
-      yield ctx.slots.register({
-        name: 'conversation.hero.workspace.directoryFlow', inject: injected,
-      }, BrowseDirectoryFlow)
-      yield ctx.slots.register({
-        name: 'sidebar.workspaces.directoryFlow', inject: injected,
-      }, BrowseDirectoryFlow)
-    }))
+    ctx.slots.inject('sidebar.workspaces.directoryFlow', () =>
+      ctx.slots.inject('host.directoryFlow', function* () {
+        yield ctx.slots.register({
+          name: 'conversation.hero.workspace.directoryFlow', inject: injected,
+        }, BrowseDirectoryFlow)
+        yield ctx.slots.register({
+          name: 'sidebar.workspaces.directoryFlow', inject: injected,
+        }, BrowseDirectoryFlow)
+        yield ctx.slots.register({
+          name: 'host.directoryFlow', inject: injected,
+        }, BrowseDirectoryFlow)
+      })))
 }

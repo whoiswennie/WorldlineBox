@@ -6,8 +6,8 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import {
-  FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR, FOS_PICKFOLDERS, HRESULT_CANCELLED,
-  runFolderDialog, type Win32DialogBindings, type Win32FolderDialog,
+  FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, HRESULT_CANCELLED,
+  runPathDialog, type Win32DialogBindings, type Win32PathDialog,
 } from '../src/win32-dialog-logic.ts'
 
 const E_FAIL = 0x80004005 | 0
@@ -20,16 +20,18 @@ interface FakeWorld {
   dialog: {
     setOptions: ReturnType<typeof vi.fn>
     setTitle: ReturnType<typeof vi.fn>
+    setFileName: ReturnType<typeof vi.fn>
     show: ReturnType<typeof vi.fn>
     resultPath: ReturnType<typeof vi.fn>
     release: ReturnType<typeof vi.fn>
   }
 }
 
-function world(overrides: Partial<Win32FolderDialog> = {}, coInit = 0): FakeWorld {
+function world(overrides: Partial<Win32PathDialog> = {}, coInit = 0): FakeWorld {
   const dialog = {
     setOptions: vi.fn(() => 0),
     setTitle: vi.fn(() => 0),
+    setFileName: vi.fn(() => 0),
     show: vi.fn(() => 0),
     resultPath: vi.fn(() => ({ hr: 0, path: 'C:\\picked\\目录' })),
     release: vi.fn(),
@@ -42,21 +44,23 @@ function world(overrides: Partial<Win32FolderDialog> = {}, coInit = 0): FakeWorl
     setThreadDpiAwareness: dpi,
     coInitializeSta: vi.fn(() => coInit),
     coUninitialize: uninitialize,
-    createFolderDialog: createDialog,
+    createPathDialog: createDialog,
     currentThreadId: vi.fn(() => 4242),
   }
   return { bindings, dpi, createDialog, uninitialize, dialog: dialog as FakeWorld['dialog'] }
 }
 
-describe('runFolderDialog', () => {
+const directoryRequest = { mode: 'directory', title: 'Pick' } as const
+
+describe('runPathDialog', () => {
   it('sequences DPI, STA, options, title, show, result extraction, and apartment teardown', () => {
     const { bindings, dpi, dialog, uninitialize } = world()
     const showing = vi.fn()
-    expect(runFolderDialog(bindings, 'Pick', showing)).toBe('C:\\picked\\目录')
+    expect(runPathDialog(bindings, directoryRequest, showing)).toBe('C:\\picked\\目录')
     expect(dpi).toHaveBeenCalledOnce()
     expect(uninitialize).toHaveBeenCalledOnce()
     expect(dialog.release.mock.invocationCallOrder[0]).toBeLessThan(uninitialize.mock.invocationCallOrder[0] as number)
-    expect(dialog.setOptions).toHaveBeenCalledWith(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR)
+    expect(dialog.setOptions).toHaveBeenCalledWith(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR | FOS_PATHMUSTEXIST)
     expect(dialog.setTitle).toHaveBeenCalledWith('Pick')
     expect(showing).toHaveBeenCalledWith(4242)
     expect(showing.mock.invocationCallOrder[0]).toBeLessThan(dialog.show.mock.invocationCallOrder[0] as number)
@@ -65,7 +69,7 @@ describe('runFolderDialog', () => {
 
   it('maps the cancelled HRESULT to null and still releases the dialog and apartment', () => {
     const { bindings, dialog, uninitialize } = world({ show: vi.fn(() => HRESULT_CANCELLED) })
-    expect(runFolderDialog(bindings, 'Pick', vi.fn())).toBeNull()
+    expect(runPathDialog(bindings, directoryRequest, vi.fn())).toBeNull()
     expect(dialog.resultPath).not.toHaveBeenCalled()
     expect(dialog.release).toHaveBeenCalledOnce()
     expect(uninitialize).toHaveBeenCalledOnce()
@@ -73,12 +77,12 @@ describe('runFolderDialog', () => {
 
   it('accepts the S_FALSE re-entry HRESULT from CoInitializeEx', () => {
     const { bindings } = world({}, 1)
-    expect(runFolderDialog(bindings, 'Pick', vi.fn())).toBe('C:\\picked\\目录')
+    expect(runPathDialog(bindings, directoryRequest, vi.fn())).toBe('C:\\picked\\目录')
   })
 
   it('throws on a failing CoInitializeEx without creating a dialog or uninitializing', () => {
     const { bindings, createDialog, uninitialize } = world({}, E_FAIL)
-    expect(() => runFolderDialog(bindings, 'Pick', vi.fn())).toThrow('CoInitializeEx failed: HRESULT 0x80004005')
+    expect(() => runPathDialog(bindings, directoryRequest, vi.fn())).toThrow('CoInitializeEx failed: HRESULT 0x80004005')
     expect(createDialog).not.toHaveBeenCalled()
     // A failed CoInitializeEx must NOT be paired with CoUninitialize.
     expect(uninitialize).not.toHaveBeenCalled()
@@ -89,10 +93,22 @@ describe('runFolderDialog', () => {
     ['SetTitle', { setTitle: vi.fn(() => E_FAIL) }],
     ['Show', { show: vi.fn(() => E_FAIL) }],
     ['GetResult', { resultPath: vi.fn(() => ({ hr: E_FAIL })) }],
-  ] satisfies [string, Partial<Win32FolderDialog>][])('releases the dialog and apartment when %s fails', (what, overrides) => {
+    ['SetFileName', { setFileName: vi.fn(() => E_FAIL) }],
+  ] satisfies [string, Partial<Win32PathDialog>][])('releases the dialog and apartment when %s fails', (what, overrides) => {
     const { bindings, dialog, uninitialize } = world(overrides)
-    expect(() => runFolderDialog(bindings, 'Pick', vi.fn())).toThrow(`${what} failed: HRESULT 0x80004005`)
+    const request = what === 'SetFileName'
+      ? { mode: 'save-file', title: 'Save', suggestedName: 'world.worldline.zip', extensions: ['worldline.zip'] } as const
+      : directoryRequest
+    expect(() => runPathDialog(bindings, request, vi.fn())).toThrow(`${what} failed: HRESULT 0x80004005`)
     expect(dialog.release).toHaveBeenCalledOnce()
     expect(uninitialize).toHaveBeenCalledOnce()
+  })
+
+  it('seeds save dialogs with the suggested archive name', () => {
+    const { bindings, dialog, createDialog } = world()
+    const request = { mode: 'save-file', title: '保存世界包', suggestedName: '星港.worldline.zip', extensions: ['worldline.zip'] } as const
+    expect(runPathDialog(bindings, request, vi.fn())).toBe('C:\\picked\\目录')
+    expect(createDialog).toHaveBeenCalledWith('save-file')
+    expect(dialog.setFileName).toHaveBeenCalledWith('星港.worldline.zip')
   })
 })

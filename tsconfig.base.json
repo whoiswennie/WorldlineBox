@@ -117,6 +117,9 @@
       "@deepseek-ai/dsh-worldline-project/types": [
         "./packages/worldline/project/src/types.ts"
       ],
+      "@deepseek-ai/dsh-worldline-project-local": [
+        "./packages/worldline/project-local/src/index.ts"
+      ],
       "@deepseek-ai/dsh-worldline-run-sqlite": [
         "./packages/worldline/run-sqlite/src/index.ts"
       ],

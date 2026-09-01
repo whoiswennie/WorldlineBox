@@ -12,6 +12,8 @@ import type {
   RunId,
 } from '@deepseek-ai/dsh-worldline-standard'
 
+/** Describes the worldline conversation binding value exchanged across the package boundary.
+ */
 export interface WorldlineConversationBinding {
   readonly sessionId: SessionId
   readonly projectId: ProjectId
@@ -21,6 +23,8 @@ export interface WorldlineConversationBinding {
   readonly runId?: RunId
 }
 
+/** Describes the bind worldline conversation request value exchanged across the package boundary.
+ */
 export interface BindWorldlineConversationRequest {
   readonly sessionId: SessionId
   readonly projectId: ProjectId
@@ -38,28 +42,38 @@ declare module '@deepseek-ai/cordis' {
   interface Context { worldlineConversationContexts: WorldlineConversationContexts }
 }
 
+/** Read resolve worldline conversation binding from the package-owned authoritative state.
+ * @param source - The source supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function resolveWorldlineConversationBinding(
   source: Pick<Session, 'events'> | { readonly events: readonly SessionEvent[] },
 ): WorldlineConversationBinding | undefined {
-  for (let index = source.events.length - 1; index >= 0; index -= 1) {
-    const event = source.events[index]
-    if (event?.type === 'worldline/context-bound') return event.data
+  let binding: WorldlineConversationBinding | undefined
+  for (const event of source.events) {
+    if (event.type !== 'worldline/context-bound') continue
+    if (binding !== undefined) {
+      throw new Error('Worldline conversation contains more than one immutable project binding')
+    }
+    binding = event.data
   }
-  return undefined
+  return binding
 }
 
 function renderBinding(binding: WorldlineConversationBinding | undefined): string {
   if (binding === undefined) {
-    return 'This Worldline author Session is not bound to a project. Project-scoped authoring, build, and Run tools must fail closed until the Studio creates a bound Session.'
+    return '当前世界线作者会话尚未绑定项目。在工作室完成绑定前，所有项目创作、构建和 Run 工具都必须拒绝执行。'
   }
   return [
-    'Authoritative Worldline conversation binding:',
+    '当前会话的权威世界线绑定：',
     `- sessionId: ${binding.sessionId}`,
     `- projectId: ${binding.projectId}`,
     `- worldlineId: ${binding.worldlineId}`,
     `- sourceRevisionAtBinding: ${binding.sourceRevision}`,
     ...(binding.runId === undefined ? [] : [`- runId: ${binding.runId}`]),
-    'Keep every project and Run operation inside this binding. Document-level expected revisions and current build digests remain authoritative after binding.',
+    '这是结构化 OC 世界线项目，不是普通工作区写作。先加载 worldline-authoring 技能并用 worldline_query 检查项目树；只用 worldline_* 工具在上述 projectId/Run 范围内读写。',
+    '开放式世界观创作必须分别完善 Canon、角色、地图、机制和场景；除非用户明确只要说明文，否则单个 Markdown 总结不算完成。',
+    '声称可运行前必须完成编译预览，并实际验证冻结蓝图、创建 Run、合法动作、时间推进与事件记录。绑定后的文档预期修订和当前构建摘要始终是并发与冻结权威。',
   ].join('\n')
 }
 
@@ -95,10 +109,18 @@ export default class WorldlineConversationContexts extends Service {
     }, 'worldline conversation prompt bindings')
   }
 
+  /** Return the active Worldline binding for a conversation.
+   * @param session - The session supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   binding(session: Pick<Session, 'events'>): WorldlineConversationBinding | undefined {
     return resolveWorldlineConversationBinding(session)
   }
 
+  /** Bind a conversation to a project and optional Run.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   async bind(request: BindWorldlineConversationRequest): Promise<WorldlineConversationBinding> {
     const session = this.context.sessions.get(request.sessionId)
     if (session === undefined) throw new Error(`Session is not live: ${request.sessionId}`)

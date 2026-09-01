@@ -319,7 +319,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the created or idempotently resolved Workspace.',
       },
       {
-        signature: 'pickDirectory(): Promise<string | null>',
+        signature: 'pickPath(): Promise<string | null>',
         description: 'Open the Host\'s native directory picker.',
         parameters: [],
         returns: 'the selected path, or null when the user cancelled.',

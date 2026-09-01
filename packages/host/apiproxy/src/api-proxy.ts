@@ -3206,17 +3206,17 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         }))
       },
 
-      async pickDirectory(request, signal) {
+      async pickPath(request, signal) {
         const capability = ctx.directoryPicker.capability()
         if (capability.kind !== 'native') {
           return err(request, {
             code: 'directory-picker-unavailable',
-            message: `host.pickDirectory needs the native capability; the composed picker serves "${capability.kind}"`,
+            message: `host.pickPath needs the native capability; the composed picker serves "${capability.kind}"`,
             details: { capability: capability.kind },
           })
         }
         try {
-          const path = await capability.pick(signal)
+          const path = await capability.pick(request.payload, signal)
           return ok(request, { path })
         } catch (error: unknown) {
           if (signal.aborted) {
@@ -3235,7 +3235,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       },
 
       async listDirectory(request, signal) {
-        if (request.payload.includeFiles === true) {
+        if (request.payload.includeFiles === true && request.payload.hostFilesystem !== true) {
           const requestedPath = request.payload.path
           if (requestedPath === undefined) {
             return err(request, { code: 'directory-unreadable', message: 'workspace tree needs an explicit path', details: { path: '' } })
@@ -3279,7 +3279,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             request.payload.includeFiles === undefined ? {} : { includeFiles: request.payload.includeFiles }))
         } catch (error: unknown) {
           // An abort is the caller's own timeout/disconnect, not a server
-          // failure — same code pickDirectory and command.execute report.
+          // failure — same code pickPath and command.execute report.
           if (signal.aborted) {
             return err(request, { code: 'cancelled', message: 'directory listing was aborted', details: {} })
           }
@@ -3298,6 +3298,22 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         }
         try {
           return ok(request, { path: await capability.createDirectory(request.payload.path, request.payload.name) })
+        } catch (error: unknown) {
+          return err(request, directoryError(error))
+        }
+      },
+
+      async resolveDirectoryFile(request) {
+        const capability = ctx.directoryPicker.capability()
+        if (capability.kind !== 'browse') {
+          return err(request, {
+            code: 'directory-picker-unavailable',
+            message: `host.resolveDirectoryFile needs the browse capability; the composed picker serves "${capability.kind}"`,
+            details: { capability: capability.kind },
+          })
+        }
+        try {
+          return ok(request, { path: await capability.resolveFile(request.payload.path, request.payload.name) })
         } catch (error: unknown) {
           return err(request, directoryError(error))
         }

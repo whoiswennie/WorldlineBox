@@ -11,7 +11,10 @@ import type {
   WorldMap,
 } from './model.ts'
 
-/** WorldEvent is reserved for an authoritative difference or meaningful process boundary. */
+/** WorldEvent is reserved for an authoritative difference or meaningful process boundary.
+ * @param event - The event supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function isValidWorldEvent(event: WorldEvent): boolean {
   return event.deltas.some(delta => JSON.stringify(delta.before) !== JSON.stringify(delta.after))
     || event.persistentFacts.length > 0
@@ -25,15 +28,24 @@ export const REQUIRED_CERTIFICATE_CATEGORIES: readonly CertificateCategory[] = [
   'fairness', 'event-validity', 'behavioral-validity', 'replay', 'provenance',
 ]
 
+/** Perform certificate is autonomous through the package's public contract.
+ * @param certificate - The certificate supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function certificateIsAutonomous(certificate: ClosureCertificate): boolean {
   const byCategory = new Map(certificate.results.map(result => [result.category, result]))
   return certificate.deterministicWithoutAi
     && REQUIRED_CERTIFICATE_CATEGORIES.every(category => byCategory.get(category)?.status !== 'blocking')
 }
 
+/** Describes the map diagnostic value exchanged across the package boundary.
+ */
 export interface MapDiagnostic { readonly code: string; readonly message: string; readonly objectId?: string }
 
-/** Validate hierarchy, endpoints, capacities, geometry, and reachability of one map. */
+/** Validate hierarchy, endpoints, capacities, geometry, and reachability of one map.
+ * @param map - The map supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function validateWorldMap(map: WorldMap): readonly MapDiagnostic[] {
   const diagnostics: MapDiagnostic[] = []
   const nodes = new Map(map.nodes.map(node => [node.id, node]))
@@ -73,7 +85,10 @@ export function validateWorldMap(map: WorldMap): readonly MapDiagnostic[] {
   return diagnostics
 }
 
-/** Verify an ordinary movement never changes position without a route-covering process. */
+/** Verify an ordinary movement never changes position without a route-covering process.
+ * @param process - The process supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function movementIsContinuous(process: Process): boolean {
   const movement = process.movement
   if (movement === undefined) return true
@@ -88,7 +103,9 @@ export function movementIsContinuous(process: Process): boolean {
     && movement.remainingDuration >= 0
 }
 
-/** Refuse Context Packs that would knowingly exceed their exact model budget. */
+/** Refuse Context Packs that would knowingly exceed their exact model budget.
+ * @param pack - The pack supplied by the caller.
+ */
 export function validateContextPack(pack: ContextPack): void {
   if (pack.contextWindow < 1 || pack.inputLimit < 1) throw new TypeError('Context capacity must be positive.')
   if (pack.inputLimit > Math.floor(pack.contextWindow * 0.8)) {
@@ -102,7 +119,11 @@ export function validateContextPack(pack: ContextPack): void {
   }
 }
 
-/** Evaluate the deliberately small, deterministic Blueprint expression language. */
+/** Evaluate the deliberately small, deterministic Blueprint expression language.
+ * @param expression - The expression supplied by the caller.
+ * @param state - The state supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function evaluateExpression(expression: Expression, state: JsonObject): boolean {
   switch (expression.op) {
     case 'and': return expression.items.every(item => evaluateExpression(item, state))
@@ -125,6 +146,11 @@ export function evaluateExpression(expression: Expression, state: JsonObject): b
   }
 }
 
+/** Read a nested value from an unknown structure by path.
+ * @param root - The root supplied by the caller.
+ * @param path - The path supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function readPath(root: JsonObject, path: string): JsonValue | undefined {
   const segments = path.split('.').filter(Boolean)
   let cursor: JsonValue | undefined = root
@@ -135,7 +161,10 @@ export function readPath(root: JsonObject, path: string): JsonValue | undefined 
   return cursor
 }
 
-/** Check a Blueprint is frozen, source-covered, and safe to start. */
+/** Check a Blueprint is frozen, source-covered, and safe to start.
+ * @param blueprint - The blueprint supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function validateBlueprint(blueprint: Blueprint): readonly string[] {
   const errors: string[] = []
   if (blueprint.digest.length < 16) errors.push('Blueprint digest is missing or too short.')

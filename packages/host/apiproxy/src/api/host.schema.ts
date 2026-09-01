@@ -21,13 +21,28 @@ export const hostDescribeValueSchema = z.object({
   canOpenPath: z.boolean(),
 }) satisfies z.ZodType<Wire<ResponseValue<'host.describe'>>>
 
-/** host.pickDirectory request payload (empty object literal). */
-export const hostPickDirectoryRequestSchema = z.object({}) satisfies z.ZodType<Wire<RequestPayload<'host.pickDirectory'>>>
+const pathPickerBaseSchema = z.object({ title: z.string().trim().min(1).max(120) })
+/** host.pickPath request payload: one current directory/open/save chooser model. */
+export const hostPickPathRequestSchema = z.discriminatedUnion('mode', [
+  pathPickerBaseSchema.extend({ mode: z.literal('directory') }),
+  pathPickerBaseSchema.extend({
+    mode: z.literal('open-file'),
+    extensions: z.array(z.string().trim().min(1).max(80)).max(16),
+  }),
+  pathPickerBaseSchema.extend({
+    mode: z.literal('save-file'),
+    suggestedName: z.string().trim().min(1).max(240).refine(
+      value => value !== '.' && value !== '..' && !/[/\\]/.test(value),
+      { message: 'suggestedName must be one file name' },
+    ),
+    extensions: z.array(z.string().trim().min(1).max(80)).max(16),
+  }),
+]) satisfies z.ZodType<Wire<RequestPayload<'host.pickPath'>>>
 
-/** host.pickDirectory response value; null means the user cancelled. */
-export const hostPickDirectoryValueSchema = z.object({
+/** host.pickPath response value; null means the user cancelled. */
+export const hostPickPathValueSchema = z.object({
   path: z.string().nullable(),
-}) satisfies z.ZodType<Wire<ResponseValue<'host.pickDirectory'>>>
+}) satisfies z.ZodType<Wire<ResponseValue<'host.pickPath'>>>
 
 /** Directory row shared by listing entries and breadcrumb crumbs. */
 export const directoryEntrySchema = z.object({
@@ -41,6 +56,7 @@ export const directoryEntrySchema = z.object({
 export const hostListDirectoryRequestSchema = z.object({
   path: z.string().optional(),
   includeFiles: z.boolean().optional(),
+  hostFilesystem: z.boolean().optional(),
 }) satisfies z.ZodType<Wire<RequestPayload<'host.listDirectory'>>>
 
 /** host.listDirectory response value. */
@@ -66,6 +82,21 @@ export const hostCreateDirectoryRequestSchema = z.object({
 export const hostCreateDirectoryValueSchema = z.object({
   path: z.string(),
 }) satisfies z.ZodType<Wire<ResponseValue<'host.createDirectory'>>>
+
+/** Resolve a plain file name below one browsed host directory. */
+export const hostResolveDirectoryFileRequestSchema = z.object({
+  path: z.string(),
+  name: z.string().trim().min(1).max(240).refine(
+    value => value !== '.' && value !== '..' && !/[/\\]/.test(value),
+    { message: 'host.resolveDirectoryFile requires one plain file name' },
+  ),
+}) satisfies z.ZodType<Wire<RequestPayload<'host.resolveDirectoryFile'>>>
+
+/** Identifies the package-owned host resolve directory file value schema value.
+ */
+export const hostResolveDirectoryFileValueSchema = z.object({
+  path: z.string(),
+}) satisfies z.ZodType<Wire<ResponseValue<'host.resolveDirectoryFile'>>>
 /** host.openPath request payload. */
 export const hostOpenPathRequestSchema = z.object({
   path: z.string().min(1),

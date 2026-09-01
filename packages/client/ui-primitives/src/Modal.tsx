@@ -25,10 +25,11 @@ import css from './Modal.module.css'
  * header structure; mask, card, Escape, and aria-label remain.
  * @param props.closeLabel - close-button aria label; the owner passes
  * localized copy (this package is cordis-free, so copy arrives via props).
+ * @param props.rootClassName - Optional class on the full-viewport overlay for nested layering.
  * @returns null when closed; otherwise the overlay tree.
  */
 export function Modal({
-  open, onClose, title, closeLabel = 'Close', description, children, footer, className, contentClassName, headless = false,
+  open, onClose, title, closeLabel = 'Close', description, children, footer, className, rootClassName, contentClassName, headless = false,
 }: {
   open: boolean
   onClose: () => void
@@ -38,6 +39,7 @@ export function Modal({
   children?: ReactNode
   footer?: ReactNode
   className?: string
+  rootClassName?: string
   contentClassName?: string
   headless?: boolean
 }) {
@@ -53,7 +55,7 @@ export function Modal({
   if (!open) return null
 
   return createPortal((
-    <div className={css.root} role="presentation">
+    <div className={clsx(css.root, rootClassName)} role="presentation">
       <div className={css.mask} aria-hidden="true" onClick={onClose} />
       <div
         className={clsx(css.dialog, className)}

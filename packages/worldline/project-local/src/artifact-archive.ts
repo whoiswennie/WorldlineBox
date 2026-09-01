@@ -80,7 +80,11 @@ interface RunArchiveManifest extends ArchiveManifestBase {
   readonly checkpointCount: number
 }
 
+/** Describes the blueprint archive preflight value exchanged across the package boundary.
+ */
 export type BlueprintArchivePreflight = ArchivePreflight<BlueprintArchiveManifest>
+/** Describes the run archive preflight value exchanged across the package boundary.
+ */
 export type RunArchivePreflight = ArchivePreflight<RunArchiveManifest>
 
 function sha256(value: string): string {
@@ -145,6 +149,11 @@ function validateExactLayout(expected: ReadonlySet<string>, paths: ReadonlySet<s
   }
 }
 
+/** Perform preflight blueprint archive through the package's public contract.
+ * @param source - The source supplied by the caller.
+ * @param signal - The signal supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function preflightBlueprintArchive(
   source: string,
   signal?: AbortSignal,
@@ -158,6 +167,11 @@ export function preflightBlueprintArchive(
   })
 }
 
+/** Perform preflight run archive through the package's public contract.
+ * @param source - The source supplied by the caller.
+ * @param signal - The signal supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function preflightRunArchive(
   source: string,
   signal?: AbortSignal,
@@ -203,6 +217,10 @@ async function parseBlueprintFiles(directory: string): Promise<{
   }
 }
 
+/** Export a compiled blueprint as a deterministic archive.
+ * @param options - The options supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function exportBlueprintArchive(options: {
   readonly buildDirectory: string
   readonly destination: string
@@ -237,6 +255,10 @@ export async function exportBlueprintArchive(options: {
   })
 }
 
+/** Perform extract and verify blueprint archive through the package's public contract.
+ * @param options - The options supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function extractAndVerifyBlueprintArchive(options: {
   readonly source: string
   readonly destination: string
@@ -271,6 +293,10 @@ async function writeNdjson(
   await durableWriteStream(path, Readable.from(lines()), expectedBytes)
 }
 
+/** Export a Run as a deterministic archive.
+ * @param options - The options supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function exportRunArchive(options: {
   readonly runDirectory: string
   readonly projectId: ProjectId
@@ -461,6 +487,10 @@ async function* ndjson(path: string): AsyncIterable<unknown> {
   }
 }
 
+/** Perform extract and import run archive through the package's public contract.
+ * @param options - The options supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function extractAndImportRunArchive(options: {
   readonly source: string
   readonly destination: string

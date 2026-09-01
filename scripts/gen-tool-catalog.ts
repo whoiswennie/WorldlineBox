@@ -70,6 +70,7 @@ import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
 import VmWorkflowEngine from '@deepseek-ai/dsh-workflow-worker-thread'
 import * as ToolRalph from '@deepseek-ai/dsh-tool-ralph'
 import * as ToolWorkflow from '@deepseek-ai/dsh-tool-workflow'
+import * as ToolWorldline from '@deepseek-ai/dsh-tool-worldline'
 import * as WorldlineVideo from '@deepseek-ai/dsh-worldline-video'
 import { githubSlug } from './verify-md-links.ts'
 
@@ -628,6 +629,25 @@ const TOOL_PACKAGES: ToolPackage[] = [
       await ctx.plugin(VmWorkflowEngine, { provider: 'mock' })
       await ctx.plugin(ToolWorkflow)
     },
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-worldline',
+    dir: 'tool-worldline',
+    source: 'packages/worldline/tool-worldline/src/index.ts',
+    requires: [
+      'ctx.tools', 'ctx.systemPrompt', 'ctx.worldlineProjects', 'ctx.worldlineCompiler',
+      'ctx.worldlineRuns', 'ctx.worldlineConversationContexts', 'a bound calling Agent at execution time',
+    ],
+    writes: ['tool/call', 'project Canon/build artifacts or Run state for mutations', 'tool/result'],
+    async mount(ctx) {
+      ctx.provide('worldlineProjects', {} as never)
+      ctx.provide('worldlineCompiler', {} as never)
+      ctx.provide('worldlineRuns', {} as never)
+      ctx.provide('worldlineConversationContexts', {} as never)
+      await ctx.plugin(ToolWorldline)
+    },
+    note:
+      'The nine project-scoped tools require the calling author Session binding at execution time; mutation schemas carry stable identity, provenance, revision, dry-run, or explicit-confirmation fields instead of exposing generic filesystem writes.',
   },
   {
     pkg: '@deepseek-ai/dsh-tool-web',

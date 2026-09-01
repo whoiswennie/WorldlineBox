@@ -101,6 +101,7 @@ const SENTENCE_MODEL_EXPERIENCE: Readonly<Record<string, SentenceContract>> = {
   'packages/client/ui-settings-models': { kind: 'none', reason: 'Browser-side UI plugin layer; registers nothing model-facing.' },
   'packages/client/ui-plugin-center': { kind: 'none', reason: 'Browser-side inventory projection; registers nothing model-facing.' },
   'packages/client/ui-virtual-companion': { kind: 'indirect', reason: 'The launch action selects the virtual-companion preset; that preset owns its persona and account context.' },
+  'packages/client/ui-worldline': { kind: 'none', reason: 'The browser studio renders and invokes Host-owned Worldline services without contributing model context.' },
   'packages/identity/account-profile': { kind: 'indirect', reason: 'The service definition exposes data only to an explicitly mounted consumer.' },
   'packages/client/locale': { kind: 'none', reason: 'Browser-side UI plugin layer; registers nothing model-facing.' },
   'packages/client/web': { kind: 'none', reason: 'Browser-side UI plugin layer; registers nothing model-facing.' },
@@ -172,6 +173,13 @@ const SENTENCE_MODEL_EXPERIENCE: Readonly<Record<string, SentenceContract>> = {
   'packages/web/web-fetch-http': { kind: 'indirect', reason: 'The provider backend delegates model rendering to worldline-tool-web.' },
   'packages/web/web-search-exa': { kind: 'indirect', reason: 'The provider backend delegates model rendering to worldline-tool-web.' },
   'packages/workflow/workflow': { kind: 'indirect', reason: 'The service delegates parent and child model rendering to its consumer and engine.' },
+  'packages/worldline/compiler': { kind: 'indirect', reason: 'Compiler diagnostics and frozen artifacts reach models only through an explicitly mounted consumer.' },
+  'packages/worldline/project': { kind: 'indirect', reason: 'The storage seam delegates model rendering to Worldline tools and context consumers.' },
+  'packages/worldline/project-local': { kind: 'indirect', reason: 'The local provider delegates model rendering to Worldline tools and context consumers.' },
+  'packages/worldline/run-sqlite': { kind: 'indirect', reason: 'The ledger exposes records only through runtime and narrative consumers.' },
+  'packages/worldline/runtime': { kind: 'indirect', reason: 'The runtime seam delegates model rendering to Worldline tools and narrative consumers.' },
+  'packages/worldline/runtime-worker': { kind: 'indirect', reason: 'The worker backend delegates model rendering to Worldline tools and narrative consumers.' },
+  'packages/worldline/standard': { kind: 'indirect', reason: 'The contract package contributes no prompt or schema by itself; consumers select its values for model context.' },
 }
 
 interface Failure {

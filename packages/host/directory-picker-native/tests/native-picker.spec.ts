@@ -21,13 +21,16 @@ const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn<ExecFileMock>()
 vi.mock('node:child_process', () => ({ execFile: execFileMock }))
 
 import { describe, expect, it, vi } from 'vitest'
-import { pickNativeDirectory, type DirectoryPickerRunner } from '../src/native-picker.ts'
+import { pickNativePath as openNativePathDialog, type DirectoryPickerInternals, type DirectoryPickerRunner } from '../src/native-picker.ts'
 
 function failure(code: string | number, stderr = ''): Error {
   return Object.assign(new Error(`command failed: ${String(code)}`), { code, stderr })
 }
 
 const signal = () => new AbortController().signal
+const directoryRequest = { mode: 'directory', title: '选择工作区目录' } as const
+const pickNativePath = (requestSignal: AbortSignal, internals?: DirectoryPickerInternals) =>
+  openNativePathDialog(directoryRequest, requestSignal, internals)
 
 /** A Win32 dialog that always fails — the no-fallback case. */
 const noDialog = async (): Promise<string | null> => { throw new Error('dialog unavailable') }
@@ -35,14 +38,14 @@ const noDialog = async (): Promise<string | null> => { throw new Error('dialog u
 describe('native directory picker', () => {
   it('uses the macOS folder chooser and maps user cancellation to null', async () => {
     const run = vi.fn<DirectoryPickerRunner>(async () => ({ stdout: '/Users/test/project/\n', stderr: '' }))
-    await expect(pickNativeDirectory(signal(), { platform: 'darwin', run })).resolves.toBe('/Users/test/project/')
-    expect(run).toHaveBeenCalledWith('osascript', expect.arrayContaining(['POSIX path of selectedFolder']), expect.any(AbortSignal))
+    await expect(pickNativePath(signal(), { platform: 'darwin', run })).resolves.toBe('/Users/test/project/')
+    expect(run).toHaveBeenCalledWith('osascript', expect.arrayContaining(['POSIX path of selectedPath']), expect.any(AbortSignal))
 
     run.mockRejectedValueOnce(failure(1, 'execution error: User canceled. (-128)'))
-    await expect(pickNativeDirectory(signal(), { platform: 'darwin', run })).resolves.toBeNull()
+    await expect(pickNativePath(signal(), { platform: 'darwin', run })).resolves.toBeNull()
 
     run.mockRejectedValueOnce(failure(2, 'permission denied'))
-    await expect(pickNativeDirectory(signal(), { platform: 'darwin', run })).rejects.toThrow('command failed')
+    await expect(pickNativePath(signal(), { platform: 'darwin', run })).rejects.toThrow('command failed')
   })
 
   it.each([
@@ -52,32 +55,32 @@ describe('native directory picker', () => {
     ['a non-string stderr property', { code: 1, stderr: 42 }],
   ])('does not mistake %s for macOS cancellation', async (_label, reason) => {
     const run = vi.fn<DirectoryPickerRunner>(async () => { throw reason })
-    await expect(pickNativeDirectory(signal(), { platform: 'darwin', run })).rejects.toBe(reason)
+    await expect(pickNativePath(signal(), { platform: 'darwin', run })).rejects.toBe(reason)
   })
 
   it('uses the Win32 dialog and never spawns a command when it answers', async () => {
     const run = vi.fn<DirectoryPickerRunner>()
     const pickWin32Dialog = vi.fn(async (): Promise<string | null> => 'C:\\work\\selected')
-    await expect(pickNativeDirectory(signal(), { platform: 'win32', run, pickWin32Dialog })).resolves.toBe('C:\\work\\selected')
+    await expect(pickNativePath(signal(), { platform: 'win32', run, pickWin32Dialog })).resolves.toBe('C:\\work\\selected')
     pickWin32Dialog.mockResolvedValueOnce(null)
-    await expect(pickNativeDirectory(signal(), { platform: 'win32', run, pickWin32Dialog })).resolves.toBeNull()
+    await expect(pickNativePath(signal(), { platform: 'win32', run, pickWin32Dialog })).resolves.toBeNull()
     expect(run).not.toHaveBeenCalled()
   })
 
   it('surfaces the Win32 dialog failure with no fallback', async () => {
     const run = vi.fn<DirectoryPickerRunner>()
-    await expect(pickNativeDirectory(signal(), { platform: 'win32', run, pickWin32Dialog: noDialog }))
+    await expect(pickNativePath(signal(), { platform: 'win32', run, pickWin32Dialog: noDialog }))
       .rejects.toThrow('dialog unavailable')
     expect(run).not.toHaveBeenCalled()
   })
 
   it('wires the real Win32 dialog as the default tier', async () => {
     // A pre-aborted signal makes the DEFAULT dialog deterministic on every
-    // host: pickWin32Directory throws before spawning any worker or window.
+    // host: pickWin32Path throws before spawning any worker or window.
     const abort = new AbortController()
     abort.abort()
     const run = vi.fn<DirectoryPickerRunner>()
-    await expect(pickNativeDirectory(abort.signal, { platform: 'win32', run }))
+    await expect(pickNativePath(abort.signal, { platform: 'win32', run }))
       .rejects.toThrow('native directory picker aborted')
     expect(run).not.toHaveBeenCalled()
   })
@@ -86,7 +89,7 @@ describe('native directory picker', () => {
     const abort = new AbortController()
     abort.abort(new Error('closed'))
     const run = vi.fn<DirectoryPickerRunner>()
-    await expect(pickNativeDirectory(abort.signal, { platform: 'win32', run, pickWin32Dialog: noDialog })).rejects.toThrow('dialog unavailable')
+    await expect(pickNativePath(abort.signal, { platform: 'win32', run, pickWin32Dialog: noDialog })).rejects.toThrow('dialog unavailable')
     expect(run).not.toHaveBeenCalled()
   })
 
@@ -94,7 +97,7 @@ describe('native directory picker', () => {
     execFileMock.mockImplementationOnce((_command, _args, _options, callback) => {
       callback(null, '/home/test/project\n', '')
     })
-    await expect(pickNativeDirectory(signal(), { platform: 'linux' })).resolves.toBe('/home/test/project')
+    await expect(pickNativePath(signal(), { platform: 'linux' })).resolves.toBe('/home/test/project')
     const [command, args, options] = execFileMock.mock.calls[0]!
     expect(command).toBe('zenity')
     expect(args).toEqual(expect.arrayContaining(['--file-selection', '--directory']))
@@ -107,7 +110,7 @@ describe('native directory picker', () => {
     execFileMock.mockImplementationOnce((_command, _args, _options, callback) => {
       callback(Object.assign(new Error('zenity failed'), { code: 7 }), 'partial output', 'failure details')
     })
-    const surfaced = await pickNativeDirectory(signal(), { platform: 'linux' })
+    const surfaced = await pickNativePath(signal(), { platform: 'linux' })
       .then(() => { throw new Error('expected rejection') }, (error: unknown) => error as Error)
     expect(surfaced).toMatchObject({
       message: 'zenity failed', code: 7,
@@ -122,49 +125,49 @@ describe('native directory picker', () => {
     const run = vi.fn<DirectoryPickerRunner>(async () => ({ stdout: '/default/platform\n', stderr: '' }))
     const pickWin32Dialog = async (): Promise<string | null> => 'C:\\default\\platform'
     const expected = process.platform === 'win32' ? 'C:\\default\\platform' : '/default/platform'
-    await expect(pickNativeDirectory(signal(), { run, pickWin32Dialog })).resolves.toBe(expected)
+    await expect(pickNativePath(signal(), { run, pickWin32Dialog })).resolves.toBe(expected)
   })
 
   it('maps empty command output to cancellation', async () => {
     const run = vi.fn<DirectoryPickerRunner>(async () => ({ stdout: '', stderr: '' }))
-    await expect(pickNativeDirectory(signal(), { platform: 'linux', run })).resolves.toBeNull()
+    await expect(pickNativePath(signal(), { platform: 'linux', run })).resolves.toBeNull()
   })
 
   it('uses Zenity on Linux and falls back to KDialog only when Zenity is missing', async () => {
     const run = vi.fn<DirectoryPickerRunner>()
       .mockRejectedValueOnce(failure('ENOENT'))
       .mockResolvedValueOnce({ stdout: '/home/test/project\n', stderr: '' })
-    await expect(pickNativeDirectory(signal(), { platform: 'linux', run })).resolves.toBe('/home/test/project')
+    await expect(pickNativePath(signal(), { platform: 'linux', run })).resolves.toBe('/home/test/project')
     expect(run.mock.calls.map(call => call[0])).toEqual(['zenity', 'kdialog'])
 
     const zenity = vi.fn<DirectoryPickerRunner>(async () => ({ stdout: '/home/test/direct\n', stderr: '' }))
-    await expect(pickNativeDirectory(signal(), { platform: 'linux', run: zenity }))
+    await expect(pickNativePath(signal(), { platform: 'linux', run: zenity }))
       .resolves.toBe('/home/test/direct')
     expect(zenity).toHaveBeenCalledOnce()
   })
 
   it('maps Linux cancellation to null and reports a missing desktop picker', async () => {
     const cancelled = vi.fn<DirectoryPickerRunner>(async () => { throw failure(1) })
-    await expect(pickNativeDirectory(signal(), { platform: 'linux', run: cancelled })).resolves.toBeNull()
+    await expect(pickNativePath(signal(), { platform: 'linux', run: cancelled })).resolves.toBeNull()
 
     const missing = vi.fn<DirectoryPickerRunner>(async () => { throw failure('ENOENT') })
-    await expect(pickNativeDirectory(signal(), { platform: 'linux', run: missing }))
+    await expect(pickNativePath(signal(), { platform: 'linux', run: missing }))
       .rejects.toThrow('install zenity or kdialog')
 
     const kdialogCancelled = vi.fn<DirectoryPickerRunner>()
       .mockRejectedValueOnce(failure('ENOENT'))
       .mockRejectedValueOnce(failure(1))
-    await expect(pickNativeDirectory(signal(), { platform: 'linux', run: kdialogCancelled }))
+    await expect(pickNativePath(signal(), { platform: 'linux', run: kdialogCancelled }))
       .resolves.toBeNull()
 
     const zenityFailed = vi.fn<DirectoryPickerRunner>(async () => { throw failure(2) })
-    await expect(pickNativeDirectory(signal(), { platform: 'linux', run: zenityFailed }))
+    await expect(pickNativePath(signal(), { platform: 'linux', run: zenityFailed }))
       .rejects.toThrow('command failed')
 
     const kdialogFailed = vi.fn<DirectoryPickerRunner>()
       .mockRejectedValueOnce(failure('ENOENT'))
       .mockRejectedValueOnce(failure(2))
-    await expect(pickNativeDirectory(signal(), { platform: 'linux', run: kdialogFailed }))
+    await expect(pickNativePath(signal(), { platform: 'linux', run: kdialogFailed }))
       .rejects.toThrow('command failed')
   })
 
@@ -172,10 +175,21 @@ describe('native directory picker', () => {
     const abort = new AbortController()
     abort.abort(new Error('closed'))
     const run = vi.fn<DirectoryPickerRunner>(async () => { throw failure('ABORT_ERR') })
-    await expect(pickNativeDirectory(abort.signal, { platform: 'linux', run })).rejects.toThrow('command failed')
+    await expect(pickNativePath(abort.signal, { platform: 'linux', run })).rejects.toThrow('command failed')
   })
 
   it('reports unsupported platforms', async () => {
-    await expect(pickNativeDirectory(signal(), { platform: 'aix' })).rejects.toThrow('unsupported on aix')
+    await expect(pickNativePath(signal(), { platform: 'aix' })).rejects.toThrow('unsupported on aix')
+  })
+
+  it('configures native open and save file choices without inventing a destination', async () => {
+    const run = vi.fn<DirectoryPickerRunner>(async () => ({ stdout: '/tmp/星港.worldline.zip\n', stderr: '' }))
+    await expect(openNativePathDialog({ mode: 'open-file', title: '选择世界包', extensions: ['worldline.zip'] }, signal(), { platform: 'linux', run }))
+      .resolves.toBe('/tmp/星港.worldline.zip')
+    expect(run).toHaveBeenLastCalledWith('zenity', expect.arrayContaining(['--file-filter=*.worldline.zip']), expect.any(AbortSignal))
+
+    await expect(openNativePathDialog({ mode: 'save-file', title: '保存世界包', suggestedName: '星港.worldline.zip', extensions: ['worldline.zip'] }, signal(), { platform: 'linux', run }))
+      .resolves.toBe('/tmp/星港.worldline.zip')
+    expect(run).toHaveBeenLastCalledWith('zenity', expect.arrayContaining(['--save', '--confirm-overwrite', '--filename=星港.worldline.zip']), expect.any(AbortSignal))
   })
 })

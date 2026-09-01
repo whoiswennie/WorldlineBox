@@ -5,6 +5,9 @@
  * the one-or-two-column Miller content, and the bordered footer. */
 
 /* Doubled class beats Modal's own .dialog regardless of stylesheet order. */
+.modalLayer { z-index: 11000; }
+.nestedModalLayer { z-index: 11001; }
+
 /* Short viewports clamp the card: header/footer are flex-none and the
  * columns scroll, so shrinking the height keeps Open/Cancel reachable
  * instead of clipping them below a fixed overlay. */

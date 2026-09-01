@@ -9,7 +9,7 @@
 import type {
   DirectoryListing, SessionId, WorkspaceId, WorkspaceView, WorkspaceTreeSearchListing,
 } from '@deepseek-ai/dsh-api-remotes/client'
-import type { WorkspaceTreeMutation, WorkspaceTreePreview } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { PathPickerRequest, WorkspaceTreeMutation, WorkspaceTreePreview } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { ObservableSnapshot } from '../contract/store.ts'
 import type { WorkspaceListState } from './service.ts'
 
@@ -41,14 +41,18 @@ export interface IWorkspaces {
    * Open the Host's native directory picker.
    * @returns the selected path, or null when the user cancelled.
    */
-  pickDirectory(): Promise<string | null>
+  pickPath(request: PathPickerRequest): Promise<string | null>
   /**
    * List one directory level through the Host's `browse` capability.
    * @param path - absolute directory to list; absent lists the Host home directory.
    * @param signal - aborts the wire request (and the Host's scan) when the caller supersedes it.
    * @returns the level's listing with breadcrumb ancestry.
    */
-  listDirectory(path?: string, signal?: AbortSignal, includeFiles?: boolean): Promise<DirectoryListing>
+  listDirectory(
+    path?: string,
+    signal?: AbortSignal,
+    options?: { includeFiles?: boolean; hostFilesystem?: boolean },
+  ): Promise<DirectoryListing>
   /**
    * Create one child directory through the Host's `browse` capability.
    * @param path - absolute existing parent directory.
@@ -56,6 +60,8 @@ export interface IWorkspaces {
    * @returns the created directory's absolute path.
    */
   createDirectory(path: string, name: string): Promise<string>
+  /** Resolve a plain file name below a directory selected in the host browser. */
+  resolveDirectoryFile(path: string, name: string): Promise<string>
   /**
    * Open a filesystem path with the Host operating system's default application.
    * @param path - absolute or host-resolvable path.

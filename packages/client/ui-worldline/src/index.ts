@@ -8,11 +8,10 @@ import type {} from '@deepseek-ai/dsh-worldline-narrative'
 import type { NarrateRequest } from '@deepseek-ai/dsh-worldline-narrative/types'
 import type {} from '@deepseek-ai/dsh-worldline-project'
 import type { ImportProjectEntryRequest } from '@deepseek-ai/dsh-worldline-project/types'
+import { BIND_PATH, PROJECT_UPLOAD_PATH, STREAM_PATH } from './contract.ts'
 
 export const inject = ['webServer', 'worldlineNarrative', 'worldlineConversationContexts', 'worldlineProjects']
-export const STREAM_PATH = '/api/worldline/narrative/stream'
-export const BIND_PATH = '/api/worldline/conversation/bind'
-export const PROJECT_UPLOAD_PATH = '/api/worldline/project/upload'
+export { BIND_PATH, PROJECT_UPLOAD_PATH, STREAM_PATH } from './contract.ts'
 const MAX_BODY_BYTES = 64 * 1024
 
 async function jsonBody(req: IncomingMessage): Promise<unknown> {

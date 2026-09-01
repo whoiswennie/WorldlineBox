@@ -215,8 +215,8 @@ export class WorkspaceRuntime implements IWorkspaces {
    * Open the Host's native directory picker (the `native` capability).
    * @returns the selected path, or null when the user cancelled.
    */
-  async pickDirectory(): Promise<string | null> {
-    const response = await this.api.host.pickDirectory({})
+  async pickPath(request: import('@deepseek-ai/dsh-host-apiproxy/api').PathPickerRequest): Promise<string | null> {
+    const response = await this.api.host.pickPath(request)
     if (!response.result.ok) {
       throw new Error(`directory picker failed: ${response.result.error.message}`)
     }
@@ -229,10 +229,15 @@ export class WorkspaceRuntime implements IWorkspaces {
    * @param signal - aborts the wire request (and the Host's scan) when the caller supersedes it.
    * @returns the level's listing with breadcrumb ancestry.
    */
-  async listDirectory(path?: string, signal?: AbortSignal, includeFiles = false): Promise<DirectoryListing> {
+  async listDirectory(
+    path?: string,
+    signal?: AbortSignal,
+    options: { includeFiles?: boolean; hostFilesystem?: boolean } = {},
+  ): Promise<DirectoryListing> {
     const payload = {
       ...(path === undefined ? {} : { path }),
-      ...(includeFiles ? { includeFiles: true } : {}),
+      ...(options.includeFiles === true ? { includeFiles: true } : {}),
+      ...(options.hostFilesystem === true ? { hostFilesystem: true } : {}),
     }
     const response = await this.api.host.listDirectory(payload, signal)
     if (!response.result.ok) throw new DirectoryBrowseError(response.result.error)
@@ -247,6 +252,12 @@ export class WorkspaceRuntime implements IWorkspaces {
    */
   async createDirectory(path: string, name: string): Promise<string> {
     const response = await this.api.host.createDirectory({ path, name })
+    if (!response.result.ok) throw new DirectoryBrowseError(response.result.error)
+    return response.result.value.path
+  }
+
+  async resolveDirectoryFile(path: string, name: string): Promise<string> {
+    const response = await this.api.host.resolveDirectoryFile({ path, name })
     if (!response.result.ok) throw new DirectoryBrowseError(response.result.error)
     return response.result.value.path
   }

@@ -1,7 +1,7 @@
 /**
  * Browser half of the native directory-picker backend: fills ui-workspace's
- * two directory-flow holes with a renderless occupant that answers each
- * `open` by driving `host.pickDirectory` (the node half's OS chooser) and
+ * directory-flow holes with a renderless occupant that answers each
+ * `open` by driving `host.pickPath` (the node half's OS chooser) and
  * reporting the one outcome — picked path, cancellation, or failure — back
  * through the owner conversation. Mounting this package therefore composes
  * both sides of the native interaction with one cordis.yml row; no client
@@ -18,23 +18,27 @@ import { NativeDirectoryFlow } from './flow.ts'
 export const inject = ['slots', 'workspaces']
 
 /**
- * Client plugin body: register the renderless native flow into both
- * directory-flow holes through `slots.inject()` because the ui-workspace
- * entries may activate later or replace their declarations.
+ * Client plugin body: register the renderless native flow into every
+ * directory-flow hole through `slots.inject()` because owners may activate
+ * later or replace their declarations.
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
-  const injected = (): NativeFlowInjected => ({ pick: () => ctx.workspaces.pickDirectory() })
-  // Both declaration lifetimes must be live before the pair installs; the
-  // generator makes the two registrations one transactional effect. The
-  // outer/inner nesting order is arbitrary; neither hole has precedence.
+  const injected = (): NativeFlowInjected => ({ pick: request => ctx.workspaces.pickPath(request) })
+  // All declaration lifetimes must be live before the group installs; the
+  // generator makes the registrations one transactional effect. The nesting
+  // order is arbitrary; no consumer hole has precedence.
   ctx.slots.inject('conversation.hero.workspace.directoryFlow', () =>
-    ctx.slots.inject('sidebar.workspaces.directoryFlow', function* () {
-      yield ctx.slots.register({
-        name: 'conversation.hero.workspace.directoryFlow', inject: injected,
-      }, NativeDirectoryFlow)
-      yield ctx.slots.register({
-        name: 'sidebar.workspaces.directoryFlow', inject: injected,
-      }, NativeDirectoryFlow)
-    }))
+    ctx.slots.inject('sidebar.workspaces.directoryFlow', () =>
+      ctx.slots.inject('host.directoryFlow', function* () {
+        yield ctx.slots.register({
+          name: 'conversation.hero.workspace.directoryFlow', inject: injected,
+        }, NativeDirectoryFlow)
+        yield ctx.slots.register({
+          name: 'sidebar.workspaces.directoryFlow', inject: injected,
+        }, NativeDirectoryFlow)
+        yield ctx.slots.register({
+          name: 'host.directoryFlow', inject: injected,
+        }, NativeDirectoryFlow)
+      })))
 }

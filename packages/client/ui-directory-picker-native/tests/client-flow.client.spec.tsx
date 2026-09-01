@@ -11,23 +11,28 @@ import { apply as nodeApply } from '../src/index.ts'
 
 afterEach(cleanup)
 
-const HOLES = ['conversation.hero.workspace.directoryFlow', 'sidebar.workspaces.directoryFlow'] as const
+const HOLES = [
+  'conversation.hero.workspace.directoryFlow',
+  'sidebar.workspaces.directoryFlow',
+  'host.directoryFlow',
+] as const
 
 async function bench() {
   const ctx = new Context()
   await ctx.plugin(SlotRegistry).await()
-  const pickDirectory = vi.fn(async (): Promise<string | null> => '/tmp/picked')
-  ctx.provide('workspaces', { pickDirectory } as never)
+  const pickPath = vi.fn(async (): Promise<string | null> => '/tmp/picked')
+  ctx.provide('workspaces', { pickPath } as never)
   const slots = ctx.get('slots') as SlotRegistry
   const declare = () => slots.register({
     name: 'root',
     children: Object.fromEntries(HOLES.map(name => [name, { kind: 'single', scope: 'root' }])),
   } as never, () => null)
-  return { ctx, slots, pickDirectory, declare }
+  return { ctx, slots, pickPath, declare }
 }
 
 function owner(overrides: Partial<DirectoryFlowOwnerProps> = {}): DirectoryFlowOwnerProps {
   return {
+    request: { mode: 'directory', title: '选择目录' },
     open: true, busy: false,
     onPicked: vi.fn(), onCancel: vi.fn(), onError: vi.fn(),
     ...overrides,
@@ -39,7 +44,7 @@ describe('directory-picker-native client half', () => {
     expect(inject).toEqual(['slots', 'workspaces'])
   })
 
-  it('fills both directory-flow holes for declarations before or after apply, and leaves with its fiber', async () => {
+  it('fills every directory-flow hole for declarations before or after apply, and leaves with its fiber', async () => {
     const before = await bench()
     before.declare()
     const fiber = before.ctx.plugin({ inject: [...inject], apply })
@@ -75,15 +80,15 @@ describe('directory-picker-native client half', () => {
     process.on('uncaughtException', onUnhandled)
     try {
       // The rival subscribes first, so synchronous declaration notifications
-      // let it occupy the pair before this provider's waiting injection runs.
-      b.slots.inject(HOLES[0], () => b.slots.inject(HOLES[1], function* () {
-        yield b.slots.register({ name: HOLES[0] } as never, () => null)
-        yield b.slots.register({ name: HOLES[1] } as never, () => null)
-      }))
+      // let it occupy the group before this provider's waiting injection runs.
+      b.slots.inject(HOLES[0], () => b.slots.inject(HOLES[1], () =>
+        b.slots.inject(HOLES[2], function* () {
+          for (const hole of HOLES) yield b.slots.register({ name: hole } as never, () => null)
+        })))
       await b.ctx.plugin({ inject: [...inject], apply }).await()
       b.declare()
       await new Promise(resolve => setTimeout(resolve, 20))
-      // The rival keeps both holes; this provider rolled back wholesale and
+      // The rival keeps every hole; this provider rolled back wholesale and
       // surfaced the conflict on the fail-loud channel — no partial mix.
       for (const hole of HOLES) expect(b.slots.entries(hole)).toHaveLength(1)
       expect(rejections.map(String).join('\n')).toContain('already has a registration')
@@ -144,9 +149,9 @@ describe('directory-picker-native client half', () => {
     b.declare()
     await b.ctx.plugin({ inject: [...inject], apply }).await()
     const entry = b.slots.entries(HOLES[0])[0]!
-    const injected = (entry.inject as () => { pick: () => Promise<string | null> })()
-    await expect(injected.pick()).resolves.toBe('/tmp/picked')
-    expect(b.pickDirectory).toHaveBeenCalledOnce()
+    const injected = (entry.inject as () => { pick: (request: DirectoryFlowOwnerProps['request']) => Promise<string | null> })()
+    await expect(injected.pick({ mode: 'open-file', title: '选择世界包', extensions: ['worldline.zip'] })).resolves.toBe('/tmp/picked')
+    expect(b.pickPath).toHaveBeenCalledWith({ mode: 'open-file', title: '选择世界包', extensions: ['worldline.zip'] })
   })
 
   it('runs one pick per open edge and reports the path to the latest onPicked', async () => {

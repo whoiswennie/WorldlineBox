@@ -82,7 +82,16 @@ describe('ui-virtual-companion apply', () => {
       },
     } as never, () => null)
 
-    await ctx.plugin({ inject: [...inject], apply }).await()
+    const disposeWorldlineRail = slots.register({
+      name: 'worldline.rail.primary', id: 'worldline-studio', order: 21,
+    } as never, () => null)
+    const disposeWorldlinePage = slots.register({
+      name: 'worldline.main.page', priority: 21,
+      select: (owner: { activePage: string }) => owner.activePage === 'worldline-studio' ? {} : null,
+      inject: () => ({}),
+    } as never, () => null)
+    const fiber = ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
     const mentionSource = triggerSources.find(source => source.trigger === '@')
     expect(mentionSource).toBeDefined()
     const candidates = await mentionSource!.candidates({ sessionId }, {
@@ -91,8 +100,12 @@ describe('ui-virtual-companion apply', () => {
     expect(candidates.find(candidate => candidate.name === companion.name)?.description)
       .toBe('GUIDE · 知识向导 · 会耐心整理问题，并给出清楚的下一步。')
     mentionSessionActive = false
-    expect(slots.entries('worldline.rail.primary')).toHaveLength(2)
-    expect(slots.entries('worldline.main.page')).toHaveLength(2)
+    expect(slots.entries('worldline.rail.primary').map(entry => entry.options.id)).toEqual([
+      'knowledge-vault',
+      'virtual-companions',
+      'worldline-studio',
+    ])
+    expect(slots.entries('worldline.main.page')).toHaveLength(3)
     expect(slots.entries('conversation.input.left').map(entry => entry.options.id)).toEqual([
       'virtual-companion-memes',
       'virtual-companion-process',
@@ -125,5 +138,12 @@ describe('ui-virtual-companion apply', () => {
       body: JSON.stringify({ sessionId, participantIds: ['yachiyo-runami'] }),
     }))
     expect(activatePage).toHaveBeenLastCalledWith('conversation')
+
+    await fiber.dispose()
+    expect(slots.entries('worldline.rail.primary').map(entry => entry.options.id))
+      .toEqual(['worldline-studio'])
+    expect(slots.entries('worldline.main.page')).toHaveLength(1)
+    disposeWorldlinePage()
+    disposeWorldlineRail()
   })
 })

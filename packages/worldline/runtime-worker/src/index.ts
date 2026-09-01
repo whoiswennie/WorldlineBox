@@ -46,11 +46,20 @@ import type { WorkerCommand, WorkerInit, WorkerRequest, WorkerToHost } from './p
 
 const nodeRequire = createRequire(import.meta.url)
 
+/** Describes the config value exchanged across the package boundary.
+ */
 export interface Config {
+  /** V8 old-generation heap ceiling applied independently to each Run worker. */
   readonly maxOldGenerationSizeMb: number
+  /** Maximum milliseconds allowed for one Host-to-worker request. */
   readonly requestTimeoutMs: number
 }
 
+/** Perform worker spawn env through the package's public contract.
+ * @param platform - The platform supplied by the caller.
+ * @param tsconfigPath - The tsconfig path supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function workerSpawnEnv(
   platform: NodeJS.Platform = process.platform,
   tsconfigPath?: string,
@@ -101,6 +110,7 @@ class WorkerRunHandle {
   private readonly worker: Worker
   private requestId = 0
   private closed = false
+  private shutdown?: Promise<void>
   private readonly pending = new Map<number, {
     readonly resolve: (value: unknown) => void
     readonly reject: (error: Error) => void
@@ -111,6 +121,7 @@ class WorkerRunHandle {
     readonly init: WorkerInit,
     maxOldGenerationSizeMb: number,
     private readonly timeoutMs: number,
+    private readonly onFailure: (handle: WorkerRunHandle) => void,
   ) {
     this.ready = new Promise<RunView>((resolve, reject) => {
       this.readyResolve = resolve
@@ -122,7 +133,7 @@ class WorkerRunHandle {
     this.worker.on('error', (error) => { this.fail(error) })
     this.worker.on('messageerror', (error) => { this.fail(new Error(String(error))) })
     this.worker.on('exit', (code) => {
-      if (!this.closed && code !== 0) this.fail(new Error(`Worldline Runtime Worker exited with code ${String(code)}`))
+      if (!this.closed) this.fail(new Error(`Worldline Runtime Worker exited unexpectedly with code ${String(code)}`))
     })
   }
 
@@ -136,19 +147,25 @@ class WorkerRunHandle {
         reject(new WorldlineRuntimeError('worker-failed', `Runtime Worker request timed out: ${command.type}`))
       }, this.timeoutMs)
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer })
-      this.worker.postMessage({ type: 'request', id, command } satisfies WorkerRequest)
+      try {
+        this.worker.postMessage({ type: 'request', id, command } satisfies WorkerRequest)
+      } catch (reason) {
+        this.fail(reason instanceof Error ? reason : new Error(String(reason)))
+      }
     })
   }
 
   async terminate(): Promise<void> {
-    if (this.closed) return
-    this.closed = true
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer)
-      pending.reject(new WorldlineRuntimeError('run-not-live', 'Run Worker terminated'))
+    if (this.shutdown === undefined) {
+      this.closed = true
+      for (const pending of this.pending.values()) {
+        clearTimeout(pending.timer)
+        pending.reject(new WorldlineRuntimeError('run-not-live', 'Run Worker terminated'))
+      }
+      this.pending.clear()
+      this.shutdown = this.worker.terminate().then(() => undefined)
     }
-    this.pending.clear()
-    await this.worker.terminate()
+    await this.shutdown
   }
 
   private onMessage(message: WorkerToHost): void {
@@ -165,9 +182,16 @@ class WorkerRunHandle {
   }
 
   private fail(error: Error): void {
-    this.readyReject(error)
-    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error) }
+    if (this.closed) return
+    this.closed = true
+    const failure = error instanceof WorldlineRuntimeError
+      ? error
+      : new WorldlineRuntimeError('worker-failed', error.message)
+    this.readyReject(failure)
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(failure) }
     this.pending.clear()
+    this.onFailure(this)
+    this.shutdown = this.worker.terminate().then(() => undefined).catch(() => {})
   }
 }
 
@@ -336,9 +360,12 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
       init,
       this.config.maxOldGenerationSizeMb,
       this.config.requestTimeoutMs,
+      (failed) => {
+        if (this.handles.get(init.runId) === failed) this.handles.delete(init.runId)
+      },
     )
     this.handles.set(init.runId, handle)
-    void handle.ready.catch(() => { this.handles.delete(init.runId) })
+    void handle.ready.catch(() => {})
     return handle
   }
 

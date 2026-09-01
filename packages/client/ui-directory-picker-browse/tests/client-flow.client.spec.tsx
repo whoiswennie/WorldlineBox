@@ -17,7 +17,11 @@ usePinnedBrowserLanguages('zh-CN')
 
 afterEach(cleanup)
 
-const HOLES = ['conversation.hero.workspace.directoryFlow', 'sidebar.workspaces.directoryFlow'] as const
+const HOLES = [
+  'conversation.hero.workspace.directoryFlow',
+  'sidebar.workspaces.directoryFlow',
+  'host.directoryFlow',
+] as const
 
 const HOME = '/home/u'
 const homeListing: DirectoryListing = {
@@ -34,17 +38,19 @@ async function bench() {
   ctx.provide('locale', new LocaleRuntime(ctx))
   const listDirectory = vi.fn(async (): Promise<DirectoryListing> => homeListing)
   const createDirectory = vi.fn(async (path: string, name: string) => `${path}/${name}`)
-  ctx.provide('workspaces', { listDirectory, createDirectory } as never)
+  const resolveDirectoryFile = vi.fn(async (path: string, name: string) => `${path}/${name}`)
+  ctx.provide('workspaces', { listDirectory, createDirectory, resolveDirectoryFile } as never)
   const slots = ctx.get('slots') as SlotRegistry
   const declare = () => slots.register({
     name: 'root',
     children: Object.fromEntries(HOLES.map(name => [name, { kind: 'single', scope: 'root' }])),
   } as never, () => null)
-  return { ctx, slots, listDirectory, createDirectory, declare }
+  return { ctx, slots, listDirectory, createDirectory, resolveDirectoryFile, declare }
 }
 
 function owner(overrides: Partial<DirectoryFlowOwnerProps> = {}): DirectoryFlowOwnerProps {
   return {
+    request: { mode: 'directory', title: '选择目录' },
     open: true, busy: false,
     onPicked: vi.fn(), onCancel: vi.fn(), onError: vi.fn(),
     ...overrides,
@@ -56,7 +62,7 @@ describe('directory-picker-browse client half', () => {
     expect(inject).toEqual(['slots', 'workspaces', 'locale'])
   })
 
-  it('fills both directory-flow holes for declarations before or after apply, and leaves with its fiber', async () => {
+  it('fills every directory-flow hole for declarations before or after apply, and leaves with its fiber', async () => {
     const before = await bench()
     before.declare()
     const fiber = before.ctx.plugin({ inject: [...inject], apply })
@@ -107,15 +113,15 @@ describe('directory-picker-browse client half', () => {
     process.on('uncaughtException', onUnhandled)
     try {
       // The rival subscribes first, so synchronous declaration notifications
-      // let it occupy the pair before this provider's waiting injection runs.
-      b.slots.inject(HOLES[0], () => b.slots.inject(HOLES[1], function* () {
-        yield b.slots.register({ name: HOLES[0] } as never, () => null)
-        yield b.slots.register({ name: HOLES[1] } as never, () => null)
-      }))
+      // let it occupy the group before this provider's waiting injection runs.
+      b.slots.inject(HOLES[0], () => b.slots.inject(HOLES[1], () =>
+        b.slots.inject(HOLES[2], function* () {
+          for (const hole of HOLES) yield b.slots.register({ name: hole } as never, () => null)
+        })))
       await b.ctx.plugin({ inject: [...inject], apply }).await()
       b.declare()
       await new Promise(resolve => setTimeout(resolve, 20))
-      // The rival keeps both holes; this provider rolled back wholesale and
+      // The rival keeps every hole; this provider rolled back wholesale and
       // surfaced the conflict on the fail-loud channel — no partial mix.
       for (const hole of HOLES) expect(b.slots.entries(hole)).toHaveLength(1)
       expect(rejections.map(String).join('\n')).toContain('already has a registration')
@@ -181,9 +187,11 @@ describe('directory-picker-browse client half', () => {
     const injected = (entry.inject as () => {
       listDirectory: (path?: string) => Promise<DirectoryListing>
       createDirectory: (path: string, name: string) => Promise<string>
+      resolveFile: (path: string, name: string) => Promise<string>
     })()
     await expect(injected.listDirectory()).resolves.toBe(homeListing)
     await expect(injected.createDirectory(HOME, 'fresh')).resolves.toBe(`${HOME}/fresh`)
+    await expect(injected.resolveFile(HOME, 'world.worldline.zip')).resolves.toBe(`${HOME}/world.worldline.zip`)
     expect(b.listDirectory).toHaveBeenCalledOnce()
     expect(b.createDirectory).toHaveBeenCalledWith(HOME, 'fresh')
   })
@@ -197,6 +205,7 @@ describe('directory-picker-browse client half', () => {
         {...props}
         listDirectory={listDirectory}
         createDirectory={vi.fn(async () => '')}
+        resolveFile={vi.fn(async (path, name) => `${path}/${name}`)}
         t={t}
       />,
     )
@@ -210,12 +219,53 @@ describe('directory-picker-browse client half', () => {
     expect(props.onError).not.toHaveBeenCalled()
   })
 
+  it('lets remote users choose an existing archive or an explicit save name', async () => {
+    const archives: DirectoryListing = {
+      ...homeListing,
+      entries: [
+        { name: 'Archive', path: `${HOME}/Archive`, hidden: false, kind: 'directory' },
+        { name: '星港.worldline.zip', path: `${HOME}/星港.worldline.zip`, hidden: false, kind: 'file' },
+        { name: 'notes.txt', path: `${HOME}/notes.txt`, hidden: false, kind: 'file' },
+      ],
+    }
+    const listDirectory = vi.fn(async (): Promise<DirectoryListing> => archives)
+    const openOwner = owner({ request: { mode: 'open-file', title: '选择世界包', extensions: ['worldline.zip'] } })
+    const view = render(<BrowseDirectoryFlow
+      {...openOwner}
+      listDirectory={listDirectory}
+      createDirectory={vi.fn(async () => '')}
+      resolveFile={vi.fn(async (path, name) => `${path}/${name}`)}
+      t={key => key}
+    />)
+    await screen.findByRole('option', { name: /星港\.worldline\.zip/u })
+    expect(screen.queryByText('notes.txt')).toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /星港\.worldline\.zip/u }))
+    fireEvent.click(screen.getByRole('button', { name: 'path.choose' }))
+    expect(openOwner.onPicked).toHaveBeenCalledWith(`${HOME}/星港.worldline.zip`)
+
+    const resolveFile = vi.fn(async (path: string, name: string) => `${path}/${name}`)
+    const saveOwner = owner({ request: { mode: 'save-file', title: '保存世界包', suggestedName: '新世界.worldline.zip', extensions: ['worldline.zip'] } })
+    view.rerender(<BrowseDirectoryFlow
+      {...saveOwner}
+      listDirectory={listDirectory}
+      createDirectory={vi.fn(async () => '')}
+      resolveFile={resolveFile}
+      t={key => key}
+    />)
+    const name = await screen.findByLabelText('path.fileName')
+    expect((name as HTMLInputElement).value).toBe('新世界.worldline.zip')
+    fireEvent.click(screen.getByRole('button', { name: 'path.save' }))
+    await waitFor(() => { expect(resolveFile).toHaveBeenCalledWith(HOME, '新世界.worldline.zip') })
+    expect(saveOwner.onPicked).toHaveBeenCalledWith(`${HOME}/新世界.worldline.zip`)
+  })
+
   it('renders nothing while the flow is closed', () => {
     const view = render(
       <BrowseDirectoryFlow
         {...owner({ open: false })}
         listDirectory={vi.fn(async () => homeListing)}
         createDirectory={vi.fn(async () => '')}
+        resolveFile={vi.fn(async (path, name) => `${path}/${name}`)}
         t={key => key}
       />,
     )

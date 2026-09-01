@@ -68,7 +68,6 @@ External packages that a workspace package resolves at runtime. The tier covers 
 | [`e2b`](https://github.com/e2b-dev/e2b) | MIT |
 | [`eventsource-parser`](https://github.com/rexxars/eventsource-parser) | MIT |
 | [`fflate`](https://github.com/101arrowz/fflate) | MIT |
-| [`gsap`](https://github.com/greensock/GSAP) | Standard 'no charge' license: https://gsap.com/standard-license. |
 | [`immer`](https://github.com/immerjs/immer) | MIT |
 | [`ipaddr.js`](https://github.com/whitequark/ipaddr.js) | MIT |
 | [`js-yaml`](https://github.com/nodeca/js-yaml) | MIT |
@@ -133,10 +132,6 @@ The installed SDK 0.3.241 declares the following optional platform packages. Eac
 | [`@anthropic-ai/claude-agent-sdk-win32-arm64`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk-win32-arm64) | 0.3.241 | SEE LICENSE IN LICENSE.md |
 | [`@anthropic-ai/claude-agent-sdk-win32-x64`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk-win32-x64) | 0.3.241 | SEE LICENSE IN LICENSE.md |
 
-
-## GSAP runtime authorization
-
-The project owner explicitly authorizes Worldline to bundle and distribute the official [`gsap`](https://github.com/greensock/GSAP) package under GreenSock's [Standard "no charge" License](https://gsap.com/standard-license/). This identity-scoped authorization does not classify those terms as permissive and does not cover any unrelated package; a package-identity or declared-license change still requires the ordinary dependency, compatibility, terms, and notices review.
 
 
 ## Development-only npm dependencies

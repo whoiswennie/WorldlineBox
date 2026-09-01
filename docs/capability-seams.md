@@ -224,6 +224,22 @@ flowchart LR
   pkg_cordis_host_runner["cordis-host-runner"]
   svc_dynamicCordisRunner["ctx.dynamicCordisRunner<br/>Dynamic Cordis package host runner"]
   svc_cordisInspect["ctx.cordisInspect<br/>Dynamic Cordis inspect registry"]
+  pkg_worldline_project["worldline-project"]
+  svc_worldlineProjects["ctx.worldlineProjects<br/>Worldline project-library seam"]
+  pkg_worldline_project_local["worldline-project-local"]
+  pkg_worldline_compiler["worldline-compiler"]
+  pkg_worldline_runtime_worker["worldline-runtime-worker"]
+  pkg_worldline_conversation_context["worldline-conversation-context"]
+  pkg_tool_worldline["tool-worldline"]
+  svc_worldlineCompiler["ctx.worldlineCompiler<br/>Worldline Canon compiler"]
+  pkg_ui_worldline["ui-worldline"]
+  pkg_worldline_runtime["worldline-runtime"]
+  svc_worldlineRuns["ctx.worldlineRuns<br/>Worldline Run seam"]
+  pkg_worldline_ai["worldline-ai"]
+  pkg_worldline_narrative["worldline-narrative"]
+  svc_worldlineAi["ctx.worldlineAi<br/>Budgeted Worldline AI"]
+  svc_worldlineNarrative["ctx.worldlineNarrative<br/>Worldline text-play projection"]
+  svc_worldlineConversationContexts["ctx.worldlineConversationContexts<br/>Worldline author Session binding"]
   pkg_account_profile --> svc_localAccountProfile
   pkg_acp --> svc_approval
   pkg_agent --> svc_agents
@@ -339,6 +355,14 @@ flowchart LR
   pkg_workflow --> svc_workflowEngine
   pkg_workflow_worker_thread --> svc_workflowEngine
   pkg_workspace --> svc_workspaceRegistry
+  pkg_worldline_ai --> svc_worldlineAi
+  pkg_worldline_compiler --> svc_worldlineCompiler
+  pkg_worldline_conversation_context --> svc_worldlineConversationContexts
+  pkg_worldline_narrative --> svc_worldlineNarrative
+  pkg_worldline_project --> svc_worldlineProjects
+  pkg_worldline_project_local --> svc_worldlineProjects
+  pkg_worldline_runtime --> svc_worldlineRuns
+  pkg_worldline_runtime_worker --> svc_worldlineRuns
   svc_agentDefaultModel --> pkg_headless
   svc_agentDefaultModel --> pkg_host_apiproxy
   svc_agentLoop --> pkg_agent_spine_demo
@@ -466,6 +490,21 @@ flowchart LR
   svc_workspaceRegistry --> pkg_apiproxy
   svc_workspaceTree --> pkg_host_apiproxy
   svc_workspaceTree --> pkg_host_desktop_browser
+  svc_worldlineAi --> pkg_ui_worldline
+  svc_worldlineAi --> pkg_worldline_narrative
+  svc_worldlineCompiler --> pkg_tool_worldline
+  svc_worldlineCompiler --> pkg_ui_worldline
+  svc_worldlineConversationContexts --> pkg_tool_worldline
+  svc_worldlineConversationContexts --> pkg_ui_worldline
+  svc_worldlineNarrative --> pkg_ui_worldline
+  svc_worldlineProjects --> pkg_tool_worldline
+  svc_worldlineProjects --> pkg_worldline_compiler
+  svc_worldlineProjects --> pkg_worldline_conversation_context
+  svc_worldlineProjects --> pkg_worldline_runtime_worker
+  svc_worldlineRuns --> pkg_tool_worldline
+  svc_worldlineRuns --> pkg_ui_worldline
+  svc_worldlineRuns --> pkg_worldline_ai
+  svc_worldlineRuns --> pkg_worldline_narrative
   svc_fs -. event gate .-> pkg_fs_observation_policy
 ```
 
@@ -537,5 +576,11 @@ flowchart LR
 | `ctx.apiProxy` | `core` | `apiproxy` | - | `connection` | - | The transport-agnostic host gateway face: it dispatches browser API calls, and each open host stream subscribes to the events it forwards rather than being pushed to through a broadcast verb. |
 | `ctx.dynamicCordisRunner` | `core` | [`cordis-host-runner`](../packages/extensions/cordis-host-runner) | - | [`tool-cordis`](../packages/extensions/tool-cordis) | - | Owns the in-memory definition registry, the vm sandbox for host halves, and the request-run round trip; browser pages reach the same service over the wire through its remote namespace. |
 | `ctx.cordisInspect` | `core` | [`cordis-host-runner`](../packages/extensions/cordis-host-runner) | - | [`tool-cordis`](../packages/extensions/tool-cordis) | - | Registers host inspect providers, mirrors the client provider manifest, and routes client queries through the dynamic Cordis transport. |
+| `ctx.worldlineProjects` | `seam` | [`worldline-project`](../packages/worldline/project) | [`worldline-project-local`](../packages/worldline/project-local) | [`worldline-compiler`](../packages/worldline/compiler), [`worldline-runtime-worker`](../packages/worldline/runtime-worker), [`worldline-conversation-context`](../packages/worldline/conversation-context), [`tool-worldline`](../packages/worldline/tool-worldline) | - | The service owns project-scoped source, history, artifacts, and transfer contracts; the local provider confines durable filesystem and archive operations to explicit user-selected paths. |
+| `ctx.worldlineCompiler` | `core` | [`worldline-compiler`](../packages/worldline/compiler) | - | [`tool-worldline`](../packages/worldline/tool-worldline), `ui-worldline` | - | Compiles one revision-pinned Canon snapshot, carries provenance through diagnostics and proposals, and freezes only a purpose-closed immutable Blueprint. |
+| `ctx.worldlineRuns` | `seam` | [`worldline-runtime`](../packages/worldline/runtime) | [`worldline-runtime-worker`](../packages/worldline/runtime-worker) | [`worldline-ai`](../packages/worldline/ai), [`worldline-narrative`](../packages/worldline/narrative), [`tool-worldline`](../packages/worldline/tool-worldline), `ui-worldline` | - | The contract owns Run lifecycle, validated actions, observations, records, checkpoints, branches, and explanations; the worker provider serializes commands over one durable writer per open Run. |
+| `ctx.worldlineAi` | `core` | [`worldline-ai`](../packages/worldline/ai) | - | [`worldline-narrative`](../packages/worldline/narrative), `ui-worldline` | - | Builds bounded project-and-Run context, routes and prices model calls, and records decision evidence without granting the model direct state-mutation authority. |
+| `ctx.worldlineNarrative` | `core` | [`worldline-narrative`](../packages/worldline/narrative) | - | `ui-worldline` | - | Projects authoritative Run state into scenes, choices, narration, savepoints, branches, retries, and replaceable StoryStage renderers. |
+| `ctx.worldlineConversationContexts` | `core` | [`worldline-conversation-context`](../packages/worldline/conversation-context) | - | [`tool-worldline`](../packages/worldline/tool-worldline), `ui-worldline` | - | Pins one author Session to one project, worldline, source revision, and optional Run, and publishes that exact authority boundary into scoped context. |
 
 Maintenance mode: hybrid: services are discovered from Cordis declarations; interface/implementation/consumer roles are classified in `scripts/gen-doc-graphs.ts` with a completeness guard.

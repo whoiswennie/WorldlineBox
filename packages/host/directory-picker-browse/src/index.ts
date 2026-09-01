@@ -206,6 +206,7 @@ export default class BrowseDirectoryPicker extends DirectoryPicker {
     kind: 'browse',
     list: (path, signal, options) => this.list(path, signal, options),
     createDirectory: (path, name) => this.createDirectory(path, name),
+    resolveFile: (path, name) => this.resolveFile(path, name),
   }
 
   constructor(ctx: Context, private readonly config: Config) {
@@ -334,5 +335,21 @@ export default class BrowseDirectoryPicker extends DirectoryPicker {
       }
       throw new DirectoryPickerError('directory-create-failed', target, `cannot create ${target}: ${messageOf(error)}`)
     }
+  }
+
+  private async resolveFile(path: string, name: string): Promise<string> {
+    if (!fullyQualified(path)) {
+      throw new DirectoryPickerError('directory-unreadable', path, `cannot resolve under "${path}": not a fully qualified directory`)
+    }
+    if (name.trim() === '' || name === '.' || name === '..' || /[/\\]/.test(name)) {
+      throw new DirectoryPickerError('file-name-invalid', join(path, name), `"${name}" is not one plain file name`)
+    }
+    const parent = resolve(path)
+    try {
+      if (!(await stat(parent)).isDirectory()) throw new Error('target is not a directory')
+    } catch (error: unknown) {
+      throw new DirectoryPickerError('directory-unreadable', parent, `cannot resolve under ${parent}: ${messageOf(error)}`)
+    }
+    return join(parent, name)
   }
 }

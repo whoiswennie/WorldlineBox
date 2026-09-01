@@ -61,6 +61,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     super(context, 'worldlineNarrative')
   }
 
+  /** Perform register renderer through the package's public contract.
+   * @param renderer - The renderer supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   registerRenderer(renderer: StoryStageRenderer): () => void {
     const effect = this.context.effect(function* (this: WorldlineNarrative) {
       if (this.renderers.has(renderer.id)) throw new Error(`StoryStage renderer already exists: ${renderer.id}`)
@@ -70,6 +74,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     return () => void effect()
   }
 
+  /** Return the current text-play scene.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('scene')
   async scene(request: TextPlayRequest): Promise<SceneFrame> {
     const view = await this.context.worldlineRuns.view({ runId: request.runId })
@@ -111,6 +119,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     }
   }
 
+  /** Open a text-play session for a Run and actor.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('open')
   async open(request: TextPlayRequest): Promise<TextPlayView> {
     const [run, frame, choices, beatsPage, saves] = await Promise.all([
@@ -133,6 +145,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     }
   }
 
+  /** Produce the next narration from authoritative Run records.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('narrate')
   async narrate(request: NarrateRequest): Promise<NarrativeBeat> {
     let beat: NarrativeBeat | undefined
@@ -143,6 +159,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     return beat
   }
 
+  /** Perform narrate stream through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   async *narrateStream(request: NarrateRequest): AsyncIterable<NarrativeStreamChunk> {
     const frame = await this.scene(request)
     const sources = await this.sources(request)
@@ -206,6 +226,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     yield { type: 'beat', beat: recorded.beat }
   }
 
+  /** Submit one listed text-play choice.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('choose')
   async choose(request: ChooseTextActionRequest): Promise<SubmitRunActionResult> {
     const projected = await this.context.worldlineRuns.choices(request)
@@ -222,6 +246,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     })
   }
 
+  /** Perform free input through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('freeInput')
   async freeInput(request: FreeTextActionRequest): Promise<FreeTextActionResult> {
     const text = request.text.trim().toLocaleLowerCase()
@@ -241,6 +269,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     return { status: 'submitted', candidates, action }
   }
 
+  /** Rephrase presentation text without changing Run state.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('rephrase')
   async rephrase(request: RephraseRequest): Promise<NarrativeBeat> {
     const records = await this.context.worldlineRuns.records({
@@ -259,11 +291,19 @@ export default class WorldlineNarrative extends TypertRemoteService {
     })
   }
 
+  /** Save the current text-play scene as a checkpoint.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('save')
   save(request: SaveTextPlayRequest): Promise<CheckpointView> {
     return this.context.worldlineRuns.checkpoint({ runId: request.runId, label: request.label })
   }
 
+  /** Branch text play from a saved checkpoint.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('branch')
   branch(request: BranchTextPlayRequest): Promise<RunView> {
     return this.context.worldlineRuns.branch({
@@ -273,6 +313,10 @@ export default class WorldlineNarrative extends TypertRemoteService {
     })
   }
 
+  /** Retry narration from the latest authoritative Run state.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('retry')
   async retry(request: RetryTextActionRequest): Promise<SubmitRunActionResult> {
     const branch = await this.branch(request)
@@ -295,6 +339,9 @@ export default class WorldlineNarrative extends TypertRemoteService {
     })
   }
 
+  /** Perform story stage through the package's public contract.
+   * @returns The result produced by the operation.
+   */
   @Remote('storyStage')
   storyStage(): StoryStageStatus {
     const renderers = [...this.renderers.values()].map(renderer => ({

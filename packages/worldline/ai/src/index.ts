@@ -41,20 +41,35 @@ declare module '@deepseek-ai/cordis' {
   interface Context { worldlineAi: WorldlineAi }
 }
 
+/** Describes the route price value exchanged across the package boundary.
+ */
 export interface RoutePrice {
+  /** Provider identifier matched against the selected model route. */
   readonly provider: string
+  /** Provider model identifier matched against the selected model route. */
   readonly model: string
+  /** Price per million uncached input tokens in the configured currency. */
   readonly inputPerMillion: number
+  /** Price per million generated output tokens in the configured currency. */
   readonly outputPerMillion: number
+  /** Price per million cache-read input tokens in the configured currency. */
   readonly cacheReadPerMillion: number
 }
 
+/** Describes the config value exchanged across the package boundary.
+ */
 export interface Config {
+  /** Exact provider/model price rows used before the fallback prices. */
   readonly routePrices: readonly RoutePrice[]
+  /** Input-token fallback price per million when a route has no exact row. */
   readonly fallbackInputPerMillion: number
+  /** Output-token fallback price per million when a route has no exact row. */
   readonly fallbackOutputPerMillion: number
+  /** Cache-read fallback price per million when a route has no exact row. */
   readonly fallbackCacheReadPerMillion: number
+  /** Maximum durable Run records considered when assembling one context pack. */
   readonly maxContextRecords: number
+  /** Minimum logical-time distance before L2 memory is included again. */
   readonly l2MinLogicalInterval: number
 }
 
@@ -123,6 +138,9 @@ export default class WorldlineAi extends TypertRemoteService {
     super(context, 'worldlineAi')
   }
 
+  /** Return the configured model catalog visible to Worldline routing.
+   * @returns The result produced by the operation.
+   */
   @Remote('catalog')
   async catalog(): Promise<WorldlineAiCatalog> {
     const providers = this.context.llm.listProviders()
@@ -133,6 +151,10 @@ export default class WorldlineAi extends TypertRemoteService {
     return { models: groups.flat() }
   }
 
+  /** Perform context pack through the package's public contract.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('contextPack')
   async contextPack(request: ContextPackRequest): Promise<ContextPack> {
     const view = await this.context.worldlineRuns.view({ runId: request.runId })
@@ -256,6 +278,10 @@ export default class WorldlineAi extends TypertRemoteService {
     return pack
   }
 
+  /** Return the current AI budget state for a Run.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('budget')
   async budget(request: AiBudgetRequest): Promise<AiBudgetStatus> {
     const view = await this.context.worldlineRuns.view({ runId: request.runId })
@@ -309,6 +335,10 @@ export default class WorldlineAi extends TypertRemoteService {
     }
   }
 
+  /** Route one actor decision through policy, budget, and validation gates.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Remote('decide')
   async decide(request: DecideForActorRequest): Promise<AiDecisionResult> {
     const view = await this.context.worldlineRuns.view({ runId: request.runId })
@@ -345,7 +375,10 @@ export default class WorldlineAi extends TypertRemoteService {
     return this.callDecision(request, choices.sequence, choices.choices, pack, budget)
   }
 
-  /** Host-only streaming primitive used by authority-constrained narrative and summary services. */
+  /** Host-only streaming primitive used by authority-constrained narrative and summary services.
+   * @param request - The request supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   async *streamText(request: StreamWorldlineTextRequest): AsyncIterable<WorldlineTextChunk> {
     validateContextPack(request.contextPack)
     const budget = await this.budget({

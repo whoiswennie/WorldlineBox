@@ -18,14 +18,20 @@ const MAX_SUSPICIOUS_RATIO = 1_000
 const RATIO_CHECK_BYTES = 100 * 1024 ** 2
 const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu
 
+/** Describes the worldline archive kind value exchanged across the package boundary.
+ */
 export type WorldlineArchiveKind = 'project' | 'blueprint' | 'run'
 
+/** Describes the archive file digest value exchanged across the package boundary.
+ */
 export interface ArchiveFileDigest {
   readonly path: string
   readonly bytes: number
   readonly sha256: string
 }
 
+/** Describes the archive manifest base value exchanged across the package boundary.
+ */
 export interface ArchiveManifestBase {
   readonly format: typeof WWS_VERSION
   readonly kind: WorldlineArchiveKind
@@ -35,6 +41,8 @@ export interface ArchiveManifestBase {
   readonly files: readonly ArchiveFileDigest[]
 }
 
+/** Describes the archive source file value exchanged across the package boundary.
+ */
 export interface ArchiveSourceFile {
   readonly absolute: string
   readonly path: string
@@ -55,6 +63,8 @@ interface ArchiveEntryFingerprint {
   readonly attributes: number
 }
 
+/** Describes the archive preflight value exchanged across the package boundary.
+ */
 export interface ArchivePreflight<M extends ArchiveManifestBase> {
   readonly manifest: M
   readonly payloadPrefix: string
@@ -75,11 +85,18 @@ function abortError(): Error {
   return new DOMException('Worldline archive transfer was cancelled', 'AbortError')
 }
 
+/** Perform assert archive not aborted through the package's public contract.
+ * @param signal - The signal supplied by the caller.
+ */
 export function assertArchiveNotAborted(signal: AbortSignal): void {
   if (signal.aborted) throw abortError()
 }
 
-/** O(1)-memory accounting for one central-directory entry before any payload is opened. */
+/** O(1)-memory accounting for one central-directory entry before any payload is opened.
+ * @param current - The current supplied by the caller.
+ * @param entry - The entry supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function accumulateArchiveExpandedBytes(
   current: number,
   entry: { readonly path: string; readonly compressedBytes: number; readonly expandedBytes: number },
@@ -109,6 +126,10 @@ async function* abortable(
   }
 }
 
+/** Perform portable archive path through the package's public contract.
+ * @param path - The path supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function portableArchivePath(path: string): string {
   if (path.includes('\\') || path.includes('\0') || path.startsWith('/') || /^[a-z]:/iu.test(path)) {
     throw new WorldlineProjectError('transfer-failed', `unsafe ZIP entry path: ${path}`)
@@ -149,6 +170,10 @@ function isSymbolicLink(entry: Entry): boolean {
   return (unixMode & 0o170000) === 0o120000
 }
 
+/** Perform parse archive files through the package's public contract.
+ * @param value - The value supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function parseArchiveFiles(value: unknown): readonly ArchiveFileDigest[] {
   if (!Array.isArray(value)) {
     throw new WorldlineProjectError('transfer-failed', 'archive manifest files must be an array')
@@ -174,6 +199,11 @@ export function parseArchiveFiles(value: unknown): readonly ArchiveFileDigest[] 
   })
 }
 
+/** Perform parse archive envelope through the package's public contract.
+ * @param value - The value supplied by the caller.
+ * @param expectedKind - The expected kind supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export function parseArchiveEnvelope(
   value: unknown,
   expectedKind: WorldlineArchiveKind,
@@ -233,6 +263,10 @@ async function readEntryBounded(zip: ZipReader, entry: Entry, maxBytes: number):
   return Buffer.concat(chunks).toString('utf8')
 }
 
+/** Perform preflight archive through the package's public contract.
+ * @param options - The options supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function preflightArchive<M extends ArchiveManifestBase>(options: {
   readonly source: string
   readonly signal?: AbortSignal
@@ -333,6 +367,10 @@ export async function preflightArchive<M extends ArchiveManifestBase>(options: {
   }
 }
 
+/** Write a deterministic archive through the bounded archive pipeline.
+ * @param options - The options supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function writeArchive(options: {
   readonly destination: string
   readonly payloadPrefix: string
@@ -447,6 +485,10 @@ export async function writeArchive(options: {
   }
 }
 
+/** Perform extract archive through the package's public contract.
+ * @param options - The options supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 export async function extractArchive<M extends ArchiveManifestBase>(options: {
   readonly source: string
   readonly destination: string

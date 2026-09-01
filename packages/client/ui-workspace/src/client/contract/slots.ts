@@ -29,7 +29,7 @@ import type { HostObservable, PropsHooks, PropsLocale, PropsRenderSlots, PropsRu
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {
-  SessionId, SessionSearchResultItem, WorkspaceId, WorkspaceView,
+  PathPickerRequest, SessionId, SessionSearchResultItem, WorkspaceId, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { createWorkspaceViewStore } from '../stores.ts'
 
@@ -39,6 +39,8 @@ import type { createWorkspaceViewStore } from '../stores.ts'
  * to run/render its interaction and reports exactly one outcome per open.
  */
 export interface DirectoryFlowOwnerProps {
+  /** Exact choice the owner requests; all picker backends honor the same mode. */
+  request: PathPickerRequest
   /** True while a picking interaction is requested; flipping back to false withdraws the request. */
   open: boolean
   /** True while the owner adopts a picked path (`createWorkspace` in flight); occupants disable their commit affordances. */
@@ -53,6 +55,8 @@ export interface DirectoryFlowOwnerProps {
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
+    /** Reusable host-directory flow declared by product surfaces that need an arbitrary local root. */
+    'host.directoryFlow': { kind: 'single'; scope: 'root'; owner: DirectoryFlowOwnerProps }
     /** Directory-flow hole under the conversation empty-state picker (declared by the WorkspacePicker entry). */
     'conversation.hero.workspace.directoryFlow': { kind: 'single'; scope: 'root'; owner: DirectoryFlowOwnerProps }
     /** Directory-flow hole under the sidebar browsing region (declared by the WorkspaceBrowser entry). */
@@ -60,8 +64,9 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** The two directory-flow holes; a flow package's client half registers its one component into both. */
+/** Every host-directory flow hole; a backend registers its one component into all of them. */
 export type DirectoryFlowSlotName =
+  | 'host.directoryFlow'
   | 'conversation.hero.workspace.directoryFlow'
   | 'sidebar.workspaces.directoryFlow'
 
