@@ -47,6 +47,8 @@ const FIRST_PARTY = new Set([
 
 /** Official SDK identity covered by the project's narrow owner authorization. */
 export const CLAUDE_AGENT_SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
+/** Official animation runtime explicitly selected for the Worldline product UI. */
+export const GSAP_PACKAGE = 'gsap'
 const CLAUDE_PLATFORM_PACKAGE_PREFIX = `${CLAUDE_AGENT_SDK_PACKAGE}-`
 const CLAUDE_PLATFORM_DECLARED_LICENSE = 'SEE LICENSE IN LICENSE.md'
 
@@ -54,10 +56,10 @@ const CLAUDE_PLATFORM_DECLARED_LICENSE = 'SEE LICENSE IN LICENSE.md'
  * Whether a non-permissive runtime declaration has an identity-scoped owner
  * authorization. This does not reclassify its terms as permissive.
  * @param name - exact npm package identity.
- * @returns true only for the official Claude Agent SDK package.
+ * @returns true only for an exact package identity explicitly authorized by the owner.
  */
 export function isOwnerAuthorizedRuntime(name: string): boolean {
-  return name === CLAUDE_AGENT_SDK_PACKAGE
+  return name === CLAUDE_AGENT_SDK_PACKAGE || name === GSAP_PACKAGE
 }
 
 /**
@@ -699,6 +701,20 @@ ${rows.join('\n')}
 }
 
 /**
+ * Record the owner's explicit decision to ship GSAP under its own terms.
+ * Keeping this separate from the dependency table makes clear that the
+ * authorization does not reclassify GSAP's license as permissive.
+ */
+function renderGsapDistribution(runtimeDeps: ExternalDep[]): string {
+  if (!runtimeDeps.some(dep => dep.name === GSAP_PACKAGE)) return ''
+  return `
+## GSAP runtime authorization
+
+The project owner explicitly authorizes Worldline to bundle and distribute the official [\`${GSAP_PACKAGE}\`](https://github.com/greensock/GSAP) package under GreenSock's [Standard "no charge" License](https://gsap.com/standard-license/). This identity-scoped authorization does not classify those terms as permissive and does not cover any unrelated package; a package-identity or declared-license change still requires the ordinary dependency, compatibility, terms, and notices review.
+`
+}
+
+/**
  * Render the complete notices document.
  * @returns the exact bytes `THIRD_PARTY_NOTICES.md` must hold.
  */
@@ -734,7 +750,7 @@ export function render(): string {
 
 Worldline is licensed under [MIT](LICENSE). It depends on the third-party software listed below. Each project remains under its own license; nothing in this file changes those terms.
 
-This file lists **direct** dependencies declared by the workspace, bundled native video tools, and the explicitly disclosed official Claude Code platform payload closure. It is generated from the workspace manifests by \`scripts/gen-third-party-notices.ts\`: a pre-commit hook regenerates it whenever a staged file changes one of its inputs, and \`scripts/gen-third-party-notices.spec.ts\` asserts in the test lane that the committed bytes match. Deleting a manifest runs no hook, so that case is caught by the assertion instead. Run \`pnpm run verify-third-party-notices\` for the standalone check.
+This file lists **direct** dependencies declared by the workspace, bundled native video tools, and explicitly authorized non-permissive runtime distributions. It is generated from the workspace manifests by \`scripts/gen-third-party-notices.ts\`: a pre-commit hook regenerates it whenever a staged file changes one of its inputs, and \`scripts/gen-third-party-notices.spec.ts\` asserts in the test lane that the committed bytes match. Deleting a manifest runs no hook, so that case is caught by the assertion instead. Run \`pnpm run verify-third-party-notices\` for the standalone check.
 
 The complete npm transitive closure, including the Landlock launcher workspace, is recorded with exact pinned versions in [\`pnpm-lock.yaml\`](pnpm-lock.yaml) — inspect it with \`pnpm licenses list\`. The Python closure is recorded separately in [\`python/sdk/uv.lock\`](python/sdk/uv.lock).
 
@@ -756,6 +772,7 @@ pnpm applies local patches to the following packages at install time, so shipped
 
 ${patchedLines.join('\n')}
 ${renderClaudeDistribution(claudeDistribution)}
+${renderGsapDistribution(runtimeDeps)}
 
 ## Development-only npm dependencies
 

@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { ProjectRootView, ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
+import type { DocumentView, ProjectRootView, ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import { WorldlineStudio, type WorldlineStudioProps } from '../src/client/WorldlineStudio.tsx'
+import { uploadProjectEntry } from '../src/client/CanonWorkbench.tsx'
 import { zh } from '../src/client/locales.ts'
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+function ownMethod(target: object, name: string): unknown {
+  return Object.getOwnPropertyDescriptor(target, name)?.value
+}
 
 const configured: ProjectRootView = {
   configured: true,
@@ -48,7 +53,7 @@ function studioProps(root: ProjectRootView, overrides: Record<string, unknown> =
     activePage: 'worldline-studio',
     useSessions: (() => { throw new Error('unused') }),
     useWorkspaces: (() => { throw new Error('unused') }),
-    t: key => (zh as Record<string, string>)[key] ?? key,
+    t: (key: keyof typeof zh) => zh[key],
     projects,
     compiler: {},
     runs: {},
@@ -62,6 +67,20 @@ function studioProps(root: ProjectRootView, overrides: Record<string, unknown> =
 }
 
 describe('Worldline Studio', () => {
+  it('streams dropped files to the project-scoped upload endpoint', async () => {
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response('{}', { status: 201 }))
+    vi.stubGlobal('fetch', fetch)
+    const file = new File([Uint8Array.from([1, 2, 3])], 'portrait.bin', { type: 'application/octet-stream' })
+
+    await uploadProjectEntry(project.manifest.id, 'assets/portraits', file)
+
+    const [url, init] = fetch.mock.calls[0] ?? []
+    expect(url).toContain('/api/worldline/project/upload?')
+    expect(url).toContain('projectId=project%3Aatlas')
+    expect(url).toContain('path=assets%2Fportraits%2Fportrait.bin')
+    expect(init).toMatchObject({ method: 'PUT', body: file })
+  })
+
   it('requires an explicit local library binding on first use', async () => {
     const root: ProjectRootView = { configured: false, writable: false, projectCount: 0 }
     const props = studioProps(root)
@@ -70,8 +89,9 @@ describe('Worldline Studio', () => {
     fireEvent.click(await screen.findByRole('button', { name: '选择目录' }))
 
     await waitFor(() => {
-      expect(props.pickDirectory).toHaveBeenCalledOnce()
-      expect(props.projects.setRoot).toHaveBeenCalledWith({ path: 'C:\\Worlds', create: true })
+      expect(ownMethod(props, 'pickDirectory')).toHaveBeenCalledOnce()
+      expect(ownMethod(props.projects, 'setRoot'))
+        .toHaveBeenCalledWith({ path: 'C:\\Worlds', create: true })
     })
   })
 
@@ -93,6 +113,55 @@ describe('Worldline Studio', () => {
     render(<WorldlineStudio {...props} />)
     fireEvent.click(await screen.findByRole('button', { name: '打开 星海图鉴' }))
     fireEvent.click(await screen.findByRole('button', { name: '与世界线助手对话' }))
-    await waitFor(() => { expect(props.launchConversation).toHaveBeenCalledWith(project) })
+    await waitFor(() => {
+      expect(ownMethod(props, 'launchConversation')).toHaveBeenCalledWith(project)
+    })
+  })
+
+  it('keeps multiple canon documents open in one current tabbed editor', async () => {
+    const props = studioProps(configured)
+    const documents = new Map<string, DocumentView>(['canon/alpha.md', 'canon/beta.md'].map((path, index) => [path, {
+      projectId: project.manifest.id,
+      id: `document:${String(index + 1)}`,
+      path,
+      content: `# ${path}`,
+      revision: 1,
+      updatedAt: '2026-09-01T00:00:00.000Z',
+      tags: [],
+    } as unknown as DocumentView]))
+    Object.assign(props.projects, {
+      tree: vi.fn(async () => ({
+        projectId: project.manifest.id,
+        path: '',
+        truncated: false,
+        entries: [...documents.values()].map(document => ({
+          id: document.id,
+          name: document.path.slice(document.path.lastIndexOf('/') + 1),
+          path: document.path,
+          kind: 'document',
+          sizeBytes: document.content.length,
+          updatedAt: document.updatedAt,
+          revision: document.revision,
+          tags: [],
+        })),
+      })),
+      read: vi.fn(async ({ path }: { path: string }) => {
+        const document = documents.get(path)
+        if (document === undefined) throw new Error('not found')
+        return document
+      }),
+      search: vi.fn(async () => []),
+    })
+    render(<WorldlineStudio {...props} />)
+    fireEvent.click(await screen.findByRole('button', { name: '打开 星海图鉴' }))
+    fireEvent.click(screen.getByRole('button', { name: '设定' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /alpha\.md/u }))
+    await screen.findByRole('button', { name: '关闭 alpha.md' })
+    fireEvent.click(await screen.findByRole('button', { name: /beta\.md/u }))
+
+    expect(screen.getByRole('navigation', { name: '已打开文档' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '关闭 alpha.md' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: '关闭 beta.md' })).toBeTruthy()
   })
 })

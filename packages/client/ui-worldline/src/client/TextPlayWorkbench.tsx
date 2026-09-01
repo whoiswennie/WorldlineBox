@@ -1,5 +1,5 @@
 /* oxlint-disable @stylistic/max-len -- JSX keeps each compact story action structurally visible. */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
@@ -7,6 +7,7 @@ import type { RunSummary, RunView } from '@deepseek-ai/dsh-worldline-runtime/typ
 import type { TextPlayView, StoryStageStatus } from '@deepseek-ai/dsh-worldline-narrative/types'
 import type { EntityId, JsonObject, JsonValue, NarrativeBeat } from '@deepseek-ai/dsh-worldline-standard/types'
 import type { NarrativeClient, RunsClient } from './types.ts'
+import { useWorldlineEntrance, useWorldlinePulse } from './motion.ts'
 import css from './TextPlayWorkbench.module.css'
 
 interface TextPlayWorkbenchProps extends PropsLocale<'worldlineStudio'> {
@@ -35,10 +36,15 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
   const [camera, setCamera] = useState('limited-third-person')
   const [templateOnly, setTemplateOnly] = useState(false)
   const [freeText, setFreeText] = useState('')
+  const [retryChoiceId, setRetryChoiceId] = useState('')
   const [streamingText, setStreamingText] = useState('')
   const [busy, setBusy] = useState<string>()
   const [error, setError] = useState<string>()
+  const motionRoot = useRef<HTMLDivElement>(null)
+  const transcript = useRef<HTMLDivElement>(null)
   const projectId = props.project.manifest.id
+  useWorldlineEntrance(motionRoot, [runId])
+  useWorldlinePulse(transcript, '[data-latest]', [play?.beats.length, streamingText === '' ? 0 : 1])
 
   const loadRuns = useCallback(async (): Promise<void> => {
     const next = (await props.runs.list()).filter(item => item.projectId === projectId)
@@ -67,6 +73,11 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
   useEffect(() => { void loadRun().catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)) }) }, [loadRun])
   useEffect(() => { void refreshPlay().catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)) }) }, [refreshPlay])
   useEffect(() => { void props.narrative.storyStage().then(setStage).catch(() => {}) }, [props.narrative])
+  useEffect(() => {
+    if (play === undefined) return
+    setRetryChoiceId(current => play.choices.choices.some(choice => choice.id === current)
+      ? current : play.choices.choices[0]?.id ?? '')
+  }, [play])
 
   const mutate = async (key: string, operation: () => Promise<void>): Promise<void> => {
     setBusy(key); setError(undefined)
@@ -92,8 +103,8 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
     void mutate(`rephrase:${beat.id}`, async () => { await props.narrative.rephrase({ runId, actorId, beatId: beat.id, camera }) })
   }
 
-  return <div className={css.page}>
-    <header className={css.header}>
+  return <div ref={motionRoot} className={css.page}>
+    <header className={css.header} data-worldline-reveal>
       <div><span>STORY PROJECTION</span><h2>{props.t('textPlay')}</h2></div>
       <div className={css.selectors}>
         <label>Run<select value={runId ?? ''} onChange={(event) => { setRunId(event.target.value as RunSummary['runId']) }}>{runs.map(item => <option key={item.runId} value={item.runId}>{item.runId.slice(-12)} · {item.status}</option>)}</select></label>
@@ -102,8 +113,8 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
       </div>
     </header>
     {error !== undefined && <div className={css.error} role="alert">{props.t('error')}: {error}</div>}
-    {play === undefined ? <div className={css.empty}><span>❧</span><p>{runs.length === 0 ? props.t('newRun') : props.t('actor')}</p></div> : <div className={css.layout}>
-      <main className={css.story}>
+    {play === undefined ? <div className={css.empty} data-worldline-hero><span>❧</span><p>{runs.length === 0 ? props.t('newRun') : props.t('actor')}</p></div> : <div className={css.layout}>
+      <main className={css.story} data-worldline-hero>
         <section className={css.sceneMeta}>
           <div><small>{props.t('logicalTime')}</small><strong>{play.frame.logicalTime.toLocaleString()}</strong></div>
           <div><small>Place</small><strong>{play.frame.placeId ?? '—'}</strong></div>
@@ -111,14 +122,14 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
           <button type="button" disabled={busy !== undefined} onClick={narrate}>{busy === 'narrate' ? '…' : props.t('narrate')}</button>
           <label><input type="checkbox" checked={templateOnly} onChange={(event) => { setTemplateOnly(event.target.checked) }} />{props.t('templateNarration')}</label>
         </section>
-        <div className={css.transcript} aria-live="polite">
+        <div ref={transcript} className={css.transcript} aria-live="polite">
           {play.beats.length === 0 && streamingText === '' && <p className={css.quiet}>The world is waiting to be narrated.</p>}
-          {play.beats.map(beat => <article key={beat.id} data-style={beat.style}>
+          {play.beats.map((beat, index) => <article key={beat.id} data-style={beat.style} data-latest={index === play.beats.length - 1 || undefined}>
             <header><span>{beat.camera}</span><small>{beat.style}{beat.modelRoute === undefined ? '' : ` · ${beat.modelRoute.provider}/${beat.modelRoute.model}`}</small></header>
             <MarkdownText text={beat.text} />
             <footer><span>{beat.eventIds.length} events · {beat.observationIds.length} observations</span><button type="button" onClick={() => { rephrase(beat) }}>{props.t('rephrase')}</button></footer>
           </article>)}
-          {streamingText !== '' && <article data-streaming><header><span>{camera}</span><small>streaming</small></header><MarkdownText text={streamingText} streaming /></article>}
+          {streamingText !== '' && <article data-streaming data-latest><header><span>{camera}</span><small>streaming</small></header><MarkdownText text={streamingText} streaming /></article>}
         </div>
         <section className={css.composer}>
           <div className={css.choices}>{play.choices.choices.map(choice => <button type="button" key={choice.id} disabled={busy !== undefined} onClick={() => { void mutate(`choice:${choice.id}`, async () => { await props.narrative.choose({ runId: play.run.summary.runId, actorId: play.choices.actorId, choiceId: choice.id, expectedSequence: play.choices.sequence, camera }) }) }}>
@@ -136,17 +147,25 @@ export function TextPlayWorkbench(props: TextPlayWorkbenchProps) {
           }}><textarea value={freeText} onChange={(event) => { setFreeText(event.target.value) }} placeholder={props.t('freeInput')} /><button type="submit" disabled={busy !== undefined}>{props.t('submit')}</button></form>
         </section>
       </main>
-      <aside className={css.sidebar}>
+      <aside className={css.sidebar} data-worldline-reveal>
         <section><h3>{props.t('savePoint')}</h3><button type="button" disabled={runId === undefined || actorId === undefined} onClick={() => {
           if (runId === undefined || actorId === undefined) return
           void mutate('save', async () => { await props.narrative.save({ runId, actorId, label: `Text play · t=${String(play.frame.logicalTime)}`, camera }) })
-        }}>{props.t('savePoint')}</button><ul>{play.saves.map(save => <li key={save.checkpoint.id}><div><strong>{save.label}</strong><small>#{save.checkpoint.sequence}</small></div><button type="button" onClick={() => {
+        }}>{props.t('savePoint')}</button>
+        {play.saves.length > 0 && <label className={css.retryChoice}>{props.t('retryChoice')}<select value={retryChoiceId} onChange={(event) => { setRetryChoiceId(event.target.value) }}>{play.choices.choices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}</select></label>}
+        <ul>{play.saves.map(save => <li key={save.checkpoint.id}><div><strong>{save.label}</strong><small>#{save.checkpoint.sequence}</small></div><div className={css.saveActions}><button type="button" disabled={busy !== undefined} onClick={() => {
           if (actorId === undefined) return
           void mutate(`branch:${save.checkpoint.id}`, async () => {
             const branch = await props.narrative.branch({ runId: play.run.summary.runId, actorId, checkpointId: save.checkpoint.id, camera })
             setRunId(branch.summary.runId)
           })
-        }}>{props.t('branch')}</button></li>)}</ul></section>
+        }}>{props.t('branch')}</button><button type="button" disabled={busy !== undefined || retryChoiceId === ''} onClick={() => {
+          if (actorId === undefined || retryChoiceId === '') return
+          void mutate(`retry:${save.checkpoint.id}`, async () => {
+            const result = await props.narrative.retry({ runId: play.run.summary.runId, actorId, checkpointId: save.checkpoint.id, choiceId: retryChoiceId, camera })
+            setRunId(result.view.summary.runId)
+          })
+        }}>{props.t('retry')}</button></div></li>)}</ul></section>
         <section data-unavailable={stage?.available === false || undefined}><h3>{props.t('storyStage')} <span>{stage?.available ? stage.renderers.length : props.t('unavailable')}</span></h3><p>{stage?.message ?? '…'}</p>{stage?.renderers.map(renderer => <div key={renderer.id}><strong>{renderer.name}</strong><small>{renderer.capabilities.join(' · ')}</small></div>)}</section>
         <section><h3>SceneFrame</h3><pre>{JSON.stringify(play.frame, null, 2)}</pre></section>
       </aside>

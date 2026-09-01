@@ -1,9 +1,10 @@
 /* oxlint-disable @stylistic/max-len -- JSX keeps each compact diagnostic row structurally visible. */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BuildPreview, CompilerState, SemanticsExplanation } from '@deepseek-ai/dsh-worldline-compiler/types'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import type { CompilerClient } from './types.ts'
+import { useWorldlineEntrance } from './motion.ts'
 import css from './BuildWorkbench.module.css'
 
 interface BuildWorkbenchProps extends PropsLocale<'worldlineStudio'> {
@@ -21,7 +22,9 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
   const [error, setError] = useState<string>()
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [explanation, setExplanation] = useState<SemanticsExplanation>()
+  const motionRoot = useRef<HTMLDivElement>(null)
   const projectId = props.project.manifest.id
+  useWorldlineEntrance(motionRoot, [preview?.sourceDigest])
 
   useEffect(() => {
     let current = true
@@ -66,8 +69,8 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
 
   const questions = preview?.questions ?? state?.questions ?? []
   const proposals = preview?.proposals ?? state?.proposals ?? []
-  return <div className={css.page}>
-    <header className={css.hero}>
+  return <div ref={motionRoot} className={css.page}>
+    <header className={css.hero} data-worldline-hero>
       <div><span>CANON → BLUEPRINT</span><h2>{props.t('build')}</h2><p>{props.t('noBuild')}</p></div>
       <div className={css.heroActions}>
         <button type="button" disabled={busy !== undefined} onClick={compile}>{busy === 'compile' ? props.t('loading') : props.t('compile')}</button>
@@ -82,14 +85,14 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
       </div>
     </header>
     {error !== undefined && <div className={css.error} role="alert">{props.t('error')}: {error}</div>}
-    {preview === undefined ? <div className={css.empty}><span>⌁</span><p>{props.t('noBuild')}</p><button type="button" onClick={compile}>{props.t('compile')}</button></div> : <>
-      <section className={css.metrics}>
+    {preview === undefined ? <div className={css.empty} data-worldline-hero><span>⌁</span><p>{props.t('noBuild')}</p><button type="button" onClick={compile}>{props.t('compile')}</button></div> : <>
+      <section className={css.metrics} data-worldline-stagger>
         <div><small>{props.t('sourceCoverage')}</small><strong>{percent(preview.sourceCoverage)}</strong><i><span style={{ width: percent(preview.sourceCoverage) }} /></i></div>
         <div><small>Canon</small><strong>{preview.canon.length}</strong><span>{preview.phase}</span></div>
         <div><small>Executable</small><strong>{Object.values(preview.executableCounts).reduce((sum, value) => sum + value, 0)}</strong><span>{Object.entries(preview.executableCounts).map(([key, value]) => `${key} ${String(value)}`).join(' · ')}</span></div>
         <div data-ready={preview.canFreeze || undefined}><small>Closure</small><strong>{preview.canFreeze ? 'READY' : 'BLOCKED'}</strong><span>{preview.canFreeze ? props.t('freezeReady') : props.t('freezeBlocked')}</span></div>
       </section>
-      <div className={css.columns}>
+      <div className={css.columns} data-worldline-stagger>
         <section className={css.panel}>
           <header><h3>{props.t('diagnostics')}</h3><span>{preview.diagnostics.length}</span></header>
           <ul>{preview.diagnostics.map(item => <li key={`${item.code}:${item.path ?? ''}:${item.objectId ?? ''}`} data-severity={item.severity}>
@@ -119,7 +122,7 @@ export function BuildWorkbench(props: BuildWorkbenchProps) {
           </li>)}</ul>
         </section>
       </div>
-      <section className={css.canonTable}>
+      <section className={css.canonTable} data-worldline-reveal>
         <header><h3>Canon & provenance</h3><span>{preview.canon.length}</span></header>
         {preview.canon.map(item => <button type="button" key={item.id} onClick={() => { void run(`explain:${item.id}`, async () => { setExplanation(await props.compiler.explain({ projectId, objectId: item.id })) }) }}>
           <span>{item.kind}</span><strong>{item.title}</strong><small>{item.provenance.flatMap(value => value.anchors).length} anchors</small>

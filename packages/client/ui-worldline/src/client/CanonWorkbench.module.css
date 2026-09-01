@@ -1,5 +1,7 @@
-.workbench { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr) minmax(220px, 280px); min-height: 0; height: 100%; background: var(--dsw-alias-background-base); color: var(--dsw-alias-label-primary); }
+.workbench { --worldline-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2); --worldline-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2); display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr) minmax(220px, 280px); min-height: 0; height: 100%; background: var(--dsw-alias-background-base); color: var(--dsw-alias-label-primary); }
 .treePane, .inspector { min-height: 0; overflow: auto; border-right: 1px solid var(--dsw-alias-divider); background: color-mix(in srgb, var(--dsw-alias-background-elevated) 78%, transparent); }
+.treePane { position: relative; }
+.treePane[data-importing]::after { content: ''; position: absolute; inset: 7px; z-index: 5; border: 1px dashed var(--dsw-alias-state-business-primary); border-radius: 11px; background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 7%, transparent); pointer-events: none; }
 .inspector { border-right: 0; border-left: 1px solid var(--dsw-alias-divider); }
 .searchBox { display: flex; align-items: center; gap: 8px; margin: 12px; padding: 7px 10px; border: 1px solid var(--dsw-alias-divider); border-radius: 10px; background: var(--dsw-alias-background-elevated); }
 .searchBox input, .createBar input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
@@ -12,8 +14,20 @@
 .treeError, .notice { margin: 12px; color: var(--dsw-alias-state-danger-primary); font-size: 12px; overflow-wrap: anywhere; }
 .createBar { position: sticky; bottom: 0; display: flex; gap: 4px; padding: 10px; border-top: 1px solid var(--dsw-alias-divider); background: var(--dsw-alias-background-elevated); }
 .createBar input { padding: 6px 8px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; }
-.createBar button, .editorActions button, .inspector button, .stackActions button { border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.createBar button, .createBar label, .editorActions button, .inspector button, .stackActions button { border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.createBar label { display: grid; place-items: center; padding: 0 7px; }
+.createBar label input { display: none; }
+.dropStatus { position: sticky; bottom: 52px; z-index: 6; margin: 8px; padding: 8px; border-radius: 8px; background: var(--dsw-alias-state-business-primary); color: white; font-size: 11px; text-align: center; }
 .editorPane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.documentTabs { display: flex; min-height: 35px; overflow-x: auto; border-bottom: 1px solid var(--dsw-alias-divider); background: color-mix(in srgb, var(--dsw-alias-background-elevated) 72%, transparent); }
+.documentTabs > div { display: flex; flex: 0 0 auto; align-items: stretch; border-right: 1px solid var(--dsw-alias-divider); }
+.documentTabs > div[data-active] { background: var(--dsw-alias-background-base); box-shadow: inset 0 2px var(--dsw-alias-state-business-primary); }
+.documentTabs button { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 7px 9px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.documentTabs button:first-child { max-width: 190px; }
+.documentTabs button:first-child span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.documentTabs button:last-child { padding-left: 2px; opacity: .55; }
+.documentTabs i { width: 7px; color: var(--dsw-alias-state-business-primary); font-size: 7px; font-style: normal; }
+.documentTabs i[data-state='conflict'], .documentTabs i[data-state='error'] { color: var(--dsw-alias-state-danger-primary); }
 .editorHeader { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 51px; padding: 8px 14px; border-bottom: 1px solid var(--dsw-alias-divider); }
 .editorHeader > div:first-child { min-width: 0; display: flex; flex-direction: column; }
 .editorHeader small { overflow: hidden; text-overflow: ellipsis; opacity: .6; }
@@ -44,6 +58,15 @@
 .stackActions { display: grid; gap: 6px; margin-top: 16px; }
 .stackActions button { padding: 7px; }
 .stackActions button[data-danger] { color: var(--dsw-alias-state-danger-primary); }
+.inlineActions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.clipboard, .operation { display: grid; gap: 7px; margin-top: 12px; padding: 10px; border: 1px solid var(--dsw-alias-divider); border-radius: 9px; background: var(--dsw-alias-background-base); font-size: 11px; }
+.clipboard span, .operation span { overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); }
+.clipboard { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
+.operation input { min-width: 0; padding: 7px 8px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: var(--dsw-alias-background-elevated); color: inherit; }
+.operation p { margin: 0; color: var(--dsw-alias-state-danger-primary); }
+.operation > div { display: flex; justify-content: flex-end; gap: 6px; }
+.operation button { padding: 6px 8px; }
+.operation button[data-danger] { color: var(--dsw-alias-state-danger-primary); }
 .auditList li { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 9px 5px; border-bottom: 1px solid var(--dsw-alias-divider); }
 .auditList div, .auditList button { min-width: 0; display: flex; flex-direction: column; text-align: left; }
 .auditList button { padding: 5px 7px; }

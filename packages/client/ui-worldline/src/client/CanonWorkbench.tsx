@@ -4,6 +4,8 @@ import {
   useEffect,
   useRef,
   useState,
+  type ChangeEvent,
+  type DragEvent,
   type ReactNode,
 } from 'react'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -16,6 +18,7 @@ import type {
   ProjectTreeEntry,
 } from '@deepseek-ai/dsh-worldline-project/types'
 import { MarkdownEditor } from './MarkdownEditor.tsx'
+import { useWorldlineEntrance } from './motion.ts'
 import type { EditorDocumentState, ProjectClient } from './types.ts'
 import css from './CanonWorkbench.module.css'
 
@@ -25,14 +28,28 @@ type SidePanel = 'details' | 'history' | 'backlinks' | 'trash'
 interface CanonWorkbenchProps extends PropsLocale<'worldlineStudio'> {
   readonly project: ProjectSummary
   readonly projects: ProjectClient
-  readonly openDocument: EditorDocumentState | undefined
+  readonly openDocuments: readonly EditorDocumentState[]
+  readonly activePath?: string | undefined
   readonly openPath: (path: string) => Promise<void>
+  readonly activatePath: (path: string) => void
+  readonly closePath: (path: string) => Promise<void>
   readonly editDocument: (content: string) => void
   readonly saveDocument: () => Promise<void>
   readonly useDiskVersion: () => void
   readonly retryLocalVersion: () => Promise<void>
   readonly treeRevision: number
   readonly refreshTree: () => void
+}
+
+interface EntryClipboard {
+  readonly mode: 'copy' | 'cut'
+  readonly entry: ProjectTreeEntry
+}
+
+interface EntryOperation {
+  readonly kind: 'move' | 'copy' | 'trash'
+  readonly entry: ProjectTreeEntry
+  readonly destination: string
 }
 
 function joinPath(directory: string, name: string): string {
@@ -46,6 +63,27 @@ function parentPath(path: string): string {
 
 function basename(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1)
+}
+
+export async function uploadProjectEntry(
+  projectId: ProjectSummary['manifest']['id'],
+  directory: string,
+  file: File,
+): Promise<void> {
+  const query = new URLSearchParams({
+    projectId,
+    path: joinPath(directory, file.name),
+    expectedBytes: String(file.size),
+  })
+  const response = await fetch(`/api/worldline/project/upload?${query.toString()}`, {
+    method: 'PUT',
+    headers: { 'content-type': file.type || 'application/octet-stream' },
+    body: file,
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => undefined) as { error?: unknown } | undefined
+    throw new Error(typeof payload?.error === 'string' ? payload.error : 'project entry upload failed')
+  }
 }
 
 function TreeBranch({
@@ -124,10 +162,15 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
   const [backlinks, setBacklinks] = useState<readonly ProjectLink[]>([])
   const [trash, setTrash] = useState<readonly import('@deepseek-ai/dsh-worldline-project/types').TrashedEntry[]>([])
   const [newPath, setNewPath] = useState('canon/new-document.md')
+  const [clipboard, setClipboard] = useState<EntryClipboard>()
+  const [operation, setOperation] = useState<EntryOperation>()
+  const [importing, setImporting] = useState(0)
   const [notice, setNotice] = useState<string>()
   const searchGeneration = useRef(0)
+  const motionRoot = useRef<HTMLDivElement>(null)
   const projectId = props.project.manifest.id
-  const activePath = props.openDocument?.document.path
+  const activePath = props.activePath
+  useWorldlineEntrance(motionRoot, [activePath, sidePanel])
 
   useEffect(() => {
     const normalized = query.trim()
@@ -182,50 +225,83 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
     }
   }
 
-  const moveSelected = async (): Promise<void> => {
-    if (selected === undefined) return
-    const destination = window.prompt(props.t('renameMove'), selected.path)
-    if (destination === null || destination.trim() === '' || destination === selected.path) return
+  const applyOperation = async (): Promise<void> => {
+    if (operation === undefined) return
+    const destination = operation.destination.trim().replace(/\\/gu, '/')
     try {
-      await props.projects.move({
-        projectId,
-        source: selected.path,
-        destination: destination.trim().replace(/\\/gu, '/'),
-        ...(selected.revision === undefined ? {} : { expectedRevision: selected.revision }),
+      if (operation.kind === 'move') await props.projects.move({
+        projectId, source: operation.entry.path, destination,
+        ...(operation.entry.revision === undefined ? {} : { expectedRevision: operation.entry.revision }),
       })
-      setSelected(undefined)
-      props.refreshTree()
-    } catch (reason) { setNotice(reason instanceof Error ? reason.message : String(reason)) }
-  }
-
-  const copySelected = async (): Promise<void> => {
-    if (selected === undefined) return
-    const suggestion = joinPath(parentPath(selected.path), `copy-${selected.name}`)
-    const destination = window.prompt(props.t('duplicateEntry'), suggestion)
-    if (destination === null || destination.trim() === '') return
-    try {
-      await props.projects.copyEntry({ projectId, source: selected.path, destination: destination.trim() })
-      props.refreshTree()
-    } catch (reason) { setNotice(reason instanceof Error ? reason.message : String(reason)) }
-  }
-
-  const trashSelected = async (): Promise<void> => {
-    if (selected === undefined || !window.confirm(`${props.t('trash')} “${selected.name}”?`)) return
-    try {
-      await props.projects.trashEntry({
-        projectId,
-        path: selected.path,
-        ...(selected.revision === undefined ? {} : { expectedRevision: selected.revision }),
+      if (operation.kind === 'copy') await props.projects.copyEntry({
+        projectId, source: operation.entry.path, destination,
       })
+      if (operation.kind === 'trash') await props.projects.trashEntry({
+        projectId, path: operation.entry.path,
+        ...(operation.entry.revision === undefined ? {} : { expectedRevision: operation.entry.revision }),
+      })
+      if (operation.kind === 'trash' && activePath === operation.entry.path) {
+        await props.closePath(operation.entry.path)
+      }
       setSelected(undefined)
+      setOperation(undefined)
       props.refreshTree()
-      if (activePath === selected.path) setNotice(props.t('trash'))
     } catch (reason) { setNotice(reason instanceof Error ? reason.message : String(reason)) }
   }
 
-  const document = props.openDocument
-  return <div className={css.workbench}>
-    <aside className={css.treePane} aria-label={props.t('files')}>
+  const pasteClipboard = async (): Promise<void> => {
+    if (clipboard === undefined) return
+    const directory = selected?.kind === 'directory' ? selected.path : parentPath(selected?.path ?? activePath ?? '')
+    const destination = joinPath(directory, clipboard.entry.name)
+    if (destination === clipboard.entry.path) {
+      setNotice(props.t('pasteSamePath'))
+      return
+    }
+    try {
+      if (clipboard.mode === 'copy') await props.projects.copyEntry({ projectId, source: clipboard.entry.path, destination })
+      else await props.projects.move({
+        projectId, source: clipboard.entry.path, destination,
+        ...(clipboard.entry.revision === undefined ? {} : { expectedRevision: clipboard.entry.revision }),
+      })
+      if (clipboard.mode === 'cut') setClipboard(undefined)
+      props.refreshTree()
+    } catch (reason) { setNotice(reason instanceof Error ? reason.message : String(reason)) }
+  }
+
+  const importFiles = async (files: readonly File[]): Promise<void> => {
+    if (files.length === 0) return
+    const directory = selected?.kind === 'directory' ? selected.path : parentPath(selected?.path ?? activePath ?? '')
+    setImporting(files.length)
+    setNotice(undefined)
+    try {
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index]
+        if (file === undefined) continue
+        setImporting(files.length - index)
+        await uploadProjectEntry(projectId, directory, file)
+      }
+      props.refreshTree()
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setImporting(0)
+    }
+  }
+
+  const selectFiles = (event: ChangeEvent<HTMLInputElement>): void => {
+    void importFiles([...event.currentTarget.files ?? []])
+    event.currentTarget.value = ''
+  }
+
+  const dropFiles = (event: DragEvent<HTMLElement>): void => {
+    if (!event.dataTransfer.types.includes('Files')) return
+    event.preventDefault()
+    void importFiles([...event.dataTransfer.files])
+  }
+
+  const document = props.openDocuments.find(item => item.document.path === activePath)
+  return <div ref={motionRoot} className={css.workbench}>
+    <aside className={css.treePane} aria-label={props.t('files')} data-worldline-reveal data-importing={importing > 0 || undefined} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDrop={dropFiles}>
       <div className={css.searchBox}>
         <span aria-hidden="true">⌕</span>
         <input value={query} onChange={(event) => { setQuery(event.target.value) }} placeholder={props.t('searchInProject')} />
@@ -247,13 +323,23 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
         <input aria-label={props.t('path')} value={newPath} onChange={(event) => { setNewPath(event.target.value) }} />
         <button type="button" title={props.t('createFile')} onClick={() => { void createDocument() }}>＋</button>
         <button type="button" title={props.t('createFolder')} onClick={() => { void createDirectory() }}>▱</button>
+        <label title={props.t('importFiles')}>⇩<input type="file" multiple onChange={selectFiles} /></label>
       </div>
+      {importing > 0 && <div className={css.dropStatus} role="status">{props.t('importingFiles')} · {importing}</div>}
     </aside>
 
-    <section className={css.editorPane}>
+    <section className={css.editorPane} data-worldline-hero>
       {document === undefined ? <div className={css.emptyEditor}>
         <span aria-hidden="true">◇</span><h2>{props.t('files')}</h2><p>{props.t('autosave')}</p>
       </div> : <>
+        <nav className={css.documentTabs} aria-label={props.t('openDocuments')} data-worldline-stagger>
+          {props.openDocuments.map(item => <div key={item.document.path} data-active={item.document.path === activePath || undefined}>
+            <button type="button" onClick={() => { props.activatePath(item.document.path) }}>
+              <span>{basename(item.document.path)}</span><i data-state={item.saveState}>{item.saveState === 'saved' ? '' : '●'}</i>
+            </button>
+            <button type="button" aria-label={`${props.t('close')} ${basename(item.document.path)}`} onClick={() => { void props.closePath(item.document.path) }}>×</button>
+          </div>)}
+        </nav>
         <header className={css.editorHeader}>
           <div><strong>{basename(document.document.path)}</strong><small>{document.document.path}</small></div>
           <div className={css.editorActions}>
@@ -282,7 +368,7 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
       </>}
     </section>
 
-    <aside className={css.inspector}>
+    <aside className={css.inspector} data-worldline-reveal>
       <nav>
         {(['details', 'history', 'backlinks', 'trash'] as const).map(panel => <button
           type="button" key={panel} data-active={sidePanel === panel || undefined}
@@ -294,11 +380,24 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
         {selected !== undefined && <>
           <dl><dt>{props.t('path')}</dt><dd>{selected.path}</dd><dt>{props.t('size')}</dt><dd>{selected.sizeBytes.toLocaleString()} B</dd><dt>{props.t('updated')}</dt><dd>{new Date(selected.updatedAt).toLocaleString()}</dd></dl>
           <div className={css.stackActions}>
-            <button type="button" onClick={() => { void moveSelected() }}>{props.t('renameMove')}</button>
-            <button type="button" onClick={() => { void copySelected() }}>{props.t('duplicateEntry')}</button>
-            <button type="button" data-danger onClick={() => { void trashSelected() }}>{props.t('deleteEntry')}</button>
+            <button type="button" onClick={() => { setOperation({ kind: 'move', entry: selected, destination: selected.path }) }}>{props.t('renameMove')}</button>
+            <button type="button" onClick={() => { setOperation({ kind: 'copy', entry: selected, destination: joinPath(parentPath(selected.path), `copy-${selected.name}`) }) }}>{props.t('duplicateEntry')}</button>
+            <div className={css.inlineActions}><button type="button" onClick={() => { setClipboard({ mode: 'cut', entry: selected }) }}>{props.t('cut')}</button><button type="button" onClick={() => { setClipboard({ mode: 'copy', entry: selected }) }}>{props.t('copy')}</button></div>
+            <button type="button" data-danger onClick={() => { setOperation({ kind: 'trash', entry: selected, destination: '' }) }}>{props.t('deleteEntry')}</button>
           </div>
         </>}
+        {clipboard !== undefined && <div className={css.clipboard}>
+          <span>{props.t(clipboard.mode)}: {clipboard.entry.path}</span>
+          <button type="button" onClick={() => { void pasteClipboard() }}>{props.t('paste')}</button>
+          <button type="button" onClick={() => { setClipboard(undefined) }}>{props.t('cancel')}</button>
+        </div>}
+        {operation !== undefined && <form className={css.operation} onSubmit={(event) => { event.preventDefault(); void applyOperation() }}>
+          <strong>{props.t(operation.kind === 'trash' ? 'deleteEntry' : operation.kind === 'move' ? 'renameMove' : 'duplicateEntry')}</strong>
+          <span>{operation.entry.path}</span>
+          {operation.kind !== 'trash' && <input autoFocus value={operation.destination} onChange={(event) => { setOperation({ ...operation, destination: event.target.value }) }} aria-label={props.t('destinationPath')} />}
+          {operation.kind === 'trash' && <p>{props.t('trashConfirm')}</p>}
+          <div><button type="button" onClick={() => { setOperation(undefined) }}>{props.t('cancel')}</button><button type="submit" data-danger={operation.kind === 'trash' || undefined} disabled={operation.kind !== 'trash' && operation.destination.trim() === ''}>{props.t('confirm')}</button></div>
+        </form>}
         {document !== undefined && <><p>{document.document.objectKind ?? 'document'}</p><div className={css.tags}>{document.document.tags.map(tag => <span key={tag}>{tag}</span>)}</div></>}
       </div>}
       {sidePanel === 'history' && <ul className={css.auditList}>{history.map(item => <li key={item.revision}>

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import {
   CLAUDE_AGENT_SDK_PACKAGE,
+  GSAP_PACKAGE,
   claudeDistributionFromManifest,
   collectPythonDependencies,
   isOwnerAuthorizedRuntime,
@@ -275,11 +276,13 @@ describe('isPermissive', () => {
 })
 
 describe('official Claude distribution authorization', () => {
-  it('authorizes only the direct SDK identity without relabeling its license', () => {
+  it('authorizes only exact owner-approved identities without relabeling their licenses', () => {
     expect(isOwnerAuthorizedRuntime(CLAUDE_AGENT_SDK_PACKAGE)).toBe(true)
+    expect(isOwnerAuthorizedRuntime(GSAP_PACKAGE)).toBe(true)
     expect(isOwnerAuthorizedRuntime(`${CLAUDE_AGENT_SDK_PACKAGE}-linux-x64`))
       .toBe(false)
     expect(isOwnerAuthorizedRuntime('@anthropic-ai/unrelated')).toBe(false)
+    expect(isOwnerAuthorizedRuntime('@greensock/unrelated')).toBe(false)
     expect(isPermissive('SEE LICENSE IN README.md')).toBe(false)
   })
 

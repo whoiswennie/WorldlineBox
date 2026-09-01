@@ -1,25 +1,43 @@
-.workbench { height: 100%; min-height: 0; display: grid; grid-template: auto minmax(0, 1fr) / minmax(0, 1fr) 270px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-background-base); }
+.workbench { --worldline-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2); --worldline-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2); height: 100%; min-height: 0; display: grid; grid-template: auto minmax(0, 1fr) / minmax(0, 1fr) 270px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-background-base); }
 .toolbar { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 54px; padding: 8px 14px; border-bottom: 1px solid var(--dsw-alias-divider); }
 .toolbar > div:first-child { display: flex; min-width: 0; flex-direction: column; }
 .toolbar small { opacity: .6; overflow: hidden; text-overflow: ellipsis; }
 .toolbar > div:last-child { display: flex; flex-wrap: wrap; gap: 5px; }
 .toolbar button { padding: 6px 9px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
 .toolbar button:disabled { opacity: .4; cursor: default; }
+.zoom { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--dsw-alias-label-secondary); }
+.zoom input { width: 76px; }
 .canvasScroller { min-width: 0; min-height: 0; overflow: auto; background: color-mix(in srgb, var(--dsw-alias-background-elevated) 70%, transparent); }
 .canvas { display: block; min-width: 100%; min-height: 100%; }
 .canvas pattern path { stroke: color-mix(in srgb, currentColor 8%, transparent); stroke-width: 1; }
 .edge line { stroke: color-mix(in srgb, var(--dsw-alias-label-primary) 32%, transparent); stroke-width: 1.5; }
 .edge text { fill: var(--dsw-alias-label-secondary); font-size: 10px; }
+.edge { cursor: pointer; outline: none; }
+.edge[data-selected] line { stroke: var(--dsw-alias-state-business-primary); stroke-width: 3; }
+.backgroundLabel { fill: var(--dsw-alias-label-secondary); font-size: 11px; opacity: .65; }
 .node { cursor: pointer; outline: none; }
+.node polygon { fill: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); stroke: color-mix(in srgb, var(--dsw-alias-state-business-primary) 38%, transparent); }
 .node rect { fill: var(--dsw-alias-background-elevated); stroke: color-mix(in srgb, var(--dsw-alias-label-primary) 28%, transparent); stroke-width: 1.5; }
 .node[data-selected] rect { stroke: var(--dsw-alias-state-business-primary); stroke-width: 2.5; filter: drop-shadow(0 5px 10px color-mix(in srgb, var(--dsw-alias-state-business-primary) 20%, transparent)); }
+.node[data-locked] { opacity: .62; }
 .node text { fill: var(--dsw-alias-label-primary); font-size: 11px; pointer-events: none; }
 .node text:last-child { fill: var(--dsw-alias-label-secondary); font-size: 9px; }
 .inspector { min-height: 0; overflow: auto; padding: 15px; border-left: 1px solid var(--dsw-alias-divider); background: var(--dsw-alias-background-elevated); }
 .inspector h3 { margin: 0 0 14px; }
+.inspector > section:not(:first-child) { padding-top: 12px; border-top: 1px solid var(--dsw-alias-divider); }
 .inspector label { display: grid; gap: 5px; margin: 10px 0; color: var(--dsw-alias-label-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .inspector input, .inspector select { min-width: 0; padding: 7px 8px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: var(--dsw-alias-background-base); color: var(--dsw-alias-label-primary); font: inherit; text-transform: none; }
 .coordinates { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.check { display: flex !important; grid-template-columns: auto 1fr; align-items: center; }
+.check input { min-width: auto; }
+.layers { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--dsw-alias-divider); }
+.layers header { display: flex; align-items: center; justify-content: space-between; }
+.layers header h3 { margin: 0; }
+.layers header button, .layers > div button { border: 0; background: transparent; color: inherit; cursor: pointer; }
+.layers > div { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px; margin-top: 6px; }
+.layers > div input { padding: 5px 7px; }
+.layers button[data-enabled] { color: var(--dsw-alias-state-business-primary); }
+.locked { padding: 7px; border-radius: 7px; background: color-mix(in srgb, var(--dsw-alias-state-warning-primary) 12%, transparent); font-size: 11px; }
 .validation { margin-top: 20px; padding: 10px; border-radius: 9px; background: color-mix(in srgb, var(--dsw-alias-state-danger-primary) 10%, transparent); font-size: 11px; }
 .validation[data-valid] { background: color-mix(in srgb, #34c98f 11%, transparent); }
 .validation p { margin: 6px 0 0; overflow-wrap: anywhere; }

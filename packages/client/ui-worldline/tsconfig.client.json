@@ -10,6 +10,7 @@
     "src/client/CanonWorkbench.tsx",
     "src/client/MarkdownEditor.tsx",
     "src/client/MapWorkbench.tsx",
+    "src/client/motion.ts",
     "src/client/SimulationWorkbench.tsx",
     "src/client/TextPlayWorkbench.tsx",
     "src/client/WorldlineNavItem.tsx",

@@ -11,6 +11,7 @@
     { "path": "../../runtime-diagnostics/invariants" },
     { "path": "../../host/webserver" },
     { "path": "../../worldline/conversation-context" },
-    { "path": "../../worldline/narrative" }
+    { "path": "../../worldline/narrative" },
+    { "path": "../../worldline/project" }
   ]
 }

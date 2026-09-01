@@ -11,6 +11,7 @@ import type {
   ExportProjectRequest,
   HistoryRequest,
   ImportProjectRequest,
+  ImportProjectEntryRequest,
   MoveEntryRequest,
   MutationResult,
   ProjectLibraryPage,
@@ -64,6 +65,11 @@ export abstract class WorldlineProjects extends TypertRemoteService {
   abstract tree(request: ProjectTreeRequest): Promise<ProjectTreeListing>
   abstract read(request: ReadDocumentRequest): Promise<DocumentView>
   abstract write(request: WriteDocumentRequest): Promise<DocumentView>
+  /** Stream one browser-owned file without placing its bytes in Remote JSON or Host memory. */
+  abstract importEntry(
+    request: ImportProjectEntryRequest,
+    source: AsyncIterable<Uint8Array>,
+  ): Promise<MutationResult>
   abstract createDirectory(request: CreateDirectoryRequest): Promise<MutationResult>
   abstract move(request: MoveEntryRequest): Promise<MutationResult>
   abstract copyEntry(request: CopyEntryRequest): Promise<MutationResult>

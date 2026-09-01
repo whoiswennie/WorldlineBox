@@ -1,4 +1,4 @@
-.page { height: 100%; min-height: 0; overflow: auto; padding: 22px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-background-base); box-sizing: border-box; }
+.page { --worldline-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2); --worldline-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2); height: 100%; min-height: 0; overflow: auto; padding: 22px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-background-base); box-sizing: border-box; }
 .hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 4px 4px 20px; }
 .hero span { color: var(--dsw-alias-state-business-primary); font-size: 10px; letter-spacing: .16em; }
 .hero h2 { margin: 4px 0; font-size: 26px; }

@@ -101,6 +101,48 @@ export async function durableWrite(path: string, content: string | Uint8Array): 
   }
 }
 
+export async function durableWriteStream(
+  path: string,
+  source: AsyncIterable<Uint8Array>,
+  expectedBytes: number,
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  const temporary = resolve(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`)
+  const file = await open(temporary, 'wx', 0o600)
+  let written = 0
+  try {
+    for await (const chunk of source) {
+      written += chunk.byteLength
+      if (written > expectedBytes) throw new RangeError('stream exceeds declared file length')
+      let offset = 0
+      while (offset < chunk.byteLength) {
+        const result = await file.write(chunk, offset, chunk.byteLength - offset)
+        if (result.bytesWritten === 0) throw new Error('streamed import made no write progress')
+        offset += result.bytesWritten
+      }
+    }
+    if (written !== expectedBytes) throw new RangeError(`stream ended at ${String(written)} of ${String(expectedBytes)} bytes`)
+    await file.sync()
+  } catch (error) {
+    await file.close().catch(() => undefined)
+    await unlink(temporary).catch(() => undefined)
+    throw error
+  }
+  await file.close()
+  try {
+    await rename(temporary, path)
+    try {
+      const parent = await open(dirname(path), 'r')
+      try { await parent.sync() } finally { await parent.close() }
+    } catch {
+      // Windows and some network filesystems do not expose directory fsync.
+    }
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined)
+    throw error
+  }
+}
+
 export async function readTextBounded(path: string): Promise<string> {
   const info = await stat(path).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {

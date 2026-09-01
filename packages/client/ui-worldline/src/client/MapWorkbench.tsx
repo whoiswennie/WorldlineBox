@@ -1,10 +1,15 @@
+/* oxlint-disable @stylistic/max-len -- Compact controls keep map editing relationships visible. */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { UIEvent } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { MapNode, WorldMap } from '@deepseek-ai/dsh-worldline-standard/types'
+import type { MapEdge, MapLayer, MapNode, MapPoint, WorldMap } from '@deepseek-ai/dsh-worldline-standard/types'
 import type { EditorDocumentState } from './types.ts'
+import { useWorldlineEntrance, useWorldlinePulse } from './motion.ts'
 import css from './MapWorkbench.module.css'
 
 const MAP_FENCE = /```worldline-map\s*\r?\n([\s\S]*?)\r?\n```/iu
+const MAP_NODE_KINDS = ['world', 'plane', 'region', 'city', 'building', 'room', 'slot'] as const
+const SPATIAL_CELL = 320
 
 export interface ParsedMapFence {
   readonly map?: WorldMap
@@ -13,21 +18,69 @@ export interface ParsedMapFence {
   readonly end?: number
 }
 
+export interface MapViewport {
+  readonly left: number
+  readonly top: number
+  readonly right: number
+  readonly bottom: number
+}
+
+export interface MapSpatialIndex {
+  readonly cells: ReadonlyMap<string, readonly MapNode[]>
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function strings(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string')
+}
+
+function point(value: unknown): value is MapPoint {
+  return object(value) && typeof value['x'] === 'number' && typeof value['y'] === 'number'
+}
+
+function layer(value: unknown): value is MapLayer {
+  return object(value) && typeof value['id'] === 'string' && typeof value['name'] === 'string'
+    && typeof value['visible'] === 'boolean' && typeof value['locked'] === 'boolean'
+    && typeof value['order'] === 'number'
+}
+
+function node(value: unknown): value is MapNode {
+  return object(value) && typeof value['id'] === 'string' && typeof value['layerId'] === 'string'
+    && typeof value['name'] === 'string' && MAP_NODE_KINDS.includes(value['kind'] as typeof MAP_NODE_KINDS[number])
+    && point(value['position']) && strings(value['permissions']) && strings(value['hazards'])
+    && strings(value['entryNodeIds']) && (value['polygon'] === undefined
+      || Array.isArray(value['polygon']) && value['polygon'].every(point))
+}
+
+function edge(value: unknown): value is MapEdge {
+  return object(value) && typeof value['id'] === 'string' && typeof value['from'] === 'string'
+    && typeof value['to'] === 'string' && typeof value['bidirectional'] === 'boolean'
+    && typeof value['distance'] === 'number' && typeof value['baseDuration'] === 'number'
+    && strings(value['modes']) && strings(value['permissions']) && strings(value['hazards'])
+}
+
+function currentWorldMap(value: unknown): value is WorldMap {
+  if (!object(value) || value['version'] !== 1 || typeof value['id'] !== 'string'
+    || typeof value['name'] !== 'string' || typeof value['rootNodeId'] !== 'string'
+    || !Array.isArray(value['nodes']) || !value['nodes'].every(node)
+    || !Array.isArray(value['edges']) || !value['edges'].every(edge)
+    || !Array.isArray(value['layers']) || !value['layers'].every(layer)
+    || !Array.isArray(value['provenance'])) return false
+  return value['backgroundAssetId'] === undefined || typeof value['backgroundAssetId'] === 'string'
+}
+
 export function parseWorldlineMapFence(content: string): ParsedMapFence {
   const match = MAP_FENCE.exec(content)
   if (match === null) return {}
   try {
-    const candidate = JSON.parse(match[1] ?? '') as unknown
-    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
-      return { error: 'worldline-map must contain one JSON object', start: match.index, end: match.index + match[0].length }
-    }
-    const value = candidate as Record<string, unknown>
-    if (value['version'] !== 1 || typeof value['id'] !== 'string' || typeof value['name'] !== 'string'
-      || typeof value['rootNodeId'] !== 'string' || !Array.isArray(value['nodes'])
-      || !Array.isArray(value['edges']) || !Array.isArray(value['layers'])) {
+    const candidate: unknown = JSON.parse(match[1] ?? '')
+    if (!currentWorldMap(candidate)) {
       return { error: 'worldline-map does not match the current WorldMap schema', start: match.index, end: match.index + match[0].length }
     }
-    return { map: candidate as WorldMap, start: match.index, end: match.index + match[0].length }
+    return { map: candidate, start: match.index, end: match.index + match[0].length }
   } catch (reason) {
     return { error: reason instanceof Error ? reason.message : String(reason), start: match.index, end: match.index + match[0].length }
   }
@@ -42,33 +95,85 @@ export function layoutWorldMap(map: WorldMap): WorldMap {
   const columns = Math.max(1, Math.ceil(Math.sqrt(map.nodes.length)))
   return {
     ...map,
-    nodes: map.nodes.map((node, index) => ({
-      ...node,
+    nodes: map.nodes.map((item, index) => ({
+      ...item,
       position: { x: 110 + (index % columns) * 190, y: 95 + Math.floor(index / columns) * 145 },
     })),
   }
 }
 
-function validateMap(map: WorldMap): readonly string[] {
-  const issues: string[] = []
-  const ids = new Set(map.nodes.map(node => node.id))
-  if (!ids.has(map.rootNodeId)) issues.push('Root node does not exist.')
-  if (ids.size !== map.nodes.length) issues.push('Node IDs must be unique.')
-  for (const node of map.nodes) {
-    if (!Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) issues.push(`${node.name}: invalid coordinates.`)
-    if (node.parentId !== undefined && !ids.has(node.parentId)) issues.push(`${node.name}: parent does not exist.`)
+export function buildMapSpatialIndex(map: WorldMap): MapSpatialIndex {
+  const mutable = new Map<string, MapNode[]>()
+  for (const item of map.nodes) {
+    const key = `${String(Math.floor(item.position.x / SPATIAL_CELL))}:${String(Math.floor(item.position.y / SPATIAL_CELL))}`
+    const bucket = mutable.get(key) ?? []
+    bucket.push(item)
+    mutable.set(key, bucket)
   }
-  for (const edge of map.edges) {
-    if (!ids.has(edge.from) || !ids.has(edge.to)) issues.push(`${edge.id}: edge endpoint does not exist.`)
-    if (edge.distance < 0 || edge.baseDuration < 0) issues.push(`${edge.id}: negative distance or duration.`)
+  return { cells: mutable }
+}
+
+export function visibleMapNodes(
+  index: MapSpatialIndex,
+  viewport: MapViewport,
+  visibleLayers: ReadonlySet<string>,
+  overscan = 180,
+): readonly MapNode[] {
+  const left = viewport.left - overscan
+  const top = viewport.top - overscan
+  const right = viewport.right + overscan
+  const bottom = viewport.bottom + overscan
+  const result = new Map<MapNode['id'], MapNode>()
+  for (let x = Math.floor(left / SPATIAL_CELL); x <= Math.floor(right / SPATIAL_CELL); x += 1) {
+    for (let y = Math.floor(top / SPATIAL_CELL); y <= Math.floor(bottom / SPATIAL_CELL); y += 1) {
+      for (const item of index.cells.get(`${String(x)}:${String(y)}`) ?? []) {
+        if (visibleLayers.has(item.layerId) && item.position.x >= left && item.position.x <= right
+          && item.position.y >= top && item.position.y <= bottom) result.set(item.id, item)
+      }
+    }
+  }
+  return [...result.values()]
+}
+
+function mapIssues(map: WorldMap): readonly string[] {
+  const issues: string[] = []
+  const nodeIds = new Set(map.nodes.map(item => item.id))
+  const edgeIds = new Set(map.edges.map(item => item.id))
+  const layerIds = new Set(map.layers.map(item => item.id))
+  if (nodeIds.size !== map.nodes.length) issues.push('Node IDs must be unique.')
+  if (edgeIds.size !== map.edges.length) issues.push('Edge IDs must be unique.')
+  if (layerIds.size !== map.layers.length) issues.push('Layer IDs must be unique.')
+  if (!nodeIds.has(map.rootNodeId)) issues.push('Map root does not exist.')
+  for (const item of map.nodes) {
+    if (!layerIds.has(item.layerId)) issues.push(`${item.id}: layer does not exist.`)
+    if (item.parentId !== undefined && !nodeIds.has(item.parentId)) issues.push(`${item.id}: parent does not exist.`)
+    if (!Number.isFinite(item.position.x) || !Number.isFinite(item.position.y)) issues.push(`${item.id}: coordinates must be finite.`)
+    if (item.capacity !== undefined && (!Number.isFinite(item.capacity) || item.capacity < 0)) issues.push(`${item.id}: capacity must be finite and non-negative.`)
+    const seen = new Set<string>()
+    let cursor: MapNode['id'] | undefined = item.id
+    while (cursor !== undefined) {
+      if (seen.has(cursor)) { issues.push(`${item.id}: hierarchy contains a cycle.`); break }
+      seen.add(cursor)
+      cursor = map.nodes.find(candidate => candidate.id === cursor)?.parentId
+    }
+  }
+  for (const item of map.edges) {
+    if (!nodeIds.has(item.from) || !nodeIds.has(item.to)) issues.push(`${item.id}: edge endpoint does not exist.`)
+    if (!Number.isFinite(item.distance) || item.distance < 0 || !Number.isFinite(item.baseDuration) || item.baseDuration < 0) {
+      issues.push(`${item.id}: distance and duration must be finite and non-negative.`)
+    }
   }
   return issues
 }
 
-function nextNodeId(map: WorldMap): MapNode['id'] {
-  let index = map.nodes.length + 1
-  while (map.nodes.some(node => node.id === `map-node:node-${String(index)}`)) index += 1
-  return `map-node:node-${String(index)}` as MapNode['id']
+function nextId(prefix: 'map-node' | 'map-edge', used: ReadonlySet<string>): string {
+  let index = used.size + 1
+  while (used.has(`${prefix}:item-${String(index)}`)) index += 1
+  return `${prefix}:item-${String(index)}`
+}
+
+function list(value: string): readonly string[] {
+  return value.split(',').map(item => item.trim()).filter(Boolean)
 }
 
 interface MapWorkbenchProps extends PropsLocale<'worldlineStudio'> {
@@ -80,15 +185,22 @@ interface MapWorkbenchProps extends PropsLocale<'worldlineStudio'> {
 export function MapWorkbench(props: MapWorkbenchProps) {
   const parsed = useMemo(() => parseWorldlineMapFence(props.document?.content ?? ''), [props.document?.content])
   const [draft, setDraft] = useState<WorldMap>()
-  const [selectedId, setSelectedId] = useState<MapNode['id']>()
+  const [selectedNodeId, setSelectedNodeId] = useState<MapNode['id']>()
+  const [selectedEdgeId, setSelectedEdgeId] = useState<MapEdge['id']>()
   const [issues, setIssues] = useState<readonly string[]>([])
+  const [zoom, setZoom] = useState(1)
+  const [viewport, setViewport] = useState<MapViewport>({ left: 0, top: 0, right: 1600, bottom: 1000 })
   const undo = useRef<WorldMap[]>([])
   const redo = useRef<WorldMap[]>([])
+  const scroller = useRef<HTMLDivElement>(null)
+  const motionRoot = useRef<HTMLDivElement>(null)
+  const canvas = useRef<SVGSVGElement>(null)
 
   useEffect(() => {
     setDraft(parsed.map)
-    setSelectedId(parsed.map?.rootNodeId)
-    setIssues(parsed.map === undefined ? [] : validateMap(parsed.map))
+    setSelectedNodeId(parsed.map?.rootNodeId)
+    setSelectedEdgeId(undefined)
+    setIssues(parsed.map === undefined ? [] : mapIssues(parsed.map))
     undo.current = []
     redo.current = []
   }, [parsed.map, props.document?.document.revision])
@@ -97,100 +209,162 @@ export function MapWorkbench(props: MapWorkbenchProps) {
     if (draft !== undefined) undo.current.push(draft)
     redo.current = []
     setDraft(next)
-    setIssues(validateMap(next))
+    setIssues(mapIssues(next))
     if (props.document !== undefined) props.editDocument(replaceWorldlineMapFence(props.document.content, next))
   }
+
   const travel = (from: { current: WorldMap[] }, to: { current: WorldMap[] }): void => {
     const next = from.current.pop()
     if (next === undefined || draft === undefined) return
     to.current.push(draft)
     setDraft(next)
-    setIssues(validateMap(next))
+    setIssues(mapIssues(next))
     if (props.document !== undefined) props.editDocument(replaceWorldlineMapFence(props.document.content, next))
   }
 
-  if (props.document === undefined) return <div className={css.empty}><span>◎</span><h2>{props.t('map')}</h2><p>{props.t('mapHint')}</p></div>
-  if (draft === undefined) return <div className={css.empty}><span>⌁</span><h2>{props.t('mapEmpty')}</h2><p>{parsed.error ?? props.t('mapHint')}</p></div>
-  const selected = draft.nodes.find(node => node.id === selectedId)
-  const width = Math.max(780, ...draft.nodes.map(node => node.position.x + 140))
-  const height = Math.max(520, ...draft.nodes.map(node => node.position.y + 100))
-
-  const updateSelected = (patch: Partial<MapNode>): void => {
-    if (selected === undefined) return
-    commit({ ...draft, nodes: draft.nodes.map(node => node.id === selected.id ? { ...node, ...patch } : node) })
+  const updateViewport = (event?: UIEvent<HTMLDivElement>): void => {
+    const target = event?.currentTarget ?? scroller.current
+    if (target === null) return
+    setViewport({
+      left: target.scrollLeft / zoom,
+      top: target.scrollTop / zoom,
+      right: (target.scrollLeft + target.clientWidth) / zoom,
+      bottom: (target.scrollTop + target.clientHeight) / zoom,
+    })
   }
 
-  return <div className={css.workbench}>
-    <header className={css.toolbar}>
-      <div><strong>{draft.name}</strong><small>{props.document.document.path}</small></div>
+  const index = useMemo(() => draft === undefined ? undefined : buildMapSpatialIndex(draft), [draft])
+  const visibleLayers = useMemo(() => new Set(draft?.layers.filter(item => item.visible).map(item => item.id) ?? []), [draft])
+  const renderedNodes = useMemo(() => index === undefined ? [] : visibleMapNodes(index, viewport, visibleLayers), [index, viewport, visibleLayers])
+  const renderedNodeIds = useMemo(() => new Set(renderedNodes.map(item => item.id)), [renderedNodes])
+  useWorldlineEntrance(motionRoot, [props.document?.document.path])
+  useWorldlinePulse(canvas, '.node', [draft?.nodes.length, zoom])
+  useWorldlinePulse(canvas, '.node[data-selected], .edge[data-selected]', [selectedNodeId, selectedEdgeId])
+
+  if (props.document === undefined) return <div className={css.empty}><span>◎</span><h2>{props.t('map')}</h2><p>{props.t('mapHint')}</p></div>
+  if (draft === undefined) return <div className={css.empty}><span>⌁</span><h2>{props.t('mapEmpty')}</h2><p>{parsed.error ?? props.t('mapHint')}</p></div>
+
+  const selectedNode = draft.nodes.find(item => item.id === selectedNodeId)
+  const selectedEdge = draft.edges.find(item => item.id === selectedEdgeId)
+  const selectedLayer = draft.layers.find(item => item.id === selectedNode?.layerId)
+  const width = Math.max(780, ...draft.nodes.map(item => item.position.x + 180))
+  const height = Math.max(520, ...draft.nodes.map(item => item.position.y + 140))
+
+  const updateSelectedNode = (patch: Partial<MapNode>): void => {
+    if (selectedNode === undefined || selectedLayer?.locked === true) return
+    commit({ ...draft, nodes: draft.nodes.map(item => item.id === selectedNode.id ? { ...item, ...patch } : item) })
+  }
+
+  const updateSelectedEdge = (patch: Partial<MapEdge>): void => {
+    if (selectedEdge === undefined) return
+    commit({ ...draft, edges: draft.edges.map(item => item.id === selectedEdge.id ? { ...item, ...patch } : item) })
+  }
+
+  return <div ref={motionRoot} className={css.workbench}>
+    <header className={css.toolbar} data-worldline-reveal>
+      <div><strong>{draft.name}</strong><small>{props.document.document.path} · {renderedNodes.length}/{draft.nodes.length} {props.t('visibleNodes')}</small></div>
       <div>
         <button type="button" disabled={undo.current.length === 0} onClick={() => { travel(undo, redo) }}>{props.t('undo')}</button>
         <button type="button" disabled={redo.current.length === 0} onClick={() => { travel(redo, undo) }}>{props.t('redo')}</button>
         <button type="button" onClick={() => { commit(layoutWorldMap(draft)) }}>{props.t('autoLayout')}</button>
-        <button type="button" onClick={() => { setIssues(validateMap(draft)) }}>{props.t('validate')}</button>
+        <button type="button" onClick={() => { setIssues(mapIssues(draft)) }}>{props.t('validate')}</button>
         <button type="button" onClick={() => {
-          const id = nextNodeId(draft)
-          commit({ ...draft, nodes: [...draft.nodes, {
-            id, layerId: draft.layers[0]?.id ?? 'default', kind: 'region', name: `Node ${String(draft.nodes.length + 1)}`,
-            position: { x: 120, y: 120 }, permissions: [], hazards: [], entryNodeIds: [],
-          }] })
-          setSelectedId(id)
+          const id = nextId('map-node', new Set(draft.nodes.map(item => item.id))) as MapNode['id']
+          const targetLayer = draft.layers.find(item => item.visible && !item.locked) ?? draft.layers[0]
+          if (targetLayer === undefined) return
+          commit({ ...draft, nodes: [...draft.nodes, { id, layerId: targetLayer.id, kind: 'region', name: `Node ${String(draft.nodes.length + 1)}`, position: { x: viewport.left + 140, y: viewport.top + 100 }, permissions: [], hazards: [], entryNodeIds: [] }] })
+          setSelectedNodeId(id); setSelectedEdgeId(undefined)
         }}>{props.t('addNode')}</button>
+        <button type="button" disabled={draft.nodes.length < 2} onClick={() => {
+          const from = selectedNode ?? draft.nodes[0]
+          const to = draft.nodes.find(item => item.id !== from?.id)
+          if (from === undefined || to === undefined) return
+          const id = nextId('map-edge', new Set(draft.edges.map(item => item.id))) as MapEdge['id']
+          commit({ ...draft, edges: [...draft.edges, { id, from: from.id, to: to.id, bidirectional: true, distance: 1, baseDuration: 1, modes: ['walk'], permissions: [], hazards: [] }] })
+          setSelectedEdgeId(id); setSelectedNodeId(undefined)
+        }}>{props.t('addEdge')}</button>
+        <label className={css.zoom}>{props.t('zoom')}<input type="range" min="0.25" max="2" step="0.05" value={zoom} onChange={(event) => { setZoom(Number(event.target.value)); window.requestAnimationFrame(() => { updateViewport() }) }} /></label>
         <button type="button" onClick={() => { void props.saveDocument() }}>{props.t('save')}</button>
       </div>
     </header>
-    <div className={css.canvasScroller}>
-      <svg className={css.canvas} viewBox={`0 0 ${String(width)} ${String(height)}`} role="img" aria-label={draft.name}>
+    <div className={css.canvasScroller} ref={scroller} onScroll={updateViewport}>
+      <svg ref={canvas} className={css.canvas} width={width * zoom} height={height * zoom} viewBox={`0 0 ${String(width)} ${String(height)}`} role="img" aria-label={draft.name}>
         <defs><pattern id="worldline-grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" /></pattern></defs>
         <rect width="100%" height="100%" fill="url(#worldline-grid)" />
-        {draft.edges.map((edge) => {
-          const from = draft.nodes.find(node => node.id === edge.from)
-          const to = draft.nodes.find(node => node.id === edge.to)
-          if (from === undefined || to === undefined) return null
-          return <g key={edge.id} className={css.edge}>
+        {draft.backgroundAssetId !== undefined && <text className={css.backgroundLabel} x="18" y="30">{props.t('background')}: {draft.backgroundAssetId}</text>}
+        {draft.edges.map((item) => {
+          const from = draft.nodes.find(nodeItem => nodeItem.id === item.from)
+          const to = draft.nodes.find(nodeItem => nodeItem.id === item.to)
+          if (from === undefined || to === undefined || !visibleLayers.has(from.layerId) || !visibleLayers.has(to.layerId)
+            || !renderedNodeIds.has(from.id) && !renderedNodeIds.has(to.id)) return null
+          return <g key={item.id} className={css.edge} data-selected={item.id === selectedEdgeId || undefined} role="button" tabIndex={0} onClick={() => { setSelectedEdgeId(item.id); setSelectedNodeId(undefined) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { setSelectedEdgeId(item.id); setSelectedNodeId(undefined) } }}>
             <line x1={from.position.x} y1={from.position.y} x2={to.position.x} y2={to.position.y} />
-            <text x={(from.position.x + to.position.x) / 2} y={(from.position.y + to.position.y) / 2 - 6}>{edge.baseDuration}</text>
+            <text x={(from.position.x + to.position.x) / 2} y={(from.position.y + to.position.y) / 2 - 6}>{item.modes.join('/')} · {item.baseDuration}t</text>
           </g>
         })}
-        {draft.nodes.map(node => <g
-          key={node.id}
-          className={css.node}
-          data-selected={node.id === selectedId || undefined}
-          transform={`translate(${String(node.position.x - 58)} ${String(node.position.y - 28)})`}
-          role="button"
-          tabIndex={0}
-          onClick={() => { setSelectedId(node.id) }}
-          onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedId(node.id) }}
-        >
-          <rect width="116" height="56" rx="14" />
-          <text x="58" y="24" textAnchor="middle">{node.name}</text>
-          <text x="58" y="42" textAnchor="middle">{node.kind}</text>
+        {renderedNodes.map(item => <g key={item.id} className={css.node} data-selected={item.id === selectedNodeId || undefined} data-locked={draft.layers.find(layerItem => layerItem.id === item.layerId)?.locked || undefined} transform={`translate(${String(item.position.x - 58)} ${String(item.position.y - 28)})`} role="button" tabIndex={0} onClick={() => { setSelectedNodeId(item.id); setSelectedEdgeId(undefined) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { setSelectedNodeId(item.id); setSelectedEdgeId(undefined) } }}>
+          {item.polygon !== undefined && <polygon points={item.polygon.map(pointItem => `${String(pointItem.x - item.position.x + 58)},${String(pointItem.y - item.position.y + 28)}`).join(' ')} />}
+          <rect width="116" height="56" rx="14" /><text x="58" y="24" textAnchor="middle">{item.name}</text><text x="58" y="42" textAnchor="middle">{item.kind}</text>
         </g>)}
       </svg>
     </div>
-    <aside className={css.inspector}>
-      <h3>{selected?.name ?? props.t('map')}</h3>
-      {selected !== undefined && <>
-        <label>ID<input value={selected.id} readOnly /></label>
-        <label>Name<input value={selected.name} onChange={(event) => { updateSelected({ name: event.target.value }) }} /></label>
-        <label>Kind<select value={selected.kind} onChange={(event) => { updateSelected({ kind: event.target.value as MapNode['kind'] }) }}>
-          {['world', 'plane', 'region', 'city', 'building', 'room', 'slot'].map(kind => <option key={kind}>{kind}</option>)}
-        </select></label>
-        <div className={css.coordinates}>
-          <label>X<input type="number" value={selected.position.x} onChange={(event) => { updateSelected({ position: { ...selected.position, x: Number(event.target.value) } }) }} /></label>
-          <label>Y<input type="number" value={selected.position.y} onChange={(event) => { updateSelected({ position: { ...selected.position, y: Number(event.target.value) } }) }} /></label>
-        </div>
-        <label>Capacity<input type="number" min="0" value={selected.capacity ?? ''} onChange={(event) => {
-          const value = event.target.value
-          if (value !== '') { updateSelected({ capacity: Number(value) }); return }
-          const { capacity: _capacity, ...withoutCapacity } = selected
-          commit({ ...draft, nodes: draft.nodes.map(node => node.id === selected.id ? withoutCapacity : node) })
+    <aside className={css.inspector} data-worldline-reveal>
+      <section className={css.layers}><header><h3>{props.t('layers')}</h3><button type="button" onClick={() => {
+        let index = draft.layers.length + 1
+        while (draft.layers.some(item => item.id === `layer-${String(index)}`)) index += 1
+        commit({ ...draft, layers: [...draft.layers, { id: `layer-${String(index)}`, name: `Layer ${String(index)}`, visible: true, locked: false, order: draft.layers.length }] })
+      }}>＋</button></header>{[...draft.layers].sort((a, b) => a.order - b.order).map(item => <div key={item.id}>
+        <button type="button" aria-label={`${props.t('visibility')} ${item.name}`} data-enabled={item.visible || undefined} onClick={() => { commit({ ...draft, layers: draft.layers.map(layerItem => layerItem.id === item.id ? { ...layerItem, visible: !layerItem.visible } : layerItem) }) }}>{item.visible ? '◉' : '○'}</button>
+        <input value={item.name} onChange={(event) => { commit({ ...draft, layers: draft.layers.map(layerItem => layerItem.id === item.id ? { ...layerItem, name: event.target.value } : layerItem) }) }} />
+        <button type="button" aria-label={`${props.t('lock')} ${item.name}`} data-enabled={item.locked || undefined} onClick={() => { commit({ ...draft, layers: draft.layers.map(layerItem => layerItem.id === item.id ? { ...layerItem, locked: !layerItem.locked } : layerItem) }) }}>{item.locked ? '◆' : '◇'}</button>
+      </div>)}</section>
+      <label>{props.t('background')}<input value={draft.backgroundAssetId ?? ''} placeholder="asset:…" onChange={(event) => {
+        const value = event.target.value.trim()
+        if (value !== '') { commit({ ...draft, backgroundAssetId: value as NonNullable<WorldMap['backgroundAssetId']> }); return }
+        const { backgroundAssetId: _backgroundAssetId, ...withoutBackground } = draft
+        commit(withoutBackground)
+      }} /></label>
+      {selectedNode !== undefined && <section><h3>{selectedNode.name}</h3>
+        {selectedLayer?.locked === true && <p className={css.locked}>{props.t('layerLocked')}</p>}
+        <label>ID<input value={selectedNode.id} readOnly /></label>
+        <label>Name<input value={selectedNode.name} disabled={selectedLayer?.locked} onChange={(event) => { updateSelectedNode({ name: event.target.value }) }} /></label>
+        <label>Kind<select value={selectedNode.kind} disabled={selectedLayer?.locked} onChange={(event) => { updateSelectedNode({ kind: event.target.value as MapNode['kind'] }) }}>{MAP_NODE_KINDS.map(kind => <option key={kind}>{kind}</option>)}</select></label>
+        <label>{props.t('layers')}<select value={selectedNode.layerId} disabled={selectedLayer?.locked} onChange={(event) => { updateSelectedNode({ layerId: event.target.value }) }}>{draft.layers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <label>Parent<select value={selectedNode.parentId ?? ''} disabled={selectedLayer?.locked} onChange={(event) => {
+          if (event.target.value !== '') { updateSelectedNode({ parentId: event.target.value as MapNode['id'] }); return }
+          const { parentId: _parentId, ...withoutParent } = selectedNode
+          commit({ ...draft, nodes: draft.nodes.map(item => item.id === selectedNode.id ? withoutParent : item) })
+        }}><option value="">—</option>{draft.nodes.filter(item => item.id !== selectedNode.id).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <div className={css.coordinates}><label>X<input type="number" value={selectedNode.position.x} disabled={selectedLayer?.locked} onChange={(event) => { updateSelectedNode({ position: { ...selectedNode.position, x: Number(event.target.value) } }) }} /></label><label>Y<input type="number" value={selectedNode.position.y} disabled={selectedLayer?.locked} onChange={(event) => { updateSelectedNode({ position: { ...selectedNode.position, y: Number(event.target.value) } }) }} /></label></div>
+        <label>Capacity<input type="number" min="0" value={selectedNode.capacity ?? ''} disabled={selectedLayer?.locked} onChange={(event) => {
+          if (event.target.value !== '') { updateSelectedNode({ capacity: Number(event.target.value) }); return }
+          const { capacity: _capacity, ...withoutCapacity } = selectedNode
+          commit({ ...draft, nodes: draft.nodes.map(item => item.id === selectedNode.id ? withoutCapacity : item) })
         }} /></label>
-      </>}
-      <section className={css.validation} data-valid={issues.length === 0 || undefined}>
-        <strong>{props.t('validate')} · {issues.length === 0 ? 'PASS' : String(issues.length)}</strong>
-        {issues.map(issue => <p key={issue}>{issue}</p>)}
-      </section>
+        <label>Entries<input value={selectedNode.entryNodeIds.join(', ')} disabled={selectedLayer?.locked} onChange={(event) => { updateSelectedNode({ entryNodeIds: list(event.target.value) as readonly MapNode['id'][] }) }} /></label>
+        <label>Permissions<input value={selectedNode.permissions.join(', ')} disabled={selectedLayer?.locked} onChange={(event) => { updateSelectedNode({ permissions: list(event.target.value) }) }} /></label>
+        <label>Hazards<input value={selectedNode.hazards.join(', ')} disabled={selectedLayer?.locked} onChange={(event) => { updateSelectedNode({ hazards: list(event.target.value) }) }} /></label>
+      </section>}
+      {selectedEdge !== undefined && <section><h3>{selectedEdge.id}</h3>
+        <label>From<select value={selectedEdge.from} onChange={(event) => { updateSelectedEdge({ from: event.target.value as MapNode['id'] }) }}>{draft.nodes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <label>To<select value={selectedEdge.to} onChange={(event) => { updateSelectedEdge({ to: event.target.value as MapNode['id'] }) }}>{draft.nodes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <label className={css.check}><input type="checkbox" checked={selectedEdge.bidirectional} onChange={(event) => { updateSelectedEdge({ bidirectional: event.target.checked }) }} />Bidirectional</label>
+        <div className={css.coordinates}><label>Distance<input type="number" min="0" value={selectedEdge.distance} onChange={(event) => { updateSelectedEdge({ distance: Number(event.target.value) }) }} /></label><label>Duration<input type="number" min="0" value={selectedEdge.baseDuration} onChange={(event) => { updateSelectedEdge({ baseDuration: Number(event.target.value) }) }} /></label></div>
+        <label>Capacity<input type="number" min="0" value={selectedEdge.capacity ?? ''} onChange={(event) => {
+          if (event.target.value !== '') { updateSelectedEdge({ capacity: Number(event.target.value) }); return }
+          const { capacity: _capacity, ...withoutCapacity } = selectedEdge
+          commit({ ...draft, edges: draft.edges.map(item => item.id === selectedEdge.id ? withoutCapacity : item) })
+        }} /></label>
+        <label>Modes<input value={selectedEdge.modes.join(', ')} onChange={(event) => { updateSelectedEdge({ modes: list(event.target.value) }) }} /></label>
+        <label>Permissions<input value={selectedEdge.permissions.join(', ')} onChange={(event) => { updateSelectedEdge({ permissions: list(event.target.value) }) }} /></label>
+        <label>Hazards<input value={selectedEdge.hazards.join(', ')} onChange={(event) => { updateSelectedEdge({ hazards: list(event.target.value) }) }} /></label>
+        <label>Dynamic condition<input value={selectedEdge.dynamicCondition ?? ''} onChange={(event) => {
+          if (event.target.value !== '') { updateSelectedEdge({ dynamicCondition: event.target.value }); return }
+          const { dynamicCondition: _dynamicCondition, ...withoutCondition } = selectedEdge
+          commit({ ...draft, edges: draft.edges.map(item => item.id === selectedEdge.id ? withoutCondition : item) })
+        }} /></label>
+      </section>}
+      <section className={css.validation} data-valid={issues.length === 0 || undefined}><strong>{props.t('validate')} · {issues.length === 0 ? 'PASS' : String(issues.length)}</strong>{issues.map(issue => <p key={issue}>{issue}</p>)}</section>
     </aside>
   </div>
 }

@@ -6,10 +6,13 @@ import type {} from '@deepseek-ai/dsh-worldline-conversation-context'
 import type { BindWorldlineConversationRequest } from '@deepseek-ai/dsh-worldline-conversation-context'
 import type {} from '@deepseek-ai/dsh-worldline-narrative'
 import type { NarrateRequest } from '@deepseek-ai/dsh-worldline-narrative/types'
+import type {} from '@deepseek-ai/dsh-worldline-project'
+import type { ImportProjectEntryRequest } from '@deepseek-ai/dsh-worldline-project/types'
 
-export const inject = ['webServer', 'worldlineNarrative', 'worldlineConversationContexts']
+export const inject = ['webServer', 'worldlineNarrative', 'worldlineConversationContexts', 'worldlineProjects']
 export const STREAM_PATH = '/api/worldline/narrative/stream'
 export const BIND_PATH = '/api/worldline/conversation/bind'
+export const PROJECT_UPLOAD_PATH = '/api/worldline/project/upload'
 const MAX_BODY_BYTES = 64 * 1024
 
 async function jsonBody(req: IncomingMessage): Promise<unknown> {
@@ -120,6 +123,49 @@ async function bind(ctx: Context, req: IncomingMessage, res: ServerResponse): Pr
   }
 }
 
+function uploadRequest(req: IncomingMessage): ImportProjectEntryRequest {
+  const url = new URL(req.url ?? PROJECT_UPLOAD_PATH, 'http://worldline.internal')
+  const projectId = url.searchParams.get('projectId')
+  const path = url.searchParams.get('path')
+  const rawBytes = url.searchParams.get('expectedBytes')
+  const expectedBytes = rawBytes === null ? Number.NaN : Number(rawBytes)
+  if (projectId === null || projectId === '' || path === null || path === '') {
+    throw new TypeError('projectId and path are required')
+  }
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) {
+    throw new TypeError('expectedBytes must be one non-negative safe integer')
+  }
+  const declared = req.headers['content-length']
+  if (declared !== undefined && Number(declared) !== expectedBytes) {
+    throw new TypeError('content-length does not match expectedBytes')
+  }
+  return {
+    projectId: projectId as ImportProjectEntryRequest['projectId'],
+    path,
+    expectedBytes,
+  }
+}
+
+async function upload(ctx: Context, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== 'PUT') { res.writeHead(405, { allow: 'PUT' }).end(); return }
+  if (!sameOrigin(req)) { res.writeHead(403).end(); return }
+  try {
+    const result = await ctx.worldlineProjects.importEntry(uploadRequest(req), req)
+    res.writeHead(201, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    })
+    res.end(JSON.stringify(result))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const status = error instanceof RangeError || message.includes('too large') || message.includes('exceeds')
+      ? 413 : message.includes('exists') ? 409 : 400
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(JSON.stringify({ error: message }))
+  }
+}
+
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact', path: STREAM_PATH, handler: (req, res) => stream(ctx, req, res),
@@ -127,4 +173,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact', path: BIND_PATH, handler: (req, res) => bind(ctx, req, res),
   }), 'ui-worldline: conversation binding')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact', path: PROJECT_UPLOAD_PATH, handler: (req, res) => upload(ctx, req, res),
+  }), 'ui-worldline: streamed project entry upload')
 }

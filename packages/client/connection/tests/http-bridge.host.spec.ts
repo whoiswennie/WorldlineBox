@@ -5,13 +5,16 @@ import { describe, expect, it } from 'vitest'
 import { bridge } from '../src/http-bridge.ts'
 
 describe('HTTP bridge abort', () => {
-  it('streams the dedicated Workspace upload route past the buffered JSON cap', async () => {
+  it.each([
+    '/api/workspace.upload?parent=%2Fw&name=movie.mp4&expectedBytes=4',
+    '/api/worldline/project/upload?projectId=project%3Aw&path=assets%2Fmovie.mp4&expectedBytes=4',
+  ])('streams the dedicated binary upload route past the buffered JSON cap: %s', async (url) => {
     const request = Readable.from([
       Buffer.from([0, 1]),
       Buffer.from([2, 3]),
     ]) as unknown as IncomingMessage
     Object.assign(request, {
-      url: '/api/workspace.upload?parent=%2Fw&name=movie.mp4&expectedBytes=4',
+      url,
       method: 'PUT',
       headers: { 'content-type': 'video/mp4', 'content-length': '4' },
     })

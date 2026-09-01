@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { WorldMap } from '@deepseek-ai/dsh-worldline-standard/types'
 import {
+  buildMapSpatialIndex,
   layoutWorldMap,
   parseWorldlineMapFence,
   replaceWorldlineMapFence,
+  visibleMapNodes,
 } from '../src/client/MapWorkbench.tsx'
 
 const map = {
@@ -44,6 +46,15 @@ describe('Worldline map document projection', () => {
     expect(parsed.error).toContain('current WorldMap schema')
   })
 
+  it('rejects malformed nested objects on the one current parser path', () => {
+    const malformed = { ...map, nodes: [{ id: 'map-node:broken', position: { x: 1 } }] }
+
+    const parsed = parseWorldlineMapFence(`\`\`\`worldline-map\n${JSON.stringify(malformed)}\n\`\`\``)
+
+    expect(parsed.map).toBeUndefined()
+    expect(parsed.error).toContain('current WorldMap schema')
+  })
+
   it('lays out every node deterministically', () => {
     const first = layoutWorldMap(map)
     const second = layoutWorldMap(map)
@@ -51,5 +62,31 @@ describe('Worldline map document projection', () => {
     expect(first).toEqual(second)
     expect(new Set(first.nodes.map(node => `${String(node.position.x)}:${String(node.position.y)}`)).size)
       .toBe(first.nodes.length)
+  })
+
+  it('uses a spatial index to clip a ten-thousand-node map by viewport and layer', () => {
+    const nodes = Array.from({ length: 10_000 }, (_, index) => ({
+      id: `map-node:item-${String(index)}`,
+      layerId: index % 2 === 0 ? 'main' : 'hidden',
+      kind: 'region' as const,
+      name: `Node ${String(index)}`,
+      position: { x: index % 100 * 200, y: Math.floor(index / 100) * 200 },
+      permissions: [], hazards: [], entryNodeIds: [],
+    }))
+    const large = { ...map, rootNodeId: nodes[0]?.id, nodes, layers: [
+      { id: 'main', name: 'Main', visible: true, locked: false, order: 0 },
+      { id: 'hidden', name: 'Hidden', visible: false, locked: false, order: 1 },
+    ] } as unknown as WorldMap
+
+    const visible = visibleMapNodes(
+      buildMapSpatialIndex(large),
+      { left: 0, top: 0, right: 1_000, bottom: 1_000 },
+      new Set(['main']),
+      0,
+    )
+
+    expect(visible.length).toBeGreaterThan(0)
+    expect(visible.length).toBeLessThan(40)
+    expect(visible.every(node => node.layerId === 'main')).toBe(true)
   })
 })

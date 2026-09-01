@@ -22,10 +22,12 @@ describe('Worldline bundled skills', () => {
     const ctx = new Context()
     await ctx.plugin(SkillRegistry)
     apply(ctx)
+    const bundled = WORLDLINE_SKILL_CANDIDATES[0]
+    if (bundled === undefined) throw new Error('worldline authoring candidate is missing')
     ctx.skills.registerProvider(() => ({
       name: 'project-test',
       list: async () => [{
-        ...WORLDLINE_SKILL_CANDIDATES[0],
+        ...bundled,
         description: 'Project-specific authoring workflow.',
         source: 'project-worldline',
         provider: 'project-test',

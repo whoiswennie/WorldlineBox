@@ -49,9 +49,12 @@ export async function bridge(
   })
   const requestUrl = new URL(req.url ?? '/', 'http://worldline.internal')
   const method = req.method ?? 'GET'
-  const streamWorkspaceUpload = method === 'PUT' && requestUrl.pathname === '/api/workspace.upload'
+  const streamBinaryUpload = method === 'PUT' && (
+    requestUrl.pathname === '/api/workspace.upload'
+    || requestUrl.pathname === '/api/worldline/project/upload'
+  )
   let request: Request
-  if (streamWorkspaceUpload) {
+  if (streamBinaryUpload) {
     request = new Request(requestUrl, {
       method,
       headers: Object.fromEntries(Object.entries(req.headers)

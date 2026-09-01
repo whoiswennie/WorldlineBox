@@ -111,7 +111,7 @@ describe('built Web profile', () => {
     expect(apiManifest.dependencies).not.toHaveProperty('@deepseek-ai/dsh-host-workspace-tree-local')
   })
 
-  it('ships five behaviorally distinct agent-plane compositions', () => {
+  it('ships six behaviorally distinct agent-plane compositions', () => {
     const presetRoot = join(repo, 'apps/cli/config/agent-presets')
     const readPreset = (id: string, file: 'preset.yml' | 'agent.cordis.yml'): string =>
       readFileSync(join(presetRoot, id, file), 'utf8')
@@ -122,6 +122,7 @@ describe('built Web profile', () => {
       ['minimal', '极简模式', 'order: 3'],
       ['cordis', '创造模式', 'order: 4'],
       ['virtual-companion', '虚拟伙伴', 'order: 5'],
+      ['worldline-author', '世界线作者', 'order: 2'],
     ] as const
     expect(readdirSync(presetRoot, { withFileTypes: true })
       .filter(entry => entry.isDirectory())
@@ -161,6 +162,12 @@ describe('built Web profile', () => {
     expect(companion).toContain('@deepseek-ai/dsh-tool-fs')
     expect(companion).toContain('@deepseek-ai/dsh-tool-bash')
     expect(companion).toContain('@deepseek-ai/dsh-compaction-basic')
+
+    const worldline = readPreset('worldline-author', 'agent.cordis.yml')
+    expect(worldline).toContain("name: '@deepseek-ai/dsh-tool-worldline'")
+    expect(worldline).toContain("name: '@deepseek-ai/dsh-skill-worldline'")
+    expect(worldline).not.toContain("name: '@deepseek-ai/dsh-tool-fs'")
+    expect(worldline).not.toContain("name: '@deepseek-ai/dsh-tool-bash'")
   })
 
   it('serves the production client without an orchestration runtime dependency', async () => {
@@ -172,7 +179,7 @@ describe('built Web profile', () => {
 
   it('mounts every shipped agent preset through the production session boundary', async () => {
     const url = await launchBuiltWeb()
-    for (const agentPreset of ['standard', 'ptc', 'minimal', 'cordis', 'virtual-companion']) {
+    for (const agentPreset of ['standard', 'ptc', 'minimal', 'cordis', 'virtual-companion', 'worldline-author']) {
       const sessionId = `preset-${agentPreset}`
       const response = await fetch(`${url}/api/session.create`, {
         method: 'POST',

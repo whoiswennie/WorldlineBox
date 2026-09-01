@@ -27,6 +27,7 @@ import {
   type ExportProjectRequest,
   type HistoryRequest,
   type ImportProjectRequest,
+  type ImportProjectEntryRequest,
   type MoveEntryRequest,
   type MutationResult,
   type ProjectLibraryPage,
@@ -69,6 +70,7 @@ import {
   canonicalRoot,
   directorySize,
   durableWrite,
+  durableWriteStream,
   exists,
   messageOf,
   normalizeRelative,
@@ -581,6 +583,38 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     await metadata.save()
     await this.touchManifest(project)
     return this.read(request)
+  }
+
+  async importEntry(
+    request: ImportProjectEntryRequest,
+    source: AsyncIterable<Uint8Array>,
+  ): Promise<MutationResult> {
+    const project = await this.projectPath(request.projectId)
+    const path = normalizeRelative(request.path)
+    if (path === '' || path.startsWith(`${CONTROL_DIRECTORY}/`) || path === PROJECT_MANIFEST) {
+      throw new WorldlineProjectError('path-invalid', `reserved project path: ${path}`)
+    }
+    if (!Number.isSafeInteger(request.expectedBytes) || request.expectedBytes < 0
+      || request.expectedBytes > 128 * 1024 ** 3) {
+      throw new WorldlineProjectError('entry-too-large', 'streamed import length is outside the 128 GiB safety bound')
+    }
+    if (kindOf(path, false) === 'document' && request.expectedBytes > 20 * 1024 ** 2) {
+      throw new WorldlineProjectError('entry-too-large', 'text document exceeds the 20 MiB editor bound')
+    }
+    const absolute = resolveInside(project, path)
+    await assertNoSymlink(project, absolute, true)
+    if (await exists(absolute)) throw new WorldlineProjectError('entry-exists', `entry exists: ${path}`)
+    const metadata = await this.metadata(project)
+    const sidecar = metadata.ensure(path)
+    try {
+      await durableWriteStream(absolute, source, request.expectedBytes)
+      await metadata.save()
+      await this.touchManifest(project)
+    } catch (error) {
+      metadata.remove(path)
+      throw error
+    }
+    return { projectId: request.projectId, path, id: sidecar.id }
   }
 
   async createDirectory(request: CreateDirectoryRequest): Promise<MutationResult> {

@@ -179,12 +179,13 @@ export class TestSessions implements ISessions {
    */
   readonly currentProvideInfo: HostObservable<SessionMaybeProvideInfo>
   private readonly records = new Map<SessionId, SessionRecord>()
+  private nextCreatedSession = 1
   /** The production provide channel (roster, materialization rules, current projection) — no test-side mirror. */
   private readonly channel: SessionProvideChannel
 
   /** Calls observed on the service-level face, newest last. */
   readonly calls: {
-    method: 'open' | 'openSubagent' | 'setSubagentCatalogOpen' | 'refreshSubagents'
+    method: 'create' | 'open' | 'openSubagent' | 'setSubagentCatalogOpen' | 'refreshSubagents'
       | 'clear' | 'search' | 'fork' | 'delete'
     args: unknown[]
   }[] = []
@@ -217,6 +218,18 @@ export class TestSessions implements ISessions {
     this.currentProvideInfo = this.channel.currentProvideInfo
     // The projection follows every current write, as in production.
     this.list.subscribe(() => { this.channel.publishCurrent() })
+  }
+
+  /** Create the same observable blank ordinary Session shape as production. */
+  async create(opts?: Parameters<ISessions['create']>[0]): Promise<SessionId> {
+    const id = opts?.sessionId
+      ?? `session:fixture-created-${String(this.nextCreatedSession++)}` as SessionId
+    this.calls.push({ method: 'create', args: [opts] })
+    return this.add({
+      id,
+      summary: { blank: true, ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }) },
+      snapshot: { blank: true },
+    })
   }
 
   /**

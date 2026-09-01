@@ -131,6 +131,12 @@ export interface WriteDocumentRequest extends ProjectRef {
   readonly createParents?: boolean
 }
 
+/** Host-only metadata for one streamed file import into the project tree. */
+export interface ImportProjectEntryRequest extends ProjectRef {
+  readonly path: string
+  readonly expectedBytes: number
+}
+
 export interface CreateDirectoryRequest extends ProjectRef { readonly path: string }
 export interface MoveEntryRequest extends ProjectRef {
   readonly source: string

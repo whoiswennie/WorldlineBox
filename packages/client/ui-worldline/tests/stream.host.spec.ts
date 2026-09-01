@@ -4,8 +4,9 @@ import { Context } from '@deepseek-ai/cordis'
 import type { WebRoute, WebServer } from '@deepseek-ai/dsh-host-webserver'
 import type { WorldlineNarrative } from '@deepseek-ai/dsh-worldline-narrative'
 import type { WorldlineConversationContexts } from '@deepseek-ai/dsh-worldline-conversation-context'
+import type { WorldlineProjects } from '@deepseek-ai/dsh-worldline-project'
 import { describe, expect, it } from 'vitest'
-import { apply, BIND_PATH, inject, STREAM_PATH } from '../src/index.ts'
+import { apply, BIND_PATH, inject, PROJECT_UPLOAD_PATH, STREAM_PATH } from '../src/index.ts'
 
 function request(body: unknown, origin = 'http://127.0.0.1:3080'): IncomingMessage {
   const stream = Readable.from([Buffer.from(JSON.stringify(body))]) as IncomingMessage
@@ -19,7 +20,7 @@ function request(body: unknown, origin = 'http://127.0.0.1:3080'): IncomingMessa
 }
 
 interface CapturedResponse {
-  readonly response: ServerResponse
+  response: ServerResponse
   readonly chunks: string[]
   status?: number
   ended: boolean
@@ -50,8 +51,15 @@ function response(): CapturedResponse {
   return captured
 }
 
-async function route(): Promise<{ streamRoute: WebRoute; bindRoute: WebRoute; dispose: () => Promise<void> }> {
+async function route(): Promise<{
+  streamRoute: WebRoute
+  bindRoute: WebRoute
+  uploadRoute: WebRoute
+  uploaded: Uint8Array[]
+  dispose: () => Promise<void>
+}> {
   const routes: WebRoute[] = []
+  const uploaded: Uint8Array[] = []
   const server = {
     register(value: WebRoute) { routes.push(value); return () => { routes.splice(routes.indexOf(value), 1) } },
   } as unknown as WebServer
@@ -78,12 +86,19 @@ async function route(): Promise<{ streamRoute: WebRoute; bindRoute: WebRoute; di
       boundAt: '2026-09-01T00:00:00.000Z',
     }),
   } as unknown as WorldlineConversationContexts)
+  ctx.provide('worldlineProjects', {
+    importEntry: async (value: { projectId: string; path: string; expectedBytes: number }, source: AsyncIterable<Uint8Array>) => {
+      for await (const chunk of source) uploaded.push(chunk)
+      return { projectId: value.projectId, path: value.path }
+    },
+  } as unknown as WorldlineProjects)
   const fiber = ctx.plugin({ inject: [...inject], apply })
   await fiber.await()
   const streamRoute = routes.find(value => value.path === STREAM_PATH)
   const bindRoute = routes.find(value => value.path === BIND_PATH)
-  if (streamRoute === undefined || bindRoute === undefined) throw new Error('routes did not register')
-  return { streamRoute, bindRoute, dispose: () => fiber.dispose() }
+  const uploadRoute = routes.find(value => value.path === PROJECT_UPLOAD_PATH)
+  if (streamRoute === undefined || bindRoute === undefined || uploadRoute === undefined) throw new Error('routes did not register')
+  return { streamRoute, bindRoute, uploadRoute, uploaded, dispose: () => fiber.dispose() }
 }
 
 describe('Worldline narrative stream bridge', () => {
@@ -122,6 +137,21 @@ describe('Worldline narrative stream bridge', () => {
     expect(output.status).toBe(200)
     expect(output.chunks.join('')).toContain('"sourceRevision":"digest-current"')
     expect(output.chunks.join('')).toContain('"runId":"run:test"')
+    await mounted.dispose()
+  })
+
+  it('passes a same-origin project upload through as a byte stream', async () => {
+    const mounted = await route()
+    const input = Readable.from([Buffer.from([0, 1]), Buffer.from([2, 3])]) as IncomingMessage
+    input.method = 'PUT'
+    input.url = `${PROJECT_UPLOAD_PATH}?projectId=project%3Atest&path=assets%2Fpixel.bin&expectedBytes=4`
+    input.headers = { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080', 'content-length': '4' }
+    const output = response()
+
+    await mounted.uploadRoute.handler(input, output.response)
+
+    expect(output.status).toBe(201)
+    expect(Buffer.concat(mounted.uploaded.map(chunk => Buffer.from(chunk)))).toEqual(Buffer.from([0, 1, 2, 3]))
     await mounted.dispose()
   })
 })

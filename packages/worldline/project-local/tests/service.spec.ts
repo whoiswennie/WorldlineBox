@@ -40,6 +40,32 @@ afterEach(async () => {
 })
 
 describe('LocalWorldlineProjects', () => {
+  it('imports project entries as bounded durable streams without buffering the whole file', async () => {
+    const root = await temporaryRoot()
+    const runtime = await start(root)
+    const project = await runtime.ctx.worldlineProjects.create({ name: 'Streaming', template: 'blank' })
+    async function * bytes(): AsyncIterable<Uint8Array> {
+      yield Uint8Array.from([0, 1])
+      yield Uint8Array.from([2, 3, 4])
+    }
+
+    const imported = await runtime.ctx.worldlineProjects.importEntry({
+      projectId: project.manifest.id,
+      path: 'assets/pixel.bin',
+      expectedBytes: 5,
+    }, bytes())
+
+    expect(imported.path).toBe('assets/pixel.bin')
+    expect(await readFile(join(project.path, imported.path))).toEqual(Buffer.from([0, 1, 2, 3, 4]))
+    await expect(runtime.ctx.worldlineProjects.importEntry({
+      projectId: project.manifest.id,
+      path: 'assets/truncated.bin',
+      expectedBytes: 6,
+    }, bytes())).rejects.toThrow('stream ended')
+    await expect(readFile(join(project.path, 'assets', 'truncated.bin'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await runtime.dispose()
+  })
+
   it('creates a portable file-source project and discovers it after a cold rescan', async () => {
     const root = await temporaryRoot()
     const first = await start(root)

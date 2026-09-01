@@ -1,4 +1,4 @@
-.page { height: 100%; min-height: 0; overflow: auto; color: var(--dsw-alias-label-primary); background: radial-gradient(circle at 50% -10%, color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent), transparent 38%), var(--dsw-alias-background-base); }
+.page { --worldline-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2); --worldline-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2); height: 100%; min-height: 0; overflow: auto; color: var(--dsw-alias-label-primary); background: radial-gradient(circle at 50% -10%, color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent), transparent 38%), var(--dsw-alias-background-base); }
 .header { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; padding: 17px 22px; border-bottom: 1px solid var(--dsw-alias-divider); }
 .header span { color: var(--dsw-alias-state-business-primary); font-size: 9px; letter-spacing: .16em; }
 .header h2 { margin: 3px 0 0; }
@@ -38,6 +38,10 @@
 .sidebar ul { margin: 9px 0 0; padding: 0; list-style: none; }
 .sidebar li { display: flex; justify-content: space-between; gap: 6px; padding: 7px 0; border-top: 1px solid var(--dsw-alias-divider); }
 .sidebar li div, .sidebar section > div { display: flex; flex-direction: column; }
+.retryChoice { display: grid; gap: 4px; margin-top: 9px; color: var(--dsw-alias-label-secondary); font-size: 10px; }
+.retryChoice select { min-width: 0; padding: 6px; border: 1px solid var(--dsw-alias-divider); border-radius: 7px; background: var(--dsw-alias-background-base); color: inherit; }
+.sidebar .saveActions { align-items: stretch; gap: 4px; }
+.sidebar .saveActions button { padding: 5px 7px; font-size: 10px; }
 .sidebar small { color: var(--dsw-alias-label-secondary); }
 .sidebar pre { max-height: 330px; overflow: auto; margin: 0; font: 9px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .empty { display: grid; min-height: 500px; place-content: center; place-items: center; color: var(--dsw-alias-label-secondary); }
