@@ -79,6 +79,26 @@ export function assertArchiveNotAborted(signal: AbortSignal): void {
   if (signal.aborted) throw abortError()
 }
 
+/** O(1)-memory accounting for one central-directory entry before any payload is opened. */
+export function accumulateArchiveExpandedBytes(
+  current: number,
+  entry: { readonly path: string; readonly compressedBytes: number; readonly expandedBytes: number },
+): number {
+  if (!Number.isSafeInteger(entry.compressedBytes) || entry.compressedBytes < 0
+    || !Number.isSafeInteger(entry.expandedBytes) || entry.expandedBytes < 0) {
+    throw new WorldlineProjectError('transfer-failed', `invalid ZIP entry size: ${entry.path}`)
+  }
+  if (entry.expandedBytes > RATIO_CHECK_BYTES
+    && entry.expandedBytes / Math.max(1, entry.compressedBytes) > MAX_SUSPICIOUS_RATIO) {
+    throw new WorldlineProjectError('transfer-failed', `suspicious ZIP expansion ratio: ${entry.path}`)
+  }
+  const next = current + entry.expandedBytes
+  if (!Number.isSafeInteger(next) || next > MAX_EXPANDED_BYTES) {
+    throw new WorldlineProjectError('transfer-failed', 'ZIP expanded size exceeds the Worldline archive limit')
+  }
+  return next
+}
+
 async function* abortable(
   source: AsyncIterable<Uint8Array>,
   signal: AbortSignal,
@@ -253,14 +273,11 @@ export async function preflightArchive<M extends ArchiveManifestBase>(options: {
       if (entries.length >= MAX_ARCHIVE_FILES) {
         throw new WorldlineProjectError('transfer-failed', `ZIP exceeds ${String(MAX_ARCHIVE_FILES)} entries`)
       }
-      if (entry.uncompressedSize > RATIO_CHECK_BYTES
-        && entry.uncompressedSize / Math.max(1, entry.compressedSize) > MAX_SUSPICIOUS_RATIO) {
-        throw new WorldlineProjectError('transfer-failed', `suspicious ZIP expansion ratio: ${entry.fileName}`)
-      }
-      expandedBytes += entry.uncompressedSize
-      if (expandedBytes > MAX_EXPANDED_BYTES) {
-        throw new WorldlineProjectError('transfer-failed', 'ZIP expanded size exceeds the Worldline archive limit')
-      }
+      expandedBytes = accumulateArchiveExpandedBytes(expandedBytes, {
+        path: entry.fileName,
+        compressedBytes: entry.compressedSize,
+        expandedBytes: entry.uncompressedSize,
+      })
       if (entry.fileName === ARCHIVE_MANIFEST) {
         if (manifest !== undefined || entry.fileName.endsWith('/')) {
           throw new WorldlineProjectError('transfer-failed', 'ZIP must contain one archive manifest file')

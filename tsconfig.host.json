@@ -799,6 +799,7 @@
     "examples/*/src/**/*.ts",
     "examples/*/start.ts",
     "examples/*/tests/**/*.ts",
+    "fixtures/worldline/**/*.ts",
     "packages/*/*/tests/**/*.ts",
     "scripts/**/*.ts",
     "website/**/*.ts",

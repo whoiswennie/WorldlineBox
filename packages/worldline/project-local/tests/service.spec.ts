@@ -19,6 +19,7 @@ import {
 import { WorldlineRunDatabase } from '@deepseek-ai/dsh-worldline-run-sqlite'
 import LocalWorldlineProjects, { paginateTreeEntries } from '../src/index.ts'
 import { extractProjectArchive, preflightProjectArchive } from '../src/archive.ts'
+import { accumulateArchiveExpandedBytes } from '../src/archive-core.ts'
 import { preflightBlueprintArchive, preflightRunArchive } from '../src/artifact-archive.ts'
 import type { TransferJob } from '@deepseek-ai/dsh-worldline-project'
 
@@ -138,6 +139,21 @@ afterEach(async () => {
 })
 
 describe('LocalWorldlineProjects', () => {
+  it('accounts for a synthetic 20 GiB archive in bounded metadata memory', () => {
+    const oneGiB = 1024 ** 3
+    const total = Array.from({ length: 20 }, (_, index) => ({
+      path: `payload/chunk-${String(index).padStart(2, '0')}.bin`,
+      compressedBytes: 2 * 1024 ** 2,
+      expandedBytes: oneGiB,
+    })).reduce(accumulateArchiveExpandedBytes, 0)
+    expect(total).toBe(20 * oneGiB)
+    expect(() => accumulateArchiveExpandedBytes(128 * oneGiB, {
+      path: 'payload/overflow.bin',
+      compressedBytes: 2 * 1024 ** 2,
+      expandedBytes: oneGiB,
+    })).toThrow(/expanded size exceeds/u)
+  })
+
   it('paginates 50,000 metadata names without constructing an unbounded response', () => {
     const entries = Array.from({ length: 50_000 }, (_, index) => ({
       name: `entry-${String(index).padStart(5, '0')}`,
