@@ -36,6 +36,24 @@
 .panel h3 { margin: 0; font-size: 13px; }
 .panel select { min-width: 0; padding: 5px; border: 1px solid var(--dsw-alias-divider); border-radius: 6px; background: var(--dsw-alias-background-base); color: inherit; }
 .panel pre { max-height: 340px; overflow: auto; margin: 0; padding: 12px; font: 10px/1.55 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.spatialPanel { grid-column: 1 / -1; min-height: 390px; }
+.spatialPanel > header > div { display: flex; flex-direction: column; gap: 2px; }
+.spatialPanel > header small { color: var(--dsw-alias-label-secondary); font-size: 10px; }
+.runtimeMap { display: block; width: 100%; height: min(38vh, 390px); min-height: 270px; background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent), transparent 58%); }
+.runtimeMap defs + rect { opacity: .5; }
+.runtimeMap pattern path { fill: none; stroke: color-mix(in srgb, var(--dsw-alias-divider) 55%, transparent); stroke-width: 1; }
+.mapEdge { stroke: color-mix(in srgb, var(--dsw-alias-label-secondary) 55%, transparent); stroke-width: 2; }
+.mapRoute { fill: none; stroke: var(--dsw-alias-state-business-primary); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 7px color-mix(in srgb, var(--dsw-alias-state-business-primary) 55%, transparent)); }
+.mapNode circle { fill: var(--dsw-alias-background-elevated); stroke: color-mix(in srgb, var(--dsw-alias-state-business-primary) 65%, var(--dsw-alias-divider)); stroke-width: 2; }
+.mapNode text { fill: var(--dsw-alias-label-secondary); font-size: 10px; }
+.actorMarker circle { fill: #ff91bd; stroke: var(--dsw-alias-background-base); stroke-width: 3; }
+.actorMarker[data-selected] circle { fill: #8da8ff; filter: drop-shadow(0 0 8px #8da8ff); }
+.actorMarker text { fill: var(--dsw-alias-label-primary); font-size: 9px; font-weight: 700; }
+.movementList { display: flex; gap: 8px; margin: 0; padding: 9px 12px 12px; overflow-x: auto; list-style: none; }
+.movementList li { display: grid; min-width: 230px; gap: 3px; padding: 8px 10px; border: 1px solid var(--dsw-alias-divider); border-radius: 8px; background: var(--dsw-alias-background-base); }
+.movementList span, .movementList small { color: var(--dsw-alias-label-secondary); font-size: 9px; }
+.mapNotice { margin: 0; padding: 6px 12px; color: var(--dsw-alias-state-warning-primary); font-size: 10px; }
+.mapEmpty { display: grid; min-height: 270px; place-items: center; color: var(--dsw-alias-label-secondary); }
 .actorActions { display: flex; justify-content: flex-end; gap: 6px; padding: 10px; border-top: 1px solid var(--dsw-alias-divider); }
 .events ol { max-height: 480px; overflow: auto; margin: 0; padding: 0; list-style: none; }
 .events li { display: grid; grid-template-columns: 115px 1fr; border-bottom: 1px solid var(--dsw-alias-divider); }

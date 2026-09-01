@@ -12,6 +12,8 @@ import type {
   RunChoicesView,
   RunRecordsPage,
   RunRecordsRequest,
+  RunSpatialRequest,
+  RunSpatialView,
   RecordAiIntentRequest,
   RecordAiIntentResult,
   RecordAiInvocationRequest,
@@ -41,6 +43,7 @@ export abstract class WorldlineRuns extends TypertRemoteService {
   abstract create(request: CreateRunRequest): Promise<RunView>
   abstract list(): Promise<readonly RunSummary[]>
   abstract view(request: RunRef): Promise<RunView>
+  abstract spatial(request: RunSpatialRequest): Promise<RunSpatialView>
   abstract choices(request: RunChoicesRequest): Promise<RunChoicesView>
   abstract advance(request: AdvanceRunRequest): Promise<RunView>
   abstract submitAction(request: SubmitRunActionRequest): Promise<SubmitRunActionResult>
@@ -65,6 +68,7 @@ export abstract class WorldlineRuns extends TypertRemoteService {
   @Remote('create') remoteCreate(value: CreateRunRequest): Promise<RunView> { return this.create(value) }
   @Remote('list') remoteList(): Promise<readonly RunSummary[]> { return this.list() }
   @Remote('view') remoteView(value: RunRef): Promise<RunView> { return this.view(value) }
+  @Remote('spatial') remoteSpatial(value: RunSpatialRequest): Promise<RunSpatialView> { return this.spatial(value) }
   @Remote('choices') remoteChoices(value: RunChoicesRequest): Promise<RunChoicesView> { return this.choices(value) }
   @Remote('advance') remoteAdvance(value: AdvanceRunRequest): Promise<RunView> { return this.advance(value) }
   @Remote('submitAction') remoteSubmitAction(value: SubmitRunActionRequest): Promise<SubmitRunActionResult> { return this.submitAction(value) }

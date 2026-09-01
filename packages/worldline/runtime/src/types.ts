@@ -11,6 +11,11 @@ import type {
   DecisionTrace,
   EntityId,
   JsonObject,
+  MapEdge,
+  MapId,
+  MapLayer,
+  MapNode,
+  MapNodeId,
   ModelPolicy,
   ModelRoute,
   NarrativeBeat,
@@ -61,6 +66,63 @@ export interface RunView {
   readonly health: RunHealth
   readonly aiUsage: AiUsage
   readonly controls: Readonly<Record<string, ActorControlMode>>
+}
+
+export interface RunSpatialViewport {
+  readonly left: number
+  readonly top: number
+  readonly right: number
+  readonly bottom: number
+}
+
+export interface RunSpatialRequest extends RunRef {
+  readonly mapId?: MapId
+  readonly viewport?: RunSpatialViewport
+  readonly visibleLayerIds?: readonly string[]
+  readonly maxNodes?: number
+}
+
+export interface RunSpatialMap {
+  readonly id: MapId
+  readonly name: string
+  readonly rootNodeId: MapNodeId
+  readonly backgroundAssetId?: string
+  readonly layers: readonly MapLayer[]
+  readonly nodes: readonly MapNode[]
+  readonly edges: readonly MapEdge[]
+  readonly totalNodes: number
+  readonly totalEdges: number
+  readonly truncated: boolean
+}
+
+export interface RunActorPosition {
+  readonly actorId: EntityId
+  readonly nodeId: MapNodeId
+}
+
+export interface RunMovementProjection {
+  readonly processId: Process['id']
+  readonly actorId: EntityId
+  readonly state: Process['state']
+  readonly origin: MapNodeId
+  readonly destination: MapNodeId
+  readonly route: readonly MapNodeId[]
+  readonly edgeIndex: number
+  readonly edgeFraction: number
+  readonly remainingDuration: number
+  readonly estimatedArrival: number
+  readonly mode: string
+}
+
+/** Bounded, read-only projection of the immutable Run map and current movement state. */
+export interface RunSpatialView {
+  readonly runId: RunId
+  readonly sequence: number
+  readonly logicalTime: number
+  readonly availableMaps: readonly { readonly id: MapId; readonly name: string; readonly nodeCount: number }[]
+  readonly map?: RunSpatialMap
+  readonly actors: readonly RunActorPosition[]
+  readonly movements: readonly RunMovementProjection[]
 }
 
 export interface CreateRunRequest {

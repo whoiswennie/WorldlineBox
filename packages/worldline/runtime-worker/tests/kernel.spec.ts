@@ -67,6 +67,38 @@ describe('WorldlineKernel', () => {
     run.close()
   })
 
+  it('projects a bounded frozen map with actor positions and movement progress', async () => {
+    const run = await kernel('spatial-projection-seed')
+    const actorId = worldlineId<'entity'>('entity:actor-a1')
+    const initial = run.view()
+    const submitted = run.submitAction({
+      runId: initial.summary.runId,
+      actorId,
+      type: 'character.move',
+      parameters: { destination: 'map-node:c-node-00001' },
+      expectedSequence: initial.snapshot.sequence,
+      controller: 'agent',
+    })
+    const spatial = run.spatial({
+      runId: initial.summary.runId,
+      viewport: { left: -0.5, top: -0.5, right: 1.5, bottom: 0.5 },
+      maxNodes: 50,
+    })
+    expect(spatial.map).toMatchObject({ name: 'Test map', totalNodes: 4, totalEdges: 2 })
+    expect(spatial.map?.nodes.map(node => node.name)).toEqual(['Root', 'A', 'B'])
+    expect(spatial.map?.edges).toHaveLength(1)
+    expect(spatial.actors).toContainEqual({ actorId, nodeId: 'map-node:a-node-00001' })
+    expect(spatial.movements).toContainEqual(expect.objectContaining({
+      processId: submitted.process.id,
+      actorId,
+      origin: 'map-node:a-node-00001',
+      destination: 'map-node:c-node-00001',
+      route: ['map-node:a-node-00001', 'map-node:b-node-00001', 'map-node:c-node-00001'],
+      remainingDuration: 30,
+    }))
+    run.close()
+  })
+
   it('acquires multiple claims atomically and ages a waiter until resources release', async () => {
     const run = await kernel('fairness-seed')
     const actorA = worldlineId<'entity'>('entity:actor-a1')

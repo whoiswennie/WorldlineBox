@@ -57,6 +57,8 @@ import type {
   RunRecordsPage,
   RunRecordsRequest,
   RunRef,
+  RunSpatialRequest,
+  RunSpatialView,
   RunSummary,
   RunView,
   SetActorControlRequest,
@@ -142,6 +144,7 @@ export interface RunsClient {
   create(request: CreateRunRequest): Promise<RunView>
   list(): Promise<readonly RunSummary[]>
   view(request: RunRef): Promise<RunView>
+  spatial(request: RunSpatialRequest): Promise<RunSpatialView>
   choices(request: RunChoicesRequest): Promise<RunChoicesView>
   advance(request: AdvanceRunRequest): Promise<RunView>
   submitAction(request: SubmitRunActionRequest): Promise<SubmitRunActionResult>

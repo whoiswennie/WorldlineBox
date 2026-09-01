@@ -52,6 +52,8 @@ import type {
   RunHealth,
   RunRecordsPage,
   RunRecordsRequest,
+  RunSpatialRequest,
+  RunSpatialView,
   RecordAiIntentRequest,
   RecordAiIntentResult,
   RecordAiInvocationRequest,
@@ -287,6 +289,99 @@ export class WorldlineKernel {
       aiUsage: this.snapshotValue.aiUsage,
       controls: Object.fromEntries(this.controls),
     }
+  }
+
+  spatial(request: RunSpatialRequest): RunSpatialView {
+    this.assertRun(request.runId)
+    const availableMaps = this.init.blueprint.maps.map(map => ({
+      id: map.id,
+      name: map.name,
+      nodeCount: map.nodes.length,
+    }))
+    const map = request.mapId === undefined
+      ? this.init.blueprint.maps[0]
+      : this.init.blueprint.maps.find(item => item.id === request.mapId)
+    if (request.mapId !== undefined && map === undefined) {
+      throw new WorldlineRuntimeError('action-invalid', `unknown Run map: ${request.mapId}`)
+    }
+    const base = {
+      runId: this.snapshotValue.runId,
+      sequence: this.snapshotValue.sequence,
+      logicalTime: this.snapshotValue.logicalTime,
+      availableMaps,
+    }
+    if (map === undefined) return { ...base, actors: [], movements: [] }
+
+    const viewport = request.viewport
+    if (viewport !== undefined && (
+      ![viewport.left, viewport.top, viewport.right, viewport.bottom].every(Number.isFinite)
+      || viewport.right < viewport.left
+      || viewport.bottom < viewport.top
+    )) {
+      throw new WorldlineRuntimeError('action-invalid', 'Run map viewport must be finite and ordered')
+    }
+    const limit = Math.min(5_000, Math.max(50, Math.trunc(request.maxNodes ?? 1_500)))
+    const visibleLayers = new Set(request.visibleLayerIds
+      ?? map.layers.filter(layer => layer.visible).map(layer => layer.id))
+    const candidates = map.nodes.filter(node => visibleLayers.has(node.layerId) && (viewport === undefined || (
+      node.position.x >= viewport.left
+      && node.position.x <= viewport.right
+      && node.position.y >= viewport.top
+      && node.position.y <= viewport.bottom
+    )))
+    const nodes = candidates.slice(0, limit)
+    const nodeIds = new Set(nodes.map(node => node.id))
+    const edges = map.edges.filter(edge => nodeIds.has(edge.from) && nodeIds.has(edge.to))
+    const allMapNodeIds = new Set(map.nodes.map(node => node.id))
+    const entities = this.snapshotValue.state['entities']
+    const actors = typeof entities !== 'object' || entities === null || Array.isArray(entities)
+      ? []
+      : Object.entries(entities).flatMap(([actorId, value]) => {
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) return []
+        const state = value['state']
+        const nodeId = typeof state === 'object' && state !== null && !Array.isArray(state)
+          && typeof state['locationId'] === 'string'
+          ? state['locationId'] as MapNodeId
+          : undefined
+        return nodeId !== undefined && nodeIds.has(nodeId)
+          ? [{ actorId: worldlineId<'entity'>(actorId), nodeId }]
+          : []
+      })
+    const movements = this.snapshotValue.processes.flatMap((process) => {
+      const movement = process.movement
+      if (movement === undefined || !movement.route.some(nodeId => allMapNodeIds.has(nodeId))) return []
+      return [{
+        processId: process.id,
+        actorId: process.action.actorId,
+        state: process.state,
+        origin: movement.origin,
+        destination: movement.destination,
+        route: movement.route,
+        edgeIndex: movement.edgeIndex,
+        edgeFraction: movement.edgeFraction,
+        remainingDuration: movement.remainingDuration,
+        estimatedArrival: movement.estimatedArrival,
+        mode: movement.mode,
+      }]
+    })
+    const projection: RunSpatialView = {
+      ...base,
+      map: {
+        id: map.id,
+        name: map.name,
+        rootNodeId: map.rootNodeId,
+        ...(map.backgroundAssetId === undefined ? {} : { backgroundAssetId: map.backgroundAssetId }),
+        layers: map.layers,
+        nodes,
+        edges,
+        totalNodes: map.nodes.length,
+        totalEdges: map.edges.length,
+        truncated: candidates.length > nodes.length,
+      },
+      actors,
+      movements,
+    }
+    return projection
   }
 
   choices(request: RunChoicesRequest): RunChoicesView {

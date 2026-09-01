@@ -29,6 +29,19 @@ export interface MapSpatialIndex {
   readonly cells: ReadonlyMap<string, readonly MapNode[]>
 }
 
+export interface MapNodeCluster {
+  readonly id: string
+  readonly x: number
+  readonly y: number
+  readonly count: number
+  readonly nodeIds: readonly MapNode['id'][]
+}
+
+export interface MapClusterProjection {
+  readonly nodes: readonly MapNode[]
+  readonly clusters: readonly MapNodeCluster[]
+}
+
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -135,6 +148,41 @@ export function visibleMapNodes(
   return [...result.values()]
 }
 
+/** Collapse dense low-zoom nodes into deterministic grid clusters without changing map data. */
+export function clusterMapNodes(
+  nodes: readonly MapNode[],
+  zoom: number,
+  pinnedIds: ReadonlySet<MapNode['id']> = new Set(),
+): MapClusterProjection {
+  if (zoom >= 0.8 && nodes.length <= 600) return { nodes, clusters: [] }
+  const cellSize = Math.max(180, 260 / Math.max(0.25, zoom))
+  const buckets = new Map<string, MapNode[]>()
+  const individuals: MapNode[] = []
+  for (const item of nodes) {
+    if (pinnedIds.has(item.id)) { individuals.push(item); continue }
+    const key = `${item.layerId}:${String(Math.floor(item.position.x / cellSize))}:${String(Math.floor(item.position.y / cellSize))}`
+    const bucket = buckets.get(key) ?? []
+    bucket.push(item)
+    buckets.set(key, bucket)
+  }
+  const clusters: MapNodeCluster[] = []
+  for (const [id, bucket] of buckets) {
+    if (bucket.length === 1) {
+      const item = bucket[0]
+      if (item !== undefined) individuals.push(item)
+      continue
+    }
+    clusters.push({
+      id,
+      x: bucket.reduce((sum, item) => sum + item.position.x, 0) / bucket.length,
+      y: bucket.reduce((sum, item) => sum + item.position.y, 0) / bucket.length,
+      count: bucket.length,
+      nodeIds: bucket.map(item => item.id),
+    })
+  }
+  return { nodes: individuals, clusters }
+}
+
 function mapIssues(map: WorldMap): readonly string[] {
   const issues: string[] = []
   const nodeIds = new Set(map.nodes.map(item => item.id))
@@ -237,6 +285,11 @@ export function MapWorkbench(props: MapWorkbenchProps) {
   const visibleLayers = useMemo(() => new Set(draft?.layers.filter(item => item.visible).map(item => item.id) ?? []), [draft])
   const renderedNodes = useMemo(() => index === undefined ? [] : visibleMapNodes(index, viewport, visibleLayers), [index, viewport, visibleLayers])
   const renderedNodeIds = useMemo(() => new Set(renderedNodes.map(item => item.id)), [renderedNodes])
+  const clustered = useMemo(() => clusterMapNodes(
+    renderedNodes,
+    zoom,
+    selectedNodeId === undefined ? new Set() : new Set([selectedNodeId]),
+  ), [renderedNodes, selectedNodeId, zoom])
   useWorldlineEntrance(motionRoot, [props.document?.document.path])
   useWorldlinePulse(canvas, '.node', [draft?.nodes.length, zoom])
   useWorldlinePulse(canvas, '.node[data-selected], .edge[data-selected]', [selectedNodeId, selectedEdgeId])
@@ -249,6 +302,18 @@ export function MapWorkbench(props: MapWorkbenchProps) {
   const selectedLayer = draft.layers.find(item => item.id === selectedNode?.layerId)
   const width = Math.max(780, ...draft.nodes.map(item => item.position.x + 180))
   const height = Math.max(520, ...draft.nodes.map(item => item.position.y + 140))
+  const renderedEdges = draft.edges.flatMap((item) => {
+    const from = draft.nodes.find(nodeItem => nodeItem.id === item.from)
+    const to = draft.nodes.find(nodeItem => nodeItem.id === item.to)
+    return from === undefined || to === undefined || !visibleLayers.has(from.layerId) || !visibleLayers.has(to.layerId)
+      || !renderedNodeIds.has(from.id) && !renderedNodeIds.has(to.id)
+      ? [] : [{ item, from, to }]
+  })
+  const batchEdges = clustered.clusters.length > 0 || renderedEdges.length > 800
+  const edgeBatchPath = batchEdges ? renderedEdges
+    .filter(({ item }) => item.id !== selectedEdgeId)
+    .map(({ from, to }) => `M${String(from.position.x)} ${String(from.position.y)}L${String(to.position.x)} ${String(to.position.y)}`)
+    .join('') : ''
 
   const updateSelectedNode = (patch: Partial<MapNode>): void => {
     if (selectedNode === undefined || selectedLayer?.locked === true) return
@@ -292,17 +357,24 @@ export function MapWorkbench(props: MapWorkbenchProps) {
         <defs><pattern id="worldline-grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" /></pattern></defs>
         <rect width="100%" height="100%" fill="url(#worldline-grid)" />
         {draft.backgroundAssetId !== undefined && <text className={css.backgroundLabel} x="18" y="30">{props.t('background')}: {draft.backgroundAssetId}</text>}
-        {draft.edges.map((item) => {
-          const from = draft.nodes.find(nodeItem => nodeItem.id === item.from)
-          const to = draft.nodes.find(nodeItem => nodeItem.id === item.to)
-          if (from === undefined || to === undefined || !visibleLayers.has(from.layerId) || !visibleLayers.has(to.layerId)
-            || !renderedNodeIds.has(from.id) && !renderedNodeIds.has(to.id)) return null
+        {edgeBatchPath !== '' && <path className={css.edgeBatch} d={edgeBatchPath} />}
+        {renderedEdges.map(({ item, from, to }) => {
+          if (batchEdges && item.id !== selectedEdgeId) return null
           return <g key={item.id} className={css.edge} data-selected={item.id === selectedEdgeId || undefined} role="button" tabIndex={0} onClick={() => { setSelectedEdgeId(item.id); setSelectedNodeId(undefined) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { setSelectedEdgeId(item.id); setSelectedNodeId(undefined) } }}>
             <line x1={from.position.x} y1={from.position.y} x2={to.position.x} y2={to.position.y} />
             <text x={(from.position.x + to.position.x) / 2} y={(from.position.y + to.position.y) / 2 - 6}>{item.modes.join('/')} · {item.baseDuration}t</text>
           </g>
         })}
-        {renderedNodes.map(item => <g key={item.id} className={css.node} data-selected={item.id === selectedNodeId || undefined} data-locked={draft.layers.find(layerItem => layerItem.id === item.layerId)?.locked || undefined} transform={`translate(${String(item.position.x - 58)} ${String(item.position.y - 28)})`} role="button" tabIndex={0} onClick={() => { setSelectedNodeId(item.id); setSelectedEdgeId(undefined) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { setSelectedNodeId(item.id); setSelectedEdgeId(undefined) } }}>
+        {clustered.clusters.map(cluster => <g key={cluster.id} className={css.cluster} transform={`translate(${String(cluster.x)} ${String(cluster.y)})`} role="button" tabIndex={0} aria-label={`${String(cluster.count)} ${props.t('clusteredNodes')}`} onClick={() => {
+          const nextZoom = Math.min(2, Math.max(.8, zoom * 1.75))
+          setZoom(nextZoom)
+          window.requestAnimationFrame(() => {
+            if (scroller.current === null) return
+            scroller.current.scrollTo({ left: cluster.x * nextZoom - scroller.current.clientWidth / 2, top: cluster.y * nextZoom - scroller.current.clientHeight / 2, behavior: 'smooth' })
+            updateViewport()
+          })
+        }}><circle r={Math.min(38, 18 + Math.log2(cluster.count) * 4)} /><text textAnchor="middle" y="4">{cluster.count}</text></g>)}
+        {clustered.nodes.map(item => <g key={item.id} className={css.node} data-selected={item.id === selectedNodeId || undefined} data-locked={draft.layers.find(layerItem => layerItem.id === item.layerId)?.locked || undefined} transform={`translate(${String(item.position.x - 58)} ${String(item.position.y - 28)})`} role="button" tabIndex={0} onClick={() => { setSelectedNodeId(item.id); setSelectedEdgeId(undefined) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { setSelectedNodeId(item.id); setSelectedEdgeId(undefined) } }}>
           {item.polygon !== undefined && <polygon points={item.polygon.map(pointItem => `${String(pointItem.x - item.position.x + 58)},${String(pointItem.y - item.position.y + 28)}`).join(' ')} />}
           <rect width="116" height="56" rx="14" /><text x="58" y="24" textAnchor="middle">{item.name}</text><text x="58" y="42" textAnchor="middle">{item.kind}</text>
         </g>)}

@@ -14,6 +14,7 @@
 .edge text { fill: var(--dsw-alias-label-secondary); font-size: 10px; }
 .edge { cursor: pointer; outline: none; }
 .edge[data-selected] line { stroke: var(--dsw-alias-state-business-primary); stroke-width: 3; }
+.edgeBatch { fill: none; stroke: color-mix(in srgb, var(--dsw-alias-label-primary) 24%, transparent); stroke-width: 1.25; vector-effect: non-scaling-stroke; }
 .backgroundLabel { fill: var(--dsw-alias-label-secondary); font-size: 11px; opacity: .65; }
 .node { cursor: pointer; outline: none; }
 .node polygon { fill: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); stroke: color-mix(in srgb, var(--dsw-alias-state-business-primary) 38%, transparent); }
@@ -22,6 +23,10 @@
 .node[data-locked] { opacity: .62; }
 .node text { fill: var(--dsw-alias-label-primary); font-size: 11px; pointer-events: none; }
 .node text:last-child { fill: var(--dsw-alias-label-secondary); font-size: 9px; }
+.cluster { cursor: zoom-in; outline: none; }
+.cluster circle { fill: color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, var(--dsw-alias-background-elevated)); stroke: color-mix(in srgb, var(--dsw-alias-state-business-primary) 72%, transparent); stroke-width: 2; filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--dsw-alias-state-business-primary) 25%, transparent)); }
+.cluster text { fill: var(--dsw-alias-label-primary); font-size: 12px; font-weight: 700; pointer-events: none; }
+.cluster:focus-visible circle { stroke-width: 4; }
 .inspector { min-height: 0; overflow: auto; padding: 15px; border-left: 1px solid var(--dsw-alias-divider); background: var(--dsw-alias-background-elevated); }
 .inspector h3 { margin: 0 0 14px; }
 .inspector > section:not(:first-child) { padding-top: 12px; border-top: 1px solid var(--dsw-alias-divider); }

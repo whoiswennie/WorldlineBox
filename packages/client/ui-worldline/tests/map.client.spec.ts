@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { WorldMap } from '@deepseek-ai/dsh-worldline-standard/types'
 import {
   buildMapSpatialIndex,
+  clusterMapNodes,
   layoutWorldMap,
   parseWorldlineMapFence,
   replaceWorldlineMapFence,
@@ -88,5 +89,23 @@ describe('Worldline map document projection', () => {
     expect(visible.length).toBeGreaterThan(0)
     expect(visible.length).toBeLessThan(40)
     expect(visible.every(node => node.layerId === 'main')).toBe(true)
+  })
+
+  it('clusters a dense low-zoom projection while keeping a selected node interactive', () => {
+    const nodes = Array.from({ length: 1_000 }, (_, index) => ({
+      ...map.nodes[0],
+      id: `map-node:cluster-${String(index)}`,
+      position: { x: index % 50 * 12, y: Math.floor(index / 50) * 12 },
+    })) as WorldMap['nodes']
+    const pinned = nodes[17]
+    if (pinned === undefined) throw new Error('cluster fixture has no pinned node')
+
+    const projection = clusterMapNodes(nodes, 0.3, new Set([pinned.id]))
+
+    expect(projection.clusters.length).toBeGreaterThan(0)
+    expect(projection.nodes).toContain(pinned)
+    expect(projection.nodes.length + projection.clusters.length).toBeLessThan(30)
+    expect(projection.clusters.reduce((sum, item) => sum + item.count, 0)
+      + projection.nodes.length).toBe(nodes.length)
   })
 })

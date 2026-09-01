@@ -22,6 +22,8 @@ import {
   type RunChoicesView,
   type RunRecordsPage,
   type RunRecordsRequest,
+  type RunSpatialRequest,
+  type RunSpatialView,
   type RecordAiIntentRequest,
   type RecordAiIntentResult,
   type RecordAiInvocationRequest,
@@ -215,6 +217,10 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
 
   override async view(request: RunRef): Promise<RunView> {
     return (await this.handle(request.runId)).call({ type: 'view' })
+  }
+
+  override async spatial(request: RunSpatialRequest): Promise<RunSpatialView> {
+    return (await this.handle(request.runId)).call({ type: 'spatial', payload: request })
   }
 
   override async choices(request: RunChoicesRequest): Promise<RunChoicesView> {

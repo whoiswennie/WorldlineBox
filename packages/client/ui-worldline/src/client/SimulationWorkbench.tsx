@@ -2,9 +2,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
-import type { CheckpointView, RunEventExplanation, RunRecordsPage, RunSummary, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
+import type { CheckpointView, RunEventExplanation, RunRecordsPage, RunSpatialView, RunSummary, RunView } from '@deepseek-ai/dsh-worldline-runtime/types'
 import type { AiBudgetStatus, WorldlineAiCatalog } from '@deepseek-ai/dsh-worldline-ai/types'
-import type { ContextPack, EntityId, JsonObject, JsonValue, ModelPurpose } from '@deepseek-ai/dsh-worldline-standard/types'
+import type { ContextPack, EntityId, JsonObject, JsonValue, MapId, ModelPurpose } from '@deepseek-ai/dsh-worldline-standard/types'
 import type { AiClient, RunsClient } from './types.ts'
 import { useWorldlineEntrance } from './motion.ts'
 import css from './SimulationWorkbench.module.css'
@@ -29,11 +29,60 @@ function entityIds(view: RunView | undefined): EntityId[] {
 
 function shortId(value: string): string { return value.length > 20 ? `${value.slice(0, 9)}…${value.slice(-7)}` : value }
 
+function SpatialMap({ spatial, selectedActor }: {
+  readonly spatial: RunSpatialView
+  readonly selectedActor?: EntityId | undefined
+}) {
+  const map = spatial.map
+  if (map === undefined || map.nodes.length === 0) return <div className={css.mapEmpty}>No map projection</div>
+  const xs = map.nodes.map(node => node.position.x)
+  const ys = map.nodes.map(node => node.position.y)
+  const minX = Math.min(...xs); const maxX = Math.max(...xs)
+  const minY = Math.min(...ys); const maxY = Math.max(...ys)
+  const point = (nodeId: string): { x: number; y: number } | undefined => {
+    const node = map.nodes.find(item => item.id === nodeId)
+    if (node === undefined) return undefined
+    return {
+      x: 42 + (node.position.x - minX) / Math.max(1, maxX - minX) * 636,
+      y: 36 + (node.position.y - minY) / Math.max(1, maxY - minY) * 232,
+    }
+  }
+  return <svg className={css.runtimeMap} viewBox="0 0 720 304" role="img" aria-label={map.name}>
+    <defs><pattern id="run-grid" width="22" height="22" patternUnits="userSpaceOnUse"><path d="M22 0H0V22" /></pattern></defs>
+    <rect width="720" height="304" fill="url(#run-grid)" />
+    {map.edges.map((edge) => {
+      const from = point(edge.from); const to = point(edge.to)
+      return from === undefined || to === undefined ? null : <line key={edge.id} className={css.mapEdge} x1={from.x} y1={from.y} x2={to.x} y2={to.y} />
+    })}
+    {spatial.movements.map((movement) => {
+      const route = movement.route.map(point).filter((item): item is { x: number; y: number } => item !== undefined)
+      return route.length < 2 ? null : <polyline key={movement.processId} className={css.mapRoute} points={route.map(item => `${String(item.x)},${String(item.y)}`).join(' ')} />
+    })}
+    {map.nodes.map((node) => {
+      const position = point(node.id)
+      if (position === undefined) return null
+      return <g key={node.id} className={css.mapNode} transform={`translate(${String(position.x)} ${String(position.y)})`}><circle r="16" /><text y="30" textAnchor="middle">{node.name}</text></g>
+    })}
+    {spatial.actors.map((actor) => {
+      const movement = spatial.movements.find(item => item.actorId === actor.actorId)
+      const current = movement === undefined ? point(actor.nodeId) : point(movement.route[movement.edgeIndex] ?? actor.nodeId)
+      const next = movement === undefined ? undefined : point(movement.route[movement.edgeIndex + 1] ?? actor.nodeId)
+      if (current === undefined) return null
+      const progress = movement?.edgeFraction ?? 0
+      const x = next === undefined ? current.x : current.x + (next.x - current.x) * progress
+      const y = next === undefined ? current.y : current.y + (next.y - current.y) * progress
+      return <g key={actor.actorId} className={css.actorMarker} data-selected={actor.actorId === selectedActor || undefined} transform={`translate(${String(x)} ${String(y)})`}><circle r="8" /><text x="11" y="4">{shortId(actor.actorId)}</text></g>
+    })}
+  </svg>
+}
+
 export function SimulationWorkbench(props: SimulationWorkbenchProps) {
   const [summaries, setSummaries] = useState<readonly RunSummary[]>([])
   const [selectedId, setSelectedId] = useState<RunSummary['runId']>()
   const [view, setView] = useState<RunView>()
   const [records, setRecords] = useState<RunRecordsPage>()
+  const [spatial, setSpatial] = useState<RunSpatialView>()
+  const [selectedMapId, setSelectedMapId] = useState<MapId>()
   const [checkpoints, setCheckpoints] = useState<readonly CheckpointView[]>([])
   const [explanation, setExplanation] = useState<RunEventExplanation>()
   const [stream, setStream] = useState<RunRecordsPage['records'][number]['stream'] | undefined>()
@@ -62,18 +111,22 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
   }, [projectId, props.runs])
 
   const refresh = useCallback(async (runId = selectedId): Promise<void> => {
-    if (runId === undefined) { setView(undefined); setRecords(undefined); setCheckpoints([]); return }
-    const [nextView, nextRecords, nextCheckpoints] = await Promise.all([
+    if (runId === undefined) { setView(undefined); setRecords(undefined); setSpatial(undefined); setCheckpoints([]); return }
+    const [nextView, nextRecords, nextCheckpoints, nextSpatial] = await Promise.all([
       props.runs.view({ runId }),
       props.runs.records({ runId, limit: 200, ...(stream === undefined ? {} : { stream }) }),
       props.runs.checkpoints({ runId }),
+      props.runs.spatial({ runId, ...(selectedMapId === undefined ? {} : { mapId: selectedMapId }), maxNodes: 1_500 }),
     ])
     setView(nextView)
     setRecords(nextRecords)
     setCheckpoints(nextCheckpoints)
+    setSpatial(nextSpatial)
+    setSelectedMapId(current => current !== undefined
+      && nextSpatial.availableMaps.some(map => map.id === current) ? current : nextSpatial.availableMaps[0]?.id)
     const actors = entityIds(nextView)
     setSelectedActor(current => current !== undefined && actors.includes(current) ? current : actors[0])
-  }, [props.runs, selectedId, stream])
+  }, [props.runs, selectedId, selectedMapId, stream])
 
   useEffect(() => { void loadList().catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)) }) }, [loadList, props.runRevision])
   useEffect(() => { void refresh().catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)) }) }, [refresh])
@@ -134,6 +187,12 @@ export function SimulationWorkbench(props: SimulationWorkbenchProps) {
           <div><small>{props.t('livelocks')}</small><strong>{view.health.livelocksResolved}</strong></div>
         </section>
         <div className={css.contentGrid} data-worldline-stagger>
+          {spatial !== undefined && <section className={`${css.panel} ${css.spatialPanel}`}>
+            <header><div><h3>{props.t('runtimeMap')}</h3><small>{spatial.map === undefined ? '—' : `${String(spatial.map.nodes.length)}/${String(spatial.map.totalNodes)} ${props.t('visibleNodes')}`}</small></div><select value={selectedMapId ?? ''} onChange={(event) => { setSelectedMapId(event.target.value as MapId) }}>{spatial.availableMaps.map(map => <option key={map.id} value={map.id}>{map.name} · {map.nodeCount}</option>)}</select></header>
+            <SpatialMap spatial={spatial} selectedActor={selectedActor} />
+            {spatial.map?.truncated === true && <p className={css.mapNotice}>{props.t('mapProjectionClipped')}</p>}
+            <ul className={css.movementList}>{spatial.movements.map(item => <li key={item.processId}><strong>{shortId(item.actorId)}</strong><span>{item.origin} → {item.destination}</span><small>{item.mode} · {Math.round(item.edgeFraction * 100)}% · {item.remainingDuration.toLocaleString()} {props.t('remaining')}</small></li>)}</ul>
+          </section>}
           <section className={css.panel}>
             <header><h3>{props.t('entities')}</h3><select value={selectedActor ?? ''} onChange={(event) => { setSelectedActor(event.target.value as EntityId) }}>{actors.map(id => <option key={id}>{id}</option>)}</select></header>
             <pre>{JSON.stringify(selectedEntity ?? {}, null, 2)}</pre>

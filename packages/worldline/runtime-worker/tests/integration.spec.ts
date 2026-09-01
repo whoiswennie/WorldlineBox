@@ -159,6 +159,17 @@ describe('WorkerWorldlineRuns integration', () => {
       expectedSequence: created.snapshot.sequence,
       controller: 'agent',
     })
+    const spatial = await first.context.worldlineRuns.spatial({
+      runId: created.summary.runId,
+      maxNodes: 100,
+    })
+    expect(spatial.map?.nodes.length).toBeGreaterThan(0)
+    expect(spatial.actors).toContainEqual(expect.objectContaining({ actorId: actor.id }))
+    expect(spatial.movements).toContainEqual(expect.objectContaining({
+      processId: submitted.process.id,
+      destination: 'map-node:end-worker-00001',
+      remainingDuration: 10,
+    }))
     const advanced = await first.context.worldlineRuns.advance({
       runId: created.summary.runId,
       duration: 10,
