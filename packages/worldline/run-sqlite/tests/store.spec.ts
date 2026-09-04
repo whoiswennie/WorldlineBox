@@ -21,8 +21,11 @@ function snapshot(sequence = 0): RunSnapshot {
     state: { value: sequence },
     processes: [], reservations: [], futureEvents: [], randomState: 'random-state',
     modelPolicy: { routes: {}, aiEnabled: false, revision: 'sha256:model-policy' as RunSnapshot['modelPolicy']['revision'] },
-    aiBudget: { maxCalls: 0, maxInputTokens: 0, maxOutputTokens: 0, maxConcurrent: 0, maxCallsPerLogicalDay: 0, maxCallsPerRealHour: 0, maxEstimatedCost: 0, currency: 'USD' },
     aiUsage: { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, estimatedCost: 0, cacheHits: 0 },
+    presentationCursors: {},
+    actionDecks: {},
+    storyProgress: {},
+    storyStateCommits: {},
   }
 }
 
@@ -162,6 +165,29 @@ describe('WorldlineRunDatabase', () => {
     expect(store.records(first.sequence, 1, undefined, first.ordinal)).toEqual([
       expect.objectContaining({ sequence: 0, ordinal: 1 }),
     ])
+    store.close()
+  })
+
+  it('reads the newest records as a chronological tail instead of replaying the first page', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'worldline-run-db-tail-'))
+    roots.push(root)
+    const store = new WorldlineRunDatabase(join(root, 'world.sqlite'))
+    store.initialize(snapshot())
+    for (let sequence = 1; sequence <= 5; sequence += 1) {
+      store.commit({
+        snapshot: snapshot(sequence),
+        records: [{
+          sequence,
+          logicalTime: sequence * 10,
+          stream: 'telemetry',
+          id: `telemetry:tail-${String(sequence).padStart(6, '0')}`,
+          payload: { sequence },
+        }],
+      })
+    }
+
+    expect(store.records(-1, 2, 'telemetry').map(record => record.sequence)).toEqual([1, 2])
+    expect(store.records(-1, 2, 'telemetry', -1, true).map(record => record.sequence)).toEqual([4, 5])
     store.close()
   })
 

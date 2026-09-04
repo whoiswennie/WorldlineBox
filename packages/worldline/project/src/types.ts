@@ -68,6 +68,12 @@ export interface SetProjectRootRequest {
   readonly path: string
   readonly create?: boolean
   readonly dryRun?: boolean
+  /**
+   * Copy the projects from the previous library before selecting this root.
+   * Defaults to true. Dedicated author Sessions set this to false when their
+   * workspace becomes a fresh, isolated project library.
+   */
+  readonly relocateExisting?: boolean
 }
 
 /** Describes the root relocation plan value exchanged across the package boundary.
@@ -185,6 +191,14 @@ export interface WriteDocumentRequest extends ProjectRef {
 export interface ImportProjectEntryRequest extends ProjectRef {
   readonly path: string
   readonly expectedBytes: number
+}
+
+/** Host-only resolved asset. The absolute path never crosses the Remote boundary. */
+export interface ProjectAssetFile {
+  readonly projectId: ProjectId
+  readonly path: string
+  readonly absolutePath: string
+  readonly sizeBytes: number
 }
 
 /** Describes the create directory request value exchanged across the package boundary.
@@ -391,6 +405,7 @@ export type WorldlineProjectErrorCode =
   | 'root-not-configured'
   | 'root-unreadable'
   | 'project-not-found'
+  | 'project-busy'
   | 'project-invalid'
   | 'path-outside-project'
   | 'path-invalid'

@@ -1,38 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { autocompletion, closeBrackets } from '@codemirror/autocomplete'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { markdown } from '@codemirror/lang-markdown'
-import {
-  bracketMatching,
-  defaultHighlightStyle,
-  indentOnInput,
-  syntaxHighlighting,
-} from '@codemirror/language'
-import { searchKeymap } from '@codemirror/search'
-import { EditorState } from '@codemirror/state'
-import {
-  drawSelection,
-  dropCursor,
-  EditorView,
-  highlightActiveLine,
-  highlightActiveLineGutter,
-  highlightSpecialChars,
-  keymap,
-  lineNumbers,
-  rectangularSelection,
-} from '@codemirror/view'
 import {
   Button,
   IconChevronDownOutline14,
-  IconChevronRightOutline14,
   IconFolderClose16,
   IconFolderOpen16,
   IconPlusOutline16,
   IconSearchOutline16,
   IconTrashOutline16,
-  MarkdownText,
+  MarkdownWorkspaceEditor,
+  MarkdownWorkspaceModeSwitch,
+  MarkdownWorkspacePreview,
   Modal,
+  WorkspaceFileTreeRow,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
@@ -308,94 +288,6 @@ function TagOutline() {
   </svg>
 }
 
-function MarkdownEditor({
-  value,
-  onChange,
-  onSave,
-}: {
-  value: string
-  onChange: (value: string) => void
-  onSave: () => void
-}) {
-  const host = useRef<HTMLDivElement>(null)
-  const view = useRef<EditorView | null>(null)
-  const change = useRef(onChange)
-  const save = useRef(onSave)
-  change.current = onChange
-  save.current = onSave
-  useEffect(() => {
-    if (host.current === null) return
-    const editor = new EditorView({
-      parent: host.current,
-      state: EditorState.create({
-        doc: value,
-        extensions: [
-          lineNumbers(),
-          highlightActiveLineGutter(),
-          highlightSpecialChars(),
-          history(),
-          drawSelection(),
-          dropCursor(),
-          EditorState.allowMultipleSelections.of(true),
-          indentOnInput(),
-          bracketMatching(),
-          closeBrackets(),
-          autocompletion(),
-          rectangularSelection(),
-          highlightActiveLine(),
-          markdown(),
-          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-          keymap.of([
-            {
-              key: 'Mod-s',
-              preventDefault: true,
-              run: () => {
-                save.current()
-                return true
-              },
-            },
-            indentWithTab,
-            ...defaultKeymap,
-            ...searchKeymap,
-            ...historyKeymap,
-          ]),
-          EditorView.lineWrapping,
-          EditorView.updateListener.of((update) => {
-            if (update.docChanged) change.current(update.state.doc.toString())
-          }),
-          EditorView.theme({
-            '&': { height: '100%', fontSize: '13px' },
-            '.cm-scroller': {
-              overflow: 'auto',
-              fontFamily: 'ui-monospace,SFMono-Regular,Cascadia Code,Consolas,monospace',
-            },
-            '.cm-content': { padding: '18px 0 48px' },
-            '.cm-line': { padding: '0 18px' },
-            '.cm-gutters': {
-              backgroundColor: '#f8fafc',
-              color: '#9aa6b2',
-              border: 'none',
-              borderRight: '1px solid #edf0f4',
-            },
-            '&.cm-focused': { outline: 'none' },
-          }),
-        ],
-      }),
-    })
-    view.current = editor
-    return () => {
-      editor.destroy()
-      view.current = null
-    }
-  }, [])
-  useEffect(() => {
-    const editor = view.current
-    if (editor === null || editor.state.doc.toString() === value) return
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } })
-  }, [value])
-  return <div ref={host} className={css.editorSurface} />
-}
-
 function MarkdownDocumentOutline() {
   return <svg
     viewBox="0 0 16 16"
@@ -510,10 +402,11 @@ function TreeBranch({
       onFiles([...event.dataTransfer.files], targetDirectory)
     }
   }
-  const folderRow = directory === '' ? null : <button
-    type="button"
-    className={css.treeFolder}
-    data-selected={selected === directory || undefined}
+  const folderRow = directory === '' ? null : <WorkspaceFileTreeRow
+    kind="directory"
+    name={folderEntry.name}
+    open={open}
+    selected={selected === directory}
     draggable={managedTreeEntry(folderEntry)}
     onClick={() => {
       onSelect(folderEntry)
@@ -537,13 +430,7 @@ function TreeBranch({
       ) ? 'move' : 'copy'
     }}
     onDrop={(event) => { drop(event, directory) }}
-  >
-    <span className={css.treeChevron}>{open
-      ? <IconChevronDownOutline14 />
-      : <IconChevronRightOutline14 />}</span>
-    <span className={css.treeGlyph}>{open ? <IconFolderOpen16 /> : <IconFolderClose16 />}</span>
-    <span className={css.treeName}>{folderEntry.name}</span>
-  </button>
+  />
   if (directory !== '' && !open) return folderRow
   return (
     <div className={directory === '' ? css.treeRoot : css.treeChildren}>
@@ -564,12 +451,12 @@ function TreeBranch({
             {...(active === undefined ? {} : { active })}
           />
         ) : (
-          <button
-            type="button"
+          <WorkspaceFileTreeRow
             key={entry.path}
-            className={css.treeFile}
-            aria-current={active === entry.path}
-            data-selected={selected === entry.path || undefined}
+            kind="document"
+            name={entry.name}
+            active={active === entry.path}
+            selected={selected === entry.path}
             title={entry.path}
             draggable={managedTreeEntry(entry)}
             onClick={() => {
@@ -587,11 +474,7 @@ function TreeBranch({
               event.dataTransfer.setData('application/x-worldline-vault-path', entry.path)
               event.dataTransfer.setData('application/x-worldline-vault-kind', entry.kind)
             }}
-          >
-            <span className={css.treeChevron} />
-            <span className={css.treeFileGlyph}><MarkdownDocumentOutline /></span>
-            <span className={css.treeName}>{entry.name}</span>
-          </button>
+          />
         ),
       )}
     </div>
@@ -1269,26 +1152,11 @@ function KnowledgeWorkbench({
                 <strong>{active.document.title}</strong>
                 <span>{active.document.path}</span>
               </div>
-              <div className={css.viewModes}>
-                {(['edit', 'preview', 'split'] as const).map(mode => (
-                  <button
-                    type="button"
-                    key={mode}
-                    aria-pressed={active.viewMode === mode}
-                    onClick={() => {
-                      setDocuments(current =>
-                        current.map(item =>
-                          item.document.path === active.document.path
-                            ? { ...item, viewMode: mode }
-                            : item,
-                        ),
-                      )
-                    }}
-                  >
-                    {mode === 'edit' ? '编辑' : mode === 'preview' ? '预览' : '分屏'}
-                  </button>
-                ))}
-              </div>
+              <MarkdownWorkspaceModeSwitch value={active.viewMode} onChange={(mode) => {
+                setDocuments(current => current.map(item => item.document.path === active.document.path
+                  ? { ...item, viewMode: mode }
+                  : item))
+              }} />
               <button
                 type="button"
                 className={css.saveButton}
@@ -1332,7 +1200,7 @@ function KnowledgeWorkbench({
             )}
             <div className={css.documentBody} data-mode={active.viewMode}>
               {active.viewMode !== 'preview' && (
-                <MarkdownEditor
+                <MarkdownWorkspaceEditor
                   value={active.content}
                   onChange={(content) => {
                     edit(active.document.path, content)
@@ -1340,12 +1208,16 @@ function KnowledgeWorkbench({
                   onSave={() => {
                     void saveNow(active.document.path)
                   }}
+                  ariaLabel={`编辑: ${active.document.path}`}
+                  className={css.editorSurface}
                 />
               )}
               {active.viewMode !== 'edit' && (
-                <div className={css.preview}>
-                  <MarkdownText text={active.content} />
-                </div>
+                <MarkdownWorkspacePreview
+                  content={active.content}
+                  ariaLabel={`预览: ${active.document.path}`}
+                  className={css.preview}
+                />
               )}
             </div>
           </>

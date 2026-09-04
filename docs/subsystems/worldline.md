@@ -6,14 +6,23 @@ The Worldline subsystem turns user-authored Canon into provenance-preserving fro
 
 ## Authority and data flow
 
-The project service owns mutable source documents under one user-selected library root. The compiler reads a revision-pinned source snapshot and freezes only a closed Blueprint. The runtime service creates logical Runs from frozen builds; one worker and one SQLite writer own each open Run. Its bounded autonomous scheduler advances actors, game-calendar time, systems, memories, relationships, and spatial state through the same validated action path used by interactive play. AI intents, invocations, observations, and narrative beats are durable evidence, never authoritative state changes.
+The project service owns mutable source documents under one user-selected library root. Recoverable deletion is a durable library-level tombstone: it quiesces project activity and removes the project from every active lookup without moving storage or an open SQLite file; explicit trash emptying is the only physical deletion. The compiler reads a revision-pinned source snapshot and freezes only a closed Blueprint. The runtime service creates logical Runs from frozen builds; one worker and one SQLite writer own each open Run. Its bounded autonomous scheduler advances actors, game-calendar time, systems, memories, relationships, and spatial state through the same validated action path used by interactive play. AI intents, invocations, observations, and narrative beats are durable evidence, never authoritative state changes.
+
+Author-facing Canon, character, and scenario sources remain readable Markdown, with small structured state contracts only where validation needs them. Native map composition and the project-owned runtime model are the sole executable sources for maps, actions, systems, and invariants; obsolete executable Markdown fences are rejected. Interactive story turns run in a strict pipeline: retained prose, atomic state/memory/evidence assessment, completed presentation, then exactly three model-authored choices grounded in current legal capabilities. The separate creative route may fall back to the narrator route when not configured, but its output is never replaced by static choice text.
+
+Authored projects follow the one current `WORLDLINE_PROJECT_LAYOUT` contract exported by the
+Standard package. It covers charter, characters, species, places, organizations, relations, rules,
+concepts, facts, items, media catalogs, scenarios, and timeline events. Native authoring and the OC
+archive consume this same taxonomy. The `.worldline/` subtree is reserved for managed metadata,
+history, builds, Runs, trash, and transfers; it is not Canon and save recovery cannot rewrite
+authored Markdown.
 
 ## Public type groups
 
 - Project types cover root binding, library pages, project summaries, document reads and optimistic writes, history, trash, source snapshots, frozen build references, transfer jobs, and explicit project, Blueprint, or Run archive requests.
 - Compiler types cover build state, diagnostics, creative questions, reviewable proposals, closure certificates, frozen builds, and semantic explanations.
 - Runtime types cover Run creation, bounded deterministic simulation, views, spatial projections, choices, validated actions, controls, ordered record pages, checkpoints, branches, AI evidence, and event explanations.
-- AI and narrative types cover model catalogs, budgets, bounded context packs, actor decisions, streamed text, scene frames, text actions, savepoints, and StoryStage renderers.
+- AI and narrative types cover model catalogs, usage telemetry, bounded context packs, actor decisions, streamed text, scene frames, text actions, savepoints, and StoryStage renderers.
 - Conversation-context types carry a switchable active project, worldline, source revision, and optional Run authority for an OC author Session. An explicit project or Run identifier may select another project without permanently pinning the Session to it.
 
 The current declarations and field-level contracts live in [`packages/worldline/standard/src`](../../packages/worldline/standard/src), [`packages/worldline/project/src/types.ts`](../../packages/worldline/project/src/types.ts), [`packages/worldline/compiler/src/types.ts`](../../packages/worldline/compiler/src/types.ts), [`packages/worldline/runtime/src/types.ts`](../../packages/worldline/runtime/src/types.ts), [`packages/worldline/ai/src/types.ts`](../../packages/worldline/ai/src/types.ts), and [`packages/worldline/narrative/src/types.ts`](../../packages/worldline/narrative/src/types.ts).
@@ -48,13 +57,7 @@ Bounded one-shot model planner. Runtime remains the only authority that can chan
  */
 @Remote('contextPack') async contextPack(request: ContextPackRequest): Promise<ContextPack>
 
-/** Return the current AI budget state for a Run.
- * @param request - The request supplied by the caller.
- * @returns The result produced by the operation.
- */
-@Remote('budget') async budget(request: AiBudgetRequest): Promise<AiBudgetStatus>
-
-/** Route one actor decision through policy, budget, and validation gates.
+/** Route one actor decision through policy, context-capacity, and validation gates.
  * @param request - The request supplied by the caller.
  * @returns The result produced by the operation.
  */
@@ -67,7 +70,7 @@ Bounded one-shot model planner. Runtime remains the only authority that can chan
 async *streamText(request: StreamWorldlineTextRequest): AsyncIterable<WorldlineTextChunk>
 ```
 
-Source: [`packages/worldline/ai/src/index.ts:118`](../../packages/worldline/ai/src/index.ts)
+Source: [`packages/worldline/ai/src/index.ts:175`](../../packages/worldline/ai/src/index.ts)
 
 <a id="ctxworldlinecompiler--worldlinecompiler"></a>
 
@@ -119,7 +122,7 @@ Host compiler gateway. All model-generated semantics enter through reviewable pr
 @Remote('explain') async explain(request: ExplainSemanticsRequest): Promise<SemanticsExplanation>
 ```
 
-Source: [`packages/worldline/compiler/src/index.ts:77`](../../packages/worldline/compiler/src/index.ts)
+Source: [`packages/worldline/compiler/src/index.ts:82`](../../packages/worldline/compiler/src/index.ts)
 
 <a id="ctxworldlineconversationcontexts--worldlineconversationcontexts"></a>
 
@@ -182,6 +185,12 @@ registerRenderer(renderer: StoryStageRenderer): () => void
  */
 async *narrateStream(request: NarrateRequest): AsyncIterable<NarrativeStreamChunk>
 
+/** Generate exactly three scene-specific choices after the latest story beat is fully presented.
+ * @param request - The active Run, actor, and camera selection.
+ * @returns Three creative plans grounded in current Runtime-legal opportunities.
+ */
+@Remote('suggest') async suggest(request: TextPlayRequest): Promise<StoryChoiceSuggestions>
+
 /** Submit one listed text-play choice.
  * @param request - The request supplied by the caller.
  * @returns The result produced by the operation.
@@ -224,7 +233,7 @@ async *narrateStream(request: NarrateRequest): AsyncIterable<NarrativeStreamChun
 @Remote('storyStage') storyStage(): StoryStageStatus
 ```
 
-Source: [`packages/worldline/narrative/src/index.ts:103`](../../packages/worldline/narrative/src/index.ts)
+Source: [`packages/worldline/narrative/src/index.ts:1072`](../../packages/worldline/narrative/src/index.ts)
 
 <a id="ctxworldlineprojects--worldlineprojects-abstract-seam"></a>
 
@@ -313,6 +322,12 @@ abstract write(request: WriteDocumentRequest): Promise<DocumentView>
  * @returns The result produced by the operation.
  */
 abstract importEntry( request: ImportProjectEntryRequest, source: AsyncIterable<Uint8Array>, ): Promise<MutationResult>
+
+/** Resolve one project-owned binary resource for a Host streaming endpoint. Not Remote.
+ * @param request - Project and asset path to resolve.
+ * @returns The validated Host file descriptor for streaming.
+ */
+abstract assetFile(request: ReadDocumentRequest): Promise<ProjectAssetFile>
 
 /** Create a directory inside a project.
  * @param request - The request supplied by the caller.
@@ -648,7 +663,7 @@ abstract runStorages(): Promise<readonly ProjectRunStorage[]>
 @Remote('cancelTransfer') remoteCancelTransfer(value: string): Promise<TransferJob>
 ```
 
-Source: [`packages/worldline/project/src/index.ts:57`](../../packages/worldline/project/src/index.ts)
+Source: [`packages/worldline/project/src/index.ts:68`](../../packages/worldline/project/src/index.ts)
 
 <a id="ctxworldlineruns--worldlineruns-abstract-seam"></a>
 
@@ -764,12 +779,6 @@ abstract setControl(request: SetActorControlRequest): Promise<RunView>
  */
 abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
 
-/** Set the explicit bounded AI allowance for a Run.
- * @param request - The request supplied by the caller.
- * @returns The result produced by the operation.
- */
-abstract setAiBudget(request: SetAiBudgetRequest): Promise<RunView>
-
 /** Perform switch model through the package's public contract.
  * @param request - The request supplied by the caller.
  * @returns The result produced by the operation.
@@ -799,6 +808,24 @@ abstract recordAiInvocation(request: RecordAiInvocationRequest): Promise<RecordA
  * @returns The result produced by the operation.
  */
 abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<RecordNarrativeBeatResult>
+
+/** Persist that a player has fully presented one retained narrative beat.
+ * @param request - The completed beat and perspective actor.
+ * @returns The durable presentation cursor and resulting Run sequence.
+ */
+abstract completePresentation( request: CompletePresentationRequest, ): Promise<CompletePresentationResult>
+
+/** Validate and retain a model-authored action deck for the current story pause.
+ * @param request - Three creative plans bound to current legal opportunities.
+ * @returns The retained action deck and resulting Run sequence.
+ */
+abstract recordActionDeck(request: RecordActionDeckRequest): Promise<RecordActionDeckResult>
+
+/** Validate and atomically retain schema-constrained soft state and memories.
+ * @param request - Mutations, memory writes, and optional plot evidence for one retained beat.
+ * @returns The committed story state and resulting Run sequence.
+ */
+abstract recordStoryState(request: RecordStoryStateRequest): Promise<RecordStoryStateResult>
 
 /** Perform remote create through the package's public contract.
  * @param value - The value supplied by the caller.
@@ -907,12 +934,6 @@ abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<Recor
  */
 @Remote('setAiEnabled') remoteSetAiEnabled(value: SetAiEnabledRequest): Promise<RunView>
 
-/** Update the Run AI budget through the generated Remote boundary.
- * @param value - The value supplied by the caller.
- * @returns The result produced by the operation.
- */
-@Remote('setAiBudget') remoteSetAiBudget(value: SetAiBudgetRequest): Promise<RunView>
-
 /** Perform remote switch model through the package's public contract.
  * @param value - The value supplied by the caller.
  * @returns The result produced by the operation.
@@ -924,7 +945,35 @@ abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<Recor
  * @returns The result produced by the operation.
  */
 @Remote('explain') remoteExplain(value: ExplainRunEventRequest): Promise<RunEventExplanation>
+
+/** Persist a stable presentation boundary through the generated Remote face.
+ * @param value - The completed beat and perspective actor.
+ * @returns The durable presentation cursor and resulting Run sequence.
+ */
+@Remote('completePresentation') remoteCompletePresentation( value: CompletePresentationRequest, ): Promise<CompletePresentationResult>
 ```
 
-Source: [`packages/worldline/runtime/src/index.ts:44`](../../packages/worldline/runtime/src/index.ts)
+Source: [`packages/worldline/runtime/src/index.ts:49`](../../packages/worldline/runtime/src/index.ts)
+
+<a id="worldline-project-events"></a>
+
+### `worldline-project/*` events
+
+<a id="worldline-projectrelease--parallel"></a>
+
+#### `worldline-project/release` — parallel
+
+Awaited checkpoint before a project becomes inaccessible. Runtime owners must release project-scoped activity and file handles before resolving.
+
+```ts cordis-catalog
+/**
+ * Awaited checkpoint before a project becomes inaccessible. Runtime owners
+ * must release project-scoped activity and file handles before resolving.
+ * @param projectId - Project that is leaving the active library.
+ * @mode parallel
+ */
+'worldline-project/release'(projectId: ProjectId): Promise<void> | void
+```
+
+Source: [`packages/worldline/project/src/index.ts:63`](../../packages/worldline/project/src/index.ts)
 <!-- END GENERATED cordis-surface -->

@@ -3,7 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 
-/** No runtime invariant: every call performs capacity and budget admission immediately before IO. */
+/** No runtime invariant: every call validates its routed model capacity immediately before IO. */
 const install: InvariantInstaller = () => {}
 
 export const name = 'worldline-ai-invariant'

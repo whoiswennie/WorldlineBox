@@ -20,13 +20,19 @@ function execute(kernel: WorldlineKernel, command: WorkerCommand): unknown {
   if (command.type === 'checkpoints') return kernel.checkpoints()
   if (command.type === 'set-control') return kernel.setControl(command.payload)
   if (command.type === 'set-ai') return kernel.setAiEnabled(command.payload)
-  if (command.type === 'set-ai-budget') return kernel.setAiBudget(command.payload)
   if (command.type === 'switch-model') return kernel.switchModel(command.payload)
   if (command.type === 'explain') return kernel.explain(command.payload)
   if (command.type === 'record-ai-intent') return kernel.recordAiIntent(command.payload)
   if (command.type === 'record-ai-invocation') return kernel.recordAiInvocation(command.payload)
   if (command.type === 'record-narrative-beat') return kernel.recordNarrativeBeat(command.payload)
+  if (command.type === 'complete-presentation') return kernel.completePresentation(command.payload)
+  if (command.type === 'record-action-deck') return kernel.recordActionDeck(command.payload)
+  if (command.type === 'record-story-state') return kernel.recordStoryState(command.payload)
   const summary = kernel.summary()
+  if (command.type === 'release') {
+    kernel.releaseStorage()
+    return summary
+  }
   kernel.close()
   return { ...summary, status: 'stopped' }
 }
@@ -50,7 +56,6 @@ async function runWorker(): Promise<void> {
     seed: init.seed,
     startPaused: init.startPaused,
     ...(init.modelPolicy === undefined ? {} : { modelPolicy: init.modelPolicy }),
-    ...(init.aiBudget === undefined ? {} : { aiBudget: init.aiBudget }),
     ...(init.resumeSnapshot === undefined ? {} : { resumeSnapshot: init.resumeSnapshot }),
     ...(init.parentRunId === undefined ? {} : { parentRunId: init.parentRunId }),
     ...(init.forkSequence === undefined ? {} : { forkSequence: init.forkSequence }),

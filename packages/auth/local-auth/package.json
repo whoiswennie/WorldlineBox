@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-local-auth",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "private": true,
   "type": "module",
   "license": "MIT",

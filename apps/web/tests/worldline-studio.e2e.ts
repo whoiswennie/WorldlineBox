@@ -7,9 +7,11 @@ import {
   acceptanceScenarios,
   charterDocument,
   characterDocument,
+  locationDocument,
   mapDocument,
   mechanismDocument,
   openingScenarioDocument,
+  runtimeSemanticDocument,
   timelineDocument,
 } from '../../../fixtures/worldline/scenarios.ts'
 import { launchWebScaffold, watchConsole, type WebScaffold } from './scaffold.ts'
@@ -69,9 +71,13 @@ describe('web e2e: Worldline authoring to archived branch', () => {
     const directory = picker.getByRole('textbox', { name: '编辑路径' })
     await directory.fill(dirname(path))
     await directory.press('Enter')
+    await expect.poll(async () => await picker.getByRole('listbox').getAttribute('aria-busy'))
+      .toBe('false')
+    await expect.poll(async () => await directory.inputValue()).toBe(dirname(path))
     const fileName = picker.getByRole('textbox', { name: '文件名' })
     await fileName.fill(basename(path))
     await picker.getByRole('button', { name: '保存到这里' }).click()
+    await expect.poll(async () => await dialog.getByLabel('保存位置').inputValue()).toBe(path)
   }
 
   beforeAll(async () => {
@@ -144,6 +150,7 @@ describe('web e2e: Worldline authoring to archived branch', () => {
 
     await page.getByRole('heading', { name: '勇士与恶龙：灰烬王冠' }).waitFor()
     await page.getByRole('button', { name: '创作设定', exact: true }).click()
+    await page.getByRole('button', { name: 'Markdown 源文本 IDE', exact: true }).click()
     await replaceDocument(
       await openTreeDocument('canon', 'charter.md'),
       charterDocument(scenario),
@@ -172,12 +179,34 @@ describe('web e2e: Worldline authoring to archived branch', () => {
       'characters/dragon.md',
       characterDocument(scenario, scenario.characters[1]!),
     )
+    for (const node of scenario.map.nodes) {
+      await createDocument(
+        `maps/places/${node.id.replace('map-node:', '')}.md`,
+        locationDocument(scenario, node),
+      )
+    }
+    const authoredProject = (await scaffold.ctx.worldlineProjects.library({ search: '勇士与恶龙' }))
+      .projects.find(item => item.manifest.name === '勇士与恶龙：灰烬王冠')
+    if (authoredProject === undefined) throw new Error('newly authored worldline project is missing')
+    await scaffold.ctx.worldlineProjects.writeControl({
+      projectId: authoredProject.manifest.id,
+      namespace: 'compiler',
+      path: 'runtime-model.json',
+      content: `${JSON.stringify({
+        documents: { 'mechanisms/core.md': runtimeSemanticDocument(scenario) },
+      }, null, 2)}\n`,
+    })
 
     await page.getByRole('button', { name: '世界地图', exact: true }).click()
-    await page.getByRole('img', { name: scenario.map.name }).waitFor({ timeout: 10_000 })
-    await page.getByRole('button', { name: '验证', exact: true }).click()
+    await page.getByRole('heading', { name: '地图尚未进入运行世界' }).waitFor({ timeout: 10_000 })
+    await page.getByRole('button', { name: '编排布局', exact: true }).click()
+    await page.getByRole('img', { name: '地点节点式世界地图' }).waitFor({ timeout: 10_000 })
+    await page.getByRole('button', { name: '晨钟村 城市', exact: true }).waitFor({ timeout: 10_000 })
+    await page.getByText('地图结构有效', { exact: true }).waitFor({ timeout: 10_000 })
 
-    await page.getByRole('button', { name: '构建验证', exact: true }).click()
+    await page.getByRole('button', { name: '创作设定', exact: true }).click()
+    await page.getByRole('button', { name: '原生 OC 编辑器', exact: true }).click()
+    await page.getByText('可运行性检查与发布', { exact: true }).click()
     await page.getByRole('button', { name: '编译预览' }).first().click()
     await page.getByText('可以冻结', { exact: true }).waitFor({ timeout: 15_000 })
     await page.getByRole('button', { name: '冻结并激活' }).click()
@@ -185,37 +214,14 @@ describe('web e2e: Worldline authoring to archived branch', () => {
       return await page.getByText('所有闭包门禁已通过，可以冻结。').count()
     }, { timeout: 15_000 }).toBeGreaterThan(0)
 
-    await page.getByRole('button', { name: '实时演算', exact: true }).click()
-    await page.getByLabel('创建后先暂停').uncheck()
-    await page.getByLabel('命运种子').fill('warrior-dragon-seed')
-    await page.getByRole('button', { name: '开始新演算' }).click()
+    await page.getByRole('button', { name: '视觉演绎', exact: true }).click()
+    await page.getByRole('button', { name: '开启视觉演绎', exact: true }).click()
+    await page.getByRole('main', { name: '视觉互动小说' }).waitFor({ timeout: 15_000 })
+    await page.getByRole('button', { name: '实时世界', exact: true }).click()
     await page.getByRole('img', { name: scenario.map.name }).waitFor({ timeout: 15_000 })
-    await page.getByText('battle.strike', { exact: true }).first().waitFor({ timeout: 10_000 })
-    await page.getByRole('button', { name: '执行干预' }).click()
-    await page.getByLabel('推进时间').fill('120')
-    await page.getByRole('button', { name: '推进时间', exact: true }).click()
-    await expect.poll(async () => Number((await page.locator('[class*="metrics"] strong').first().textContent())?.replace(/,/gu, '')), {
-      timeout: 15_000,
-    }).toBeGreaterThanOrEqual(120)
-    await page.locator('section[class*="events"]').locator('pre')
-      .filter({ hasText: '"type": "action.completed"' }).first()
-      .waitFor({ timeout: 10_000 })
+    await page.getByRole('button', { name: '流逝 10 分钟', exact: true }).click()
     await page.getByRole('button', { name: '保存此刻', exact: true }).click()
-    await page.getByRole('button', { name: '从这里开启分支' }).waitFor({ timeout: 10_000 })
-
-    await page.getByRole('button', { name: '故事舞台', exact: true }).first().click()
-    await page.getByLabel('使用本地模板叙事').check()
-    await page.getByRole('button', { name: '叙述当前场景' }).click()
-    await page.locator('article').filter({ has: page.getByRole('button', { name: '重新表述' }) })
-      .waitFor({ timeout: 15_000 })
-    await page.getByRole('button', { name: '保存点', exact: true }).click()
-    await page.getByRole('button', { name: '开启新世界线', exact: true }).click()
-    await expect.poll(async () => await page.getByLabel('演算档案').locator('option').count(), {
-      timeout: 15_000,
-    }).toBeGreaterThan(1)
-
-    await page.getByRole('button', { name: '实时演算', exact: true }).click()
-    await page.getByRole('button', { name: '导出演算存档' }).click()
+    await page.getByRole('button', { name: '导出世界线', exact: true }).click()
     const exportRun = page.getByRole('dialog', { name: '导出演算存档' })
     await chooseArchiveDestination(exportRun, runArchive)
     await exportRun.getByRole('button', { name: '导出演算存档' }).click()

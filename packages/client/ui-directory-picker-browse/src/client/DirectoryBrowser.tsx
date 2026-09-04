@@ -893,10 +893,15 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && !composingRef.current) {
                       event.preventDefault()
+                      // Read the submitted value from the input event itself. A browser can
+                      // deliver Enter immediately after an automation paste (and fast users
+                      // can do the same through an IME), before React has committed the
+                      // controlled-state render that refreshes this closure.
+                      const submittedPath = event.currentTarget.value
                       // Trim only detects a blank draft; the Host gets the
                       // original text — a real directory name may end in
                       // whitespace, and trimming would list its sibling.
-                      if (pathDraft.trim() !== '') {
+                      if (submittedPath.trim() !== '') {
                         // Success will unmount the still-focused input; park
                         // focus on the returning crumb edit zone (a failure
                         // keeps the editor, so the flag waits until close).
@@ -906,7 +911,7 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
                         // otherwise supersede this navigation and land the
                         // draft's parent directory instead.
                         previewSuspended.current = true
-                        navigate(pathDraft)
+                        navigate(submittedPath)
                       }
                     }
                   }}

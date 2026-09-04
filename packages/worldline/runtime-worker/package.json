@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-worldline-runtime-worker",
   "description": "Worker-thread supervisor and deterministic discrete-event Worldline kernel",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "private": true,
   "type": "module",
   "license": "MIT",

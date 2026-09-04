@@ -11,6 +11,7 @@ import {
   mapDocument,
   mechanismDocument,
   openingScenarioDocument,
+  runtimeSemanticDocument,
   timelineDocument,
 } from '../../../../fixtures/worldline/scenarios.ts'
 import WorldlineCompiler from '../../compiler/src/index.ts'
@@ -59,10 +60,10 @@ describe('星露谷小镇长期自治验收', () => {
       const project = await context.worldlineProjects.create({ name: scenario.name, template: 'blank' })
       const documents = [
         ['canon/charter.md', charterDocument(scenario), 'charter'],
-        ['canon/timeline.md', timelineDocument(scenario), 'timeline-event'],
-        ['scenarios/opening.md', openingScenarioDocument(scenario), 'scenario'],
+        ['timelines/canon.md', timelineDocument(scenario), 'timeline-event'],
+        ['scenarios/plot-points/opening.md', openingScenarioDocument(scenario), 'scenario'],
         ['mechanisms/runtime.md', mechanismDocument(scenario), 'rule'],
-        ['maps/world.md', mapDocument(scenario), 'place'],
+        ['maps/places/world.md', mapDocument(scenario), 'place'],
       ] as const
       for (const [path, content, objectKind] of documents) {
         await context.worldlineProjects.write({
@@ -73,6 +74,14 @@ describe('星露谷小镇长期自治验收', () => {
           objectKind,
         })
       }
+      await context.worldlineProjects.writeControl({
+        projectId: project.manifest.id,
+        namespace: 'compiler',
+        path: 'runtime-model.json',
+        content: JSON.stringify({
+          documents: { 'mechanisms/runtime.md': runtimeSemanticDocument(scenario) },
+        }),
+      })
       for (const [index, character] of scenario.characters.entries()) {
         await context.worldlineProjects.write({
           projectId: project.manifest.id,
@@ -122,11 +131,11 @@ describe('星露谷小镇长期自治验收', () => {
 
       const world = record(final.snapshot.state['world'])
       expect(record(world['calendar'])).toMatchObject({
-        absoluteDay: 1001,
+        absoluteDay: 1000,
         year: 9,
         season: '冬',
         dayOfSeason: 21,
-        timeOfDaySeconds: 0,
+        timeOfDaySeconds: 21_600,
       })
       expect(record(world['environment'])).toMatchObject({ daysElapsed: 1000, seasonTransitions: 35 })
       expect(record(world['farm'])).toMatchObject({ cropGrowth: 1000, soilCycles: 1000 })

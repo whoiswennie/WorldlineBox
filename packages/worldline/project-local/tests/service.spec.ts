@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import {
   WWS_VERSION,
+  WORLDLINE_PROJECT_LAYOUT,
   stableStringify,
   worldlineId,
   type Blueprint,
@@ -129,8 +130,11 @@ function runSnapshot(blueprint: Blueprint): RunSnapshot {
     state: { place: 'harbor' },
     processes: [], reservations: [], futureEvents: [], randomState: 'archive-random',
     modelPolicy: blueprint.modelPolicy,
-    aiBudget: { maxCalls: 0, maxInputTokens: 0, maxOutputTokens: 0, maxConcurrent: 0, maxCallsPerLogicalDay: 0, maxCallsPerRealHour: 0, maxEstimatedCost: 0, currency: 'USD' },
     aiUsage: { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, estimatedCost: 0, cacheHits: 0 },
+    presentationCursors: {},
+    actionDecks: {},
+    storyProgress: {},
+    storyStateCommits: {},
   }
 }
 
@@ -240,8 +244,19 @@ describe('LocalWorldlineProjects', () => {
       health: 'ready',
     })
     const manifest = await readFile(join(page.projects[0]!.path, 'worldline.toml'), 'utf8')
-    expect(manifest).toContain('format = "0.1.0"')
+    expect(manifest).toContain('format = "0.3.0"')
     expect(manifest).not.toContain('apiKey')
+    const expectedDirectories = [
+      ...Object.values(WORLDLINE_PROJECT_LAYOUT.canonDirectories),
+      WORLDLINE_PROJECT_LAYOUT.mediaDirectory,
+      WORLDLINE_PROJECT_LAYOUT.control.history,
+      WORLDLINE_PROJECT_LAYOUT.control.builds,
+      WORLDLINE_PROJECT_LAYOUT.control.runs,
+      WORLDLINE_PROJECT_LAYOUT.control.trash,
+      WORLDLINE_PROJECT_LAYOUT.control.transfers,
+    ]
+    await expect(Promise.all(expectedDirectories.map(async directory =>
+      await readdir(join(page.projects[0]!.path, directory))))).resolves.toHaveLength(expectedDirectories.length)
     await first.dispose()
 
     const second = await start(root)
@@ -330,6 +345,10 @@ describe('LocalWorldlineProjects', () => {
     const runtime = await start(root)
     const project = await runtime.ctx.worldlineProjects.create({ name: 'Trash', template: 'blank' })
     const projectId = project.manifest.id
+    const released: ProjectId[] = []
+    runtime.ctx.on('worldline-project/release', (releasedProjectId) => {
+      released.push(releasedProjectId)
+    })
     const document = await runtime.ctx.worldlineProjects.write({
       projectId,
       path: 'notes/keep.md',
@@ -348,10 +367,61 @@ describe('LocalWorldlineProjects', () => {
       .resolves.toMatchObject({ content: 'recover me', id: document.id })
 
     const removed = await runtime.ctx.worldlineProjects.trashProject({ projectId })
+    expect(released).toEqual([projectId])
     await expect(runtime.ctx.worldlineProjects.library()).resolves.toMatchObject({ total: 0 })
     const restored = await runtime.ctx.worldlineProjects.restoreProject({ trashId: removed.trashId })
     expect(restored.manifest.id).toBe(projectId)
     await runtime.dispose()
+  })
+
+  it('logically recycles a project without relocating an open Run database', async () => {
+    const root = await temporaryRoot()
+    const runtime = await start(root)
+    const project = await runtime.ctx.worldlineProjects.create({ name: 'Open ledger', template: 'blank' })
+    const runId = worldlineId<'run'>('run:open-ledger')
+    const storage = await runtime.ctx.worldlineProjects.runStorage(project.manifest.id, runId)
+    const database = new WorldlineRunDatabase(storage.databasePath)
+
+    try {
+      const trashed = await runtime.ctx.worldlineProjects.trashProject({ projectId: project.manifest.id })
+
+      expect(await readFile(join(project.path, 'worldline.toml'), 'utf8')).toContain(project.manifest.id)
+      expect(await readFile(storage.databasePath)).not.toHaveLength(0)
+      await expect(runtime.ctx.worldlineProjects.library()).resolves.toMatchObject({ total: 0 })
+      await expect(runtime.ctx.worldlineProjects.runStorage(project.manifest.id, runId))
+        .rejects.toMatchObject({ code: 'project-not-found' })
+      const listed = await runtime.ctx.worldlineProjects.listTrashedProjects()
+      expect(listed).toHaveLength(1)
+      expect(listed[0]?.trashId).toBe(trashed.trashId)
+      expect(listed[0]?.manifest?.id).toBe(project.manifest.id)
+
+      const restored = await runtime.ctx.worldlineProjects.restoreProject({ trashId: trashed.trashId })
+      expect(restored.path).toBe(project.path)
+      expect((await runtime.ctx.worldlineProjects.runStorage(project.manifest.id, runId)).databasePath)
+        .toBe(storage.databasePath)
+    } finally {
+      database.close()
+      await runtime.dispose()
+    }
+  })
+
+  it('keeps logical project trash authoritative across provider restarts', async () => {
+    const root = await temporaryRoot()
+    const first = await start(root)
+    const project = await first.ctx.worldlineProjects.create({ name: 'Durable trash', template: 'blank' })
+    const trashed = await first.ctx.worldlineProjects.trashProject({ projectId: project.manifest.id })
+    await first.dispose()
+
+    const second = await start(root)
+    await expect(second.ctx.worldlineProjects.library()).resolves.toMatchObject({ total: 0 })
+    await expect(second.ctx.worldlineProjects.listTrashedProjects()).resolves.toEqual([
+      expect.objectContaining({ trashId: trashed.trashId, originalName: 'durable-trash' }),
+    ])
+    await second.ctx.worldlineProjects.restoreProject({ trashId: trashed.trashId })
+    const restoredLibrary = await second.ctx.worldlineProjects.library()
+    expect(restoredLibrary.total).toBe(1)
+    expect(restoredLibrary.projects[0]?.manifest.id).toBe(project.manifest.id)
+    await second.dispose()
   })
 
   it('permanently empties the project recycle bin only when explicitly requested', async () => {
@@ -365,6 +435,23 @@ describe('LocalWorldlineProjects', () => {
     await expect(runtime.ctx.worldlineProjects.emptyProjectTrash()).resolves.toBe(2)
     await expect(runtime.ctx.worldlineProjects.listTrashedProjects()).resolves.toEqual([])
     await expect(runtime.ctx.worldlineProjects.emptyProjectTrash()).resolves.toBe(0)
+    await runtime.dispose()
+  })
+
+  it('keeps a project in place when a resource owner cannot release it', async () => {
+    const root = await temporaryRoot()
+    const runtime = await start(root)
+    const project = await runtime.ctx.worldlineProjects.create({ name: 'Busy', template: 'blank' })
+    runtime.ctx.on('worldline-project/release', () => {
+      throw new Error('synthetic resource release failure')
+    })
+
+    await expect(runtime.ctx.worldlineProjects.trashProject({ projectId: project.manifest.id }))
+      .rejects.toMatchObject({ code: 'project-busy' })
+    const library = await runtime.ctx.worldlineProjects.library()
+    expect(library.total).toBe(1)
+    expect(library.projects.map(item => item.manifest.id)).toEqual([project.manifest.id])
+    await expect(runtime.ctx.worldlineProjects.listTrashedProjects()).resolves.toEqual([])
     await runtime.dispose()
   })
 
@@ -413,6 +500,32 @@ describe('LocalWorldlineProjects', () => {
       projects: [{ manifest: { id: project.manifest.id } }],
     })
     expect(await readFile(join(source, 'relocation', 'worldline.toml'), 'utf8')).toContain(project.manifest.id)
+    await runtime.dispose()
+  })
+
+  it('selects an isolated author workspace without copying the previous library', async () => {
+    const source = await temporaryRoot()
+    const destination = await temporaryRoot()
+    const runtime = await start(source)
+    const existing = await runtime.ctx.worldlineProjects.create({ name: 'Existing', template: 'blank' })
+
+    const selected = await runtime.ctx.worldlineProjects.setRoot({
+      path: destination,
+      relocateExisting: false,
+    })
+
+    expect(selected).toMatchObject({
+      source,
+      destination,
+      projects: [],
+      conflicts: [],
+      requiredBytes: 0,
+      dryRun: false,
+    })
+    expect((await runtime.ctx.worldlineProjects.root()).path).toBe(destination)
+    await expect(runtime.ctx.worldlineProjects.library()).resolves.toMatchObject({ total: 0 })
+    expect(await readFile(join(source, 'existing', 'worldline.toml'), 'utf8'))
+      .toContain(existing.manifest.id)
     await runtime.dispose()
   })
 

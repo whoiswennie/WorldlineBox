@@ -6,7 +6,7 @@
 
 ## 契约
 
-每次执行都会解析调用方作者会话的当前活动项目。新建项目或明确使用另一个稳定项目标识时会自动切换，无需手动绑定。`worldline_map` 通过乐观项目修订校验并写入当前唯一结构化地图块，模型不再伪造编译器来源锚点。`worldline_build prove` 是可游玩闭环的权威门禁：它统一完成编译、冻结、创建 Run、执行自治合法动作、推进逻辑时间、验证地图与因果记录并创建检查点。`worldline_run simulate` 执行有界的确定性自治循环。通用文件系统或 Shell 工具绝不是项目数据的替代权限来源。
+每次执行都会解析调用方作者会话的当前活动项目。作者 Agent 会话必须先成功加载 `worldline-authoring`，否则所有变更会在工具边界被拒绝；这是运行时前置条件，不是仅靠提示词维持的约定。角色、地图、机制与剧本阶段的写入还分别强制要求对应的 `worldline-character-design`、`worldline-map-design`、`worldline-mechanism-design` 与 `worldline-scenario-design`，冻结和 prove 则要求 `worldline-build-audit`。新建项目或明确使用另一个稳定项目标识时会自动切换，无需手动绑定。`worldline_map` 通过乐观项目修订校验并写入当前唯一结构化地图块，模型不再伪造编译器来源锚点。`worldline_build prove` 是可游玩闭环的权威门禁：它统一完成编译、冻结、创建 Run、执行自治合法动作、推进逻辑时间、验证地图与因果记录并创建检查点。`worldline_run simulate` 执行有界的确定性自治循环。通用文件系统或 Shell 工具绝不是项目数据的替代权限来源。
 
 ## 模型体验
 

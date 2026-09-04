@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -55,61 +56,48 @@ const purpose: SimulationPurpose = {
   antiPatterns: ['instant ordinary movement'],
 }
 
-const mechanisms = `# Runtime mechanisms
-
-\`\`\`worldline-map
-{
-  "id": "map:worker-integration-0001",
-  "name": "Worker integration map",
-  "rootNodeId": "map-node:root-worker-0001",
-  "layers": [{ "id": "ground", "name": "Ground", "visible": true, "locked": false, "order": 0 }],
-  "nodes": [
-    {
-      "id": "map-node:root-worker-0001", "layerId": "ground", "kind": "world", "name": "Root",
-      "position": { "x": 0, "y": 0 }, "permissions": [], "hazards": [], "entryNodeIds": []
+const mechanisms = '# Runtime mechanisms\n\nMovement, time, and invariants are stored in the current Runtime semantic model.\n'
+const runtimeModel = {
+  documents: {
+    'mechanisms/runtime.md': {
+      maps: [{
+        id: 'map:worker-integration-0001',
+        name: 'Worker integration map',
+        rootNodeId: 'map-node:root-worker-0001',
+        layers: [{ id: 'ground', name: 'Ground', visible: true, locked: false, order: 0 }],
+        nodes: [{
+          id: 'map-node:root-worker-0001', layerId: 'ground', kind: 'world', name: 'Root',
+          position: { x: 0, y: 0 }, permissions: [], hazards: [], entryNodeIds: [],
+        }, {
+          id: 'map-node:start-worker-0001', parentId: 'map-node:root-worker-0001',
+          layerId: 'ground', kind: 'room', name: 'Start', position: { x: 0, y: 0 },
+          permissions: [], hazards: [], entryNodeIds: [],
+        }, {
+          id: 'map-node:end-worker-00001', parentId: 'map-node:root-worker-0001',
+          layerId: 'ground', kind: 'room', name: 'End', position: { x: 1, y: 0 },
+          permissions: [], hazards: [], entryNodeIds: [],
+        }],
+        edges: [{
+          id: 'map-edge:worker-route-0001', from: 'map-node:start-worker-0001',
+          to: 'map-node:end-worker-00001', bidirectional: true, distance: 1,
+          baseDuration: 10, modes: ['walk'], permissions: [], hazards: [],
+        }],
+      }],
+      actions: [{
+        id: 'character.move', operator: 'move', description: 'Walk over authored edges',
+        actorTypes: ['character'], duration: 0, maxWait: 60, maxRetries: 3, effects: [],
+      }],
+      systems: [{
+        id: 'world.clock', description: 'Advance the authored clock', nextWake: 60,
+        interval: 60, effects: [{ op: 'increment', path: 'world.time', amount: 60 }],
+      }],
+      invariants: [{
+        id: 'world.time.nonnegative', description: 'Time remains nonnegative',
+        expression: { op: 'gte', path: 'world.time', value: 0 },
+      }],
     },
-    {
-      "id": "map-node:start-worker-0001", "parentId": "map-node:root-worker-0001",
-      "layerId": "ground", "kind": "room", "name": "Start", "position": { "x": 0, "y": 0 },
-      "permissions": [], "hazards": [], "entryNodeIds": []
-    },
-    {
-      "id": "map-node:end-worker-00001", "parentId": "map-node:root-worker-0001",
-      "layerId": "ground", "kind": "room", "name": "End", "position": { "x": 1, "y": 0 },
-      "permissions": [], "hazards": [], "entryNodeIds": []
-    }
-  ],
-  "edges": [{
-    "id": "map-edge:worker-route-0001", "from": "map-node:start-worker-0001",
-    "to": "map-node:end-worker-00001", "bidirectional": true, "distance": 1,
-    "baseDuration": 10, "modes": ["walk"], "permissions": [], "hazards": []
-  }]
+  },
 }
-\`\`\`
-
-\`\`\`worldline-action
-{
-  "id": "character.move", "operator": "move", "description": "Walk over authored edges",
-  "actorTypes": ["character"], "duration": 0, "maxWait": 60, "retryBudget": 3,
-  "effects": []
-}
-\`\`\`
-
-\`\`\`worldline-system
-{
-  "id": "world.clock", "description": "Advance the authored clock", "nextWake": 60,
-  "interval": 60, "effects": [{ "op": "increment", "path": "world.time", "amount": 60 }]
-}
-\`\`\`
-
-\`\`\`worldline-invariant
-{
-  "id": "world.time.nonnegative", "description": "Time remains nonnegative",
-  "expression": { "op": "gte", "path": "world.time", "value": 0 }
-}
-\`\`\`
-`
-
 describe('WorkerWorldlineRuns integration', () => {
   it('runs, checkpoints, branches and cold-recovers an immutable compiled world', async () => {
     const root = await mkdtemp(join(tmpdir(), 'worldline-worker-integration-'))
@@ -122,7 +110,7 @@ describe('WorkerWorldlineRuns integration', () => {
     await first.context.worldlineProjects.write({
       projectId: project.manifest.id,
       path: 'characters/traveller.md',
-      content: '# Traveller\n\n<!-- worldline-facets {"initialState":{"locationId":"map-node:start-worker-0001"}} -->',
+      content: '# Traveller\n\n```worldline-initial-state\nlocationId: map-node:start-worker-0001\n```',
       createParents: true,
       objectKind: 'character',
     })
@@ -132,6 +120,12 @@ describe('WorkerWorldlineRuns integration', () => {
       content: mechanisms,
       createParents: true,
       objectKind: 'rule',
+    })
+    await first.context.worldlineProjects.writeControl({
+      projectId: project.manifest.id,
+      namespace: 'compiler',
+      path: 'runtime-model.json',
+      content: JSON.stringify(runtimeModel),
     })
     const preview = await first.context.worldlineCompiler.compile({
       projectId: project.manifest.id,
@@ -173,6 +167,48 @@ describe('WorkerWorldlineRuns integration', () => {
       invariants: [{ id: 'world.time.nonnegative' }],
     })
     expect(definition.actions.map(action => action.id)).toContain('character.move')
+    const presentationText = '抵达之前，镜头停在仍未打开的门上。'
+    const presentationRoute = { provider: 'test', model: 'test-narrator' }
+    const presentationInvocation = await first.context.worldlineRuns.recordAiInvocation({
+      runId: created.summary.runId,
+      purpose: 'narrator',
+      actorId: actor.id,
+      modelRoute: presentationRoute,
+      contextSourceIds: [],
+      inputTokens: 1,
+      outputTokens: 1,
+      estimatedCost: 0,
+      outputDigest: createHash('sha256').update(presentationText).digest('hex'),
+      outcome: 'completed',
+    })
+    const presentationBeat = await first.context.worldlineRuns.recordNarrativeBeat({
+      runId: created.summary.runId,
+      invocationId: presentationInvocation.invocation.id,
+      perspectiveActorId: actor.id,
+      eventIds: [],
+      observationIds: [],
+      camera: 'limited-third-person',
+      modelOutput: presentationText,
+      text: presentationText,
+      blocks: [{ type: 'narration', text: presentationText }],
+      media: [],
+      modelRoute: presentationRoute,
+    })
+    const completedPresentation = await first.context.worldlineRuns.completePresentation({
+      runId: created.summary.runId,
+      actorId: actor.id,
+      beatId: presentationBeat.beat.id,
+    })
+    expect(completedPresentation.view.snapshot.presentationCursors[actor.id]).toEqual({
+      actorId: actor.id,
+      completedBeatId: presentationBeat.beat.id,
+    })
+    const presentationRecords = await first.context.worldlineRuns.records({
+      runId: created.summary.runId,
+      stream: 'presentation-progress',
+      limit: 10,
+    })
+    expect(presentationRecords.records).toHaveLength(1)
     const submitted = await first.context.worldlineRuns.submitAction({
       runId: created.summary.runId,
       actorId: actor.id,
@@ -215,12 +251,56 @@ describe('WorkerWorldlineRuns integration', () => {
       forkSequence: checkpoint.checkpoint.sequence,
       status: 'paused',
     })
+    expect(branch.snapshot.presentationCursors).toEqual({})
+    expect(branch.snapshot.actionDecks).toEqual({})
+    expect(branch.snapshot.storyStateCommits).toEqual({})
+    await first.context.worldlineRuns.resume({ runId: branch.summary.runId })
+    const branchText = '分支从抵达后的同一刻继续，但拥有独立的叙事记录。'
+    const branchInvocation = await first.context.worldlineRuns.recordAiInvocation({
+      runId: branch.summary.runId,
+      purpose: 'narrator',
+      actorId: actor.id,
+      modelRoute: presentationRoute,
+      contextSourceIds: [],
+      inputTokens: 1,
+      outputTokens: 1,
+      estimatedCost: 0,
+      outputDigest: createHash('sha256').update(branchText).digest('hex'),
+      outcome: 'completed',
+    })
+    const branchBeat = await first.context.worldlineRuns.recordNarrativeBeat({
+      runId: branch.summary.runId,
+      invocationId: branchInvocation.invocation.id,
+      perspectiveActorId: actor.id,
+      eventIds: [],
+      observationIds: [],
+      camera: 'limited-third-person',
+      modelOutput: branchText,
+      text: branchText,
+      blocks: [{ type: 'narration', text: branchText }],
+      media: [],
+      modelRoute: presentationRoute,
+    })
+    const branchPresentation = await first.context.worldlineRuns.completePresentation({
+      runId: branch.summary.runId,
+      actorId: actor.id,
+      beatId: branchBeat.beat.id,
+    })
+    expect(branchPresentation.cursor.completedBeatId).toBe(branchBeat.beat.id)
     const events = await first.context.worldlineRuns.records({
       runId: created.summary.runId,
       stream: 'world-event',
       limit: 100,
     })
     expect(events.records.length).toBeGreaterThan(0)
+    const latestEvents = await first.context.worldlineRuns.records({
+      runId: created.summary.runId,
+      stream: 'world-event',
+      limit: 2,
+      tail: true,
+    })
+    expect(latestEvents.records.map(item => item.id))
+      .toEqual(events.records.slice(-2).map(item => item.id))
     const explanation = await first.context.worldlineRuns.explain({
       runId: created.summary.runId,
       eventId: String(events.records.at(-1)?.id),
@@ -250,6 +330,9 @@ describe('WorkerWorldlineRuns integration', () => {
     expect(restored.snapshot).toMatchObject({
       logicalTime: 10,
       blueprintDigest: frozen.blueprint.digest,
+      presentationCursors: {
+        [actor.id]: { completedBeatId: presentationBeat.beat.id },
+      },
     })
     expect(restored.health).toMatchObject({ writerThread: true, wal: true })
     expect(restored.summary.createdAt).toBe(originalCreatedAt)
@@ -270,6 +353,22 @@ describe('WorkerWorldlineRuns integration', () => {
       branch.summary.runId,
     ]))
     expect(submitted.process.movement?.route.at(-1)).toBe('map-node:end-worker-00001')
+    const trashedProject = await recovered.context.worldlineProjects.trashProject({
+      projectId: project.manifest.id,
+    })
+    expect((recovered.context.worldlineRuns as unknown as {
+      readonly handles: Map<string, unknown>
+    }).handles.size).toBe(0)
+    await expect(recovered.context.worldlineProjects.library()).resolves.toMatchObject({ total: 0 })
+    const restoredProject = await recovered.context.worldlineProjects.restoreProject({
+      trashId: trashedProject.trashId,
+    })
+    expect(restoredProject.manifest.id).toBe(project.manifest.id)
+    await expect(recovered.context.worldlineRuns.view({ runId: created.summary.runId }))
+      .resolves.toMatchObject({
+        summary: { projectId: project.manifest.id, status: 'paused' },
+        snapshot: { logicalTime: 10 },
+      })
     await recovered.dispose()
   })
 })

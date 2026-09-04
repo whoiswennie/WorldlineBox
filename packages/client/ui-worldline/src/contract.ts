@@ -6,3 +6,6 @@ export const BIND_PATH = '/api/worldline/conversation/bind'
 
 /** Same-origin endpoint for bounded project-entry byte uploads. */
 export const PROJECT_UPLOAD_PATH = '/api/worldline/project/upload'
+
+/** Same-origin endpoint for project-owned portraits, CG, audio and other binary resources. */
+export const PROJECT_ASSET_PATH = '/api/worldline/project/asset'

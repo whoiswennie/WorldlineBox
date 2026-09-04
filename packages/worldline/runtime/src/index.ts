@@ -4,6 +4,8 @@ import type {
   AdvanceRunRequest,
   BranchRunRequest,
   CheckpointView,
+  CompletePresentationRequest,
+  CompletePresentationResult,
   CreateCheckpointRequest,
   CreateRunRequest,
   ExplainRunEventRequest,
@@ -21,13 +23,16 @@ import type {
   RecordAiIntentResult,
   RecordAiInvocationRequest,
   RecordAiInvocationResult,
+  RecordActionDeckRequest,
+  RecordActionDeckResult,
   RecordNarrativeBeatRequest,
   RecordNarrativeBeatResult,
+  RecordStoryStateRequest,
+  RecordStoryStateResult,
   RunRef,
   RunSummary,
   RunView,
   SetActorControlRequest,
-  SetAiBudgetRequest,
   SetAiEnabledRequest,
   SubmitRunActionRequest,
   SubmitRunActionResult,
@@ -133,11 +138,6 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   abstract setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
-  /** Set the explicit bounded AI allowance for a Run.
-   * @param request - The request supplied by the caller.
-   * @returns The result produced by the operation.
-   */
-  abstract setAiBudget(request: SetAiBudgetRequest): Promise<RunView>
   /** Perform switch model through the package's public contract.
    * @param request - The request supplied by the caller.
    * @returns The result produced by the operation.
@@ -163,6 +163,23 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   abstract recordNarrativeBeat(request: RecordNarrativeBeatRequest): Promise<RecordNarrativeBeatResult>
+  /** Persist that a player has fully presented one retained narrative beat.
+   * @param request - The completed beat and perspective actor.
+   * @returns The durable presentation cursor and resulting Run sequence.
+   */
+  abstract completePresentation(
+    request: CompletePresentationRequest,
+  ): Promise<CompletePresentationResult>
+  /** Validate and retain a model-authored action deck for the current story pause.
+   * @param request - Three creative plans bound to current legal opportunities.
+   * @returns The retained action deck and resulting Run sequence.
+   */
+  abstract recordActionDeck(request: RecordActionDeckRequest): Promise<RecordActionDeckResult>
+  /** Validate and atomically retain schema-constrained soft state and memories.
+   * @param request - Mutations, memory writes, and optional plot evidence for one retained beat.
+   * @returns The committed story state and resulting Run sequence.
+   */
+  abstract recordStoryState(request: RecordStoryStateRequest): Promise<RecordStoryStateResult>
 
   /** Perform remote create through the package's public contract.
    * @param value - The value supplied by the caller.
@@ -255,11 +272,6 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   @Remote('setAiEnabled') remoteSetAiEnabled(value: SetAiEnabledRequest): Promise<RunView> { return this.setAiEnabled(value) }
-  /** Update the Run AI budget through the generated Remote boundary.
-   * @param value - The value supplied by the caller.
-   * @returns The result produced by the operation.
-   */
-  @Remote('setAiBudget') remoteSetAiBudget(value: SetAiBudgetRequest): Promise<RunView> { return this.setAiBudget(value) }
   /** Perform remote switch model through the package's public contract.
    * @param value - The value supplied by the caller.
    * @returns The result produced by the operation.
@@ -270,6 +282,13 @@ export abstract class WorldlineRuns extends TypertRemoteService {
    * @returns The result produced by the operation.
    */
   @Remote('explain') remoteExplain(value: ExplainRunEventRequest): Promise<RunEventExplanation> { return this.explain(value) }
+  /** Persist a stable presentation boundary through the generated Remote face.
+   * @param value - The completed beat and perspective actor.
+   * @returns The durable presentation cursor and resulting Run sequence.
+   */
+  @Remote('completePresentation') remoteCompletePresentation(
+    value: CompletePresentationRequest,
+  ): Promise<CompletePresentationResult> { return this.completePresentation(value) }
 }
 
 export default WorldlineRuns

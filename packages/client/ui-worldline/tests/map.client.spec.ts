@@ -1,19 +1,18 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render } from '@testing-library/react'
-import { createElement } from 'react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createElement } from 'react'
+import type { ProjectSummary } from '@deepseek-ai/dsh-worldline-project/types'
 import type { WorldMap } from '@deepseek-ai/dsh-worldline-standard/types'
 import {
-  MapWorkbench,
   buildMapSpatialIndex,
   clusterMapNodes,
   layoutWorldMap,
+  MapWorkbench,
   mapCanvasFrame,
-  parseWorldlineMapFence,
-  replaceWorldlineMapFence,
   visibleMapNodes,
 } from '../src/client/MapWorkbench.tsx'
-import type { EditorDocumentState } from '../src/client/types.ts'
+import type { ProjectClient, RunsClient } from '../src/client/types.ts'
 
 afterEach(cleanup)
 
@@ -37,33 +36,7 @@ const map = {
   provenance: [],
 } as unknown as WorldMap
 
-describe('Worldline map document projection', () => {
-  it('round-trips the one current worldline-map schema without touching prose', () => {
-    const source = '# Atlas\n\nAuthor note.\n'
-    const updated = replaceWorldlineMapFence(source, map)
-    const parsed = parseWorldlineMapFence(updated)
-
-    expect(updated).toContain('Author note.')
-    expect(parsed.error).toBeUndefined()
-    expect(parsed.map).toEqual(map)
-  })
-
-  it('rejects a non-current map shape instead of selecting compatibility logic', () => {
-    const parsed = parseWorldlineMapFence('```worldline-map\n{"version":0}\n```')
-
-    expect(parsed.map).toBeUndefined()
-    expect(parsed.error).toContain('当前 WorldMap 格式')
-  })
-
-  it('rejects malformed nested objects on the one current parser path', () => {
-    const malformed = { ...map, nodes: [{ id: 'map-node:broken', position: { x: 1 } }] }
-
-    const parsed = parseWorldlineMapFence(`\`\`\`worldline-map\n${JSON.stringify(malformed)}\n\`\`\``)
-
-    expect(parsed.map).toBeUndefined()
-    expect(parsed.error).toContain('当前 WorldMap 格式')
-  })
-
+describe('Worldline current map projection', () => {
   it('lays out every node deterministically', () => {
     const first = layoutWorldMap(map)
     const second = layoutWorldMap(map)
@@ -81,42 +54,6 @@ describe('Worldline map document projection', () => {
     expect(frame.width).toBeGreaterThanOrEqual(1_400)
     expect(frame.height).toBeGreaterThanOrEqual(860)
     expect(map.nodes.every(node => node.position.x === 0 && node.position.y === 0)).toBe(true)
-  })
-
-  it('pans the canvas by dragging its blank background', () => {
-    const content = replaceWorldlineMapFence('# Map\n', map)
-    const document = {
-      document: {
-        projectId: 'project:test', id: 'document:test', path: 'maps/world.md', content,
-        revision: 'revision:test', updatedAt: '2026-09-01T00:00:00.000Z', tags: [],
-      },
-      content,
-      saveState: 'saved',
-    } as unknown as EditorDocumentState
-    const { getByTestId } = render(createElement(MapWorkbench, {
-      document,
-      editDocument: vi.fn(),
-      saveDocument: vi.fn(async () => undefined),
-      t: key => key,
-    }))
-    const canvas = getByTestId('worldline-map-canvas')
-    Object.assign(canvas, {
-      scrollLeft: 280,
-      scrollTop: 170,
-      setPointerCapture: vi.fn(),
-      hasPointerCapture: vi.fn(() => true),
-      releasePointerCapture: vi.fn(),
-    })
-
-    fireEvent.pointerDown(canvas, { button: 0, pointerId: 7, clientX: 300, clientY: 220 })
-    fireEvent.pointerMove(canvas, { pointerId: 7, clientX: 180, clientY: 140 })
-
-    expect(canvas.scrollLeft).toBe(400)
-    expect(canvas.scrollTop).toBe(250)
-    expect(canvas.getAttribute('data-panning')).toBe('true')
-
-    fireEvent.pointerUp(canvas, { pointerId: 7, clientX: 180, clientY: 140 })
-    expect(canvas.hasAttribute('data-panning')).toBe(false)
   })
 
   it('uses a spatial index to clip a ten-thousand-node map by viewport and layer', () => {
@@ -161,5 +98,53 @@ describe('Worldline map document projection', () => {
     expect(projection.nodes.length + projection.clusters.length).toBeLessThan(30)
     expect(projection.clusters.reduce((sum, item) => sum + item.count, 0)
       + projection.nodes.length).toBe(nodes.length)
+  })
+
+  it('opens on the generated world overview and exposes the full place description', async () => {
+    const project = {
+      manifest: { id: 'project:atlas', name: '潮港图志' },
+    } as unknown as ProjectSummary
+    const run = { runId: 'run:atlas', projectId: project.manifest.id, status: 'running' }
+    const generated = {
+      ...map,
+      name: '潮港运行地图',
+      nodes: map.nodes.map((node, index) => ({
+        ...node,
+        description: index === 0
+          ? '潮港总控层悬在旧防波堤上，空气带有盐、机油与湿冷金属的气味；这里负责调度疏散，也是风暴警报最先抵达的地点。'
+          : '狭长的内港城区沿轨道展开，商铺灯箱映在积水中，承担居民中转和线索交换。',
+      })),
+      totalNodes: 2,
+      totalEdges: 0,
+      truncated: false,
+    }
+    const spatial = vi.fn(async () => ({
+      runId: run.runId, sequence: 1, logicalTime: 90,
+      availableMaps: [{ id: generated.id, name: generated.name, nodeCount: 2 }],
+      map: generated, actors: [], movements: [],
+    }))
+    const runs = {
+      list: vi.fn(async () => [run]),
+      view: vi.fn(async () => ({
+        summary: run,
+        snapshot: { logicalTime: 90, state: { entities: {} } },
+      })),
+      spatial,
+    } as unknown as RunsClient
+
+    render(createElement(MapWorkbench, {
+      t: (key: string) => key,
+      project,
+      projects: {} as ProjectClient,
+      runs,
+    }))
+
+    const overview = screen.getByRole('button', { name: '地图总览' })
+    expect(overview.getAttribute('data-active')).toBe('true')
+    expect(await screen.findByRole('heading', { name: '潮港运行地图' })).toBeTruthy()
+    expect(screen.getByText('地点描述')).toBeTruthy()
+    expect(screen.getByText(/潮港总控层悬在旧防波堤上/u)).toBeTruthy()
+    expect(screen.queryByText('先定义地点，再组装世界')).toBeNull()
+    await waitFor(() => { expect(spatial).toHaveBeenCalledOnce() })
   })
 })

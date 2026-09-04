@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-session",
   "description": "Event-sourced session store for the Worldline",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "publishConfig": {
     "access": "public"
   },

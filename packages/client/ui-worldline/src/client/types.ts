@@ -52,6 +52,8 @@ import type {
   AdvanceRunRequest,
   BranchRunRequest,
   CheckpointView,
+  CompletePresentationRequest,
+  CompletePresentationResult,
   CreateCheckpointRequest,
   CreateRunRequest,
   ExplainRunEventRequest,
@@ -67,8 +69,6 @@ import type {
   RunSummary,
   RunView,
   SetActorControlRequest,
-  SetAiBudgetRequest,
-  SetAiEnabledRequest,
   SimulateRunRequest,
   SimulateRunResult,
   SubmitRunActionRequest,
@@ -76,8 +76,6 @@ import type {
   SwitchModelPolicyRequest,
 } from '@deepseek-ai/dsh-worldline-runtime/types'
 import type {
-  AiBudgetRequest,
-  AiBudgetStatus,
   AiDecisionResult,
   ContextPackRequest,
   DecideForActorRequest,
@@ -93,6 +91,7 @@ import type {
   RephraseRequest,
   RetryTextActionRequest,
   SaveTextPlayRequest,
+  StoryChoiceSuggestions,
   StoryStageStatus,
   TextPlayRequest,
   TextPlayView,
@@ -181,10 +180,9 @@ export interface RunsClient {
   checkpoints(request: RunRef): Promise<readonly CheckpointView[]>
   branch(request: BranchRunRequest): Promise<RunView>
   setControl(request: SetActorControlRequest): Promise<RunView>
-  setAiEnabled(request: SetAiEnabledRequest): Promise<RunView>
-  setAiBudget(request: SetAiBudgetRequest): Promise<RunView>
   switchModel(request: SwitchModelPolicyRequest): Promise<RunView>
   explain(request: ExplainRunEventRequest): Promise<RunEventExplanation>
+  completePresentation(request: CompletePresentationRequest): Promise<CompletePresentationResult>
 }
 
 /** Describes the ai client value exchanged across the package boundary.
@@ -192,7 +190,6 @@ export interface RunsClient {
 export interface AiClient {
   catalog(): Promise<WorldlineAiCatalog>
   contextPack(request: ContextPackRequest): Promise<ContextPack>
-  budget(request: AiBudgetRequest): Promise<AiBudgetStatus>
   decide(request: DecideForActorRequest): Promise<AiDecisionResult>
 }
 
@@ -201,6 +198,7 @@ export interface AiClient {
 export interface NarrativeClient {
   open(request: TextPlayRequest): Promise<TextPlayView>
   scene(request: TextPlayRequest): Promise<SceneFrame>
+  suggest(request: TextPlayRequest): Promise<StoryChoiceSuggestions>
   narrate(request: NarrateRequest): Promise<NarrativeBeat>
   narrateStream(request: NarrateRequest, onChunk: (chunk: NarrativeStreamChunk) => void): Promise<NarrativeBeat>
   choose(request: ChooseTextActionRequest): Promise<SubmitRunActionResult>

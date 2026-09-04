@@ -20,6 +20,7 @@ import type {
   MutationResult,
   ProjectLibraryPage,
   ProjectLibraryQuery,
+  ProjectAssetFile,
   ProjectLink,
   ProjectRootView,
   ProjectRunStorage,
@@ -51,6 +52,16 @@ export * from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context { worldlineProjects: WorldlineProjects }
+
+  interface Events {
+    /**
+     * Awaited checkpoint before a project becomes inaccessible. Runtime owners
+     * must release project-scoped activity and file handles before resolving.
+     * @param projectId - Project that is leaving the active library.
+     * @mode parallel
+     */
+    'worldline-project/release'(projectId: ProjectId): Promise<void> | void
+  }
 }
 
 /** Host-owned project storage contract; clients see only its generated Remote face. */
@@ -127,6 +138,11 @@ export abstract class WorldlineProjects extends TypertRemoteService {
     request: ImportProjectEntryRequest,
     source: AsyncIterable<Uint8Array>,
   ): Promise<MutationResult>
+  /** Resolve one project-owned binary resource for a Host streaming endpoint. Not Remote.
+   * @param request - Project and asset path to resolve.
+   * @returns The validated Host file descriptor for streaming.
+   */
+  abstract assetFile(request: ReadDocumentRequest): Promise<ProjectAssetFile>
   /** Create a directory inside a project.
    * @param request - The request supplied by the caller.
    * @returns The result produced by the operation.

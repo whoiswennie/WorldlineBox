@@ -6,10 +6,13 @@
 .objectView[data-kind='timeline-event'] { --object-accent: #5c97df; }
 .objectView[data-kind='scenario'] { --object-accent: #d46878; }
 .objectView[data-kind='asset'] { --object-accent: #5faaa2; }
-.hero { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 24px; align-items: center; max-width: 1180px; margin: 0 auto 22px; padding: 25px; border: 1px solid color-mix(in srgb, var(--object-accent) 28%, var(--dsw-alias-divider)); border-radius: 24px; overflow: hidden; background: color-mix(in srgb, var(--dsw-alias-background-elevated) 91%, transparent); box-shadow: 0 24px 70px color-mix(in srgb, var(--object-accent) 13%, transparent); }
+.hero { position: relative; display: grid; grid-template-columns: 184px minmax(0, 1fr) auto; gap: 22px; align-items: center; max-width: 1180px; margin: 0 auto 22px; padding: 25px; border: 1px solid color-mix(in srgb, var(--object-accent) 28%, var(--dsw-alias-divider)); border-radius: 24px; overflow: hidden; background: color-mix(in srgb, var(--dsw-alias-background-elevated) 91%, transparent); box-shadow: 0 24px 70px color-mix(in srgb, var(--object-accent) 13%, transparent); }
 .hero::after { content: ''; position: absolute; width: 240px; height: 240px; top: -155px; right: 12%; border: 1px solid color-mix(in srgb, var(--object-accent) 22%, transparent); border-radius: 50%; box-shadow: 0 0 0 28px color-mix(in srgb, var(--object-accent) 4%, transparent), 0 0 0 64px color-mix(in srgb, var(--object-accent) 3%, transparent); pointer-events: none; }
-.sigil { position: relative; z-index: 1; display: grid; width: 76px; height: 76px; place-items: center; border-radius: 22px; background: linear-gradient(145deg, color-mix(in srgb, var(--object-accent) 82%, white), var(--object-accent)); color: white; box-shadow: 0 16px 34px color-mix(in srgb, var(--object-accent) 30%, transparent); }
-.sigil span { font-size: 29px; }
+.heroArtwork { position: relative; z-index: 1; overflow: hidden; aspect-ratio: 3 / 2; border: 1px solid var(--dsw-alias-divider); border-radius: 13px; background: #f4f4f1; }
+.heroArtwork img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.objectView[data-kind='character'] .hero { grid-template-columns: 200px minmax(0, 1fr) auto; align-items: stretch; }
+.objectView[data-kind='character'] .heroArtwork { aspect-ratio: 4 / 5; }
+.objectView[data-kind='character'] .heroArtwork img { object-position: center top; }
 .identity { position: relative; z-index: 1; min-width: 0; }
 .identity > div:first-child { display: flex; gap: 9px; align-items: center; color: var(--object-accent); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .identity i { opacity: .5; font-style: normal; }
@@ -46,6 +49,6 @@
 .emptySection { display: grid; min-height: 260px; place-content: center; place-items: center; padding: 30px; text-align: center; }
 .emptySection span { color: var(--object-accent); font-size: 34px; }
 .emptySection p { max-width: 380px; color: var(--dsw-alias-label-secondary); }
-@media (max-width: 980px) { .hero { grid-template-columns: auto minmax(0, 1fr); } .metrics { grid-column: 1 / -1; } .contentGrid { grid-template-columns: 1fr; } .context { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 620px) { .objectView { padding: 15px 12px 50px; } .hero { grid-template-columns: 1fr; padding: 20px; } .sigil { width: 58px; height: 58px; border-radius: 17px; } .metrics { grid-template-columns: repeat(3, 1fr); } .context { grid-template-columns: 1fr; } .sectionCard { padding: 16px; } }
+@media (max-width: 980px) { .hero,.objectView[data-kind='character'] .hero { grid-template-columns: 170px minmax(0, 1fr); align-items: center; } .metrics { grid-column: 1 / -1; } .contentGrid { grid-template-columns: 1fr; } .context { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .objectView { padding: 15px 12px 50px; } .hero,.objectView[data-kind='character'] .hero { grid-template-columns: 1fr; padding: 20px; } .heroArtwork { width: 100%; max-width: 320px; } .objectView[data-kind='character'] .heroArtwork { max-width: 240px; } .metrics { grid-template-columns: repeat(3, 1fr); } .context { grid-template-columns: 1fr; } .sectionCard { padding: 16px; } }
 @media (prefers-reduced-motion: reduce) { .hero, .sectionCard, .context > section { box-shadow: none; } }

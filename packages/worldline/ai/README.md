@@ -2,11 +2,11 @@
 
 English | [中文](README.zh.md)
 
-This package provides budgeted model routing, bounded context assembly, actor decisions, and streamed text generation for Worldline Runs.
+This package provides model routing, bounded context assembly, actor decisions, resilient streamed text generation, and durable usage telemetry for Worldline Runs.
 
 ## Contract
 
-Requests are scoped to one project and Run, validated against current choices, priced before dispatch, charged from durable usage, and rejected when budget or context limits would be exceeded. AI output records intent and invocation evidence but cannot mutate authoritative state directly.
+Requests are scoped to one project and Run, validated against current choices, and bounded by the selected model's real context window. Provider-classified transient failures use that route's retry and Retry-After policy; every attempt is retained as invocation evidence, while failed partial output is discarded. Usage and estimated cost remain diagnostic telemetry and never pause a story. AI output records intent and invocation evidence but cannot mutate authoritative state directly.
 
 ## Model Experience
 
@@ -18,7 +18,7 @@ The selected `ContextPack` sections, the request purpose, allowed choices or nar
 
 #### Token effect
 
-Input is capped by the routed model window and package context bounds; output is capped by the request policy and charged to the Run budget.
+Input is capped by the routed model window and package context bounds; output is capped by the request policy. These are protocol validity bounds, not user quotas.
 
 #### KV Cache effect
 
@@ -26,4 +26,4 @@ Stable system instructions and unchanged Canon sections retain their order, whil
 
 ## Known Limitations and Deferred Work
 
-- **Configured price authority** — cost enforcement depends on maintained provider/model price rows; an unknown route uses explicit fallback prices rather than silently assuming zero cost.
+- **Diagnostic price estimates** — estimated cost depends on maintained provider/model price rows; an unknown route uses explicit fallback prices rather than silently recording zero cost.

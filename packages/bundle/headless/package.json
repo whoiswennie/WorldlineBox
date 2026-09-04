@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-headless",
   "description": "The worldline one-shot bundle: a direct core Agent/Session runner over worldline-base with no Host, HTTP, or browser layer",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "publishConfig": {
     "access": "public"
   },

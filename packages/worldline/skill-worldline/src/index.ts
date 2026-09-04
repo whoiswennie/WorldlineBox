@@ -16,7 +16,7 @@ export const WORLDLINE_SKILLS = [
   ['worldline-authoring', 'Create and revise Canon sources with stable identity, provenance, and explicit author authority.'],
   ['worldline-character-design', 'Design executable characters whose traits, relationships, resources, and actions remain source-grounded.'],
   ['worldline-map-design', 'Design and audit structured Worldline maps, topology, travel constraints, layers, and provenance.'],
-  ['worldline-mechanism-design', 'Turn authored rules into reviewable actions, systems, invariants, budgets, and conflict semantics.'],
+  ['worldline-mechanism-design', 'Turn authored rules into reviewable actions, systems, invariants, retry policy, and conflict semantics.'],
   ['worldline-scenario-design', 'Design simulation scenarios, initial conditions, actors, goals, seeds, and observable success criteria.'],
   ['worldline-build-audit', 'Compile and audit closure, diagnostics, questions, proposals, provenance coverage, and immutable freezing.'],
   ['worldline-simulation-analysis', 'Analyze deterministic Runs, event causality, processes, reservations, deadlocks, AI audit, and branches.'],

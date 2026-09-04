@@ -1,5 +1,7 @@
 /** Host half for the Worldline browser studio and its bounded NDJSON narrative bridge. */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createReadStream } from 'node:fs'
+import { extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-worldline-conversation-context'
@@ -8,11 +10,46 @@ import type {} from '@deepseek-ai/dsh-worldline-narrative'
 import type { NarrateRequest } from '@deepseek-ai/dsh-worldline-narrative/types'
 import type {} from '@deepseek-ai/dsh-worldline-project'
 import type { ImportProjectEntryRequest } from '@deepseek-ai/dsh-worldline-project/types'
-import { BIND_PATH, PROJECT_UPLOAD_PATH, STREAM_PATH } from './contract.ts'
+import { BIND_PATH, PROJECT_ASSET_PATH, PROJECT_UPLOAD_PATH, STREAM_PATH } from './contract.ts'
 
 export const inject = ['webServer', 'worldlineNarrative', 'worldlineConversationContexts', 'worldlineProjects']
-export { BIND_PATH, PROJECT_UPLOAD_PATH, STREAM_PATH } from './contract.ts'
+export { BIND_PATH, PROJECT_ASSET_PATH, PROJECT_UPLOAD_PATH, STREAM_PATH } from './contract.ts'
 const MAX_BODY_BYTES = 64 * 1024
+
+interface ActiveAssetRequest {
+  readonly controller: AbortController
+  readonly settled: Promise<void>
+  readonly settle: () => void
+}
+
+type ActiveAssetRequests = Map<ImportProjectEntryRequest['projectId'], Set<ActiveAssetRequest>>
+
+function beginAssetRequest(
+  active: ActiveAssetRequests,
+  projectId: ImportProjectEntryRequest['projectId'],
+): ActiveAssetRequest {
+  let settle!: () => void
+  const request: ActiveAssetRequest = {
+    controller: new AbortController(),
+    settled: new Promise((resolveSettled) => { settle = resolveSettled }),
+    settle: () => { settle() },
+  }
+  const requests = active.get(projectId) ?? new Set<ActiveAssetRequest>()
+  requests.add(request)
+  active.set(projectId, requests)
+  return request
+}
+
+function finishAssetRequest(
+  active: ActiveAssetRequests,
+  projectId: ImportProjectEntryRequest['projectId'],
+  request: ActiveAssetRequest,
+): void {
+  const requests = active.get(projectId)
+  requests?.delete(request)
+  if (requests?.size === 0) active.delete(projectId)
+  request.settle()
+}
 
 async function jsonBody(req: IncomingMessage): Promise<unknown> {
   let size = 0
@@ -32,7 +69,8 @@ function narrativeRequest(value: unknown): NarrateRequest {
     throw new TypeError('runId and actorId are required')
   }
   if (item['camera'] !== undefined && typeof item['camera'] !== 'string') throw new TypeError('camera must be a string')
-  if (item['templateOnly'] !== undefined && typeof item['templateOnly'] !== 'boolean') throw new TypeError('templateOnly must be boolean')
+  if (item['actionId'] !== undefined && typeof item['actionId'] !== 'string') throw new TypeError('actionId must be a string')
+  if (item['playerIntent'] !== undefined && typeof item['playerIntent'] !== 'string') throw new TypeError('playerIntent must be a string')
   const strings = (key: 'eventIds' | 'observationIds'): readonly string[] | undefined => {
     const candidate = item[key]
     if (candidate === undefined) return undefined
@@ -44,8 +82,11 @@ function narrativeRequest(value: unknown): NarrateRequest {
   return {
     runId: item['runId'] as NarrateRequest['runId'],
     actorId: item['actorId'] as NarrateRequest['actorId'],
+    ...(item['actionId'] === undefined ? {} : {
+      actionId: item['actionId'] as NonNullable<NarrateRequest['actionId']>,
+    }),
+    ...(item['playerIntent'] === undefined ? {} : { playerIntent: item['playerIntent'].slice(0, 500) }),
     ...(item['camera'] === undefined ? {} : { camera: item['camera'] }),
-    ...(item['templateOnly'] === undefined ? {} : { templateOnly: item['templateOnly'] }),
     ...(eventIds === undefined ? {} : { eventIds }),
     ...(observationIds === undefined ? {} : { observationIds }),
   }
@@ -74,7 +115,16 @@ async function stream(ctx: Context, req: IncomingMessage, res: ServerResponse): 
     }
     if (!res.destroyed) res.end()
   } catch (error) {
-    if (res.headersSent) { res.destroy(error instanceof Error ? error : undefined); return }
+    if (res.headersSent) {
+      if (!res.destroyed) {
+        res.write(`${JSON.stringify({
+          type: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        })}\n`)
+        res.end()
+      }
+      return
+    }
     const status = error instanceof RangeError ? 413 : error instanceof TypeError || error instanceof SyntaxError ? 400 : 500
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
     res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }))
@@ -165,7 +215,79 @@ async function upload(ctx: Context, req: IncomingMessage, res: ServerResponse): 
   }
 }
 
+const ASSET_TYPES: Readonly<Record<string, string>> = {
+  '.avif': 'image/avif', '.gif': 'image/gif', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.webp': 'image/webp',
+  '.aac': 'audio/aac', '.flac': 'audio/flac', '.m4a': 'audio/mp4', '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.mp4': 'video/mp4', '.webm': 'video/webm',
+}
+
+function assetRequest(req: IncomingMessage): ImportProjectEntryRequest {
+  const url = new URL(req.url ?? PROJECT_ASSET_PATH, 'http://worldline.internal')
+  const projectId = url.searchParams.get('projectId')
+  const path = url.searchParams.get('path')
+  if (projectId === null || projectId === '' || path === null || path === '') {
+    throw new TypeError('projectId and path are required')
+  }
+  return { projectId: projectId as ImportProjectEntryRequest['projectId'], path, expectedBytes: 0 }
+}
+
+async function asset(
+  ctx: Context,
+  req: IncomingMessage,
+  res: ServerResponse,
+  active: ActiveAssetRequests,
+): Promise<void> {
+  if (req.method !== 'GET') { res.writeHead(405, { allow: 'GET' }).end(); return }
+  let request: ImportProjectEntryRequest | undefined
+  let activeRequest: ActiveAssetRequest | undefined
+  try {
+    request = assetRequest(req)
+    activeRequest = beginAssetRequest(active, request.projectId)
+    const file = await ctx.worldlineProjects.assetFile(request)
+    const rawRange = req.headers.range
+    const match = typeof rawRange === 'string' ? /^bytes=(\d+)-(\d*)$/u.exec(rawRange) : undefined
+    const start = match === null || match === undefined ? 0 : Number(match[1])
+    const requestedEnd = match?.[2] === '' || match?.[2] === undefined ? file.sizeBytes - 1 : Number(match[2])
+    const end = Math.min(file.sizeBytes - 1, requestedEnd)
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= file.sizeBytes) {
+      res.writeHead(416, { 'content-range': `bytes */${String(file.sizeBytes)}` }).end(); return
+    }
+    const partial = match !== undefined && match !== null
+    res.writeHead(partial ? 206 : 200, {
+      'content-type': ASSET_TYPES[extname(file.path).toLowerCase()] ?? 'application/octet-stream',
+      'content-length': String(end - start + 1),
+      'accept-ranges': 'bytes',
+      ...(partial ? { 'content-range': `bytes ${String(start)}-${String(end)}/${String(file.sizeBytes)}` } : {}),
+      'cache-control': 'private, max-age=60',
+      'x-content-type-options': 'nosniff',
+    })
+    for await (const chunk of createReadStream(file.absolutePath, {
+      start,
+      end,
+      signal: activeRequest.controller.signal,
+    })) {
+      if (res.destroyed) break
+      res.write(chunk)
+    }
+    if (!res.destroyed) res.end()
+  } catch (error) {
+    if (res.headersSent) { res.destroy(error instanceof Error ? error : undefined); return }
+    res.writeHead(404, { 'cache-control': 'no-store' }).end()
+  } finally {
+    if (request !== undefined && activeRequest !== undefined) {
+      finishAssetRequest(active, request.projectId, activeRequest)
+    }
+  }
+}
+
 export function apply(ctx: Context): void {
+  const activeAssetRequests: ActiveAssetRequests = new Map()
+  ctx.on('worldline-project/release', async (projectId) => {
+    const requests = [...(activeAssetRequests.get(projectId) ?? [])]
+    for (const request of requests) request.controller.abort()
+    await Promise.all(requests.map(request => request.settled))
+  })
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact', path: STREAM_PATH, handler: (req, res) => stream(ctx, req, res),
   }), 'ui-worldline: narrative stream')
@@ -175,4 +297,8 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact', path: PROJECT_UPLOAD_PATH, handler: (req, res) => upload(ctx, req, res),
   }), 'ui-worldline: streamed project entry upload')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact', path: PROJECT_ASSET_PATH,
+    handler: (req, res) => asset(ctx, req, res, activeAssetRequests),
+  }), 'ui-worldline: streamed project asset')
 }

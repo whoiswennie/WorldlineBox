@@ -11,6 +11,7 @@ import {
   characterDocument,
   mechanismDocument,
   openingScenarioDocument,
+  runtimeSemanticDocument,
   timelineDocument,
 } from '../../../../fixtures/worldline/scenarios.ts'
 import WorldlineCompiler from '../../compiler/src/index.ts'
@@ -19,6 +20,39 @@ import WorkerWorldlineRuns from '../../runtime-worker/src/index.ts'
 import { apply } from '../src/index.ts'
 
 const roots: string[] = []
+
+function loadedWorldlineSkillEvents() {
+  const skills = [
+    'worldline-authoring',
+    'worldline-character-design',
+    'worldline-map-design',
+    'worldline-mechanism-design',
+    'worldline-scenario-design',
+    'worldline-build-audit',
+  ]
+  return skills.flatMap((skillName, index) => {
+    const callId = `call:${skillName}`
+    return [{
+      type: 'tool/call', seq: index * 2 + 1, time: index * 2 + 1,
+      data: {
+        turn: 1, step: index + 1, callId, name: 'skill',
+        arguments: JSON.stringify({ name: skillName }),
+      },
+    }, {
+      type: 'tool/result', seq: index * 2 + 2, time: index * 2 + 2,
+      data: {
+        turn: 1, step: index + 1,
+        message: {
+          id: `message:${skillName}`, role: 'user', source: { kind: 'tool', callId },
+          content: [{
+            type: 'tool-result', toolCallId: callId,
+            content: [{ type: 'text', text: 'loaded' }],
+          }],
+        },
+      },
+    }]
+  }) as never
+}
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true })))
@@ -81,7 +115,9 @@ describe('Worldline OC author tool closure', () => {
       if (found === undefined) throw new Error(`missing tool: ${name}`)
       return found
     }
-    const exec = { agent: { session: { id: SessionId('session:closed-loop'), events: [] } } }
+    const exec = { agent: { session: {
+      id: SessionId('session:closed-loop'), events: loadedWorldlineSkillEvents(),
+    } } }
 
     try {
       const scenario = acceptanceScenarios.find(item => item.slug === 'warrior-and-dragon')
@@ -100,18 +136,15 @@ describe('Worldline OC author tool closure', () => {
         })
         await tool('worldline_edit').execute({
           operation: 'replace',
-          project_id: projectId,
           path,
           expected_revision: current.revision,
-          before: current.content,
-          after: content,
+          content,
           dry_run: false,
         }, exec)
       }
       const create = async (path: string, documentId: string, content: string) => {
         await tool('worldline_edit').execute({
           operation: 'create',
-          project_id: projectId,
           path,
           document_id: documentId,
           content,
@@ -120,15 +153,72 @@ describe('Worldline OC author tool closure', () => {
       }
 
       await replace('canon/charter.md', charterDocument(scenario))
-      await replace('canon/timeline.md', timelineDocument(scenario))
+      await replace('timelines/canon.md', timelineDocument(scenario))
       await replace('characters/protagonist.md', characterDocument(scenario, scenario.characters[0]!))
-      await create('characters/dragon.md', 'document:dragon-character', characterDocument(scenario, scenario.characters[1]!))
-      await replace('scenarios/opening.md', openingScenarioDocument(scenario))
+      await tool('worldline_edit').execute({
+        operation: 'create',
+        path: 'characters/dragon.md',
+        content: characterDocument(scenario, scenario.characters[1]!),
+        dry_run: false,
+      }, exec)
+      const runtimePreview = JSON.parse(await tool('worldline_edit').execute({
+        operation: 'set-runtime',
+        document_id: 'character:dragon',
+        runtime: { facets: { resources: { portrait: 'assets/files/characters/dragon/portrait.png' } } },
+      }, exec)) as { readonly dryRun: boolean; readonly runtime: Record<string, unknown> }
+      expect(runtimePreview).toMatchObject({
+        dryRun: true,
+        path: 'characters/dragon.md',
+        runtime: { facets: { resources: { portrait: 'assets/files/characters/dragon/portrait.png' } } },
+      })
+      await tool('worldline_edit').execute({
+        operation: 'set-runtime',
+        path: 'characters/dragon.md',
+        runtime: { facets: { resources: { portrait: 'assets/files/characters/dragon/portrait.png' } } },
+        dry_run: false,
+      }, exec)
+      const storedRuntime = JSON.parse(await tool('worldline_query').execute({
+        operation: 'runtime',
+        path: 'characters/dragon.md',
+      }, exec)) as { readonly path: string; readonly runtime: Record<string, unknown> }
+      expect(storedRuntime).toMatchObject({
+        path: 'characters/dragon.md',
+        runtime: { facets: { resources: { portrait: 'assets/files/characters/dragon/portrait.png' } } },
+      })
+      await replace('scenarios/plot-points/opening.md', openingScenarioDocument(scenario))
       await create('mechanisms/runtime.md', 'document:runtime-mechanisms', mechanismDocument(scenario))
+      const { maps: _maps, ...runtimeRules } = runtimeSemanticDocument(scenario)
+      await tool('worldline_edit').execute({
+        operation: 'set-runtime',
+        path: 'mechanisms/runtime.md',
+        runtime: runtimeRules,
+        dry_run: false,
+      }, exec)
 
       await expect(tool('worldline_map').execute({
         operation: 'validate',
-        project_id: projectId,
+        map_json: JSON.stringify({
+          ...scenario.map,
+          nodes: scenario.map.nodes.map((node, index) => {
+            if (index !== 1) return node
+            const { position: _position, ...withoutPosition } = node
+            return withoutPosition
+          }),
+        }),
+      }, exec)).rejects.toThrow('map_json.nodes[1] 缺少或无效字段：position')
+
+      await expect(tool('worldline_map').execute({
+        operation: 'validate',
+        map_json: JSON.stringify({
+          ...scenario.map,
+          nodes: scenario.map.nodes.map((node, index) => index === 1
+            ? { ...node, id: 'map-node:gate' }
+            : node),
+        }),
+      }, exec)).rejects.toThrow('例如 map-node:school-gate；冒号后至少 6 个字符')
+
+      await expect(tool('worldline_map').execute({
+        operation: 'validate',
         map_json: JSON.stringify({
           ...scenario.map,
           nodes: scenario.map.nodes.map((node, index) => index === 1
@@ -139,8 +229,7 @@ describe('Worldline OC author tool closure', () => {
 
       const mapResult = JSON.parse(await tool('worldline_map').execute({
         operation: 'write',
-        project_id: projectId,
-        path: 'maps/world.md',
+        path: 'maps/places/world.md',
         map_json: JSON.stringify(scenario.map),
         dry_run: false,
       }, exec)) as { readonly map: { readonly nodes: unknown[]; readonly edges: unknown[] } }
@@ -148,20 +237,19 @@ describe('Worldline OC author tool closure', () => {
       expect(mapResult.map.edges).toHaveLength(2)
       const mapDocument = await services.worldlineProjects.read({
         projectId: worldlineId<'project'>(projectId),
-        path: 'maps/world.md',
+        path: 'maps/places/world.md',
       })
-      expect(mapDocument.content).toContain('```worldline-map')
+      expect(mapDocument.content).toContain('# 世界地图')
+      expect(mapDocument.content).not.toContain('```worldline-map')
 
       await expect(tool('worldline_build').execute({
         operation: 'prove',
-        project_id: projectId,
         advance_duration: 0,
         confirm: true,
       }, exec)).rejects.toThrow('advance_duration must be positive')
 
       const proof = JSON.parse(await tool('worldline_build').execute({
         operation: 'prove',
-        project_id: projectId,
         seed: 'warrior-dragon-proof',
         action_type: 'battle.strike',
         advance_duration: 60,

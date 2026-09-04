@@ -13,6 +13,7 @@ import {
   type ProjectTemplate,
   type RunId,
   WWS_VERSION,
+  WORLDLINE_PROJECT_LAYOUT,
   allocateWorldlineId,
   stableStringify,
 } from '@deepseek-ai/dsh-worldline-standard'
@@ -36,6 +37,7 @@ import {
   type MutationResult,
   type ProjectLibraryPage,
   type ProjectLibraryQuery,
+  type ProjectAssetFile,
   type ProjectLink,
   type ProjectRootView,
   type ProjectRunStorage,
@@ -111,9 +113,22 @@ interface EntryTrashMetadata {
   readonly sizeBytes: number
 }
 interface ProjectTrashMetadata {
+  readonly format: 'worldline-project-trash@1'
   readonly originalName: string
   readonly deletedAt: string
   readonly sizeBytes: number
+  readonly projectId: ProjectId
+  readonly storageName: string
+}
+type ManagedTransferJob = TransferJob & {
+  readonly controller?: AbortController
+  readonly projectId?: ProjectId
+  readonly settled?: Promise<void>
+}
+
+function transferView(job: ManagedTransferJob): TransferJob {
+  const { controller: _controller, projectId: _projectId, settled: _settled, ...view } = job
+  return view
 }
 
 const TEXT_EXTENSIONS = new Set(['.md', '.txt', '.json', '.yaml', '.yml', '.toml', '.csv'])
@@ -172,7 +187,49 @@ function recordOf(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
 }
 
-/** Durable local provider. Files remain the source of truth; all control data is rebuildable sidecar state. */
+function topLevelStorageName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  try {
+    const normalized = normalizeRelative(value)
+    return normalized !== '' && normalized === basename(normalized) ? normalized : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function storageNameKey(value: string): string {
+  return process.platform === 'win32' ? value.toLocaleLowerCase() : value
+}
+
+function projectTrashId(value: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value)) {
+    throw new WorldlineProjectError('path-invalid', 'project trash id is malformed')
+  }
+  return value
+}
+
+async function readProjectTrashMetadata(path: string): Promise<ProjectTrashMetadata> {
+  const value = recordOf(JSON.parse(await readTextBounded(path)))
+  const originalName = topLevelStorageName(value.originalName)
+  const storageName = topLevelStorageName(value.storageName)
+  if (value.format !== 'worldline-project-trash@1'
+    || originalName === undefined || storageName === undefined
+    || typeof value.projectId !== 'string' || !value.projectId.startsWith('project:')
+    || typeof value.deletedAt !== 'string' || !Number.isFinite(Date.parse(value.deletedAt))
+    || typeof value.sizeBytes !== 'number' || !Number.isSafeInteger(value.sizeBytes) || value.sizeBytes < 0) {
+    throw new WorldlineProjectError('project-invalid', 'project trash metadata does not match the current schema')
+  }
+  return {
+    format: value.format,
+    originalName,
+    storageName,
+    projectId: value.projectId as ProjectId,
+    deletedAt: value.deletedAt,
+    sizeBytes: value.sizeBytes,
+  }
+}
+
+/** Durable local provider. Project files and library trash tombstones are authoritative durable state. */
 export default class LocalWorldlineProjects extends WorldlineProjects {
   static Config: z<Config> = z.object({
     root: z.string().default(''),
@@ -184,7 +241,8 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
   private configuredRoot: string
   private scannedAt: string | undefined
   private projectCache = new Map<ProjectId, string>()
-  private readonly jobs = new Map<string, TransferJob & { controller?: AbortController }>()
+  private readonly transitioningProjects = new Set<ProjectId>()
+  private readonly jobs = new Map<string, ManagedTransferJob>()
   private readonly context: Context
 
   constructor(ctx: Context, private readonly config: Config) {
@@ -221,13 +279,16 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     const root = requestedRoot ?? await this.rootPath()
     const summaries: ProjectSummary[] = []
     const cache = new Map<ProjectId, string>()
+    const trashedStorageNames = await this.trashedStorageNames(root)
     const entries = await readdir(root, { withFileTypes: true })
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      if (trashedStorageNames.has(storageNameKey(entry.name))) continue
       const path = resolve(root, entry.name)
       if (!(await exists(resolve(path, PROJECT_MANIFEST)))) continue
       try {
         const summary = await this.summarize(path)
+        if (this.transitioningProjects.has(summary.manifest.id)) continue
         summaries.push(summary)
         cache.set(summary.manifest.id, path)
       } catch (error) {
@@ -244,6 +305,9 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
   }
 
   private async projectPath(projectId: ProjectId): Promise<string> {
+    if (this.transitioningProjects.has(projectId)) {
+      throw new WorldlineProjectError('project-busy', 'Worldline project is leaving the active library')
+    }
     let path = this.projectCache.get(projectId)
     if (path === undefined) {
       await this.scan()
@@ -296,7 +360,10 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
   async setRoot(request: SetProjectRootRequest): Promise<RootRelocationPlan> {
     const destination = await canonicalRoot(request.path, request.create !== false)
     const source = this.configuredRoot.trim() === '' ? undefined : await this.rootPath()
-    const sourceProjects = source === undefined || source === destination ? [] : await this.scan(source)
+    const relocateExisting = request.relocateExisting !== false
+    const sourceProjects = !relocateExisting || source === undefined || source === destination
+      ? []
+      : await this.scan(source)
     const destinationNames = new Set((await readdir(destination, { withFileTypes: true }))
       .filter(entry => entry.isDirectory()).map(entry => entry.name.toLocaleLowerCase()))
     const projects = sourceProjects.map(project => ({
@@ -320,7 +387,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
         conflicts: conflicts.join(', '),
       })
     }
-    if (source !== undefined && source !== destination) {
+    if (relocateExisting && source !== undefined && source !== destination) {
       const staging = resolve(destination, '.worldline-relocation', randomUUID())
       const committed: string[] = []
       try {
@@ -410,7 +477,14 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
       }
       await writeManifest(path, manifest)
       await this.createTemplate(path, request.template)
-      await mkdir(resolve(path, CONTROL_DIRECTORY, 'history'), { recursive: true })
+      await Promise.all([
+        WORLDLINE_PROJECT_LAYOUT.control.root,
+        WORLDLINE_PROJECT_LAYOUT.control.history,
+        WORLDLINE_PROJECT_LAYOUT.control.builds,
+        WORLDLINE_PROJECT_LAYOUT.control.runs,
+        WORLDLINE_PROJECT_LAYOUT.control.trash,
+        WORLDLINE_PROJECT_LAYOUT.control.transfers,
+      ].map(directory => mkdir(resolve(path, directory), { recursive: true })))
       const summary = await this.summarize(path)
       this.projectCache.set(manifest.id, path)
       return summary
@@ -423,18 +497,23 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
   private async createTemplate(path: string, template: ProjectTemplate): Promise<void> {
     const documents: Record<string, string> = {
       'canon/charter.md': '# 世界宪章\n\n在这里写下这个世界不可违背的核心事实、边界与代价。\n',
-      'canon/timeline.md': '# 正典时间线\n\n记录有明确时间、参与者、地点和因果关系的重大事件。\n',
-      'maps/world.md': '# 世界地图\n\n定义地点层级、连接路径、移动耗时、容量与危险因素。\n',
+      'timelines/canon.md': '# 正典时间线\n\n记录有明确时间、参与者、地点和因果关系的重大事件。\n',
+      'maps/places/world.md': '# 世界地图\n\n定义地点层级、连接路径、移动耗时、容量与危险因素。\n',
       'mechanisms/core.md': '# 核心机制\n\n定义资源、角色动作、持续进程、周期系统和必须始终成立的不变量。\n',
     }
     if (template === 'character-story' || template === 'playable-scenario') {
       documents['characters/protagonist.md'] = '# 主角\n\n写明身份、外观、性格、价值观、目标、能力、资源、关系、经历与初始位置。\n'
-      documents['scenarios/opening.md'] = '# 开场剧本\n\n写明初始状态、视角角色、当前冲突、可行动目标与成功或失败条件。\n'
+      documents['scenarios/plot-points/opening.md'] = '# 开场剧本\n\n写明初始状态、视角角色、当前冲突、可行动目标与成功或失败条件。\n'
     }
     if (template === 'social-simulation' || template === 'civilization-sandbox') {
-      documents['factions/society.md'] = '# 社会与组织\n\n定义制度、角色分工、规范、关系网络与资源流动。\n'
+      documents['organizations/society.md'] = '# 社会与组织\n\n定义制度、角色分工、规范、关系网络与资源流动。\n'
       documents['mechanisms/economy.md'] = '# 经济机制\n\n定义生产、交换、稀缺、分配、价格与异常恢复规则。\n'
     }
+    const directories = new Set([
+      ...Object.values(WORLDLINE_PROJECT_LAYOUT.canonDirectories),
+      WORLDLINE_PROJECT_LAYOUT.mediaDirectory,
+    ])
+    await Promise.all([...directories].map(directory => mkdir(resolve(path, directory), { recursive: true })))
     const metadata = await this.metadata(path)
     for (const [relativePath, content] of Object.entries(documents)) {
       await durableWrite(resolveInside(path, relativePath), content)
@@ -460,32 +539,64 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
   }
 
   async trashProject(request: TrashProjectRequest): Promise<TrashedProject> {
-    const source = await this.projectPath(request.projectId)
-    const root = await this.rootPath()
-    const trashId = randomUUID()
-    const target = resolve(root, '.worldline-trash', 'projects', trashId)
-    const sizeBytes = await directorySize(source)
-    const metadata: ProjectTrashMetadata = { originalName: basename(source), deletedAt: now(), sizeBytes }
-    await mkdir(dirname(target), { recursive: true })
-    await rename(source, target)
-    await durableWrite(`${target}.json`, `${JSON.stringify(metadata, null, 2)}\n`)
-    this.projectCache.delete(request.projectId)
-    return { trashId, ...metadata, manifest: await readManifest(target) }
+    const [source, root] = await Promise.all([this.projectPath(request.projectId), this.rootPath()])
+    if (this.transitioningProjects.has(request.projectId)) {
+      throw new WorldlineProjectError('project-busy', 'Worldline project is already leaving the active library')
+    }
+    this.transitioningProjects.add(request.projectId)
+    try {
+      const trashId = randomUUID()
+      const [sizeBytes, manifest] = await Promise.all([directorySize(source), readManifest(source)])
+      const originalName = basename(source)
+      const metadata: ProjectTrashMetadata = {
+        format: 'worldline-project-trash@1',
+        originalName,
+        deletedAt: now(),
+        sizeBytes,
+        projectId: request.projectId,
+        storageName: originalName,
+      }
+      const metadataPath = resolve(root, '.worldline-trash', 'projects', `${trashId}.json`)
+      try {
+        await this.cancelProjectJobs(request.projectId)
+        await this.context.parallel('worldline-project/release', request.projectId)
+      } catch (error) {
+        throw new WorldlineProjectError(
+          'project-busy',
+          'Worldline could not safely release every active project resource. Try the recycle action again.',
+          { cause: messageOf(error) },
+        )
+      }
+      // The durable marker is the commit point. Keeping storage at its stable path means
+      // an open SQLite/file handle cannot make a recoverable delete fail on Windows.
+      await durableWrite(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`)
+      this.projectCache.delete(request.projectId)
+      return { trashId, ...metadata, manifest }
+    } finally {
+      this.transitioningProjects.delete(request.projectId)
+    }
   }
 
   async listTrashedProjects(): Promise<readonly TrashedProject[]> {
-    const directory = resolve(await this.rootPath(), '.worldline-trash', 'projects')
+    const root = await this.rootPath()
+    const directory = resolve(root, '.worldline-trash', 'projects')
     if (!(await exists(directory))) return []
     const results: TrashedProject[] = []
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue
-      const metadata = recordOf(JSON.parse(await readTextBounded(resolve(directory, `${entry.name}.json`))))
-      const manifest = await readManifest(resolve(directory, entry.name)).catch(() => undefined)
+    const entries = await readdir(directory, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+      const trashId = projectTrashId(entry.name.slice(0, -5))
+      const metadata = await readProjectTrashMetadata(resolve(directory, entry.name))
+      const projectPath = resolve(root, metadata.storageName)
+      const manifest = await readManifest(projectPath).catch(() => undefined)
+      if (manifest !== undefined && manifest.id !== metadata.projectId) {
+        throw new WorldlineProjectError('manifest-conflict', 'project trash identity does not match its storage')
+      }
       results.push({
-        trashId: entry.name,
-        originalName: String(metadata.originalName),
-        deletedAt: String(metadata.deletedAt),
-        sizeBytes: Number(metadata.sizeBytes),
+        trashId,
+        originalName: metadata.originalName,
+        deletedAt: metadata.deletedAt,
+        sizeBytes: metadata.sizeBytes,
         ...(manifest === undefined ? {} : { manifest }),
       })
     }
@@ -493,26 +604,48 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
   }
 
   async emptyProjectTrash(): Promise<number> {
-    const directory = resolve(await this.rootPath(), '.worldline-trash', 'projects')
+    const root = await this.rootPath()
+    const directory = resolve(root, '.worldline-trash', 'projects')
     if (!(await exists(directory))) return 0
     const entries = await readdir(directory, { withFileTypes: true })
-    const projectCount = entries.filter(entry => entry.isDirectory()).length
-    for (const entry of entries) {
-      await rm(resolve(directory, entry.name), { recursive: true, force: true })
+    const metadataFiles = entries.filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+    for (const entry of metadataFiles) {
+      const metadataPath = resolve(directory, entry.name)
+      const metadata = await readProjectTrashMetadata(metadataPath)
+      const projectPath = resolve(root, metadata.storageName)
+      if (await exists(resolve(projectPath, PROJECT_MANIFEST))) {
+        const manifest = await readManifest(projectPath)
+        if (manifest.id !== metadata.projectId) {
+          throw new WorldlineProjectError('manifest-conflict', 'project trash identity does not match its storage')
+        }
+      }
+      await rm(projectPath, { recursive: true, force: true })
+      await rm(metadataPath, { force: true })
     }
-    return projectCount
+    return metadataFiles.length
   }
 
   async restoreProject(request: RestoreProjectRequest): Promise<ProjectSummary> {
     const root = await this.rootPath()
-    const source = resolve(root, '.worldline-trash', 'projects', normalizeRelative(request.trashId))
-    if (!(await exists(source))) throw new WorldlineProjectError('entry-not-found', 'trashed project not found')
-    const raw = recordOf(JSON.parse(await readTextBounded(`${source}.json`)))
-    const desired = request.name === undefined ? String(raw.originalName) : slugify(request.name)
-    const destination = resolve(root, await this.availableName(root, desired))
-    await rename(source, destination)
-    await rm(`${source}.json`, { force: true })
+    const trashId = projectTrashId(request.trashId)
+    const metadataPath = resolve(root, '.worldline-trash', 'projects', `${trashId}.json`)
+    if (!(await exists(metadataPath))) throw new WorldlineProjectError('entry-not-found', 'trashed project not found')
+    const metadata = await readProjectTrashMetadata(metadataPath)
+    const source = resolve(root, metadata.storageName)
+    if (!(await exists(source))) throw new WorldlineProjectError('entry-not-found', 'trashed project storage is missing')
+    const manifest = await readManifest(source)
+    if (manifest.id !== metadata.projectId) {
+      throw new WorldlineProjectError('manifest-conflict', 'trashed project identity does not match its storage')
+    }
+    const activeDuplicate = (await this.scan()).find(project => project.manifest.id === manifest.id)
+    if (activeDuplicate !== undefined) {
+      throw new WorldlineProjectError('manifest-conflict', `project already exists: ${manifest.id}`)
+    }
+    const desired = request.name === undefined ? metadata.originalName : slugify(request.name)
+    const destination = request.name === undefined ? source : resolve(root, await this.availableName(root, desired))
+    if (destination !== source) await rename(source, destination)
     const result = await this.summarize(destination)
+    await rm(metadataPath, { force: true })
     this.projectCache.set(result.manifest.id, destination)
     return result
   }
@@ -660,6 +793,20 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
       throw error
     }
     return { projectId: request.projectId, path, id: sidecar.id }
+  }
+
+  async assetFile(request: ReadDocumentRequest): Promise<ProjectAssetFile> {
+    const project = await this.projectPath(request.projectId)
+    const path = normalizeRelative(request.path)
+    if (path === '' || kindOf(path, false) !== 'asset') {
+      throw new WorldlineProjectError('path-invalid', 'only project asset entries can be streamed')
+    }
+    const absolutePath = resolveInside(project, path)
+    await assertNoSymlink(project, absolutePath)
+    if (!(await exists(absolutePath))) throw new WorldlineProjectError('entry-not-found', `asset not found: ${path}`)
+    const info = await stat(absolutePath)
+    if (!info.isFile()) throw new WorldlineProjectError('path-invalid', `not an asset file: ${path}`)
+    return { projectId: request.projectId, path, absolutePath, sizeBytes: info.size }
   }
 
   async createDirectory(request: CreateDirectoryRequest): Promise<MutationResult> {
@@ -873,8 +1020,8 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     const project = await this.projectPath(request.projectId)
     const manifest = await readManifest(project)
     const destination = resolve(request.destination)
-    const job = this.beginJob('export', await directorySize(project))
-    void (async () => {
+    const job = this.beginJob('export', await directorySize(project), request.projectId)
+    const operation = (async () => {
       try {
         const signal = this.jobs.get(job.id)?.controller?.signal
         if (signal === undefined) throw new Error('archive transfer controller is unavailable')
@@ -891,6 +1038,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
         this.finishJob(job.id, result.sourceBytes)
       } catch (error) { this.failJob(job.id, error) }
     })()
+    this.trackJob(job.id, operation)
     return job
   }
 
@@ -903,7 +1051,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     const source = resolve(request.source)
     const info = await stat(source)
     const job = this.beginJob('import', info.size)
-    void (async () => {
+    const operation = (async () => {
       const staging = resolve(root, '.worldline-import', job.id)
       try {
         const signal = this.jobs.get(job.id)?.controller?.signal
@@ -959,6 +1107,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
         this.failJob(job.id, error)
       }
     })()
+    this.trackJob(job.id, operation)
     return job
   }
 
@@ -972,8 +1121,8 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     if (!(await exists(resolve(buildDirectory, 'blueprint.json')))) {
       throw new WorldlineProjectError('entry-not-found', `frozen Blueprint not found: ${digest}`)
     }
-    const job = this.beginJob('export-blueprint')
-    void (async () => {
+    const job = this.beginJob('export-blueprint', undefined, request.projectId)
+    const operation = (async () => {
       try {
         const signal = this.jobs.get(job.id)?.controller?.signal
         if (signal === undefined) throw new Error('archive transfer controller is unavailable')
@@ -987,6 +1136,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
         this.finishJob(job.id, result.sourceBytes, { resultBlueprintDigest: digest })
       } catch (error) { this.failJob(job.id, error) }
     })()
+    this.trackJob(job.id, operation)
     return job
   }
 
@@ -994,8 +1144,8 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     const project = await this.projectPath(request.projectId)
     const source = resolve(request.source)
     const info = await stat(source)
-    const job = this.beginJob('import-blueprint', info.size)
-    void (async () => {
+    const job = this.beginJob('import-blueprint', info.size, request.projectId)
+    const operation = (async () => {
       const staging = resolve(project, CONTROL_DIRECTORY, 'transfers', job.id)
       try {
         const signal = this.jobs.get(job.id)?.controller?.signal
@@ -1033,6 +1183,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
         this.failJob(job.id, error)
       }
     })()
+    this.trackJob(job.id, operation)
     return job
   }
 
@@ -1042,8 +1193,8 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     if (storage === undefined) {
       throw new WorldlineProjectError('entry-not-found', `Run not found: ${request.runId}`)
     }
-    const job = this.beginJob('export-run')
-    void (async () => {
+    const job = this.beginJob('export-run', undefined, request.projectId)
+    const operation = (async () => {
       try {
         const signal = this.jobs.get(job.id)?.controller?.signal
         if (signal === undefined) throw new Error('archive transfer controller is unavailable')
@@ -1059,6 +1210,7 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
         this.finishJob(job.id, result.sourceBytes, { resultRunId: request.runId })
       } catch (error) { this.failJob(job.id, error) }
     })()
+    this.trackJob(job.id, operation)
     return job
   }
 
@@ -1066,8 +1218,8 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     const project = await this.projectPath(request.projectId)
     const source = resolve(request.source)
     const info = await stat(source)
-    const job = this.beginJob('import-run', info.size)
-    void (async () => {
+    const job = this.beginJob('import-run', info.size, request.projectId)
+    const operation = (async () => {
       const staging = resolve(project, CONTROL_DIRECTORY, 'transfers', job.id)
       let createdRunDirectory: string | undefined
       try {
@@ -1111,14 +1263,14 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
         this.failJob(job.id, error)
       }
     })()
+    this.trackJob(job.id, operation)
     return job
   }
 
   transfer(id: string): Promise<TransferJob> {
     const job = this.jobs.get(id)
     if (job === undefined) throw new WorldlineProjectError('entry-not-found', `transfer not found: ${id}`)
-    const { controller: _controller, ...view } = job
-    return Promise.resolve(view)
+    return Promise.resolve(transferView(job))
   }
 
   async cancelTransfer(id: string): Promise<TransferJob> {
@@ -1292,15 +1444,34 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     return storages
   }
 
-  private beginJob(kind: TransferJob['kind'], totalBytes?: number): TransferJob {
-    const job: TransferJob & { controller: AbortController } = {
+  private beginJob(kind: TransferJob['kind'], totalBytes?: number, projectId?: ProjectId): TransferJob {
+    if (projectId !== undefined && this.transitioningProjects.has(projectId)) {
+      throw new WorldlineProjectError('project-busy', 'Worldline project is leaving the active library')
+    }
+    const job: ManagedTransferJob & { controller: AbortController } = {
       id: randomUUID(), kind, state: 'running', completedBytes: 0,
       ...(totalBytes === undefined ? {} : { totalBytes }),
+      ...(projectId === undefined ? {} : { projectId }),
       controller: new AbortController(),
     }
     this.jobs.set(job.id, job)
-    const { controller: _controller, ...view } = job
-    return view
+    return transferView(job)
+  }
+
+  private trackJob(id: string, operation: Promise<void>): void {
+    const current = this.jobs.get(id)
+    if (current === undefined) throw new Error(`transfer disappeared: ${id}`)
+    this.jobs.set(id, { ...current, settled: operation.then(() => {}, () => {}) })
+  }
+
+  private async cancelProjectJobs(projectId: ProjectId): Promise<void> {
+    const jobs = [...this.jobs.values()].filter(job => job.projectId === projectId
+      && (job.state === 'queued' || job.state === 'running'))
+    for (const job of jobs) {
+      job.controller?.abort()
+      this.jobs.set(job.id, { ...job, state: 'cancelled' })
+    }
+    await Promise.all(jobs.map(job => job.settled ?? Promise.resolve()))
   }
 
   private async controlPath(projectId: ProjectId, namespace: string, path: string): Promise<string> {
@@ -1312,6 +1483,26 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
     const absolute = resolveInside(base, path)
     await assertNoSymlink(base, absolute, true)
     return absolute
+  }
+
+  private async trashedStorageNames(root: string): Promise<Set<string>> {
+    const directory = resolve(root, '.worldline-trash', 'projects')
+    const names = new Set<string>()
+    if (!(await exists(directory))) return names
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+      projectTrashId(entry.name.slice(0, -5))
+      const metadata = await readProjectTrashMetadata(resolve(directory, entry.name))
+      const projectPath = resolve(root, metadata.storageName)
+      if (await exists(resolve(projectPath, PROJECT_MANIFEST))) {
+        const manifest = await readManifest(projectPath)
+        if (manifest.id !== metadata.projectId) {
+          throw new WorldlineProjectError('manifest-conflict', 'project trash identity does not match its storage')
+        }
+      }
+      names.add(storageNameKey(metadata.storageName))
+    }
+    return names
   }
 
   private finishJob(
@@ -1327,21 +1518,18 @@ export default class LocalWorldlineProjects extends WorldlineProjects {
       totalBytes: finalBytes,
       ...result }
     this.jobs.set(id, job)
-    const { controller: _controller, ...view } = job
-    return view
+    return transferView(job)
   }
 
   private failJob(id: string, error: unknown): TransferJob {
     const current = this.jobs.get(id)
     if (current === undefined) throw new Error(`transfer disappeared: ${id}`)
     if (current.state === 'cancelled') {
-      const { controller: _controller, ...view } = current
-      return view
+      return transferView(current)
     }
     const job = { ...current, state: 'failed' as const, error: messageOf(error) }
     this.jobs.set(id, job)
-    const { controller: _controller, ...view } = job
-    return view
+    return transferView(job)
   }
 
   private updateJobProgress(id: string, completedBytes: number): void {

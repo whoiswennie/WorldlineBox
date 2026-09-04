@@ -1,17 +1,19 @@
-import type { AiBudget, ModelPolicy, ProjectId, RunId, RunSnapshot } from '@deepseek-ai/dsh-worldline-standard'
+import type { ModelPolicy, ProjectId, RunId, RunSnapshot } from '@deepseek-ai/dsh-worldline-standard'
 import type {
   ActorControlMode,
   AdvanceRunRequest,
+  CompletePresentationRequest,
   CreateCheckpointRequest,
   ExplainRunEventRequest,
   RunRecordsRequest,
   RunSpatialRequest,
   RecordAiIntentRequest,
+  RecordActionDeckRequest,
   RecordAiInvocationRequest,
   RecordNarrativeBeatRequest,
+  RecordStoryStateRequest,
   RunChoicesRequest,
   SetActorControlRequest,
-  SetAiBudgetRequest,
   SetAiEnabledRequest,
   SimulateRunRequest,
   SubmitRunActionRequest,
@@ -28,7 +30,6 @@ export interface WorkerInit {
   readonly seed: string
   readonly startPaused: boolean
   readonly modelPolicy?: ModelPolicy
-  readonly aiBudget?: AiBudget
   readonly resumeSnapshot?: RunSnapshot
   readonly parentRunId?: RunId
   readonly forkSequence?: number
@@ -47,18 +48,21 @@ export type WorkerCommand =
   | { readonly type: 'submit-action'; readonly payload: SubmitRunActionRequest }
   | { readonly type: 'pause' }
   | { readonly type: 'resume' }
+  | { readonly type: 'release' }
   | { readonly type: 'stop' }
   | { readonly type: 'records'; readonly payload: RunRecordsRequest }
   | { readonly type: 'checkpoint'; readonly payload: CreateCheckpointRequest }
   | { readonly type: 'checkpoints' }
   | { readonly type: 'set-control'; readonly payload: SetActorControlRequest }
   | { readonly type: 'set-ai'; readonly payload: SetAiEnabledRequest }
-  | { readonly type: 'set-ai-budget'; readonly payload: SetAiBudgetRequest }
   | { readonly type: 'switch-model'; readonly payload: SwitchModelPolicyRequest }
   | { readonly type: 'explain'; readonly payload: ExplainRunEventRequest }
   | { readonly type: 'record-ai-intent'; readonly payload: RecordAiIntentRequest }
   | { readonly type: 'record-ai-invocation'; readonly payload: RecordAiInvocationRequest }
   | { readonly type: 'record-narrative-beat'; readonly payload: RecordNarrativeBeatRequest }
+  | { readonly type: 'complete-presentation'; readonly payload: CompletePresentationRequest }
+  | { readonly type: 'record-action-deck'; readonly payload: RecordActionDeckRequest }
+  | { readonly type: 'record-story-state'; readonly payload: RecordStoryStateRequest }
 
 /** Describes the worker request value exchanged across the package boundary.
  */

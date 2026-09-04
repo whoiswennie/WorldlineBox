@@ -59,7 +59,7 @@ export type Revision = Branded<'WorldlineRevision'>
 
 /** Identifies the package-owned wws version value.
  */
-export const WWS_VERSION = '0.1.0' as const
+export const WWS_VERSION = '0.3.0' as const
 /** Identifies the package-owned project manifest value.
  */
 export const PROJECT_MANIFEST = 'worldline.toml' as const
@@ -231,6 +231,10 @@ export interface MapNode {
   readonly layerId: string
   readonly kind: MapNodeKind
   readonly name: string
+  /** Complete authored place description used by the atlas, narrator, and state director. */
+  readonly description?: string
+  /** Project-owned visual-novel background shown while this place is observed. */
+  readonly background?: string
   readonly position: MapPoint
   readonly polygon?: readonly MapPoint[]
   readonly capacity?: number
@@ -275,19 +279,6 @@ export interface ModelPolicy {
   readonly revision: Revision
 }
 
-/** Describes the ai budget value exchanged across the package boundary.
- */
-export interface AiBudget {
-  readonly maxCalls: number
-  readonly maxInputTokens: number
-  readonly maxOutputTokens: number
-  readonly maxConcurrent: number
-  readonly maxCallsPerLogicalDay: number
-  readonly maxCallsPerRealHour: number
-  readonly maxEstimatedCost: number
-  readonly currency: string
-}
-
 /** Describes the ai usage value exchanged across the package boundary.
  */
 export interface AiUsage {
@@ -297,7 +288,6 @@ export interface AiUsage {
   readonly cacheReadTokens: number
   readonly estimatedCost: number
   readonly cacheHits: number
-  readonly degradedReason?: string
 }
 
 /** Describes the context pack section value exchanged across the package boundary.
@@ -464,7 +454,7 @@ export interface Process {
   readonly progressMeasure: number
   readonly movement?: MovementProgress
   readonly reservationIds: readonly WorldlineId<'reservation'>[]
-  readonly retryBudget: number
+  readonly maxRetries: number
   readonly retryCount: number
   readonly blockedReason?: string
   readonly wakeConditions: readonly string[]
@@ -530,6 +520,33 @@ export interface AiIntent {
   readonly recordedAt: string
 }
 
+/** One concrete next action authored by the choice director for the current committed scene. */
+export interface ActionPlan {
+  readonly id: WorldlineId<'action-plan'>
+  readonly actorId: EntityId
+  /** Internal Runtime affordance that this generated action instantiates. */
+  readonly opportunityId: string
+  readonly capabilityId: string
+  readonly parameters: JsonObject
+  readonly targetIds: readonly string[]
+  readonly label: string
+  readonly intent: string
+  readonly storyRole: 'advance' | 'character' | 'deviate'
+  readonly estimatedDuration: number
+  readonly costs: readonly string[]
+  readonly risks: readonly string[]
+}
+
+/** Durable set of generated choices for exactly one stable story pause. */
+export interface ActionDeck {
+  readonly id: WorldlineId<'action-deck'>
+  readonly actorId: EntityId
+  readonly sequence: number
+  readonly afterBeatId: WorldlineId<'narrative-beat'>
+  readonly invocationId: WorldlineId<'ai-invocation'>
+  readonly plans: readonly ActionPlan[]
+}
+
 /** Actual routed model call accounting, shared by character, narrator, summary and compiler uses. */
 export interface AiInvocation {
   readonly id: WorldlineId<'ai-invocation'>
@@ -563,15 +580,60 @@ export interface Observation {
  */
 export interface NarrativeBeat {
   readonly id: WorldlineId<'narrative-beat'>
-  readonly invocationId?: WorldlineId<'ai-invocation'>
+  readonly invocationId: WorldlineId<'ai-invocation'>
+  /** Actor whose bounded knowledge and point of view produced this presentation. */
+  readonly perspectiveActorId: EntityId
   readonly eventIds: readonly EventId[]
   readonly observationIds: readonly WorldlineId<'observation'>[]
   readonly camera: string
   readonly speakerId?: EntityId
   readonly text: string
+  /** Ordered presentation units retained exactly as the visual story was authored. */
+  readonly blocks: readonly NarrativeBlock[]
   readonly media: readonly MediaCue[]
-  readonly style: 'template' | 'llm'
-  readonly modelRoute?: ModelRoute
+  readonly modelRoute: ModelRoute
+}
+
+/** One player-paced unit in the interactive-fiction presentation stream. */
+export type NarrativeBlock =
+  | {
+    readonly type: 'narration'
+    readonly text: string
+  }
+  | {
+    readonly type: 'character'
+    readonly actorId: EntityId
+    readonly mode: 'dialogue' | 'thought' | 'action'
+    readonly text: string
+  }
+  | {
+    /** Ordered, Runtime-authorized visual or audio cue selected by the narrator. */
+    readonly type: 'media'
+    readonly cue: MediaCue
+    readonly caption?: string
+  }
+  | {
+    /** Model-authored request for media that does not exist yet. Generators may consume the
+     * structured marker later; text-only clients render its fallback without losing story order. */
+    readonly type: 'media-intent'
+    readonly intent: MediaGenerationIntent
+  }
+  | {
+    /** Runtime-authorized state change selected for an inline, non-prose story pulse. */
+    readonly type: 'state'
+    readonly cue: NarrativeStateCue
+  }
+
+/** One immutable projection of an authoritative Runtime delta. The narrator may decide where to
+ * present this cue, but cannot choose its label, value, subject or tone. */
+export interface NarrativeStateCue {
+  readonly scope: 'character' | 'environment' | 'relationship' | 'story'
+  readonly label: string
+  readonly before?: string
+  readonly value: string
+  readonly tone: 'neutral' | 'positive' | 'warning' | 'danger'
+  readonly actorId?: EntityId
+  readonly path: string
 }
 
 /** Describes the media cue value exchanged across the package boundary.
@@ -581,6 +643,17 @@ export interface MediaCue {
   readonly assetId?: AssetId
   readonly entityId?: EntityId
   readonly variant?: string
+}
+
+/** A unified, persisted placeholder for a future image or audio generation provider. The prompt
+ * describes presentation only and is never an authority for world state or hidden knowledge. */
+export interface MediaGenerationIntent {
+  readonly kind: 'image' | 'audio'
+  readonly purpose: 'scene' | 'character' | 'event' | 'music' | 'sfx' | 'voice'
+  /** Generator-ready description, grounded only in facts visible from the current perspective. */
+  readonly prompt: string
+  /** Human-readable substitute shown inline when no compatible generator is connected. */
+  readonly fallbackText: string
 }
 
 /** Describes the telemetry value exchanged across the package boundary.
@@ -624,9 +697,94 @@ export interface Blueprint {
   readonly actions: readonly ActionDefinition[]
   readonly systems: readonly SystemDefinition[]
   readonly invariants: readonly InvariantDefinition[]
+  /** Ordered story direction compiled from human-readable plot-point documents. */
+  readonly plotPoints?: readonly PlotPointDefinition[]
   readonly provenance: readonly Provenance[]
   readonly modelPolicy: ModelPolicy
   readonly certificate: ClosureCertificate
+}
+
+/** One authored dramatic goal. It describes evidence and pressure, never an executable action. */
+export interface PlotPointDefinition {
+  readonly id: string
+  readonly name: string
+  readonly summary: string
+  readonly order: number
+  readonly entryCondition: string
+  readonly completionCriteria: string
+  readonly dramaticPressure: string
+  readonly successOutcome: string
+  readonly failureOutcome: string
+  readonly recoveryHook: string
+  /** Runtime-owned absolute logical-time gates; models can narrate but cannot delay or skip them. */
+  readonly timing: PlotPointTiming
+  readonly provenance: readonly Provenance[]
+}
+
+export interface PlotPointTiming {
+  readonly activateAt: number
+  readonly deadlineAt: number
+  readonly interventions: readonly PlotTimeIntervention[]
+}
+
+export interface PlotTimeIntervention {
+  readonly id: string
+  readonly at: number
+  readonly title: string
+  readonly description: string
+}
+
+/** Auditable state-director verdict for one plot point at one committed story frontier. */
+export interface StoryProgressEvidence {
+  readonly id: WorldlineId<'story-progress'>
+  readonly pointId: PlotPointDefinition['id']
+  readonly sequence: number
+  readonly beatId: WorldlineId<'narrative-beat'>
+  readonly invocationId: WorldlineId<'ai-invocation'>
+  readonly status: 'active' | 'completed' | 'failed'
+  readonly rationale: string
+  readonly evidence: readonly string[]
+  readonly eventIds: readonly EventId[]
+  readonly observationIds: readonly WorldlineId<'observation'>[]
+}
+
+/** One schema-constrained soft-state mutation proposed after a retained story beat. */
+export interface StoryStateMutation {
+  readonly scope: 'character' | 'world'
+  readonly actorId?: EntityId
+  readonly path: string
+  readonly operation: 'set' | 'increment' | 'append' | 'remove'
+  readonly value: JsonValue
+  readonly reason: string
+}
+
+/** One durable memory distilled from what a character could perceive in the retained beat. */
+export interface StoryMemoryWrite {
+  readonly actorId: EntityId
+  readonly summary: string
+  readonly importance: number
+}
+
+/** One independently inferred slice of the complete world update for a retained story beat. */
+export interface StoryStateShard {
+  readonly invocationId: WorldlineId<'ai-invocation'>
+  readonly domain: 'characters' | 'world'
+  /** Complete roster covered by this inference slice; empty for the world slice. */
+  readonly subjectIds: readonly EntityId[]
+  readonly mutations: readonly StoryStateMutation[]
+  readonly memoryWrites: readonly StoryMemoryWrite[]
+}
+
+/** Atomic fan-out/fan-in state-director commit between authored prose and the final choice deck. */
+export interface StoryStateCommit {
+  readonly id: WorldlineId<'story-state'>
+  readonly sequence: number
+  readonly beatId: WorldlineId<'narrative-beat'>
+  readonly shards: readonly StoryStateShard[]
+  readonly progressInvocationId?: WorldlineId<'ai-invocation'>
+  readonly mutations: readonly StoryStateMutation[]
+  readonly memoryWrites: readonly StoryMemoryWrite[]
+  readonly deltas: readonly StateDelta[]
 }
 
 /** Describes the simulation purpose value exchanged across the package boundary.
@@ -661,6 +819,15 @@ export interface ActionDefinition {
   readonly description: string
   /** Core execution family; ordinary movement must use `move`, never a generic position write. */
   readonly operator?: 'generic' | 'move' | 'teleport'
+  /**
+   * Explicit spatial contract for non-movement actions. Interactive stories must either name the
+   * map nodes where an action is possible or deliberately declare that it works everywhere.
+   * Travel itself remains a separate `move` action so prose can never relocate an actor ahead of
+   * Runtime state.
+   */
+  readonly location?:
+    | { readonly mode: 'anywhere' }
+    | { readonly mode: 'at'; readonly nodeIds: readonly MapNodeId[] }
   readonly actorTypes: readonly string[]
   readonly preconditions: readonly Expression[]
   readonly claims: readonly ClaimTemplate[]
@@ -668,7 +835,7 @@ export interface ActionDefinition {
   readonly effects: readonly Effect[]
   readonly interruptible: boolean
   readonly maxWait: number
-  readonly retryBudget: number
+  readonly maxRetries: number
   readonly fallbacks: readonly string[]
   readonly provenance: readonly Provenance[]
 }
@@ -776,8 +943,22 @@ export interface RunSnapshot {
   readonly futureEvents: readonly FutureEvent[]
   readonly randomState: string
   readonly modelPolicy: ModelPolicy
-  readonly aiBudget: AiBudget
   readonly aiUsage: AiUsage
+  /** Durable player presentation boundary. A completed beat must never animate again after
+   * navigation, process restart, checkpoint restore, or branch creation. */
+  readonly presentationCursors: Readonly<Record<string, PresentationCursor>>
+  /** Latest model-authored action deck per viewpoint. Stale sequences are never reused. */
+  readonly actionDecks: Readonly<Record<string, ActionDeck>>
+  /** Latest validated state-director verdict per authored plot point. */
+  readonly storyProgress: Readonly<Record<string, StoryProgressEvidence>>
+  /** State-director commits keyed by the story beat they were derived from. */
+  readonly storyStateCommits: Readonly<Record<string, StoryStateCommit>>
+}
+
+/** The latest fully presented story beat for one player-controlled viewpoint. */
+export interface PresentationCursor {
+  readonly actorId: EntityId
+  readonly completedBeatId: WorldlineId<'narrative-beat'>
 }
 
 /** Describes the checkpoint value exchanged across the package boundary.

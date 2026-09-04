@@ -10,6 +10,7 @@ import {
   mapDocument,
   mechanismDocument,
   openingScenarioDocument,
+  runtimeSemanticDocument,
   timelineDocument,
 } from '../../../../fixtures/worldline/scenarios.ts'
 import WorldlineCompiler from '../../compiler/src/index.ts'
@@ -55,14 +56,14 @@ describe('Worldline product acceptance scenarios', () => {
       })
       await context.worldlineProjects.write({
         projectId: project.manifest.id,
-        path: 'canon/timeline.md',
+        path: 'timelines/canon.md',
         content: timelineDocument(scenario),
         createParents: true,
         objectKind: 'timeline-event',
       })
       await context.worldlineProjects.write({
         projectId: project.manifest.id,
-        path: 'scenarios/opening.md',
+        path: 'scenarios/plot-points/opening.md',
         content: openingScenarioDocument(scenario),
         createParents: true,
         objectKind: 'scenario',
@@ -86,9 +87,17 @@ describe('Worldline product acceptance scenarios', () => {
         createParents: true,
         objectKind: 'rule',
       })
+      await context.worldlineProjects.writeControl({
+        projectId: project.manifest.id,
+        namespace: 'compiler',
+        path: 'runtime-model.json',
+        content: JSON.stringify({
+          documents: { 'mechanisms/runtime.md': runtimeSemanticDocument(scenario) },
+        }),
+      })
       await context.worldlineProjects.write({
         projectId: project.manifest.id,
-        path: 'maps/world.md',
+        path: 'maps/places/world.md',
         content: mapDocument(scenario),
         createParents: true,
         objectKind: 'place',

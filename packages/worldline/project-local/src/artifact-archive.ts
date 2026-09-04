@@ -57,6 +57,11 @@ const RUN_STREAMS = new Set<RunStream>([
   'ai-invocation',
   'observation',
   'narrative-beat',
+  'presentation-progress',
+  'action-deck',
+  'story-progress',
+  'story-state',
+  'runtime-diagnostic',
   'telemetry',
 ])
 const MAX_NDJSON_LINE_BYTES = 32 * 1024 * 1024
@@ -417,8 +422,55 @@ function parseRunSnapshot(value: unknown): RunSnapshot {
   }
   jsonObject(source['state'], 'Run state')
   jsonObject(source['modelPolicy'], 'Run model policy')
-  jsonObject(source['aiBudget'], 'Run AI budget')
   jsonObject(source['aiUsage'], 'Run AI usage')
+  const presentationCursors = jsonObject(source['presentationCursors'], 'Run presentation cursors')
+  for (const [actorId, rawCursor] of Object.entries(presentationCursors)) {
+    const cursor = jsonObject(rawCursor, `Run presentation cursor ${actorId}`)
+    if (cursor['actorId'] !== actorId || typeof cursor['completedBeatId'] !== 'string') {
+      throw new WorldlineProjectError('transfer-failed', 'Run presentation cursor is malformed')
+    }
+  }
+  const actionDecks = jsonObject(source['actionDecks'], 'Run action decks')
+  for (const [actorId, rawDeck] of Object.entries(actionDecks)) {
+    const deck = jsonObject(rawDeck, `Run action deck ${actorId}`)
+    if (deck['actorId'] !== actorId || typeof deck['id'] !== 'string'
+      || typeof deck['afterBeatId'] !== 'string' || typeof deck['invocationId'] !== 'string'
+      || !Number.isSafeInteger(deck['sequence']) || !Array.isArray(deck['plans'])
+      || deck['plans'].length !== 3) {
+      throw new WorldlineProjectError('transfer-failed', 'Run action deck is malformed')
+    }
+  }
+  const storyProgress = jsonObject(source['storyProgress'], 'Run story progress')
+  for (const [pointId, rawProgress] of Object.entries(storyProgress)) {
+    const progress = jsonObject(rawProgress, `Run story progress ${pointId}`)
+    if (progress['pointId'] !== pointId || typeof progress['id'] !== 'string'
+      || typeof progress['beatId'] !== 'string' || typeof progress['invocationId'] !== 'string'
+      || !Number.isSafeInteger(progress['sequence'])
+      || !['active', 'completed', 'failed'].includes(String(progress['status']))
+      || typeof progress['rationale'] !== 'string' || !Array.isArray(progress['evidence'])
+      || !Array.isArray(progress['eventIds']) || !Array.isArray(progress['observationIds'])) {
+      throw new WorldlineProjectError('transfer-failed', 'Run story progress is malformed')
+    }
+  }
+  const storyStateCommits = jsonObject(source['storyStateCommits'], 'Run story state commits')
+  for (const [beatId, rawCommit] of Object.entries(storyStateCommits)) {
+    const commit = jsonObject(rawCommit, `Run story state commit ${beatId}`)
+    if (commit['beatId'] !== beatId || typeof commit['id'] !== 'string'
+      || !Number.isSafeInteger(commit['sequence']) || !Array.isArray(commit['shards'])
+      || commit['shards'].length !== 2
+      || !Array.isArray(commit['mutations']) || !Array.isArray(commit['memoryWrites'])
+      || !Array.isArray(commit['deltas'])) {
+      throw new WorldlineProjectError('transfer-failed', 'Run story state commit is malformed')
+    }
+    for (const rawShard of commit['shards']) {
+      const shard = jsonObject(rawShard, `Run story state shard ${beatId}`)
+      if (!['world', 'characters'].includes(String(shard['domain']))
+        || typeof shard['invocationId'] !== 'string' || !Array.isArray(shard['subjectIds'])
+        || !Array.isArray(shard['mutations']) || !Array.isArray(shard['memoryWrites'])) {
+        throw new WorldlineProjectError('transfer-failed', 'Run story state shard is malformed')
+      }
+    }
+  }
   return {
     ...source,
     runId: worldlineId<'run'>(source['runId']),

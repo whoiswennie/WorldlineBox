@@ -4,7 +4,6 @@ import type {
   ActionRequest,
   AiIntent,
   AiInvocation,
-  AiBudget,
   Blueprint,
   CharacterMemory,
   Checkpoint,
@@ -28,6 +27,8 @@ import type {
   ResourceClaim,
   RunId,
   RunSnapshot,
+  StoryProgressEvidence,
+  StoryStateCommit,
   StateDelta,
   Telemetry,
   WorldEvent,
@@ -40,6 +41,7 @@ import {
   expressionPaths,
   isValidWorldEvent,
   materializeInitialWorldState,
+  projectAuthoredCalendar,
   stableStringify,
   validateBlueprint,
   worldlineId,
@@ -49,6 +51,8 @@ import type {
   ActorControlMode,
   AdvanceRunRequest,
   CheckpointView,
+  CompletePresentationRequest,
+  CompletePresentationResult,
   CreateCheckpointRequest,
   ExplainRunEventRequest,
   RunEventExplanation,
@@ -66,13 +70,16 @@ import type {
   RecordAiIntentResult,
   RecordAiInvocationRequest,
   RecordAiInvocationResult,
+  RecordActionDeckRequest,
+  RecordActionDeckResult,
   RecordNarrativeBeatRequest,
   RecordNarrativeBeatResult,
+  RecordStoryStateRequest,
+  RecordStoryStateResult,
   RunStatus,
   RunSummary,
   RunView,
   SetActorControlRequest,
-  SetAiBudgetRequest,
   SetAiEnabledRequest,
   SubmitRunActionRequest,
   SubmitRunActionResult,
@@ -90,7 +97,6 @@ export interface KernelInit {
   readonly seed: string
   readonly startPaused?: boolean
   readonly modelPolicy?: RunSnapshot['modelPolicy']
-  readonly aiBudget?: AiBudget
   readonly resumeSnapshot?: RunSnapshot
   readonly parentRunId?: RunId
   readonly forkSequence?: number
@@ -124,17 +130,6 @@ interface PlannedMovement {
   readonly duration: number
 }
 
-const DEFAULT_AI_BUDGET: AiBudget = {
-  maxCalls: 100,
-  maxInputTokens: 1_000_000,
-  maxOutputTokens: 200_000,
-  maxConcurrent: 1,
-  maxCallsPerLogicalDay: 50,
-  maxCallsPerRealHour: 20,
-  maxEstimatedCost: 5,
-  currency: 'USD',
-}
-
 const EMPTY_MEMORY: CharacterMemory = {
   episodic: [],
   beliefs: [],
@@ -158,27 +153,28 @@ function actionNeedsTarget(definition: ActionDefinition): boolean {
 }
 
 function syncConfiguredCalendar(state: JsonObject, logicalTime: number): JsonObject {
-  const world = state['world']
-  if (typeof world !== 'object' || world === null || Array.isArray(world)) return state
-  const calendar = world['calendar']
-  if (typeof calendar !== 'object' || calendar === null || Array.isArray(calendar)) return state
-  const secondsPerDay = Number(calendar['secondsPerDay'])
-  const daysPerSeason = Number(calendar['daysPerSeason'])
-  const seasons = Array.isArray(calendar['seasons'])
-    ? calendar['seasons'].filter((item): item is string => typeof item === 'string' && item !== '')
-    : []
-  if (!Number.isFinite(secondsPerDay) || secondsPerDay <= 0
-    || !Number.isInteger(daysPerSeason) || daysPerSeason <= 0 || seasons.length === 0) return state
-  const dayIndex = Math.floor(logicalTime / secondsPerDay)
-  const yearLength = daysPerSeason * seasons.length
-  const seasonIndex = Math.floor((dayIndex % yearLength) / daysPerSeason)
-  return setPath(state, 'world.calendar', {
-    ...calendar,
-    absoluteDay: dayIndex + 1,
-    year: Math.floor(dayIndex / yearLength) + 1,
-    season: seasons[seasonIndex] ?? seasons[0] ?? '',
-    dayOfSeason: dayIndex % daysPerSeason + 1,
-    timeOfDaySeconds: logicalTime % secondsPerDay,
+  const projection = projectAuthoredCalendar(state, logicalTime)
+  if (projection === undefined) return state
+  const world = state['world'] as JsonObject
+  const calendar = world['calendar'] as JsonObject
+  const time = `${String(projection.hour).padStart(2, '0')}:${String(projection.minute).padStart(2, '0')}`
+  return setPath(state, 'world', {
+    ...world,
+    calendar: {
+      ...calendar,
+      startYear: projection.startYear,
+      startSeason: projection.startSeason,
+      startDayOfSeason: projection.startDayOfSeason,
+      absoluteDay: projection.absoluteDay,
+      year: projection.year,
+      season: projection.season,
+      dayOfSeason: projection.dayOfSeason,
+      timeOfDaySeconds: projection.timeOfDaySeconds,
+    },
+    ...(typeof world['year'] === 'number' ? { year: projection.year } : {}),
+    ...(typeof world['season'] === 'string' ? { season: projection.season } : {}),
+    ...(typeof world['day'] === 'number' ? { day: projection.dayOfSeason } : {}),
+    ...(typeof world['time'] === 'string' ? { time } : {}),
   })
 }
 
@@ -335,6 +331,12 @@ export class WorldlineKernel {
   close(): void {
     if (this.stopped) return
     this.statusValue = 'stopped'
+    this.releaseStorage()
+  }
+
+  /** Flush the current state and close storage without changing the Run's status. */
+  releaseStorage(): void {
+    if (this.stopped) return
     this.commit([])
     this.stopped = true
     this.database.close()
@@ -382,6 +384,7 @@ export class WorldlineKernel {
       actions: structuredClone(this.init.blueprint.actions),
       systems: structuredClone(this.init.blueprint.systems),
       invariants: structuredClone(this.init.blueprint.invariants),
+      plotPoints: structuredClone(this.init.blueprint.plotPoints ?? []),
     }
   }
 
@@ -709,6 +712,16 @@ export class WorldlineKernel {
     ))) {
       throw new WorldlineRuntimeError('action-forbidden', 'action preconditions are not satisfied')
     }
+    if (definition.location?.mode === 'at') {
+      const actorState = actor['state']
+      const actorLocation = typeof actorState === 'object' && actorState !== null
+        && !Array.isArray(actorState) && typeof actorState['locationId'] === 'string'
+        ? worldlineId<'map-node'>(actorState['locationId'])
+        : undefined
+      if (actorLocation === undefined || !definition.location.nodeIds.includes(actorLocation)) {
+        throw new WorldlineRuntimeError('action-forbidden', 'the action is not available at the actor location')
+      }
+    }
     if (this.snapshotValue.processes.some(process => (
       process.action.actorId === request.actorId && !processTerminal(process.state)
     ))) {
@@ -732,7 +745,7 @@ export class WorldlineKernel {
       progress: 0,
       progressMeasure: Math.max(0, definition.duration),
       reservationIds: [],
-      retryBudget: definition.retryBudget,
+      maxRetries: definition.maxRetries,
       retryCount: 0,
       wakeConditions: [],
       fallbacks: definition.fallbacks,
@@ -770,13 +783,18 @@ export class WorldlineKernel {
       limit + 1,
       request.stream,
       request.afterOrdinal ?? -1,
+      request.tail === true,
     )
-    const page = records.slice(0, limit)
+    // Tail queries ask the database for one extra row as well. Keep the newest `limit`
+    // rows instead of dropping the newest row from the reversed chronological window.
+    const page = request.tail === true
+      ? records.slice(Math.max(0, records.length - limit))
+      : records.slice(0, limit)
     return {
       records: page,
       nextSequence: page.at(-1)?.sequence ?? request.afterSequence ?? -1,
       nextOrdinal: page.at(-1)?.ordinal ?? request.afterOrdinal ?? -1,
-      hasMore: records.length > limit,
+      hasMore: request.tail === true ? false : records.length > limit,
     }
   }
 
@@ -826,44 +844,6 @@ export class WorldlineKernel {
     this.snapshotValue = {
       ...this.snapshotValue,
       modelPolicy: { ...this.snapshotValue.modelPolicy, aiEnabled: request.enabled },
-    }
-    this.commit([])
-    return this.view()
-  }
-
-  /** Replace the explicit hard AI allowance without resetting accumulated usage. */
-  setAiBudget(request: SetAiBudgetRequest): RunView {
-    this.assertRun(request.runId)
-    if (request.expectedSequence !== this.snapshotValue.sequence) {
-      throw new WorldlineRuntimeError('run-conflict', 'Run advanced before the AI budget update')
-    }
-    const numeric = [
-      request.budget.maxCalls,
-      request.budget.maxInputTokens,
-      request.budget.maxOutputTokens,
-      request.budget.maxConcurrent,
-      request.budget.maxCallsPerLogicalDay,
-      request.budget.maxCallsPerRealHour,
-      request.budget.maxEstimatedCost,
-    ]
-    if (numeric.some(value => !Number.isFinite(value) || value < 0)) {
-      throw new WorldlineRuntimeError('action-invalid', 'AI budget values must be finite and non-negative')
-    }
-    if (request.budget.currency.trim() === '') {
-      throw new WorldlineRuntimeError('action-invalid', 'AI budget currency is required')
-    }
-    this.snapshotValue = {
-      ...this.snapshotValue,
-      aiBudget: {
-        ...request.budget,
-        maxCalls: Math.floor(request.budget.maxCalls),
-        maxInputTokens: Math.floor(request.budget.maxInputTokens),
-        maxOutputTokens: Math.floor(request.budget.maxOutputTokens),
-        maxConcurrent: Math.floor(request.budget.maxConcurrent),
-        maxCallsPerLogicalDay: Math.floor(request.budget.maxCallsPerLogicalDay),
-        maxCallsPerRealHour: Math.floor(request.budget.maxCallsPerRealHour),
-        currency: request.budget.currency.trim().toUpperCase(),
-      },
     }
     this.commit([])
     return this.view()
@@ -992,16 +972,12 @@ export class WorldlineKernel {
       estimatedCost: this.snapshotValue.aiUsage.estimatedCost + invocation.estimatedCost,
       cacheHits: this.snapshotValue.aiUsage.cacheHits + (invocation.cacheReadTokens > 0 ? 1 : 0),
     }
-    const budgetExceeded = this.aiBudgetExceeded(usage)
     this.snapshotValue = {
       ...this.snapshotValue,
-      aiUsage: budgetExceeded ? { ...usage, degradedReason: 'AI budget exhausted' } : usage,
-      modelPolicy: budgetExceeded
-        ? { ...this.snapshotValue.modelPolicy, aiEnabled: false }
-        : this.snapshotValue.modelPolicy,
+      aiUsage: usage,
     }
     this.commit([this.record('ai-invocation', invocation.id, invocation, this.snapshotValue.sequence)])
-    return { invocation, budgetExceeded, view: this.view() }
+    return { invocation, view: this.view() }
   }
 
   /** Apply record narrative beat through the package's validated ownership boundary.
@@ -1019,40 +995,463 @@ export class WorldlineKernel {
     if (events.some(item => item === undefined) || observations.some(item => item === undefined)) {
       throw new WorldlineRuntimeError('action-invalid', 'narrative references records outside this Run')
     }
-    if (request.style === 'llm') {
-      if (request.invocationId === undefined || request.modelRoute === undefined) {
-        throw new WorldlineRuntimeError('action-invalid', 'LLM narrative requires its recorded invocation and route')
-      }
-      const invocationPayload = this.database.record('ai-invocation', request.invocationId)?.payload
-      const invocation = invocationPayload as unknown as AiInvocation | undefined
-      if (invocation === undefined || invocation.purpose !== 'narrator'
-        || stableStringify(invocation.modelRoute) !== stableStringify(request.modelRoute)
-        || invocation.outputDigest !== createHash('sha256').update(request.text).digest('hex')) {
-        throw new WorldlineRuntimeError('action-invalid', 'narrative does not match its recorded narrator call')
-      }
-      const cited = [...request.eventIds, ...request.observationIds]
-      if (cited.some(id => !invocation.contextSourceIds.includes(id))) {
-        throw new WorldlineRuntimeError('action-invalid', 'narrative cites facts absent from its Context Pack')
-      }
+    const invocationPayload = this.database.record('ai-invocation', request.invocationId)?.payload
+    const invocation = invocationPayload as unknown as AiInvocation | undefined
+    if (invocation === undefined || invocation.purpose !== 'narrator'
+      || stableStringify(invocation.modelRoute) !== stableStringify(request.modelRoute)
+      || invocation.outputDigest !== createHash('sha256').update(request.modelOutput).digest('hex')) {
+      throw new WorldlineRuntimeError('action-invalid', 'narrative does not match its recorded narrator call')
+    }
+    const cited = [...request.eventIds, ...request.observationIds]
+    if (cited.some(id => !invocation.contextSourceIds.includes(id))) {
+      throw new WorldlineRuntimeError('action-invalid', 'narrative cites facts absent from its Context Pack')
     }
     const beat: NarrativeBeat = {
       id: worldlineId<'narrative-beat'>(this.nextId('narrative-beat')),
-      ...(request.invocationId === undefined ? {} : { invocationId: request.invocationId }),
+      invocationId: request.invocationId,
+      perspectiveActorId: request.perspectiveActorId,
       eventIds: request.eventIds,
       observationIds: request.observationIds,
       camera: request.camera,
       ...(request.speakerId === undefined ? {} : { speakerId: request.speakerId }),
       text: request.text,
+      blocks: request.blocks,
       media: request.media,
-      style: request.style,
-      ...(request.modelRoute === undefined ? {} : { modelRoute: request.modelRoute }),
+      modelRoute: request.modelRoute,
     }
     this.commit([this.record('narrative-beat', beat.id, beat, this.snapshotValue.sequence)])
     return { beat, view: this.view() }
   }
 
+  /** Persist a monotonic, player-facing playback boundary without advancing world time. */
+  completePresentation(request: CompletePresentationRequest): CompletePresentationResult {
+    this.assertRun(request.runId)
+    this.assertLive()
+    const beatRecord = this.database.record('narrative-beat', request.beatId)
+    if (beatRecord === undefined) {
+      throw new WorldlineRuntimeError('action-invalid', 'presentation beat is not retained by this Run')
+    }
+    const previous = this.snapshotValue.presentationCursors[request.actorId]
+    if (previous !== undefined) {
+      const previousRecord = this.database.record('narrative-beat', previous.completedBeatId)
+      if (previousRecord === undefined) {
+        throw new WorldlineRuntimeError('worker-failed', 'presentation cursor references a missing beat')
+      }
+      const previousOrdinal = previousRecord.ordinal ?? -1
+      const nextOrdinal = beatRecord.ordinal ?? -1
+      if (beatRecord.sequence < previousRecord.sequence
+        || (beatRecord.sequence === previousRecord.sequence && nextOrdinal < previousOrdinal)) {
+        throw new WorldlineRuntimeError('action-invalid', 'presentation cursor cannot move backwards')
+      }
+    }
+    const cursor = { actorId: request.actorId, completedBeatId: request.beatId } as const
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      presentationCursors: {
+        ...this.snapshotValue.presentationCursors,
+        [request.actorId]: cursor,
+      },
+    }
+    this.commit([this.record(
+      'presentation-progress',
+      this.nextId('presentation-progress'),
+      cursor,
+      this.snapshotValue.sequence,
+    )])
+    return { cursor, view: this.view() }
+  }
+
+  /** Validate and persist the choice director's concrete action plans as the final story-turn step. */
+  recordActionDeck(request: RecordActionDeckRequest): RecordActionDeckResult {
+    this.assertRun(request.runId)
+    this.assertLive()
+    if (request.expectedSequence !== this.snapshotValue.sequence) {
+      throw new WorldlineRuntimeError('run-conflict', 'Run advanced before the action deck was committed')
+    }
+    const beatRecord = this.database.record('narrative-beat', request.afterBeatId)
+    if (beatRecord?.sequence !== this.snapshotValue.sequence) {
+      throw new WorldlineRuntimeError(
+        'action-forbidden',
+        'action choices require a story beat committed at the current world sequence',
+      )
+    }
+    if (this.snapshotValue.storyStateCommits[request.afterBeatId] === undefined) {
+      throw new WorldlineRuntimeError(
+        'action-forbidden',
+        'action choices require the state-director turn to commit after the story beat',
+      )
+    }
+    const invocationRecord = this.database.record('ai-invocation', request.invocationId)
+    const invocation = invocationRecord?.payload as unknown as AiInvocation | undefined
+    if (invocation === undefined || invocation.purpose !== 'creative'
+      || invocation.actorId !== request.actorId
+      || !invocation.contextSourceIds.includes(request.afterBeatId)) {
+      throw new WorldlineRuntimeError(
+        'action-invalid',
+        'action deck does not match its retained choice-director invocation',
+      )
+    }
+    const opportunities = this.choices(request).choices
+    if (opportunities.length === 0) {
+      throw new WorldlineRuntimeError('action-forbidden', 'the current scene exposes no legal capabilities')
+    }
+    if (request.plans.length !== 3) {
+      throw new WorldlineRuntimeError('action-invalid', 'the choice director must produce exactly three plans')
+    }
+    const opportunityById = new Map(opportunities.map(item => [item.id, item]))
+    const labels = new Set<string>()
+    const intents = new Set<string>()
+    const storyRoles = new Set<string>()
+    const deckId = worldlineId<'action-deck'>(this.nextId('action-deck'))
+    const plans = request.plans.map((draft) => {
+      const opportunity = opportunityById.get(draft.opportunityId)
+      if (opportunity === undefined) {
+        throw new WorldlineRuntimeError('action-invalid', 'action plan references a stale capability opportunity')
+      }
+      const label = draft.label.trim()
+      const intent = draft.intent.trim()
+      const labelKey = label.normalize('NFKC').toLocaleLowerCase()
+      const intentKey = intent.normalize('NFKC').toLocaleLowerCase()
+      if (label.length < 4 || label.length > 64 || intent.length < 4 || intent.length > 240) {
+        throw new WorldlineRuntimeError('action-invalid', 'action plan label or intent is outside its bound')
+      }
+      if (labels.has(labelKey) || intents.has(intentKey)) {
+        throw new WorldlineRuntimeError('action-invalid', 'action plans must be semantically distinct')
+      }
+      labels.add(labelKey)
+      intents.add(intentKey)
+      if (storyRoles.has(draft.storyRole)) {
+        throw new WorldlineRuntimeError('action-invalid', 'each action plan must serve a distinct story role')
+      }
+      storyRoles.add(draft.storyRole)
+      return {
+        id: worldlineId<'action-plan'>(this.nextId('action-plan')),
+        actorId: request.actorId,
+        opportunityId: opportunity.id,
+        capabilityId: opportunity.actionType,
+        parameters: { ...opportunity.parameters, storyIntent: intent },
+        targetIds: opportunity.targetIds,
+        label,
+        intent,
+        storyRole: draft.storyRole,
+        estimatedDuration: opportunity.estimatedDuration,
+        costs: opportunity.costs,
+        risks: opportunity.risks,
+      }
+    })
+    if (!['advance', 'character', 'deviate'].every(role => storyRoles.has(role))) {
+      throw new WorldlineRuntimeError('action-invalid', 'action deck must cover advance, character, and deviate')
+    }
+    const deck = {
+      id: deckId,
+      actorId: request.actorId,
+      sequence: this.snapshotValue.sequence,
+      afterBeatId: request.afterBeatId,
+      invocationId: request.invocationId,
+      plans,
+    } as const
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      actionDecks: { ...this.snapshotValue.actionDecks, [request.actorId]: deck },
+    }
+    this.commit([this.record('action-deck', deck.id, deck, this.snapshotValue.sequence)])
+    return { deck, view: this.view() }
+  }
+
+  /** Apply schema-constrained soft state and perceived memories at the same stable story frontier. */
+  recordStoryState(request: RecordStoryStateRequest): RecordStoryStateResult {
+    this.assertRun(request.runId)
+    this.assertLive()
+    const retained = this.snapshotValue.storyStateCommits[request.beatId]
+    if (retained !== undefined) {
+      const progress = Object.values(this.snapshotValue.storyProgress)
+        .find(item => item.beatId === request.beatId)
+      return { commit: retained, ...(progress === undefined ? {} : { progress }), view: this.view() }
+    }
+    const beatRecord = this.database.record('narrative-beat', request.beatId)
+    const beat = beatRecord?.payload as unknown as NarrativeBeat | undefined
+    if (beat === undefined || beatRecord?.sequence !== this.snapshotValue.sequence) {
+      throw new WorldlineRuntimeError(
+        'action-invalid',
+        'story state must be derived from a narrative beat at the current world frontier',
+      )
+    }
+    const validateInvocation = (invocationId: AiInvocation['id'], subjectId?: string): AiInvocation => {
+      const record = this.database.record('ai-invocation', invocationId)
+      const invocation = record?.payload as unknown as AiInvocation | undefined
+      if (invocation === undefined || invocation.purpose !== 'creative'
+        || invocation.actorId !== beat.perspectiveActorId
+        || !invocation.contextSourceIds.includes(request.beatId)
+        || (subjectId !== undefined && !invocation.contextSourceIds.includes(subjectId))) {
+        throw new WorldlineRuntimeError(
+          'action-invalid',
+          'story state does not match its retained state-director invocation',
+        )
+      }
+      return invocation
+    }
+    const characterIds = this.init.blueprint.entities
+      .filter(entity => entity.type === 'character')
+      .map(entity => entity.id)
+    if (request.shards.length !== 2) {
+      throw new WorldlineRuntimeError(
+        'action-invalid',
+        'story state must include one world shard and one complete character-roster shard',
+      )
+    }
+    const worldShards = request.shards.filter(shard => shard.domain === 'world')
+    const characterShards = request.shards.filter(shard => shard.domain === 'characters')
+    const characterShardIds = characterShards[0]?.subjectIds ?? []
+    if (worldShards.length !== 1 || worldShards[0]?.subjectIds.length !== 0
+      || characterShards.length !== 1 || characterShardIds.length !== characterIds.length
+      || new Set(characterShardIds).size !== characterIds.length
+      || characterIds.some(actorId => !characterShardIds.includes(actorId))) {
+      throw new WorldlineRuntimeError(
+        'action-invalid',
+        'story state shards do not cover the complete world roster exactly once',
+      )
+    }
+    for (const shard of request.shards) {
+      validateInvocation(
+        shard.invocationId,
+        shard.domain === 'world' ? 'runtime:world-state-shard' : 'runtime:character-state-shard',
+      )
+      if (shard.mutations.some(mutation => shard.domain === 'world'
+        ? mutation.scope !== 'world' || mutation.actorId !== undefined
+        : mutation.scope !== 'character' || mutation.actorId === undefined
+          || !shard.subjectIds.includes(mutation.actorId))
+        || shard.memoryWrites.some(write => shard.domain !== 'characters'
+          || !shard.subjectIds.includes(write.actorId))) {
+        throw new WorldlineRuntimeError('action-invalid', 'story state shard crossed its subject boundary')
+      }
+    }
+    const mutations = request.shards.flatMap(shard => shard.mutations)
+    const memoryWriteDrafts = request.shards.flatMap(shard => shard.memoryWrites)
+    const mutationKeys = mutations.map(mutation => (
+      mutation.scope === 'world'
+        ? `world:${mutation.path}`
+        : `character:${mutation.actorId ?? ''}:${mutation.path}`
+    ))
+    if (new Set(mutationKeys).size !== mutationKeys.length) {
+      throw new WorldlineRuntimeError('action-invalid', 'story state proposed the same path more than once')
+    }
+    let progress: StoryProgressEvidence | undefined
+    if (request.progress !== undefined) {
+      const points = [...(this.init.blueprint.plotPoints ?? [])]
+        .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
+      const current = points.find(point => this.snapshotValue.storyProgress[point.id]?.status !== 'completed')
+      if (current === undefined || current.id !== request.progress.pointId) {
+        throw new WorldlineRuntimeError('action-forbidden', 'state director may only assess the current plot point')
+      }
+      const progressInvocation = validateInvocation(request.progress.invocationId, current.id)
+      if (!progressInvocation.contextSourceIds.includes(current.id)) {
+        throw new WorldlineRuntimeError(
+          'action-invalid',
+          'story progress point was absent from the state-director context',
+        )
+      }
+      const rationale = request.progress.rationale.trim()
+      const evidence = request.progress.evidence.map(item => item.trim()).filter(Boolean)
+      const eventIds = [...new Set(request.progress.eventIds)]
+      const observationIds = [...new Set(request.progress.observationIds)]
+      if (!['active', 'completed', 'failed'].includes(request.progress.status)
+        || rationale.length < 8 || rationale.length > 2_000
+        || evidence.length < 1 || evidence.length > 8
+        || evidence.some(item => item.length < 3 || item.length > 800)
+        || eventIds.some(id => !beat.eventIds.includes(id))
+        || observationIds.some(id => !beat.observationIds.includes(id))) {
+        throw new WorldlineRuntimeError('action-invalid', 'story progress evidence is invalid')
+      }
+      progress = {
+        id: worldlineId<'story-progress'>(this.nextId('story-progress')),
+        pointId: current.id,
+        sequence: this.snapshotValue.sequence,
+        beatId: request.beatId,
+        invocationId: request.progress.invocationId,
+        status: request.progress.status,
+        rationale,
+        evidence,
+        eventIds,
+        observationIds,
+      }
+    } else if ((this.init.blueprint.plotPoints ?? []).some(point => (
+      this.snapshotValue.storyProgress[point.id]?.status !== 'completed'
+    ))) {
+      throw new WorldlineRuntimeError('action-invalid', 'state director omitted the current plot assessment')
+    }
+    if (mutations.length > 64 || memoryWriteDrafts.length > 32) {
+      throw new WorldlineRuntimeError('action-invalid', 'story state proposal exceeds its bounded size')
+    }
+    const observations = beat.observationIds.map(id => (
+      this.database.record('observation', id)?.payload as unknown as Observation | undefined
+    ))
+    const perspectiveLocation = this.entity(beat.perspectiveActorId)?.['state']
+    const perspectiveLocationId = typeof perspectiveLocation === 'object'
+      && perspectiveLocation !== null && !Array.isArray(perspectiveLocation)
+      && typeof perspectiveLocation['locationId'] === 'string'
+      ? perspectiveLocation['locationId'] : undefined
+    const perceivedActors = new Set<EntityId>([
+      beat.perspectiveActorId,
+      ...observations.flatMap(item => item === undefined ? [] : [item.observerId]),
+      ...beat.blocks.flatMap(block => block.type === 'character' ? [block.actorId] : []),
+      ...this.init.blueprint.entities.flatMap(entity => entity.type === 'character'
+        && perspectiveLocationId !== undefined
+        && entity.state['locationId'] === perspectiveLocationId ? [entity.id] : []),
+    ])
+    let state = this.snapshotValue.state
+    const deltas: StateDelta[] = []
+    for (const mutation of mutations) {
+      if (!/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*){0,5}$/u.test(mutation.path)) {
+        throw new WorldlineRuntimeError('action-invalid', 'story state path is malformed')
+      }
+      let schema: JsonValue | undefined
+      let absolutePath: string
+      if (mutation.scope === 'character') {
+        if (mutation.actorId === undefined) {
+          throw new WorldlineRuntimeError('action-invalid', 'character story state requires actorId')
+        }
+        const actor = this.init.blueprint.entities.find(item => item.id === mutation.actorId)
+        if (actor === undefined || actor.type !== 'character') {
+          throw new WorldlineRuntimeError('action-forbidden', 'story state may only update characters')
+        }
+        schema = actor.facets['stateSchema']
+        absolutePath = `entities.${escapePathSegment(mutation.actorId)}.state.${mutation.path}`
+      } else {
+        if (mutation.actorId !== undefined) {
+          throw new WorldlineRuntimeError('action-invalid', 'world story state must not contain actorId')
+        }
+        if (mutation.path === 'time' || mutation.path.startsWith('time.')
+          || mutation.path === 'calendar' || mutation.path.startsWith('calendar.')) {
+          throw new WorldlineRuntimeError('action-forbidden', 'story state cannot modify Runtime time')
+        }
+        schema = this.snapshotValue.state['worldStateSchema']
+        absolutePath = `world.${mutation.path}`
+      }
+      const field = typeof schema === 'object' && schema !== null && !Array.isArray(schema)
+        ? schema[mutation.path]
+        : undefined
+      if (typeof field !== 'object' || field === null || Array.isArray(field)
+        || field['mutable'] !== true || typeof field['type'] !== 'string') {
+        throw new WorldlineRuntimeError(
+          'action-forbidden',
+          `story state path is not declared mutable: ${mutation.path}`,
+        )
+      }
+      const reason = mutation.reason.trim()
+      if (reason.length < 4 || reason.length > 240) {
+        throw new WorldlineRuntimeError('action-invalid', 'story state mutation reason is outside its bound')
+      }
+      const before = getPath(state, absolutePath)
+      let after: JsonValue
+      if (mutation.operation === 'increment') {
+        if (field['type'] !== 'number' || typeof before !== 'number'
+          || typeof mutation.value !== 'number' || !Number.isFinite(mutation.value)) {
+          throw new WorldlineRuntimeError('action-invalid', 'increment requires a declared numeric field')
+        }
+        const minimum = typeof field['minimum'] === 'number' ? field['minimum'] : -Number.MAX_SAFE_INTEGER
+        const maximum = typeof field['maximum'] === 'number' ? field['maximum'] : Number.MAX_SAFE_INTEGER
+        after = Math.min(maximum, Math.max(minimum, before + mutation.value))
+      } else if (mutation.operation === 'append' || mutation.operation === 'remove') {
+        if (field['type'] !== 'array' || !Array.isArray(before)) {
+          throw new WorldlineRuntimeError('action-invalid', 'append/remove requires a declared array field')
+        }
+        after = mutation.operation === 'append'
+          ? [...before, mutation.value].slice(-100)
+          : before.filter(item => stableStringify(item) !== stableStringify(mutation.value))
+      } else {
+        const typeMatches = field['type'] === 'string' ? typeof mutation.value === 'string'
+          : field['type'] === 'number' ? typeof mutation.value === 'number' && Number.isFinite(mutation.value)
+            : field['type'] === 'boolean' ? typeof mutation.value === 'boolean'
+              : field['type'] === 'array' ? Array.isArray(mutation.value)
+                : field['type'] === 'object' ? typeof mutation.value === 'object'
+                  && mutation.value !== null && !Array.isArray(mutation.value)
+                  : false
+        if (!typeMatches) {
+          throw new WorldlineRuntimeError('action-invalid', 'story state value does not match its schema')
+        }
+        after = mutation.value
+      }
+      if (stableStringify(before) === stableStringify(after)) continue
+      state = setPath(state, absolutePath, after)
+      deltas.push(stateDelta(absolutePath, before, after))
+    }
+    const invariantFailures = this.invariantFailures(state)
+    if (invariantFailures.length > 0) {
+      throw new WorldlineRuntimeError(
+        'action-forbidden',
+        `story state violates world invariants: ${invariantFailures.map(item => item.invariantId).join(', ')}`,
+      )
+    }
+    const memoryWrites = memoryWriteDrafts.map((write) => {
+      const actor = this.init.blueprint.entities.find(item => item.id === write.actorId)
+      if (!perceivedActors.has(write.actorId) || actor?.type !== 'character') {
+        throw new WorldlineRuntimeError('action-forbidden', 'story memory may only update perceived characters')
+      }
+      const summary = write.summary.trim()
+      if (summary.length < 4 || summary.length > 500
+        || !Number.isFinite(write.importance) || write.importance < 0 || write.importance > 1) {
+        throw new WorldlineRuntimeError('action-invalid', 'story memory write is outside its bound')
+      }
+      return { actorId: write.actorId, summary, importance: write.importance }
+    })
+    this.snapshotValue = { ...this.snapshotValue, state }
+    for (const write of memoryWrites) {
+      const memory = this.characterMemory(write.actorId)
+      const actorState = this.entity(write.actorId)?.['state']
+      const placeId = typeof actorState === 'object' && actorState !== null && !Array.isArray(actorState)
+        && typeof actorState['locationId'] === 'string'
+        ? worldlineId<'map-node'>(actorState['locationId'])
+        : undefined
+      this.setCharacterMemory(write.actorId, {
+        ...memory,
+        episodic: [...memory.episodic, {
+          id: worldlineId<'memory'>(this.nextId('memory')),
+          actorId: write.actorId,
+          logicalTime: this.snapshotValue.logicalTime,
+          sourceEventIds: beat.eventIds,
+          importance: write.importance,
+          summary: write.summary,
+          participants: [...perceivedActors],
+          ...(placeId === undefined ? {} : { placeId }),
+        }].slice(-MEMORY_CATEGORY_LIMIT),
+      })
+    }
+    const commit: StoryStateCommit = {
+      id: worldlineId<'story-state'>(this.nextId('story-state')),
+      sequence: this.snapshotValue.sequence,
+      beatId: request.beatId,
+      shards: request.shards,
+      ...(request.progress === undefined ? {} : {
+        progressInvocationId: request.progress.invocationId,
+      }),
+      mutations,
+      memoryWrites,
+      deltas,
+    }
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      storyStateCommits: {
+        ...this.snapshotValue.storyStateCommits,
+        [request.beatId]: commit,
+      },
+      ...(progress === undefined ? {} : {
+        storyProgress: { ...this.snapshotValue.storyProgress, [progress.pointId]: progress },
+      }),
+    }
+    this.commit([
+      this.record('story-state', commit.id, commit, this.snapshotValue.sequence),
+      ...(progress === undefined ? [] : [this.record(
+        'story-progress',
+        progress.id,
+        progress,
+        this.snapshotValue.sequence,
+      )]),
+    ])
+    return { commit, ...(progress === undefined ? {} : { progress }), view: this.view() }
+  }
+
   private initialSnapshot(): RunSnapshot {
-    const futureEvents: FutureEvent[] = this.init.blueprint.systems.map((system, index) => ({
+    const systemEvents: FutureEvent[] = this.init.blueprint.systems.map((system, index) => ({
       id: `future:${contentFingerprint(`${this.init.runId}:${system.id}:initial`)}`,
       due: Math.max(0, system.nextWake),
       order: index,
@@ -1060,6 +1459,34 @@ export class WorldlineKernel {
       payload: { systemId: system.id },
       dedupeKey: `system:${system.id}`,
     }))
+    const plotEvents: FutureEvent[] = (this.init.blueprint.plotPoints ?? []).flatMap((point, pointIndex) => ([{
+      id: `future:${contentFingerprint(`${this.init.runId}:${point.id}:activate`)}`,
+      due: point.timing.activateAt,
+      order: systemEvents.length + pointIndex * 100,
+      kind: 'plot-time-control',
+      payload: { pointId: point.id, phase: 'activate', priority: 20 },
+      dedupeKey: `plot:${point.id}:activate`,
+    }, ...point.timing.interventions.map((intervention, interventionIndex) => ({
+      id: `future:${contentFingerprint(`${this.init.runId}:${intervention.id}`)}`,
+      due: intervention.at,
+      order: systemEvents.length + pointIndex * 100 + interventionIndex + 1,
+      kind: 'plot-time-control',
+      payload: {
+        pointId: point.id,
+        phase: 'intervention',
+        interventionId: intervention.id,
+        priority: 30,
+      },
+      dedupeKey: `plot:${intervention.id}`,
+    })), {
+      id: `future:${contentFingerprint(`${this.init.runId}:${point.id}:deadline`)}`,
+      due: point.timing.deadlineAt,
+      order: systemEvents.length + pointIndex * 100 + point.timing.interventions.length + 1,
+      kind: 'plot-time-control',
+      payload: { pointId: point.id, phase: 'deadline', priority: 40 },
+      dedupeKey: `plot:${point.id}:deadline`,
+    }]))
+    const futureEvents = [...systemEvents, ...plotEvents]
     return {
       runId: this.init.runId,
       blueprintId: this.init.blueprint.id,
@@ -1079,11 +1506,14 @@ export class WorldlineKernel {
       futureEvents,
       randomState: createHash('sha256').update(this.init.seed).digest('hex'),
       modelPolicy: this.init.modelPolicy ?? this.init.blueprint.modelPolicy,
-      aiBudget: this.init.aiBudget ?? DEFAULT_AI_BUDGET,
       aiUsage: {
         calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
         estimatedCost: 0, cacheHits: 0,
       },
+      presentationCursors: {},
+      actionDecks: {},
+      storyProgress: {},
+      storyStateCommits: {},
     }
   }
 
@@ -1125,8 +1555,8 @@ export class WorldlineKernel {
     if (process.deadline !== undefined && now >= process.deadline) {
       return this.failProcess(process, definition, 'resource wait deadline exceeded', records)
     }
-    if (process.retryCount >= process.retryBudget) {
-      return this.failProcess(process, definition, 'resource retry budget exhausted', records)
+    if (process.retryCount >= process.maxRetries) {
+      return this.failProcess(process, definition, 'maximum resource retries reached', records)
     }
     const delay = Math.min(300, 5 * (2 ** process.retryCount))
     const waiting: Process = {
@@ -1255,6 +1685,51 @@ export class WorldlineKernel {
       if (typeof processId !== 'string') throw new Error('movement event has no process ID')
       this.advanceMovement(processId, Number(future.payload['edgeIndex']), records)
     }
+    if (future.kind === 'plot-time-control') this.runPlotTimeControl(future, records)
+  }
+
+  private runPlotTimeControl(future: FutureEvent, records: RunStreamRecord[]): void {
+    const pointId = future.payload['pointId']
+    const phase = future.payload['phase']
+    if (typeof pointId !== 'string' || typeof phase !== 'string'
+      || !['activate', 'intervention', 'deadline'].includes(phase)) return
+    const point = this.init.blueprint.plotPoints?.find(candidate => candidate.id === pointId)
+    if (point === undefined || this.snapshotValue.storyProgress[point.id]?.status === 'completed') return
+    const interventionId = future.payload['interventionId']
+    const intervention = typeof interventionId === 'string'
+      ? point.timing.interventions.find(candidate => candidate.id === interventionId)
+      : undefined
+    const title = phase === 'activate' ? `剧情阶段已激活：${point.name}`
+      : phase === 'deadline' ? `剧情截止已到：${point.name}`
+        : intervention?.title ?? `剧情时间干预：${point.name}`
+    const description = phase === 'activate' ? point.entryCondition
+      : phase === 'deadline' ? point.failureOutcome
+        : intervention?.description ?? point.dramaticPressure
+    const participants = this.init.blueprint.entities
+      .filter(entity => entity.type === 'character').map(entity => entity.id)
+    this.emitEvent(this.worldEvent({
+      type: phase === 'deadline' ? 'story.deadline' : 'story.intervention',
+      participantIds: participants,
+      ruleId: point.id,
+      deltas: [],
+      persistentFacts: [{
+        subject: point.id,
+        predicate: phase === 'deadline' ? 'deadline-reached' : 'time-intervention-reached',
+        object: intervention?.id ?? phase,
+        title,
+        description,
+        at: this.snapshotValue.logicalTime,
+      }],
+      cognitionChanges: [],
+      provenance: point.provenance,
+      data: {
+        pointId: point.id,
+        phase,
+        title,
+        description,
+        deadlineAt: point.timing.deadlineAt,
+      },
+    }), records)
   }
 
   private runSystem(id: string, records: RunStreamRecord[]): void {
@@ -1413,7 +1888,9 @@ export class WorldlineKernel {
     })
   }
 
-  private worldEvent(input: Omit<WorldEvent, 'id' | 'sequence' | 'logicalTime' | 'causedBy' | 'persistentFacts' | 'visibleTo'>): WorldEvent {
+  private worldEvent(input: Omit<WorldEvent, 'id' | 'sequence' | 'logicalTime' | 'causedBy' | 'persistentFacts' | 'visibleTo'> & {
+    readonly persistentFacts?: WorldEvent['persistentFacts']
+  }): WorldEvent {
     return {
       id: worldlineId<'event'>(this.nextId('event')),
       sequence: this.snapshotValue.sequence + 1,
@@ -1761,7 +2238,7 @@ export class WorldlineKernel {
       .sort((left, right) => left.action.requestedAt - right.action.requestedAt || left.id.localeCompare(right.id))[0]
     if (victim !== undefined) {
       this.healthValue.livelocksResolved += 1
-      this.failProcess(victim, this.definition(victim.action.type), 'no-progress budget exhausted', records)
+      this.failProcess(victim, this.definition(victim.action.type), 'maximum no-progress attempts reached', records)
     }
     this.healthValue.noProgressSteps = 0
     this.statusValue = 'degraded'
@@ -1827,12 +2304,16 @@ export class WorldlineKernel {
     definition: ActionDefinition,
   ): ChoiceProjection[] {
     if (definition.operator !== 'move' && definition.operator !== 'teleport') {
+      const actorState = this.entity(actorId)?.['state']
+      const actorLocation = typeof actorState === 'object' && actorState !== null
+        && !Array.isArray(actorState) && typeof actorState['locationId'] === 'string'
+        ? worldlineId<'map-node'>(actorState['locationId'])
+        : undefined
+      if (definition.location?.mode === 'at'
+        && (actorLocation === undefined || !definition.location.nodeIds.includes(actorLocation))) {
+        return []
+      }
       if (actionNeedsTarget(definition)) {
-        const actorState = this.entity(actorId)?.['state']
-        const actorLocation = typeof actorState === 'object' && actorState !== null
-          && !Array.isArray(actorState) && typeof actorState['locationId'] === 'string'
-          ? actorState['locationId']
-          : undefined
         return this.init.blueprint.entities
           .filter(entity => entity.type === 'character' && entity.id !== actorId)
           .filter((target) => {
@@ -1917,23 +2398,6 @@ export class WorldlineKernel {
       writerThread: true,
       wal: !verifyStore || this.database.integrity().journalMode.toLowerCase() === 'wal',
     }
-  }
-
-  private aiBudgetExceeded(usage: RunSnapshot['aiUsage']): boolean {
-    const budget = this.snapshotValue.aiBudget
-    const invocations = this.database.records(-1, 5000, 'ai-invocation')
-      .map(record => record.payload as unknown as AiInvocation)
-    const logicalDay = Math.floor(this.snapshotValue.logicalTime / 86_400)
-    const callsThisLogicalDay = invocations
-      .filter(item => Math.floor(item.logicalTime / 86_400) === logicalDay).length + 1
-    const hourAgo = Date.now() - 3_600_000
-    const callsThisRealHour = invocations.filter(item => Date.parse(item.recordedAt) >= hourAgo).length + 1
-    return usage.calls > budget.maxCalls
-      || usage.inputTokens > budget.maxInputTokens
-      || usage.outputTokens > budget.maxOutputTokens
-      || usage.estimatedCost > budget.maxEstimatedCost
-      || callsThisLogicalDay > budget.maxCallsPerLogicalDay
-      || callsThisRealHour > budget.maxCallsPerRealHour
   }
 
   private schedule(kind: string, due: number, payload: JsonObject, dedupeKey?: string): void {

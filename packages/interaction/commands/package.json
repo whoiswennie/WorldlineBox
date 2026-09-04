@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-commands",
   "description": "Plugin-owned human command registry for Worldline UIs",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "publishConfig": {
     "access": "public"
   },

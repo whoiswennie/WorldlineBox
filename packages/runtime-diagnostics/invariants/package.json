@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-invariants",
   "description": "Registry service for package-owned Worldline runtime invariants",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "publishConfig": {
     "access": "public"
   },

@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-agent-vault",
   "description": "Portable file-native cognitive vault seam for Worldline Agents",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

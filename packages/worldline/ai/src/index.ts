@@ -3,9 +3,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
   BlockAssembler,
+  errorChain,
   ReasoningEffortId,
   createUserMessage,
+  type GenerateOptions,
+  type LlmFailure,
   type LlmModelInfo,
+  type ResolvedRetryPolicy,
   type TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
@@ -20,11 +24,10 @@ import type {
   EntityId,
   JsonObject,
   JsonValue,
+  ModelPurpose,
   ModelRoute,
 } from '@deepseek-ai/dsh-worldline-standard/types'
 import type {
-  AiBudgetRequest,
-  AiBudgetStatus,
   AiDecisionResult,
   ContextPackRequest,
   DecideForActorRequest,
@@ -86,8 +89,34 @@ interface ParsedDecision {
   readonly confidence: number
 }
 
+interface TextAttempt {
+  readonly assembler: BlockAssembler
+  readonly output: string
+  readonly textOutput: string
+  readonly toolCalls: readonly { readonly name: string; readonly arguments: string }[]
+  readonly failure?: LlmFailure
+}
+
 const EMPTY_MEMORY: CharacterMemory = {
   episodic: [], beliefs: [], goals: [], relationships: [], experience: [], skills: [], reflections: [],
+}
+
+function routeForPurpose(
+  routes: Readonly<Partial<Record<ModelPurpose, ModelRoute>>>,
+  purpose: ModelPurpose,
+): ModelRoute | undefined {
+  return purpose === 'creative' ? routes.creative ?? routes.narrator : routes[purpose]
+}
+
+function creativeToolSystem(tools: readonly { readonly name: string }[]): string {
+  const names = new Set(tools.map(tool => tool.name))
+  if (names.has('story_propose_state_update')) {
+    return 'Use the supplied state-update tool to derive only schema-allowed world, character, and memory changes caused by the saved prose and authoritative records. Keep unaffected fields unchanged, respect each character knowledge boundary, and never invent a later event.'
+  }
+  if (names.has('story_assess_progress')) {
+    return 'Use the supplied progress tool to audit only the current plot point against saved prose and authoritative records. Cite concrete evidence, keep the point active when proof is missing, and never create a new event or state change.'
+  }
+  return 'Act as the bounded Story Director. Use the supplied planning tool to return scene-aware suggestions or one player-intent proposal. Select only exact Runtime-legal ids from the input; never invent a result or world-state change.'
 }
 
 function record(value: JsonValue | undefined): JsonObject | undefined {
@@ -112,6 +141,34 @@ function parseDecision(text: string): ParsedDecision | undefined {
   } catch {
     return undefined
   }
+}
+
+function retryDelay(policy: ResolvedRetryPolicy, retry: number): number {
+  const exponent = Math.min(Math.max(0, retry - 1), 1024)
+  const base = Math.min(policy.initialDelayMs * 2 ** exponent, policy.maxDelayMs)
+  const jitter = 1 - policy.jitterRatio + 2 * policy.jitterRatio * Math.random()
+  return Math.max(1, Math.round(Math.min(base * jitter, policy.maxDelayMs)))
+}
+
+function retryable(policy: ResolvedRetryPolicy, failure: LlmFailure, retries: number): boolean {
+  if (failure.code === 'ABORTED') return false
+  if (policy.mode === 'always') return true
+  return retries < policy.maxRetries && policy.retryableCodes.includes(failure.code)
+}
+
+function failureFrom(assembler: BlockAssembler, thrown: unknown): LlmFailure | undefined {
+  if (assembler.finish.kind === 'error') return assembler.finish.failure
+  if (assembler.finish.kind === 'aborted') {
+    return { ...assembler.finish.failure, code: 'ABORTED' }
+  }
+  if (thrown === undefined) return undefined
+  if (typeof thrown === 'object' && thrown !== null && 'code' in thrown
+    && typeof thrown.code === 'string') {
+    return { code: thrown.code, message: errorChain(thrown) }
+  }
+  // This boundary only surrounds provider iteration. An untyped throw here is a transport
+  // failure, not an application exception; finite provider policy still bounds repetition.
+  return { code: 'TRANSPORT', message: errorChain(thrown) }
 }
 
 /** Bounded one-shot model planner. Runtime remains the only authority that can change world state. */
@@ -159,7 +216,7 @@ export default class WorldlineAi extends TypertRemoteService {
   async contextPack(request: ContextPackRequest): Promise<ContextPack> {
     const view = await this.context.worldlineRuns.view({ runId: request.runId })
     const purpose = request.purpose ?? 'character'
-    const route = view.snapshot.modelPolicy.routes[purpose]
+    const route = routeForPurpose(view.snapshot.modelPolicy.routes, purpose)
     if (route === undefined) {
       throw new WorldlineAiError('model-route-missing', `no ${purpose} model route is configured for this Run`)
     }
@@ -278,64 +335,7 @@ export default class WorldlineAi extends TypertRemoteService {
     return pack
   }
 
-  /** Return the current AI budget state for a Run.
-   * @param request - The request supplied by the caller.
-   * @returns The result produced by the operation.
-   */
-  @Remote('budget')
-  async budget(request: AiBudgetRequest): Promise<AiBudgetStatus> {
-    const view = await this.context.worldlineRuns.view({ runId: request.runId })
-    const purpose = request.purpose ?? 'character'
-    const route = view.snapshot.modelPolicy.routes[purpose]
-    const pack = request.contextPack ?? (route === undefined ? undefined : await this.contextPack(request))
-    const invocations = (await this.context.worldlineRuns.records({
-      runId: request.runId,
-      stream: 'ai-invocation',
-      limit: 5000,
-    })).records.map(item => item.payload as unknown as AiInvocation)
-    const budget = view.snapshot.aiBudget
-    const logicalDay = Math.floor(view.snapshot.logicalTime / 86_400)
-    const logicalCalls = invocations.filter(item => Math.floor(item.logicalTime / 86_400) === logicalDay).length
-    const hourAgo = Date.now() - 3_600_000
-    const realHourCalls = invocations.filter(item => Date.parse(item.recordedAt) >= hourAgo).length
-    const activeCalls = this.active.get(request.runId) ?? 0
-    const priced = route === undefined
-      ? { cost: 0, source: 'conservative-fallback' as const }
-      : this.estimatedCost(route, pack?.totalTokens ?? 0, pack?.reservedOutputTokens ?? 0, 0)
-    const reasons: string[] = []
-    if (!view.snapshot.modelPolicy.aiEnabled) reasons.push('AI is paused for this Run.')
-    if (route === undefined) reasons.push(`No ${purpose} model route is configured.`)
-    if (view.snapshot.aiUsage.calls >= budget.maxCalls) reasons.push('Call budget is exhausted.')
-    if (view.snapshot.aiUsage.inputTokens + (pack?.totalTokens ?? 0) > budget.maxInputTokens) {
-      reasons.push('Input-token budget is exhausted.')
-    }
-    if (view.snapshot.aiUsage.outputTokens + (pack?.reservedOutputTokens ?? 0) > budget.maxOutputTokens) {
-      reasons.push('Output-token budget is exhausted.')
-    }
-    if (logicalCalls >= budget.maxCallsPerLogicalDay) reasons.push('Logical-day call budget is exhausted.')
-    if (realHourCalls >= budget.maxCallsPerRealHour) reasons.push('Real-hour call budget is exhausted.')
-    if (activeCalls >= budget.maxConcurrent) reasons.push('Concurrent-call budget is exhausted.')
-    if (view.snapshot.aiUsage.estimatedCost + priced.cost > budget.maxEstimatedCost) {
-      reasons.push('Estimated monetary budget is exhausted.')
-    }
-    return {
-      runId: request.runId,
-      allowed: reasons.length === 0,
-      reasons,
-      ...(route === undefined ? {} : { route }),
-      activeCalls,
-      callsRemaining: Math.max(0, budget.maxCalls - view.snapshot.aiUsage.calls),
-      inputTokensRemaining: Math.max(0, budget.maxInputTokens - view.snapshot.aiUsage.inputTokens),
-      outputTokensRemaining: Math.max(0, budget.maxOutputTokens - view.snapshot.aiUsage.outputTokens),
-      logicalDayCallsRemaining: Math.max(0, budget.maxCallsPerLogicalDay - logicalCalls),
-      realHourCallsRemaining: Math.max(0, budget.maxCallsPerRealHour - realHourCalls),
-      estimatedNextCost: priced.cost,
-      estimatedCostRemaining: Math.max(0, budget.maxEstimatedCost - view.snapshot.aiUsage.estimatedCost),
-      pricing: priced.source,
-    }
-  }
-
-  /** Route one actor decision through policy, budget, and validation gates.
+  /** Route one actor decision through policy, context-capacity, and validation gates.
    * @param request - The request supplied by the caller.
    * @returns The result produced by the operation.
    */
@@ -352,10 +352,6 @@ export default class WorldlineAi extends TypertRemoteService {
       return { status: 'no-legal-choice', message: 'Runtime projected no legal action choices.' }
     }
     const pack = await this.contextPack(request)
-    const budget = await this.budget({ ...request, contextPack: pack })
-    if (!budget.allowed || budget.route === undefined) {
-      return { status: 'budget-blocked', message: budget.reasons.join(' '), contextPack: pack, budget }
-    }
     const recent = (await this.context.worldlineRuns.records({
       runId: request.runId,
       stream: 'ai-invocation',
@@ -369,10 +365,9 @@ export default class WorldlineAi extends TypertRemoteService {
         status: 'deterministic-only',
         message: 'The L2 actor is inside its low-frequency model cooldown.',
         contextPack: pack,
-        budget,
       }
     }
-    return this.callDecision(request, choices.sequence, choices.choices, pack, budget)
+    return this.callDecision(request, choices.sequence, choices.choices, pack)
   }
 
   /** Host-only streaming primitive used by authority-constrained narrative and summary services.
@@ -381,74 +376,133 @@ export default class WorldlineAi extends TypertRemoteService {
    */
   async *streamText(request: StreamWorldlineTextRequest): AsyncIterable<WorldlineTextChunk> {
     validateContextPack(request.contextPack)
-    const budget = await this.budget({
-      runId: request.runId,
-      actorId: request.actorId,
-      purpose: request.purpose === 'creative' ? 'narrator' : request.purpose,
-      contextPack: request.contextPack,
-    })
-    if (!budget.allowed || budget.route === undefined) {
-      yield { type: 'blocked', budget }
-      return
+    let route = request.contextPack.model
+    if (route.reasoningEffort === undefined
+      && (request.purpose === 'narrator' || request.purpose === 'summary'
+        || (request.tools?.length ?? 0) > 0)) {
+      const model = await this.context.llm.resolveModelInfo(route.provider, route.model)
+      if (model.reasoning?.efforts.some(effort => effort.id === 'off')) {
+        route = { ...route, reasoningEffort: 'off' }
+      }
     }
-    const route = budget.route
+    const message = createUserMessage({
+      source: {
+        kind: 'plugin',
+        plugin: 'worldline-ai',
+        form: 'snapshot',
+        sections: request.contextPack.sections.map(section => ({ name: section.kind, text: section.text })),
+      },
+      content: [{
+        type: 'text',
+        text: request.contextPack.sections.map(section => `## ${section.kind}\n${section.text}`).join('\n\n'),
+      }],
+    })
+    const options: GenerateOptions = {
+      provider: route.provider,
+      model: route.model,
+      ...(route.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: ReasoningEffortId(route.reasoningEffort) }),
+      messages: [message],
+      system: request.purpose === 'summary'
+        ? 'Summarize only supplied authoritative records. Add no facts.'
+        : request.purpose === 'creative'
+          ? request.tools !== undefined && request.tools.length > 0
+            ? creativeToolSystem(request.tools)
+            : 'Follow the supplied bounded planning contract. Return only the requested JSON. Select only exact legal choice IDs from the input; never create an action, parameter, result, or world-state change.'
+          : request.tools !== undefined && request.tools.length > 0
+            ? 'Use only the supplied presentation tools, in story order, to stage the requested bounded visual interactive fiction. Each call is one player-revealed unit. Tool calls may present known facts but cannot mutate world state. Never invent an actor id, media cue, durable fact, location change, relationship change, item, injury, or completed result.'
+            : 'Write only the requested bounded visual-interactive-fiction story blocks. Preserve the exact narration/dialogue/thought/action tags and exact legal actor IDs. You may stage dialogue, body language and sensory detail consistent with known character profiles, but never invent durable world-state changes.',
+      ...(request.tools === undefined ? {} : { tools: [...request.tools] }),
+      maxTokens: request.contextPack.reservedOutputTokens,
+      temperature: request.temperature ?? 0.6,
+    }
+    const policy = this.context.llm.providerRetryPolicy(route.provider)
+    let retries = 0
+    while (true) {
+      const attempt = await this.textAttempt(request.runId, options, request.maxCharacters)
+      const invocation = await this.recordInvocation(
+        { runId: request.runId, actorId: request.actorId },
+        route,
+        request.contextPack,
+        attempt.assembler.usage,
+        attempt.output,
+        attempt.failure === undefined ? 'completed' : 'failed',
+        request.purpose,
+      )
+      if (attempt.failure === undefined) {
+        if (attempt.textOutput !== '') yield { type: 'text-delta', text: attempt.textOutput }
+        for (const tool of attempt.toolCalls) yield { type: 'tool-call', ...tool }
+        yield {
+          type: 'finish',
+          invocation: invocation.invocation,
+          output: attempt.output,
+        }
+        return
+      }
+      if (!retryable(policy, attempt.failure, retries)) {
+        throw new WorldlineAiError(
+          'model-retry-exhausted',
+          `模型连接在 ${String(retries + 1)} 次尝试后仍失败（${attempt.failure.code}）：${attempt.failure.message}`,
+        )
+      }
+      retries += 1
+      const localDelay = retryDelay(policy, retries)
+      const requestedDelay = attempt.failure.providerRetryAfterMs
+      const delayMs = requestedDelay !== undefined && requestedDelay <= policy.maxDelayMs
+        ? Math.max(1, Math.round(requestedDelay))
+        : localDelay
+      yield {
+        type: 'retry',
+        attempt: retries + 1,
+        ...(policy.mode === 'normal' ? { maxAttempts: policy.maxRetries + 1 } : {}),
+        delayMs,
+        failure: { code: attempt.failure.code, message: attempt.failure.message },
+      }
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
+  }
+
+  private async textAttempt(
+    runId: string,
+    options: GenerateOptions,
+    maxCharacters: number | undefined,
+  ): Promise<TextAttempt> {
     const assembler = new BlockAssembler()
     let thrown: unknown
-    this.active.set(request.runId, (this.active.get(request.runId) ?? 0) + 1)
+    this.active.set(runId, (this.active.get(runId) ?? 0) + 1)
     try {
-      const message = createUserMessage({
-        source: {
-          kind: 'plugin',
-          plugin: 'worldline-ai',
-          form: 'snapshot',
-          sections: request.contextPack.sections.map(section => ({ name: section.kind, text: section.text })),
-        },
-        content: [{
-          type: 'text',
-          text: request.contextPack.sections.map(section => `## ${section.kind}\n${section.text}`).join('\n\n'),
-        }],
-      })
-      for await (const chunk of this.context.llm.stream({
-        provider: route.provider,
-        model: route.model,
-        ...(route.reasoningEffort === undefined
-          ? {}
-          : { reasoningEffort: ReasoningEffortId(route.reasoningEffort) }),
-        messages: [message],
-        system: request.purpose === 'summary'
-          ? 'Summarize only supplied authoritative records. Add no facts.'
-          : 'Write prose using only supplied WorldEvents, Observations and SceneFrame. Add no facts, secrets, participants or state changes.',
-        maxTokens: request.contextPack.reservedOutputTokens,
-        temperature: request.temperature ?? 0.6,
-      })) {
-        assembler.push(chunk)
-        if (chunk.type === 'text-delta' && chunk.text !== '') {
-          yield { type: 'text-delta', text: chunk.text }
-        }
-      }
+      for await (const chunk of this.context.llm.stream(options)) assembler.push(chunk)
     } catch (error) {
       thrown = error
     } finally {
-      const next = Math.max(0, (this.active.get(request.runId) ?? 1) - 1)
-      if (next === 0) this.active.delete(request.runId)
-      else this.active.set(request.runId, next)
+      const next = Math.max(0, (this.active.get(runId) ?? 1) - 1)
+      if (next === 0) this.active.delete(runId)
+      else this.active.set(runId, next)
     }
-    const output = assembler.blocks().flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
-    const failed = thrown !== undefined || assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted'
-    const invocation = await this.recordInvocation(
-      { runId: request.runId, actorId: request.actorId },
-      route,
-      request.contextPack,
-      assembler.usage,
-      output,
-      failed ? 'failed' : 'completed',
-      request.purpose,
-    )
-    yield {
-      type: 'finish',
-      invocation: invocation.invocation,
-      budgetExceeded: invocation.budgetExceeded,
+    const failure = failureFrom(assembler, thrown)
+    let blocks: ReturnType<BlockAssembler['blocks']> = []
+    try {
+      blocks = assembler.blocks()
+    } catch (error) {
+      return {
+        assembler,
+        output: '',
+        textOutput: '',
+        toolCalls: [],
+        failure: { code: 'TRANSPORT', message: errorChain(error) },
+      }
     }
+    const rawText = blocks.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    const textOutput = (maxCharacters === undefined
+      ? rawText
+      : rawText.slice(0, Math.max(1, maxCharacters))).trim()
+    const toolCalls = blocks.flatMap(block => block.type === 'tool-call'
+      ? [{ name: block.name, arguments: block.arguments }]
+      : [])
+    const toolOutput = toolCalls.map(tool => stableStringify(tool))
+    const output = [...(textOutput === '' ? [] : [textOutput]), ...toolOutput].join('\n')
+    return { assembler, output, textOutput, toolCalls, ...(failure === undefined ? {} : { failure }) }
   }
 
   private async describeModel(model: LlmModelInfo): Promise<WorldlineAiModel> {
@@ -530,7 +584,10 @@ export default class WorldlineAi extends TypertRemoteService {
     return low === 0 ? '' : `${text.slice(0, low)}…`
   }
 
-  private price(route: ModelRoute): { readonly price: RoutePrice; readonly source: AiBudgetStatus['pricing'] } {
+  private price(route: ModelRoute): {
+    readonly price: RoutePrice
+    readonly source: 'route' | 'conservative-fallback'
+  } {
     const configured = this.config.routePrices.find(item => (
       item.provider === route.provider && item.model === route.model
     ))
@@ -553,7 +610,7 @@ export default class WorldlineAi extends TypertRemoteService {
     inputTokens: number,
     outputTokens: number,
     cacheReadTokens: number,
-  ): { readonly cost: number; readonly source: AiBudgetStatus['pricing'] } {
+  ): { readonly cost: number; readonly source: 'route' | 'conservative-fallback' } {
     const { price, source } = this.price(route)
     return {
       cost: (
@@ -570,68 +627,58 @@ export default class WorldlineAi extends TypertRemoteService {
     expectedSequence: number,
     choices: Awaited<ReturnType<Context['worldlineRuns']['choices']>>['choices'],
     pack: ContextPack,
-    budget: AiBudgetStatus,
   ): Promise<AiDecisionResult> {
-    const route = budget.route
-    if (route === undefined) throw new WorldlineAiError('model-route-missing', 'character model route disappeared')
-    this.active.set(request.runId, (this.active.get(request.runId) ?? 0) + 1)
-    const assembler = new BlockAssembler()
-    let thrown: unknown
-    try {
-      const message = createUserMessage({
-        source: { kind: 'plugin', plugin: 'worldline-ai', form: 'snapshot', sections: pack.sections.map(section => ({
-          name: section.kind,
-          text: section.text,
-        })) },
-        content: [{ type: 'text', text: pack.sections.map(section => (
-          `## ${section.kind}\n${section.text}`
-        )).join('\n\n') }],
-      })
-      for await (const chunk of this.context.llm.stream({
-        provider: route.provider,
-        model: route.model,
-        ...(route.reasoningEffort === undefined
-          ? {}
-          : { reasoningEffort: ReasoningEffortId(route.reasoningEffort) }),
-        messages: [message],
-        system: 'Return only JSON: {"choiceId":"...","rationale":"...","confidence":0..1}. Choose exactly one listed choice. Do not create world facts.',
-        maxTokens: pack.reservedOutputTokens,
-        temperature: 0.2,
-      })) assembler.push(chunk)
-    } catch (error) {
-      thrown = error
-    } finally {
-      const next = Math.max(0, (this.active.get(request.runId) ?? 1) - 1)
-      if (next === 0) this.active.delete(request.runId)
-      else this.active.set(request.runId, next)
+    const route = pack.model
+    const message = createUserMessage({
+      source: { kind: 'plugin', plugin: 'worldline-ai', form: 'snapshot', sections: pack.sections.map(section => ({
+        name: section.kind,
+        text: section.text,
+      })) },
+      content: [{ type: 'text', text: pack.sections.map(section => (
+        `## ${section.kind}\n${section.text}`
+      )).join('\n\n') }],
+    })
+    const options: GenerateOptions = {
+      provider: route.provider,
+      model: route.model,
+      ...(route.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: ReasoningEffortId(route.reasoningEffort) }),
+      messages: [message],
+      system: 'Return only JSON: {"choiceId":"...","rationale":"...","confidence":0..1}. Choose exactly one listed choice. Do not create world facts.',
+      maxTokens: pack.reservedOutputTokens,
+      temperature: 0.2,
     }
-    const output = assembler.blocks().flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
-    const failed = thrown !== undefined || assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted'
-    const invocation = await this.recordInvocation(
-      request,
-      route,
-      pack,
-      assembler.usage,
-      output,
-      failed ? 'failed' : 'completed',
-    )
-    if (failed) {
-      return {
-        status: 'model-failed',
-        message: thrown instanceof Error ? thrown.message : 'The model call failed; deterministic Runtime remains active.',
-        contextPack: pack,
-        budget,
-        invocation: invocation.invocation,
+    const policy = this.context.llm.providerRetryPolicy(route.provider)
+    let retries = 0
+    let invocation: Awaited<ReturnType<WorldlineAi['recordInvocation']>>
+    let output = ''
+    while (true) {
+      const attempt = await this.textAttempt(request.runId, options, undefined)
+      invocation = await this.recordInvocation(
+        request,
+        route,
+        pack,
+        attempt.assembler.usage,
+        attempt.output,
+        attempt.failure === undefined ? 'completed' : 'failed',
+      )
+      output = attempt.output
+      if (attempt.failure === undefined) break
+      if (!retryable(policy, attempt.failure, retries)) {
+        return {
+          status: 'model-failed',
+          message: `The model call failed after ${String(retries + 1)} attempts: ${attempt.failure.message}; deterministic Runtime remains active.`,
+          contextPack: pack,
+          invocation: invocation.invocation,
+        }
       }
-    }
-    if (invocation.budgetExceeded) {
-      return {
-        status: 'budget-blocked',
-        message: 'Actual model usage exhausted the Run budget; the proposal was retained but not applied.',
-        contextPack: pack,
-        budget,
-        invocation: invocation.invocation,
-      }
+      retries += 1
+      const requestedDelay = attempt.failure.providerRetryAfterMs
+      const delayMs = requestedDelay !== undefined && requestedDelay <= policy.maxDelayMs
+        ? Math.max(1, Math.round(requestedDelay))
+        : retryDelay(policy, retries)
+      await new Promise(resolve => setTimeout(resolve, delayMs))
     }
     const parsed = parseDecision(output)
     const choice = parsed === undefined ? undefined : choices.find(item => item.id === parsed.choiceId)
@@ -640,7 +687,6 @@ export default class WorldlineAi extends TypertRemoteService {
         status: 'invalid-output',
         message: 'The model did not select one legal Runtime choice.',
         contextPack: pack,
-        budget,
         invocation: invocation.invocation,
       }
     }
@@ -670,7 +716,6 @@ export default class WorldlineAi extends TypertRemoteService {
         status: 'submitted',
         message: 'The recorded intent passed Runtime validation and started an Action.',
         contextPack: pack,
-        budget,
         invocation: invocation.invocation,
         intent: recorded.intent,
         action,
@@ -680,7 +725,6 @@ export default class WorldlineAi extends TypertRemoteService {
         status: 'conflict',
         message: error instanceof Error ? error.message : String(error),
         contextPack: pack,
-        budget,
         invocation: invocation.invocation,
         intent: recorded.intent,
       }

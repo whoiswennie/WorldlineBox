@@ -3453,7 +3453,7 @@ export interface RoutePrice {
 }
 ```
 
-Source: [`packages/worldline/ai/src/index.ts:61`](../packages/worldline/ai/src/index.ts)
+Source: [`packages/worldline/ai/src/index.ts:64`](../packages/worldline/ai/src/index.ts)
 
 <a id="deepseek-aidsh-worldline-project-local"></a>
 
@@ -3472,7 +3472,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/worldline/project-local/src/index.ts:97`](../packages/worldline/project-local/src/index.ts)
+Source: [`packages/worldline/project-local/src/index.ts:98`](../packages/worldline/project-local/src/index.ts)
 
 <a id="deepseek-aidsh-worldline-run-sqlite"></a>
 
@@ -3486,7 +3486,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/worldline/run-sqlite/src/index.ts:38`](../packages/worldline/run-sqlite/src/index.ts)
+Source: [`packages/worldline/run-sqlite/src/index.ts:43`](../packages/worldline/run-sqlite/src/index.ts)
 
 <a id="deepseek-aidsh-worldline-runtime-worker"></a>
 
@@ -3505,7 +3505,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/worldline/runtime-worker/src/index.ts:51`](../packages/worldline/runtime-worker/src/index.ts)
+Source: [`packages/worldline/runtime-worker/src/index.ts:60`](../packages/worldline/runtime-worker/src/index.ts)
 
 ## Loadable plugins with no config
 

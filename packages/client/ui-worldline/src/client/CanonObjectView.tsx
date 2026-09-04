@@ -1,6 +1,8 @@
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
-import { inferCanonObjectKind } from '@deepseek-ai/dsh-worldline-standard/canon-kind'
 import type { CanonObjectKind } from '@deepseek-ai/dsh-worldline-standard/types'
+import { ArtworkImage } from './ArtworkImage.tsx'
+import { inferCanonObjectKind } from './canon-kind.ts'
+import { defaultArtwork } from './default-artwork.ts'
 import type { WorldlineLocaleKey } from './locales.ts'
 import { worldlineLabel } from './presentation.ts'
 import css from './CanonObjectView.module.css'
@@ -12,6 +14,8 @@ interface CanonObjectViewProps {
   readonly documentId: string
   readonly revision: string | number
   readonly tags: readonly string[]
+  readonly mediaSources?: readonly string[]
+  readonly mediaAlt?: string
   readonly t: (key: WorldlineLocaleKey) => string
 }
 
@@ -37,12 +41,6 @@ const KIND_LABELS: Record<CanonObjectKind, WorldlineLocaleKey> = {
   custom: 'kindCustom',
 }
 
-const KIND_ICONS: Record<CanonObjectKind, string> = {
-  charter: '✦', character: '◉', place: '⌖', organization: '⌘', species: '❈', item: '◇',
-  concept: '∞', rule: '⚖', relation: '↭', fact: '●', 'timeline-event': '◷', scenario: '▶',
-  asset: '▧', custom: '✣',
-}
-
 const MODEL_PROJECTIONS: Record<CanonObjectKind, readonly string[]> = {
   charter: ['Purpose', 'Scope', 'Expectation Profile', 'Invariant'],
   character: ['Entity', 'Facet', 'Belief', 'Goal', 'Policy', 'Action'],
@@ -66,7 +64,6 @@ function parseDocument(content: string): { readonly title: string; readonly summ
   const firstSection = sectionMatches[0]?.index ?? content.length
   const preface = content.slice(0, firstSection)
     .replace(/^#\s+.*$/mu, '')
-    .replace(/<!--\s*worldline-facets[\s\S]*?-->/gu, '')
     .trim()
   const sections = sectionMatches.map((match, index) => {
     const start = match.index + match[0].length
@@ -76,17 +73,6 @@ function parseDocument(content: string): { readonly title: string; readonly summ
   return { title, summary: preface, sections }
 }
 
-function parseFacets(content: string): Readonly<Record<string, unknown>> {
-  const source = /<!--\s*worldline-facets\s+([\s\S]*?)-->/u.exec(content)?.[1]
-  if (source === undefined) return {}
-  try {
-    const parsed = JSON.parse(source) as unknown
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Readonly<Record<string, unknown>>
-      : {}
-  } catch { return {} }
-}
-
 function referencesOf(content: string): readonly string[] {
   const values = [...content.matchAll(/\[\[([^\]]+)\]\]|@([a-z][a-z0-9-]*:[a-zA-Z0-9._-]+)/gu)]
     .map(match => match[0].startsWith('[[') ? match[0].slice(2, -2).trim() : match[0].slice(1).trim())
@@ -94,19 +80,18 @@ function referencesOf(content: string): readonly string[] {
   return [...new Set(values)].slice(0, 24)
 }
 
-function facetText(value: unknown): string {
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
-  return JSON.stringify(value)
-}
-
 export function CanonObjectView(props: CanonObjectViewProps) {
   const parsed = parseDocument(props.content)
   const resolution = inferCanonObjectKind(props.path, props.explicitKind)
-  const facets = Object.entries(parseFacets(props.content)).slice(0, 12)
   const references = referencesOf(props.content)
   return <article className={css.objectView} data-kind={resolution.kind}>
     <header className={css.hero}>
-      <div className={css.sigil} aria-hidden="true"><span>{KIND_ICONS[resolution.kind]}</span></div>
+      <div className={css.heroArtwork}><ArtworkImage
+        sources={props.mediaSources?.length === 0 || props.mediaSources === undefined
+          ? [defaultArtwork(resolution.kind, props.path)]
+          : props.mediaSources}
+        alt={props.mediaAlt ?? ''}
+      /></div>
       <div className={css.identity}>
         <div><span>{props.t(KIND_LABELS[resolution.kind])}</span><i>正典对象</i></div>
         <h1>{parsed.title}</h1>
@@ -116,7 +101,7 @@ export function CanonObjectView(props: CanonObjectViewProps) {
       <dl className={css.metrics}>
         <div><dt>{props.t('canonSections')}</dt><dd>{parsed.sections.length}</dd></div>
         <div><dt>{props.t('canonReferences')}</dt><dd>{references.length}</dd></div>
-        <div><dt>{props.t('canonStatus')}</dt><dd>{worldlineLabel(facetText(parseFacets(props.content)['status'] ?? 'canon'))}</dd></div>
+        <div><dt>{props.t('canonStatus')}</dt><dd>{worldlineLabel('canon')}</dd></div>
       </dl>
     </header>
 
@@ -136,7 +121,7 @@ export function CanonObjectView(props: CanonObjectViewProps) {
 
       <aside className={css.context}>
         <section><header><span>◈</span><h2>{props.t('canonIdentity')}</h2></header><dl><dt>ID</dt><dd>{props.documentId}</dd><dt>{props.t('kind')}</dt><dd>{resolution.customKind ?? props.t(KIND_LABELS[resolution.kind])}</dd><dt>{props.t('revision')}</dt><dd>{String(props.revision).slice(0, 12)}</dd></dl></section>
-        <section><header><span>⌁</span><h2>{props.t('canonFacets')}</h2></header>{facets.length === 0 ? <p>{props.t('canonNoFacets')}</p> : <dl>{facets.map(([key, value]) => <div key={key}><dt>{worldlineLabel(key)}</dt><dd>{worldlineLabel(facetText(value))}</dd></div>)}</dl>}</section>
+        <section><header><span>⌁</span><h2>{props.t('canonFacets')}</h2></header><p>可运行状态使用档案声明的结构契约；保存后由构建器校验并进入冻结蓝图。</p></section>
         <section><header><span>↗</span><h2>{props.t('canonReferences')}</h2></header>{references.length === 0 ? <p>{props.t('canonNoReferences')}</p> : <div className={css.references}>{references.map(reference => <span key={reference}>{reference}</span>)}</div>}</section>
         <section className={css.source}><header><span>◎</span><h2>{props.t('canonSource')}</h2></header><p>{props.t('canonSourceHint')}</p><code>{props.path}</code></section>
       </aside>

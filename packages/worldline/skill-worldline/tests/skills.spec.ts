@@ -19,7 +19,7 @@ describe('Worldline bundled skills', () => {
       expect(skill?.resourceBase).toBeUndefined()
     }
     expect((await ctx.skills.get('worldline-map-design'))?.content).toContain('```json')
-    expect((await ctx.skills.get('worldline-mechanism-design'))?.content).toContain('worldline-action')
+    expect((await ctx.skills.get('worldline-mechanism-design'))?.content).toContain('set-runtime')
   })
 
   it('lets a project-ranked provider replace a bundled name without compatibility branches', async () => {

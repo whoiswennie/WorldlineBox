@@ -1,17 +1,79 @@
 import { describe, expect, it } from 'vitest'
 import {
   certificateIsAutonomous,
+  canonDirectory,
+  canonPathBelongsToKind,
   contentFingerprint,
   inferCanonObjectKind,
   isValidWorldEvent,
+  projectAuthoredCalendar,
   stableStringify,
   validateContextPack,
   validateWorldMap,
+  WORLDLINE_PROJECT_LAYOUT,
   worldlineId,
 } from '../src/index.ts'
 import type { ClosureCertificate, ContextPack, WorldEvent, WorldMap } from '../src/index.ts'
 
 describe('WWS portable contracts', () => {
+  it('owns one closed authored-project layout and separates managed runtime state', () => {
+    expect(WORLDLINE_PROJECT_LAYOUT.canonDirectories).toEqual({
+      charter: 'canon',
+      character: 'characters',
+      species: 'species',
+      place: 'maps/places',
+      organization: 'organizations',
+      relation: 'relations',
+      rule: 'mechanisms',
+      concept: 'concepts',
+      fact: 'facts',
+      item: 'items',
+      asset: 'assets/catalog',
+      scenario: 'scenarios/plot-points',
+      'timeline-event': 'timelines',
+    })
+    expect(WORLDLINE_PROJECT_LAYOUT.mediaDirectory).toBe('assets/files')
+    expect(WORLDLINE_PROJECT_LAYOUT.control.runs).toBe('.worldline/runs')
+    expect(canonDirectory('organization')).toBe('organizations')
+    expect(canonPathBelongsToKind('organizations/council.md', 'organization')).toBe(true)
+    expect(canonPathBelongsToKind('characters/council.md', 'organization')).toBe(false)
+  })
+
+  it('projects an authored named era without collapsing it to runtime year one', () => {
+    const state = {
+      world: {
+        calendar: {
+          secondsPerDay: 86_400,
+          daysPerSeason: 9,
+          seasons: ['第一伪月周期', '第二伪月周期', '第三伪月周期', '第四伪月周期',
+            '第五伪月周期', '第六伪月周期'],
+          startDayIndex: 53,
+          startClockMinute: 1_397,
+        },
+        year: 218,
+        season: '第六伪月周期',
+        day: 8,
+      },
+    }
+    expect(projectAuthoredCalendar(state, 0)).toMatchObject({
+      startYear: 218,
+      startSeason: '第六伪月周期',
+      startDayOfSeason: 8,
+      year: 218,
+      season: '第六伪月周期',
+      dayOfSeason: 8,
+      hour: 23,
+      minute: 17,
+    })
+    expect(projectAuthoredCalendar(state, 45 * 60)).toMatchObject({
+      year: 218,
+      season: '第六伪月周期',
+      dayOfSeason: 9,
+      hour: 0,
+      minute: 2,
+    })
+  })
+
   it('keeps deterministic fingerprints independent of object insertion order', () => {
     expect(stableStringify({ b: 2, a: 1 })).toBe(stableStringify({ a: 1, b: 2 }))
     expect(contentFingerprint({ b: 2, a: 1 })).toBe(contentFingerprint({ a: 1, b: 2 }))

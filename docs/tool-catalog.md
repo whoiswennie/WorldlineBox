@@ -2766,7 +2766,7 @@ Source: [`packages/workflow/tool-workflow/src/index.ts`](../packages/workflow/to
 
 ### `worldline_build`
 
-Inspect or compile source, review author Proposals, freeze, or prove a complete playable OC loop. prove compiles, freezes, creates a Run, executes autonomous legal actions, advances time, verifies the map/event ledger, and checkpoints; it is the only completion gate.
+Inspect or compile the active project, review Proposals, freeze, or prove a complete playable OC loop. Omit project_id after selection; only provide it to switch projects. prove compiles, freezes, creates a Run, executes autonomous legal actions, advances time, verifies the map/event ledger, and checkpoints; it is the only completion gate.
 
 ```json
 {
@@ -2856,8 +2856,7 @@ Inspect or compile source, review author Proposals, freeze, or prove a complete 
     }
   },
   "required": [
-    "operation",
-    "project_id"
+    "operation"
   ]
 }
 ```
@@ -2866,7 +2865,7 @@ Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline
 
 ### `worldline_edit`
 
-Dry-run or apply one project-scoped document/directory mutation. Existing documents use an exact expected revision; text edits replace one unique fragment.
+Dry-run or apply one mutation to the active project. Omit project_id after selection; only provide it to switch projects. Use create with path and content for a new document; document_id is optional and allocated automatically. Use import-local with source (inside the current Agent workspace) and destination to copy an image, audio file, or other binary into the project without embedding bytes in the tool call. For replace, pass expected_revision and either content for a whole-document replacement or a non-empty before plus after for one exact replacement. For set-runtime, identify the existing document with path (preferred) or the exact document_id returned by worldline_query read, then pass the runtime object directly; do not stringify or escape it. set-runtime stores executable structure outside human-readable Markdown.
 
 ```json
 {
@@ -2877,6 +2876,8 @@ Dry-run or apply one project-scoped document/directory mutation. Existing docume
       "enum": [
         "create",
         "replace",
+        "set-runtime",
+        "import-local",
         "mkdir",
         "move",
         "copy",
@@ -2888,6 +2889,9 @@ Dry-run or apply one project-scoped document/directory mutation. Existing docume
       "type": "string"
     },
     "path": {
+      "type": "string"
+    },
+    "source": {
       "type": "string"
     },
     "destination": {
@@ -2908,6 +2912,11 @@ Dry-run or apply one project-scoped document/directory mutation. Existing docume
     "content": {
       "type": "string"
     },
+    "runtime": {
+      "type": "object",
+      "description": "Structured object for set-runtime. Allowed top-level keys: facets, maps, actions, systems, invariants.",
+      "additionalProperties": true
+    },
     "trash_id": {
       "type": "string"
     },
@@ -2917,11 +2926,7 @@ Dry-run or apply one project-scoped document/directory mutation. Existing docume
     "confirm": {
       "type": "boolean"
     }
-  },
-  "required": [
-    "operation",
-    "project_id"
-  ]
+  }
 }
 ```
 
@@ -2965,7 +2970,7 @@ Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline
 
 ### `worldline_link`
 
-Inspect incoming links for one project document or search stable IDs/paths before editing references.
+Inspect incoming links or search stable IDs/paths in the active project. Omit project_id after selection; only provide it to switch projects.
 
 ```json
 {
@@ -2989,8 +2994,7 @@ Inspect incoming links for one project document or search stable IDs/paths befor
     }
   },
   "required": [
-    "operation",
-    "project_id"
+    "operation"
   ]
 }
 ```
@@ -2999,7 +3003,7 @@ Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline
 
 ### `worldline_map`
 
-Read, validate, or write the one current worldline-map JSON block in a project document. Writing uses project revision checks and computes provenance during compilation; never provide source anchors.
+Read, validate, or write the active project map. Omit project_id after selection; only provide it to switch projects. On first creation, do not call read: construct one complete object from the map skill reference, validate it, then write it. Map structure is stored outside Markdown; the document remains readable prose.
 
 ```json
 {
@@ -3018,11 +3022,11 @@ Read, validate, or write the one current worldline-map JSON block in a project d
     },
     "path": {
       "type": "string",
-      "description": "Map Markdown document path; defaults to maps/world.md."
+      "description": "Map Markdown document path; defaults to maps/places/world.md."
     },
     "map_json": {
       "type": "string",
-      "description": "One complete current WorldMap JSON object. Required for validate and write."
+      "description": "One complete WorldMap JSON object for validate/write. Required top-level fields: id, version=1, name, rootNodeId, layers, nodes, edges. Every layer: id,name,visible,locked,order. Every node: id,name,description (at least 20 characters),layerId,kind,position{x,y},permissions,hazards,entryNodeIds; non-root nodes normally include parentId. Every edge: id,from,to,bidirectional,distance,baseDuration,modes,permissions,hazards. Stable ID suffixes after the colon need at least 6 characters."
     },
     "expected_revision": {
       "type": "string"
@@ -3032,8 +3036,7 @@ Read, validate, or write the one current worldline-map JSON block in a project d
     }
   },
   "required": [
-    "operation",
-    "project_id"
+    "operation"
   ]
 }
 ```
@@ -3108,7 +3111,7 @@ Source: [`packages/worldline/tool-worldline/src/index.ts`](../packages/worldline
 
 ### `worldline_query`
 
-Read a bounded project tree, one document, document history, project search results, or project trash. This tool never writes.
+Read the active project tree, one human-readable document, one hidden runtime document, document history, search results, or trash. After one list/create/explicit selection, omit project_id and use the active project; only provide project_id to switch projects. Use runtime before revising existing hidden structure so fields are preserved. This tool never writes.
 
 ```json
 {
@@ -3119,6 +3122,7 @@ Read a bounded project tree, one document, document history, project search resu
       "enum": [
         "tree",
         "read",
+        "runtime",
         "history",
         "search",
         "trash"
@@ -3128,6 +3132,9 @@ Read a bounded project tree, one document, document history, project search resu
       "type": "string"
     },
     "path": {
+      "type": "string"
+    },
+    "document_id": {
       "type": "string"
     },
     "query": {
@@ -3144,8 +3151,7 @@ Read a bounded project tree, one document, document history, project search resu
     }
   },
   "required": [
-    "operation",
-    "project_id"
+    "operation"
   ]
 }
 ```
@@ -3176,9 +3182,7 @@ Inspect or control deterministic Runs. Explicit project and Run IDs automaticall
         "checkpoint",
         "checkpoints",
         "branch",
-        "set-control",
-        "set-ai",
-        "set-budget"
+        "set-control"
       ]
     },
     "project_id": {
@@ -3221,12 +3225,6 @@ Inspect or control deterministic Runs. Explicit project and Run IDs automaticall
         "suggestions",
         "player"
       ]
-    },
-    "enabled": {
-      "type": "boolean"
-    },
-    "budget_json": {
-      "type": "string"
     },
     "confirm": {
       "type": "boolean"

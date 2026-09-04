@@ -97,8 +97,15 @@ export function materializeInitialWorldState(
       ? mergeJsonObjects(state, value)
       : state
   }, {})
+  const worldStateSchema = canon.reduce<JsonObject>((schema, object) => {
+    const value = object.facets.worldStateSchema
+    return value !== null && !Array.isArray(value) && typeof value === 'object'
+      ? mergeJsonObjects(schema, value)
+      : schema
+  }, {})
   return mergeJsonObjects({
     world: { time: 0 },
+    worldStateSchema,
     entities: Object.fromEntries(entities.map(entity => [entity.id, {
       type: entity.type,
       facets: entity.facets,
@@ -360,7 +367,7 @@ export function movementIsContinuous(process: Process): boolean {
     && movement.remainingDuration >= 0
 }
 
-/** Refuse Context Packs that would knowingly exceed their exact model budget.
+/** Refuse Context Packs that would knowingly exceed their exact model context capacity.
  * @param pack - The pack supplied by the caller.
  */
 export function validateContextPack(pack: ContextPack): void {

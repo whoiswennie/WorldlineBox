@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -30,48 +31,27 @@ afterEach(async () => {
 })
 
 describe('WorldlineKernel', () => {
-  it('starts with a bounded usable AI budget and updates it optimistically', async () => {
-    const run = await kernel('ai-budget-seed')
+  it('records AI usage as diagnostics without exposing a story-stopping quota', async () => {
+    const run = await kernel('ai-usage-seed')
     const initial = run.view()
-    expect(initial.snapshot.aiBudget).toMatchObject({
-      maxCalls: 100,
-      maxConcurrent: 1,
-      maxCallsPerLogicalDay: 50,
-      maxCallsPerRealHour: 20,
-      currency: 'USD',
-    })
-    expect(initial.snapshot.aiBudget.maxInputTokens).toBeGreaterThan(0)
-
-    const updated = run.setAiBudget({
+    expect(initial.snapshot).not.toHaveProperty('aiBudget')
+    const recorded = run.recordAiInvocation({
       runId: initial.summary.runId,
-      expectedSequence: initial.snapshot.sequence,
-      budget: {
-        maxCalls: 12.9,
-        maxInputTokens: 10_000.9,
-        maxOutputTokens: 2_000.9,
-        maxConcurrent: 2.9,
-        maxCallsPerLogicalDay: 8.9,
-        maxCallsPerRealHour: 4.9,
-        maxEstimatedCost: 1.5,
-        currency: ' cny ',
-      },
+      purpose: 'narrator',
+      modelRoute: { provider: 'mock', model: 'narrator' },
+      contextSourceIds: [],
+      inputTokens: 120,
+      outputTokens: 30,
+      estimatedCost: 0.002,
+      outputDigest: 'a'.repeat(64),
+      outcome: 'completed',
     })
-    expect(updated.snapshot.aiBudget).toEqual({
-      maxCalls: 12,
-      maxInputTokens: 10_000,
-      maxOutputTokens: 2_000,
-      maxConcurrent: 2,
-      maxCallsPerLogicalDay: 8,
-      maxCallsPerRealHour: 4,
-      maxEstimatedCost: 1.5,
-      currency: 'CNY',
+    expect(recorded.view.snapshot.aiUsage).toMatchObject({
+      calls: 1,
+      inputTokens: 120,
+      outputTokens: 30,
+      estimatedCost: 0.002,
     })
-    run.advance({ runId: initial.summary.runId, duration: 60 })
-    expect(() => run.setAiBudget({
-      runId: initial.summary.runId,
-      expectedSequence: initial.snapshot.sequence,
-      budget: updated.snapshot.aiBudget,
-    })).toThrow(/Run advanced/u)
     run.close()
   })
 
@@ -102,6 +82,62 @@ describe('WorldlineKernel', () => {
     run.close()
   })
 
+  it('keeps an authored era stable while projecting logical time into the calendar', async () => {
+    const base = testBlueprint()
+    const blueprint: Blueprint = {
+      ...base,
+      canon: [{
+        id: worldlineId<'entity'>('entity:calendar-charter'),
+        kind: 'charter',
+        documentId: worldlineId<'document'>('document:calendar-charter'),
+        title: '镜潮历法',
+        aliases: [],
+        tags: [],
+        status: 'canon',
+        worldIds: [base.worldId],
+        worldlineIds: [base.worldlineId],
+        facets: {
+          initialWorldState: {
+            world: {
+              calendar: {
+                secondsPerDay: 86_400,
+                daysPerSeason: 9,
+                seasons: ['第一伪月周期', '第二伪月周期', '第三伪月周期', '第四伪月周期',
+                  '第五伪月周期', '第六伪月周期'],
+                startDayIndex: 53,
+                startClockMinute: 1_397,
+              },
+              year: 218,
+              season: '第六伪月周期',
+              day: 8,
+              time: '23:17',
+            },
+          },
+        },
+        provenance: [],
+      }],
+    }
+    const run = await kernel('authored-calendar-seed', blueprint)
+    const advanced = run.advance({ runId: run.view().summary.runId, duration: 45 * 60 })
+    const world = advanced.snapshot.state['world'] as Record<string, unknown>
+    expect(world).toMatchObject({
+      year: 218,
+      season: '第六伪月周期',
+      day: 9,
+      time: '00:02',
+      calendar: {
+        startYear: 218,
+        startSeason: '第六伪月周期',
+        startDayOfSeason: 8,
+        year: 218,
+        season: '第六伪月周期',
+        dayOfSeason: 9,
+        timeOfDaySeconds: 120,
+      },
+    })
+    run.close()
+  })
+
   it('moves only through route milestones and never teleports an ordinary move', async () => {
     const run = await kernel('movement-seed')
     const actorId = worldlineId<'entity'>('entity:actor-a1')
@@ -124,6 +160,47 @@ describe('WorldlineKernel', () => {
     expect(((arrived.snapshot.state['entities'] as Record<string, { state: { locationId: string } }>)[actorId]?.state.locationId))
       .toBe('map-node:c-node-00001')
     expect(arrived.snapshot.processes.find(item => item.id === submitted.process.id)?.state).toBe('completed')
+    run.close()
+  })
+
+  it('keeps place-bound actions unavailable until Runtime movement reaches the authored node', async () => {
+    const base = testBlueprint()
+    const blueprint: Blueprint = {
+      ...base,
+      actions: base.actions.map((action) => {
+        if (action.id !== 'character.work') return action
+        return {
+          ...action,
+          location: {
+            mode: 'at' as const,
+            nodeIds: [worldlineId<'map-node'>('map-node:c-node-00001')],
+          },
+        }
+      }),
+    }
+    const run = await kernel('place-bound-action-seed', blueprint)
+    const actorId = worldlineId<'entity'>('entity:actor-a1')
+    const initial = run.view()
+    expect(run.choices({ runId: initial.summary.runId, actorId }).choices
+      .some(choice => choice.actionType === 'character.work')).toBe(false)
+    expect(() => run.submitAction({
+      runId: initial.summary.runId,
+      actorId,
+      type: 'character.work',
+      expectedSequence: initial.snapshot.sequence,
+      controller: 'agent',
+    })).toThrow(/actor location/u)
+    run.submitAction({
+      runId: initial.summary.runId,
+      actorId,
+      type: 'character.move',
+      parameters: { destination: 'map-node:c-node-00001' },
+      expectedSequence: initial.snapshot.sequence,
+      controller: 'agent',
+    })
+    const arrived = run.advance({ runId: initial.summary.runId, duration: 30 })
+    expect(run.choices({ runId: arrived.summary.runId, actorId }).choices
+      .some(choice => choice.actionType === 'character.work')).toBe(true)
     run.close()
   })
 
@@ -299,7 +376,7 @@ describe('WorldlineKernel', () => {
         effects: [{ op: 'increment', path: 'state.letters', amount: -1, min: 0 }],
         interruptible: true,
         maxWait: 10,
-        retryBudget: 1,
+        maxRetries: 1,
         fallbacks: [],
         provenance: base.provenance,
       }],
@@ -384,6 +461,195 @@ describe('WorldlineKernel', () => {
       actionType: choice.actionType,
       parameters: choice.parameters,
     })
+    run.close()
+  })
+
+  it('advances plot goals only through retained state-director evidence, never an action id', async () => {
+    const base = testBlueprint()
+    const point = {
+      id: 'plot-point:evidence-only',
+      name: '确认彼此的约定',
+      summary: '两位角色需要在真实互动中确认同一件事。',
+      order: 1,
+      entryCondition: '双方都在同一地点。',
+      completionCriteria: '双方明确确认约定内容。',
+      dramaticPressure: '地点即将关闭。',
+      successOutcome: '两人开始共同面对下一次危机。',
+      failureOutcome: '误会继续扩大。',
+      recoveryHook: '遗留消息可在另一地点重建联系。',
+      timing: {
+        activateAt: 0,
+        deadlineAt: 3_600,
+        interventions: [{
+          id: 'plot-intervention:closing-warning',
+          at: 3_000,
+          title: '闭馆提醒',
+          description: '广播宣布地点将在十分钟后关闭。',
+        }],
+      },
+      provenance: base.provenance,
+    }
+    const run = await kernel('story-evidence-seed', { ...base, plotPoints: [point] })
+    const runId = run.view().summary.runId
+    const actorId = worldlineId<'entity'>('entity:actor-a1')
+    const work = run.choices({ runId, actorId }).choices
+      .find(choice => choice.actionType === 'character.work')
+    if (work === undefined) throw new Error('work capability is missing')
+    run.setControl({ runId, actorId, mode: 'player' })
+    run.submitAction({
+      runId,
+      actorId,
+      type: work.actionType,
+      parameters: work.parameters,
+      expectedSequence: 0,
+      controller: 'player',
+    })
+    run.advance({ runId, duration: 10 })
+    expect(run.view().snapshot.storyProgress).toEqual({})
+
+    const eventIds = run.records({ runId, stream: 'world-event', limit: 100 }).records
+      .map(record => record.id)
+    const text = '工作结束后，两个人仍没有谈到约定。'
+    const route: ModelRoute = { provider: 'mock', model: 'director' }
+    const narrator = run.recordAiInvocation({
+      runId,
+      purpose: 'narrator',
+      actorId,
+      modelRoute: route,
+      contextSourceIds: eventIds,
+      inputTokens: 10,
+      outputTokens: 5,
+      estimatedCost: 0,
+      outputDigest: createHash('sha256').update(text).digest('hex'),
+      outcome: 'completed',
+    }).invocation
+    const beat = run.recordNarrativeBeat({
+      runId,
+      invocationId: narrator.id,
+      perspectiveActorId: actorId,
+      eventIds: eventIds.map(id => worldlineId<'event'>(id)),
+      observationIds: [],
+      camera: 'limited-third-person',
+      modelOutput: text,
+      text,
+      blocks: [{ type: 'narration', text }],
+      media: [],
+      modelRoute: route,
+    }).beat
+    const stateDirector = run.recordAiInvocation({
+      runId,
+      purpose: 'creative',
+      actorId,
+      modelRoute: route,
+      contextSourceIds: [point.id, beat.id, 'runtime:world-state-shard', ...eventIds],
+      inputTokens: 20,
+      outputTokens: 8,
+      estimatedCost: 0,
+      outputDigest: 'b'.repeat(64),
+      outcome: 'completed',
+    }).invocation
+    const characterDirector = run.recordAiInvocation({
+      runId,
+      purpose: 'creative',
+      actorId,
+      modelRoute: route,
+      contextSourceIds: [beat.id, 'runtime:character-state-shard', ...eventIds],
+      inputTokens: 20,
+      outputTokens: 8,
+      estimatedCost: 0,
+      outputDigest: 'c'.repeat(64),
+      outcome: 'completed',
+    }).invocation
+    const shards = (mutations: Parameters<typeof run.recordStoryState>[0]['shards'][number]['mutations']) => [{
+      invocationId: stateDirector.id,
+      domain: 'world' as const,
+      subjectIds: [],
+      mutations,
+      memoryWrites: [],
+    }, {
+      invocationId: characterDirector.id,
+      domain: 'characters' as const,
+      subjectIds: base.entities.filter(entity => entity.type === 'character').map(entity => entity.id),
+      mutations: [],
+      memoryWrites: [],
+    }]
+    expect(() => run.recordStoryState({
+      runId,
+      beatId: beat.id,
+      shards: shards([{
+        scope: 'world',
+        path: 'time',
+        operation: 'set',
+        value: 999,
+        reason: '试图让状态导演越权修改运行时间。',
+      }]),
+      progress: {
+        invocationId: stateDirector.id,
+        pointId: point.id,
+        status: 'active',
+        rationale: '测试非法时间变更必须在提交前被拒绝。',
+        evidence: ['正文中没有发生任何合法的时间推进。'],
+        eventIds: beat.eventIds,
+        observationIds: beat.observationIds,
+      },
+    })).toThrow('story state cannot modify Runtime time')
+    const storyTurn = run.recordStoryState({
+      runId,
+      beatId: beat.id,
+      shards: shards([]),
+      progress: {
+        invocationId: stateDirector.id,
+        pointId: point.id,
+        status: 'active',
+        rationale: '动作已经完成，但约定的完成证据仍未出现。',
+        evidence: ['保存的正文明确说明双方没有谈到约定。'],
+        eventIds: beat.eventIds,
+        observationIds: beat.observationIds,
+      },
+    })
+    expect(storyTurn.progress?.status).toBe('active')
+    expect(run.view().snapshot.storyProgress[point.id]).toEqual(storyTurn.progress)
+    expect(run.records({ runId, stream: 'story-progress', limit: 10 }).records)
+      .toHaveLength(1)
+    expect(run.records({ runId, stream: 'story-state', limit: 10 }).records)
+      .toHaveLength(1)
+    run.close()
+  })
+
+  it('commits plot interventions and deadlines at exact Runtime times', async () => {
+    const base = testBlueprint()
+    const point = {
+      id: 'plot-point:hard-clock', name: '在闸门关闭前通过', summary: '时间门控测试。', order: 1,
+      entryCondition: '闸门仍然开放。', completionCriteria: '角色已经穿过闸门。',
+      dramaticPressure: '警报逐步升级。', successOutcome: '角色抵达安全区。',
+      failureOutcome: '闸门关闭并切断路线。', recoveryHook: '可寻找维护通道。',
+      timing: {
+        activateAt: 0, deadlineAt: 120,
+        interventions: [{
+          id: 'plot-intervention:alarm', at: 60, title: '一分钟警报',
+          description: '红色警灯启动，闸门开始倒计时。',
+        }],
+      },
+      provenance: base.provenance,
+    }
+    const run = await kernel('hard-clock-seed', { ...base, plotPoints: [point] })
+    const runId = run.view().summary.runId
+    run.advance({ runId, duration: 60 })
+    const first = run.records({ runId, stream: 'world-event', limit: 100 }).records
+      .map(record => record.payload)
+    const activation = first.find(event => event.type === 'story.intervention'
+      && event.logicalTime === 0)
+    expect(activation?.data).toMatchObject({ phase: 'activate', pointId: point.id })
+    const intervention = first.find(event => event.type === 'story.intervention'
+      && event.logicalTime === 60)
+    expect(intervention?.data).toMatchObject({ phase: 'intervention', title: '一分钟警报' })
+    run.advance({ runId, duration: 60 })
+    const all = run.records({ runId, stream: 'world-event', limit: 100 }).records
+      .map(record => record.payload)
+    const deadline = all.find(event => event.type === 'story.deadline'
+      && event.logicalTime === 120)
+    expect(deadline?.data).toMatchObject({ phase: 'deadline', description: point.failureOutcome })
+    expect(run.view().snapshot.logicalTime).toBe(120)
     run.close()
   })
 })

@@ -1,0 +1,8 @@
+.editor { min-width: 0; min-height: 0; height: 100%; overflow: hidden; background: var(--worldline-surface, var(--dsw-alias-background-elevated, #fff)); }
+.preview { min-width: 0; min-height: 0; overflow: auto; padding: 22px 28px 48px; box-sizing: border-box; background: var(--worldline-surface, var(--dsw-alias-background-elevated, #fff)); color: var(--worldline-ink, var(--dsw-alias-label-primary, #17202a)); }
+.previewContent { width: min(100%, 860px); margin: 0 auto; }
+.modeSwitch { display: inline-flex; padding: 3px; gap: 2px; border: 1px solid var(--worldline-border, var(--dsw-alias-border-subtle, #dfe5eb)); border-radius: 9px; background: color-mix(in srgb, var(--worldline-ink, #17202a) 4%, transparent); }
+.modeSwitch button { min-height: 28px; padding: 4px 9px; border: 0; border-radius: 6px; color: var(--worldline-muted, var(--dsw-alias-label-secondary, #718096)); background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
+.modeSwitch button[aria-pressed='true'] { color: var(--worldline-accent, var(--dsw-alias-accent-primary, #327f9f)); background: var(--worldline-surface, var(--dsw-alias-background-elevated, #fff)); box-shadow: 0 1px 4px rgb(31 55 74 / .08); }
+
+@media (max-width: 720px) { .preview { padding: 20px; } }

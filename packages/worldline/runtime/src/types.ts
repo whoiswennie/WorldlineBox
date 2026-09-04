@@ -1,8 +1,9 @@
 import type {
   ActionId,
+  ActionDeck,
+  ActionPlan,
   AiIntent,
   AiInvocation,
-  AiBudget,
   AiUsage,
   ActionDefinition,
   CanonWorldlineId,
@@ -20,6 +21,8 @@ import type {
   ModelPolicy,
   ModelRoute,
   NarrativeBeat,
+  PresentationCursor,
+  PlotPointDefinition,
   Process,
   ProjectId,
   Reservation,
@@ -28,6 +31,9 @@ import type {
   InvariantDefinition,
   RunId,
   RunSnapshot,
+  StoryProgressEvidence,
+  StoryStateCommit,
+  StoryStateShard,
   Telemetry,
   WorldEvent,
 } from '@deepseek-ai/dsh-worldline-standard/types'
@@ -100,6 +106,7 @@ export interface RunDefinitionView {
   readonly actions: readonly ActionDefinition[]
   readonly systems: readonly SystemDefinition[]
   readonly invariants: readonly InvariantDefinition[]
+  readonly plotPoints: readonly PlotPointDefinition[]
 }
 
 /** Describes the run spatial viewport value exchanged across the package boundary.
@@ -175,7 +182,6 @@ export interface CreateRunRequest {
   readonly projectId: ProjectId
   readonly seed: string
   readonly modelPolicy?: ModelPolicy
-  readonly aiBudget?: AiBudget
   readonly startPaused?: boolean
 }
 
@@ -272,26 +278,89 @@ export interface RecordAiInvocationRequest extends RunRef {
  */
 export interface RecordAiInvocationResult {
   readonly invocation: AiInvocation
-  readonly budgetExceeded: boolean
   readonly view: RunView
 }
 /** Describes the record narrative beat request value exchanged across the package boundary.
  */
 export interface RecordNarrativeBeatRequest extends RunRef {
-  readonly invocationId?: AiInvocation['id']
+  readonly invocationId: AiInvocation['id']
+  readonly perspectiveActorId: EntityId
   readonly eventIds: NarrativeBeat['eventIds']
   readonly observationIds: NarrativeBeat['observationIds']
   readonly camera: string
   readonly speakerId?: EntityId
+  /** Exact raw provider output used only to bind this validated presentation to its invocation. */
+  readonly modelOutput: string
+  /** Reader-facing novel text projected from the validated ordered blocks. */
   readonly text: string
+  readonly blocks: NarrativeBeat['blocks']
   readonly media: NarrativeBeat['media']
-  readonly style: NarrativeBeat['style']
-  readonly modelRoute?: ModelRoute
+  readonly modelRoute: ModelRoute
 }
 /** Describes the record narrative beat result value exchanged across the package boundary.
  */
 export interface RecordNarrativeBeatResult {
   readonly beat: NarrativeBeat
+  readonly view: RunView
+}
+
+/** Persist one stable player-facing playback boundary. */
+export interface CompletePresentationRequest extends RunRef {
+  readonly actorId: EntityId
+  readonly beatId: NarrativeBeat['id']
+}
+
+/** The authoritative presentation cursor after completing a beat. */
+export interface CompletePresentationResult {
+  readonly cursor: PresentationCursor
+  readonly view: RunView
+}
+
+/** One model-authored concrete decision before Runtime attaches executable fields. */
+export interface ActionPlanDraft {
+  readonly opportunityId: string
+  readonly label: string
+  readonly intent: string
+  readonly storyRole: ActionPlan['storyRole']
+}
+
+/** Host-only request to validate and retain the final step of a story turn. */
+export interface RecordActionDeckRequest extends RunRef {
+  readonly actorId: EntityId
+  readonly expectedSequence: number
+  readonly afterBeatId: NarrativeBeat['id']
+  readonly invocationId: AiInvocation['id']
+  readonly plans: readonly ActionPlanDraft[]
+}
+
+/** Validated action deck retained in the Run snapshot and stream. */
+export interface RecordActionDeckResult {
+  readonly deck: ActionDeck
+  readonly view: RunView
+}
+
+/** Plot assessment committed atomically with the rest of the state-director turn. */
+export interface StoryProgressDraft {
+  readonly pointId: PlotPointDefinition['id']
+  readonly status: StoryProgressEvidence['status']
+  readonly rationale: string
+  readonly evidence: readonly string[]
+  readonly eventIds: NarrativeBeat['eventIds']
+  readonly observationIds: NarrativeBeat['observationIds']
+}
+
+/** Runtime-validated state and memory proposal derived from one retained story beat. */
+export interface RecordStoryStateRequest extends RunRef {
+  readonly beatId: NarrativeBeat['id']
+  /** Independently inferred world/character slices, atomically validated and committed together. */
+  readonly shards: readonly StoryStateShard[]
+  readonly progress?: StoryProgressDraft & { readonly invocationId: AiInvocation['id'] }
+}
+
+/** Atomic committed story state. */
+export interface RecordStoryStateResult {
+  readonly commit: StoryStateCommit
+  readonly progress?: StoryProgressEvidence
   readonly view: RunView
 }
 
@@ -302,6 +371,8 @@ export interface RunRecordsRequest extends RunRef {
   readonly afterOrdinal?: number
   readonly limit?: number
   readonly stream?: RunStream
+  /** Return the newest matching records while preserving chronological order. */
+  readonly tail?: boolean
 }
 /** Describes the run records page value exchanged across the package boundary.
  */
@@ -338,11 +409,6 @@ export interface SetActorControlRequest extends RunRef {
 /** Describes the set ai enabled request value exchanged across the package boundary.
  */
 export interface SetAiEnabledRequest extends RunRef { readonly enabled: boolean }
-/** Replace the bounded AI allowance for a Run after optimistic sequence validation. */
-export interface SetAiBudgetRequest extends RunRef {
-  readonly budget: AiBudget
-  readonly expectedSequence: number
-}
 /** Describes the switch model policy request value exchanged across the package boundary.
  */
 export interface SwitchModelPolicyRequest extends RunRef {

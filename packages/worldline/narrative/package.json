@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-worldline-narrative",
   "description": "Authority-safe text sandbox and StoryStage extension seam",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "private": true,
   "type": "module",
   "license": "MIT",

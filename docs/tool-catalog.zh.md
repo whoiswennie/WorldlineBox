@@ -2769,7 +2769,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_build`
 
-检查或编译来源、审查作者提案、冻结构建，或证明一个完整可游玩的 OC 闭环。`prove` 会执行编译、冻结、创建 Run、自治合法动作、时间推进、地图与事件账本验证以及检查点创建；它是唯一的完成门禁。
+检查或编译当前项目、审查作者提案、冻结构建，或证明一个完整可游玩的 OC 闭环。选中项目后可省略 `project_id`；只在切换项目时传入。`prove` 会执行编译、冻结、创建 Run、自治合法动作、时间推进、地图与事件账本验证以及检查点创建；它是唯一的完成门禁。
 
 ```json
 {
@@ -2859,8 +2859,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     }
   },
   "required": [
-    "operation",
-    "project_id"
+    "operation"
   ]
 }
 ```
@@ -2869,7 +2868,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_edit`
 
-试运行或执行一次项目范围的文档或目录变更。已有文档必须携带准确预期修订；文本编辑只替换唯一匹配片段。
+试运行或执行当前项目的一次变更。选中项目后可省略 `project_id`；只在切换项目时传入。新建文档使用 `create` 并传入 `path` 与 `content`，`document_id` 可省略并自动分配。使用 `import-local` 将当前 Agent 工作区内的图像、音频或其他二进制文件复制到项目，无需在工具调用中嵌入字节。`replace` 需传入 `expected_revision`，再传入 `content` 替换全文，或用非空 `before` 与 `after` 进行一次精确替换。`set-runtime` 使用 `path`（首选）或 `worldline_query read` 返回的精确 `document_id` 定位已有文档，并直接传入 `runtime` 对象，不得序列化或转义。可执行结构保存在人类可读 Markdown 之外。
 
 ```json
 {
@@ -2880,6 +2879,8 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
       "enum": [
         "create",
         "replace",
+        "set-runtime",
+        "import-local",
         "mkdir",
         "move",
         "copy",
@@ -2891,6 +2892,9 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
       "type": "string"
     },
     "path": {
+      "type": "string"
+    },
+    "source": {
       "type": "string"
     },
     "destination": {
@@ -2911,6 +2915,11 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     "content": {
       "type": "string"
     },
+    "runtime": {
+      "type": "object",
+      "description": "Structured object for set-runtime. Allowed top-level keys: facets, maps, actions, systems, invariants.",
+      "additionalProperties": true
+    },
     "trash_id": {
       "type": "string"
     },
@@ -2920,11 +2929,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     "confirm": {
       "type": "boolean"
     }
-  },
-  "required": [
-    "operation",
-    "project_id"
-  ]
+  }
 }
 ```
 
@@ -2968,7 +2973,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_link`
 
-检查一个项目文档的入站链接，或在编辑引用前搜索稳定标识与路径。
+检查当前项目的入站链接，或搜索稳定标识与路径。选中项目后可省略 `project_id`；只在切换项目时传入。
 
 ```json
 {
@@ -2992,8 +2997,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     }
   },
   "required": [
-    "operation",
-    "project_id"
+    "operation"
   ]
 }
 ```
@@ -3002,7 +3006,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_map`
 
-读取、校验或写入项目文档中当前唯一的 `worldline-map` JSON 结构块。写入使用项目修订校验，来源由编译器计算；不要提供来源锚点。
+读取、校验或写入活动项目地图。首次建图应从地图技能参考构造完整对象，先验证再写入。地图结构保存在 Markdown 之外，文档只保留作者可读内容。
 
 ```json
 {
@@ -3021,11 +3025,11 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     },
     "path": {
       "type": "string",
-      "description": "Map Markdown document path; defaults to maps/world.md."
+      "description": "Map Markdown document path; defaults to maps/places/world.md."
     },
     "map_json": {
       "type": "string",
-      "description": "One complete current WorldMap JSON object. Required for validate and write."
+      "description": "One complete WorldMap JSON object for validate/write. Required top-level fields: id, version=1, name, rootNodeId, layers, nodes, edges. Every layer: id,name,visible,locked,order. Every node: id,name,description (at least 20 characters),layerId,kind,position{x,y},permissions,hazards,entryNodeIds; non-root nodes normally include parentId. Every edge: id,from,to,bidirectional,distance,baseDuration,modes,permissions,hazards. Stable ID suffixes after the colon need at least 6 characters."
     },
     "expected_revision": {
       "type": "string"
@@ -3035,8 +3039,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     }
   },
   "required": [
-    "operation",
-    "project_id"
+    "operation"
   ]
 }
 ```
@@ -3111,7 +3114,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_query`
 
-读取有界项目树、单个文档、文档历史、项目搜索结果或项目回收站。此工具绝不写入。
+读取当前项目树、一份人类可读文档、一份隐藏运行结构、文档历史、搜索结果或回收站。列出、创建或明确选择项目后可省略 `project_id`，只在切换项目时传入。修订已有隐藏结构前先使用 `runtime`，以保留其他字段。此工具绝不写入。
 
 ```json
 {
@@ -3122,6 +3125,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
       "enum": [
         "tree",
         "read",
+        "runtime",
         "history",
         "search",
         "trash"
@@ -3131,6 +3135,9 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
       "type": "string"
     },
     "path": {
+      "type": "string"
+    },
+    "document_id": {
       "type": "string"
     },
     "query": {
@@ -3147,8 +3154,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
     }
   },
   "required": [
-    "operation",
-    "project_id"
+    "operation"
   ]
 }
 ```
@@ -3157,7 +3163,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 ### `worldline_run`
 
-检查或控制确定性演算。明确的项目与 Run 标识会自动选中其所属项目。动作、大步推进、分支、控制变更、AI 变更和停止等变更操作使用显式确认。
+检查或控制确定性演算。明确的项目与 Run 标识会自动选中其所属项目。动作、大步推进、分支、控制变更和停止等变更操作使用显式确认。
 
 ```json
 {
@@ -3179,9 +3185,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
         "checkpoint",
         "checkpoints",
         "branch",
-        "set-control",
-        "set-ai",
-        "set-budget"
+        "set-control"
       ]
     },
     "project_id": {
@@ -3224,12 +3228,6 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
         "suggestions",
         "player"
       ]
-    },
-    "enabled": {
-      "type": "boolean"
-    },
-    "budget_json": {
-      "type": "string"
     },
     "confirm": {
       "type": "boolean"

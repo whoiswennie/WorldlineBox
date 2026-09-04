@@ -40,6 +40,20 @@ function purpose(summary: string, scope: readonly string[]): SimulationPurpose {
   }
 }
 
+const worldTimeSchema = {
+  time: {
+    type: 'number',
+    mutable: false,
+    label: '世界时间',
+    participation: {
+      drivers: ['clock'],
+      meaning: '所有行动、系统和剧情干预共同使用的逻辑时间',
+      narrative: '时间窗口临近时必须在正文中形成可感知的压力',
+      choices: '行动耗时会改变仍然可行的选择与剧情结果',
+    },
+  },
+} as const
+
 function map(
   id: string,
   name: string,
@@ -66,6 +80,7 @@ function node(id: string, name: string, kind: WorldMap['nodes'][number]['kind'],
     layerId: 'ground',
     kind,
     name,
+    description: `${name} 是此验收世界中的完整可执行地点，具有清晰的空间边界、可感知环境、日常用途与影响角色行动的条件。`,
     position: { x, y },
     permissions: [],
     hazards: [],
@@ -337,200 +352,197 @@ export const acceptanceScenarios: readonly WorldlineAcceptanceScenario[] = [
 ]
 
 export function mechanismDocument(scenario: WorldlineAcceptanceScenario): string {
-  if (scenario.slug === 'warrior-and-dragon') return `# 灰烬王冠运行规则
+  if (scenario.slug === 'warrior-and-dragon') {
+    return '# 灰烬王冠运行规则\n\n勇士和恶龙都受体力、伤势、空间与时间约束。胜负只能来自已记录的动作和系统结算。\n\n可执行语义由世界线运行模型维护；本文只保留作者可读的规则说明。\n'
+  }
+  if (scenario.slug === 'stardew-valley-town') {
+    return '# 鹈鹕镇长期运行规则\n\n角色工作、社交、休息、移动与社区生活遵守精力、地点和游戏内时间约束。农场、经济、环境和社区由可审计的周期系统推进。\n'
+  }
+  return `# ${scenario.name} runtime\n\n角色可等待世界系统推进；所有变化都由运行模型结算并保留因果记录。\n`
+}
 
-勇士和恶龙都受体力、伤势、空间与时间约束。胜负只能来自已记录的动作和系统结算。
-
-\`\`\`worldline-action
-${JSON.stringify({
-    id: 'battle.strike',
-    description: '在龙巢中发动一次有体力代价的正面攻击。',
-    operator: 'generic',
-    actorTypes: ['character'],
-    preconditions: [{ op: 'gt', path: 'state.stamina', value: 0 }],
-    duration: 10,
-    maxWait: 60,
-    retryBudget: 2,
-    effects: [
-      { op: 'increment', path: 'state.stamina', amount: -1, min: 0 },
-      { op: 'set', path: 'conflict.heroWounds', value: 0 },
-      { op: 'increment', path: 'conflict.dragonWounds', amount: 1, min: 0 },
-    ],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-action
-${JSON.stringify({
-    id: 'battle.guard',
-    description: '稳住阵脚并恢复一点体力。',
-    operator: 'generic',
-    actorTypes: ['character'],
-    duration: 5,
-    maxWait: 30,
-    retryBudget: 2,
-    effects: [{ op: 'increment', path: 'state.stamina', amount: 1, min: 0, max: 5 }],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-system
-${JSON.stringify({
-    id: 'dragon.counterfire',
-    description: '恶龙每三十秒掀起一次可追溯的龙焰反击。',
-    nextWake: 30,
-    interval: 30,
-    effects: [{ op: 'increment', path: 'conflict.heroWounds', amount: 1, min: 0 }],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-invariant
-${JSON.stringify({
-    id: 'battle.dragon-wounds.nonnegative',
-    description: '恶龙伤势计数不得为负。',
-    expression: { op: 'gte', path: 'conflict.dragonWounds', value: 0 },
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-invariant
-${JSON.stringify({
-    id: 'battle.hero-wounds.nonnegative',
-    description: '勇士伤势计数不得为负。',
-    expression: { op: 'gte', path: 'conflict.heroWounds', value: 0 },
-  }, null, 2)}
-\`\`\`
-`
-  if (scenario.slug === 'stardew-valley-town') return `# 鹈鹕镇长期运行规则
-
-一天等于 86400 个游戏逻辑秒。角色行为、农场状态、季节与社区变化都只能由以下动作和周期系统推进。
-
-\`\`\`worldline-action
-${JSON.stringify({
-    id: 'town.work', description: '履行角色当前职业的日常工作', operator: 'generic', actorTypes: ['character'],
-    preconditions: [{ op: 'gt', path: 'state.energy', value: 0 }], duration: 21_600, maxWait: 86_400,
-    retryBudget: 3, effects: [
-      { op: 'increment', path: 'state.energy', amount: -1, min: 0, max: 10 },
-      { op: 'increment', path: 'state.workDays', amount: 1, min: 0 },
-      { op: 'increment', path: 'world.farm.laborUnits', amount: 1, min: 0 },
-      { op: 'increment', path: 'world.economy.serviceUnits', amount: 1, min: 0 },
-    ],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-action
-${JSON.stringify({
-    id: 'town.socialize', description: '与一名镇民进行有来有往的社区交流', operator: 'generic', actorTypes: ['character'],
-    preconditions: [
-      { op: 'gt', path: 'state.energy', value: 0 },
-      { op: 'gte', path: 'target.state.socialInteractions', value: 0 },
-    ], duration: 7_200, maxWait: 86_400, retryBudget: 3, effects: [
-      { op: 'increment', path: 'state.energy', amount: -1, min: 0, max: 10 },
-      { op: 'increment', path: 'state.socialInteractions', amount: 1, min: 0 },
-      { op: 'increment', path: 'target.state.socialInteractions', amount: 1, min: 0 },
-      { op: 'increment', path: 'world.community.interactions', amount: 1, min: 0 },
-    ],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-action
-${JSON.stringify({
-    id: 'town.rest', description: '休息并恢复继续生活所需的精力', operator: 'generic', actorTypes: ['character'],
-    duration: 28_800, maxWait: 86_400, retryBudget: 3,
-    effects: [{ op: 'increment', path: 'state.energy', amount: 3, min: 0, max: 10 }],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-action
-${JSON.stringify({
-    id: 'town.community', description: '参加公共事务、节日筹备或邻里互助', operator: 'generic', actorTypes: ['character'],
-    duration: 14_400, maxWait: 86_400, retryBudget: 3, effects: [
-      { op: 'increment', path: 'state.communityContributions', amount: 1, min: 0 },
-      { op: 'increment', path: 'world.community.contributions', amount: 1, min: 0 },
-    ],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-action
-${JSON.stringify({
-    id: 'town.travel', description: '沿地图道路前往另一个真实地点', operator: 'move', actorTypes: ['character'],
-    duration: 0, maxWait: 86_400, retryBudget: 3, effects: [],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-system
-${JSON.stringify({
-    id: 'town.environment.daily', description: '每日结算环境与农场生长', nextWake: 86_400, interval: 86_400,
-    effects: [
-      { op: 'increment', path: 'world.environment.daysElapsed', amount: 1, min: 0 },
-      { op: 'increment', path: 'world.farm.cropGrowth', amount: 1, min: 0 },
-      { op: 'increment', path: 'world.farm.soilCycles', amount: 1, min: 0 },
-      { op: 'increment', path: 'world.economy.dailyDemand', amount: 1, min: 0 },
-    ],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-system
-${JSON.stringify({
-    id: 'town.community.weekly', description: '每七日结算一次社区活动', nextWake: 7 * 86_400,
-    interval: 7 * 86_400, effects: [{ op: 'increment', path: 'world.community.weeklyGatherings', amount: 1, min: 0 }],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-system
-${JSON.stringify({
-    id: 'town.season.transition', description: '每二十八日记录一次季节交替', nextWake: 28 * 86_400,
-    interval: 28 * 86_400, effects: [{ op: 'increment', path: 'world.environment.seasonTransitions', amount: 1, min: 0 }],
-  }, null, 2)}
-\`\`\`
-
-${[
-    ['town.energy.nonnegative', '角色精力不能为负', 'state.energy'],
-    ['town.work.nonnegative', '角色工作日不能为负', 'state.workDays'],
-    ['town.farm.nonnegative', '农场生长不能倒退', 'world.farm.cropGrowth'],
-    ['town.calendar.nonnegative', '游戏日不能为负', 'world.calendar.absoluteDay'],
-  ].map(([id, description, path]) => `\`\`\`worldline-invariant\n${JSON.stringify({
-    id, description, expression: { op: 'gte', path, value: 0 },
-  }, null, 2)}\n\`\`\``).join('\n\n')}
-`
-  return `# ${scenario.name} runtime
-
-\`\`\`worldline-action
-${JSON.stringify({
-    id: 'world.wait',
-    description: 'Wait while authored systems advance.',
-    operator: 'generic',
-    actorTypes: ['character'],
-    duration: 60,
-    maxWait: 600,
-    retryBudget: 3,
-    effects: [{ op: 'increment', path: 'state.elapsed', amount: 60 }],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-system
-${JSON.stringify({
-    id: 'world.clock',
-    description: 'Advance the authored world clock.',
-    nextWake: 3_600,
-    interval: 3_600,
-    effects: [{ op: 'increment', path: 'world.time', amount: 3_600 }],
-  }, null, 2)}
-\`\`\`
-
-\`\`\`worldline-invariant
-${JSON.stringify({
-    id: 'world.time.nonnegative',
-    description: 'Logical world time never becomes negative.',
-    expression: { op: 'gte', path: 'world.time', value: 0 },
-  }, null, 2)}
-\`\`\`
-`
+/** Current executable semantics stored outside author-facing Markdown. */
+export function runtimeSemanticDocument(scenario: WorldlineAcceptanceScenario): JsonObject {
+  const { provenance: _provenance, ...authoredMap } = scenario.map
+  const runtimeMap = JSON.parse(JSON.stringify(authoredMap)) as JsonObject
+  if (scenario.slug === 'warrior-and-dragon') {
+    return {
+      maps: [runtimeMap],
+      actions: [{
+        id: 'battle.strike',
+        description: '在龙巢中发动一次有体力代价的正面攻击。',
+        operator: 'generic',
+        location: { mode: 'at', nodeIds: ['map-node:dragon-lair'] },
+        actorTypes: ['character'],
+        preconditions: [{ op: 'gt', path: 'state.stamina', value: 0 }],
+        duration: 10,
+        maxWait: 60,
+        maxRetries: 2,
+        effects: [
+          { op: 'increment', path: 'state.stamina', amount: -1, min: 0 },
+          { op: 'set', path: 'conflict.heroWounds', value: 0 },
+          { op: 'increment', path: 'conflict.dragonWounds', amount: 1, min: 0 },
+        ],
+      }, {
+        id: 'battle.guard',
+        description: '稳住阵脚并恢复一点体力。',
+        operator: 'generic',
+        location: { mode: 'at', nodeIds: ['map-node:dragon-lair'] },
+        actorTypes: ['character'],
+        duration: 5,
+        maxWait: 30,
+        maxRetries: 2,
+        effects: [{ op: 'increment', path: 'state.stamina', amount: 1, min: 0, max: 5 }],
+      }],
+      systems: [{
+        id: 'dragon.counterfire',
+        description: '恶龙每三十秒掀起一次可追溯的龙焰反击。',
+        nextWake: 30,
+        interval: 30,
+        effects: [{ op: 'increment', path: 'conflict.heroWounds', amount: 1, min: 0 }],
+      }],
+      invariants: [{
+        id: 'battle.dragon-wounds.nonnegative',
+        description: '恶龙伤势计数不得为负。',
+        expression: { op: 'gte', path: 'conflict.dragonWounds', value: 0 },
+      }, {
+        id: 'battle.hero-wounds.nonnegative',
+        description: '勇士伤势计数不得为负。',
+        expression: { op: 'gte', path: 'conflict.heroWounds', value: 0 },
+      }],
+    }
+  }
+  if (scenario.slug === 'stardew-valley-town') {
+    return {
+      maps: [runtimeMap],
+      actions: [{
+        id: 'town.work', description: '履行角色当前职业的日常工作', operator: 'generic',
+        location: { mode: 'anywhere' },
+        actorTypes: ['character'], preconditions: [{ op: 'gt', path: 'state.energy', value: 0 }],
+        duration: 21_600, maxWait: 86_400, maxRetries: 3,
+        effects: [
+          { op: 'increment', path: 'state.energy', amount: -1, min: 0, max: 10 },
+          { op: 'increment', path: 'state.workDays', amount: 1, min: 0 },
+          { op: 'increment', path: 'world.farm.laborUnits', amount: 1, min: 0 },
+          { op: 'increment', path: 'world.economy.serviceUnits', amount: 1, min: 0 },
+        ],
+      }, {
+        id: 'town.socialize', description: '与一名镇民进行有来有往的社区交流', operator: 'generic',
+        location: { mode: 'anywhere' },
+        actorTypes: ['character'],
+        preconditions: [
+          { op: 'gt', path: 'state.energy', value: 0 },
+          { op: 'gte', path: 'target.state.socialInteractions', value: 0 },
+        ],
+        duration: 7_200, maxWait: 86_400, maxRetries: 3,
+        effects: [
+          { op: 'increment', path: 'state.energy', amount: -1, min: 0, max: 10 },
+          { op: 'increment', path: 'state.socialInteractions', amount: 1, min: 0 },
+          { op: 'increment', path: 'target.state.socialInteractions', amount: 1, min: 0 },
+          { op: 'increment', path: 'world.community.interactions', amount: 1, min: 0 },
+        ],
+      }, {
+        id: 'town.rest', description: '休息并恢复继续生活所需的精力', operator: 'generic',
+        location: { mode: 'anywhere' },
+        actorTypes: ['character'], duration: 28_800, maxWait: 86_400, maxRetries: 3,
+        effects: [{ op: 'increment', path: 'state.energy', amount: 3, min: 0, max: 10 }],
+      }, {
+        id: 'town.community', description: '参加公共事务、节日筹备或邻里互助',
+        operator: 'generic', location: { mode: 'anywhere' }, actorTypes: ['character'],
+        duration: 14_400, maxWait: 86_400,
+        maxRetries: 3, effects: [
+          { op: 'increment', path: 'state.communityContributions', amount: 1, min: 0 },
+          { op: 'increment', path: 'world.community.contributions', amount: 1, min: 0 },
+        ],
+      }, {
+        id: 'town.travel', description: '沿地图道路前往另一个真实地点', operator: 'move',
+        actorTypes: ['character'], duration: 0, maxWait: 86_400, maxRetries: 3, effects: [],
+      }],
+      systems: [{
+        id: 'town.environment.daily', description: '每日结算环境与农场生长',
+        nextWake: 86_400, interval: 86_400, effects: [
+          { op: 'increment', path: 'world.environment.daysElapsed', amount: 1, min: 0 },
+          { op: 'increment', path: 'world.farm.cropGrowth', amount: 1, min: 0 },
+          { op: 'increment', path: 'world.farm.soilCycles', amount: 1, min: 0 },
+          { op: 'increment', path: 'world.economy.dailyDemand', amount: 1, min: 0 },
+        ],
+      }, {
+        id: 'town.community.weekly', description: '每七日结算一次社区活动',
+        nextWake: 604_800, interval: 604_800,
+        effects: [{ op: 'increment', path: 'world.community.weeklyGatherings', amount: 1, min: 0 }],
+      }, {
+        id: 'town.season.transition', description: '每二十八日记录一次季节交替',
+        nextWake: 2_419_200, interval: 2_419_200,
+        effects: [{ op: 'increment', path: 'world.environment.seasonTransitions', amount: 1, min: 0 }],
+      }],
+      invariants: ([
+        ['town.energy.nonnegative', '角色精力不能为负', 'state.energy'],
+        ['town.work.nonnegative', '角色工作日不能为负', 'state.workDays'],
+        ['town.farm.nonnegative', '农场生长不能倒退', 'world.farm.cropGrowth'],
+        ['town.calendar.nonnegative', '运行时间不能为负', 'world.time'],
+      ] as const).map(([id, description, path]) => ({
+        id, description, expression: { op: 'gte', path, value: 0 },
+      })),
+    }
+  }
+  return {
+    maps: [runtimeMap],
+    actions: [{
+      id: 'world.wait',
+      description: 'Wait while authored systems advance.',
+      operator: 'generic',
+      location: { mode: 'anywhere' },
+      actorTypes: ['character'],
+      duration: 60,
+      maxWait: 600,
+      maxRetries: 3,
+      effects: [{ op: 'increment', path: 'state.elapsed', amount: 60 }],
+    }],
+    systems: [{
+      id: 'world.clock',
+      description: 'Advance the authored world clock.',
+      nextWake: 3_600,
+      interval: 3_600,
+      effects: [{ op: 'increment', path: 'world.time', amount: 3_600 }],
+    }],
+    invariants: [{
+      id: 'world.time.nonnegative',
+      description: 'Logical world time never becomes negative.',
+      expression: { op: 'gte', path: 'world.time', value: 0 },
+    }],
+  }
 }
 
 export function mapDocument(scenario: WorldlineAcceptanceScenario): string {
-  return `# ${scenario.map.name}
+  return `# ${scenario.map.name}\n\n地图包含 ${String(scenario.map.nodes.length)} 个地点和 ${String(scenario.map.edges.length)} 条通路；结构由原生地图编排器维护。\n`
+}
 
-\`\`\`worldline-map
-${JSON.stringify(scenario.map, null, 2)}
-\`\`\`
+/** Human-readable native place archive consumed by the current map composer. */
+export function locationDocument(
+  scenario: WorldlineAcceptanceScenario,
+  node: WorldlineAcceptanceScenario['map']['nodes'][number],
+): string {
+  const connections = scenario.map.edges.flatMap((edge) => {
+    if (edge.from === node.id) return [`${edge.to}|${String(edge.baseDuration)}`]
+    if (edge.bidirectional && edge.to === node.id) {
+      return [`${edge.from}|${String(edge.baseDuration)}`]
+    }
+    return []
+  })
+  return `# ${node.name}
+
+${node.name}是${scenario.map.name}中的真实地点；人物移动与场景切换必须引用这份地点档案。
+
+## 地点档案
+
+- 地点 ID：${node.id}
+- 地点类型：${node.kind}
+- 上级地点：${node.parentId ?? '—'}
+- 地图坐标：${String(Math.round(node.position.x))}, ${String(Math.round(node.position.y))}
+- 容纳人数：${node.capacity === undefined ? '—' : String(node.capacity)}
+- 相邻地点：${connections.length === 0 ? '—' : connections.join('；')}
+- 场景背景：—
+- 场景画廊：—
 `
 }
 
@@ -550,23 +562,53 @@ export function characterDocument(
   const belief = character.belief ?? (character.name.includes('勇士')
     ? '力量必须为守护负责，胜利不能以无辜者为代价。'
     : '凡人会夺走龙族遗物，但勇气也可能证明承诺。')
+  const memory = {
+    episodic: [dragonStory],
+    beliefs: { core: { subject: '世界信念', value: belief, confidence: 0.9 } },
+    goals: [{ goal, status: 'active' }],
+    skills: character.skills !== undefined
+      ? character.skills.map((skill, index) => ({ skill, level: Math.max(1, 3 - index) }))
+      : character.name.includes('勇士')
+      ? [{ skill: '盾剑战斗', level: 3 }, { skill: '追踪', level: 2 }]
+      : [{ skill: '龙焰控制', level: 4 }, { skill: '古代记忆', level: 3 }],
+  }
+  const stateSchema = Object.fromEntries(Object.entries(character.state).map(([key, value]) => {
+    const type = Array.isArray(value) ? 'array' : value === null ? 'object' : typeof value
+    if (key === 'locationId') return [key, { type, mutable: false, label: '当前地点' }]
+    const numericBands = type === 'number' ? {
+      bands: [
+        { max: 0, label: '耗尽', narrative: `${key} 已经耗尽`, choices: '必须恢复或承担失败后果' },
+        { min: 1, label: '可用', narrative: `${key} 仍能支持行动`, choices: '可以继续行动，但需要权衡消耗' },
+      ],
+    } : {}
+    return [key, {
+      type,
+      mutable: true,
+      label: key === 'stamina' ? '体力' : key === 'wounds' ? '伤势' : '角色状态',
+      participation: {
+        drivers: key === 'stamina' ? ['action', 'director'] : ['director'],
+        meaning: '这是会影响角色处境的权威状态，不是装饰信息',
+        narrative: '正文应在状态改变或形成压力时自然表现它',
+        choices: '可行动范围和风险必须反映这个状态',
+        ...numericBands,
+      },
+    }]
+  }))
   return `# ${character.name}
 
 ${dragonStory}
 
-<!-- worldline-facets ${JSON.stringify({
-    initialState: character.state,
-    memory: {
-      episodic: [dragonStory],
-      beliefs: { core: { subject: '世界信念', value: belief, confidence: 0.9 } },
-      goals: [{ goal, status: 'active' }],
-      skills: character.skills !== undefined
-        ? character.skills.map((skill, index) => ({ skill, level: Math.max(1, 3 - index) }))
-        : character.name.includes('勇士')
-        ? [{ skill: '盾剑战斗', level: 3 }, { skill: '追踪', level: 2 }]
-        : [{ skill: '龙焰控制', level: 4 }, { skill: '古代记忆', level: 3 }],
-    },
-  })} -->
+\`\`\`worldline-state-schema
+${JSON.stringify(stateSchema, null, 2)}
+\`\`\`
+
+\`\`\`worldline-initial-state
+${JSON.stringify(character.state, null, 2)}
+\`\`\`
+
+\`\`\`worldline-memory
+${JSON.stringify(memory, null, 2)}
+\`\`\`
 `
 }
 
@@ -574,9 +616,25 @@ ${dragonStory}
 export function charterDocument(scenario: WorldlineAcceptanceScenario): string {
   if (scenario.slug === 'warrior-and-dragon') return `# 灰烬边境世界宪章
 
-<!-- worldline-facets ${JSON.stringify({
-    initialWorldState: { conflict: { heroWounds: 0, dragonWounds: 0 } },
-  })} -->
+\`\`\`worldline-initial-world-state
+${JSON.stringify({
+    world: {
+      time: 0,
+      calendar: {
+        secondsPerDay: 86_400,
+        daysPerSeason: 30,
+        seasons: ['雨季', '旱季', '霜季'],
+        startDayIndex: 1,
+        startClockMinute: 1_080,
+      },
+    },
+    conflict: { heroWounds: 0, dragonWounds: 0 },
+  }, null, 2)}
+\`\`\`
+
+\`\`\`worldline-world-state-schema
+${JSON.stringify(worldTimeSchema, null, 2)}
+\`\`\`
 
 1. 角色只能依据亲历事件与明确观察行动，不能读取未获得的秘密。
 2. 距离、行动耗时、体力与伤势必须由地图和机制结算，任何角色都不能无代价胜利。
@@ -585,26 +643,28 @@ export function charterDocument(scenario: WorldlineAcceptanceScenario): string {
 `
   if (scenario.slug === 'stardew-valley-town') return `# 星露谷与鹈鹕镇世界宪章
 
-<!-- worldline-facets ${JSON.stringify({
-    initialWorldState: {
-      world: {
-        calendar: {
-          secondsPerDay: 86_400,
-          daysPerSeason: 28,
-          seasons: ['春', '夏', '秋', '冬'],
-          absoluteDay: 1,
-          year: 1,
-          season: '春',
-          dayOfSeason: 1,
-          timeOfDaySeconds: 0,
-        },
-        environment: { daysElapsed: 0, seasonTransitions: 0 },
-        farm: { laborUnits: 0, cropGrowth: 0, soilCycles: 0 },
-        economy: { serviceUnits: 0, dailyDemand: 0 },
-        community: { interactions: 0, contributions: 0, weeklyGatherings: 0 },
+\`\`\`worldline-initial-world-state
+${JSON.stringify({
+    world: {
+      time: 0,
+      calendar: {
+        secondsPerDay: 86_400,
+        daysPerSeason: 28,
+        seasons: ['春', '夏', '秋', '冬'],
+        startDayIndex: 1,
+        startClockMinute: 360,
       },
+      environment: { daysElapsed: 0, seasonTransitions: 0 },
+      farm: { laborUnits: 0, cropGrowth: 0, soilCycles: 0 },
+      economy: { serviceUnits: 0, dailyDemand: 0 },
+      community: { interactions: 0, contributions: 0, weeklyGatherings: 0 },
     },
-  })} -->
+  }, null, 2)}
+\`\`\`
+
+\`\`\`worldline-world-state-schema
+${JSON.stringify(worldTimeSchema, null, 2)}
+\`\`\`
 
 1. 游戏内一天固定为 86400 个逻辑秒，四季各 28 日；现实时间不参与世界结算。
 2. 每位居民拥有职业、精力、目标、信念、技能、地点、行动经验与人际关系，不能退化成无名统计量。
@@ -615,6 +675,25 @@ export function charterDocument(scenario: WorldlineAcceptanceScenario): string {
   return `# ${scenario.name}世界宪章
 
 Authored facts, bounded knowledge, explicit time, and retained causal events govern this world.
+
+\`\`\`worldline-initial-world-state
+${JSON.stringify({
+    world: {
+      time: 0,
+      calendar: {
+        secondsPerDay: 86_400,
+        daysPerSeason: 30,
+        seasons: ['first', 'second', 'third', 'fourth'],
+        startDayIndex: 1,
+        startClockMinute: 480,
+      },
+    },
+  }, null, 2)}
+\`\`\`
+
+\`\`\`worldline-world-state-schema
+${JSON.stringify(worldTimeSchema, null, 2)}
+\`\`\`
 `
 }
 
@@ -644,16 +723,51 @@ export function openingScenarioDocument(scenario: WorldlineAcceptanceScenario): 
 
 勇士艾琳与赤焰龙烬冠同处龙巢。玩家控制艾琳，目标是在体力不低于零的前提下完成至少一次有效攻击，并承受世界时间推进带来的龙焰反击。
 
-验收条件：构建闭包通过；Run 中出现 battle.strike 的完成事件；恶龙伤势增加；三十秒后勇士伤势增加；故事舞台只能叙述这些已经记录的事实。
+## 剧情推进
+
+- 顺序：1
+- 激活时刻（游戏秒）：0
+- 截止时刻（游戏秒）：3600
+- 时间干预：1800|龙焰逼近|龙巢深处的火流越过石桥，迫使双方在剩余时间内作出选择
+- 进入条件：勇士与恶龙同处龙巢，双方都能观察到彼此
+- 完成证据：Run 中出现 battle.strike 的完成事件，且恶龙伤势增加
+- 戏剧压力：龙焰每三十秒结算一次，拖延会持续增加勇士伤势
+- 成功后果：正面交锋成为可追溯事实，双方必须依据真实损耗决定下一步
+- 失败后果：勇士在未取得进展前承受更多龙焰反击，体力与退路继续收窄
+- 恢复钩子：即使错过正面攻击，也可以先稳住阵脚，再依据已发生的反击重新寻找机会
 `
   if (scenario.slug === 'stardew-valley-town') return `# 一千日小镇长期演算
 
 从第一年春季第一日开始，无需外部模型干预，让所有居民按照可执行动作持续工作、社交、休息、参与社区事务并沿真实地图移动。
 
-验收条件：运行到第 1001 个游戏日；每位居民都有工作、社交、移动或社区行为留下的行动经验和记忆；职业、精力、关系与地点始终有效；农场、环境、经济和社区指标持续推进；无失败进程、无永久等待、无状态越界；叙事只复述权威记录。
+## 剧情推进
+
+- 顺序：1
+- 激活时刻（游戏秒）：0
+- 截止时刻（游戏秒）：86400000
+- 时间干预：2419200|首个季节结算|世界系统结算首个二十八日周期，并将农场、经济与社区变化写入事件账本
+- 进入条件：农场主与镇民已经位于各自真实地点，职业与世界系统开始运行
+- 完成证据：运行到第 1001 个游戏日，且每位居民都留下可追溯的行动经验与记忆
+- 戏剧压力：季节、资源与居民精力持续结算，停滞会造成可审计的社区缺口
+- 成功后果：农场、经济、环境与社区指标连续推进，居民仍保持各自身份与目标
+- 失败后果：出现永久等待、状态越界或没有来源的变化，并由验收报告明确指出
+- 恢复钩子：从最近一个通过不变量检查的存档点分支，修复机制后继续长期演算
 `
   return `# ${scenario.name} opening
 
 Start from the authored map, actors, rules, and observable success criteria.
+
+## 剧情推进
+
+- 顺序：1
+- 激活时刻（游戏秒）：0
+- 截止时刻（游戏秒）：${String(Math.max(3600, scenario.purpose.duration))}
+- 时间干预：3600|首轮世界结算|世界时钟完成第一次可追溯结算，提醒角色当前目标仍在推进
+- 进入条件：角色、地图、动作与世界规则已经载入权威运行状态
+- 完成证据：至少一次角色动作与一次世界系统结算被写入 Run 事件账本
+- 戏剧压力：世界时间持续推进，未处理的目标会留下明确后果
+- 成功后果：角色依据亲历和已发生事件推进目标，不产生越权知识
+- 失败后果：目标未完成但失败原因与状态变化被完整保留
+- 恢复钩子：从最近的合法状态继续尝试另一条可执行行动路径
 `
 }

@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-settings-file",
   "description": "File-backed settings provider (settings.yaml) for the Worldline",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "publishConfig": {
     "access": "public"
   },

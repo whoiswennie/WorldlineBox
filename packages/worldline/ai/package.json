@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-worldline-ai",
-  "description": "Budgeted bounded-context AI planning for Worldline runs",
-  "version": "0.2.3",
+  "description": "Bounded-context AI planning with resilient retries and durable usage telemetry",
+  "version": "0.2.4-alpha.1",
   "private": true,
   "type": "module",
   "license": "MIT",

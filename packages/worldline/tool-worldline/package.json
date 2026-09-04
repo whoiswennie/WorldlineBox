@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-tool-worldline",
   "description": "Project-scoped and provenance-aware tools for Worldline authoring, builds, and Runs",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "private": true,
   "type": "module",
   "license": "MIT",

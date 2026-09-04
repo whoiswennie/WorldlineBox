@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-worldline-standard",
   "description": "Portable WWS contracts and validation primitives for Worldline world projects",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",
@@ -21,6 +21,10 @@
     "./canon-kind": {
       "types": "./lib/types/canon-kind.d.ts",
       "default": "./lib/types/canon-kind.js"
+    },
+    "./project-layout": {
+      "types": "./lib/types/project-layout.d.ts",
+      "default": "./lib/types/project-layout.js"
     },
     "./src/*": "./src/*",
     "./package.json": "./package.json"

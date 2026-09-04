@@ -65,12 +65,16 @@ async function route(): Promise<{
   } as unknown as WebServer
   const narrative = {
     async *narrateStream() {
+      yield { type: 'media', cue: { type: 'background', variant: 'assets/library.png' } } as const
       yield { type: 'text-delta', text: 'The gate opens.' } as const
       yield {
         type: 'beat',
         beat: {
-          id: 'narrative-beat:test', eventIds: [], observationIds: [], camera: 'limited-third-person',
-          text: 'The gate opens.', media: [], style: 'template',
+          id: 'narrative-beat:test', invocationId: 'ai-invocation:test',
+          perspectiveActorId: 'entity:reader', eventIds: [], observationIds: [],
+          camera: 'limited-third-person', text: 'The gate opens.',
+          blocks: [{ type: 'narration', text: 'The gate opens.' }], media: [],
+          modelRoute: { provider: 'test', model: 'narrator' },
         },
       } as const
     },
@@ -110,6 +114,7 @@ describe('Worldline narrative stream bridge', () => {
     expect(mounted.streamRoute).toMatchObject({ kind: 'exact', path: STREAM_PATH })
     expect(output.status).toBe(200)
     expect(output.ended).toBe(true)
+    expect(output.chunks.join('')).toContain('"type":"media"')
     expect(output.chunks.join('')).toContain('"type":"text-delta"')
     expect(output.chunks.join('')).toContain('"type":"beat"')
     await mounted.dispose()

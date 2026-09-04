@@ -43,7 +43,7 @@ export function inferCanonObjectKind(path: string, explicit?: string): CanonKind
   if (normalized.startsWith('species/')) return { kind: 'species' }
   if (normalized.startsWith('items/')) return { kind: 'item' }
   if (normalized.startsWith('concepts/')) return { kind: 'concept' }
-  if (normalized.startsWith('rules/') || normalized.startsWith('mechanisms/')) return { kind: 'rule' }
+  if (normalized.startsWith('mechanisms/')) return { kind: 'rule' }
   if (normalized.startsWith('relations/')) return { kind: 'relation' }
   if (normalized.startsWith('facts/')) return { kind: 'fact' }
   if (normalized.includes('timeline')) return { kind: 'timeline-event' }

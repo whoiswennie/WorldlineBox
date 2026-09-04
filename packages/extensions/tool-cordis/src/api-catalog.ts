@@ -2830,14 +2830,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The result produced by the operation.',
       },
       {
-        signature: '@Remote(\'budget\') async budget(request: AiBudgetRequest): Promise<AiBudgetStatus>',
-        description: 'Return the current AI budget state for a Run.',
-        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
-        returns: 'The result produced by the operation.',
-      },
-      {
         signature: '@Remote(\'decide\') async decide(request: DecideForActorRequest): Promise<AiDecisionResult>',
-        description: 'Route one actor decision through policy, budget, and validation gates.',
+        description: 'Route one actor decision through policy, context-capacity, and validation gates.',
         parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
         returns: 'The result produced by the operation.',
       },
@@ -2951,6 +2945,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Perform narrate stream through the package\'s public contract.',
         parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
         returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'suggest\') async suggest(request: TextPlayRequest): Promise<StoryChoiceSuggestions>',
+        description: 'Generate exactly three scene-specific choices after the latest story beat is fully presented.',
+        parameters: [{ name: 'request', description: 'The active Run, actor, and camera selection.' }],
+        returns: 'Three creative plans grounded in current Runtime-legal opportunities.',
       },
       {
         signature: '@Remote(\'choose\') async choose(request: ChooseTextActionRequest): Promise<SubmitRunActionResult>',
@@ -3084,6 +3084,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Stream one browser-owned file without placing its bytes in Remote JSON or Host memory.',
         parameters: [{ name: 'request', description: 'The request supplied by the caller.' }, { name: 'source', description: 'The source supplied by the caller.' }],
         returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract assetFile(request: ReadDocumentRequest): Promise<ProjectAssetFile>',
+        description: 'Resolve one project-owned binary resource for a Host streaming endpoint. Not Remote.',
+        parameters: [{ name: 'request', description: 'Project and asset path to resolve.' }],
+        returns: 'The validated Host file descriptor for streaming.',
       },
       {
         signature: 'abstract createDirectory(request: CreateDirectoryRequest): Promise<MutationResult>',
@@ -3536,12 +3542,6 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The result produced by the operation.',
       },
       {
-        signature: 'abstract setAiBudget(request: SetAiBudgetRequest): Promise<RunView>',
-        description: 'Set the explicit bounded AI allowance for a Run.',
-        parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
-        returns: 'The result produced by the operation.',
-      },
-      {
         signature: 'abstract switchModel(request: SwitchModelPolicyRequest): Promise<RunView>',
         description: 'Perform switch model through the package\'s public contract.',
         parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
@@ -3570,6 +3570,24 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Host-only: persist prose derived from retained events/observations without changing world state.',
         parameters: [{ name: 'request', description: 'The request supplied by the caller.' }],
         returns: 'The result produced by the operation.',
+      },
+      {
+        signature: 'abstract completePresentation( request: CompletePresentationRequest, ): Promise<CompletePresentationResult>',
+        description: 'Persist that a player has fully presented one retained narrative beat.',
+        parameters: [{ name: 'request', description: 'The completed beat and perspective actor.' }],
+        returns: 'The durable presentation cursor and resulting Run sequence.',
+      },
+      {
+        signature: 'abstract recordActionDeck(request: RecordActionDeckRequest): Promise<RecordActionDeckResult>',
+        description: 'Validate and retain a model-authored action deck for the current story pause.',
+        parameters: [{ name: 'request', description: 'Three creative plans bound to current legal opportunities.' }],
+        returns: 'The retained action deck and resulting Run sequence.',
+      },
+      {
+        signature: 'abstract recordStoryState(request: RecordStoryStateRequest): Promise<RecordStoryStateResult>',
+        description: 'Validate and atomically retain schema-constrained soft state and memories.',
+        parameters: [{ name: 'request', description: 'Mutations, memory writes, and optional plot evidence for one retained beat.' }],
+        returns: 'The committed story state and resulting Run sequence.',
       },
       {
         signature: '@Remote(\'create\') remoteCreate(value: CreateRunRequest): Promise<RunView>',
@@ -3680,12 +3698,6 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The result produced by the operation.',
       },
       {
-        signature: '@Remote(\'setAiBudget\') remoteSetAiBudget(value: SetAiBudgetRequest): Promise<RunView>',
-        description: 'Update the Run AI budget through the generated Remote boundary.',
-        parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
-        returns: 'The result produced by the operation.',
-      },
-      {
         signature: '@Remote(\'switchModel\') remoteSwitchModel(value: SwitchModelPolicyRequest): Promise<RunView>',
         description: 'Perform remote switch model through the package\'s public contract.',
         parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
@@ -3696,6 +3708,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Perform remote explain through the package\'s public contract.',
         parameters: [{ name: 'value', description: 'The value supplied by the caller.' }],
         returns: 'The result produced by the operation.',
+      },
+      {
+        signature: '@Remote(\'completePresentation\') remoteCompletePresentation( value: CompletePresentationRequest, ): Promise<CompletePresentationResult>',
+        description: 'Persist a stable presentation boundary through the generated Remote face.',
+        parameters: [{ name: 'value', description: 'The completed beat and perspective actor.' }],
+        returns: 'The durable presentation cursor and resulting Run sequence.',
       },
     ],
   },
@@ -4191,6 +4209,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     description: 'A lazily watched registered Workspace changed on disk.',
     parameters: [{ name: 'workspaceRoot', description: 'canonical root of the changed Workspace.' }],
   },
+  {
+    name: 'worldline-project/release',
+    mode: 'parallel',
+    signature: '\'worldline-project/release\'(projectId: ProjectId): Promise<void> | void',
+    summary: 'Awaited checkpoint before a project becomes inaccessible.',
+    description: 'Awaited checkpoint before a project becomes inaccessible. Runtime owners must release project-scoped activity and file handles before resolving.',
+    parameters: [{ name: 'projectId', description: 'Project that is leaving the active library.' }],
+  },
 ]
 
 /** Shapes of every exported type the Service and Event signatures reference (transitively), sorted by name. */
@@ -4200,8 +4226,12 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface AccountProfileSnapshot {\n    id: number;\n    username: string;\n    createdAt: number;\n    lastLoginAt: number | null;\n    displayName: string;\n    avatar: string;\n    avatarPath?: string;\n    bio: string;\n}',
   },
   {
+    name: 'ActionDeck',
+    declaration: 'export interface ActionDeck {\n    readonly id: WorldlineId<\'action-deck\'>;\n    readonly actorId: EntityId;\n    readonly sequence: number;\n    readonly afterBeatId: WorldlineId<\'narrative-beat\'>;\n    readonly invocationId: WorldlineId<\'ai-invocation\'>;\n    readonly plans: readonly ActionPlan[];\n}',
+  },
+  {
     name: 'ActionDefinition',
-    declaration: 'export interface ActionDefinition {\n    readonly id: string;\n    readonly description: string;\n    readonly operator?: \'generic\' | \'move\' | \'teleport\';\n    readonly actorTypes: readonly string[];\n    readonly preconditions: readonly Expression[];\n    readonly claims: readonly ClaimTemplate[];\n    readonly duration: number;\n    readonly effects: readonly Effect[];\n    readonly interruptible: boolean;\n    readonly maxWait: number;\n    readonly retryBudget: number;\n    readonly fallbacks: readonly string[];\n    readonly provenance: readonly Provenance[];\n}',
+    declaration: 'export interface ActionDefinition {\n    readonly id: string;\n    readonly description: string;\n    readonly operator?: \'generic\' | \'move\' | \'teleport\';\n    readonly location?: {\n        readonly mode: \'anywhere\';\n    } | {\n        readonly mode: \'at\';\n        readonly nodeIds: readonly MapNodeId[];\n    };\n    readonly actorTypes: readonly string[];\n    readonly preconditions: readonly Expression[];\n    readonly claims: readonly ClaimTemplate[];\n    readonly duration: number;\n    readonly effects: readonly Effect[];\n    readonly interruptible: boolean;\n    readonly maxWait: number;\n    readonly maxRetries: number;\n    readonly fallbacks: readonly string[];\n    readonly provenance: readonly Provenance[];\n}',
   },
   {
     name: 'ActionExperience',
@@ -4214,6 +4244,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ActionLifecycleState',
     declaration: 'export type ActionLifecycleState = \'proposed\' | \'admitted\' | \'reserved\' | \'started\' | \'progressing\' | ActionTerminalState;',
+  },
+  {
+    name: 'ActionPlan',
+    declaration: 'export interface ActionPlan {\n    readonly id: WorldlineId<\'action-plan\'>;\n    readonly actorId: EntityId;\n    readonly opportunityId: string;\n    readonly capabilityId: string;\n    readonly parameters: JsonObject;\n    readonly targetIds: readonly string[];\n    readonly label: string;\n    readonly intent: string;\n    readonly storyRole: \'advance\' | \'character\' | \'deviate\';\n    readonly estimatedDuration: number;\n    readonly costs: readonly string[];\n    readonly risks: readonly string[];\n}',
+  },
+  {
+    name: 'ActionPlanDraft',
+    declaration: 'export interface ActionPlanDraft {\n    readonly opportunityId: string;\n    readonly label: string;\n    readonly intent: string;\n    readonly storyRole: ActionPlan[\'storyRole\'];\n}',
   },
   {
     name: 'ActionRequest',
@@ -4292,20 +4330,8 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface AgentVaultTrashEntry {\n    readonly id: string;\n    readonly agentId: string;\n    readonly name: string;\n    readonly deletedAt: number;\n    readonly createdAt: number;\n    readonly updatedAt: number;\n    readonly restorable: boolean;\n    readonly hasAvatar: boolean;\n}',
   },
   {
-    name: 'AiBudget',
-    declaration: 'export interface AiBudget {\n    readonly maxCalls: number;\n    readonly maxInputTokens: number;\n    readonly maxOutputTokens: number;\n    readonly maxConcurrent: number;\n    readonly maxCallsPerLogicalDay: number;\n    readonly maxCallsPerRealHour: number;\n    readonly maxEstimatedCost: number;\n    readonly currency: string;\n}',
-  },
-  {
-    name: 'AiBudgetRequest',
-    declaration: 'export interface AiBudgetRequest extends ContextPackRequest {\n    readonly contextPack?: ContextPack;\n}',
-  },
-  {
-    name: 'AiBudgetStatus',
-    declaration: 'export interface AiBudgetStatus {\n    readonly runId: RunId;\n    readonly allowed: boolean;\n    readonly reasons: readonly string[];\n    readonly route?: ModelRoute;\n    readonly activeCalls: number;\n    readonly callsRemaining: number;\n    readonly inputTokensRemaining: number;\n    readonly outputTokensRemaining: number;\n    readonly logicalDayCallsRemaining: number;\n    readonly realHourCallsRemaining: number;\n    readonly estimatedNextCost: number;\n    readonly estimatedCostRemaining: number;\n    readonly pricing: \'route\' | \'conservative-fallback\';\n}',
-  },
-  {
     name: 'AiDecisionResult',
-    declaration: 'export interface AiDecisionResult {\n    readonly status: \'submitted\' | \'deterministic-only\' | \'no-legal-choice\' | \'budget-blocked\' | \'model-failed\' | \'invalid-output\' | \'conflict\';\n    readonly message: string;\n    readonly contextPack?: ContextPack;\n    readonly budget?: AiBudgetStatus;\n    readonly invocation?: AiInvocation;\n    readonly intent?: AiIntent;\n    readonly action?: SubmitRunActionResult;\n}',
+    declaration: 'export interface AiDecisionResult {\n    readonly status: \'submitted\' | \'deterministic-only\' | \'no-legal-choice\' | \'model-failed\' | \'invalid-output\' | \'conflict\';\n    readonly message: string;\n    readonly contextPack?: ContextPack;\n    readonly invocation?: AiInvocation;\n    readonly intent?: AiIntent;\n    readonly action?: SubmitRunActionResult;\n}',
   },
   {
     name: 'AiIntent',
@@ -4317,7 +4343,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'AiUsage',
-    declaration: 'export interface AiUsage {\n    readonly calls: number;\n    readonly inputTokens: number;\n    readonly outputTokens: number;\n    readonly cacheReadTokens: number;\n    readonly estimatedCost: number;\n    readonly cacheHits: number;\n    readonly degradedReason?: string;\n}',
+    declaration: 'export interface AiUsage {\n    readonly calls: number;\n    readonly inputTokens: number;\n    readonly outputTokens: number;\n    readonly cacheReadTokens: number;\n    readonly estimatedCost: number;\n    readonly cacheHits: number;\n}',
   },
   {
     name: 'AllowedModelRoute',
@@ -4473,7 +4499,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'Blueprint',
-    declaration: 'export interface Blueprint {\n    readonly id: BlueprintId;\n    readonly digest: string;\n    readonly format: typeof WWS_VERSION;\n    readonly projectId: ProjectId;\n    readonly worldId: WorldId;\n    readonly worldlineId: CanonWorldlineId;\n    readonly projectRevision: Revision;\n    readonly createdAt: string;\n    readonly purpose: SimulationPurpose;\n    readonly canon: readonly CanonObject[];\n    readonly links: readonly CanonLink[];\n    readonly maps: readonly WorldMap[];\n    readonly entities: readonly RuntimeEntitySeed[];\n    readonly actions: readonly ActionDefinition[];\n    readonly systems: readonly SystemDefinition[];\n    readonly invariants: readonly InvariantDefinition[];\n    readonly provenance: readonly Provenance[];\n    readonly modelPolicy: ModelPolicy;\n    readonly certificate: ClosureCertificate;\n}',
+    declaration: 'export interface Blueprint {\n    readonly id: BlueprintId;\n    readonly digest: string;\n    readonly format: typeof WWS_VERSION;\n    readonly projectId: ProjectId;\n    readonly worldId: WorldId;\n    readonly worldlineId: CanonWorldlineId;\n    readonly projectRevision: Revision;\n    readonly createdAt: string;\n    readonly purpose: SimulationPurpose;\n    readonly canon: readonly CanonObject[];\n    readonly links: readonly CanonLink[];\n    readonly maps: readonly WorldMap[];\n    readonly entities: readonly RuntimeEntitySeed[];\n    readonly actions: readonly ActionDefinition[];\n    readonly systems: readonly SystemDefinition[];\n    readonly invariants: readonly InvariantDefinition[];\n    readonly plotPoints?: readonly PlotPointDefinition[];\n    readonly provenance: readonly Provenance[];\n    readonly modelPolicy: ModelPolicy;\n    readonly certificate: ClosureCertificate;\n}',
   },
   {
     name: 'BlueprintId',
@@ -4585,7 +4611,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ChooseTextActionRequest',
-    declaration: 'export interface ChooseTextActionRequest extends TextPlayRequest {\n    readonly choiceId: string;\n    readonly expectedSequence: number;\n}',
+    declaration: 'export interface ChooseTextActionRequest extends TextPlayRequest {\n    readonly planId: ActionPlan[\'id\'];\n    readonly expectedSequence: number;\n}',
   },
   {
     name: 'ClaimTemplate',
@@ -4684,6 +4710,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface CompileWorldRequest {\n    readonly projectId: ProjectId;\n    readonly purpose?: SimulationPurpose;\n}',
   },
   {
+    name: 'CompletePresentationRequest',
+    declaration: 'export interface CompletePresentationRequest extends RunRef {\n    readonly actorId: EntityId;\n    readonly beatId: NarrativeBeat[\'id\'];\n}',
+  },
+  {
+    name: 'CompletePresentationResult',
+    declaration: 'export interface CompletePresentationResult {\n    readonly cursor: PresentationCursor;\n    readonly view: RunView;\n}',
+  },
+  {
     name: 'ConfinedArgv',
     declaration: 'export interface ConfinedArgv {\n    argv: string[];\n    enforcement: SandboxEnforcement;\n    denialSignatures: readonly string[];\n    runnerFailureRules: readonly RunnerFailureRule[];\n}',
   },
@@ -4729,7 +4763,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ContextPackRequest',
-    declaration: 'export interface ContextPackRequest {\n    readonly runId: RunId;\n    readonly actorId: EntityId;\n    readonly purpose?: \'character\' | \'narrator\' | \'summary\';\n    readonly maxOutputTokens?: number;\n    readonly reservedToolTokens?: number;\n}',
+    declaration: 'export interface ContextPackRequest {\n    readonly runId: RunId;\n    readonly actorId: EntityId;\n    readonly purpose?: \'character\' | \'creative\' | \'narrator\' | \'summary\';\n    readonly maxOutputTokens?: number;\n    readonly reservedToolTokens?: number;\n}',
   },
   {
     name: 'ContextPackSection',
@@ -4825,7 +4859,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'CreateRunRequest',
-    declaration: 'export interface CreateRunRequest {\n    readonly projectId: ProjectId;\n    readonly seed: string;\n    readonly modelPolicy?: ModelPolicy;\n    readonly aiBudget?: AiBudget;\n    readonly startPaused?: boolean;\n}',
+    declaration: 'export interface CreateRunRequest {\n    readonly projectId: ProjectId;\n    readonly seed: string;\n    readonly modelPolicy?: ModelPolicy;\n    readonly startPaused?: boolean;\n}',
   },
   {
     name: 'CreateSessionOptions',
@@ -5477,7 +5511,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'MapNode',
-    declaration: 'export interface MapNode {\n    readonly id: MapNodeId;\n    readonly entityId?: EntityId;\n    readonly parentId?: MapNodeId;\n    readonly layerId: string;\n    readonly kind: MapNodeKind;\n    readonly name: string;\n    readonly position: MapPoint;\n    readonly polygon?: readonly MapPoint[];\n    readonly capacity?: number;\n    readonly permissions: readonly string[];\n    readonly hazards: readonly string[];\n    readonly entryNodeIds: readonly MapNodeId[];\n}',
+    declaration: 'export interface MapNode {\n    readonly id: MapNodeId;\n    readonly entityId?: EntityId;\n    readonly parentId?: MapNodeId;\n    readonly layerId: string;\n    readonly kind: MapNodeKind;\n    readonly name: string;\n    readonly description?: string;\n    readonly background?: string;\n    readonly position: MapPoint;\n    readonly polygon?: readonly MapPoint[];\n    readonly capacity?: number;\n    readonly permissions: readonly string[];\n    readonly hazards: readonly string[];\n    readonly entryNodeIds: readonly MapNodeId[];\n}',
   },
   {
     name: 'MapNodeId',
@@ -5498,6 +5532,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'MediaCue',
     declaration: 'export interface MediaCue {\n    readonly type: \'background\' | \'portrait\' | \'expression\' | \'bgm\' | \'sfx\' | \'voice\' | \'transition\';\n    readonly assetId?: AssetId;\n    readonly entityId?: EntityId;\n    readonly variant?: string;\n}',
+  },
+  {
+    name: 'MediaGenerationIntent',
+    declaration: 'export interface MediaGenerationIntent {\n    readonly kind: \'image\' | \'audio\';\n    readonly purpose: \'scene\' | \'character\' | \'event\' | \'music\' | \'sfx\' | \'voice\';\n    readonly prompt: string;\n    readonly fallbackText: string;\n}',
   },
   {
     name: 'MemoryBase',
@@ -5637,15 +5675,27 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'NarrateRequest',
-    declaration: 'export interface NarrateRequest extends TextPlayRequest {\n    readonly eventIds?: readonly string[];\n    readonly observationIds?: readonly string[];\n    readonly templateOnly?: boolean;\n}',
+    declaration: 'export interface NarrateRequest extends TextPlayRequest {\n    readonly actionId?: ActionId;\n    readonly playerIntent?: string;\n    readonly eventIds?: readonly string[];\n    readonly observationIds?: readonly string[];\n}',
+  },
+  {
+    name: 'NarrativeAgentPhase',
+    declaration: 'export type NarrativeAgentPhase = \'context\' | \'narrative\' | \'world-state\' | \'complete\';',
   },
   {
     name: 'NarrativeBeat',
-    declaration: 'export interface NarrativeBeat {\n    readonly id: WorldlineId<\'narrative-beat\'>;\n    readonly invocationId?: WorldlineId<\'ai-invocation\'>;\n    readonly eventIds: readonly EventId[];\n    readonly observationIds: readonly WorldlineId<\'observation\'>[];\n    readonly camera: string;\n    readonly speakerId?: EntityId;\n    readonly text: string;\n    readonly media: readonly MediaCue[];\n    readonly style: \'template\' | \'llm\';\n    readonly modelRoute?: ModelRoute;\n}',
+    declaration: 'export interface NarrativeBeat {\n    readonly id: WorldlineId<\'narrative-beat\'>;\n    readonly invocationId: WorldlineId<\'ai-invocation\'>;\n    readonly perspectiveActorId: EntityId;\n    readonly eventIds: readonly EventId[];\n    readonly observationIds: readonly WorldlineId<\'observation\'>[];\n    readonly camera: string;\n    readonly speakerId?: EntityId;\n    readonly text: string;\n    readonly blocks: readonly NarrativeBlock[];\n    readonly media: readonly MediaCue[];\n    readonly modelRoute: ModelRoute;\n}',
+  },
+  {
+    name: 'NarrativeBlock',
+    declaration: 'export type NarrativeBlock = {\n    readonly type: \'narration\';\n    readonly text: string;\n} | {\n    readonly type: \'character\';\n    readonly actorId: EntityId;\n    readonly mode: \'dialogue\' | \'thought\' | \'action\';\n    readonly text: string;\n} | {\n    readonly type: \'media\';\n    readonly cue: MediaCue;\n    readonly caption?: string;\n} | {\n    readonly type: \'media-intent\';\n    readonly intent: MediaGenerationIntent;\n} | {\n    readonly type: \'state\';\n    readonly cue: NarrativeStateCue;\n};',
+  },
+  {
+    name: 'NarrativeStateCue',
+    declaration: 'export interface NarrativeStateCue {\n    readonly scope: \'character\' | \'environment\' | \'relationship\' | \'story\';\n    readonly label: string;\n    readonly before?: string;\n    readonly value: string;\n    readonly tone: \'neutral\' | \'positive\' | \'warning\' | \'danger\';\n    readonly actorId?: EntityId;\n    readonly path: string;\n}',
   },
   {
     name: 'NarrativeStreamChunk',
-    declaration: 'export type NarrativeStreamChunk = {\n    readonly type: \'text-delta\';\n    readonly text: string;\n} | {\n    readonly type: \'replace\';\n    readonly text: string;\n} | {\n    readonly type: \'beat\';\n    readonly beat: NarrativeBeat;\n};',
+    declaration: 'export type NarrativeStreamChunk = {\n    readonly type: \'phase\';\n    readonly phase: NarrativeAgentPhase;\n} | {\n    readonly type: \'retry\';\n    readonly phase: Exclude<NarrativeAgentPhase, \'context\' | \'complete\'>;\n    readonly attempt: number;\n    readonly maxAttempts?: number;\n    readonly delayMs: number;\n    readonly failure: {\n        readonly code: string;\n        readonly message: string;\n    };\n} | {\n    readonly type: \'media\';\n    readonly cue: MediaCue;\n} | {\n    readonly type: \'text-delta\';\n    readonly text: string;\n} | {\n    readonly type: \'replace\';\n    readonly text: string;\n} | {\n    readonly type: \'beat\';\n    readonly beat: NarrativeBeat;\n} | {\n    readonly type: \'error\';\n    readonly message: string;\n};',
   },
   {
     name: 'ObjectJsonSchema',
@@ -5662,6 +5712,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PermissionSelect',
     declaration: 'export interface PermissionSelect {\n    options: PresetOption[];\n    currentValue: string;\n}',
+  },
+  {
+    name: 'PlotPointDefinition',
+    declaration: 'export interface PlotPointDefinition {\n    readonly id: string;\n    readonly name: string;\n    readonly summary: string;\n    readonly order: number;\n    readonly entryCondition: string;\n    readonly completionCriteria: string;\n    readonly dramaticPressure: string;\n    readonly successOutcome: string;\n    readonly failureOutcome: string;\n    readonly recoveryHook: string;\n    readonly timing: PlotPointTiming;\n    readonly provenance: readonly Provenance[];\n}',
+  },
+  {
+    name: 'PlotPointTiming',
+    declaration: 'export interface PlotPointTiming {\n    readonly activateAt: number;\n    readonly deadlineAt: number;\n    readonly interventions: readonly PlotTimeIntervention[];\n}',
+  },
+  {
+    name: 'PlotTimeIntervention',
+    declaration: 'export interface PlotTimeIntervention {\n    readonly id: string;\n    readonly at: number;\n    readonly title: string;\n    readonly description: string;\n}',
   },
   {
     name: 'PostToolDecision',
@@ -5688,6 +5750,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type PrepareSessionOptions = (CreateSessionOptions & {\n    readonly seedSource?: undefined;\n}) | RestoredSessionOptions;',
   },
   {
+    name: 'PresentationCursor',
+    declaration: 'export interface PresentationCursor {\n    readonly actorId: EntityId;\n    readonly completedBeatId: WorldlineId<\'narrative-beat\'>;\n}',
+  },
+  {
     name: 'PresetOption',
     declaration: 'export interface PresetOption {\n    value: string;\n    name: string;\n    description?: string;\n}',
   },
@@ -5709,11 +5775,15 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'Process',
-    declaration: 'export interface Process {\n    readonly id: ProcessId;\n    readonly action: ActionRequest;\n    readonly state: ActionLifecycleState;\n    readonly startedAt?: number;\n    readonly nextWakeAt?: number;\n    readonly deadline?: number;\n    readonly progress: number;\n    readonly progressMeasure: number;\n    readonly movement?: MovementProgress;\n    readonly reservationIds: readonly WorldlineId<\'reservation\'>[];\n    readonly retryBudget: number;\n    readonly retryCount: number;\n    readonly blockedReason?: string;\n    readonly wakeConditions: readonly string[];\n    readonly fallbacks: readonly string[];\n    readonly failure?: string;\n}',
+    declaration: 'export interface Process {\n    readonly id: ProcessId;\n    readonly action: ActionRequest;\n    readonly state: ActionLifecycleState;\n    readonly startedAt?: number;\n    readonly nextWakeAt?: number;\n    readonly deadline?: number;\n    readonly progress: number;\n    readonly progressMeasure: number;\n    readonly movement?: MovementProgress;\n    readonly reservationIds: readonly WorldlineId<\'reservation\'>[];\n    readonly maxRetries: number;\n    readonly retryCount: number;\n    readonly blockedReason?: string;\n    readonly wakeConditions: readonly string[];\n    readonly fallbacks: readonly string[];\n    readonly failure?: string;\n}',
   },
   {
     name: 'ProcessId',
     declaration: 'export type ProcessId = WorldlineId<\'process\'>;',
+  },
+  {
+    name: 'ProjectAssetFile',
+    declaration: 'export interface ProjectAssetFile {\n    readonly projectId: ProjectId;\n    readonly path: string;\n    readonly absolutePath: string;\n    readonly sizeBytes: number;\n}',
   },
   {
     name: 'ProjectBuildStatus',
@@ -5896,6 +5966,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface RecallResult {\n    readonly cards: readonly RecallCard[];\n    readonly continuation?: string;\n    readonly elapsedMs: number;\n    readonly indexRevision: number;\n}',
   },
   {
+    name: 'RecordActionDeckRequest',
+    declaration: 'export interface RecordActionDeckRequest extends RunRef {\n    readonly actorId: EntityId;\n    readonly expectedSequence: number;\n    readonly afterBeatId: NarrativeBeat[\'id\'];\n    readonly invocationId: AiInvocation[\'id\'];\n    readonly plans: readonly ActionPlanDraft[];\n}',
+  },
+  {
+    name: 'RecordActionDeckResult',
+    declaration: 'export interface RecordActionDeckResult {\n    readonly deck: ActionDeck;\n    readonly view: RunView;\n}',
+  },
+  {
     name: 'RecordAiIntentRequest',
     declaration: 'export interface RecordAiIntentRequest extends RunRef {\n    readonly actorId: EntityId;\n    readonly invocationId: AiInvocation[\'id\'];\n    readonly choiceId: string;\n    readonly actionType: string;\n    readonly parameters: JsonObject;\n    readonly rationale: string;\n    readonly confidence: number;\n    readonly modelRoute: ModelRoute;\n    readonly contextSourceIds: readonly string[];\n}',
   },
@@ -5909,15 +5987,23 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RecordAiInvocationResult',
-    declaration: 'export interface RecordAiInvocationResult {\n    readonly invocation: AiInvocation;\n    readonly budgetExceeded: boolean;\n    readonly view: RunView;\n}',
+    declaration: 'export interface RecordAiInvocationResult {\n    readonly invocation: AiInvocation;\n    readonly view: RunView;\n}',
   },
   {
     name: 'RecordNarrativeBeatRequest',
-    declaration: 'export interface RecordNarrativeBeatRequest extends RunRef {\n    readonly invocationId?: AiInvocation[\'id\'];\n    readonly eventIds: NarrativeBeat[\'eventIds\'];\n    readonly observationIds: NarrativeBeat[\'observationIds\'];\n    readonly camera: string;\n    readonly speakerId?: EntityId;\n    readonly text: string;\n    readonly media: NarrativeBeat[\'media\'];\n    readonly style: NarrativeBeat[\'style\'];\n    readonly modelRoute?: ModelRoute;\n}',
+    declaration: 'export interface RecordNarrativeBeatRequest extends RunRef {\n    readonly invocationId: AiInvocation[\'id\'];\n    readonly perspectiveActorId: EntityId;\n    readonly eventIds: NarrativeBeat[\'eventIds\'];\n    readonly observationIds: NarrativeBeat[\'observationIds\'];\n    readonly camera: string;\n    readonly speakerId?: EntityId;\n    readonly modelOutput: string;\n    readonly text: string;\n    readonly blocks: NarrativeBeat[\'blocks\'];\n    readonly media: NarrativeBeat[\'media\'];\n    readonly modelRoute: ModelRoute;\n}',
   },
   {
     name: 'RecordNarrativeBeatResult',
     declaration: 'export interface RecordNarrativeBeatResult {\n    readonly beat: NarrativeBeat;\n    readonly view: RunView;\n}',
+  },
+  {
+    name: 'RecordStoryStateRequest',
+    declaration: 'export interface RecordStoryStateRequest extends RunRef {\n    readonly beatId: NarrativeBeat[\'id\'];\n    readonly shards: readonly StoryStateShard[];\n    readonly progress?: StoryProgressDraft & {\n        readonly invocationId: AiInvocation[\'id\'];\n    };\n}',
+  },
+  {
+    name: 'RecordStoryStateResult',
+    declaration: 'export interface RecordStoryStateResult {\n    readonly commit: StoryStateCommit;\n    readonly progress?: StoryProgressEvidence;\n    readonly view: RunView;\n}',
   },
   {
     name: 'RedactedSecret',
@@ -6021,7 +6107,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RetryTextActionRequest',
-    declaration: 'export interface RetryTextActionRequest extends BranchTextPlayRequest {\n    readonly choiceId: string;\n}',
+    declaration: 'export interface RetryTextActionRequest extends BranchTextPlayRequest {\n    readonly planId: ActionPlan[\'id\'];\n}',
   },
   {
     name: 'ReviewProposalRequest',
@@ -6073,7 +6159,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RunDefinitionView',
-    declaration: 'export interface RunDefinitionView {\n    readonly runId: RunId;\n    readonly blueprintDigest: string;\n    readonly purpose: SimulationPurpose;\n    readonly entities: readonly RunEntityDefinition[];\n    readonly actions: readonly ActionDefinition[];\n    readonly systems: readonly SystemDefinition[];\n    readonly invariants: readonly InvariantDefinition[];\n}',
+    declaration: 'export interface RunDefinitionView {\n    readonly runId: RunId;\n    readonly blueprintDigest: string;\n    readonly purpose: SimulationPurpose;\n    readonly entities: readonly RunEntityDefinition[];\n    readonly actions: readonly ActionDefinition[];\n    readonly systems: readonly SystemDefinition[];\n    readonly invariants: readonly InvariantDefinition[];\n    readonly plotPoints: readonly PlotPointDefinition[];\n}',
   },
   {
     name: 'RunEntityDefinition',
@@ -6105,7 +6191,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RunRecordsRequest',
-    declaration: 'export interface RunRecordsRequest extends RunRef {\n    readonly afterSequence?: number;\n    readonly afterOrdinal?: number;\n    readonly limit?: number;\n    readonly stream?: RunStream;\n}',
+    declaration: 'export interface RunRecordsRequest extends RunRef {\n    readonly afterSequence?: number;\n    readonly afterOrdinal?: number;\n    readonly limit?: number;\n    readonly stream?: RunStream;\n    readonly tail?: boolean;\n}',
   },
   {
     name: 'RunRef',
@@ -6113,7 +6199,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RunSnapshot',
-    declaration: 'export interface RunSnapshot {\n    readonly runId: RunId;\n    readonly blueprintId: BlueprintId;\n    readonly blueprintDigest: string;\n    readonly branchId: CanonWorldlineId;\n    readonly parentRunId?: RunId;\n    readonly forkSequence?: number;\n    readonly seed: string;\n    readonly logicalTime: number;\n    readonly sequence: number;\n    readonly state: JsonObject;\n    readonly processes: readonly Process[];\n    readonly reservations: readonly Reservation[];\n    readonly futureEvents: readonly FutureEvent[];\n    readonly randomState: string;\n    readonly modelPolicy: ModelPolicy;\n    readonly aiBudget: AiBudget;\n    readonly aiUsage: AiUsage;\n}',
+    declaration: 'export interface RunSnapshot {\n    readonly runId: RunId;\n    readonly blueprintId: BlueprintId;\n    readonly blueprintDigest: string;\n    readonly branchId: CanonWorldlineId;\n    readonly parentRunId?: RunId;\n    readonly forkSequence?: number;\n    readonly seed: string;\n    readonly logicalTime: number;\n    readonly sequence: number;\n    readonly state: JsonObject;\n    readonly processes: readonly Process[];\n    readonly reservations: readonly Reservation[];\n    readonly futureEvents: readonly FutureEvent[];\n    readonly randomState: string;\n    readonly modelPolicy: ModelPolicy;\n    readonly aiUsage: AiUsage;\n    readonly presentationCursors: Readonly<Record<string, PresentationCursor>>;\n    readonly actionDecks: Readonly<Record<string, ActionDeck>>;\n    readonly storyProgress: Readonly<Record<string, StoryProgressEvidence>>;\n    readonly storyStateCommits: Readonly<Record<string, StoryStateCommit>>;\n}',
   },
   {
     name: 'RunSpatialMap',
@@ -6137,7 +6223,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RunStream',
-    declaration: 'export type RunStream = \'world-event\' | \'decision-trace\' | \'ai-intent\' | \'ai-invocation\' | \'observation\' | \'narrative-beat\' | \'runtime-diagnostic\' | \'telemetry\';',
+    declaration: 'export type RunStream = \'world-event\' | \'decision-trace\' | \'ai-intent\' | \'ai-invocation\' | \'observation\' | \'narrative-beat\' | \'presentation-progress\' | \'action-deck\' | \'story-progress\' | \'story-state\' | \'runtime-diagnostic\' | \'telemetry\';',
   },
   {
     name: 'RunStreamRecord',
@@ -6206,6 +6292,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ScopeKey',
     declaration: 'export type ScopeKey = object;',
+  },
+  {
+    name: 'ScriptProgressView',
+    declaration: 'export interface ScriptProgressView {\n    readonly completed: readonly PlotPointDefinition[];\n    readonly current?: PlotPointDefinition;\n    readonly currentProgress?: StoryProgressEvidence;\n    readonly suggestedActorIds: readonly EntityId[];\n    readonly remaining: number;\n}',
   },
   {
     name: 'SearchFileMatches',
@@ -6500,16 +6590,12 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SetActorControlRequest extends RunRef {\n    readonly actorId: EntityId;\n    readonly mode: ActorControlMode;\n}',
   },
   {
-    name: 'SetAiBudgetRequest',
-    declaration: 'export interface SetAiBudgetRequest extends RunRef {\n    readonly budget: AiBudget;\n    readonly expectedSequence: number;\n}',
-  },
-  {
     name: 'SetAiEnabledRequest',
     declaration: 'export interface SetAiEnabledRequest extends RunRef {\n    readonly enabled: boolean;\n}',
   },
   {
     name: 'SetProjectRootRequest',
-    declaration: 'export interface SetProjectRootRequest {\n    readonly path: string;\n    readonly create?: boolean;\n    readonly dryRun?: boolean;\n}',
+    declaration: 'export interface SetProjectRootRequest {\n    readonly path: string;\n    readonly create?: boolean;\n    readonly dryRun?: boolean;\n    readonly relocateExisting?: boolean;\n}',
   },
   {
     name: 'SettingsApplies',
@@ -6684,6 +6770,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface StoreProjectBuildRequest extends ProjectRef {\n    readonly digest: string;\n    readonly blueprint: string;\n    readonly certificate: string;\n    readonly sourceSnapshot: string;\n}',
   },
   {
+    name: 'StoryChoiceSuggestions',
+    declaration: 'export interface StoryChoiceSuggestions {\n    readonly sequence: number;\n    readonly afterBeatId: NarrativeBeat[\'id\'];\n    readonly suggestions: readonly ActionPlan[];\n}',
+  },
+  {
+    name: 'StoryMemoryWrite',
+    declaration: 'export interface StoryMemoryWrite {\n    readonly actorId: EntityId;\n    readonly summary: string;\n    readonly importance: number;\n}',
+  },
+  {
+    name: 'StoryProgressDraft',
+    declaration: 'export interface StoryProgressDraft {\n    readonly pointId: PlotPointDefinition[\'id\'];\n    readonly status: StoryProgressEvidence[\'status\'];\n    readonly rationale: string;\n    readonly evidence: readonly string[];\n    readonly eventIds: NarrativeBeat[\'eventIds\'];\n    readonly observationIds: NarrativeBeat[\'observationIds\'];\n}',
+  },
+  {
+    name: 'StoryProgressEvidence',
+    declaration: 'export interface StoryProgressEvidence {\n    readonly id: WorldlineId<\'story-progress\'>;\n    readonly pointId: PlotPointDefinition[\'id\'];\n    readonly sequence: number;\n    readonly beatId: WorldlineId<\'narrative-beat\'>;\n    readonly invocationId: WorldlineId<\'ai-invocation\'>;\n    readonly status: \'active\' | \'completed\' | \'failed\';\n    readonly rationale: string;\n    readonly evidence: readonly string[];\n    readonly eventIds: readonly EventId[];\n    readonly observationIds: readonly WorldlineId<\'observation\'>[];\n}',
+  },
+  {
     name: 'StoryStageRenderer',
     declaration: 'export interface StoryStageRenderer {\n    readonly id: string;\n    readonly name: string;\n    readonly capabilities: readonly MediaCue[\'type\'][];\n    render(frame: SceneFrame, beats: readonly NarrativeBeat[]): unknown;\n}',
   },
@@ -6692,12 +6794,24 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface StoryStageStatus {\n    readonly available: boolean;\n    readonly renderers: readonly {\n        readonly id: string;\n        readonly name: string;\n        readonly capabilities: readonly string[];\n    }[];\n    readonly message: string;\n}',
   },
   {
+    name: 'StoryStateCommit',
+    declaration: 'export interface StoryStateCommit {\n    readonly id: WorldlineId<\'story-state\'>;\n    readonly sequence: number;\n    readonly beatId: WorldlineId<\'narrative-beat\'>;\n    readonly shards: readonly StoryStateShard[];\n    readonly progressInvocationId?: WorldlineId<\'ai-invocation\'>;\n    readonly mutations: readonly StoryStateMutation[];\n    readonly memoryWrites: readonly StoryMemoryWrite[];\n    readonly deltas: readonly StateDelta[];\n}',
+  },
+  {
+    name: 'StoryStateMutation',
+    declaration: 'export interface StoryStateMutation {\n    readonly scope: \'character\' | \'world\';\n    readonly actorId?: EntityId;\n    readonly path: string;\n    readonly operation: \'set\' | \'increment\' | \'append\' | \'remove\';\n    readonly value: JsonValue;\n    readonly reason: string;\n}',
+  },
+  {
+    name: 'StoryStateShard',
+    declaration: 'export interface StoryStateShard {\n    readonly invocationId: WorldlineId<\'ai-invocation\'>;\n    readonly domain: \'characters\' | \'world\';\n    readonly subjectIds: readonly EntityId[];\n    readonly mutations: readonly StoryStateMutation[];\n    readonly memoryWrites: readonly StoryMemoryWrite[];\n}',
+  },
+  {
     name: 'StreamChunk',
     declaration: 'export type StreamChunk = {\n    type: \'block-start\';\n    index: number;\n    blockType: ContentBlockType;\n} | {\n    type: \'text-delta\';\n    index: number;\n    text: string;\n} | {\n    type: \'reasoning-delta\';\n    index: number;\n    text: string;\n} | {\n    type: \'tool-call-delta\';\n    index: number;\n    id: CallId;\n    name?: string;\n    argumentsDelta: string;\n} | {\n    type: \'block-end\';\n    index: number;\n    block: ContentBlock;\n} | {\n    type: \'usage\';\n    usage: TokenUsage;\n} | {\n    type: \'finish\';\n    reason: FinishReason;\n    replayState?: ReplayEnvelope;\n};',
   },
   {
     name: 'StreamWorldlineTextRequest',
-    declaration: 'export interface StreamWorldlineTextRequest {\n    readonly runId: RunId;\n    readonly actorId: EntityId;\n    readonly purpose: \'narrator\' | \'summary\' | \'creative\';\n    readonly contextPack: ContextPack;\n    readonly temperature?: number;\n}',
+    declaration: 'export interface StreamWorldlineTextRequest {\n    readonly runId: RunId;\n    readonly actorId: EntityId;\n    readonly purpose: \'narrator\' | \'summary\' | \'creative\';\n    readonly contextPack: ContextPack;\n    readonly temperature?: number;\n    readonly tools?: readonly ToolSchema[];\n    readonly maxCharacters?: number;\n}',
   },
   {
     name: 'SubagentCapabilities',
@@ -7001,7 +7115,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'TextPlayView',
-    declaration: 'export interface TextPlayView {\n    readonly run: RunView;\n    readonly frame: SceneFrame;\n    readonly beats: readonly NarrativeBeat[];\n    readonly choices: RunChoicesView;\n    readonly saves: readonly CheckpointView[];\n}',
+    declaration: 'export interface TextPlayView {\n    readonly run: RunView;\n    readonly frame: SceneFrame;\n    readonly beats: readonly NarrativeBeat[];\n    readonly choices: RunChoicesView;\n    readonly saves: readonly CheckpointView[];\n    readonly script: ScriptProgressView;\n}',
   },
   {
     name: 'TodoItem',
@@ -7481,7 +7595,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'WorldlineTextChunk',
-    declaration: 'export type WorldlineTextChunk = {\n    readonly type: \'text-delta\';\n    readonly text: string;\n} | {\n    readonly type: \'finish\';\n    readonly invocation: AiInvocation;\n    readonly budgetExceeded: boolean;\n} | {\n    readonly type: \'blocked\';\n    readonly budget: AiBudgetStatus;\n};',
+    declaration: 'export type WorldlineTextChunk = {\n    readonly type: \'text-delta\';\n    readonly text: string;\n} | {\n    readonly type: \'tool-call\';\n    readonly name: string;\n    readonly arguments: string;\n} | {\n    readonly type: \'retry\';\n    readonly attempt: number;\n    readonly maxAttempts?: number;\n    readonly delayMs: number;\n    readonly failure: {\n        readonly code: string;\n        readonly message: string;\n    };\n} | {\n    readonly type: \'finish\';\n    readonly invocation: AiInvocation;\n    readonly output: string;\n};',
   },
   {
     name: 'WorldMap',

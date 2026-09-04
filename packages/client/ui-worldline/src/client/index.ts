@@ -62,6 +62,7 @@ async function narrateStream(
     for (const line of lines) {
       if (line.trim() === '') continue
       const chunk = JSON.parse(line) as import('@deepseek-ai/dsh-worldline-narrative/types').NarrativeStreamChunk
+      if (chunk.type === 'error') throw new Error(`NARRATIVE_STREAM: ${chunk.message}`)
       onChunk(chunk)
       if (chunk.type === 'beat') beat = chunk.beat
     }
@@ -69,6 +70,7 @@ async function narrateStream(
   }
   if (pending.trim() !== '') {
     const chunk = JSON.parse(pending) as import('@deepseek-ai/dsh-worldline-narrative/types').NarrativeStreamChunk
+    if (chunk.type === 'error') throw new Error(`NARRATIVE_STREAM: ${chunk.message}`)
     onChunk(chunk)
     if (chunk.type === 'beat') beat = chunk.beat
   }
@@ -139,20 +141,21 @@ export function apply(ctx: ClientContext): void {
       checkpoints: async request => await invoke(ctx.remote.worldlineRuns.checkpoints(request)),
       branch: async request => await invoke(ctx.remote.worldlineRuns.branch(request)),
       setControl: async request => await invoke(ctx.remote.worldlineRuns.setControl(request)),
-      setAiEnabled: async request => await invoke(ctx.remote.worldlineRuns.setAiEnabled(request)),
-      setAiBudget: async request => await invoke(ctx.remote.worldlineRuns.setAiBudget(request)),
       switchModel: async request => await invoke(ctx.remote.worldlineRuns.switchModel(request)),
       explain: async request => await invoke(ctx.remote.worldlineRuns.explain(request)),
+      completePresentation: async request => await invoke(
+        ctx.remote.worldlineRuns.completePresentation(request),
+      ),
     },
     ai: {
       catalog: async () => await invoke(ctx.remote.worldlineAi.catalog()),
       contextPack: async request => await invoke(ctx.remote.worldlineAi.contextPack(request)),
-      budget: async request => await invoke(ctx.remote.worldlineAi.budget(request)),
       decide: async request => await invoke(ctx.remote.worldlineAi.decide(request)),
     },
     narrative: {
       open: async request => await invoke(ctx.remote.worldlineNarrative.open(request)),
       scene: async request => await invoke(ctx.remote.worldlineNarrative.scene(request)),
+      suggest: async request => await invoke(ctx.remote.worldlineNarrative.suggest(request)),
       narrate: async request => await invoke(ctx.remote.worldlineNarrative.narrate(request)),
       narrateStream,
       choose: async request => await invoke(ctx.remote.worldlineNarrative.choose(request)),

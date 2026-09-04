@@ -10,7 +10,7 @@ import type {
   Provenance,
   Revision,
 } from '@deepseek-ai/dsh-worldline-standard/types'
-import { compileSnapshot, type CompilationProduct } from './compile.ts'
+import { compileSnapshot, type CompilationProduct, type RuntimeSemanticModel } from './compile.ts'
 import type {
   AnswerQuestionRequest,
   BuildPreview,
@@ -36,6 +36,11 @@ declare module '@deepseek-ai/cordis' {
 interface StoredState {
   readonly questions: CompilerState['questions']
   readonly proposals: CompilerState['proposals']
+}
+
+interface CompilationInput {
+  readonly snapshot: ProjectSourceSnapshot
+  readonly runtimeModel: RuntimeSemanticModel
 }
 
 function now(): string { return new Date().toISOString() }
@@ -102,9 +107,9 @@ export default class WorldlineCompiler extends TypertRemoteService {
    */
   @Remote('compile')
   async compile(request: CompileWorldRequest): Promise<BuildPreview> {
-    const snapshot = await this.context.worldlineProjects.sourceSnapshot(request.projectId)
+    const { snapshot, runtimeModel } = await this.compilationInput(request.projectId)
     const state = await this.state(request.projectId)
-    const product = compileSnapshot(snapshot, request.purpose, state.questions, state.proposals)
+    const product = compileSnapshot(snapshot, request.purpose, state.questions, state.proposals, runtimeModel)
     if (stableStringify(product.questions) !== stableStringify(state.questions)) {
       await this.saveState(request.projectId, { questions: product.questions, proposals: state.proposals }, state.revision)
     }
@@ -183,12 +188,12 @@ export default class WorldlineCompiler extends TypertRemoteService {
    */
   @Remote('freeze')
   async freeze(request: FreezeWorldRequest): Promise<FrozenBuild> {
-    const snapshot = await this.context.worldlineProjects.sourceSnapshot(request.projectId)
+    const { snapshot, runtimeModel } = await this.compilationInput(request.projectId)
     if (snapshot.digest !== request.expectedSourceDigest) {
       throw new WorldlineCompilerError('source-changed', 'project sources changed after the build preview')
     }
     const state = await this.state(request.projectId)
-    const product = compileSnapshot(snapshot, request.purpose, state.questions, state.proposals)
+    const product = compileSnapshot(snapshot, request.purpose, state.questions, state.proposals, runtimeModel)
     if (!canFreeze(product)) {
       throw new WorldlineCompilerError('closure-blocked', 'Blueprint cannot freeze while closure blockers remain')
     }
@@ -209,9 +214,9 @@ export default class WorldlineCompiler extends TypertRemoteService {
    */
   @Remote('explain')
   async explain(request: ExplainSemanticsRequest): Promise<SemanticsExplanation> {
-    const snapshot = await this.context.worldlineProjects.sourceSnapshot(request.projectId)
+    const { snapshot, runtimeModel } = await this.compilationInput(request.projectId)
     const state = await this.state(request.projectId)
-    const product = compileSnapshot(snapshot, undefined, state.questions, state.proposals)
+    const product = compileSnapshot(snapshot, undefined, state.questions, state.proposals, runtimeModel)
     const candidates = [
       ...product.canon,
       ...product.actions,
@@ -252,6 +257,27 @@ export default class WorldlineCompiler extends TypertRemoteService {
     return { revision: document.revision, questions: state.questions, proposals: state.proposals }
   }
 
+  private async compilationInput(projectId: ProjectId): Promise<CompilationInput> {
+    const source = await this.context.worldlineProjects.sourceSnapshot(projectId)
+    const runtime = await this.context.worldlineProjects.readControl(projectId, 'compiler', 'runtime-model.json')
+    let runtimeModel: RuntimeSemanticModel = { documents: {} }
+    if (runtime !== undefined) {
+      try {
+        const parsed = JSON.parse(runtime.content) as Partial<RuntimeSemanticModel>
+        if (parsed.documents !== undefined && typeof parsed.documents === 'object') {
+          runtimeModel = { documents: parsed.documents }
+        }
+      } catch {
+        throw new WorldlineCompilerError('closure-blocked', '项目内部运行模型已损坏，请重新生成世界结构。')
+      }
+    }
+    const digest = createHash('sha256').update(stableStringify({
+      source: source.digest,
+      runtime: runtime?.revision ?? 'empty',
+    })).digest('hex') as Revision
+    return { snapshot: { ...source, digest }, runtimeModel }
+  }
+
   private assertStateRevision(state: CompilerState, expected: Revision | undefined): void {
     if (expected !== undefined && state.revision !== expected) {
       throw new WorldlineCompilerError('state-conflict', 'compiler review state changed concurrently')
@@ -282,6 +308,7 @@ export default class WorldlineCompiler extends TypertRemoteService {
       actions: product.actions,
       systems: product.systems,
       invariants: product.invariants,
+      plotPoints: product.plotPoints,
       provenance,
       modelPolicy: { routes: {}, aiEnabled: false, revision: product.snapshot.digest as Revision },
       certificate: product.certificate,

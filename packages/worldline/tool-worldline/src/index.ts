@@ -1,4 +1,7 @@
 /** Guarded model tools over the authoritative Worldline services. */
+import { createReadStream } from 'node:fs'
+import { realpath, stat } from 'node:fs/promises'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {
@@ -6,14 +9,13 @@ import type {
   ProposalTarget,
 } from '@deepseek-ai/dsh-worldline-compiler'
 import type {
-  AiBudget,
   JsonObject,
   ProjectTemplate,
   Revision,
   SourceAnchor,
   WorldMap,
 } from '@deepseek-ai/dsh-worldline-standard'
-import { validateWorldMap, worldlineId } from '@deepseek-ai/dsh-worldline-standard'
+import { allocateWorldlineId, validateWorldMap, worldlineId } from '@deepseek-ai/dsh-worldline-standard'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-worldline-compiler'
@@ -68,10 +70,98 @@ const projectId = (value: unknown) => worldlineId<'project'>(string(value, 'proj
 const runId = (value: unknown) => worldlineId<'run'>(string(value, 'run_id'))
 const entityId = (value: unknown) => worldlineId<'entity'>(string(value, 'actor_id'))
 const revision = (value: unknown, name = 'expected_revision') => string(value, name) as Revision
-const MAP_FENCE = /```worldline-map\s*\r?\n([\s\S]*?)\r?\n```/iu
 
 interface BoundExecution {
-  readonly agent?: { readonly session: Pick<Session, 'id' | 'events'> }
+  readonly agent?: {
+    readonly session: Pick<Session, 'id' | 'events'> & {
+      readonly header?: { readonly cwd?: string }
+    }
+  }
+}
+
+/** Return whether this author Session successfully loaded a named workflow skill. Model prompt
+ * guidance is not a sufficient boundary: mutation tools enforce prerequisites themselves. */
+export function hasLoadedWorldlineSkill(
+  session: Pick<Session, 'events'>,
+  skillName: string,
+): boolean {
+  const successfulCalls = new Set(session.events.flatMap((event) => {
+    if (event.type !== 'tool/result' || event.data.error !== undefined) return []
+    const block = event.data.message.content[0]
+    return block.isError === true ? [] : [block.toolCallId]
+  }))
+  return session.events.some((event) => {
+    if (event.type !== 'tool/call' || event.data.name !== 'skill'
+      || !successfulCalls.has(event.data.callId)) return false
+    try {
+      const args = JSON.parse(event.data.arguments) as { readonly name?: unknown }
+      return args.name === skillName
+    } catch {
+      return false
+    }
+  })
+}
+
+/** Return whether this author Session successfully loaded the root workflow skill. */
+export function hasLoadedWorldlineAuthoringSkill(
+  session: Pick<Session, 'events'>,
+): boolean {
+  return hasLoadedWorldlineSkill(session, 'worldline-authoring')
+}
+
+function requireWorldlineSkill(exec: BoundExecution, skillName: string, purpose: string): void {
+  const session = exec.agent?.session
+  if (session === undefined || hasLoadedWorldlineSkill(session, skillName)) return
+  throw new Error(`必须先调用 skill(name="${skillName}") 并成功加载${purpose}流程，才能继续该阶段。`)
+}
+
+function requireWorldlineAuthoringSkill(exec: BoundExecution): void {
+  requireWorldlineSkill(exec, 'worldline-authoring', '当前创作')
+}
+
+function requireDesignSkillForPath(exec: BoundExecution, path: string): void {
+  const normalized = path.replaceAll('\\', '/').replace(/^\.\//u, '').toLowerCase()
+  if (normalized.startsWith('characters/')) {
+    requireWorldlineSkill(exec, 'worldline-character-design', '角色设计')
+  } else if (normalized.startsWith('maps/')) {
+    requireWorldlineSkill(exec, 'worldline-map-design', '空间设计')
+  } else if (normalized.startsWith('mechanisms/')) {
+    requireWorldlineSkill(exec, 'worldline-mechanism-design', '机制设计')
+  } else if (normalized.startsWith('scenarios/')) {
+    requireWorldlineSkill(exec, 'worldline-scenario-design', '剧本设计')
+  }
+}
+
+async function selectAuthorWorkspaceRoot(ctx: Context, exec: BoundExecution): Promise<void> {
+  const cwd = exec.agent?.session.header?.cwd?.trim()
+  if (cwd === undefined || cwd === '') return
+  const current = await ctx.worldlineProjects.root()
+  if (current.path === cwd) return
+  await ctx.worldlineProjects.setRoot({
+    path: cwd,
+    create: true,
+    relocateExisting: false,
+  })
+}
+
+async function workspaceLocalFile(exec: BoundExecution, source: string): Promise<{
+  readonly absolutePath: string
+  readonly sizeBytes: number
+}> {
+  const cwd = exec.agent?.session.header?.cwd?.trim()
+  if (cwd === undefined || cwd === '') throw new Error('local asset import requires an Agent workspace')
+  const workspace = await realpath(cwd)
+  const absolutePath = await realpath(resolve(workspace, source))
+  const workspaceRelative = relative(workspace, absolutePath)
+  if (workspaceRelative === '..' || workspaceRelative.startsWith(`..${sep}`) || isAbsolute(workspaceRelative)) {
+    throw new Error('source must stay inside the current Agent workspace')
+  }
+  const info = await stat(absolutePath)
+  if (!info.isFile()) throw new Error('source must be a regular file')
+  if (!Number.isSafeInteger(info.size) || info.size < 0 || info.size > 128 * 1024 ** 3) {
+    throw new Error('source file length is outside the 128 GiB safety bound')
+  }
+  return { absolutePath, sizeBytes: info.size }
 }
 
 async function selectProjectScope(
@@ -91,6 +181,84 @@ async function selectProjectScope(
   })
 }
 
+async function activeProjectScope(
+  ctx: Context,
+  exec: BoundExecution,
+  requestedProjectId: unknown,
+): Promise<ReturnType<typeof projectId>> {
+  if (exec.agent === undefined) throw new Error('Worldline tools require an Agent execution')
+  const requested = optionalString(requestedProjectId)
+  if (requested !== undefined) {
+    const id = projectId(requested)
+    await selectProjectScope(ctx, exec, id)
+    return id
+  }
+  const current = ctx.worldlineConversationContexts.binding(exec.agent.session)
+  if (current === undefined) {
+    throw new Error('当前没有活动世界线项目；请先用 worldline_project list 后明确选择项目，或直接 create 新项目')
+  }
+  return current.projectId
+}
+
+async function resolveDocumentTargetPath(
+  ctx: Context,
+  id: ReturnType<typeof projectId>,
+  pathValue: unknown,
+  documentIdValue: unknown,
+): Promise<string> {
+  const explicitPath = optionalString(pathValue)
+  if (explicitPath !== undefined) return explicitPath
+
+  const documentHint = optionalString(documentIdValue)
+  if (documentHint === undefined) {
+    throw new Error('set-runtime requires path or a document_id returned by worldline_query read')
+  }
+
+  const pending = ['']
+  while (pending.length > 0) {
+    const directory = pending.shift()
+    if (directory === undefined) break
+    let cursor: string | undefined
+    do {
+      const listing = await ctx.worldlineProjects.tree({
+        projectId: id,
+        ...(directory === '' ? {} : { path: directory }),
+        ...(cursor === undefined ? {} : { cursor }),
+        limit: 500,
+      })
+      for (const entry of listing.entries) {
+        if (entry.id === documentHint) return entry.path
+        if (entry.kind === 'directory') pending.push(entry.path)
+      }
+      cursor = listing.nextCursor
+    } while (cursor !== undefined)
+  }
+
+  const stableHint = /^([a-z-]+):([a-z0-9][a-z0-9-]{2,80})$/iu.exec(documentHint)
+  const folderByKind: Readonly<Record<string, string>> = {
+    character: 'characters',
+    mechanism: 'mechanisms',
+    scenario: 'scenarios',
+    map: 'maps',
+  }
+  if (stableHint !== null) {
+    const kind = stableHint[1]
+    if (kind === undefined) return documentHint
+    const folder = folderByKind[kind.toLowerCase()]
+    if (folder !== undefined) {
+      const candidate = `${folder}/${stableHint[2]}.md`
+      try {
+        await ctx.worldlineProjects.read({ projectId: id, path: candidate })
+        return candidate
+      } catch {
+        // Fall through to one actionable error instead of exposing a filesystem failure.
+      }
+    }
+  }
+
+  throw new Error(`cannot resolve document_id ${documentHint}; pass the document path or the id returned by worldline_query read`)
+}
+
 async function assertRunScope(ctx: Context, exec: BoundExecution, id: ReturnType<typeof runId>): Promise<void> {
   const run = await ctx.worldlineRuns.view({ runId: id })
   await selectProjectScope(ctx, exec, run.summary.projectId, id)
@@ -104,6 +272,13 @@ function objectJson(value: unknown, name: string): JsonObject {
     throw new Error(`${name} must contain one JSON object`)
   }
   return parsed as JsonObject
+}
+
+function structuredObject(value: unknown, name: string): JsonObject {
+  if (value === null || Array.isArray(value) || typeof value !== 'object') {
+    throw new Error(`${name} must contain one object`)
+  }
+  return value as JsonObject
 }
 
 function anchorsJson(value: unknown): SourceAnchor[] {
@@ -129,41 +304,88 @@ function anchorsJson(value: unknown): SourceAnchor[] {
   })
 }
 
+function jsonRecord(value: unknown, name: string): JsonRecord {
+  if (value === null || Array.isArray(value) || typeof value !== 'object') {
+    throw new Error(`${name} 必须是一个对象`)
+  }
+  return value as JsonRecord
+}
+
+function missingFields(
+  value: JsonRecord,
+  fields: ReadonlyArray<readonly [string, (candidate: unknown) => boolean]>,
+): string[] {
+  return fields.filter(([field, accepts]) => !accepts(value[field])).map(([field]) => field)
+}
+
+function mapStableId<Kind extends string>(value: unknown, name: string, example: string) {
+  const resolved = string(value, name)
+  try {
+    return worldlineId<Kind>(resolved)
+  } catch {
+    throw new Error(`${name} 必须是稳定 ID（例如 ${example}；冒号后至少 6 个字符），当前为 ${resolved}`)
+  }
+}
+
 function worldMapJson(value: unknown): WorldMap {
   const parsed = objectJson(value, 'map_json') as JsonRecord
   if (parsed['version'] !== 1) throw new Error('map_json.version 必须是当前格式 1')
   if (!Array.isArray(parsed['layers']) || !Array.isArray(parsed['nodes']) || !Array.isArray(parsed['edges'])) {
     throw new Error('map_json 必须包含 layers、nodes 和 edges 数组')
   }
+  mapStableId<'map'>(parsed['id'], 'map_json.id', 'map:school-campus')
+  mapStableId<'map-node'>(parsed['rootNodeId'], 'map_json.rootNodeId', 'map-node:school-world')
+  if (typeof parsed['name'] !== 'string' || parsed['name'].trim() === '') throw new Error('map_json.name 不能为空')
+  for (const [index, candidate] of parsed['layers'].entries()) {
+    const name = `map_json.layers[${String(index)}]`
+    const layer = jsonRecord(candidate, name)
+    const missing = missingFields(layer, [
+      ['id', value => typeof value === 'string' && value.trim() !== ''],
+      ['name', value => typeof value === 'string' && value.trim() !== ''],
+      ['visible', value => typeof value === 'boolean'],
+      ['locked', value => typeof value === 'boolean'],
+      ['order', value => Number.isFinite(value)],
+    ])
+    if (missing.length > 0) throw new Error(`${name} 缺少或无效字段：${missing.join('、')}`)
+  }
+  for (const [index, candidate] of parsed['nodes'].entries()) {
+    const name = `map_json.nodes[${String(index)}]`
+    const node = jsonRecord(candidate, name)
+    mapStableId<'map-node'>(node['id'], `${name}.id`, 'map-node:school-gate')
+    if (node['parentId'] !== undefined) {
+      mapStableId<'map-node'>(node['parentId'], `${name}.parentId`, 'map-node:school-world')
+    }
+    const missing = missingFields(node, [
+      ['name', value => typeof value === 'string' && value.trim() !== ''],
+      ['description', value => typeof value === 'string' && value.trim().length >= 20],
+      ['layerId', value => typeof value === 'string' && value.trim() !== ''],
+      ['kind', value => typeof value === 'string'
+        && ['world', 'plane', 'region', 'city', 'building', 'room', 'slot'].includes(value)],
+      ['position', value => value !== null && !Array.isArray(value) && typeof value === 'object'
+        && Number.isFinite((value as JsonRecord)['x']) && Number.isFinite((value as JsonRecord)['y'])],
+      ['permissions', Array.isArray],
+      ['hazards', Array.isArray],
+      ['entryNodeIds', Array.isArray],
+    ])
+    if (missing.length > 0) throw new Error(`${name} 缺少或无效字段：${missing.join('、')}`)
+  }
+  for (const [index, candidate] of parsed['edges'].entries()) {
+    const name = `map_json.edges[${String(index)}]`
+    const edge = jsonRecord(candidate, name)
+    mapStableId<'map-edge'>(edge['id'], `${name}.id`, 'map-edge:gate-to-hall')
+    mapStableId<'map-node'>(edge['from'], `${name}.from`, 'map-node:school-gate')
+    mapStableId<'map-node'>(edge['to'], `${name}.to`, 'map-node:main-building')
+    const missing = missingFields(edge, [
+      ['bidirectional', value => typeof value === 'boolean'],
+      ['distance', value => Number.isFinite(value)],
+      ['baseDuration', value => Number.isFinite(value)],
+      ['modes', Array.isArray],
+      ['permissions', Array.isArray],
+      ['hazards', Array.isArray],
+    ])
+    if (missing.length > 0) throw new Error(`${name} 缺少或无效字段：${missing.join('、')}`)
+  }
   const map = { ...parsed, provenance: [] } as unknown as WorldMap
-  worldlineId<'map'>(string(map.id, 'map_json.id'))
-  worldlineId<'map-node'>(string(map.rootNodeId, 'map_json.rootNodeId'))
-  if (typeof map.name !== 'string' || map.name.trim() === '') throw new Error('map_json.name 不能为空')
-  for (const [index, layer] of map.layers.entries()) {
-    if (typeof layer.id !== 'string' || layer.id === '' || typeof layer.name !== 'string'
-      || typeof layer.visible !== 'boolean' || typeof layer.locked !== 'boolean'
-      || !Number.isFinite(layer.order)) throw new Error(`map_json.layers[${String(index)}] 缺少当前格式字段`)
-  }
-  for (const [index, node] of map.nodes.entries()) {
-    worldlineId<'map-node'>(string(node.id, `map_json.nodes[${String(index)}].id`))
-    if (node.parentId !== undefined) worldlineId<'map-node'>(node.parentId)
-    if (typeof node.name !== 'string' || node.name.trim() === '' || typeof node.layerId !== 'string'
-      || !['world', 'plane', 'region', 'city', 'building', 'room', 'slot'].includes(node.kind)
-      || !Array.isArray(node.permissions) || !Array.isArray(node.hazards)
-      || !Array.isArray(node.entryNodeIds)) {
-      throw new Error(`map_json.nodes[${String(index)}] 缺少当前格式字段`)
-    }
-  }
-  for (const [index, edge] of map.edges.entries()) {
-    worldlineId<'map-edge'>(string(edge.id, `map_json.edges[${String(index)}].id`))
-    worldlineId<'map-node'>(string(edge.from, `map_json.edges[${String(index)}].from`))
-    worldlineId<'map-node'>(string(edge.to, `map_json.edges[${String(index)}].to`))
-    if (typeof edge.bidirectional !== 'boolean' || !Number.isFinite(edge.distance)
-      || !Number.isFinite(edge.baseDuration) || !Array.isArray(edge.modes)
-      || !Array.isArray(edge.permissions) || !Array.isArray(edge.hazards)) {
-      throw new Error(`map_json.edges[${String(index)}] 缺少当前格式字段`)
-    }
-  }
   const issues = validateWorldMap(map)
   if (issues.length > 0) {
     throw new Error(`地图校验失败：${issues.map(issue => issue.message).join('；')}`)
@@ -190,12 +412,50 @@ function worldMapJson(value: unknown): WorldMap {
   return map
 }
 
-function replaceMapFence(content: string, map: WorldMap): string {
-  const { provenance: _provenance, ...sourceMap } = map
-  const block = `\`\`\`worldline-map\n${JSON.stringify(sourceMap, null, 2)}\n\`\`\``
-  if (MAP_FENCE.test(content)) return content.replace(MAP_FENCE, block)
-  const source = content.trimEnd()
-  return `${source === '' ? `# ${map.name}` : source}\n\n${block}\n`
+function currentMapDocument(content: string, map: WorldMap): string {
+  const source = content.trim()
+  return `${source === '' ? `# ${map.name}\n\n这里记录 ${map.name} 的地点、区域与通路。地图会在 OC 档案页中自动呈现。` : source}\n`
+}
+
+interface ToolRuntimeDocument {
+  readonly facets?: JsonObject
+  readonly maps?: readonly JsonObject[]
+  readonly actions?: readonly JsonObject[]
+  readonly systems?: readonly JsonObject[]
+  readonly invariants?: readonly JsonObject[]
+}
+
+interface ToolRuntimeModel {
+  readonly documents: Readonly<Record<string, ToolRuntimeDocument>>
+}
+
+async function runtimeModel(ctx: Context, id: ReturnType<typeof projectId>): Promise<{
+  readonly model: ToolRuntimeModel
+  readonly revision?: Revision
+}> {
+  const control = await ctx.worldlineProjects.readControl(id, 'compiler', 'runtime-model.json')
+  if (control === undefined) return { model: { documents: {} } }
+  const parsed = JSON.parse(control.content) as Partial<ToolRuntimeModel>
+  if (parsed.documents === undefined || typeof parsed.documents !== 'object') {
+    throw new Error('项目内部运行模型已损坏')
+  }
+  return { model: { documents: parsed.documents }, revision: control.revision }
+}
+
+async function writeRuntimeDocument(
+  ctx: Context,
+  id: ReturnType<typeof projectId>,
+  path: string,
+  document: ToolRuntimeDocument,
+): Promise<void> {
+  const current = await runtimeModel(ctx, id)
+  await ctx.worldlineProjects.writeControl({
+    projectId: id,
+    namespace: 'compiler',
+    path: 'runtime-model.json',
+    content: `${JSON.stringify({ documents: { ...current.model.documents, [path]: document } }, null, 2)}\n`,
+    ...(current.revision === undefined ? {} : { expectedRevision: current.revision }),
+  })
 }
 
 export async function simulateAutonomousCycles(
@@ -279,7 +539,7 @@ export function apply(ctx: Context): void {
   ctx.systemPrompt.section({
     name: 'tool:worldline',
     order: 1900,
-    text: 'Worldline tools are the only authority for Worldline project writes and Run changes. Every mutation must name one project or Run and carry the required revision, stable identity, dry-run, provenance, or explicit confirmation. Never edit project storage, immutable Blueprint files, or Run databases through generic filesystem/shell tools. Project Canon overrides inference; narration never mutates state. Only the current WWS and map formats exist—reject incompatible data instead of adding compatibility logic.',
+    text: 'Worldline tools are the only authority for Worldline project writes and Run changes. Before the first mutation, load skill(name="worldline-authoring"); mutation tools enforce this prerequisite. Stage boundaries also enforce worldline-character-design for characters/**, worldline-map-design for maps/**, worldline-mechanism-design for mechanisms/**, worldline-scenario-design for scenarios/**, and worldline-build-audit before freeze/prove. Select one active project once; after that omit project_id so calls use the active project and cannot corrupt a copied long ID. Supplying a different valid project_id switches the active project without permanently pinning the Session. Every mutation must carry the required revision, stable identity, dry-run, provenance, or explicit confirmation. Never edit project storage, immutable Blueprint files, or Run databases through generic filesystem/shell tools. Project Canon overrides inference; narration never mutates state. Only the current WWS and map formats exist—reject incompatible data instead of adding compatibility logic.',
   })
 
   ctx.tools.register(defineTool({
@@ -305,6 +565,8 @@ export function apply(ctx: Context): void {
           return encode({ ...page, ...(activeProjectId === undefined ? {} : { activeProjectId }) })
         }
         case 'create': {
+          requireWorldlineAuthoringSkill(exec)
+          await selectAuthorWorkspaceRoot(ctx, exec)
           const created = await ctx.worldlineProjects.create({
             name: string(args.name, 'name'),
             ...optionalField('description', args.description),
@@ -317,6 +579,7 @@ export function apply(ctx: Context): void {
           return encode(created)
         }
         case 'copy': {
+          requireWorldlineAuthoringSkill(exec)
           requireConfirmation(args.confirm, 'copy project')
           const sourceProjectId = projectId(args.project_id)
           await selectProjectScope(ctx, exec, sourceProjectId)
@@ -327,6 +590,7 @@ export function apply(ctx: Context): void {
           return encode(copied)
         }
         case 'trash':
+          requireWorldlineAuthoringSkill(exec)
           requireConfirmation(args.confirm, 'trash project')
           await selectProjectScope(ctx, exec, projectId(args.project_id))
           return encode(await ctx.worldlineProjects.trashProject({
@@ -337,6 +601,7 @@ export function apply(ctx: Context): void {
           return encode(await ctx.worldlineProjects.listTrashedProjects())
         }
         case 'restore': {
+          requireWorldlineAuthoringSkill(exec)
           requireConfirmation(args.confirm, 'restore project')
           const trashId = string(args.trash_id, 'trash_id')
           const item = (await ctx.worldlineProjects.listTrashedProjects())
@@ -355,15 +620,14 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'worldline_query',
-    description: 'Read a bounded project tree, one document, document history, project search results, or project trash. This tool never writes.',
+    description: 'Read the active project tree, one human-readable document, one hidden runtime document, document history, search results, or trash. After one list/create/explicit selection, omit project_id and use the active project; only provide project_id to switch projects. Use runtime before revising existing hidden structure so fields are preserved. This tool never writes.',
     parameters: {
-      operation: { type: 'string', required: true, enum: ['tree', 'read', 'history', 'search', 'trash'] },
-      project_id: { type: 'string', required: true }, path: { type: 'string' }, query: { type: 'string' },
+      operation: { type: 'string', required: true, enum: ['tree', 'read', 'runtime', 'history', 'search', 'trash'] },
+      project_id: { type: 'string' }, path: { type: 'string' }, document_id: { type: 'string' }, query: { type: 'string' },
       tags: { type: 'array', items: { type: 'string' } }, limit: { type: 'integer' },
     }, output: OUTPUT,
     async execute(args, exec) {
-      const id = projectId(args.project_id)
-      await selectProjectScope(ctx, exec, id)
+      const id = await activeProjectScope(ctx, exec, args.project_id)
       const limit = Math.min(200, Math.max(1, integer(args.limit, 50)))
       switch (args.operation) {
         case 'tree': return encode(await ctx.worldlineProjects.tree({
@@ -371,6 +635,11 @@ export function apply(ctx: Context): void {
           ...optionalField('path', args.path),
         }))
         case 'read': return encode(await ctx.worldlineProjects.read({ projectId: id, path: string(args.path, 'path') }))
+        case 'runtime': {
+          const targetPath = await resolveDocumentTargetPath(ctx, id, args.path, args.document_id)
+          const current = await runtimeModel(ctx, id)
+          return encode({ path: targetPath, runtime: current.model.documents[targetPath] ?? null })
+        }
         case 'history': return encode(await ctx.worldlineProjects.history({ projectId: id, path: string(args.path, 'path'), limit }))
         case 'search': return encode(await ctx.worldlineProjects.search({
           projectId: id, query: string(args.query, 'query'),
@@ -384,21 +653,28 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'worldline_edit',
-    description: 'Dry-run or apply one project-scoped document/directory mutation. Existing documents use an exact expected revision; text edits replace one unique fragment.',
+    description: 'Dry-run or apply one mutation to the active project. Omit project_id after selection; only provide it to switch projects. Use create with path and content for a new document; document_id is optional and allocated automatically. Use import-local with source (inside the current Agent workspace) and destination to copy an image, audio file, or other binary into the project without embedding bytes in the tool call. For replace, pass expected_revision and either content for a whole-document replacement or a non-empty before plus after for one exact replacement. For set-runtime, identify the existing document with path (preferred) or the exact document_id returned by worldline_query read, then pass the runtime object directly; do not stringify or escape it. set-runtime stores executable structure outside human-readable Markdown.',
     parameters: {
-      operation: { type: 'string', required: true, enum: ['create', 'replace', 'mkdir', 'move', 'copy', 'trash', 'restore'] },
-      project_id: { type: 'string', required: true }, path: { type: 'string' }, destination: { type: 'string' },
+      operation: { type: 'string', enum: ['create', 'replace', 'set-runtime', 'import-local', 'mkdir', 'move', 'copy', 'trash', 'restore'] },
+      project_id: { type: 'string' }, path: { type: 'string' }, source: { type: 'string' }, destination: { type: 'string' },
       document_id: { type: 'string' }, expected_revision: { type: 'string' }, before: { type: 'string' },
-      after: { type: 'string' }, content: { type: 'string' }, trash_id: { type: 'string' },
+      after: { type: 'string' }, content: { type: 'string' },
+      runtime: { type: 'object', additionalProperties: true, description: 'Structured object for set-runtime. Allowed top-level keys: facets, maps, actions, systems, invariants.' },
+      trash_id: { type: 'string' },
       dry_run: { type: 'boolean' }, confirm: { type: 'boolean' },
     }, output: OUTPUT,
     async execute(args, exec) {
-      const id = projectId(args.project_id)
-      await selectProjectScope(ctx, exec, id)
+      if (args.operation === undefined) throw new Error('operation is required')
+      requireWorldlineAuthoringSkill(exec)
+      const id = await activeProjectScope(ctx, exec, args.project_id)
       const path = optionalString(args.path)
       const dryRun = args.dry_run !== false
       if (args.operation === 'create') {
-        const documentId = worldlineId<'document'>(string(args.document_id, 'document_id'))
+        requireDesignSkillForPath(exec, string(path, 'path'))
+        const requestedDocumentId = optionalString(args.document_id)
+        const documentId = requestedDocumentId === undefined
+          ? allocateWorldlineId<'document'>('document')
+          : worldlineId<'document'>(requestedDocumentId)
         const request = {
           projectId: id,
           path: string(path, 'path'),
@@ -410,13 +686,46 @@ export function apply(ctx: Context): void {
           : encode(await ctx.worldlineProjects.write(request))
       }
       if (args.operation === 'replace') {
+        requireDesignSkillForPath(exec, string(path, 'path'))
         const expectedRevision = revision(args.expected_revision)
         const current = await ctx.worldlineProjects.read({ projectId: id, path: string(path, 'path') })
         if (current.revision !== expectedRevision) throw new Error('expected_revision does not match the current document')
-        const content = applyUniqueReplacement(current.content, args.before ?? '', args.after ?? '')
+        const replacement = optionalString(args.content)
+        const content = replacement ?? applyUniqueReplacement(current.content, args.before ?? '', args.after ?? '')
         const request = { projectId: id, path: current.path, content, expectedRevision, documentId: current.id }
         return dryRun ? encode({ dryRun: true, operation: args.operation, path: current.path, revision: current.revision })
           : encode(await ctx.worldlineProjects.write(request))
+      }
+      if (args.operation === 'set-runtime') {
+        const targetPath = await resolveDocumentTargetPath(ctx, id, path, args.document_id)
+        requireDesignSkillForPath(exec, targetPath)
+        const runtime = structuredObject(args.runtime, 'runtime') as ToolRuntimeDocument
+        const allowed = new Set(['facets', 'maps', 'actions', 'systems', 'invariants'])
+        if (Object.keys(runtime).some(key => !allowed.has(key))) throw new Error('runtime 只能包含 facets、maps、actions、systems、invariants')
+        for (const key of ['maps', 'actions', 'systems', 'invariants'] as const) {
+          if (runtime[key] !== undefined && !Array.isArray(runtime[key])) throw new Error(`runtime.${key} 必须是数组`)
+        }
+        if (dryRun) return encode({ dryRun: true, operation: args.operation, path: targetPath, runtime })
+        await ctx.worldlineProjects.read({ projectId: id, path: targetPath })
+        await writeRuntimeDocument(ctx, id, targetPath, runtime)
+        return encode({ path: targetPath, runtimeStored: true })
+      }
+      if (args.operation === 'import-local') {
+        const source = await workspaceLocalFile(exec, string(args.source, 'source'))
+        const destination = optionalString(args.destination) ?? path
+        const request = {
+          projectId: id,
+          path: string(destination, 'destination'),
+          expectedBytes: source.sizeBytes,
+        }
+        if (dryRun) return encode({
+          dryRun: true,
+          operation: args.operation,
+          source: string(args.source, 'source'),
+          destination: request.path,
+          sizeBytes: source.sizeBytes,
+        })
+        return encode(await ctx.worldlineProjects.importEntry(request, createReadStream(source.absolutePath)))
       }
       if (args.operation === 'mkdir') {
         const request = { projectId: id, path: string(path, 'path') }
@@ -455,14 +764,13 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'worldline_link',
-    description: 'Inspect incoming links for one project document or search stable IDs/paths before editing references.',
+    description: 'Inspect incoming links or search stable IDs/paths in the active project. Omit project_id after selection; only provide it to switch projects.',
     parameters: {
       operation: { type: 'string', required: true, enum: ['backlinks', 'search'] },
-      project_id: { type: 'string', required: true }, path: { type: 'string' }, query: { type: 'string' },
+      project_id: { type: 'string' }, path: { type: 'string' }, query: { type: 'string' },
     }, output: OUTPUT,
     async execute(args, exec) {
-      const id = projectId(args.project_id)
-      await selectProjectScope(ctx, exec, id)
+      const id = await activeProjectScope(ctx, exec, args.project_id)
       return args.operation === 'backlinks'
         ? encode(await ctx.worldlineProjects.backlinks({ projectId: id, path: string(args.path, 'path') }))
         : encode(await ctx.worldlineProjects.search({ projectId: id, query: string(args.query, 'query'), limit: 100 }))
@@ -471,23 +779,26 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'worldline_map',
-    description: 'Read, validate, or write the one current worldline-map JSON block in a project document. Writing uses project revision checks and computes provenance during compilation; never provide source anchors.',
+    description: 'Read, validate, or write the active project map. Omit project_id after selection; only provide it to switch projects. On first creation, do not call read: construct one complete object from the map skill reference, validate it, then write it. Map structure is stored outside Markdown; the document remains readable prose.',
     parameters: {
       operation: { type: 'string', required: true, enum: ['read', 'validate', 'write'] },
-      project_id: { type: 'string', required: true },
-      path: { type: 'string', description: 'Map Markdown document path; defaults to maps/world.md.' },
-      map_json: { type: 'string', description: 'One complete current WorldMap JSON object. Required for validate and write.' },
+      project_id: { type: 'string' },
+      path: { type: 'string', description: 'Map Markdown document path; defaults to maps/places/world.md.' },
+      map_json: { type: 'string', description: 'One complete WorldMap JSON object for validate/write. Required top-level fields: id, version=1, name, rootNodeId, layers, nodes, edges. Every layer: id,name,visible,locked,order. Every node: id,name,description (at least 20 characters),layerId,kind,position{x,y},permissions,hazards,entryNodeIds; non-root nodes normally include parentId. Every edge: id,from,to,bidirectional,distance,baseDuration,modes,permissions,hazards. Stable ID suffixes after the colon need at least 6 characters.' },
       expected_revision: { type: 'string' }, dry_run: { type: 'boolean' },
     }, output: OUTPUT,
     async execute(args, exec) {
-      const id = projectId(args.project_id)
-      await selectProjectScope(ctx, exec, id)
-      const path = optionalString(args.path) ?? 'maps/world.md'
+      const id = await activeProjectScope(ctx, exec, args.project_id)
+      const path = optionalString(args.path) ?? 'maps/places/world.md'
       if (args.operation === 'read') {
         const document = await ctx.worldlineProjects.read({ projectId: id, path })
-        const match = MAP_FENCE.exec(document.content)
-        if (match?.[1] === undefined) throw new Error(`地图文档 ${path} 中没有 worldline-map JSON 代码块`)
-        return encode({ document: { id: document.id, path, revision: document.revision }, map: worldMapJson(match[1]) })
+        const stored = (await runtimeModel(ctx, id)).model.documents[path]?.maps?.[0]
+        if (stored === undefined) throw new Error(`地图文档 ${path} 尚未建立运行地图`)
+        return encode({ document: { id: document.id, path, revision: document.revision }, map: stored })
+      }
+      if (args.operation === 'write') {
+        requireWorldlineAuthoringSkill(exec)
+        requireWorldlineSkill(exec, 'worldline-map-design', '空间设计')
       }
       const map = worldMapJson(args.map_json)
       if (args.operation === 'validate') return encode({ valid: true, map, diagnostics: [] })
@@ -504,7 +815,7 @@ export function apply(ctx: Context): void {
       const request = {
         projectId: id,
         path,
-        content: replaceMapFence(current?.content ?? '', map),
+        content: currentMapDocument(current?.content ?? '', map),
         ...(current === undefined ? { createParents: true, objectKind: 'place' as const } : {
           expectedRevision: current.revision,
           documentId: current.id,
@@ -512,18 +823,21 @@ export function apply(ctx: Context): void {
           tags: current.tags,
         }),
       }
-      return args.dry_run !== false
-        ? encode({ dryRun: true, valid: true, request: { ...request, content: undefined }, map })
-        : encode({ map, document: await ctx.worldlineProjects.write(request) })
+      if (args.dry_run !== false) return encode({ dryRun: true, valid: true, request: { ...request, content: undefined }, map })
+      const existing = await runtimeModel(ctx, id)
+      const runtime = existing.model.documents[path] ?? {}
+      const { provenance: _provenance, ...sourceMap } = map
+      await writeRuntimeDocument(ctx, id, path, { ...runtime, maps: [sourceMap as unknown as JsonObject] })
+      return encode({ map, document: await ctx.worldlineProjects.write(request) })
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'worldline_build',
-    description: 'Inspect or compile source, review author Proposals, freeze, or prove a complete playable OC loop. prove compiles, freezes, creates a Run, executes autonomous legal actions, advances time, verifies the map/event ledger, and checkpoints; it is the only completion gate.',
+    description: 'Inspect or compile the active project, review Proposals, freeze, or prove a complete playable OC loop. Omit project_id after selection; only provide it to switch projects. prove compiles, freezes, creates a Run, executes autonomous legal actions, advances time, verifies the map/event ledger, and checkpoints; it is the only completion gate.',
     parameters: {
       operation: { type: 'string', required: true, enum: ['state', 'compile', 'answer', 'propose', 'review', 'freeze', 'prove'] },
-      project_id: { type: 'string', required: true }, question_id: { type: 'string' }, answer: { type: 'string' },
+      project_id: { type: 'string' }, question_id: { type: 'string' }, answer: { type: 'string' },
       target: { type: 'string', enum: ['canon', 'action', 'system', 'invariant', 'map'] },
       title: { type: 'string' }, rationale: { type: 'string' }, risk: { type: 'string', enum: ['low', 'medium', 'high'] },
       payload_json: { type: 'string' }, anchors_json: { type: 'string' }, proposal_id: { type: 'string' },
@@ -532,9 +846,11 @@ export function apply(ctx: Context): void {
       seed: { type: 'string' }, action_type: { type: 'string' }, advance_duration: { type: 'number' },
     }, output: OUTPUT,
     async execute(args, exec) {
-      const id = projectId(args.project_id)
-      await selectProjectScope(ctx, exec, id)
+      const id = await activeProjectScope(ctx, exec, args.project_id)
       const stateRevision = optionalString(args.expected_state_revision) as Revision | undefined
+      if (args.operation !== 'state' && args.operation !== 'compile') {
+        requireWorldlineAuthoringSkill(exec)
+      }
       switch (args.operation) {
         case 'state': return encode(await ctx.worldlineCompiler.state(id))
         case 'compile': return encode(await ctx.worldlineCompiler.compile({ projectId: id }))
@@ -557,11 +873,13 @@ export function apply(ctx: Context): void {
             ...(stateRevision === undefined ? {} : { expectedStateRevision: stateRevision }),
           }))
         case 'freeze':
+          requireWorldlineSkill(exec, 'worldline-build-audit', '构建审计')
           requireConfirmation(args.confirm, 'freeze build')
           return encode(await ctx.worldlineCompiler.freeze({
             projectId: id, expectedSourceDigest: string(args.expected_source_digest, 'expected_source_digest'),
           }))
         case 'prove': {
+          requireWorldlineSkill(exec, 'worldline-build-audit', '构建审计')
           requireConfirmation(args.confirm, 'prove complete Worldline loop')
           const duration = positiveDuration(args.advance_duration, 60, 'advance_duration')
           const preview = await ctx.worldlineCompiler.compile({ projectId: id })
@@ -638,12 +956,12 @@ export function apply(ctx: Context): void {
     name: 'worldline_run',
     description: 'Inspect or control deterministic Runs. Explicit project and Run IDs automatically select their owning project. Mutating operations use confirmation for actions, large advances, branches, control changes, AI changes, and stop.',
     parameters: {
-      operation: { type: 'string', required: true, enum: ['list', 'create', 'view', 'choices', 'advance', 'simulate', 'action', 'pause', 'resume', 'stop', 'checkpoint', 'checkpoints', 'branch', 'set-control', 'set-ai', 'set-budget'] },
+      operation: { type: 'string', required: true, enum: ['list', 'create', 'view', 'choices', 'advance', 'simulate', 'action', 'pause', 'resume', 'stop', 'checkpoint', 'checkpoints', 'branch', 'set-control'] },
       project_id: { type: 'string' }, run_id: { type: 'string' }, actor_id: { type: 'string' }, seed: { type: 'string' },
       duration: { type: 'number' }, max_events: { type: 'integer' }, action_type: { type: 'string' },
       parameters_json: { type: 'string' }, expected_sequence: { type: 'integer' }, label: { type: 'string' },
       checkpoint_id: { type: 'string' }, mode: { type: 'string', enum: ['autonomous', 'suggestions', 'player'] },
-      enabled: { type: 'boolean' }, budget_json: { type: 'string' }, confirm: { type: 'boolean' },
+      confirm: { type: 'boolean' },
       cycles: { type: 'integer' }, step_duration: { type: 'number' },
     }, output: OUTPUT,
     async execute(args, exec) {
@@ -660,9 +978,10 @@ export function apply(ctx: Context): void {
         const runs = await ctx.worldlineRuns.list()
         return encode(active === undefined ? runs : runs.filter(item => item.projectId === active.projectId))
       }
+      if (args.operation !== 'view' && args.operation !== 'choices'
+        && args.operation !== 'checkpoints') requireWorldlineAuthoringSkill(exec)
       if (args.operation === 'create') {
-        const id = projectId(args.project_id)
-        await selectProjectScope(ctx, exec, id)
+        const id = await activeProjectScope(ctx, exec, args.project_id)
         const created = await ctx.worldlineRuns.create({
           projectId: id, seed: string(args.seed, 'seed'), startPaused: true,
         })
@@ -732,19 +1051,8 @@ export function apply(ctx: Context): void {
           requireConfirmation(args.confirm, 'change actor control')
           if (args.mode !== 'autonomous' && args.mode !== 'suggestions' && args.mode !== 'player') throw new Error('mode is required')
           return encode(await ctx.worldlineRuns.setControl({ runId: id, actorId: entityId(args.actor_id), mode: args.mode }))
-        case 'set-ai':
-          requireConfirmation(args.confirm, 'change Run AI state')
-          if (typeof args.enabled !== 'boolean') throw new Error('enabled is required')
-          return encode(await ctx.worldlineRuns.setAiEnabled({ runId: id, enabled: args.enabled }))
-        case 'set-budget':
-          requireConfirmation(args.confirm, 'change Run AI budget')
-          return encode(await ctx.worldlineRuns.setAiBudget({
-            runId: id,
-            budget: objectJson(args.budget_json, 'budget_json') as unknown as AiBudget,
-            expectedSequence: integer(args.expected_sequence, -1),
-          }))
       }
-      throw new Error('create requires project_id and seed')
+      throw new Error('create requires an active project and seed')
     },
   }))
 
@@ -757,8 +1065,7 @@ export function apply(ctx: Context): void {
     }, output: OUTPUT,
     async execute(args, exec) {
       if (args.target === 'semantic') {
-        const id = projectId(args.project_id)
-        await selectProjectScope(ctx, exec, id)
+        const id = await activeProjectScope(ctx, exec, args.project_id)
         return encode(await ctx.worldlineCompiler.explain({ projectId: id, objectId: string(args.object_id, 'object_id') }))
       }
       const id = runId(args.run_id)
@@ -804,8 +1111,7 @@ export function apply(ctx: Context): void {
           requireConfirmation(args.confirm, 'import project')
           return encode(await ctx.worldlineProjects.importProject(request))
         }
-        const id = projectId(args.project_id)
-        await selectProjectScope(ctx, exec, id)
+        const id = await activeProjectScope(ctx, exec, args.project_id)
         const request = { projectId: id, source }
         if (args.dry_run !== false) return encode({ dryRun: true, operation: args.operation, artifact, request })
         requireConfirmation(args.confirm, `import ${artifact}`)
@@ -813,8 +1119,7 @@ export function apply(ctx: Context): void {
           ? await ctx.worldlineProjects.importBlueprint(request)
           : await ctx.worldlineProjects.importRun(request))
       }
-      const id = projectId(args.project_id)
-      await selectProjectScope(ctx, exec, id)
+      const id = await activeProjectScope(ctx, exec, args.project_id)
       const destination = string(args.destination, 'destination')
       if (artifact === 'blueprint') {
         const request = { projectId: id, destination }

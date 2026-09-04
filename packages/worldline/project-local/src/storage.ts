@@ -14,12 +14,12 @@ import {
   unlink,
 } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
-import type { Revision } from '@deepseek-ai/dsh-worldline-standard'
+import { WORLDLINE_PROJECT_LAYOUT, type Revision } from '@deepseek-ai/dsh-worldline-standard'
 import { WorldlineProjectError } from '@deepseek-ai/dsh-worldline-project'
 
 /** Identifies the package-owned control directory value.
  */
-export const CONTROL_DIRECTORY = '.worldline'
+export const CONTROL_DIRECTORY = WORLDLINE_PROJECT_LAYOUT.control.root
 /** Identifies the package-owned max text bytes value.
  */
 export const MAX_TEXT_BYTES = 20 * 1024 * 1024

@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-client-ui-attachment",
   "description": "Dynamic attachment presentation plugin for Worldline conversation input and message-image slots",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "publishConfig": {
     "access": "public"
   },

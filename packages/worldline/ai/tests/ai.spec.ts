@@ -4,15 +4,18 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, {
+  CallId,
   LlmAdapter,
+  LlmError,
   ReasoningEffortId,
+  resolveRetryPolicy,
   type GenerateOptions,
   type LlmModelInfo,
   type LlmResolvedModelInfo,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
-import type { AiBudget, Blueprint, ModelPolicy } from '@deepseek-ai/dsh-worldline-standard'
+import type { Blueprint, ModelPolicy } from '@deepseek-ai/dsh-worldline-standard'
 import { stableStringify } from '@deepseek-ai/dsh-worldline-standard'
 import LocalWorldlineProjects from '../../project-local/src/index.ts'
 import WorkerWorldlineRuns from '../../runtime-worker/src/index.ts'
@@ -25,8 +28,19 @@ const disposers: Array<() => Promise<void>> = []
 class ChoiceAdapter extends LlmAdapter {
   calls = 0
   failNext = false
+  transientFailures = 0
+  partialTransientFailures = 0
   readonly inputs: string[] = []
+  readonly options: GenerateOptions[] = []
   readonly credential = 'sk-provider-owned-worldline-test-secret'
+
+  override providerRetryPolicy() {
+    return resolveRetryPolicy({
+      mode: 'normal',
+      maxRetries: 3,
+      backoff: { initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+    }, 'worldline test retryPolicy')
+  }
 
   override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     return Promise.resolve([{ provider, id: 'planner', name: 'Planner' }])
@@ -40,7 +54,10 @@ class ChoiceAdapter extends LlmAdapter {
       context: { contextWindow: 4096 },
       defaultMaxTokens: 256,
       reasoning: {
-        efforts: [{ id: ReasoningEffortId('medium'), name: 'Medium' }],
+        efforts: [
+          { id: ReasoningEffortId('off'), name: 'Off' },
+          { id: ReasoningEffortId('medium'), name: 'Medium' },
+        ],
         defaultEffort: ReasoningEffortId('medium'),
       },
     })
@@ -48,12 +65,50 @@ class ChoiceAdapter extends LlmAdapter {
 
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.calls += 1
+    this.options.push(options)
     const input = options.messages.flatMap(message => message.content)
       .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
     this.inputs.push(input)
+    if (this.partialTransientFailures > 0) {
+      this.partialTransientFailures -= 1
+      const id = CallId('call-interrupted')
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+      yield { type: 'tool-call-delta', index: 0, id, name: 'discard_me', argumentsDelta: '{}' }
+      yield {
+        type: 'block-end',
+        index: 0,
+        block: { type: 'tool-call', id, name: 'discard_me', arguments: '{}' },
+      }
+      throw new LlmError('stream disconnected after partial output', 'TRANSPORT')
+    }
+    if (this.transientFailures > 0) {
+      this.transientFailures -= 1
+      throw new LlmError('simulated transient outage', 'TRANSPORT')
+    }
     if (this.failNext) {
       this.failNext = false
       throw new Error('simulated provider outage')
+    }
+    const tool = options.tools?.[0]
+    if (tool !== undefined) {
+      const id = CallId('call-structured')
+      const args = tool.name === 'story_assess_progress'
+        ? JSON.stringify({
+          status: 'active',
+          rationale: 'The supplied evidence does not yet complete the current plot point.',
+          evidence: ['The saved prose establishes only the opening situation.'],
+        })
+        : JSON.stringify({ mutations: [], memoryWrites: [] })
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+      yield { type: 'tool-call-delta', index: 0, id, name: tool.name, argumentsDelta: args }
+      yield {
+        type: 'block-end',
+        index: 0,
+        block: { type: 'tool-call', id, name: tool.name, arguments: args },
+      }
+      yield { type: 'usage', usage: { inputTokens: 300, outputTokens: 40, cacheReadTokens: 20 } }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
     }
     const choiceId = /"id":"(choice:[^"]+)"/u.exec(input)?.[1]
     if (choiceId === undefined) throw new Error('Context Pack contains no projected choice')
@@ -76,17 +131,6 @@ const policy: ModelPolicy = {
   routes: { character: { provider: 'mock', model: 'planner', reasoningEffort: 'medium' } },
   aiEnabled: true,
   revision: 'sha256:ai-policy' as ModelPolicy['revision'],
-}
-
-const budget: AiBudget = {
-  maxCalls: 10,
-  maxInputTokens: 10_000,
-  maxOutputTokens: 5000,
-  maxConcurrent: 1,
-  maxCallsPerLogicalDay: 10,
-  maxCallsPerRealHour: 10,
-  maxEstimatedCost: 10,
-  currency: 'USD',
 }
 
 async function harness(): Promise<Harness> {
@@ -145,7 +189,6 @@ async function harness(): Promise<Harness> {
 
 async function createRun(
   context: Context,
-  runBudget: AiBudget = budget,
   privateMarker?: string,
 ): Promise<{
   readonly runId: Awaited<ReturnType<Context['worldlineRuns']['create']>>['summary']['runId']
@@ -177,7 +220,6 @@ async function createRun(
     projectId: project.manifest.id,
     seed: 'ai-run-seed',
     modelPolicy: policy,
-    aiBudget: runBudget,
     startPaused: false,
   })
   const actor = blueprint.entities[0]
@@ -201,6 +243,48 @@ afterEach(async () => {
 })
 
 describe('WorldlineAi', () => {
+  it('disables hidden reasoning and gives state/progress tools purpose-specific authority', async () => {
+    const runtime = await harness()
+    const run = await createRun(runtime.context)
+    const before = await runtime.context.worldlineRuns.view({ runId: run.runId })
+    await runtime.context.worldlineRuns.switchModel({
+      runId: run.runId,
+      expectedSequence: before.snapshot.sequence,
+      modelPolicy: {
+        ...policy,
+        routes: {
+          ...policy.routes,
+          creative: { provider: 'mock', model: 'planner' },
+        },
+      },
+    })
+    const view = await runtime.context.worldlineRuns.view({ runId: run.runId })
+    const pack = await runtime.context.worldlineAi.contextPack({
+      runId: run.runId,
+      actorId: run.actorId,
+      purpose: 'creative',
+    })
+    const chunks = []
+    for await (const chunk of runtime.context.worldlineAi.streamText({
+      runId: run.runId,
+      actorId: run.actorId,
+      purpose: 'creative',
+      contextPack: pack,
+      tools: [{
+        name: 'story_propose_state_update',
+        description: 'test state update',
+        parameters: { type: 'object' },
+      }],
+    })) chunks.push(chunk)
+    const generated = runtime.adapter.options.at(-1)
+    expect(view.snapshot.modelPolicy.routes.creative?.reasoningEffort).toBeUndefined()
+    expect(generated?.reasoningEffort).toBe('off')
+    expect(generated?.system).toContain('schema-allowed world, character, and memory changes')
+    expect(generated?.system).not.toContain('never invent a result or world-state change')
+    expect(chunks.some(chunk => chunk.type === 'tool-call')).toBe(true)
+    await runtime.dispose()
+  })
+
   it('builds a hard-bounded Context Pack and records a legal model intent before its Action', async () => {
     const runtime = await harness()
     const run = await createRun(runtime.context)
@@ -238,20 +322,80 @@ describe('WorldlineAi', () => {
     await runtime.dispose()
   })
 
-  it('blocks before provider IO when any hard budget is exhausted', async () => {
+  it('retains usage telemetry without a story-stopping quota', async () => {
     const runtime = await harness()
-    const run = await createRun(runtime.context, { ...budget, maxCalls: 0 })
+    const run = await createRun(runtime.context)
     const result = await runtime.context.worldlineAi.decide(run)
-    expect(result).toMatchObject({ status: 'budget-blocked' })
-    expect(result.budget?.reasons).toContain('Call budget is exhausted.')
-    expect(runtime.adapter.calls).toBe(0)
+    expect(result).toMatchObject({ status: 'submitted' })
+    expect(runtime.adapter.calls).toBe(1)
+    const view = await runtime.context.worldlineRuns.view({ runId: run.runId })
+    expect(view.snapshot.aiUsage.calls).toBe(1)
+    expect(view.snapshot).not.toHaveProperty('aiBudget')
+    await runtime.dispose()
+  })
+
+  it('automatically retries transient streams and records each isolated attempt', async () => {
+    const runtime = await harness()
+    const run = await createRun(runtime.context)
+    runtime.adapter.transientFailures = 2
+    const pack = await runtime.context.worldlineAi.contextPack(run)
+    const chunks = []
+    for await (const chunk of runtime.context.worldlineAi.streamText({
+      ...run,
+      purpose: 'creative',
+      contextPack: pack,
+      tools: [{ name: 'story_propose_state_update', description: 'test', parameters: { type: 'object' } }],
+    })) chunks.push(chunk)
+
+    expect(runtime.adapter.calls).toBe(3)
+    expect(chunks.filter(chunk => chunk.type === 'retry')).toMatchObject([
+      { attempt: 2, maxAttempts: 4, delayMs: 1, failure: { code: 'TRANSPORT' } },
+      { attempt: 3, maxAttempts: 4, delayMs: 1, failure: { code: 'TRANSPORT' } },
+    ])
+    expect(chunks.filter(chunk => chunk.type === 'tool-call')).toHaveLength(1)
+    expect(chunks.at(-1)?.type).toBe('finish')
+    const invocations = await runtime.context.worldlineRuns.records({
+      runId: run.runId,
+      stream: 'ai-invocation',
+      limit: 10,
+    })
+    expect(invocations.records.map(item => item.payload['outcome']))
+      .toEqual(['failed', 'failed', 'completed'])
+    await runtime.dispose()
+  })
+
+  it('discards partial failed-attempt output and stops after the provider retry bound', async () => {
+    const runtime = await harness()
+    const run = await createRun(runtime.context)
+    const pack = await runtime.context.worldlineAi.contextPack(run)
+    runtime.adapter.partialTransientFailures = 1
+    const recovered = []
+    for await (const chunk of runtime.context.worldlineAi.streamText({
+      ...run,
+      purpose: 'creative',
+      contextPack: pack,
+      tools: [{ name: 'story_propose_state_update', description: 'test', parameters: { type: 'object' } }],
+    })) recovered.push(chunk)
+    expect(recovered.some(chunk => chunk.type === 'tool-call' && chunk.name === 'discard_me'))
+      .toBe(false)
+    expect(recovered.filter(chunk => chunk.type === 'tool-call')).toHaveLength(1)
+
+    runtime.adapter.transientFailures = 5
+    await expect(async () => {
+      for await (const _chunk of runtime.context.worldlineAi.streamText({
+        ...run,
+        purpose: 'creative',
+        contextPack: pack,
+      })) { /* consume */ }
+    }).rejects.toThrow('4 次尝试后仍失败')
+    expect(runtime.adapter.transientFailures).toBe(1)
     await runtime.dispose()
   })
 
   it('keeps another actor private and never accumulates unrelated context', async () => {
     const runtime = await harness()
     const marker = 'OTHER_ACTOR_PRIVATE_CONTEXT_MUST_NOT_LEAK'
-    const run = await createRun(runtime.context, budget, marker)
+    const run = await createRun(runtime.context, marker)
     const pack = await runtime.context.worldlineAi.contextPack(run)
     expect(stableStringify(pack)).not.toContain(marker)
 

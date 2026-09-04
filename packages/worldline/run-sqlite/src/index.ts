@@ -12,6 +12,10 @@ export type RunStream =
   | 'ai-invocation'
   | 'observation'
   | 'narrative-beat'
+  | 'presentation-progress'
+  | 'action-deck'
+  | 'story-progress'
+  | 'story-state'
   | 'runtime-diagnostic'
   | 'telemetry'
 
@@ -42,7 +46,7 @@ export interface Config {
 }
 
 const APPLICATION_ID = 0x5757524c
-const CURRENT_SCHEMA_VERSION = 2
+const CURRENT_SCHEMA_VERSION = 5
 
 const CURRENT_SCHEMA = `
   CREATE TABLE run_meta(
@@ -278,15 +282,26 @@ export class WorldlineRunDatabase {
     limit = 500,
     stream?: RunStream,
     afterOrdinal = -1,
+    tail = false,
   ): readonly RunStreamRecord[] {
     const bounded = Math.min(5001, Math.max(1, limit))
-    const rows = stream === undefined
-      ? this.database.prepare(`
+    const rows = tail
+      ? (stream === undefined
+        ? this.database.prepare(`
+              SELECT sequence,ordinal,logical_time,stream,id,payload FROM stream_records
+              ORDER BY sequence DESC,ordinal DESC LIMIT ?
+            `).all(bounded)
+        : this.database.prepare(`
+              SELECT sequence,ordinal,logical_time,stream,id,payload FROM stream_records
+              WHERE stream=? ORDER BY sequence DESC,ordinal DESC LIMIT ?
+            `).all(stream, bounded)).reverse()
+      : stream === undefined
+        ? this.database.prepare(`
           SELECT sequence,ordinal,logical_time,stream,id,payload FROM stream_records
           WHERE sequence>? OR (sequence=? AND ordinal>?)
           ORDER BY sequence,ordinal LIMIT ?
         `).all(afterSequence, afterSequence, afterOrdinal, bounded)
-      : this.database.prepare(`
+        : this.database.prepare(`
           SELECT sequence,ordinal,logical_time,stream,id,payload FROM stream_records
           WHERE (sequence>? OR (sequence=? AND ordinal>?)) AND stream=?
           ORDER BY sequence,ordinal LIMIT ?

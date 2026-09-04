@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-fs-e2b",
   "description": "E2B filesystem implementation for Worldline",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "publishConfig": {
     "access": "public"
   },

@@ -7,6 +7,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-worldline-project'
 import {
+  type ProjectId,
   type RunId,
   allocateWorldlineId,
 } from '@deepseek-ai/dsh-worldline-standard'
@@ -14,6 +15,8 @@ import {
   type AdvanceRunRequest,
   type BranchRunRequest,
   type CheckpointView,
+  type CompletePresentationRequest,
+  type CompletePresentationResult,
   type CreateCheckpointRequest,
   type CreateRunRequest,
   type ExplainRunEventRequest,
@@ -29,13 +32,16 @@ import {
   type RecordAiIntentResult,
   type RecordAiInvocationRequest,
   type RecordAiInvocationResult,
+  type RecordActionDeckRequest,
+  type RecordActionDeckResult,
   type RecordNarrativeBeatRequest,
   type RecordNarrativeBeatResult,
+  type RecordStoryStateRequest,
+  type RecordStoryStateResult,
   type RunRef,
   type RunSummary,
   type RunView,
   type SetActorControlRequest,
-  type SetAiBudgetRequest,
   type SetAiEnabledRequest,
   type SimulateRunRequest,
   type SimulateRunResult,
@@ -171,6 +177,14 @@ class WorkerRunHandle {
     await this.shutdown
   }
 
+  async release(): Promise<void> {
+    try {
+      await this.call({ type: 'release' })
+    } finally {
+      await this.terminate()
+    }
+  }
+
   private onMessage(message: WorkerToHost): void {
     if (message.type === 'ready') { this.readyResolve(message.value as RunView); return }
     const pending = this.pending.get(message.id)
@@ -207,9 +221,26 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
   })
 
   private readonly handles = new Map<RunId, WorkerRunHandle>()
+  private readonly releasingProjects = new Set<ProjectId>()
 
   constructor(private readonly context: Context, private readonly config: Config) {
     super(context)
+    context.on('worldline-project/release', async (projectId) => {
+      this.releasingProjects.add(projectId)
+      const handles = [...this.handles.values()]
+        .filter(handle => handle.init.projectId === projectId)
+      try {
+        const results = await Promise.allSettled(handles.map(async (handle) => {
+          try { await handle.release() } finally {
+            if (this.handles.get(handle.init.runId) === handle) this.handles.delete(handle.init.runId)
+          }
+        }))
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+        if (failure !== undefined) throw failure.reason
+      } finally {
+        this.releasingProjects.delete(projectId)
+      }
+    })
     context.effect(() => async () => {
       const handles = [...this.handles.values()]
       this.handles.clear()
@@ -232,7 +263,6 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
       seed: request.seed,
       startPaused: request.startPaused !== false,
       ...(request.modelPolicy === undefined ? {} : { modelPolicy: request.modelPolicy }),
-      ...(request.aiBudget === undefined ? {} : { aiBudget: request.aiBudget }),
     })
     return handle.ready
   }
@@ -318,6 +348,13 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
       parentRunId: request.runId,
       forkSequence: checkpoint.checkpoint.sequence,
       seed: request.seed ?? checkpoint.checkpoint.snapshot.seed,
+      // Presentation and story-turn indexes point at records owned by the parent
+      // database. A branch starts its own narrative stream from the checkpoint's
+      // materialized world state, so retaining those foreign references would make
+      // its first completed beat fail validation against records it cannot own.
+      presentationCursors: {},
+      actionDecks: {},
+      storyStateCommits: {},
     }
     const handle = this.spawn({
       projectId: sourceView.summary.projectId,
@@ -342,10 +379,6 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
     return (await this.handle(request.runId)).call({ type: 'set-ai', payload: request })
   }
 
-  override async setAiBudget(request: SetAiBudgetRequest): Promise<RunView> {
-    return (await this.handle(request.runId)).call({ type: 'set-ai-budget', payload: request })
-  }
-
   override async switchModel(request: SwitchModelPolicyRequest): Promise<RunView> {
     return (await this.handle(request.runId)).call({ type: 'switch-model', payload: request })
   }
@@ -366,6 +399,22 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
     return (await this.handle(request.runId)).call({ type: 'record-narrative-beat', payload: request })
   }
 
+  override async completePresentation(
+    request: CompletePresentationRequest,
+  ): Promise<CompletePresentationResult> {
+    return (await this.handle(request.runId)).call({ type: 'complete-presentation', payload: request })
+  }
+
+  override async recordActionDeck(request: RecordActionDeckRequest): Promise<RecordActionDeckResult> {
+    return (await this.handle(request.runId)).call({ type: 'record-action-deck', payload: request })
+  }
+
+  override async recordStoryState(
+    request: RecordStoryStateRequest,
+  ): Promise<RecordStoryStateResult> {
+    return (await this.handle(request.runId)).call({ type: 'record-story-state', payload: request })
+  }
+
   private spawn(init: WorkerInit): WorkerRunHandle {
     if (this.handles.has(init.runId)) throw new WorldlineRuntimeError('run-conflict', `Run is already open: ${init.runId}`)
     const handle = new WorkerRunHandle(
@@ -383,7 +432,12 @@ export default class WorkerWorldlineRuns extends WorldlineRuns {
 
   private async handle(runId: RunId): Promise<WorkerRunHandle> {
     const existing = this.handles.get(runId)
-    if (existing !== undefined) return existing
+    if (existing !== undefined) {
+      if (this.releasingProjects.has(existing.init.projectId)) {
+        throw new WorldlineRuntimeError('run-not-live', 'Run storage is being released')
+      }
+      return existing
+    }
     const storage = (await this.context.worldlineProjects.runStorages()).find(item => item.runId === runId)
     if (storage === undefined) throw new WorldlineRuntimeError('run-not-found', `Run not found: ${runId}`)
     const retainedBlueprint = `${dirname(storage.databasePath)}/blueprint.json`

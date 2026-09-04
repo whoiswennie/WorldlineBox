@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-client-ui-worldline",
   "description": "Worldline authoring, compilation, simulation, and text-play studio",
-  "version": "0.2.3",
+  "version": "0.2.4-alpha.1",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -46,8 +46,7 @@
     "@deepseek-ai/dsh-worldline-narrative": "workspace:^",
     "@deepseek-ai/dsh-worldline-project": "workspace:^",
     "@deepseek-ai/dsh-worldline-runtime": "workspace:^",
-    "@deepseek-ai/dsh-worldline-standard": "workspace:^",
-    "react-dom": "^18.2.0"
+    "@deepseek-ai/dsh-worldline-standard": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",

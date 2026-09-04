@@ -37,10 +37,10 @@ export function testBlueprint(): Blueprint {
       rootNodeId: worldlineId<'map-node'>('map-node:root-000001'),
       layers: [{ id: 'ground', name: 'Ground', visible: true, locked: false, order: 0 }],
       nodes: [
-        { id: worldlineId<'map-node'>('map-node:root-000001'), layerId: 'ground', kind: 'world', name: 'Root', position: { x: 0, y: 0 }, permissions: [], hazards: [], entryNodeIds: [] },
-        { id: worldlineId<'map-node'>('map-node:a-node-00001'), parentId: worldlineId<'map-node'>('map-node:root-000001'), layerId: 'ground', kind: 'room', name: 'A', position: { x: 0, y: 0 }, permissions: [], hazards: [], entryNodeIds: [] },
-        { id: worldlineId<'map-node'>('map-node:b-node-00001'), parentId: worldlineId<'map-node'>('map-node:root-000001'), layerId: 'ground', kind: 'room', name: 'B', position: { x: 1, y: 0 }, permissions: [], hazards: [], entryNodeIds: [] },
-        { id: worldlineId<'map-node'>('map-node:c-node-00001'), parentId: worldlineId<'map-node'>('map-node:root-000001'), layerId: 'ground', kind: 'room', name: 'C', position: { x: 2, y: 0 }, permissions: [], hazards: [], entryNodeIds: [] },
+        { id: worldlineId<'map-node'>('map-node:root-000001'), layerId: 'ground', kind: 'world', name: 'Root', description: 'The complete test world containing every connected fixture room.', position: { x: 0, y: 0 }, permissions: [], hazards: [], entryNodeIds: [] },
+        { id: worldlineId<'map-node'>('map-node:a-node-00001'), parentId: worldlineId<'map-node'>('map-node:root-000001'), layerId: 'ground', kind: 'room', name: 'A', description: 'A quiet fixture room with a shared workshop and clear exits.', position: { x: 0, y: 0 }, permissions: [], hazards: [], entryNodeIds: [] },
+        { id: worldlineId<'map-node'>('map-node:b-node-00001'), parentId: worldlineId<'map-node'>('map-node:root-000001'), layerId: 'ground', kind: 'room', name: 'B', description: 'A narrow connecting room used to verify multi-edge travel.', position: { x: 1, y: 0 }, permissions: [], hazards: [], entryNodeIds: [] },
+        { id: worldlineId<'map-node'>('map-node:c-node-00001'), parentId: worldlineId<'map-node'>('map-node:root-000001'), layerId: 'ground', kind: 'room', name: 'C', description: 'A remote fixture room where place-bound work becomes available.', position: { x: 2, y: 0 }, permissions: [], hazards: [], entryNodeIds: [] },
       ],
       edges: [
         { id: worldlineId<'map-edge'>('map-edge:a-b-000001'), from: worldlineId<'map-node'>('map-node:a-node-00001'), to: worldlineId<'map-node'>('map-node:b-node-00001'), bidirectional: true, distance: 1, baseDuration: 10, capacity: 1, modes: ['walk'], permissions: [], hazards: [] },
@@ -61,13 +61,13 @@ export function testBlueprint(): Blueprint {
       {
         id: 'character.move', description: 'Move over connected positive-duration edges', operator: 'move',
         actorTypes: ['character'], preconditions: [], claims: [], duration: 0, effects: [],
-        interruptible: true, maxWait: 100, retryBudget: 3, fallbacks: [], provenance: [source],
+        interruptible: true, maxWait: 100, maxRetries: 3, fallbacks: [], provenance: [source],
       },
       {
         id: 'character.work', description: 'Use the shared workshop exclusively', actorTypes: ['character'],
         preconditions: [], claims: [{ resource: 'workshop', quantity: 1, mode: 'exclusive', duration: 10 }],
         duration: 10, effects: [{ op: 'increment', path: 'state.energy', amount: 1 }],
-        interruptible: true, maxWait: 100, retryBudget: 5, fallbacks: [], provenance: [source],
+        interruptible: true, maxWait: 100, maxRetries: 5, fallbacks: [], provenance: [source],
       },
     ],
     systems: [{

@@ -1,0 +1,11 @@
+.row { display: grid; grid-template-columns: 14px 27px minmax(0, 1fr) auto; width: 100%; min-width: 0; height: 36px; align-items: center; gap: 8px; padding: 0 10px 0 calc(10px + var(--workspace-tree-depth, 0) * 15px); overflow: hidden; border: 1px solid transparent; border-radius: 10px; color: var(--worldline-ink, var(--dsw-alias-label-primary, #17202a)); background: transparent; font: inherit; font-size: 11px; text-align: left; white-space: nowrap; cursor: pointer; box-sizing: border-box; }
+.row:hover { border-color: var(--worldline-border, var(--dsw-alias-border-subtle, #e4edf2)); background: var(--worldline-surface, #fff); box-shadow: 0 4px 12px rgb(66 98 120 / .04); }
+.row[data-selected] { border-color: color-mix(in srgb, var(--worldline-accent, #4aa9cf) 26%, transparent); background: color-mix(in srgb, var(--worldline-accent, #4aa9cf) 9%, transparent); }
+.row[data-active] { color: var(--worldline-accent, #327f9f); border-color: color-mix(in srgb, var(--worldline-accent, #4aa9cf) 24%, transparent); background: linear-gradient(100deg, color-mix(in srgb, var(--worldline-accent, #4aa9cf) 12%, #fff), color-mix(in srgb, #7569e7 8%, #fff)); box-shadow: inset 3px 0 var(--worldline-accent, #62afd0); }
+.row:focus-visible { outline: 2px solid color-mix(in srgb, var(--worldline-accent, #4aa9cf) 55%, #fff); outline-offset: -2px; }
+.chevron { display: grid; width: 14px; height: 14px; place-items: center; color: var(--worldline-muted, #8ba0ac); }
+.glyph { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 8px; color: #738ea0; background: #f1f5f7; }
+.row[data-kind='directory'] .glyph { color: #4b91b1; background: #edf7fb; }
+.glyph svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
+.name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.badge { color: var(--worldline-muted, var(--dsw-alias-label-secondary, #718096)); font-size: 9px; }

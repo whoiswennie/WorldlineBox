@@ -9,7 +9,12 @@ import {
   type DragEvent,
   type ReactNode,
 } from 'react'
-import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  MarkdownWorkspaceEditor,
+  MarkdownWorkspaceModeSwitch,
+  MarkdownWorkspacePreview,
+  WorkspaceFileTreeRow,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   DocumentHistoryEntry,
@@ -18,14 +23,12 @@ import type {
   ProjectSummary,
   ProjectTreeEntry,
 } from '@deepseek-ai/dsh-worldline-project/types'
-import { MarkdownEditor } from './MarkdownEditor.tsx'
-import { CanonObjectView } from './CanonObjectView.tsx'
 import { worldlineLabel } from './presentation.ts'
 import type { EditorDocumentState, ProjectClient } from './types.ts'
 import { PROJECT_UPLOAD_PATH } from '../contract.ts'
 import css from './CanonWorkbench.module.css'
 
-type ViewMode = 'edit' | 'object' | 'preview' | 'split'
+type ViewMode = 'edit' | 'preview' | 'split'
 type SidePanel = 'details' | 'history' | 'backlinks' | 'trash'
 
 interface CanonWorkbenchProps extends PropsLocale<'worldlineStudio'> {
@@ -205,6 +208,15 @@ export function VirtualProjectTree({
     void loadPage('', undefined, requestGeneration)
   }, [loadPage, project.manifest.id, revision])
 
+  useEffect(() => {
+    if (active === undefined) return
+    const parts = parentPath(active).split('/').filter(Boolean)
+    const ancestors = parts.map((_, index) => parts.slice(0, index + 1).join('/'))
+    if (ancestors.length === 0) return
+    setExpanded(current => new Set([...current, ...ancestors]))
+    for (const directory of ancestors) void loadPage(directory, undefined)
+  }, [active, loadPage])
+
   const rows = useMemo(() => {
     const result: FlatTreeRow[] = []
     const visit = (directory: string, depth: number): void => {
@@ -256,11 +268,13 @@ export function VirtualProjectTree({
       >{row.kind === 'entry' ? (() => {
           const entry = row.entry
           const open = expanded.has(entry.path)
-          return <button
-            type="button"
-            className={css.treeEntry}
-            style={{ paddingLeft: 8 + row.depth * 15 }}
-            data-active={active === entry.path || undefined}
+          return <WorkspaceFileTreeRow
+            kind={entry.kind}
+            name={entry.name}
+            depth={row.depth}
+            open={open}
+            active={active === entry.path}
+            badge={entry.tags.length > 0 ? entry.tags.length : undefined}
             onClick={() => {
               onSelect(entry)
               if (entry.kind === 'directory') {
@@ -275,11 +289,7 @@ export function VirtualProjectTree({
                 })
               } else if (entry.kind === 'document') onOpen(entry.path)
             }}
-          >
-            <span aria-hidden="true">{entry.kind === 'directory' ? (open ? '▾' : '▸') : '◇'}</span>
-            <span>{entry.name}</span>
-            {entry.tags.length > 0 && <small>{entry.tags.length}</small>}
-          </button>
+          />
         })() : row.kind === 'more' ? <button
           type="button"
           className={css.treeMore}
@@ -309,8 +319,26 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
   const [importing, setImporting] = useState(0)
   const [notice, setNotice] = useState<string>()
   const searchGeneration = useRef(0)
+  const autoOpenedProject = useRef<string>()
   const projectId = props.project.manifest.id
   const activePath = props.activePath
+
+  useEffect(() => {
+    if (autoOpenedProject.current === projectId) return
+    autoOpenedProject.current = projectId
+    if (activePath !== undefined || props.openDocuments.length > 0) return
+    let cancelled = false
+    if (typeof props.projects.search !== 'function') return
+    void props.projects.search({ projectId, query: '#', limit: 200 }).then((hits) => {
+      if (cancelled) return
+      const preferred = ['canon/world-charter.md', 'canon/charter.md']
+        .map(path => hits.find(hit => hit.path === path))
+        .find(hit => hit !== undefined)
+      const firstMarkdown = preferred ?? hits.find(hit => hit.path.endsWith('.md'))
+      if (firstMarkdown !== undefined) void props.openPath(firstMarkdown.path)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [activePath, projectId, props.openDocuments.length, props.openPath, props.projects])
 
   useEffect(() => {
     const normalized = query.trim()
@@ -470,7 +498,11 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
 
     <section className={css.editorPane}>
       {document === undefined ? <div className={css.emptyEditor}>
-        <span aria-hidden="true">◇</span><h2>{props.t('files')}</h2><p>{props.t('autosave')}</p>
+        <span aria-hidden="true">≡</span>
+        <h2>选择一份设定开始编辑</h2>
+        <p>从左侧文件树打开 Markdown，或新建一份设定文档。</p>
+        <button type="button" onClick={() => { void createDocument() }}>创建并打开新文档</button>
+        <small>{props.t('autosave')}</small>
       </div> : <>
         <nav className={css.documentTabs} aria-label={props.t('openDocuments')}>
           {props.openDocuments.map(item => <div key={item.document.path} data-active={item.document.path === activePath || undefined}>
@@ -484,10 +516,9 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
           <div><strong>{basename(document.document.path)}</strong><small>{document.document.path}</small></div>
           <div className={css.editorActions}>
             <span data-state={document.saveState}>{props.t(document.saveState === 'error' ? 'error' : document.saveState)}</span>
-            {(['edit', 'object', 'preview', 'split'] as const).map(mode => <button
-              type="button" key={mode} data-active={viewMode === mode || undefined}
-              onClick={() => { setViewMode(mode) }}
-            >{props.t(mode)}</button>)}
+            <MarkdownWorkspaceModeSwitch value={viewMode} onChange={setViewMode} labels={{
+              edit: props.t('edit'), preview: props.t('preview'), split: props.t('split'),
+            }} />
             <button type="button" onClick={() => { void props.saveDocument() }}>{props.t('save')}</button>
           </div>
         </header>
@@ -497,14 +528,18 @@ export function CanonWorkbench(props: CanonWorkbenchProps) {
           <button type="button" onClick={() => { void props.retryLocalVersion() }}>{props.t('overwrite')}</button>
         </div>}
         <div className={css.documentSurface} data-mode={viewMode}>
-          {viewMode !== 'preview' && viewMode !== 'object' && <MarkdownEditor
+          {viewMode !== 'preview' && <MarkdownWorkspaceEditor
             value={document.content}
             onChange={props.editDocument}
             onSave={() => { void props.saveDocument() }}
             ariaLabel={`${props.t('edit')}: ${document.document.path}`}
+            className={css.editorSurface}
           />}
-          {viewMode === 'object' && <CanonObjectView path={document.document.path} content={document.content} explicitKind={document.document.objectKind} documentId={document.document.id} revision={document.document.revision} tags={document.document.tags} t={props.t} />}
-          {(viewMode === 'preview' || viewMode === 'split') && <article className={css.preview}><MarkdownText text={document.content} /></article>}
+          {(viewMode === 'preview' || viewMode === 'split') && <MarkdownWorkspacePreview
+            content={document.content}
+            className={css.preview}
+            ariaLabel={`${props.t('preview')}: ${document.document.path}`}
+          />}
         </div>
       </>}
     </section>

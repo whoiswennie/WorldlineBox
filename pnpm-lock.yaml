@@ -3417,6 +3417,27 @@ importers:
 
   packages/client/ui-primitives:
     dependencies:
+      '@codemirror/autocomplete':
+        specifier: ^6.20.3
+        version: 6.20.3
+      '@codemirror/commands':
+        specifier: ^6.11.0
+        version: 6.11.0
+      '@codemirror/lang-markdown':
+        specifier: ^6.5.2
+        version: 6.5.2
+      '@codemirror/language':
+        specifier: ^6.12.4
+        version: 6.12.4
+      '@codemirror/search':
+        specifier: ^6.7.1
+        version: 6.7.1
+      '@codemirror/state':
+        specifier: ^6.7.1
+        version: 6.7.1
+      '@codemirror/view':
+        specifier: ^6.43.9
+        version: 6.43.9
       '@shikijs/langs':
         specifier: ^4.3.1
         version: 4.4.3
@@ -10289,6 +10310,9 @@ importers:
 
   packages/worldline/compiler:
     dependencies:
+      js-yaml:
+        specifier: ^4.2.0
+        version: 4.3.1
       zod:
         specifier: ^4.4.3
         version: 4.4.3
