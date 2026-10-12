@@ -1,0 +1,166 @@
+# Build & Packaging
+
+## Basic commands
+
+```bash
+npm run package          # package the app (includes build) → out/WorldlineBox-<platform>-<arch>/
+npm run make             # build installers → out/make/ (macOS dmg / Windows zip; Windows setup built with Inno Setup)
+npm run verify:package   # verify the packaged output (ASAR, native modules, media)
+```
+
+`package`/`make` run pre-hooks that ensure the media dependencies are available:
+
+- Media binaries (`media-binaries ensure` — recover from the pinned release when needed, then verify provenance and hashes)
+- ufbx WASM (`verify-ufbx-wasm` — hash-locked via `scripts/ufbx-wasm-lock.json`)
+- Packaged output (`verify:package`: ASAR, better_sqlite3.node, Host utilities)
+
+`package`/`make` update the dev Electron binary — run `npm run rebuild:native` afterwards.
+
+If the media executables are missing or do not match the promoted manifest, the
+hook automatically downloads and verifies the pinned `WorldlineBox-Build` release.
+Run the same recovery explicitly with:
+
+```bash
+npm run media:ensure
+```
+
+Set `WORLDLINEBOX_MEDIA_AUTO_ACQUIRE=0` in an offline environment to make a failed
+verification stop immediately instead of downloading.
+
+## Release pipeline (release:local)
+
+One command for the full flow:
+
+```bash
+npm run release:local
+```
+
+Phases: `verify` → `media` → `package` → `e2e` → `make` → `checksums`
+
+| Phase | What it does |
+| --- | --- |
+| verify | `rebuild:native` + `verify:mainline` (same gates as CI) |
+| media | download the controlled media bundle (`media:acquire`) + verify |
+| package | `electron-forge package` + `verify:package` |
+| e2e | packaged startup tests (`test:e2e:packaged`) |
+| make | build installers |
+| checksums | SHA-256 manifests (versioned header) |
+
+Skip slow phases with `--skip-verify` / `--skip-media` / `--skip-e2e`. Run one phase with `npm run release:<phase>` (the e2e phase is `npm run release:e2e:packaged`).
+
+```mermaid
+flowchart LR
+    C[Change] --> L[Lint + typecheck]
+    L --> U[Unit tests]
+    U --> W[Worker integration]
+    W --> E[Electron E2E]
+    E --> P[Package + verify]
+    P --> PE[Packaged E2E]
+    PE --> R[Make release artifacts]
+```
+
+### Local trial without media promotion
+
+The media bundle must be "promoted" (built and registered in `bundle-lock.json` with an immutable URL + hashes) before the formal pipeline runs. If local artifacts already match `source-lock.json`, you can skip provenance:
+
+```bash
+WORLDLINEBOX_MEDIA_SKIP_PROVENANCE=1 npm run release:local -- --skip-verify --skip-media
+```
+
+> `SKIP_PROVENANCE` is for local trials only. Formal releases must go through promotion.
+
+Another local path is `--build-media-locally`: build the full media bundle on this machine with vcpkg (`scripts/media-build/*`, takes 1-3 hours) and let the gates use the local artifacts:
+
+```bash
+npm run release:local -- --skip-verify --build-media-locally
+```
+
+### Versions
+
+- Version lives in `package.json` (semver)
+- Bump with `npm version patch|minor|major` (tags automatically)
+- Every pipeline run prints `WorldlineBox v<version>`; checksum manifests carry the version header
+
+### Platforms
+
+`forge.config.ts` enforces **native-platform builds** (allowlist `darwin-arm64` / `win32-x64`) — media binaries, ufbx and native modules are platform-specific; cross-packaging is not supported. Windows runs the same pipeline on a Windows host.
+
+### Windows installer (Inno Setup)
+
+The Windows installer `WorldlineBoxSetup.exe` is built with **Inno Setup 6** (script `assets/inno/worldlineboxsetup.iss`, outputting to `out/make/inno/WorldlineBoxSetup.exe`):
+
+#### 1. Install Inno Setup compiler dependency (ISCC.exe)
+
+Running `npm run make:inno` requires `ISCC.exe`, which can be prepared in one of two ways:
+
+- **No admin rights required (recommended)**:
+  Download `Tools.InnoSetup` from NuGet, extract it, and place the directory containing `ISCC.exe` in `%LOCALAPPDATA%\WorldlineBoxTools\inno\tools` (the build script looks here by default).
+- **Official installer**:
+  Install official Inno Setup 6 and set environment variable `WORLDLINEBOX_INNO_TOOLS` to the absolute path containing `ISCC.exe` (e.g., `C:\Program Files (x86)\Inno Setup 6`), or add that folder to system `PATH`.
+
+#### 2. Build commands
+
+```bash
+# 1. Package the application first (generates out/WorldlineBox-win32-x64)
+npm run package
+
+# 2. Run the Inno installer build script
+npm run make:inno
+```
+
+- Multilingual: language selection dialog on launch (defaults to system language), English + Simplified Chinese
+- Wizard with install-path selection (default `C:\Program Files\WorldlineBox`), Start Menu / desktop shortcuts
+- Per-machine install (UAC elevation), automatic uninstaller `unins000.exe` and Apps & Features entry
+
+> History: Squirrel (no wizard / no path selection / uninstall leftovers) and WiX MSI (MSI language switching requires a custom bootstrapper, confirmed by the community) were both tried and rolled back — see the [Windows packaging development log](https://github.com/whoiswennie/WorldlineBox/blob/dev/docs/internal/development/2026-08-08-windows-packaging-and-squirrel-installer-development-log.md).
+
+## Media binary promotion (WorldlineBox-Build)
+
+Media bundles (FFmpeg/OpenImageIO) are distributed via GitHub Releases on the
+[WorldlineBox-Build](https://github.com/dolag233/WorldlineBox-Build) repo (immutable URL +
+SHA-256); main-repo `release:media` downloads and verifies them:
+
+1. **Build once** (not in CI):
+   - `ffmpeg/ffprobe`: BtbN LGPL builds (`registry.npmmirror.com/-/binary/ffmpeg-builds/`
+     `ffmpeg-<ver>-win32-x64-lgpl.tar.xz`, or the macOS variant), LGPL-only (no GPL markers)
+   - `oiiotool`: `scripts/media-build/build-oiiotool-win32.ps1` (Windows) /
+     `darwin-arm64.sh` (macOS) — vcpkg build (pinned toolchain + registry commit)
+2. **Package and upload**:
+   ```bash
+   # assemble zip (platform layer ffmpeg/<platform>/…) + sha256
+   # upload (create/reuse Release media-v<ver> + assets + publish):
+   node scripts/release/publish-media-bundle.mjs --platform win32-x64 \
+     --version v0.1.1 --zip artifacts/media-binaries/worldlinebox-media-win32-x64.zip
+   ```
+3. **Promote in main repo**: set the platform entry in
+   `resources/media-binaries/bundle-lock.json` to
+   `{status: ready, url, sha256, size, manifestSha256}` (script prints the entry).
+
+> Versioning: bundle versions are independent of app versions (`media-vX.Y.Z`);
+> Releases use GitHub Immutable Releases (assets immutable, tags non-reusable).
+
+## Browser extension
+
+The extension ships inside the app bundle (`Resources/extension`), not via a store:
+
+```bash
+npm run extension:build   # builds dist/extension
+```
+
+`prePackage` rebuilds it automatically. Manual loading instructions are in the [user guide](../user-guide/installation.md).
+
+## Signing
+
+- **macOS**: packages are ad-hoc signed (`identity: '-'` with keychain identity validation off; otherwise the lookup fails and is skipped, and Gatekeeper still reports the app as damaged). Ad-hoc signatures do not share a team identifier, so the entitlements must allow loading bundled frameworks; otherwise the system kills the app at launch. This does not clear the unidentified-developer prompt; the first launch needs right-click Open. Swap the identity for a Developer ID and add `osxNotarize` once you have a certificate
+- **Windows**: currently unsigned (SmartScreen warning). For formal releases, SignPath free signing (same as VSCodium) or a commercial certificate
+
+## Release prerequisites (in progress)
+
+1. **Media promotion**: toolchain repo (Release attachments + `versions.json`) to remove the `SKIP_PROVENANCE` need
+2. **Windows native validation**: same pipeline on a Windows host + install/uninstall journey
+3. **Signing upgrade**: SignPath application / Apple Developer account
+4. **CI/CD**: local CICD (2026-08-09 decision: main repo dropped GitHub Actions;
+   each platform runs `npm run release:local`; the browser-extension repo keeps
+   Actions for release publishing). See [local CICD](https://github.com/whoiswennie/WorldlineBox/blob/dev/docs/internal/development/local-cicd.md).
+
+See the research doc for details.

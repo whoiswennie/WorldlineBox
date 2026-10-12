@@ -1,0 +1,1385 @@
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { LibraryService, SUPPORTED_SCHEMA_VERSION } from '../../src/worker/library-service';
+
+const temporaryRoots: string[] = [];
+const require = createRequire(import.meta.url);
+
+// LibraryService holds SQLite connections and recursive fs watchers; on
+// Windows those open handles block rm of the temp tree (POSIX unlinks open
+// files, which is why the leak is invisible on macOS). Always close first.
+const services: LibraryService[] = [];
+
+function newService(
+  ...args: ConstructorParameters<typeof LibraryService>
+): LibraryService {
+  const service = new LibraryService(...args);
+  services.push(service);
+  return service;
+}
+
+interface TestDatabaseConnection {
+  close(): void;
+  prepare(source: string): {
+    all(...parameters: unknown[]): unknown[];
+    get(...parameters: unknown[]): unknown;
+    run(...parameters: unknown[]): unknown;
+  };
+  pragma(source: string): unknown;
+}
+
+const TestDatabase = require('better-sqlite3') as new (filename: string) => TestDatabaseConnection;
+
+function temporaryRoot(): string {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-linked-test-'));
+  temporaryRoots.push(root);
+  return root;
+}
+
+afterEach(() => {
+  for (const service of services.splice(0)) service.closeAll();
+  for (const root of temporaryRoots.splice(0)) {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+describe('Linked folders schema migration', () => {
+  it('migrates a v3 library to v4 with a linked_folders table and linked asset columns', () => {
+    const root = temporaryRoot();
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'Linked', selectedParentPath: root });
+    service.closeAll();
+
+    service.openLibrary(created.libraryPath);
+
+    const database = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+    try {
+    expect(database.pragma('user_version')).toEqual([{ user_version: SUPPORTED_SCHEMA_VERSION }]);
+
+      const linkedFoldersTable = database
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'linked_folders'",
+        )
+        .all();
+      expect(linkedFoldersTable).toEqual([{ name: 'linked_folders' }]);
+
+      const assetColumns = (
+        database.prepare('PRAGMA table_info(assets)').all() as Array<{ name: string }>
+      ).map((column) => column.name);
+      expect(assetColumns).toContain('linked_folder_id');
+    } finally {
+      database.close();
+    }
+    service.closeAll();
+  });
+});
+
+describe('Linked folder import', () => {
+  it('imports a linked folder and registers its files as linked assets', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    writeFileSync(path.join(sourceRoot, 'b.png'), 'bbbb');
+    mkdirSync(path.join(sourceRoot, 'sub'));
+    writeFileSync(path.join(sourceRoot, 'sub', 'c.png'), 'ccccc');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'Linked', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+
+    expect(linked.status).toBe('available');
+    expect(linked.assetCount).toBe(3);
+    expect(linked.displayName).toBe('source');
+
+    const assets = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    expect(assets.map((asset) => asset.relativeFilePath).sort()).toEqual([
+      'a.png',
+      'b.png',
+      'sub/c.png',
+    ]);
+
+    const database = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+    try {
+      const linkedRows = database
+        .prepare(
+          "SELECT location_kind, linked_folder_id FROM assets WHERE location_kind = 'linked'",
+        )
+        .all() as Array<{ location_kind: string; linked_folder_id: string }>;
+      expect(linkedRows).toHaveLength(3);
+      expect(linkedRows.every((row) => row.linked_folder_id === linked.folderId)).toBe(true);
+    } finally {
+      database.close();
+    }
+    service.closeAll();
+  });
+
+  it('WorldlineBox-a9vh: exposes virtual child folders and non-recursive browse', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    mkdirSync(path.join(sourceRoot, 'notes'));
+    writeFileSync(path.join(sourceRoot, 'notes', 'b.png'), 'bbb');
+    mkdirSync(path.join(sourceRoot, 'notes', '2024'));
+    writeFileSync(path.join(sourceRoot, 'notes', '2024', 'c.png'), 'ccc');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'LinkedTree', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+
+    const listed = service.listLinkedFolders(created.libraryId);
+    expect(listed.map((folder) => folder.relativePath).sort()).toEqual(['', 'notes', 'notes/2024']);
+    const listedRoot = listed.find((folder) => folder.relativePath === '');
+    expect(listedRoot?.createdAt).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
+    const notes = listed.find((folder) => folder.relativePath === 'notes');
+    expect(notes?.parentFolderId).toBe(linked.folderId);
+    expect(notes?.folderId).toBe(`lfv:${linked.folderId}/notes`);
+    expect(notes?.createdAt).toBeUndefined();
+
+    const cards = service.listFolderBrowseEntries({
+      libraryId: created.libraryId,
+      parentFolderId: linked.folderId,
+    });
+    expect(cards.map((entry) => entry.name)).toEqual(['notes']);
+    expect(cards[0]?.locationKind).toBe('linked');
+    expect(cards[0]?.directAssetCount).toBe(1);
+    expect(cards[0]?.recursiveAssetCount).toBe(2);
+    expect(cards[0]?.childFolderCount).toBe(1);
+
+    const rootDirect = service.listAssets({
+      libraryId: created.libraryId,
+      folderId: linked.folderId,
+      recursive: false,
+    });
+    expect(rootDirect.map((asset) => asset.relativeFilePath)).toEqual(['a.png']);
+
+    const notesDirect = service.searchAssets({
+      libraryId: created.libraryId,
+      scope: { kind: 'folder', folderId: notes!.folderId, recursive: false },
+      limit: 50,
+      offset: 0,
+    });
+    expect(notesDirect.items.map((item) => item.relativeFilePath)).toEqual(['notes/b.png']);
+
+    const notesRecursive = service.searchAssets({
+      libraryId: created.libraryId,
+      scope: { kind: 'folder', folderId: notes!.folderId, recursive: true },
+      limit: 50,
+      offset: 0,
+    });
+    expect(notesRecursive.items.map((item) => item.relativeFilePath).sort()).toEqual([
+      'notes/2024/c.png',
+      'notes/b.png',
+    ]);
+
+    service.closeAll();
+  });
+
+  it('WorldlineBox-c643c2: linked directories support create, rename, nested import and copy', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    const incomingRoot = path.join(root, 'incoming');
+    mkdirSync(path.join(sourceRoot, 'existing'), { recursive: true });
+    mkdirSync(incomingRoot);
+    writeFileSync(path.join(sourceRoot, 'existing', 'art.png'), 'art');
+    writeFileSync(path.join(incomingRoot, 'new.png'), 'new');
+
+    const service = newService();
+    const library = service.createLibrary({ displayName: 'LinkedDirectories', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: library.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+
+    const created = service.createLinkedFolderDirectory({
+      libraryId: library.libraryId,
+      linkedFolderId: linked.folderId,
+      relativePath: '',
+      name: 'empty',
+    });
+    expect(created.relativePath).toBe('empty');
+    expect(existsSync(path.join(sourceRoot, 'empty'))).toBe(true);
+    expect(service.listLinkedFolders(library.libraryId).map((folder) => folder.relativePath)).toContain('empty');
+    expect(
+      service.listFolderBrowseEntries({
+        libraryId: library.libraryId,
+        parentFolderId: linked.folderId,
+      }).map((entry) => entry.name),
+    ).toEqual(['empty', 'existing']);
+
+    const imported = service.prepareOrExecuteImport({
+      libraryId: library.libraryId,
+      targetFolderId: created.folderId,
+      sourceKind: 'files',
+      sourcePaths: [path.join(incomingRoot, 'new.png')],
+    });
+    if ('importId' in imported) throw new Error('Unexpected linked import conflict.');
+    expect(imported.importedCount).toBe(1);
+    expect(existsSync(path.join(sourceRoot, 'empty', 'new.png'))).toBe(true);
+
+    const renamed = service.renameLinkedFolderDirectory({
+      libraryId: library.libraryId,
+      linkedFolderId: linked.folderId,
+      relativePath: 'existing',
+      newName: 'renamed',
+    });
+    expect(renamed.folderId).toBe(`lfv:${linked.folderId}/renamed`);
+    expect(existsSync(path.join(sourceRoot, 'existing'))).toBe(false);
+    expect(readFileSync(path.join(sourceRoot, 'renamed', 'art.png'), 'utf8')).toBe('art');
+    expect(
+      service.listAssets({ libraryId: library.libraryId, folderId: renamed.folderId, recursive: true })
+        .map((asset) => asset.relativeFilePath),
+    ).toEqual(['renamed/art.png']);
+
+    const rootRenamed = service.renameLinkedFolderDirectory({
+      libraryId: library.libraryId,
+      linkedFolderId: linked.folderId,
+      relativePath: '',
+      newName: 'renamed-source',
+    });
+    expect(rootRenamed.folderId).toBe(linked.folderId);
+    expect(rootRenamed.name).toBe('renamed-source');
+    expect(existsSync(path.join(root, 'renamed-source', 'renamed', 'art.png'))).toBe(true);
+    expect(service.listLinkedFolders(library.libraryId).find((folder) => folder.folderId === linked.folderId)?.displayName)
+      .toBe('renamed-source');
+
+    // The virtual hierarchy is derived from the external directory, so the
+    // empty/renamed nodes must survive a full library close and reopen too.
+    service.closeAll();
+    service.openLibrary(library.libraryPath);
+    expect(service.listLinkedFolders(library.libraryId).map((folder) => folder.relativePath))
+      .toEqual(['', 'empty', 'renamed']);
+    expect(
+      service.listFolderBrowseEntries({
+        libraryId: library.libraryId,
+        parentFolderId: linked.folderId,
+      }).map((entry) => entry.name),
+    ).toEqual(['empty', 'renamed']);
+
+    service.closeAll();
+  });
+
+  it('WorldlineBox-l1oi: header-probed image dimensions are available before thumbnails', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(
+      path.join(sourceRoot, 'pixel.png'),
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      ),
+    );
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'LinkedDims', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+    const cataloged = service.listAssets({
+      libraryId: created.libraryId,
+      folderId: linked.folderId,
+      recursive: false,
+    });
+    expect(cataloged).toHaveLength(1);
+    expect(cataloged[0]?.thumbnailStatus).not.toBe('ready');
+    // Linked import returns after catalog commit. Width/height come from the
+    // same visible-window probe browse uses, not from the import mutation.
+    const probed = service.persistVisibleWindowImageDimensions(
+      created.libraryId,
+      [cataloged[0]!.assetId],
+    );
+    expect(probed).toEqual([{ assetId: cataloged[0]!.assetId, width: 1, height: 1 }]);
+    const assets = service.listAssets({
+      libraryId: created.libraryId,
+      folderId: linked.folderId,
+      recursive: false,
+    });
+    expect(assets[0]?.width).toBe(1);
+    expect(assets[0]?.height).toBe(1);
+    expect(assets[0]?.thumbnailStatus).not.toBe('ready');
+
+    service.closeAll();
+  });
+
+  it('refresh creates an external-change revision when a linked asset is overwritten externally', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'Linked', selectedParentPath: root });
+    service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+
+    const before = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    expect(before).toHaveLength(1);
+    const originalAsset = before[0]!;
+    const originalRevisionId = originalAsset.currentRevisionId;
+
+    // External overwrite of the linked source file (not via WorldlineBox).
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaaaaa');
+
+    const refresh = service.refreshManagedAssets(created.libraryId);
+    expect(refresh.changedCount).toBe(1);
+    expect(refresh.missingCount).toBe(0);
+
+    const after = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    expect(after).toHaveLength(1);
+    expect(after[0]!.assetId).toBe(originalAsset.assetId);
+    expect(after[0]!.currentRevisionId).not.toBe(originalRevisionId);
+    expect(after[0]!.availability).toBe('available');
+    expect(after[0]!.byteSize).toBe(6);
+
+    service.closeAll();
+  });
+
+  it('flips a linked folder to offline and marks its assets missing when the source root is removed', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    writeFileSync(path.join(sourceRoot, 'b.png'), 'bbbb');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'Linked', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+
+    rmSync(sourceRoot, { recursive: true, force: true });
+
+    const refresh = service.refreshManagedAssets(created.libraryId);
+    expect(refresh.missingCount).toBe(2);
+
+    const assets = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    expect(assets.every((asset) => asset.availability === 'missing')).toBe(true);
+
+    const database = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+    try {
+      const folder = database
+        .prepare('SELECT status FROM linked_folders WHERE folder_id = ?')
+        .get(linked.folderId) as { status: string };
+      expect(folder.status).toBe('offline');
+    } finally {
+      database.close();
+    }
+    service.closeAll();
+  });
+
+  it('rejects a NAS library when a linked root is disconnected', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'computer-a-assets');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+
+    const service = newService({ storageKindOverrideForTests: 'network' });
+    const created = service.createLibrary({ displayName: 'NasLinked', selectedParentPath: root });
+    service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+    service.closeAll();
+    rmSync(sourceRoot, { recursive: true, force: true });
+
+    expect(() => service.openLibrary(created.libraryPath)).toThrowError(
+      expect.objectContaining({
+        code: 'LINKED_FOLDER_UNAVAILABLE',
+        reason: 'LINKED_FOLDER_NOT_FOUND',
+      }),
+    );
+    service.closeAll();
+  });
+
+  it('distinguishes a foreign device hint when the same path still exists', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'computer-a-assets');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+
+    const service = newService({ storageKindOverrideForTests: 'network' });
+    const created = service.createLibrary({ displayName: 'NasLinked', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: created.libraryId, sourceRootPath: sourceRoot });
+    service.closeAll();
+
+    const database = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+    database.prepare('UPDATE linked_folders SET source_device_hint = ?').run('foreign-device');
+    database.close();
+
+    expect(() => service.openLibrary(created.libraryPath)).toThrowError(
+      expect.objectContaining({
+        code: 'LINKED_FOLDER_UNAVAILABLE',
+        reason: 'LINKED_FOLDER_FOREIGN_DEVICE',
+      }),
+    );
+  });
+
+  it('fails closed when an older NAS linked folder has no device hint', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'legacy-assets');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+
+    const service = newService({ storageKindOverrideForTests: 'network' });
+    const created = service.createLibrary({ displayName: 'LegacyNasLinked', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: created.libraryId, sourceRootPath: sourceRoot });
+    service.closeAll();
+
+    const database = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+    database.prepare('UPDATE linked_folders SET source_device_hint = NULL').run();
+    database.close();
+
+    expect(() => service.openLibrary(created.libraryPath)).toThrowError(
+      expect.objectContaining({ code: 'LINKED_FOLDER_UNAVAILABLE' }),
+    );
+  });
+
+  it('rejects a replacement directory at the same NAS path', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'replaceable-assets');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+
+    const service = newService({ storageKindOverrideForTests: 'network' });
+    const created = service.createLibrary({ displayName: 'NasLinked', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: created.libraryId, sourceRootPath: sourceRoot });
+    service.closeAll();
+
+    rmSync(sourceRoot, { recursive: true, force: true });
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'replacement.png'), 'replacement');
+
+    expect(() => service.openLibrary(created.libraryPath)).toThrowError(
+      expect.objectContaining({
+        code: 'LINKED_FOLDER_UNAVAILABLE',
+        reason: 'LINKED_FOLDER_FOREIGN_DEVICE',
+      }),
+    );
+  });
+
+  it('preserves permission failures instead of reporting a disconnected share', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'protected-assets');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+
+    const service = newService({ storageKindOverrideForTests: 'network' });
+    const created = service.createLibrary({ displayName: 'NasLinked', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: created.libraryId, sourceRootPath: sourceRoot });
+    service.closeAll();
+
+    const deniedLstat = () => {
+      const error = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      throw error;
+    };
+    const reopened = newService({
+      storageKindOverrideForTests: 'network',
+      linkedRootLstat: deniedLstat,
+    });
+    expect(() => reopened.openLibrary(created.libraryPath)).toThrowError(
+      expect.objectContaining({
+        code: 'LINKED_FOLDER_UNAVAILABLE',
+        reason: 'PERMISSION_DENIED',
+      }),
+    );
+  });
+
+  it('relinks an offline linked folder to a new root and restores assets that exist there', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    writeFileSync(path.join(sourceRoot, 'b.png'), 'bbbb');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'Linked', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+    const originalA = service
+      .listAssets({ libraryId: created.libraryId, recursive: true })
+      .find((asset) => asset.relativeFilePath === 'a.png')!;
+
+    // Source root is gone; user relocates to a new root that has a.png (different
+    // content) but not b.png.
+    rmSync(sourceRoot, { recursive: true, force: true });
+    service.refreshManagedAssets(created.libraryId);
+
+    const newRoot = path.join(root, 'relocated');
+    mkdirSync(newRoot);
+    writeFileSync(path.join(newRoot, 'a.png'), 'aaa-restored');
+
+    const result = service.relinkMissingFolder({
+      libraryId: created.libraryId,
+      folderId: linked.folderId,
+      newRootPath: newRoot,
+    });
+
+    expect(result.status).toBe('available');
+
+    const assets = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    const aAsset = assets.find((asset) => asset.relativeFilePath === 'a.png')!;
+    const bAsset = assets.find((asset) => asset.relativeFilePath === 'b.png')!;
+    expect(aAsset.availability).toBe('available');
+    expect(aAsset.currentRevisionId).not.toBe(originalA.currentRevisionId);
+    expect(aAsset.byteSize).toBe('aaa-restored'.length);
+    expect(bAsset.availability).toBe('missing');
+
+    service.closeAll();
+  });
+
+  it('applies default ignore rules when importing a linked folder', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    mkdirSync(path.join(sourceRoot, '.git'));
+    writeFileSync(path.join(sourceRoot, '.git', 'config'), 'x');
+    mkdirSync(path.join(sourceRoot, 'node_modules'));
+    writeFileSync(path.join(sourceRoot, 'node_modules', 'pkg.json'), '{}');
+    writeFileSync(path.join(sourceRoot, '.DS_Store'), 'x');
+    writeFileSync(path.join(sourceRoot, 'Thumbs.db'), 'x');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'Linked', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+
+    expect(linked.assetCount).toBe(1);
+    const assets = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    expect(assets.map((asset) => asset.relativeFilePath)).toEqual(['a.png']);
+    service.closeAll();
+  });
+
+  it('does not follow or register symlinks inside a linked root', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    // A symlink inside the linked root that points outside the root must not be
+    // followed and must not become an asset.
+    writeFileSync(path.join(root, 'secret.png'), 'secret');
+    symlinkSync(path.join(root, 'secret.png'), path.join(sourceRoot, 'link.png'));
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'Linked', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: created.libraryId, sourceRootPath: sourceRoot });
+
+    const assets = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    expect(assets.map((asset) => asset.relativeFilePath)).toEqual(['a.png']);
+    service.closeAll();
+  });
+
+  it('persists editable rules, preserves hidden asset identity and metadata, and indexes newly included files', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(path.join(sourceRoot, 'node_modules'), { recursive: true });
+    writeFileSync(path.join(sourceRoot, 'keep.png'), 'keep');
+    writeFileSync(path.join(sourceRoot, 'node_modules', 'later.png'), 'later');
+    const service = newService();
+    const library = service.createLibrary({ displayName: 'Rules', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: sourceRoot });
+    const original = service.listAssets({ libraryId: library.libraryId, folderId: linked.folderId, recursive: true })[0]!;
+    service.setAssetMetadata({ libraryId: library.libraryId, assetId: original.assetId, expectedVersion: 0, description: 'Preserved' });
+
+    const defaults = service.getLinkedFolderRules({ libraryId: library.libraryId, folderId: linked.folderId });
+    const hidden = service.setLinkedFolderRules({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      rules: [...defaults, { ruleId: 'test-exclude-png', action: 'exclude', target: 'extension', pattern: '.png', enabled: true }],
+    });
+    expect(hidden.hiddenCount).toBe(1);
+    expect(service.listAssets({ libraryId: library.libraryId, folderId: linked.folderId, recursive: true })).toEqual([]);
+    expect(service.listLinkedFolders(library.libraryId)[0]!.assetCount).toBe(0);
+    expect(service.searchAssets({ libraryId: library.libraryId, query: null }).items).toEqual([]);
+
+    const restored = service.setLinkedFolderRules({ libraryId: library.libraryId, folderId: linked.folderId, rules: [] });
+    expect(restored.restoredCount).toBe(1);
+    const visible = service.listAssets({ libraryId: library.libraryId, folderId: linked.folderId, recursive: true });
+    expect(visible.map((asset) => asset.relativeFilePath).sort()).toEqual(['keep.png', 'node_modules/later.png']);
+    expect(visible.find((asset) => asset.relativeFilePath === 'keep.png')!.assetId).toBe(original.assetId);
+    expect(service.getAssetMetadata({ libraryId: library.libraryId, assetId: original.assetId }).description).toBe('Preserved');
+    service.closeAll();
+  });
+
+  // WorldlineBox-50c466 audit §5.2: an unusable rule pattern is a bad name, not an
+  // import decision — the dialog lets the user type any text.
+  it('rejects an unusable linked-folder rule pattern with a name error', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'rules-source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'a');
+    const service = newService();
+    const library = service.createLibrary({ displayName: 'RulePattern', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: sourceRoot });
+
+    const rejection = (pattern: string, target: 'path' | 'filename' | 'extension') => {
+      try {
+        service.setLinkedFolderRules({
+          libraryId: library.libraryId,
+          folderId: linked.folderId,
+          rules: [{ ruleId: 'probe', action: 'exclude', target, pattern, enabled: true }],
+        });
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    };
+
+    // Empty pattern, a path separator in a filename rule, and an escaping path.
+    expect(rejection('   ', 'filename')).toMatchObject({ code: 'INVALID_FOLDER_NAME' });
+    expect(rejection('sub/dir', 'filename')).toMatchObject({ code: 'INVALID_FOLDER_NAME' });
+    expect(rejection('../escape', 'path')).toMatchObject({ code: 'INVALID_FOLDER_NAME' });
+    service.closeAll();
+  });
+
+  it('copies managed assets into the real linked root without moving their managed source', () => {    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    const importRoot = path.join(root, 'incoming');
+    mkdirSync(linkedRoot);
+    mkdirSync(importRoot);
+    const source = path.join(importRoot, 'managed.png');
+    writeFileSync(source, 'managed bytes');
+    const service = newService();
+    const library = service.createLibrary({ displayName: 'Copy', selectedParentPath: root });
+    const imported = service.prepareOrExecuteImport({
+      libraryId: library.libraryId, sourceKind: 'files', sourcePaths: [source],
+    });
+    if ('importId' in imported) throw new Error('Unexpected import conflict.');
+    const managed = imported.assets[0]!;
+    const linked = service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+    const result = service.copyAssetsToLinkedFolder({
+      libraryId: library.libraryId, folderId: linked.folderId, assetIds: [managed.assetId], conflictStrategy: 'keep-both',
+    });
+    expect(result.copiedCount).toBe(1);
+    expect(readFileSync(path.join(linkedRoot, 'managed.png'), 'utf8')).toBe('managed bytes');
+    expect(existsSync(path.join(library.libraryPath, 'Assets', 'managed.png'))).toBe(true);
+    expect(result.assets[0]!.locationKind).toBe('linked');
+    const nested = service.createLinkedFolderDirectory({
+      libraryId: library.libraryId,
+      linkedFolderId: linked.folderId,
+      relativePath: '',
+      name: 'nested',
+    });
+    const nestedResult = service.copyAssetsToLinkedFolder({
+      libraryId: library.libraryId,
+      folderId: nested.linkedFolderId,
+      relativePath: nested.relativePath,
+      assetIds: [managed.assetId],
+      conflictStrategy: 'keep-both',
+    });
+    expect(nestedResult.copiedCount).toBe(1);
+    expect(readFileSync(path.join(linkedRoot, 'nested', 'managed.png'), 'utf8')).toBe('managed bytes');
+    service.closeAll();
+  });
+
+  it('copies a linked asset into a managed folder without treating its source as a duplicate', () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'reference.png'), 'reference bytes');
+
+    const service = newService();
+    const library = service.createLibrary({ displayName: 'LinkedToManaged', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: library.libraryId,
+      sourceRootPath: linkedRoot,
+    });
+    const sourceAsset = service.listAssets({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      recursive: true,
+    })[0]!;
+    const managedFolder = service.createManagedFolder({
+      libraryId: library.libraryId,
+      name: 'References',
+    });
+
+    const result = service.copyAssets({
+      libraryId: library.libraryId,
+      assetIds: [sourceAsset.assetId],
+      targetFolderId: managedFolder.folderId,
+      conflictStrategy: 'keep-both',
+    });
+
+    expect(result.copiedCount).toBe(1);
+    expect(result.skippedCount).toBe(0);
+    expect(result.operationId).toBeNull();
+    expect(result.assets[0]?.locationKind).toBe('managed');
+    expect(readFileSync(path.join(linkedRoot, 'reference.png'), 'utf8')).toBe('reference bytes');
+    expect(
+      readFileSync(
+        path.join(library.libraryPath, 'Assets', 'References', 'reference.png'),
+        'utf8',
+      ),
+    ).toBe('reference bytes');
+
+    service.closeAll();
+  });
+
+  it('converts a linked folder to managed while preserving identity, metadata and the external source', () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'source');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'art.png'), 'art bytes');
+    const service = newService();
+    const library = service.createLibrary({ displayName: 'Convert', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+    const before = service.listAssets({ libraryId: library.libraryId, folderId: linked.folderId, recursive: true })[0]!;
+    service.setAssetMetadata({ libraryId: library.libraryId, assetId: before.assetId, expectedVersion: 0, description: 'Stable description', favorite: true });
+
+    const converted = service.convertLinkedFolderToManaged({ libraryId: library.libraryId, folderId: linked.folderId });
+    expect(converted.convertedCount).toBe(1);
+    expect(converted.assets[0]!.assetId).toBe(before.assetId);
+    expect(converted.assets[0]!.locationKind).toBe('managed');
+    expect(service.getAssetMetadata({ libraryId: library.libraryId, assetId: before.assetId })).toMatchObject({ description: 'Stable description', favorite: true });
+    expect(readFileSync(path.join(linkedRoot, 'art.png'), 'utf8')).toBe('art bytes');
+    expect(readFileSync(path.join(library.libraryPath, 'Assets', converted.assets[0]!.relativeFilePath), 'utf8')).toBe('art bytes');
+    expect(service.listLinkedFolders(library.libraryId)).toEqual([]);
+    service.closeAll();
+  });
+
+  it('recovers a conversion interrupted after filesystem placement without removing the link', () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'crash-source');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'art.png'), 'art bytes');
+    const interrupted = newService({ failAt: 'crash-linked-convert-after-filesystem' });
+    const library = interrupted.createLibrary({ displayName: 'Crash Convert', selectedParentPath: root });
+    const linked = interrupted.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+    expect(() => interrupted.convertLinkedFolderToManaged({
+      libraryId: library.libraryId, folderId: linked.folderId,
+    })).toThrowError('IMPORT_APPLY_FAILED');
+    expect(existsSync(path.join(library.libraryPath, 'Assets', 'crash-source', 'art.png'))).toBe(true);
+    interrupted.closeAll();
+
+    const recovered = newService();
+    recovered.openLibrary(library.libraryPath);
+    expect(existsSync(path.join(library.libraryPath, 'Assets', 'crash-source'))).toBe(false);
+    expect(recovered.listLinkedFolders(library.libraryId)).toMatchObject([{ folderId: linked.folderId }]);
+    expect(recovered.listAssets({ libraryId: library.libraryId, folderId: linked.folderId, recursive: true })[0]!.locationKind).toBe('linked');
+    recovered.closeAll();
+  });
+
+  it('D1 re-verify: refresh still registers new external files when all rules are disabled (re-review misread)', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    mkdirSync(path.join(sourceRoot, 'sub'));
+    writeFileSync(path.join(sourceRoot, 'sub', 'b.png'), 'bbb');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'D1-Verify', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+    expect(linked.assetCount).toBe(2);
+
+    // Disable ALL rules (enabled = false for every rule).
+    const currentRules = service.getLinkedFolderRules({
+      libraryId: created.libraryId,
+      folderId: linked.folderId,
+    });
+    const disabledRules = currentRules.map((rule) => ({ ...rule, enabled: false }));
+    service.setLinkedFolderRules({
+      libraryId: created.libraryId,
+      folderId: linked.folderId,
+      rules: disabledRules,
+    });
+
+    // Add a new file externally (not through WorldlineBox).
+    writeFileSync(path.join(sourceRoot, 'c.png'), 'ccc');
+
+    // Refresh should discover and register the new file.
+    const refresh = service.refreshManagedAssets(created.libraryId);
+    expect(refresh.changedCount).toBe(1);
+
+    const assets = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    const relativePaths = assets.map((asset) => asset.relativeFilePath).sort();
+    expect(relativePaths).toEqual(['a.png', 'c.png', 'sub/b.png']);
+
+    service.closeAll();
+  });
+
+  it('TEXT-001: refresh discovers a new .txt under a linked subdirectory (WorldlineBox-4l7)', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    mkdirSync(path.join(sourceRoot, 'notes'));
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    writeFileSync(path.join(sourceRoot, 'notes', 'readme.md'), '# hi');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'LinkedText', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+
+    writeFileSync(path.join(sourceRoot, 'notes', 'new-note.txt'), 'hello text');
+    writeFileSync(path.join(sourceRoot, 'notes', 'data.json'), '{"ok":true}');
+    writeFileSync(path.join(sourceRoot, 'notes', 'payload.xml'), '<ok/>');
+
+    const refresh = service.refreshManagedAssets(created.libraryId);
+    expect(refresh.changedCount).toBeGreaterThanOrEqual(3);
+
+    const listed = service.listAssets({
+      libraryId: created.libraryId,
+      folderId: linked.folderId,
+      recursive: true,
+    });
+    const byPath = new Map(listed.map((asset) => [asset.relativeFilePath, asset]));
+    expect(byPath.get('notes/new-note.txt')?.mediaType).toBe('text');
+    expect(byPath.get('notes/data.json')?.mediaType).toBe('text');
+    expect(byPath.get('notes/payload.xml')?.mediaType).toBe('text');
+
+    const notesId = `lfv:${linked.folderId}/notes`;
+    const searched = service.searchAssets({
+      libraryId: created.libraryId,
+      scope: { kind: 'folder', folderId: notesId, recursive: false },
+      filters: [{ field: 'format', values: ['text'], exclude: false }],
+      limit: 50,
+      offset: 0,
+    });
+    const searchedPaths = searched.items.map((item) => item.relativeFilePath).sort();
+    expect(searchedPaths).toEqual([
+      'notes/data.json',
+      'notes/new-note.txt',
+      'notes/payload.xml',
+      'notes/readme.md',
+    ]);
+    expect(searched.items.every((item) => item.mediaType === 'text')).toBe(true);
+
+    const rootText = service.searchAssets({
+      libraryId: created.libraryId,
+      scope: { kind: 'folder', folderId: linked.folderId, recursive: false },
+      filters: [{ field: 'format', values: ['text'], exclude: false }],
+      limit: 50,
+      offset: 0,
+    });
+    expect(rootText.items).toEqual([]);
+
+    service.closeAll();
+  });
+
+  it('D2: relink continues processing remaining assets when one asset lstat fails with a non-missing-path error (e.g. EACCES)', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    const lockedDir = path.join(sourceRoot, 'locked');
+    mkdirSync(lockedDir);
+    writeFileSync(path.join(lockedDir, 'b.png'), 'bbb');
+
+    // The relink stat goes through the assetLstat seam so the EACCES fault is
+    // injected deterministically; chmod-based permission removal is a POSIX-
+    // only simulation (on Windows chmod only toggles the read-only attribute
+    // and directory traversal cannot be revoked this way). The hook receives
+    // the canonicalized root (realpath differs from the temp path on macOS),
+    // so match on the portable tail instead of an absolute prefix.
+    const lockedTail = path.join('relocated', 'locked', 'b.png');
+    const service = newService({
+      assetLstat: (assetPath) => {
+        if (assetPath.endsWith(lockedTail)) {
+          throw Object.assign(new Error('Injected EACCES'), { code: 'EACCES' });
+        }
+        return lstatSync(assetPath);
+      },
+    });
+    const created = service.createLibrary({ displayName: 'D2-Relink', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+    expect(linked.assetCount).toBe(2);
+
+    // Source root gone; refresh to set all missing.
+    rmSync(sourceRoot, { recursive: true, force: true });
+    service.refreshManagedAssets(created.libraryId);
+
+    // New root: has a.png and a locked/ subdir whose b.png fails lstat with EACCES.
+    const newRoot = path.join(root, 'relocated');
+    mkdirSync(newRoot);
+    writeFileSync(path.join(newRoot, 'a.png'), 'aaa-restored');
+    mkdirSync(path.join(newRoot, 'locked'));
+    writeFileSync(path.join(newRoot, 'locked', 'b.png'), 'bbb-restored');
+
+    const result = service.relinkMissingFolder({
+      libraryId: created.libraryId,
+      folderId: linked.folderId,
+      newRootPath: newRoot,
+    });
+
+    // The relink must complete (not abort) — a.png restored, b.png stays missing.
+    expect(result.status).toBe('available');
+
+    const assets = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    const aAsset = assets.find((asset) => asset.relativeFilePath === 'a.png')!;
+    const bAsset = assets.find((asset) => asset.relativeFilePath === 'locked/b.png')!;
+    expect(aAsset.availability).toBe('available');
+    expect(aAsset.byteSize).toBe('aaa-restored'.length);
+    expect(bAsset.availability).toBe('missing');
+
+    service.closeAll();
+  });
+
+  it('imports external files into an existing linked folder root (WorldlineBox-d3h)', () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked-target');
+    const incoming = path.join(root, 'incoming');
+    mkdirSync(linkedRoot);
+    mkdirSync(incoming);
+    writeFileSync(path.join(linkedRoot, 'existing.png'), 'keep');
+    writeFileSync(path.join(incoming, 'new-art.png'), 'fresh bytes');
+
+    const service = newService();
+    const library = service.createLibrary({
+      displayName: 'LinkedImport',
+      selectedParentPath: root,
+    });
+    const linked = service.importFolderAsLinked({
+      libraryId: library.libraryId,
+      sourceRootPath: linkedRoot,
+    });
+    expect(linked.assetCount).toBe(1);
+    expect(linked.absoluteRootPath.endsWith(`${path.sep}linked-target`)).toBe(
+      true,
+    );
+
+    const result = service.prepareOrExecuteImport({
+      libraryId: library.libraryId,
+      targetFolderId: linked.folderId,
+      sourceKind: 'files',
+      sourcePaths: [path.join(incoming, 'new-art.png')],
+    });
+    if ('importId' in result) throw new Error('Unexpected import conflict.');
+    expect(result.importedCount).toBe(1);
+    expect(
+      readFileSync(path.join(linked.absoluteRootPath, 'new-art.png'), 'utf8'),
+    ).toBe('fresh bytes');
+    const assets = service.listAssets({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      recursive: true,
+    });
+    expect(assets.some((asset) => asset.relativeFilePath === 'new-art.png')).toBe(
+      true,
+    );
+    expect(
+      assets.find((asset) => asset.relativeFilePath === 'new-art.png')
+        ?.locationKind,
+    ).toBe('linked');
+    service.closeAll();
+  });
+});
+
+describe('Moving managed assets into linked folders', () => {
+  function libraryWithManagedAsset(
+    service: LibraryService,
+    root: string,
+    name = 'managed.png',
+    content = 'managed bytes',
+  ): { library: ReturnType<LibraryService['createLibrary']>; assetId: string; linked: ReturnType<LibraryService['importFolderAsLinked']> } {
+    const linkedRoot = path.join(root, 'linked');
+    const importRoot = path.join(root, 'incoming');
+    mkdirSync(linkedRoot);
+    mkdirSync(importRoot);
+    const source = path.join(importRoot, name);
+    writeFileSync(source, content);
+    const library = service.createLibrary({ displayName: 'MoveToLinked', selectedParentPath: root });
+    const imported = service.prepareOrExecuteImport({
+      libraryId: library.libraryId,
+      sourceKind: 'files',
+      sourcePaths: [source],
+    });
+    if ('importId' in imported) throw new Error('Unexpected import conflict.');
+    const linked = service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+    return { library, assetId: imported.assets[0]!.assetId, linked };
+  }
+
+  it('moves a managed asset into the linked root and removes the managed source', () => {
+    const root = temporaryRoot();
+    const service = newService();
+    const { library, assetId, linked } = libraryWithManagedAsset(service, root);
+
+    const result = service.moveAssets({
+      libraryId: library.libraryId,
+      assetIds: [assetId],
+      targetFolderId: linked.folderId,
+      conflictStrategy: 'keep-both',
+    });
+
+    expect(result.movedCount).toBe(1);
+    expect(result.skippedCount).toBe(0);
+    expect(result.assets[0]!.locationKind).toBe('linked');
+    expect(result.assets[0]!.relativeFilePath).toBe('managed.png');
+    // 文件已物理移入链接根目录
+    expect(readFileSync(path.join(linked.absoluteRootPath, 'managed.png'), 'utf8')).toBe('managed bytes');
+    // managed 源已从库目录删除
+    expect(existsSync(path.join(library.libraryPath, 'Assets', 'managed.png'))).toBe(false);
+    const remainingManaged = service.listAssets({
+      libraryId: library.libraryId,
+      recursive: true,
+    }).filter((asset) => asset.locationKind === 'managed');
+    expect(remainingManaged).toHaveLength(0);
+    service.closeAll();
+  });
+
+  it('moves a managed asset into a linked subdirectory via its virtual folder id', () => {
+    const root = temporaryRoot();
+    const service = newService();
+    const { library, assetId, linked } = libraryWithManagedAsset(service, root, 'photo.png');
+    const nested = service.createLinkedFolderDirectory({
+      libraryId: library.libraryId,
+      linkedFolderId: linked.folderId,
+      relativePath: '',
+      name: 'nested',
+    });
+
+    const result = service.moveAssets({
+      libraryId: library.libraryId,
+      assetIds: [assetId],
+      targetFolderId: nested.folderId,
+      conflictStrategy: 'keep-both',
+    });
+
+    expect(result.movedCount).toBe(1);
+    expect(readFileSync(path.join(linked.absoluteRootPath, 'nested', 'photo.png'), 'utf8')).toBe('managed bytes');
+    expect(existsSync(path.join(library.libraryPath, 'Assets', 'photo.png'))).toBe(false);
+    service.closeAll();
+  });
+
+  it('keeps the managed source when a same-name move is skipped', () => {
+    const root = temporaryRoot();
+    const service = newService();
+    const { library, assetId, linked } = libraryWithManagedAsset(service, root, 'managed.png');
+    // 链接根已有同名文件：skip 策略应跳过，源保留原位
+    writeFileSync(path.join(linked.absoluteRootPath, 'managed.png'), 'existing bytes');
+
+    const result = service.moveAssets({
+      libraryId: library.libraryId,
+      assetIds: [assetId],
+      targetFolderId: linked.folderId,
+      conflictStrategy: 'skip',
+    });
+
+    expect(result.movedCount).toBe(0);
+    expect(result.skippedCount).toBe(1);
+    expect(readFileSync(path.join(linked.absoluteRootPath, 'managed.png'), 'utf8')).toBe('existing bytes');
+    // managed 源未被删除
+    expect(existsSync(path.join(library.libraryPath, 'Assets', 'managed.png'))).toBe(true);
+    service.closeAll();
+  });
+
+  it('copies managed assets into a linked folder via copyAssets (linked-target delegation)', () => {
+    const root = temporaryRoot();
+    const service = newService();
+    const { library, assetId, linked } = libraryWithManagedAsset(service, root);
+
+    const result = service.copyAssets({
+      libraryId: library.libraryId,
+      assetIds: [assetId],
+      targetFolderId: linked.folderId,
+      conflictStrategy: 'keep-both',
+    });
+
+    expect(result.copiedCount).toBe(1);
+    expect(result.skippedCount).toBe(0);
+    expect(readFileSync(path.join(linked.absoluteRootPath, 'managed.png'), 'utf8')).toBe('managed bytes');
+    // 复制语义：managed 源保留原位
+    expect(existsSync(path.join(library.libraryPath, 'Assets', 'managed.png'))).toBe(true);
+    expect(result.assets[0]!.locationKind).toBe('linked');
+    service.closeAll();
+  });
+});
+
+describe('Linked folder sync diagnostics', () => {
+  function diagService(): {
+    service: LibraryService;
+    diagnostics: Array<{ scope: string; error: unknown; context?: Record<string, unknown> }>;
+  } {
+    const diagnostics: Array<{ scope: string; error: unknown; context?: Record<string, unknown> }> = [];
+    const service = new LibraryService({ onDiagnostic: (d) => diagnostics.push(d) });
+    services.push(service);
+    return { service, diagnostics };
+  }
+
+  it('logs when an external file disappears from a linked folder', () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'gone.png'), 'gone bytes');
+    const { service, diagnostics } = diagService();
+    const library = service.createLibrary({ displayName: 'Diag', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+
+    // 模拟外部删除文件，随后对账
+    rmSync(path.join(linkedRoot, 'gone.png'));
+    service.refreshManagedAssets(library.libraryId);
+
+    const missing = diagnostics.find((d) => d.scope === 'linked-folder.sync.asset-missing');
+    expect(missing).toBeDefined();
+    expect(missing?.context?.relativeFilePath).toBe('gone.png');
+    // 变更摘要（中性 scope）同时触发
+    expect(diagnostics.some((d) => d.scope === 'assets.sync.reconciled')).toBe(true);
+    service.closeAll();
+  });
+
+  it('logs when a file is moved within the linked root', () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'a.png'), 'aaa');
+    const { service, diagnostics } = diagService();
+    const library = service.createLibrary({ displayName: 'DiagMove', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+
+    // 模拟根内移动：rename a.png → b.png
+    renameSync(path.join(linkedRoot, 'a.png'), path.join(linkedRoot, 'b.png'));
+    service.refreshManagedAssets(library.libraryId);
+
+    const moved = diagnostics.find((d) => d.scope === 'linked-folder.sync.asset-moved');
+    expect(moved).toBeDefined();
+    expect(moved?.context?.newRelativePath).toBe('b.png');
+    service.closeAll();
+  });
+
+  it('logs when a linked folder root becomes unavailable', () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'a.png'), 'aaa');
+    const { service, diagnostics } = diagService();
+    const library = service.createLibrary({ displayName: 'Diag2', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+
+    // 模拟链接根目录消失，对账后文件夹转 offline
+    rmSync(linkedRoot, { recursive: true, force: true });
+    service.refreshManagedAssets(library.libraryId);
+
+    const status = diagnostics.find((d) => d.scope === 'linked-folder.sync.status-changed');
+    expect(status).toBeDefined();
+    expect(status?.context?.newStatus).toBe('offline');
+    service.closeAll();
+  });
+
+  it('WorldlineBox-9cfc8c: recursive linked browse session pages past the first 100 assets', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(path.join(sourceRoot, 'nested'), { recursive: true });
+    for (let index = 0; index < 80; index += 1) {
+      writeFileSync(path.join(sourceRoot, `root-${String(index).padStart(3, '0')}.png`), 'x');
+    }
+    for (let index = 0; index < 70; index += 1) {
+      writeFileSync(
+        path.join(sourceRoot, 'nested', `nested-${String(index).padStart(3, '0')}.png`),
+        'y',
+      );
+    }
+
+    const service = newService();
+    const created = service.createLibrary({
+      displayName: 'LinkedBrowsePage',
+      selectedParentPath: root,
+    });
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+    expect(linked.assetCount).toBe(150);
+
+    const session = service.createBrowseSession({
+      libraryId: created.libraryId,
+      libraryGeneration: 1,
+      query: null,
+      scope: { kind: 'folder', folderId: linked.folderId, recursive: true },
+      limit: 100,
+    });
+    expect(session.total).toBe(150);
+    expect(session.items).toHaveLength(100);
+
+    const page = service.readBrowseSessionPage({
+      libraryId: created.libraryId,
+      libraryGeneration: 1,
+      sessionId: session.session.sessionId,
+      limit: 100,
+      offset: 100,
+    });
+    expect(page).toMatchObject({ status: 'ready', total: 150, offset: 100 });
+    if (page.status === 'ready') {
+      expect(page.items).toHaveLength(50);
+      const firstPageIds = new Set(session.items.map((item) => item.assetId));
+      expect(page.items.every((item) => !firstPageIds.has(item.assetId))).toBe(true);
+    }
+
+    const layout = service.searchAssets({
+      libraryId: created.libraryId,
+      query: null,
+      scope: { kind: 'folder', folderId: linked.folderId, recursive: true },
+      layoutOnly: true,
+    });
+    expect(layout.total).toBe(150);
+    expect(layout.layout).toHaveLength(150);
+
+    service.closeAll();
+  });
+});
+
+// WorldlineBox-316493: a linked root can hang under a managed folder (folder context
+// menu → 导入链接文件夹), with the rejection rules that keep the index honest.
+describe('Nested linked folders (WorldlineBox-316493)', () => {
+  function createManagedFolder(service: LibraryService, libraryId: string, name: string, parentFolderId?: string) {
+    return service.createManagedFolder({ libraryId, name, parentFolderId });
+  }
+
+  it('hangs a linked root under the managed folder it was imported into', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    mkdirSync(path.join(sourceRoot, 'notes'));
+    writeFileSync(path.join(sourceRoot, 'notes', 'b.png'), 'bbb');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'Nested', selectedParentPath: root });
+    const parent = createManagedFolder(service, created.libraryId, 'Alpha');
+
+    const linked = service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+      parentFolderId: parent.folderId,
+    });
+
+    expect(linked.parentFolderId).toBe(parent.folderId);
+    const listed = service.listLinkedFolders(created.libraryId);
+    const rootRow = listed.find((folder) => folder.relativePath === '');
+    expect(rootRow?.parentFolderId).toBe(parent.folderId);
+    // Virtual subdirectories stay inside the linked root's own hierarchy.
+    expect(listed.find((folder) => folder.relativePath === 'notes')?.parentFolderId)
+      .toBe(linked.folderId);
+    service.closeAll();
+  });
+
+  it('keeps the nesting across a reopen (schema v49 column survives)', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'NestedReopen', selectedParentPath: root });
+    const parent = createManagedFolder(service, created.libraryId, 'Alpha');
+    service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+      parentFolderId: parent.folderId,
+    });
+    service.closeAll();
+
+    const reopened = newService();
+    reopened.openLibrary(created.libraryPath);
+    const listed = reopened.listLinkedFolders(created.libraryId);
+    expect(listed.find((folder) => folder.relativePath === '')?.parentFolderId)
+      .toBe(parent.folderId);
+    reopened.closeAll();
+  });
+
+  it('rejects a parent that is not a managed folder of this library', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    mkdirSync(sourceRoot);
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'NestedBadParent', selectedParentPath: root });
+
+    let thrown: unknown;
+    try {
+      service.importFolderAsLinked({
+        libraryId: created.libraryId,
+        sourceRootPath: sourceRoot,
+        parentFolderId: 'not-a-managed-folder',
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: 'FOLDER_NOT_FOUND' });
+    service.closeAll();
+  });
+
+  it('rejects a source inside the library folder', () => {
+    const root = temporaryRoot();
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'NestedInsideLibrary', selectedParentPath: root });
+
+    let thrown: unknown;
+    try {
+      service.importFolderAsLinked({
+        libraryId: created.libraryId,
+        sourceRootPath: created.libraryPath,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({
+      code: 'INVALID_IMPORT_SOURCE',
+      reason: 'LINKED_SOURCE_INSIDE_LIBRARY',
+    });
+    service.closeAll();
+  });
+
+  it('rejects a directory that is already linked, or lives inside a linked folder', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'source');
+    const nestedSource = path.join(sourceRoot, 'sub');
+    mkdirSync(sourceRoot);
+    mkdirSync(nestedSource);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+
+    const service = newService();
+    const created = service.createLibrary({ displayName: 'NestedDuplicates', selectedParentPath: root });
+    service.importFolderAsLinked({
+      libraryId: created.libraryId,
+      sourceRootPath: sourceRoot,
+    });
+
+    const rejection = (sourcePath: string): unknown => {
+      try {
+        service.importFolderAsLinked({ libraryId: created.libraryId, sourceRootPath: sourcePath });
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    };
+
+    expect(rejection(sourceRoot)).toMatchObject({
+      code: 'INVALID_IMPORT_SOURCE',
+      reason: 'LINKED_SOURCE_ALREADY_LINKED',
+    });
+    expect(rejection(nestedSource)).toMatchObject({
+      code: 'INVALID_IMPORT_SOURCE',
+      reason: 'LINKED_SOURCE_INSIDE_LINKED_FOLDER',
+    });
+    service.closeAll();
+  });
+});

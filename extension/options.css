@@ -1,0 +1,11 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #111417; color: #e8ebe8; }
+body { margin: 0; }
+main { max-width: 620px; margin: 8vh auto; padding: 32px; background: #1a1e21; border: 1px solid #30363a; border-radius: 12px; }
+h1 { margin: 0 0 20px; font-size: 18px; }
+p { color: #aeb5b1; line-height: 1.6; }
+.options-section { display: grid; gap: 14px; }
+.options-toggle { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: #d5dad7; cursor: pointer; }
+.options-toggle input { margin-top: 2px; }
+#status { margin-top: 20px; font-size: 12px; }
+#status[data-kind="error"] { color: #f29b9b; }
+#status[data-kind="success"] { color: #98d7ad; }

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [],
+    "noEmit": true
+  },
+  "include": ["extension/**/*.ts"],
+  "files": ["extension/chrome.d.ts"]
+}

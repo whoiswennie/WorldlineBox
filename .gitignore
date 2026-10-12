@@ -1,0 +1,55 @@
+.DS_Store
+.agents/
+.claude/
+.kimi/
+.daimon/
+.worktrees/
+.vscode/
+skills-lock.json
+
+node_modules/
+.tools/
+**/.vite/
+dist/
+out/
+coverage/
+playwright-report/
+test-results/
+*.log
+.env
+.env.*
+!.env.example
+
+# Large platform media bundles are produced by the trusted build pipeline or
+# acquired from a checksum-pinned release. Never commit local/system binaries.
+resources/ffmpeg/
+resources/oiio/
+resources/media-binaries/*/manifest.json
+resources/media-binaries/*/licenses/
+resources/media-binaries/vcpkg/vcpkg_installed/
+.media-build/
+artifacts/media-binaries/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+.beads/issues.jsonl.lock
+.beads/issues.jsonl.*.tmp
+/skills
+
+# 媒体产物目录（manifest 等为构建生成，来源/锁文件在 media-binaries/ 根）
+resources/media-binaries/*/
+!resources/media-binaries/vcpkg/
+
+# 开发文件（2026-08-21 用户要求：仅属 dev，main 不得引入）
+# 注意：ignore 只拦未跟踪文件——dev 上已跟踪的开发文件不受影响照常提交；
+# merge 挡不住已跟踪文件，main 防污染由 scripts/hooks/pre-commit 钩子兜底。
+# docs/internal 自 2026-09-14 起**不再 ignore**（用户要求）：dev 上内部文档必须能正常
+# 跟踪提交，否则新开发日志/审查/工单会被 ignore 静默漏掉（当日实测漏掉一份开发日志）。
+# main 侧的剥离仍由合并流程（git rm --cached docs/internal）与 pre-commit 钩子负责。
+AGENTS.md
+CLAUDE.md
+.beads/
+.github/

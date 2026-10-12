@@ -1,0 +1,353 @@
+import { describe, expect, it } from 'vitest';
+
+import { createEmptyManifest, type SyncManifestEntry } from '../../src/worker/sync/manifest';
+import { planSyncActions, type LocalAssetSnapshotEntry } from '../../src/worker/sync/sync-plan';
+
+function manifest(): ReturnType<typeof createEmptyManifest> {
+  return createEmptyManifest({ libraryId: 'lib-1', displayName: '库', directoryName: '库' });
+}
+
+function entry(overrides: Partial<SyncManifestEntry> = {}): SyncManifestEntry {
+  return {
+    path: 'a/b.png',
+    contentHash: 'hash-1',
+    size: 10,
+    version: 1,
+    deviceId: 'dev-1',
+    modifiedAt: '2026-08-15T10:00:00Z',
+    metadataVersion: 1,
+    ...overrides,
+  };
+}
+
+function asset(hash = 'hash-1', size = 10): LocalAssetSnapshotEntry {
+  return { contentHash: hash, size, modifiedAt: '2026-08-15T10:00:00Z', path: 'a/b.png' };
+}
+
+describe('planSyncActions (WorldlineBox-xffq)', () => {
+  it('plans upload for a brand-new local asset', () => {
+    const localManifest = manifest();
+    const remoteManifest = manifest();
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', asset()]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'upload', assetId: 'a1' }),
+    ]);
+  });
+
+  it('plans download for a remote-only asset (new device)', () => {
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({});
+    const actions = planSyncActions({
+      localAssets: new Map(),
+      localManifest: manifest(),
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'download', assetId: 'a1' }),
+    ]);
+  });
+
+  it('plans upload when only the local side changed', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({ contentHash: 'hash-1' });
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({ contentHash: 'hash-1' });
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', asset('hash-2')]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'upload', assetId: 'a1', entry: expect.objectContaining({ contentHash: 'hash-2', version: 2 }) }),
+    ]);
+  });
+
+  it('plans download when only the remote side changed', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({ contentHash: 'hash-1' });
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({ contentHash: 'hash-2', version: 2 });
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', asset('hash-1')]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'download', assetId: 'a1' }),
+    ]);
+  });
+
+  it('detects a true conflict when both sides changed differently', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({ contentHash: 'hash-1' });
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({ contentHash: 'hash-1' });
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', asset('hash-local', 20)]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    // 远端也改了：把远端 manifest 变为 hash-2。
+    const actionsWithRemoteChange = planSyncActions({
+      localAssets: new Map([['a1', asset('hash-local', 20)]]),
+      localManifest,
+      remoteManifest: (() => {
+        const remote = manifest();
+        remote.entries.a1 = entry({ contentHash: 'hash-remote', version: 5, modifiedAt: '2026-08-15T12:00:00Z' });
+        return remote;
+      })(),
+      remoteTombstones: new Set(),
+    });
+    expect(actionsWithRemoteChange).toEqual([
+      expect.objectContaining({ type: 'conflict', assetId: 'a1', winner: 'remote' }),
+    ]);
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'upload', assetId: 'a1' }),
+    ]);
+  });
+
+  it('plans remote delete + tombstone upload for a local deletion', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({});
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({});
+    const actions = planSyncActions({
+      localAssets: new Map(),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'delete-remote', assetId: 'a1' }),
+      expect.objectContaining({ type: 'tombstone-upload', assetId: 'a1' }),
+    ]);
+  });
+
+  it('downloads when a live local asset is missing on disk but still on the remote', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({});
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({});
+    const actions = planSyncActions({
+      localAssets: new Map(),
+      localMissing: new Map([['a1', 'a/b.png']]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'download', assetId: 'a1' }),
+    ]);
+  });
+
+  it('downloads by the last known path when a missing live asset has no remote manifest entry', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({});
+    const actions = planSyncActions({
+      localAssets: new Map(),
+      localMissing: new Map([['a1', 'a/b.png']]),
+      localManifest,
+      remoteManifest: manifest(),
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'download', assetId: 'a1', entry: expect.objectContaining({ path: 'a/b.png' }) }),
+    ]);
+  });
+
+  it('clears a stale tombstone and downloads when the remote file is still present', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({});
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({});
+    const actions = planSyncActions({
+      localAssets: new Map(),
+      localMissing: new Map([['a1', 'a/b.png']]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(['a1']),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'download', assetId: 'a1' }),
+      expect.objectContaining({ type: 'clear-tombstone', assetId: 'a1' }),
+    ]);
+  });
+
+  it('clears the tombstone when a restored local file is no longer in the last sync point', () => {
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({});
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', asset()]]),
+      localManifest: manifest(),
+      remoteManifest,
+      remoteTombstones: new Set(['a1']),
+    });
+    expect(actions.some((action) => action.type === 'delete-local')).toBe(false);
+    expect(actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'clear-tombstone', assetId: 'a1' }),
+    ]));
+  });
+
+  it('plans local recycle for a remote tombstone', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({});
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({});
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', asset()]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(['a1']),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({ type: 'delete-local', assetId: 'a1' }),
+    ]);
+  });
+
+  it('plans nothing when both sides are unchanged and consistent', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({});
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({});
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', asset()]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([]);
+  });
+
+  it('plans a remote MOVE when only the local path changed (WorldlineBox-038ecf)', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({ path: 'cd.png' });
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({ path: 'cd.png' });
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', { ...asset(), path: '2D/cd.png' }]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({
+        type: 'move-remote',
+        assetId: 'a1',
+        fromPath: 'cd.png',
+        entry: expect.objectContaining({ path: '2D/cd.png', contentHash: 'hash-1', version: 2 }),
+      }),
+    ]);
+  });
+
+  it('plans a local relocate when only the remote path changed', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({ path: 'cd.png' });
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({ path: '2D/cd.png', version: 2 });
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', { ...asset(), path: 'cd.png' }]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({
+        type: 'relocate-local',
+        assetId: 'a1',
+        entry: expect.objectContaining({ path: '2D/cd.png' }),
+      }),
+    ]);
+  });
+
+  it('plans upload to the new path and records previousPath when local content and path both changed', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({ path: 'cd.png', contentHash: 'hash-1' });
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({ path: 'cd.png', contentHash: 'hash-1' });
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', { contentHash: 'hash-2', size: 12, modifiedAt: '2026-08-15T10:00:00Z', path: '2D/cd.png' }]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions).toEqual([
+      expect.objectContaining({
+        type: 'upload',
+        assetId: 'a1',
+        previousPath: 'cd.png',
+        entry: expect.objectContaining({ path: '2D/cd.png', contentHash: 'hash-2' }),
+      }),
+    ]);
+  });
+
+  it('tombstones a remote occupier before uploading a new asset at the same path', () => {
+    const remoteManifest = manifest();
+    remoteManifest.entries.old = entry({ path: 'a/b.png' });
+    const actions = planSyncActions({
+      localAssets: new Map([['new', asset()]]),
+      localManifest: manifest(),
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    const types = actions.map((action) => `${action.type}:${action.assetId}`);
+    expect(types[0]).toBe('delete-remote:old');
+    expect(types[1]).toBe('tombstone-upload:old');
+    expect(types).toContain('upload:new');
+    expect(types.some((type) => type.startsWith('download:old'))).toBe(false);
+  });
+
+  it('plans metadata upload when local tags change', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({ metadataHash: 'old-meta' });
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({ metadataHash: 'old-meta' });
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', {
+        ...asset(),
+        metadata: { tags: ['角色'], description: '主角', rating: 5, favorite: true },
+      }]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions.some((action) => action.type === 'upload-metadata' && action.assetId === 'a1')).toBe(true);
+  });
+
+  it('plans metadata upload when local AI tags change', () => {
+    const localManifest = manifest();
+    localManifest.entries.a1 = entry({ metadataHash: 'old-meta' });
+    const remoteManifest = manifest();
+    remoteManifest.entries.a1 = entry({ metadataHash: 'old-meta' });
+    const actions = planSyncActions({
+      localAssets: new Map([['a1', {
+        ...asset(),
+        metadata: {
+          tags: [],
+          description: null,
+          rating: 0,
+          favorite: false,
+          ai: {
+            tags: ['风景'],
+            description: '夜景',
+            rating: 4,
+            modelId: 'gpt-4o',
+            modelVersion: '1',
+          },
+        },
+      }]]),
+      localManifest,
+      remoteManifest,
+      remoteTombstones: new Set(),
+    });
+    expect(actions.some((action) => action.type === 'upload-metadata' && action.assetId === 'a1')).toBe(true);
+  });
+});

@@ -1,0 +1,649 @@
+import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+
+import AdmZip from 'adm-zip';
+
+import {
+  createAppUpdateService,
+  detectAppDistribution,
+  parseGitHubReleaseMeta,
+  parseGitHubRelease,
+  parseSha256,
+  resolveAppUpdateTarget,
+  selectUpdateAsset,
+  updateAssetName,
+} from '../../src/main/app-update-service';
+
+function releasePayload(overrides: Record<string, unknown> = {}) {
+  return {
+    tag_name: 'v0.1.3',
+    html_url: 'https://github.com/whoiswennie/WorldlineBox/releases/tag/v0.1.3',
+    draft: false,
+    prerelease: false,
+    body: 'Release notes',
+    assets: [
+      {
+        name: 'WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+        browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+        size: 123,
+        digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe('WorldlineBox app update release contract', () => {
+  it('distinguishes development, Inno-installed, and portable launches', () => {
+    expect(detectAppDistribution({
+      isPackaged: false,
+      platform: 'darwin',
+      executablePath: '/Applications/WorldlineBox.app/Contents/MacOS/WorldlineBox',
+    })).toBe('installed');
+
+    expect(detectAppDistribution({
+      isPackaged: false,
+      platform: 'darwin',
+      executablePath: '/Applications/WorldlineBox.app/Contents/MacOS/WorldlineBox',
+      environment: { WORLDLINEBOX_DISTRIBUTION: 'development' },
+    })).toBe('development');
+
+    expect(detectAppDistribution({
+      isPackaged: false,
+      platform: 'win32',
+      executablePath: 'C:\\Dev\\WorldlineBox\\node_modules\\electron\\dist\\electron.exe',
+      environment: { WORLDLINEBOX_DISTRIBUTION: 'portable' },
+    })).toBe('portable');
+
+    expect(detectAppDistribution({
+      isPackaged: true,
+      platform: 'win32',
+      executablePath: 'C:\\Program Files\\WorldlineBox\\WorldlineBox.exe',
+      fileExists: (filePath) => filePath.endsWith('.worldlinebox-installed'),
+    })).toBe('installed');
+
+    expect(detectAppDistribution({
+      isPackaged: true,
+      platform: 'win32',
+      executablePath: 'C:\\Program Files\\WorldlineBox\\WorldlineBox.exe',
+      fileExists: (filePath) => filePath.endsWith('unins000.exe'),
+    })).toBe('installed');
+
+    expect(detectAppDistribution({
+      isPackaged: true,
+      platform: 'win32',
+      executablePath: 'D:\\Tools\\WorldlineBox\\WorldlineBox.exe',
+      environment: { PORTABLE_EXECUTABLE_FILE: 'D:\\Tools\\WorldlineBox\\WorldlineBox.exe' },
+    })).toBe('portable');
+
+    expect(detectAppDistribution({
+      isPackaged: true,
+      platform: 'darwin',
+      executablePath: '/Applications/WorldlineBox.app/Contents/MacOS/WorldlineBox',
+    })).toBe('installed');
+  });
+
+  it('maps each release target to the established release asset name', () => {
+    const installedMac = resolveAppUpdateTarget({
+      platform: 'darwin',
+      arch: 'arm64',
+      distribution: 'installed',
+    });
+    const portableWindows = resolveAppUpdateTarget({
+      platform: 'win32',
+      arch: 'x64',
+      distribution: 'portable',
+    });
+    expect(installedMac).toEqual({ platform: 'darwin', arch: 'arm64', distribution: 'installed' });
+    expect(portableWindows).toEqual({ platform: 'win32', arch: 'x64', distribution: 'portable' });
+    expect(updateAssetName('0.1.3', installedMac!)).toEqual({
+      name: 'WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+      assetKind: 'installer',
+    });
+    expect(updateAssetName('0.1.3', portableWindows!)).toEqual({
+      name: 'WorldlineBox-win-x86-64-0.1.3-portable.zip',
+      assetKind: 'portable',
+    });
+    expect(resolveAppUpdateTarget({
+      platform: 'darwin',
+      arch: 'x64',
+      distribution: 'installed',
+    })).toBeUndefined();
+  });
+
+  it('parses GitHub releases and requires a verifiable selected asset', () => {
+    const release = parseGitHubRelease(releasePayload());
+    expect(release?.version).toBe('0.1.3');
+    expect(parseSha256('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  file.zip'))
+      .toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(parseSha256('not a checksum')).toBeUndefined();
+
+    const target = resolveAppUpdateTarget({
+      platform: 'darwin',
+      arch: 'arm64',
+      distribution: 'installed',
+    });
+    expect(selectUpdateAsset(release!, target!)).toMatchObject({
+      assetKind: 'installer',
+      asset: { name: 'WorldlineBox-darwin-arm64-0.1.3-package.dmg' },
+    });
+    expect(parseGitHubRelease({ ...releasePayload(), prerelease: true })).toBeUndefined();
+    expect(selectUpdateAsset(
+      parseGitHubRelease({
+        ...releasePayload(),
+        assets: [{
+          name: 'WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+          size: 123,
+        }],
+      })!,
+      target!,
+    )).toBeUndefined();
+  });
+
+  it('checks a newer release without exposing a filesystem path to the result', async () => {
+    const service = createAppUpdateService({
+      currentVersion: '0.1.1',
+      isPackaged: true,
+      platform: 'darwin',
+      arch: 'arm64',
+      executablePath: '/tmp/WorldlineBox.app/Contents/MacOS/WorldlineBox',
+      tempDirectory: '/tmp',
+      downloadsDirectory: '/tmp',
+      environment: { WORLDLINEBOX_DISTRIBUTION: 'installed' },
+      fetchImpl: async () => new Response(JSON.stringify(releasePayload()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    });
+
+    const result = await service.checkForUpdates();
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'available',
+      latestVersion: '0.1.3',
+      assetName: 'WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+    });
+    expect(JSON.stringify(result)).not.toContain('/tmp');
+  });
+
+  it('loads an optional release-meta.json asset without making it required', async () => {
+    const metadata = {
+      version: '0.1.3',
+      date: '2026-08-28',
+      changelog: [
+        { zhCN: '修复资源库打开稳定性。', en: 'Improve library-open stability.' },
+      ],
+      changelogUrl: 'https://github.com/whoiswennie/WorldlineBox/releases/tag/v0.1.3',
+      downloadUrl: 'https://github.com/whoiswennie/WorldlineBox/releases/tag/v0.1.3',
+      mandatory: false,
+    };
+    const release = releasePayload({
+      assets: [
+        ...((releasePayload().assets as unknown[]) ?? []),
+        {
+          name: 'release-meta.json',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/release-meta.json',
+          size: JSON.stringify(metadata).length,
+        },
+      ],
+    });
+    const service = createAppUpdateService({
+      currentVersion: '0.1.1',
+      isPackaged: true,
+      platform: 'darwin',
+      arch: 'arm64',
+      executablePath: '/Applications/WorldlineBox.app/Contents/MacOS/WorldlineBox',
+      tempDirectory: '/tmp',
+      downloadsDirectory: '/tmp',
+      environment: { WORLDLINEBOX_DISTRIBUTION: 'installed' },
+      fetchImpl: async (url) => url.endsWith('release-meta.json')
+        ? new Response(JSON.stringify(metadata), { status: 200 })
+        : new Response(JSON.stringify(release), { status: 200 }),
+    });
+
+    const result = await service.checkForUpdates();
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'available',
+      releaseMeta: metadata,
+    });
+  });
+
+  it('ignores malformed or mismatched release metadata while keeping update checks usable', async () => {
+    expect(parseGitHubReleaseMeta({ version: '0.1.2', date: '2026-08-28' }, '0.1.3')).toBeUndefined();
+    expect(parseGitHubReleaseMeta({
+      version: '0.1.3',
+      date: '2026-08-28',
+      changelog: ['ok'],
+      changelogUrl: 'javascript:alert(1)',
+    }, '0.1.3')).toBeUndefined();
+  });
+
+  it('checks updates from an unpackaged dev build by default', async () => {
+    const service = createAppUpdateService({
+      currentVersion: '0.1.1',
+      isPackaged: false,
+      platform: 'win32',
+      arch: 'x64',
+      executablePath: 'C:\\Dev\\WorldlineBox\\node_modules\\electron\\dist\\electron.exe',
+      tempDirectory: '/tmp',
+      downloadsDirectory: '/tmp',
+      fetchImpl: async () => new Response(JSON.stringify(releasePayload({
+        assets: [{
+          name: 'WorldlineBox-win-x86-64-0.1.3-setup.zip',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-setup.zip',
+          size: 123,
+          digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        }],
+      })), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    });
+
+    const result = await service.checkForUpdates();
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'available',
+      latestVersion: '0.1.3',
+      distribution: 'installed',
+      assetName: 'WorldlineBox-win-x86-64-0.1.3-setup.zip',
+    });
+  });
+
+  it('honors WORLDLINEBOX_DISTRIBUTION=development to disable dev update checks', async () => {
+    const service = createAppUpdateService({
+      currentVersion: '0.1.1',
+      isPackaged: false,
+      platform: 'win32',
+      arch: 'x64',
+      executablePath: 'C:\\Dev\\WorldlineBox\\node_modules\\electron\\dist\\electron.exe',
+      tempDirectory: '/tmp',
+      downloadsDirectory: '/tmp',
+      environment: { WORLDLINEBOX_DISTRIBUTION: 'development' },
+      fetchImpl: async () => new Response(JSON.stringify(releasePayload()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    });
+
+    const result = await service.checkForUpdates();
+    expect(result).toEqual({
+      ok: true,
+      status: 'unsupported',
+      reason: 'development',
+      currentVersion: '0.1.1',
+      distribution: 'development',
+    });
+  });
+
+  it('downloads, verifies, and reveals a portable update without replacing the running app', async () => {
+    const portableBytes = Buffer.from('portable update bytes');
+    const checksum = createHash('sha256').update(portableBytes).digest('hex');
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-test-'));
+    const revealed: string[] = [];
+    try {
+      const payload = releasePayload({
+        assets: [{
+          name: 'WorldlineBox-win-x86-64-0.1.3-portable.zip',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-portable.zip',
+          size: portableBytes.byteLength,
+        }, {
+          name: 'WorldlineBox-win-x86-64-0.1.3-portable.zip.sha256',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-portable.zip.sha256',
+          size: checksum.length,
+        }],
+      });
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'win32',
+        arch: 'x64',
+        executablePath: path.join(root, 'WorldlineBox.exe'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        environment: { WORLDLINEBOX_DISTRIBUTION: 'portable' },
+        fetchImpl: async (url) => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+          if (url.endsWith('.sha256')) return new Response(`${checksum}\n`);
+          return new Response(portableBytes);
+        },
+        showItemInFolder: (filePath) => revealed.push(filePath),
+      });
+
+      const result = await service.downloadAndInstall();
+      expect(result).toEqual({
+        ok: true,
+        status: 'completed',
+        action: 'portable-downloaded',
+        version: '0.1.3',
+        distribution: 'portable',
+      });
+      expect(revealed).toHaveLength(1);
+      expect(await readFile(revealed[0]!)).toEqual(portableBytes);
+      expect(revealed[0]).toContain('WorldlineBox-win-x86-64-0.1.3-portable.zip');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('emits download progress while fetching an update', async () => {
+    const portableBytes = Buffer.from('portable update bytes');
+    const checksum = createHash('sha256').update(portableBytes).digest('hex');
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-progress-test-'));
+    const progressEvents: Array<{ phase: string; downloadedBytes: number }> = [];
+    try {
+      const payload = releasePayload({
+        assets: [{
+          name: 'WorldlineBox-win-x86-64-0.1.3-portable.zip',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-portable.zip',
+          size: portableBytes.byteLength,
+        }, {
+          name: 'WorldlineBox-win-x86-64-0.1.3-portable.zip.sha256',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-portable.zip.sha256',
+          size: checksum.length,
+        }],
+      });
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'win32',
+        arch: 'x64',
+        executablePath: path.join(root, 'WorldlineBox.exe'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        environment: { WORLDLINEBOX_DISTRIBUTION: 'portable' },
+        fetchImpl: async (url) => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+          if (url.endsWith('.sha256')) return new Response(`${checksum}\n`);
+          return new Response(portableBytes);
+        },
+        showItemInFolder: () => undefined,
+        onDownloadProgress: (progress) => {
+          progressEvents.push({
+            phase: progress.phase,
+            downloadedBytes: progress.downloadedBytes,
+          });
+        },
+      });
+
+      await service.checkForUpdates();
+      await service.downloadAndInstall();
+      expect(progressEvents.some((event) => event.phase === 'verifying')).toBe(true);
+      expect(progressEvents.some((event) =>
+        event.phase === 'downloading' && event.downloadedBytes === portableBytes.byteLength)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('cancels an in-progress download and returns cancelled', async () => {
+    const portableBytes = Buffer.from('portable update bytes that are long enough to stream');
+    const checksum = createHash('sha256').update(portableBytes).digest('hex');
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-cancel-test-'));
+    try {
+      const payload = releasePayload({
+        assets: [{
+          name: 'WorldlineBox-win-x86-64-0.1.3-portable.zip',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-portable.zip',
+          size: portableBytes.byteLength,
+        }, {
+          name: 'WorldlineBox-win-x86-64-0.1.3-portable.zip.sha256',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-portable.zip.sha256',
+          size: checksum.length,
+        }],
+      });
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'win32',
+        arch: 'x64',
+        executablePath: path.join(root, 'WorldlineBox.exe'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        environment: { WORLDLINEBOX_DISTRIBUTION: 'portable' },
+        fetchImpl: async (url, init) => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+          if (url.endsWith('.sha256')) return new Response(`${checksum}\n`);
+          const signal = init?.signal;
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              let offset = 0;
+              const push = () => {
+                if (signal?.aborted) {
+                  controller.error(new DOMException('Aborted', 'AbortError'));
+                  return;
+                }
+                if (offset >= portableBytes.byteLength) {
+                  controller.close();
+                  return;
+                }
+                const next = portableBytes.subarray(offset, offset + 8);
+                offset += next.byteLength;
+                controller.enqueue(next);
+                setTimeout(push, 20);
+              };
+              push();
+            },
+          });
+          return new Response(stream, {
+            headers: { 'content-type': 'application/octet-stream' },
+          });
+        },
+        showItemInFolder: () => undefined,
+      });
+
+      await service.checkForUpdates();
+      const downloadPromise = service.downloadAndInstall();
+      await new Promise((resolve) => { setTimeout(resolve, 40); });
+      service.cancelDownload();
+      const result = await downloadPromise;
+      expect(result).toEqual({ ok: false, status: 'error', code: 'cancelled' });
+      expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans an installed update when opening the installer fails', async () => {
+    const installerBytes = Buffer.from('macOS installer bytes');
+    const checksum = createHash('sha256').update(installerBytes).digest('hex');
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-open-failure-test-'));
+    try {
+      const payload = releasePayload({
+        assets: [{
+          name: 'WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+          size: installerBytes.byteLength,
+          digest: `sha256:${checksum}`,
+        }],
+      });
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'darwin',
+        arch: 'arm64',
+        executablePath: path.join(root, 'WorldlineBox.app', 'Contents', 'MacOS', 'WorldlineBox'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        environment: { WORLDLINEBOX_DISTRIBUTION: 'installed' },
+        fetchImpl: async (url) => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+          return new Response(installerBytes as unknown as BodyInit);
+        },
+        openPath: async () => 'The installer could not be opened.',
+      });
+
+      const result = await service.downloadAndInstall();
+      expect(result).toEqual({ ok: false, status: 'error', code: 'open-failed' });
+      expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans the archive and extraction directory when the Windows archive is invalid', async () => {
+    const archive = new AdmZip();
+    archive.addFile('not-an-installer.txt', Buffer.from('wrong entry'));
+    const archiveBytes = archive.toBuffer();
+    const checksum = createHash('sha256').update(archiveBytes).digest('hex');
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-extraction-failure-test-'));
+    try {
+      const payload = releasePayload({
+        assets: [{
+          name: 'WorldlineBox-win-x86-64-0.1.3-setup.zip',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-setup.zip',
+          size: archiveBytes.byteLength,
+          digest: `sha256:${checksum}`,
+        }],
+      });
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'win32',
+        arch: 'x64',
+        executablePath: path.join(root, 'WorldlineBox.exe'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        environment: { WORLDLINEBOX_DISTRIBUTION: 'installed' },
+        fetchImpl: async (url) => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+          return new Response(archiveBytes as unknown as BodyInit);
+        },
+      });
+
+      const result = await service.downloadAndInstall();
+      expect(result).toEqual({ ok: false, status: 'error', code: 'download-failed' });
+      expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
+      expect((await readdir(root)).filter((entry) => entry.startsWith('worldlinebox-installer-')))
+        .toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses launchInstaller for installed Windows updates when provided', async () => {
+    const installerBytes = Buffer.from('WorldlineBox installer bytes');
+    const archive = new AdmZip();
+    archive.addFile('WorldlineBoxSetup.exe', installerBytes);
+    const archiveBytes = archive.toBuffer();
+    const checksum = createHash('sha256').update(archiveBytes).digest('hex');
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-installer-test-'));
+    const launched: string[] = [];
+    let launchedBytes: Buffer | undefined;
+    try {
+      const payload = releasePayload({
+        assets: [{
+          name: 'WorldlineBox-win-x86-64-0.1.3-setup.zip',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-setup.zip',
+          size: archiveBytes.byteLength,
+        }, {
+          name: 'WorldlineBox-win-x86-64-0.1.3-setup.zip.sha256',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-setup.zip.sha256',
+          size: checksum.length,
+        }],
+      });
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'win32',
+        arch: 'x64',
+        executablePath: path.join(root, 'WorldlineBox.exe'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        environment: { WORLDLINEBOX_DISTRIBUTION: 'installed' },
+        fetchImpl: async (url) => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+          if (url.endsWith('.sha256')) return new Response(`${checksum}\n`);
+          return new Response(archiveBytes as unknown as BodyInit);
+        },
+        launchInstaller: async (installerPath) => {
+          launched.push(installerPath);
+          launchedBytes = await readFile(installerPath);
+        },
+      });
+
+      const result = await service.downloadAndInstall();
+      expect(result).toEqual({
+        ok: true,
+        status: 'completed',
+        action: 'installer-opened',
+        version: '0.1.3',
+        distribution: 'installed',
+      });
+      expect(launched).toHaveLength(1);
+      expect(path.basename(launched[0]!)).toBe('WorldlineBoxSetup.exe');
+      expect(launchedBytes).toEqual(installerBytes);
+      expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
+      expect((await readdir(root)).filter((entry) => entry.startsWith('worldlinebox-installer-')))
+        .toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('extracts and opens the verified Windows installer for an installed launch', async () => {
+    const installerBytes = Buffer.from('WorldlineBox installer bytes');
+    const archive = new AdmZip();
+    archive.addFile('WorldlineBoxSetup.exe', installerBytes);
+    const archiveBytes = archive.toBuffer();
+    const checksum = createHash('sha256').update(archiveBytes).digest('hex');
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-installer-openpath-test-'));
+    const opened: string[] = [];
+    let openedBytes: Buffer | undefined;
+    try {
+      const payload = releasePayload({
+        assets: [{
+          name: 'WorldlineBox-win-x86-64-0.1.3-setup.zip',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-setup.zip',
+          size: archiveBytes.byteLength,
+        }, {
+          name: 'WorldlineBox-win-x86-64-0.1.3-setup.zip.sha256',
+          browser_download_url: 'https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/WorldlineBox-win-x86-64-0.1.3-setup.zip.sha256',
+          size: checksum.length,
+        }],
+      });
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'win32',
+        arch: 'x64',
+        executablePath: path.join(root, 'WorldlineBox.exe'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        environment: { WORLDLINEBOX_DISTRIBUTION: 'installed' },
+        fetchImpl: async (url) => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+          if (url.endsWith('.sha256')) return new Response(`${checksum}\n`);
+          return new Response(archiveBytes as unknown as BodyInit);
+        },
+        openPath: async (filePath) => {
+          opened.push(filePath);
+          openedBytes = await readFile(filePath);
+          return '';
+        },
+      });
+
+      const result = await service.downloadAndInstall();
+      expect(result).toEqual({
+        ok: true,
+        status: 'completed',
+        action: 'installer-opened',
+        version: '0.1.3',
+        distribution: 'installed',
+      });
+      expect(opened).toHaveLength(1);
+      expect(path.basename(opened[0]!)).toBe('WorldlineBoxSetup.exe');
+      expect(openedBytes).toEqual(installerBytes);
+      expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
+      expect((await readdir(root)).filter((entry) => entry.startsWith('worldlinebox-installer-')))
+        .toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

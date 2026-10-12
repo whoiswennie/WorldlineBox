@@ -1,0 +1,112 @@
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { performance } from "node:perf_hooks";
+
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+
+import { EXTRACT_HEADROOM_MIN_BYTES, probeFreeBytes } from "../../src/main/disk-free-space";
+import { summarizeTimingSamples } from "../../src/shared/performance-contract";
+import { LibraryService } from "../../src/worker/library-service";
+
+const FIXTURE_PREFIX = "worldlinebox-p201-";
+const smbRoot = process.env.WORLDLINEBOX_PERF_SMB_ROOT?.trim();
+const describeSmb = smbRoot ? describe : describe.skip;
+
+const temporaryRoots: string[] = [];
+const services: LibraryService[] = [];
+
+function newService(): LibraryService {
+  const service = new LibraryService({
+    observerFactory: () => ({ close() {} }),
+  });
+  services.push(service);
+  return service;
+}
+
+function removeFixtureRoot(root: string): void {
+  rmSync(root, { force: true, recursive: true });
+  if (existsSync(root)) {
+    throw new Error("PERF2-01 SMB fixture could not be deleted and must not remain on disk.");
+  }
+}
+
+beforeAll(() => {
+  if (!smbRoot || !existsSync(smbRoot)) return;
+  for (const name of readdirSync(smbRoot)) {
+    if (!name.startsWith(FIXTURE_PREFIX)) continue;
+    removeFixtureRoot(path.join(smbRoot, name));
+  }
+});
+
+afterEach(() => {
+  for (const service of services.splice(0)) {
+    try {
+      service.closeAll();
+    } catch {
+      // Close before delete even if the service is already torn down.
+    }
+  }
+  const failed = temporaryRoots.splice(0).reduce((count, root) => {
+    try {
+      removeFixtureRoot(root);
+      return count;
+    } catch {
+      return count + 1;
+    }
+  }, 0);
+  expect(failed, "PERF2-01 SMB fixture must not leave a residual directory").toBe(0);
+});
+
+describeSmb("PERF2-01 optional SMB persist baseline", () => {
+  it("times library and folder persist without recording the mount path", async () => {
+    const parent = smbRoot ?? tmpdir();
+    const freeBytes = await probeFreeBytes(parent);
+    if (freeBytes !== undefined && freeBytes < EXTRACT_HEADROOM_MIN_BYTES) {
+      throw new Error("PERF2-01 SMB fixture needs more free space on the target volume.");
+    }
+
+    const root = mkdtempSync(path.join(parent, FIXTURE_PREFIX));
+    temporaryRoots.push(root);
+    const service = newService();
+
+    const createStartedAt = performance.now();
+    const library = service.createLibrary({
+      displayName: "PERF2-01 SMB baseline",
+      selectedParentPath: root,
+    });
+    const createMs = performance.now() - createStartedAt;
+
+    const folderSamples: number[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const startedAt = performance.now();
+      service.createManagedFolder({
+        libraryId: library.libraryId,
+        name: `Folder ${index}`,
+      });
+      folderSamples.push(performance.now() - startedAt);
+    }
+
+    const browseStartedAt = performance.now();
+    const page = service.searchAssets({
+      libraryId: library.libraryId,
+      limit: 50,
+      offset: 0,
+    });
+    const browseMs = performance.now() - browseStartedAt;
+    service.closeAll();
+
+    console.info("[perf2-01-smb]", JSON.stringify({
+      persist: {
+        createLibraryMs: Number(createMs.toFixed(1)),
+        folderCreate: summarizeTimingSamples(folderSamples),
+      },
+      catalogRead: {
+        searchAssetsMs: Number(browseMs.toFixed(1)),
+      },
+      liveAssetCount: page.total,
+    }));
+    expect(page.total).toBe(0);
+    expect(createMs).toBeGreaterThan(0);
+  });
+});

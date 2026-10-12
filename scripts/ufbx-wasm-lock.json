@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "ufbx": {
+    "version": "0.23.0",
+    "tag": "v0.23.0",
+    "sourceUrl": "https://codeload.github.com/bqqbarbhg/ufbx/tar.gz/refs/tags/v0.23.0",
+    "sourceSha256": "efaed6c51f9c202e35255775775e3929d0c6978ddbb5cb888299f14d36c3c365",
+    "license": "MIT"
+  },
+  "emsdk": {
+    "version": "6.0.5"
+  },
+  "bridge": "scripts/ufbx-bridge.c",
+  "emccFlags": [
+    "-O2",
+    "-sWASM=1",
+    "-sMODULARIZE=1",
+    "-sENVIRONMENT=node",
+    "-sEXPORTED_FUNCTIONS=_worldlinebox_parse,_worldlinebox_error,_worldlinebox_out_ptr,_worldlinebox_out_size,_worldlinebox_free_out,_malloc,_free",
+    "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,HEAPU8,HEAPU32,HEAPF32",
+    "-sALLOW_MEMORY_GROWTH=1",
+    "-sMAXIMUM_MEMORY=2147483648",
+    "-sINITIAL_MEMORY=67108864",
+    "-sSTACK_SIZE=524288",
+    "-sFILESYSTEM=0",
+    "-sASSERTIONS=0",
+    "-g0"
+  ],
+  "artifacts": {
+    "ufbx.wasm": {
+      "sha256": "a182580f868f99ebf9cf618e59603ebce8aaab5a42e351676bccd0d82b2cdceb",
+      "note": "2026-08-07 rebuilt on Windows with Emscripten 6.0.5 after the WorldlineBox-a5ic bridge change #3: flip V texture coordinates (FBX bottom-left origin -> glTF top-left; matches FBX2glTF default). Wasm hash changed by the bridge edit; JS glue unchanged."
+    },
+    "ufbx.js": {
+      "sha256": "26f27f58377ff4ad4cfe46d7c71691b183e8930b91ab76789c5be824040c1d69",
+      "note": "2026-08-08 corrected to the committed glue hash (wasm from the 2026-08-07 Windows rebuild matches; the glue entry had kept a stale pre-bridge value)"
+    }
+  }
+}

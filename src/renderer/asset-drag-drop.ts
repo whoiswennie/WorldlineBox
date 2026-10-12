@@ -1,0 +1,243 @@
+// ---------------------------------------------------------------------------
+// Asset drag & drop (REQ-DND-001/002 + WorldlineBox-aa3 copy mode)
+//
+// Pure decision logic for dragging asset cards onto directory-tree targets.
+// The drag payload carries ALL selected asset ids as JSON under
+// MANAGED_ASSETS_DRAG_TYPE (the existing sidebar convention — linked rows
+// already consume it for 复制到链接文件夹); each drop target resolves
+// eligibility here so App.tsx stays a thin executor and every branch is
+// unit-testable without React or the DOM.
+//
+// Copy mode (Option/Alt held): dropEffect is "copy". Folder drops duplicate
+// managed files via copyAssets (WorldlineBox-2vn); collection drops are always
+// membership-add for both move and copy (never remove from a source folder
+// or source collection on sidebar drop).
+// ---------------------------------------------------------------------------
+
+export const MANAGED_ASSETS_DRAG_TYPE = 'application/x-worldlinebox-managed-assets';
+
+/** Minimal per-asset facts the drop resolution needs. */
+export interface DragAssetFact {
+  readonly assetId: string;
+  readonly locationKind: 'managed' | 'linked';
+  readonly availability: 'available' | 'missing';
+  readonly deletedAt: string | null;
+}
+
+/** Finder/Eagle-style modifier: Option (macOS) / Alt (Windows) = copy. */
+export type DragDropMode = 'move' | 'copy';
+
+/** Platform-correct modifier name for copy-mode toasts (WorldlineBox-2vn). */
+export function dragCopyModifierLabel(
+  platform: 'mac' | 'windows',
+): 'Option' | 'Alt' {
+  return platform === 'mac' ? 'Option' : 'Alt';
+}
+
+/**
+ * Selection snapshot for a drag start: dragging a card that belongs to the
+ * current selection moves the whole selection; dragging any other card moves
+ * just that card (it becomes selected on click elsewhere in the app).
+ */
+export function resolveDraggedAssetIds(
+  draggedAssetId: string,
+  selectedAssetIds: readonly string[],
+): string[] {
+  return selectedAssetIds.includes(draggedAssetId)
+    ? [...selectedAssetIds]
+    : [draggedAssetId];
+}
+
+export function supportsManagedAssetDrag(transfer: DataTransfer): boolean {
+  return transfer.types.includes(MANAGED_ASSETS_DRAG_TYPE);
+}
+
+/** Parse the drag payload on drop. Returns null for invalid/absent data. */
+export function parseManagedAssetDrag(transfer: DataTransfer): string[] | null {
+  const raw = transfer.getData(MANAGED_ASSETS_DRAG_TYPE);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) {
+      return null;
+    }
+    return parsed as string[];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ids for an in-app asset drop. An empty HTML5 payload or an empty in-memory
+ * snapshot is not a drop: native OS drags carry File handles instead, and
+ * treating `[]` as success skips that resolution.
+ */
+export function resolveInternalAssetDropIds(
+  transfer: DataTransfer,
+  fallbackIds: readonly string[] | null,
+): string[] | null {
+  const parsed = parseManagedAssetDrag(transfer);
+  if (parsed && parsed.length > 0) return parsed;
+  if (fallbackIds && fallbackIds.length > 0) return [...fallbackIds];
+  return null;
+}
+
+/** Map the Option/Alt modifier to move vs copy. */
+export function resolveDragDropMode(modifiers: {
+  readonly altKey: boolean;
+}): DragDropMode {
+  return modifiers.altKey ? 'copy' : 'move';
+}
+
+/**
+ * HTML5 dropEffect for managed-asset drops onto folder / collection targets.
+ * Callers must set effectAllowed to "copyMove" (or broader) at dragstart.
+ */
+export function resolveManagedDropEffect(
+  mode: DragDropMode,
+): 'copy' | 'move' {
+  return mode === 'copy' ? 'copy' : 'move';
+}
+
+/** Assets eligible for a folder drop: managed or linked, present on disk, not trashed. */
+function folderDropAssets(assets: readonly DragAssetFact[]): DragAssetFact[] {
+  return assets.filter(
+    (asset) =>
+      asset.availability === 'available' &&
+      !asset.deletedAt,
+  );
+}
+
+/** Assets eligible for the WorldlineBox trash: linked files stay outside the trash. */
+function movableAssets(assets: readonly DragAssetFact[]): DragAssetFact[] {
+  return assets.filter(
+    (asset) =>
+      asset.locationKind === 'managed' &&
+      asset.availability === 'available' &&
+      !asset.deletedAt,
+  );
+}
+
+/** Assets eligible for collection membership: any non-trashed asset (linked OK). */
+function membershipEligibleAssets(
+  assets: readonly DragAssetFact[],
+): DragAssetFact[] {
+  return assets.filter((asset) => !asset.deletedAt);
+}
+
+export type FolderDropResolution =
+  | { readonly kind: 'move'; readonly assetIds: string[]; readonly skippedCount: number }
+  | { readonly kind: 'copy'; readonly assetIds: string[]; readonly skippedCount: number }
+  | {
+      readonly kind: 'reject';
+      readonly reason: 'same-folder' | 'no-eligible-assets';
+      readonly skippedCount: number;
+    };
+
+/**
+ * Resolve a drop onto a managed folder row (or the library root, targetFolderId
+ * = null). Move onto the current folder is a no-op reject; copy onto the
+ * current folder is allowed (Finder-style duplicate with keep-both naming).
+ * Missing/trashed assets are skipped and counted for the result toast. Linked
+ * assets are accepted too; the executor copies them into a managed folder
+ * because their source remains owned by the linked directory.
+ */
+export function resolveFolderDrop(input: {
+  readonly targetFolderId: string | null;
+  readonly currentFolderId: string | null;
+  readonly assets: readonly DragAssetFact[];
+  readonly mode?: DragDropMode;
+}): FolderDropResolution {
+  const mode = input.mode ?? 'move';
+  if (mode === 'move' && input.targetFolderId === input.currentFolderId) {
+    return { kind: 'reject', reason: 'same-folder', skippedCount: 0 };
+  }
+  const eligible = folderDropAssets(input.assets);
+  const skippedCount = input.assets.length - eligible.length;
+  if (eligible.length === 0) {
+    return { kind: 'reject', reason: 'no-eligible-assets', skippedCount };
+  }
+  return {
+    kind: mode === 'copy' ? 'copy' : 'move',
+    assetIds: eligible.map((asset) => asset.assetId),
+    skippedCount,
+  };
+}
+
+export type CollectionDropResolution =
+  | {
+      readonly kind: 'add-membership';
+      readonly assetIds: string[];
+      readonly skippedCount: number;
+      /** Echoed for callers/tests; both modes use membership-add. */
+      readonly mode: DragDropMode;
+    }
+  | {
+      readonly kind: 'reject';
+      readonly reason: 'no-eligible-assets';
+      readonly skippedCount: number;
+    };
+
+/**
+ * Resolve a drop onto a (manual) collection row.
+ *
+ * Collections are multi-membership: both move and copy modes only *add*
+ * membership. They never remove the asset from its folder or from another
+ * collection. Trashed assets are skipped (same fail-closed posture as menus).
+ */
+export function resolveCollectionDrop(input: {
+  readonly assets: readonly DragAssetFact[];
+  readonly mode: DragDropMode;
+}): CollectionDropResolution {
+  const eligible = membershipEligibleAssets(input.assets);
+  const skippedCount = input.assets.length - eligible.length;
+  if (eligible.length === 0) {
+    return { kind: 'reject', reason: 'no-eligible-assets', skippedCount };
+  }
+  return {
+    kind: 'add-membership',
+    assetIds: eligible.map((asset) => asset.assetId),
+    skippedCount,
+    mode: input.mode,
+  };
+}
+
+export interface TrashDropResolution {
+  readonly assetIds: string[];
+  readonly skippedCount: number;
+}
+
+/**
+ * Resolve a drop onto the trash row: same eligibility as the batch 移至回收站
+ * menu action (managed + available + not already trashed); skips are counted
+ * for the result toast. Linked assets never enter the WorldlineBox trash.
+ * Copy mode does not apply (trash remains a move/delete target).
+ */
+export function resolveTrashDrop(
+  assets: readonly DragAssetFact[],
+): TrashDropResolution {
+  const eligible = movableAssets(assets);
+  return {
+    assetIds: eligible.map((asset) => asset.assetId),
+    skippedCount: assets.length - eligible.length,
+  };
+}
+
+/**
+ * WorldlineBox-374266: which of the dropped assets are not members of the collection
+ * yet. Dropping an asset into a collection it already belongs to changes
+ * nothing, so the caller stays silent instead of reporting an add that did not
+ * happen.
+ */
+export function resolveNewCollectionMembers(
+  assetIds: readonly string[],
+  memberships: readonly { assetId: string; collectionId: string }[],
+  collectionId: string,
+): string[] {
+  const existing = new Set(
+    memberships
+      .filter((entry) => entry.collectionId === collectionId)
+      .map((entry) => entry.assetId),
+  );
+  return assetIds.filter((assetId) => !existing.has(assetId));
+}

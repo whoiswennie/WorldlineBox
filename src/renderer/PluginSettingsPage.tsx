@@ -1,0 +1,1112 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
+
+import type {
+  PluginCommunityCatalogSnapshot,
+  PluginManagerPackageSummary,
+  PluginManagerRequest,
+  PluginManagerResolutionCandidate,
+  PluginManagerResolutionSummary,
+  WorldlineBoxPluginManagerApi,
+} from '../shared/plugin-manager-api';
+import type { PluginInstallProgress } from '../shared/plugin-install-progress';
+import { parseGitHubRepositoryUrl } from '../shared/plugin-github-url';
+import { Icon } from './Icons';
+import { iconActionAttrs } from './icon-action-attrs';
+import { pluginRequiresTrustedCssDisclosure } from '../plugins/plugin-themes';
+import { resolvePluginDisplayCopy } from '../plugins/plugin-localized-copy';
+import { PluginUninstallDialog } from './PluginUninstallDialog';
+import { DialogShell } from './ui/patterns';
+import { useLocale, useT } from './i18n';
+
+type PluginSettingsPageProps = {
+  readonly api: WorldlineBoxPluginManagerApi | undefined;
+  readonly libraryId: string | undefined;
+  readonly onOpenCommunity?: () => void;
+  readonly onOpenPluginSettings?: (pluginId: string) => void;
+  readonly refreshKey: string | null;
+};
+
+type PluginSnapshot = Extract<
+  Awaited<ReturnType<WorldlineBoxPluginManagerApi['request']>>,
+  { ok: true; packages: unknown }
+>;
+
+type InstallScope = 'user' | 'library';
+
+type PendingPluginUninstall = {
+  readonly pluginId: string;
+  readonly version: string;
+  readonly scope: InstallScope;
+  readonly displayName: string;
+  readonly libraryId: string | undefined;
+};
+
+type RendererShellApi = {
+  openExternalUrl(url: string): Promise<{ ok: boolean }>;
+};
+
+function formatPluginManagerFailure(
+  response: Extract<Awaited<ReturnType<WorldlineBoxPluginManagerApi['request']>>, { ok: false }>,
+  t: ReturnType<typeof useT>,
+): string {
+  if (response.message !== undefined && response.message.trim() !== '') {
+    return t('settings.pluginOperationFailedDetail', {
+      code: response.failureCode ?? response.code,
+      message: response.message,
+    });
+  }
+  return t('settings.pluginOperationFailed', { code: response.failureCode ?? response.code });
+}
+
+function candidateLabel(candidate: PluginManagerResolutionCandidate, t: ReturnType<typeof useT>): string {
+  return candidate.scope === 'user'
+    ? t('settings.pluginUseUserVersion', { version: candidate.version })
+    : t('settings.pluginUseLibraryVersion', { version: candidate.version });
+}
+
+function isPluginEnabledForScope(
+  resolution: PluginManagerResolutionSummary | undefined,
+  scope: InstallScope,
+): boolean {
+  if (resolution?.status !== 'resolved') return false;
+  if (resolution.selection === 'use-global') return scope === 'user';
+  if (resolution.selection === 'use-library') return scope === 'library';
+  return false;
+}
+
+function canTogglePluginEnabled(
+  resolution: PluginManagerResolutionSummary | undefined,
+  libraryId: string | undefined,
+): boolean {
+  if (libraryId === undefined) return false;
+  if (resolution === undefined) return false;
+  if (resolution.status === 'resolved') return true;
+  if (resolution.status === 'disabled' && resolution.reason === 'user-disabled') return true;
+  if (resolution.status === 'awaiting-trust') return true;
+  if (resolution.status === 'requires-confirmation') return true;
+  return false;
+}
+
+function pluginEnableRiskMessage(
+  pluginPackage: PluginManagerPackageSummary,
+  t: ReturnType<typeof useT>,
+): string {
+  const permissions = pluginPackage.permissions.length > 0
+    ? pluginPackage.permissions.join(', ')
+    : t('settings.pluginNoPermissions');
+  const runtime = pluginPackage.runtimeMode === 'unrestricted'
+    ? t('settings.pluginRuntimeTrusted')
+    : t('settings.pluginRuntimeStandard');
+  return t('settings.pluginEnableRisk', {
+    plugin: pluginPackage.name,
+    runtime,
+    permissions,
+  });
+}
+
+function confirmationPackage(
+  resolution: Extract<PluginManagerResolutionSummary, { status: 'requires-confirmation' }>,
+): PluginManagerResolutionCandidate {
+  return resolution.candidate ?? resolution.current;
+}
+
+function confirmationHintKey(
+  reason: Extract<PluginManagerResolutionSummary, { status: 'requires-confirmation' }>['reason'],
+): 'settings.pluginUpdateNeedsConfirmation'
+  | 'settings.pluginConfirmPermissionsIncreased'
+  | 'settings.pluginConfirmRuntimeChanged'
+  | 'settings.pluginConfirmSourceChanged' {
+  switch (reason) {
+    case 'permissions-increased':
+      return 'settings.pluginConfirmPermissionsIncreased';
+    case 'runtime-mode-changed':
+      return 'settings.pluginConfirmRuntimeChanged';
+    case 'source-changed':
+      return 'settings.pluginConfirmSourceChanged';
+    case 'selected-package-unavailable':
+      return 'settings.pluginUpdateNeedsConfirmation';
+  }
+}
+
+function shellApi(): RendererShellApi | undefined {
+  return (window as unknown as { worldlinebox?: { shell?: RendererShellApi } }).worldlinebox?.shell;
+}
+
+function formatInstallBytes(value: number): string {
+  if (value < 1_024) return `${value} B`;
+  if (value < 1_024 * 1_024) return `${(value / 1_024).toFixed(1)} KB`;
+  return `${(value / (1_024 * 1_024)).toFixed(1)} MB`;
+}
+
+export function PluginSettingsPage({
+  api,
+  libraryId,
+  onOpenCommunity,
+  onOpenPluginSettings,
+  refreshKey,
+}: PluginSettingsPageProps): ReactNode {
+  const t = useT();
+  const { locale } = useLocale();
+  const [snapshot, setSnapshot] = useState<PluginSnapshot | undefined>();
+  const [catalog, setCatalog] = useState<PluginCommunityCatalogSnapshot | undefined>();
+  const [installOpen, setInstallOpen] = useState(false);
+  const [installScope, setInstallScope] = useState<InstallScope>('user');
+  const [githubRepository, setGithubRepository] = useState('');
+  const [githubInstallOpen, setGithubInstallOpen] = useState(false);
+  const [githubOperationId, setGithubOperationId] = useState<string | undefined>();
+  const [githubProgress, setGithubProgress] = useState<PluginInstallProgress | undefined>();
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [installError, setInstallError] = useState<string | undefined>();
+  const [pendingUninstall, setPendingUninstall] = useState<PendingPluginUninstall | null>(null);
+
+  useEffect(() => {
+    if (api?.onInstallProgress === undefined) return undefined;
+    return api.onInstallProgress((event) => {
+      if (event.operationId === githubOperationId) setGithubProgress(event);
+    });
+  }, [api, githubOperationId]);
+
+  const load = useCallback(async () => {
+    if (api === undefined) {
+      setError(t('settings.pluginUnavailable'));
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await api.request({
+        type: 'plugin-manager.list',
+        ...(libraryId === undefined ? {} : { libraryId }),
+      });
+      if (!response.ok) {
+        setError(formatPluginManagerFailure(response, t));
+        return;
+      }
+      if (!('packages' in response)) {
+        setError(t('settings.pluginOperationFailed', { code: 'unexpected-response' }));
+        return;
+      }
+      setSnapshot(response);
+      setError(undefined);
+      try {
+        const catalogResponse = await api.request({
+          type: 'plugin-manager.community-catalog',
+          refresh: true,
+        });
+        if (catalogResponse.ok && 'catalog' in catalogResponse) {
+          setCatalog(catalogResponse.catalog);
+        }
+      } catch {
+        // Directory overlay is optional; the installed list remains usable.
+      }
+    } catch {
+      setError(t('settings.pluginOperationFailed', { code: 'bridge-unavailable' }));
+    } finally {
+      setLoading(false);
+    }
+  }, [api, libraryId, t]);
+
+  useEffect(() => {
+    const timer = globalThis.setTimeout(() => void load(), 0);
+    return () => globalThis.clearTimeout(timer);
+  }, [load, refreshKey]);
+
+  const execute = useCallback(async (request: PluginManagerRequest): Promise<boolean> => {
+    if (api === undefined) {
+      setError(t('settings.pluginUnavailable'));
+      return false;
+    }
+    setBusy(true);
+    try {
+      const response = await api.request(request);
+      if (!response.ok) {
+        if (response.code !== 'selection-cancelled') {
+          setError(formatPluginManagerFailure(response, t));
+        }
+        return false;
+      }
+      setError(undefined);
+      await load();
+      return true;
+    } catch {
+      setError(t('settings.pluginOperationFailed', { code: 'bridge-unavailable' }));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }, [api, load, t]);
+
+  const resolutionByPluginId = useMemo(
+    () => new Map(snapshot?.resolutions.map((resolution) => [resolution.pluginId, resolution]) ?? []),
+    [snapshot],
+  );
+
+  const packagesByScope = useMemo(() => {
+    const user: PluginManagerPackageSummary[] = [];
+    const library: PluginManagerPackageSummary[] = [];
+    for (const item of snapshot?.packages ?? []) {
+      if (item.scope === 'user') user.push(item);
+      else library.push(item);
+    }
+    const sortPackages = (items: PluginManagerPackageSummary[]) => [...items].sort((left, right) => {
+      const byId = left.pluginId.localeCompare(right.pluginId);
+      if (byId !== 0) return byId;
+      return right.version.localeCompare(left.version);
+    });
+    return {
+      user: sortPackages(user),
+      library: sortPackages(library),
+    };
+  }, [snapshot]);
+
+  const canUseLibraryScope = libraryId !== undefined;
+
+  const githubPackages = useMemo(
+    () => snapshot?.packages.filter((item) => item.source.kind === 'github' && item.status === 'valid') ?? [],
+    [snapshot],
+  );
+  const globalAutoUpdate = snapshot?.autoUpdateAll
+    ?? (githubPackages.length > 0 && githubPackages.every((item) => item.autoUpdate === true));
+
+  const setGlobalAutoUpdate = useCallback(async (enabled: boolean): Promise<void> => {
+    if (enabled && !globalThis.confirm(t('settings.pluginAutoUpdateRisk'))) return;
+    await execute({
+      type: 'plugin-manager.set-global-auto-update',
+      enabled,
+    });
+  }, [execute, t]);
+
+  const setEnabledForPackage = useCallback(async (
+    pluginPackage: PluginManagerPackageSummary,
+    enabled: boolean,
+  ): Promise<void> => {
+    if (libraryId === undefined) return;
+    if (!enabled) {
+      await execute({
+        type: 'plugin-manager.resolve',
+        libraryId,
+        pluginId: pluginPackage.pluginId,
+        selection: 'disabled',
+        ...(pluginPackage.scope === 'user' ? { propagateUserScoped: true } : {}),
+      });
+      return;
+    }
+    if (pluginPackage.scope === 'library' && pluginPackage.trust !== 'trusted') {
+      if (!globalThis.confirm(pluginEnableRiskMessage(pluginPackage, t))) return;
+      const trustSaved = await execute({
+        type: 'plugin-manager.trust',
+        scope: 'library',
+        libraryId,
+        pluginId: pluginPackage.pluginId,
+        packageHash: pluginPackage.packageHash,
+        decision: 'trusted',
+      });
+      if (!trustSaved) return;
+    }
+    await execute({
+      type: 'plugin-manager.resolve',
+      libraryId,
+      pluginId: pluginPackage.pluginId,
+      selection: pluginPackage.scope === 'user' ? 'use-global' : 'use-library',
+      packageHash: pluginPackage.packageHash,
+      ...(pluginPackage.scope === 'user' ? { propagateUserScoped: true } : {}),
+    });
+  }, [execute, libraryId, t]);
+
+  const openInstallDialog = useCallback(() => {
+    setGithubRepository('');
+    setInstallError(undefined);
+    setGithubInstallOpen(false);
+    setGithubOperationId(undefined);
+    setGithubProgress(undefined);
+    setInstallScope(libraryId === undefined ? 'user' : 'library');
+    setInstallOpen(true);
+  }, [libraryId]);
+
+  const closeInstallDialog = useCallback(() => {
+    const progress = githubProgress;
+    const operationId = githubOperationId;
+    if (api !== undefined
+      && operationId !== undefined
+      && progress !== undefined
+      && (progress.state === 'running' || progress.state === 'paused')) {
+      void api.request({ type: 'plugin-manager.install-control', operationId, action: 'stop' });
+    }
+    setInstallOpen(false);
+    setGithubInstallOpen(false);
+    setGithubRepository('');
+    setInstallError(undefined);
+    setGithubOperationId(undefined);
+    setGithubProgress(undefined);
+  }, [api, githubOperationId, githubProgress]);
+
+  const installScoped = useCallback(async (
+    request: Extract<PluginManagerRequest, { type: 'plugin-manager.install-local' }>,
+  ): Promise<void> => {
+    if (api === undefined) {
+      setInstallError(t('settings.pluginUnavailable'));
+      return;
+    }
+    setBusy(true);
+    setInstallError(undefined);
+    try {
+      const response = await api.request(request);
+      if (!response.ok) {
+        if (response.code !== 'selection-cancelled') {
+          setInstallError(formatPluginManagerFailure(response, t));
+        }
+        return;
+      }
+      setInstallError(undefined);
+      setError(undefined);
+      await load();
+      closeInstallDialog();
+    } catch {
+      setInstallError(t('settings.pluginOperationFailed', { code: 'bridge-unavailable' }));
+    } finally {
+      setBusy(false);
+    }
+  }, [api, closeInstallDialog, load, t]);
+
+  const startGithubInstall = useCallback(async (): Promise<void> => {
+    if (api === undefined) {
+      setInstallError(t('settings.pluginUnavailable'));
+      return;
+    }
+    let repository: string;
+    try {
+      repository = parseGitHubRepositoryUrl(githubRepository.trim()).repository;
+    } catch {
+      setInstallError(t('settings.pluginGitHubInvalidRepository'));
+      return;
+    }
+    const operationId = globalThis.crypto.randomUUID();
+    setGithubOperationId(operationId);
+    setGithubProgress({
+      operationId,
+      phase: 'resolving',
+      state: 'running',
+      bytesDownloaded: 0,
+    });
+    setInstallError(undefined);
+    setBusy(true);
+    try {
+      const response = await api.request({
+        type: 'plugin-manager.install-github',
+        scope: installScope,
+        ...(installScope === 'library' && libraryId !== undefined ? { libraryId } : {}),
+        repository,
+        operationId,
+      });
+      if (!response.ok) {
+        if (response.code !== 'selection-cancelled') {
+          setInstallError(formatPluginManagerFailure(response, t));
+        }
+        return;
+      }
+      setError(undefined);
+      await load();
+      setInstallOpen(false);
+      setGithubInstallOpen(false);
+      setGithubRepository('');
+      setGithubOperationId(undefined);
+      setGithubProgress(undefined);
+    } catch {
+      setInstallError(t('settings.pluginOperationFailed', { code: 'bridge-unavailable' }));
+    } finally {
+      setBusy(false);
+    }
+  }, [api, githubRepository, installScope, libraryId, load, t]);
+
+  const githubProgressActive = githubProgress?.state === 'running' || githubProgress?.state === 'paused';
+  const controlGithubInstall = useCallback((action: 'pause' | 'resume' | 'stop') => {
+    if (api === undefined || githubOperationId === undefined) return;
+    if (action === 'stop') {
+      closeInstallDialog();
+      return;
+    }
+    void api.request({
+      type: 'plugin-manager.install-control',
+      operationId: githubOperationId,
+      action,
+    });
+  }, [api, closeInstallDialog, githubOperationId]);
+
+  const scopeHoverTip = (scope: InstallScope): string => (
+    scope === 'library'
+      ? t('settings.pluginScopeLibraryHint')
+      : t('settings.pluginScopeUserTip')
+  );
+
+  const requestUninstall = useCallback((input: PendingPluginUninstall): void => {
+    setError(undefined);
+    setPendingUninstall(input);
+  }, []);
+
+  const confirmUninstall = useCallback(async (): Promise<void> => {
+    if (pendingUninstall === null) return;
+    const { pluginId, version, scope, libraryId: targetLibraryId } = pendingUninstall;
+    if (scope === 'library' && targetLibraryId !== libraryId) {
+      // The settings surface can outlive a library switch. Never resolve a
+      // captured package against a different open library.
+      setPendingUninstall(null);
+      return;
+    }
+    const completed = await execute({
+      type: 'plugin-manager.uninstall',
+      scope,
+      ...(scope === 'library' && targetLibraryId !== undefined ? { libraryId: targetLibraryId } : {}),
+      pluginId,
+      version,
+    });
+    if (completed) setPendingUninstall(null);
+  }, [execute, libraryId, pendingUninstall]);
+
+  const renderInstallCard = (scope: InstallScope): ReactNode => {
+    const packages = packagesByScope[scope];
+    const scopeDisabled = scope === 'library' && !canUseLibraryScope;
+    const pluginGroups = new Map<string, PluginManagerPackageSummary[]>();
+    for (const item of packages) {
+      const group = pluginGroups.get(item.pluginId) ?? [];
+      group.push(item);
+      pluginGroups.set(item.pluginId, group);
+    }
+    const grouped = [...pluginGroups.entries()];
+
+    return (
+      <section className="app-settings-card plugin-settings-scope-card" key={scope}>
+        <div className="app-settings-row-copy">
+          <strong
+            className="plugin-settings-scope-title"
+            {...(scope === 'library'
+              ? { 'data-hover-tip': t('settings.pluginScopeLibraryHint') }
+              : {})}
+          >
+            {scope === 'user' ? t('settings.pluginScopeUser') : t('settings.pluginScopeLibrary')}
+          </strong>
+        </div>
+        {scopeDisabled ? <p className="app-settings-hint">{t('settings.pluginLibraryClosedHint')}</p> : null}
+
+        {grouped.length === 0 && !scopeDisabled ? (
+          <p className="app-settings-hint">{t('settings.pluginEmpty')}</p>
+        ) : null}
+
+        {grouped.map(([pluginId, pluginPackages], groupIndex) => {
+          const resolution = resolutionByPluginId.get(pluginId);
+          const newest = pluginPackages[0];
+          if (newest === undefined) return null;
+          const enabled = isPluginEnabledForScope(resolution, scope);
+          const toggleEnabled = canTogglePluginEnabled(resolution, libraryId)
+            && newest.status === 'valid';
+          const canRollback = enabled
+            && libraryId !== undefined
+            && pluginPackages.length > 1;
+          const showSettingsAction = newest.status === 'valid'
+            && newest.hasSettingsUi
+            && onOpenPluginSettings !== undefined;
+          const catalogEntry = catalog?.plugins.find((item) => item.pluginId === pluginId);
+          const copy = resolvePluginDisplayCopy({
+            locale,
+            fallbackName: newest.name,
+            fallbackDescription: newest.description ?? pluginId,
+            manifestLocales: newest.locales,
+            catalog: catalogEntry,
+          });
+          const removed = catalog?.removed.some((item) => item.pluginId === pluginId) === true;
+          const githubRepository = newest.source.kind === 'github' ? newest.source.repository : undefined;
+          const permissionsTip = newest.permissions.length > 0
+            ? t('settings.pluginPermissionsTip', {
+              permissions: newest.permissions.join(', '),
+            })
+            : undefined;
+
+          return (
+            <div
+              className={`plugin-settings-package${groupIndex > 0 ? ' has-divider' : ''}`}
+              key={`${scope}:${pluginId}`}
+            >
+              <div className="plugin-settings-package-header">
+                <div className="plugin-settings-package-title-row">
+                  <div className="plugin-settings-package-title">
+                    <span
+                      className="plugin-settings-package-name"
+                      {...(copy.description.trim() !== ''
+                        ? { 'data-hover-tip': copy.description }
+                        : {})}
+                    >
+                      {copy.name}
+                      <span className="plugin-settings-package-version-inline">{` - v${newest.version}`}</span>
+                    </span>
+                    {catalogEntry?.tier === 'first-party' ? (
+                      <span className="plugin-community-badge plugin-community-badge--first-party">
+                        {t('settings.pluginCommunityOfficial')}
+                      </span>
+                    ) : null}
+                    {catalogEntry?.tier === 'certified' ? (
+                      <span className="plugin-community-badge plugin-community-badge--certified">
+                        {t('settings.pluginCommunityCertified')}
+                      </span>
+                    ) : null}
+                    {removed ? (
+                      <span
+                        className="plugin-community-badge plugin-community-badge--removed"
+                        data-hover-tip={t('settings.pluginCommunityRemovedHint')}
+                      >
+                        {t('settings.pluginCommunityRemoved')}
+                      </span>
+                    ) : null}
+                    <div className="plugin-settings-package-source-actions">
+                      {githubRepository !== undefined ? (
+                        <button
+                          className="plugin-settings-icon-action"
+                          disabled={busy}
+                          onClick={() => { void shellApi()?.openExternalUrl(githubRepository); }}
+                          type="button"
+                          {...iconActionAttrs(t('settings.pluginOpenGitHubSource'))}
+                        >
+                          <Icon name="github" size={14} />
+                        </button>
+                      ) : (
+                        <button
+                          className="plugin-settings-icon-action"
+                          disabled={busy || (newest.scope === 'library' && libraryId === undefined)}
+                          onClick={() => void execute({
+                            type: 'plugin-manager.reveal-package',
+                            scope: newest.scope,
+                            ...(newest.scope === 'library' && libraryId !== undefined ? { libraryId } : {}),
+                            pluginId,
+                            version: newest.version,
+                          })}
+                          type="button"
+                          {...iconActionAttrs(t('settings.pluginRevealPackage'))}
+                        >
+                          <Icon name="folder" size={14} />
+                        </button>
+                      )}
+                      {permissionsTip !== undefined ? (
+                        <span
+                          aria-label={permissionsTip}
+                          className="plugin-settings-permissions-info"
+                          data-hover-tip={permissionsTip}
+                          role="img"
+                        >
+                          <Icon name="alert-circle" size={14} />
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="plugin-settings-package-controls">
+                    <button
+                      className="plugin-settings-icon-action"
+                      disabled={busy || api === undefined}
+                      onClick={() => void execute({
+                        type: 'plugin-manager.reload',
+                        ...(libraryId === undefined ? {} : { libraryId }),
+                      })}
+                      type="button"
+                      {...iconActionAttrs(t('settings.pluginReload'))}
+                    >
+                      <Icon name="refresh" size={14} />
+                    </button>
+                    {showSettingsAction ? (
+                      <button
+                        className="plugin-settings-icon-action"
+                        disabled={busy}
+                        onClick={() => onOpenPluginSettings(pluginId)}
+                        type="button"
+                        {...iconActionAttrs(t('settings.pluginOpenSettings'))}
+                      >
+                        <Icon name="settings" size={14} />
+                      </button>
+                    ) : null}
+                    <button
+                      className="plugin-settings-icon-action"
+                      disabled={busy || (newest.scope === 'library' && libraryId === undefined)}
+                      onClick={() => requestUninstall({
+                        pluginId,
+                        version: newest.version,
+                        scope: newest.scope,
+                        displayName: copy.name,
+                        libraryId: newest.scope === 'library' ? libraryId : undefined,
+                      })}
+                      type="button"
+                      {...iconActionAttrs(t('settings.pluginUninstall'))}
+                    >
+                      <Icon name="trash" size={14} />
+                    </button>
+                    <label
+                      className="app-settings-toggle-row plugin-settings-enable-toggle"
+                    >
+                      <span className="visually-hidden">{t('settings.pluginEnable')}</span>
+                      <span className="app-settings-toggle-control">
+                        <input
+                          aria-label={t('settings.pluginEnable')}
+                          checked={enabled}
+                          disabled={busy || !toggleEnabled}
+                          onChange={(event) => void setEnabledForPackage(newest, event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span aria-hidden="true" className="app-settings-toggle-track" />
+                      </span>
+                    </label>
+                  </div>
+                </div>
+                {newest.source.kind === 'github' && newest.availableUpdate !== undefined ? (
+                  <div className="plugin-settings-update-row">
+                    <span className="plugin-settings-update-available">
+                      {t('settings.pluginUpdateAvailable', { version: newest.availableUpdate.version })}
+                    </span>
+                    <button
+                      className="secondary-button"
+                      disabled={busy || (newest.scope === 'library' && libraryId === undefined)}
+                      onClick={() => void execute({
+                        type: 'plugin-manager.update-github',
+                        scope: newest.scope,
+                        ...(newest.scope === 'library' && libraryId !== undefined ? { libraryId } : {}),
+                        pluginId,
+                        packageHash: newest.packageHash,
+                      })}
+                      type="button"
+                    >
+                      {t('settings.pluginUpdateNow')}
+                    </button>
+                  </div>
+                ) : null}
+                {newest.status === 'valid'
+                  && pluginRequiresTrustedCssDisclosure(newest.permissions)
+                  ? <p className="app-settings-hint">{t('settings.pluginThemeTrustedCssHint')}</p>
+                  : null}
+                {newest.runtimeMode === 'unrestricted' && newest.trust === 'trusted' && enabled ? (
+                  <p className="plugin-settings-unrestricted-warning">
+                    <Icon name="warning" size={14} />
+                    <span>{t('settings.pluginRuntimeTrustedHint')}</span>
+                  </p>
+                ) : null}
+                {newest.status === 'invalid'
+                  ? <p className="plugin-settings-error">{t('settings.pluginInvalid', { code: newest.errorCode ?? 'unknown' })}</p>
+                  : null}
+              </div>
+
+              {canRollback ? (
+                <div className="plugin-settings-resolution">
+                  <span>{t('settings.pluginRollbackHint')}</span>
+                  <button
+                    className="secondary-button"
+                    disabled={busy || libraryId === undefined}
+                    onClick={() => void execute({
+                      type: 'plugin-manager.rollback',
+                      libraryId: libraryId!,
+                      pluginId,
+                    })}
+                    type="button"
+                  >
+                    {t('settings.pluginRollback')}
+                  </button>
+                </div>
+              ) : null}
+
+              {resolution?.status === 'disabled' && resolution.reason === 'quarantined' ? (
+                <div className="plugin-settings-resolution">
+                  <span>{t('settings.pluginQuarantineHint')}</span>
+                  <button
+                    className="secondary-button"
+                    disabled={busy || libraryId === undefined}
+                    onClick={() => void execute({
+                      type: 'plugin-manager.clear-quarantine',
+                      libraryId: libraryId!,
+                      pluginId,
+                      packageHash: resolution.packageHash,
+                    })}
+                    type="button"
+                  >
+                    {t('settings.pluginReenable')}
+                  </button>
+                </div>
+              ) : null}
+
+              {resolution?.status === 'conflict' ? (
+                <div className="plugin-settings-resolution">
+                  <span>{t('settings.pluginConflictHint')}</span>
+                  {resolution.candidates.map((candidate) => (
+                    <button
+                      className="secondary-button"
+                      disabled={busy || libraryId === undefined}
+                      key={`${candidate.scope}:${candidate.packageHash}`}
+                      onClick={() => void execute({
+                        type: 'plugin-manager.resolve',
+                        libraryId: libraryId!,
+                        pluginId,
+                        selection: candidate.scope === 'user' ? 'use-global' : 'use-library',
+                        packageHash: candidate.packageHash,
+                        ...(candidate.scope === 'user' ? { propagateUserScoped: true } : {}),
+                      })}
+                      type="button"
+                    >
+                      {candidateLabel(candidate, t)}
+                    </button>
+                  ))}
+                  <button
+                    className="secondary-button"
+                    disabled={busy || libraryId === undefined}
+                    onClick={() => void execute({
+                      type: 'plugin-manager.resolve',
+                      libraryId: libraryId!,
+                      pluginId,
+                      selection: 'disabled',
+                      propagateUserScoped: true,
+                    })}
+                    type="button"
+                  >
+                    {t('settings.pluginDisable')}
+                  </button>
+                </div>
+              ) : null}
+
+              {resolution?.status === 'requires-confirmation' ? (
+                <div className="plugin-settings-resolution">
+                  <span>{t(confirmationHintKey(resolution.reason))}</span>
+                  <button
+                    className="secondary-button"
+                    disabled={busy || libraryId === undefined}
+                    onClick={() => {
+                      const target = confirmationPackage(resolution);
+                      void execute({
+                        type: 'plugin-manager.resolve',
+                        libraryId: libraryId!,
+                        pluginId,
+                        selection: target.scope === 'user' ? 'use-global' : 'use-library',
+                        packageHash: target.packageHash,
+                        ...(target.scope === 'user' ? { propagateUserScoped: true } : {}),
+                      });
+                    }}
+                    type="button"
+                  >
+                    {candidateLabel(confirmationPackage(resolution), t)}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={busy || libraryId === undefined}
+                    onClick={() => void execute({
+                      type: 'plugin-manager.resolve',
+                      libraryId: libraryId!,
+                      pluginId,
+                      selection: 'disabled',
+                      propagateUserScoped: true,
+                    })}
+                    type="button"
+                  >
+                    {t('settings.pluginDisable')}
+                  </button>
+                </div>
+              ) : null}
+
+              {resolution?.status === 'disabled' && resolution.reason === 'safe-mode' ? (
+                <p className="app-settings-hint">{t('settings.pluginStatusSafeMode')}</p>
+              ) : null}
+            </div>
+          );
+        })}
+      </section>
+    );
+  };
+
+  const libraryInstallDisabled = installScope === 'library' && !canUseLibraryScope;
+
+  return (
+    <div className="plugin-settings-page">
+      <section className="app-settings-card plugin-settings-overview">
+        <div className="app-settings-row app-settings-row-stack plugin-settings-overview-header">
+          <div className="app-settings-row-copy">
+            <strong>{t('settings.pluginsTitle')}</strong>
+            <span>{t('settings.pluginsHint')}</span>
+          </div>
+          <div className="plugin-settings-overview-actions">
+            <button
+              className="primary-button"
+              disabled={busy || api === undefined || onOpenCommunity === undefined}
+              onClick={onOpenCommunity}
+              type="button"
+            >
+              {t('settings.pluginCommunityOpen')}
+              <Icon name="external-link" size={13} />
+            </button>
+            <button
+              className="secondary-button"
+              disabled={busy || api === undefined}
+              onClick={openInstallDialog}
+              type="button"
+            >
+              {t('settings.pluginCommunityAdvanced')}
+            </button>
+          </div>
+        </div>
+        <label className="app-settings-toggle-row plugin-settings-safe-mode">
+          <span className="app-settings-row-copy">
+            <strong>{t('settings.pluginSafeMode')}</strong>
+            <span>{t('settings.pluginSafeModeHint')}</span>
+          </span>
+          <span className="app-settings-toggle-control">
+            <input
+              checked={snapshot?.safeMode ?? false}
+              disabled={busy || api === undefined}
+              onChange={(event) => void execute({
+                type: 'plugin-manager.safe-mode',
+                enabled: event.target.checked,
+              })}
+              type="checkbox"
+            />
+            <span aria-hidden="true" className="app-settings-toggle-track" />
+          </span>
+        </label>
+        <label className="app-settings-toggle-row plugin-settings-global-auto-update">
+          <span className="app-settings-row-copy">
+            <strong>{t('settings.pluginAutoUpdate')}</strong>
+            <span>{t('settings.pluginAutoUpdateHint')}</span>
+          </span>
+          <span className="app-settings-toggle-control">
+            <input
+              aria-label={t('settings.pluginAutoUpdate')}
+              checked={globalAutoUpdate}
+              disabled={busy || api === undefined}
+              onChange={(event) => void setGlobalAutoUpdate(event.target.checked)}
+              type="checkbox"
+            />
+            <span aria-hidden="true" className="app-settings-toggle-track" />
+          </span>
+        </label>
+      </section>
+
+      {error === undefined ? null : <p className="plugin-settings-error" role="status">{error}</p>}
+      {loading ? <p className="app-settings-hint">{t('settings.pluginLoading')}</p> : null}
+
+      {renderInstallCard('user')}
+      {renderInstallCard('library')}
+
+      {installOpen ? (
+        <div
+          className="dialog-backdrop plugin-install-dialog-backdrop"
+          role="presentation"
+        >
+          <DialogShell
+            className="create-dialog plugin-install-dialog"
+            dialogId="plugin-install-dialog"
+            onRequestClose={() => {
+              if (!busy) closeInstallDialog();
+            }}
+            headerActions={(
+              <button
+                className="dialog-close"
+                onClick={closeInstallDialog}
+                type="button"
+              >
+                <Icon name="close" size={16} />
+                <span className="visually-hidden">{t('common.cancel')}</span>
+              </button>
+            )}
+            style={{ padding: 0 }}
+            title={githubInstallOpen ? t('settings.pluginGitHubInstallTitle') : t('settings.pluginInstall')}
+          >
+            <label className="plugin-install-scope-field">
+              <span className="micro-label">{t('settings.pluginInstallScope')}</span>
+              <select
+                className="text-field"
+                disabled={busy}
+                onChange={(event) => setInstallScope(event.target.value as InstallScope)}
+                title={scopeHoverTip(installScope)}
+                value={installScope}
+              >
+                <option title={scopeHoverTip('user')} value="user">
+                  {t('settings.pluginScopeUser')}
+                </option>
+                <option
+                  disabled={!canUseLibraryScope}
+                  title={canUseLibraryScope ? scopeHoverTip('library') : t('settings.pluginLibraryClosedHint')}
+                  value="library"
+                >
+                  {t('settings.pluginScopeLibrary')}
+                </option>
+              </select>
+            </label>
+            {scopeHoverTip(installScope) ? <p className="app-settings-hint">{scopeHoverTip(installScope)}</p> : null}
+            {libraryInstallDisabled ? <p className="app-settings-hint">{t('settings.pluginLibraryClosedHint')}</p> : null}
+
+            {githubInstallOpen ? (
+              <div className="plugin-install-github-view">
+                <button
+                  className="plugin-install-back"
+                  disabled={githubProgressActive}
+                  onClick={() => setGithubInstallOpen(false)}
+                  type="button"
+                >
+                  <Icon name="chevron-left" size={14} />
+                  {t('settings.pluginInstallBack')}
+                </button>
+                <div className="plugin-install-github-intro">
+                  <span className="plugin-install-choice-icon github"><Icon name="github" size={22} /></span>
+                  <div>
+                    <strong>{t('settings.pluginGitHubInstallTitle')}</strong>
+                    <p>{t('settings.pluginInstallGitHubHint')}</p>
+                  </div>
+                </div>
+                <label className="plugin-install-repository-field">
+                  <span className="micro-label">{t('settings.pluginGitHubRepository')}</span>
+                  <input
+                    aria-label={t('settings.pluginGitHubRepository')}
+                    className="text-field"
+                    disabled={busy || api === undefined || libraryInstallDisabled || githubProgressActive}
+                    onChange={(event) => setGithubRepository(event.target.value)}
+                    placeholder={t('settings.pluginGitHubPlaceholder')}
+                    type="text"
+                    value={githubRepository}
+                  />
+                </label>
+                {githubProgress === undefined ? null : (
+                  <div className="plugin-install-progress" role="status">
+                    <div className="plugin-install-progress-label">
+                      <span>
+                        {githubProgress.phase === 'resolving'
+                          ? t('settings.pluginInstallResolving')
+                          : githubProgress.phase === 'installing'
+                            ? t('settings.pluginInstallInstalling')
+                            : t('settings.pluginInstallDownloading')}
+                      </span>
+                      {githubProgress.totalBytes === undefined ? null : (
+                        <span>{Math.round((githubProgress.bytesDownloaded / Math.max(1, githubProgress.totalBytes)) * 100)}%</span>
+                      )}
+                    </div>
+                    <progress
+                      aria-label={t('settings.pluginInstallDownloading')}
+                      className="plugin-install-progress-bar"
+                      max={githubProgress.totalBytes ?? 1}
+                      value={githubProgress.totalBytes === undefined ? undefined : githubProgress.bytesDownloaded}
+                    />
+                    {githubProgress.phase === 'downloading' ? (
+                      <span className="app-settings-hint">
+                        {t('settings.pluginInstallDownloaded', {
+                          downloaded: formatInstallBytes(githubProgress.bytesDownloaded),
+                          total: githubProgress.totalBytes === undefined ? '' : ` / ${formatInstallBytes(githubProgress.totalBytes)}`,
+                        })}
+                      </span>
+                    ) : null}
+                    {githubProgress.message !== undefined ? <p className="plugin-settings-error">{githubProgress.message}</p> : null}
+                  </div>
+                )}
+                {installError === undefined ? null : <p className="plugin-settings-error" role="status">{installError}</p>}
+                <div className="plugin-install-github-actions">
+                  {githubProgressActive ? (
+                    <>
+                      <button
+                        className="secondary-button"
+                        onClick={() => controlGithubInstall(githubProgress?.state === 'paused' ? 'resume' : 'pause')}
+                        type="button"
+                      >
+                        {githubProgress?.state === 'paused' ? t('settings.pluginInstallResume') : t('settings.pluginInstallPause')}
+                      </button>
+                      <button className="secondary-button plugin-install-stop-button" onClick={() => controlGithubInstall('stop')} type="button">
+                        {t('settings.pluginInstallStop')}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      className="primary-button"
+                      disabled={busy || githubRepository.trim() === '' || api === undefined || libraryInstallDisabled}
+                      onClick={() => void startGithubInstall()}
+                      type="button"
+                    >
+                      {t('settings.pluginGitHubInstallStart')}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <>
+                {installError === undefined ? null : <p className="plugin-settings-error" role="status">{installError}</p>}
+                <div className="plugin-install-choice-grid">
+                  <button
+                    className="plugin-install-choice"
+                    disabled={busy || api === undefined || libraryInstallDisabled}
+                    onClick={() => void installScoped({
+                      type: 'plugin-manager.install-local',
+                      sourceKind: 'zip',
+                      scope: installScope,
+                      ...(installScope === 'library' && libraryId !== undefined ? { libraryId } : {}),
+                    })}
+                    type="button"
+                  >
+                    <span className="plugin-install-choice-icon"><Icon name="archive" size={22} /></span>
+                    <span className="plugin-install-choice-copy">
+                      <strong>{t('settings.pluginInstallLocalZipAction')}</strong>
+                      <span>{t('settings.pluginInstallLocalZipHint')}</span>
+                    </span>
+                    <Icon name="chevron-right" size={16} />
+                  </button>
+                  <button
+                    className="plugin-install-choice"
+                    disabled={busy || api === undefined || libraryInstallDisabled}
+                    onClick={() => void installScoped({
+                      type: 'plugin-manager.install-local',
+                      sourceKind: 'folder',
+                      scope: installScope,
+                      ...(installScope === 'library' && libraryId !== undefined ? { libraryId } : {}),
+                    })}
+                    type="button"
+                  >
+                    <span className="plugin-install-choice-icon"><Icon name="folder" size={22} /></span>
+                    <span className="plugin-install-choice-copy">
+                      <strong>{t('settings.pluginInstallLocalFolderAction')}</strong>
+                      <span>{t('settings.pluginInstallLocalFolderHint')}</span>
+                    </span>
+                    <Icon name="chevron-right" size={16} />
+                  </button>
+                  <button
+                    className="plugin-install-choice"
+                    disabled={busy || api === undefined || libraryInstallDisabled}
+                    onClick={() => {
+                      setGithubRepository('');
+                      setInstallError(undefined);
+                      setGithubInstallOpen(true);
+                    }}
+                    type="button"
+                  >
+                    <span className="plugin-install-choice-icon github"><Icon name="github" size={22} /></span>
+                    <span className="plugin-install-choice-copy">
+                      <strong>{t('settings.pluginInstallGitHubAction')}</strong>
+                      <span>{t('settings.pluginInstallGitHubHint')}</span>
+                    </span>
+                    <Icon name="chevron-right" size={16} />
+                  </button>
+                </div>
+              </>
+            )}
+          </DialogShell>
+        </div>
+      ) : null}
+
+      {pendingUninstall === null ? null : (
+        <PluginUninstallDialog
+          busy={busy}
+          error={error}
+          onCancel={() => {
+            if (!busy) {
+              setPendingUninstall(null);
+              setError(undefined);
+            }
+          }}
+          onConfirm={() => void confirmUninstall()}
+          pluginName={pendingUninstall.displayName}
+          scopeLabel={pendingUninstall.scope === 'library'
+            ? t('settings.pluginScopeLibrary')
+            : t('settings.pluginScopeUser')}
+          version={pendingUninstall.version}
+        />
+      )}
+    </div>
+  );
+}

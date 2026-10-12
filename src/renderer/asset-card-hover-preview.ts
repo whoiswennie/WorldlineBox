@@ -1,0 +1,189 @@
+import { fileExtensionLabel } from "./asset-card-badges";
+import type { PreviewResolution } from "../shared/library-api";
+
+/** GIF or video that can play in-place on the grid card via requestPreview. */
+export function isCardHoverPreviewable(asset: {
+  mediaType: "image" | "video" | "audio" | "text" | "model" | "document" | "font" | "other";
+  displayName: string;
+  availability?: "available" | "missing";
+  deletedAt?: string | null;
+  sequence?: { frameCount: number } | null;
+}): boolean {
+  if (asset.deletedAt) return false;
+  if (asset.availability === "missing") return false;
+  // Sequences animate from thumbnail artifacts in AssetCardMedia; do not also
+  // request client preview (that stacks a second layer and flickers).
+  if (asset.sequence && asset.sequence.frameCount >= 3) return false;
+  if (asset.mediaType === "video") return true;
+  // Audio plays in-place on hover (WorldlineBox hover 音频工单).
+  if (asset.mediaType === "audio") return true;
+  return fileExtensionLabel(asset.displayName) === "GIF";
+}
+
+/** Whether the card should cycle sequence thumbnails on hover/selection. */
+export function isCardSequencePlayable(asset: {
+  availability?: "available" | "missing";
+  sequence?: { frameCount: number } | null;
+}): boolean {
+  if (asset.availability === "missing") return false;
+  return Boolean(asset.sequence && asset.sequence.frameCount >= 3);
+}
+
+/**
+ * At most one active card preview. Hover wins over primary selection when both
+ * would qualify.
+ */
+export function resolveActivePreviewAssetId(input: {
+  hoveredAssetId: string | null;
+  primarySelectedAssetId: string | null | undefined;
+  isPreviewable: (assetId: string) => boolean;
+}): string | null {
+  const { hoveredAssetId, primarySelectedAssetId, isPreviewable } = input;
+  if (hoveredAssetId != null && isPreviewable(hoveredAssetId)) {
+    return hoveredAssetId;
+  }
+  if (
+    primarySelectedAssetId != null &&
+    isPreviewable(primarySelectedAssetId)
+  ) {
+    return primarySelectedAssetId;
+  }
+  return null;
+}
+
+/** Static cover URL for a ready thumbnail artifact. */
+export function coverSrc(
+  libraryId: string,
+  thumbnailArtifactId: string,
+): string {
+  return `worldlinebox://preview/${libraryId}/${thumbnailArtifactId}`;
+}
+
+/**
+ * React identity for a card must include its library. Asset ids are only
+ * unique inside a library, and preserving a key across a library switch can
+ * leave a card component holding the previous library's media state.
+ */
+export function assetCardKey(
+  libraryId: string | undefined,
+  assetId: string,
+): string {
+  return `${libraryId ?? "no-library"}:${assetId}`;
+}
+
+/** Original-file URL used by a bounded source-direct card preview. */
+export function sourceSrc(
+  libraryId: string,
+  assetId: string,
+  revisionId: string,
+): string {
+  return `worldlinebox://source/${libraryId}/${assetId}?revision=${encodeURIComponent(revisionId)}`;
+}
+
+export function resolveAssetCardCoverUrl(input: {
+  libraryId: string | undefined;
+  assetId: string;
+  mediaType: "image" | "video" | "audio" | "text" | "model" | "document" | "font" | "other";
+  availability?: "available" | "missing";
+  deletedAt?: string | null;
+  thumbnailStatus: "ready" | "pending" | "failed" | null;
+  thumbnailArtifactId: string | null;
+  /**
+   * The compact BrowseSession layout can observe a ready artifact before the
+   * heavier AssetSummary page does. It is a same-session fallback only; a
+   * failed summary must never resurrect a stale artifact from that snapshot.
+   */
+  layoutPreviewArtifactId?: string | null;
+  previewKind?: "source" | null;
+  previewRevisionId?: string | null;
+}): { url: string | null; usedSourceFallback: boolean } {
+  const { libraryId } = input;
+  if (!libraryId) return { url: null, usedSourceFallback: false };
+  const artifactId = input.thumbnailStatus === "failed"
+    ? input.thumbnailArtifactId
+    : input.thumbnailArtifactId ?? input.layoutPreviewArtifactId ?? null;
+  if (input.thumbnailStatus === "ready" && artifactId) {
+    return {
+      url: coverSrc(libraryId, artifactId),
+      usedSourceFallback: false,
+    };
+  }
+  if (input.thumbnailStatus !== "failed" && input.layoutPreviewArtifactId) {
+    return {
+      url: coverSrc(libraryId, input.layoutPreviewArtifactId),
+      usedSourceFallback: false,
+    };
+  }
+  if (
+    input.mediaType === "image"
+    && input.availability !== "missing"
+    && !input.deletedAt
+    && input.previewKind === "source"
+    && input.previewRevisionId
+  ) {
+    return {
+      url: sourceSrc(libraryId, input.assetId, input.previewRevisionId),
+      usedSourceFallback: true,
+    };
+  }
+  return { url: null, usedSourceFallback: false };
+}
+
+export interface LivePreviewMedia {
+  /** Playable URL, present only when this preview should actually render. */
+  url: string | undefined;
+  /** Which live element to render; `null` means fall back to the static cover. */
+  kind: "gif" | "video" | "audio" | null;
+}
+
+/**
+ * Decide which live media (if any) a hover/selection preview should render,
+ * shared by the canvas card (`AssetCardMedia`) and the Inspector hero
+ * (WorldlineBox-a9n) so both use one tested rule: only an active, ready
+ * resolution with a URL plays, and only images (GIFs) or videos are eligible
+ * — anything else (including no active target, e.g. multi-selection) falls
+ * back to the static cover/thumbnail.
+ *
+ * WorldlineBox-43d32f: animated GIFs no longer resolve through a WebM proxy; the
+ * image branch plays the source GIF natively in `<img>`.
+ */
+export function resolveLivePreviewMedia(
+  isActive: boolean,
+  preview:
+    | (Pick<PreviewResolution, "status" | "url" | "mediaType" | "posterUrl">
+      & { kind?: PreviewResolution["kind"] })
+    | null
+    | undefined,
+): LivePreviewMedia {
+  const url = isActive && preview?.status === "ready" ? preview.url : undefined;
+  if (!url) return { url: undefined, kind: null };
+  if (preview?.mediaType === "image") return { url, kind: "gif" };
+  if (preview?.mediaType === "video") return { url, kind: "video" };
+  if (preview?.mediaType === "audio") return { url, kind: "audio" };
+  return { url: undefined, kind: null };
+}
+
+/**
+ * Video hover preview muted state (WorldlineBox hover 音频工单): sound only plays
+ * while the pointer is actually hovering and the preference is on; primary
+ * selection keeps the silent preview, and the viewer's own mute wins always.
+ */
+export function resolveLiveVideoMuted(input: {
+  hovering: boolean;
+  hoverVideoSound: boolean;
+  mediaMuted: boolean;
+}): boolean {
+  const { hovering, hoverVideoSound, mediaMuted } = input;
+  return mediaMuted || !hovering || !hoverVideoSound;
+}
+
+/**
+ * Whether the in-place audio preview should play: pointer hover only, gated by
+ * the preference. Selection never plays audio.
+ */
+export function shouldPlayLiveAudio(input: {
+  hovering: boolean;
+  hoverAudioPlay: boolean;
+}): boolean {
+  return input.hovering && input.hoverAudioPlay;
+}

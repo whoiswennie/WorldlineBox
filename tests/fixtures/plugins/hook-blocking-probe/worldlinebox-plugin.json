@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 1,
+  "id": "com.worldlinebox.hook-blocking-probe",
+  "version": "1.0.0",
+  "name": "Hook Blocking Probe",
+  "description": "Fixed test plugin that blocks asset.trash through an onWill hook.",
+  "author": "WorldlineBox",
+  "license": "MIT",
+  "engines": {
+    "worldlinebox": ">=0.1.0 <1.0.0",
+    "pluginApi": 1
+  },
+  "runtime": {
+    "mode": "restricted",
+    "entry": "entry/main.js"
+  },
+  "permissions": [
+    "library.read",
+    "asset.read",
+    "storage.read",
+    "storage.write",
+    "hook.blocking"
+  ],
+  "contributes": {
+    "commands": [],
+    "menus": {},
+    "views": [],
+    "settings": [],
+    "hooks": [
+      {
+        "id": "guard-trash",
+        "event": "asset.trash",
+        "blocking": true
+      }
+    ],
+    "providers": []
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "bundles": {
+    "darwin-arm64": {
+      "status": "ready",
+      "url": "https://api.github.com/repositories/1327651093/releases/376150770",
+      "sha256": "e13e392d555797229e3dbe32857c7dd0f0f30df820b379eb6f7c436ecd09b774",
+      "size": 32647951,
+      "manifestSha256": "54598a5a52a490fd028a69df05d56094af0307d5daa4bbd82c4c31afc004e7e7",
+      "upstreamManifestSha256": "92bf182a2cc7dbf855b038ea92098fb153d799c24edcb1c09cf63f1c0d641472",
+      "brandingTransform": "worldlinebox-v1"
+    },
+    "win32-x64": {
+      "status": "ready",
+      "url": "https://api.github.com/repositories/1327651093/releases/376150770",
+      "sha256": "4b722ef546cb802fc05eb1baae9de6dda6721749713b05f34d4317271118cbe5",
+      "size": 103539191,
+      "manifestSha256": "44e47704a7af189848e4530021da814c15590e04cfa937d0cea67c82bb53faaf",
+      "promotedAt": "2026-08-25T12:45:00.000Z",
+      "upstreamManifestSha256": "8464bca777de24a9646046f13926632177140d10a83ad89ff545223f0409ecea",
+      "brandingTransform": "worldlinebox-v2"
+    }
+  }
+}

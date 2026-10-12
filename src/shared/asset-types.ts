@@ -1,0 +1,695 @@
+import { z } from 'zod';
+
+import { entityAppearanceSchema } from './entity-appearance';
+
+const nonBlankString = z.string().min(1).refine((value) => value.trim().length > 0);
+const boundedSearchValue = nonBlankString.max(512);
+
+/**
+ * Canonical path form that is safe to expose across the Renderer boundary.
+ *
+ * WorldlineBox persists relative paths with POSIX separators on every platform.
+ * Rejecting absolute, drive-qualified, backslash-separated, empty, and dot
+ * segments keeps a parsed value relative without relying on the host OS path
+ * implementation.
+ */
+export const portableRelativePathSchema = nonBlankString.superRefine((value, context) => {
+  if (value.startsWith('/') || /^[A-Za-z]:/u.test(value)) {
+    context.addIssue({ code: 'custom', message: 'Path must be relative.' });
+  }
+  if (value.includes('\\')) {
+    context.addIssue({ code: 'custom', message: 'Path must use POSIX separators.' });
+  }
+  if (value.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    context.addIssue({ code: 'custom', message: 'Path must contain only canonical relative segments.' });
+  }
+});
+
+export const managedFolderSummarySchema = z.strictObject({
+  folderId: nonBlankString,
+  parentFolderId: nonBlankString.nullable(),
+  name: nonBlankString,
+  relativePath: portableRelativePathSchema,
+  /** Direct (non-recursive) managed assets in this folder. Interim FOLDER-003. */
+  directAssetCount: z.number().int().nonnegative(),
+  /** Immediate child managed folders. */
+  childFolderCount: z.number().int().nonnegative(),
+  /**
+   * Row creation time (ISO-8601), for sidebar folder sorting (WorldlineBox-db1835).
+   * Optional so rows summarized off non-navigation queries stay forward-compatible.
+   */
+  createdAt: z.string().min(1).optional(),
+  /** Custom sidebar/tab look; omitted or null means the default folder icon. */
+  appearance: entityAppearanceSchema.optional(),
+});
+
+export type ManagedFolderSummary = z.infer<typeof managedFolderSummarySchema>;
+
+/**
+ * Mixed browse canvas entry for a direct child folder (REQ-FOLDER-001/002/003).
+ * Covers and counts are batched by the Worker — Renderer never N+1 queries.
+ */
+export const folderBrowseEntrySchema = z.strictObject({
+  folderId: nonBlankString,
+  parentFolderId: nonBlankString.nullable(),
+  locationKind: z.enum(['managed', 'linked']),
+  name: nonBlankString,
+  relativePath: z.string().max(4096),
+  status: z.enum(['available', 'offline']),
+  /** Direct-child assets only (covers / layout helpers). */
+  directAssetCount: z.number().int().nonnegative(),
+  /** All descendant assets (REQ-FOLDER-003 / WorldlineBox-toh). */
+  recursiveAssetCount: z.number().int().nonnegative(),
+  childFolderCount: z.number().int().nonnegative(),
+  /** Up to 4 ready thumbnail/poster artifact ids for the folder cover deck / collage (WorldlineBox-9021d1). */
+  coverArtifactIds: z.array(nonBlankString).max(4),
+  /** User-chosen image stored with the library. Wins over the automatic cover. */
+  hasCustomCover: z.boolean().optional(),
+  /** Changes when the stored cover file is replaced, so the card does not keep the previous image. */
+  customCoverToken: z.string().min(1).max(64).optional(),
+  /**
+   * Sequence frames that are shown from the original file have no thumbnail
+   * artifact. One of these still paints the folder cover.
+   */
+  coverSourcePreviews: z.array(z.strictObject({
+    assetId: nonBlankString,
+    revisionId: nonBlankString,
+  })).max(4).optional(),
+  /**
+   * Up to 4 cover candidate asset ids (WorldlineBox-d0nv / WorldlineBox-9021d1). The Worker
+   * schedules these at the `cover` thumbnail scene so folder-card covers generate
+   * before the rest of the library; the Renderer refreshes browse entries
+   * when a thumbnail.ready event hits one of these assets.
+   */
+  coverAssetIds: z.array(nonBlankString).max(4),
+  /** Linked root id when this card is a virtual linked subdirectory. */
+  linkedFolderId: nonBlankString.nullable().optional(),
+});
+
+export type FolderBrowseEntry = z.infer<typeof folderBrowseEntrySchema>;
+
+export const trashedFolderSummarySchema = z.strictObject({
+  tombstoneId: nonBlankString,
+  /** Original managed folder id before trash removed the row. */
+  folderId: nonBlankString,
+  relativePath: portableRelativePathSchema,
+  name: nonBlankString,
+  parentRelativePath: portableRelativePathSchema.nullable(),
+  trashedAt: nonBlankString,
+  assetCount: z.number().int().nonnegative(),
+  /** Up to four ready thumbnail/poster artifact ids for folder cards. */
+  coverArtifactIds: z.array(nonBlankString).max(4),
+});
+
+export type TrashedFolderSummary = z.infer<typeof trashedFolderSummarySchema>;
+
+export const linkedFolderSummarySchema = z.strictObject({
+  folderId: nonBlankString,
+  displayName: nonBlankString,
+  status: z.enum(['available', 'offline']),
+  assetCount: z.number().int().nonnegative(),
+  /** Absolute linked root for hover affordance (WorldlineBox-rc9). */
+  absoluteRootPath: z.string().min(1).max(4096),
+  /** Linked-root id; equals folderId for the import root itself. */
+  linkedFolderId: nonBlankString.optional(),
+  /** Path relative to the linked root; empty string for the import root. */
+  relativePath: z.string().max(4096).optional().default(''),
+  parentFolderId: nonBlankString.nullable().optional(),
+  /**
+   * Linked-root row creation time (ISO-8601), for sidebar folder sorting.
+   * Virtual child directories have no row and omit this.
+   */
+  createdAt: z.string().min(1).optional(),
+  /** Linked roots only; virtual child directories stay on the default look. */
+  appearance: entityAppearanceSchema.optional(),
+});
+
+export type LinkedFolderSummary = z.infer<typeof linkedFolderSummarySchema>;
+
+/**
+ * Result of creating or renaming a physical directory under a linked root.
+ * Linked subdirectories are virtual in the library index, so they cannot use
+ * ManagedFolderSummary (there is no managed_folders row).  The id remains the
+ * encoded linked scope id and the relative path is the canonical source path
+ * relative to the linked root.
+ */
+export const linkedFolderDirectoryMutationSchema = z.strictObject({
+  folderId: nonBlankString,
+  linkedFolderId: nonBlankString,
+  parentFolderId: nonBlankString.nullable(),
+  name: nonBlankString,
+  relativePath: z.string().max(4096),
+  status: z.enum(['available', 'offline']),
+});
+
+export type LinkedFolderDirectoryMutation = z.infer<
+  typeof linkedFolderDirectoryMutationSchema
+>;
+
+export const linkedFolderRuleSchema = z.strictObject({
+  ruleId: nonBlankString,
+  action: z.enum(['include', 'exclude']),
+  target: z.enum(['path', 'filename', 'extension', 'folder']),
+  pattern: nonBlankString.max(512),
+  enabled: z.boolean(),
+});
+
+export type LinkedFolderRule = z.infer<typeof linkedFolderRuleSchema>;
+
+export const ignoredPathSchema = z.strictObject({
+  locationKind: z.enum(['managed', 'linked']),
+  linkedFolderId: nonBlankString.nullable(),
+  relativePath: z.string().max(4096),
+  pathKind: z.enum(['asset', 'folder', 'extension']),
+  displayName: nonBlankString,
+  ignoredAt: nonBlankString,
+});
+
+export type IgnoredPath = z.infer<typeof ignoredPathSchema>;
+
+/** Same visible-row cap as the official batch-renamer Host list. */
+export const GITIGNORE_PREVIEW_ROW_LIMIT = 500;
+
+export const gitignorePreviewChangeSchema = z.enum(['kept', 'added', 'removed']);
+export type GitignorePreviewChange = z.infer<typeof gitignorePreviewChangeSchema>;
+
+export const gitignorePreviewRowSchema = z.strictObject({
+  locationKind: z.enum(['managed', 'linked']),
+  linkedFolderId: nonBlankString.nullable(),
+  relativePath: z.string().max(4096),
+  pathKind: z.enum(['asset', 'folder']),
+  displayName: nonBlankString,
+  change: gitignorePreviewChangeSchema,
+});
+export type GitignorePreviewRow = z.infer<typeof gitignorePreviewRowSchema>;
+
+export const gitignorePreviewSchema = z.strictObject({
+  rows: z.array(gitignorePreviewRowSchema).max(GITIGNORE_PREVIEW_ROW_LIMIT),
+  currentCount: z.number().int().nonnegative(),
+  addedCount: z.number().int().nonnegative(),
+  removedCount: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+});
+export type GitignorePreview = z.infer<typeof gitignorePreviewSchema>;
+
+export const imageSequenceFrameSummarySchema = z.strictObject({
+  assetId: nonBlankString,
+  displayName: nonBlankString,
+  relativeFilePath: portableRelativePathSchema,
+  currentRevisionId: nonBlankString,
+  frameNumber: z.number().int().nonnegative(),
+  thumbnailArtifactId: nonBlankString.nullable(),
+  /** Bounded source-direct frame preview when no derived artifact is needed. */
+  previewKind: z.enum(['source']).nullable().optional(),
+  previewRevisionId: nonBlankString.nullable().optional(),
+});
+
+export const imageSequenceSummarySchema = z.strictObject({
+  sequenceId: nonBlankString,
+  fps: z.number().min(1).max(240),
+  frameCount: z.number().int().min(3),
+  frames: z.array(imageSequenceFrameSummarySchema).min(3),
+});
+
+export type ImageSequenceSummary = z.infer<typeof imageSequenceSummarySchema>;
+
+export const assetSummarySchema = z.strictObject({
+  assetId: nonBlankString,
+  locationKind: z.enum(['managed', 'linked']),
+  managedFolderId: nonBlankString.nullable(),
+  linkedFolderId: nonBlankString.nullable().optional(),
+  relativeFilePath: portableRelativePathSchema,
+  displayName: nonBlankString,
+  /** Stable file-content revision; metadata edits do not change it. */
+  currentRevisionId: nonBlankString,
+  byteSize: z.number().int().nonnegative(),
+  modifiedAt: nonBlankString,
+  availability: z.enum(['available', 'missing']),
+  rating: z.number().int().min(0).max(5),
+  favorite: z.boolean(),
+  deletedAt: nonBlankString.nullable(),
+  trashedFromPath: portableRelativePathSchema.nullable(),
+  /** Tombstone that owned this asset when its folder was trashed (WorldlineBox-whvm). */
+  trashedFromTombstoneId: nonBlankString.nullable().optional().default(null),
+  remainingDays: z.number().int().nullable(),
+  thumbnailStatus: z.enum(['ready', 'pending', 'failed']).nullable(),
+  thumbnailArtifactId: nonBlankString.nullable(),
+  /** Card may use the bounded original source while no artifact is ready. */
+  previewKind: z.enum(['source']).nullable().optional(),
+  previewRevisionId: nonBlankString.nullable().optional(),
+  mediaType: z.enum(['image', 'video', 'audio', 'text', 'model', 'document', 'font', 'other']),
+  width: z.number().int().positive().nullable(),
+  height: z.number().int().positive().nullable(),
+  durationMs: z.number().int().nonnegative().nullable().optional().default(null),
+  sequence: imageSequenceSummarySchema.nullable().optional(),
+});
+
+export type AssetSummary = z.infer<typeof assetSummarySchema>;
+
+/** Compact real-asset geometry index used by virtualized large-library browse. */
+export const browseLayoutEntrySchema = z.strictObject({
+  assetId: nonBlankString,
+  width: z.number().int().positive().nullable(),
+  height: z.number().int().positive().nullable(),
+  /** Ready persistent preview; lets an unseen virtual slot paint before its full summary. */
+  previewArtifactId: nonBlankString.nullable().optional(),
+  /** Bounded source-direct card preview for small native raster images. */
+  previewKind: z.enum(['source']).nullable().optional(),
+  previewRevisionId: nonBlankString.nullable().optional(),
+  /** Caption fields so layout slots are not blank while AssetSummary pages stream in (WorldlineBox-l2at). */
+  displayName: nonBlankString.optional(),
+  relativeFilePath: portableRelativePathSchema.optional(),
+  byteSize: z.number().int().nonnegative().optional(),
+  modifiedAt: nonBlankString.optional(),
+  rating: z.number().int().min(0).max(5).optional(),
+  /**
+   * Card type, so a virtual slot can render the real card (badges, media
+   * routing) from the complete index before its AssetSummary page arrives.
+   * Without it a synthesized slot would have to guess `other` and change the
+   * card's appearance once the summary landed.
+   */
+  mediaType: z.enum(['image', 'video', 'audio', 'text', 'model', 'document', 'font', 'other']).optional(),
+});
+
+export type BrowseLayoutEntry = z.infer<typeof browseLayoutEntrySchema>;
+
+export const tagSummarySchema = z.strictObject({
+  tagId: nonBlankString,
+  name: nonBlankString,
+  assetCount: z.number().int().nonnegative(),
+});
+
+export type TagSummary = z.infer<typeof tagSummarySchema>;
+
+export const tagCooccurrenceNodeSchema = z.strictObject({
+  tagId: nonBlankString,
+  name: nonBlankString,
+  assetCount: z.number().int().nonnegative(),
+});
+
+export type TagCooccurrenceNode = z.infer<typeof tagCooccurrenceNodeSchema>;
+
+export const tagCooccurrenceEdgeSchema = z.strictObject({
+  sourceTagId: nonBlankString,
+  targetTagId: nonBlankString,
+  weight: z.number().int().positive(),
+});
+
+export type TagCooccurrenceEdge = z.infer<typeof tagCooccurrenceEdgeSchema>;
+
+export const tagCooccurrenceGraphSchema = z.strictObject({
+  nodes: z.array(tagCooccurrenceNodeSchema),
+  edges: z.array(tagCooccurrenceEdgeSchema),
+  truncated: z.boolean(),
+});
+
+export type TagCooccurrenceGraph = z.infer<typeof tagCooccurrenceGraphSchema>;
+
+export const collectionSummarySchema = z.strictObject({
+  collectionId: nonBlankString,
+  parentId: nonBlankString.nullable(),
+  name: nonBlankString,
+  description: nonBlankString.nullable(),
+  coverAssetId: nonBlankString.nullable(),
+  position: z.number().int().nonnegative(),
+  assetCount: z.number().int().nonnegative(),
+  childCollectionCount: z.number().int().nonnegative(),
+  appearance: entityAppearanceSchema.optional(),
+});
+
+export type CollectionSummary = z.infer<typeof collectionSummarySchema>;
+
+export const assetMetadataResultSchema = z.strictObject({
+  assetId: nonBlankString,
+  description: nonBlankString.nullable(),
+  rating: z.number().int().min(0).max(5),
+  favorite: z.boolean(),
+  palette: nonBlankString.nullable(),
+  automaticPalette: z.array(z.strictObject({
+    hex: z.string().regex(/^#[0-9A-F]{6}$/u),
+    ratio: z.number().min(0).max(1),
+  })).max(12).optional().default([]),
+  effectivePalette: z.array(nonBlankString).max(20).optional().default([]),
+  paletteSource: z.enum(['manual', 'automatic']).nullable().optional().default(null),
+  sourcePageUrl: nonBlankString.nullable(),
+  // Author/creator (WorldlineBox-7x0): user-editable, auto-extracted from
+  // EXIF/IPTC/XMP on first thumbnail generation when left empty.
+  author: nonBlankString.nullable(),
+  // Assets created before metadata is first written use version 0 as the
+  // optimistic-lock token; the first successful set creates version 1.
+  tags: z.array(z.strictObject({
+    id: nonBlankString,
+    name: nonBlankString,
+    source: z.enum(['user', 'ai']),
+  })).optional().default([]),
+  /** Optimistic-concurrency token for AssetMetadata, not a file-content revision. */
+  entityVersion: z.number().int().min(0),
+  updatedAt: nonBlankString,
+});
+
+export type AssetMetadataResult = z.infer<typeof assetMetadataResultSchema>;
+
+/**
+ * Technical fields from the `extracted_metadata` revision artifact.
+ * Kept off AssetSummary so list/search payloads stay lean (REQ-VIEW-003).
+ *
+ * The video fields are populated by ffprobe. The optional camera fields are
+ * populated by EXIF/IPTC/XMP extraction for RAW and other image assets.
+ * Keeping one additive schema preserves the existing protocol for older
+ * video-only metadata artifacts.
+ *
+ * `framerate` is the raw ffprobe ratio string (e.g. "30000/1001").
+ * Bitrate / sampleRate may be numeric or string depending on probe output.
+ * `containerBitrate` / `frameRateFps` are optional forward-compatible fields.
+ */
+const probeNumericSchema = z.union([z.number().finite(), z.string()]).nullable();
+
+export const extractedVideoMetadataSchema = z.strictObject({
+  container: z.string().nullable().optional().default(null),
+  durationMs: z.number().finite().nonnegative().optional(),
+  width: z.number().finite().nonnegative().nullable().optional(),
+  height: z.number().finite().nonnegative().nullable().optional(),
+  framerate: z.string().nullable().optional().default(null),
+  rotation: z.number().finite().optional(),
+  videoCodec: z.string().nullable().optional().default(null),
+  videoBitrate: probeNumericSchema.optional().default(null),
+  pixelFormat: z.string().nullable().optional().default(null),
+  hasAudio: z.boolean().optional().default(false),
+  /** Embedded album art / attached picture stream detected by ffprobe. */
+  hasCoverArt: z.boolean().optional(),
+  audioCodec: z.string().nullable().optional().default(null),
+  /** Audio-stream bit_rate when present (audio assets / video A/V). */
+  audioBitrate: probeNumericSchema.optional().default(null),
+  sampleRate: probeNumericSchema.optional().default(null),
+  channels: z.number().int().positive().nullable().optional().default(null),
+  containerBitrate: probeNumericSchema.optional(),
+  frameRateFps: z.number().finite().positive().nullable().optional(),
+  /** Animated GIF / multi-page still count when extracted via sharp. */
+  frameCount: z.number().int().nonnegative().nullable().optional(),
+  /** EXIF/IPTC/XMP capture and camera fields for RAW/image Inspector details. */
+  captureDate: z.string().nullable().optional().default(null),
+  author: z.string().nullable().optional().default(null),
+  cameraMake: z.string().nullable().optional().default(null),
+  cameraModel: z.string().nullable().optional().default(null),
+  lensModel: z.string().nullable().optional().default(null),
+  iso: probeNumericSchema.optional().default(null),
+  fNumber: probeNumericSchema.optional().default(null),
+  exposureTime: probeNumericSchema.optional().default(null),
+  exposureCompensation: probeNumericSchema.optional().default(null),
+  exposureProgram: probeNumericSchema.optional().default(null),
+  meteringMode: probeNumericSchema.optional().default(null),
+  flash: probeNumericSchema.optional().default(null),
+  focalLength: probeNumericSchema.optional().default(null),
+  /** Standard embedded image/audio/video tags, projected from the source file. */
+  title: z.string().nullable().optional(),
+  artist: z.string().nullable().optional(),
+  album: z.string().nullable().optional(),
+  albumArtist: z.string().nullable().optional(),
+  trackNumber: z.string().nullable().optional(),
+  discNumber: z.string().nullable().optional(),
+  genre: z.string().nullable().optional(),
+  composer: z.string().nullable().optional(),
+  comment: z.string().nullable().optional(),
+  copyright: z.string().nullable().optional(),
+  date: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  gpsLatitude: z.number().finite().nullable().optional(),
+  gpsLongitude: z.number().finite().nullable().optional(),
+  orientation: probeNumericSchema.optional(),
+  customTags: z.array(z.strictObject({
+    key: z.string().min(1).max(128),
+    value: z.string().min(1).max(255),
+  })).max(32).optional(),
+  /**
+   * WorldlineBox-485aeb: font facts read from the font file itself (`name`, `head`,
+   * `OS/2`, `maxp`). Only present for `font` assets; the Worker derives them on
+   * demand instead of persisting an `extracted_metadata` artifact.
+   */
+  fontFamily: z.string().nullable().optional(),
+  fontSubfamily: z.string().nullable().optional(),
+  fontFullName: z.string().nullable().optional(),
+  fontVersion: z.string().nullable().optional(),
+  fontManufacturer: z.string().nullable().optional(),
+  fontCopyright: z.string().nullable().optional(),
+  fontWeightClass: z.number().int().positive().nullable().optional(),
+  fontWidthClass: z.number().int().positive().nullable().optional(),
+  fontIsBold: z.boolean().optional(),
+  fontIsItalic: z.boolean().optional(),
+  fontUnitsPerEm: z.number().int().positive().nullable().optional(),
+  fontGlyphCount: z.number().int().nonnegative().nullable().optional(),
+  /**
+   * Single language we are willing to assert for the sample/cover; null when the
+   * file's own evidence is inconclusive (CJK fonts often declare several).
+   */
+  fontLanguage: z
+    .enum(['ja', 'zh-Hans', 'zh-Hant', 'ko', 'latin'])
+    .nullable()
+    .optional(),
+  /** CJK languages the file declares via OS/2 `ulCodePageRange` (may be several). */
+  fontLanguages: z.array(z.enum(['ja', 'zh-Hans', 'zh-Hant', 'ko'])).optional(),
+  /**
+   * Weights a variable font actually offers (`fvar` `wght` axis / named
+   * instances). Null/absent for static fonts — the viewer must not offer a
+   * fake 100–900 list for a single-weight file (WorldlineBox-485aeb feedback).
+   */
+  fontVariableWeights: z
+    .array(z.number().finite().positive())
+    .nullable()
+    .optional(),
+  fontCoversLatin: z.boolean().optional(),
+});
+
+export type ExtractedVideoMetadata = z.infer<typeof extractedVideoMetadataSchema>;
+
+export const extractedMetadataResultSchema = z.strictObject({
+  assetId: nonBlankString,
+  status: z.enum(['ready', 'pending', 'failed', 'missing']),
+  metadata: extractedVideoMetadataSchema.nullable(),
+  /** Header-only image dimensions are useful for layout, but not Inspector-complete. */
+  metadataCompleteness: z.enum(['complete', 'header-only']).default('complete'),
+  errorCode: z.string().nullable().optional().default(null),
+});
+
+export type ExtractedMetadataResult = z.infer<typeof extractedMetadataResultSchema>;
+
+export const sortDefinitionSchema = z.strictObject({
+  field: z.enum([
+    'name',
+    'modified_at',
+    'created_at',
+    'byte_size',
+    'long_edge',
+    'duration',
+    'rating',
+    'color',
+    'author',
+  ]),
+  order: z.enum(['asc', 'desc']),
+});
+
+export type SortDefinition = z.infer<typeof sortDefinitionSchema>;
+
+/** Tag / rating / color chips stay small; format can select every product extension. */
+export const CATEGORICAL_FILTER_VALUES_MAX = 32;
+export const FORMAT_FILTER_VALUES_MAX = 256;
+
+const categoricalFilterClauseSchema = z.strictObject({
+  field: z.enum([
+    'format',
+    'tag',
+    'rating',
+    'favorite',
+    'source_url',
+    'availability',
+    'color',
+  ]),
+  values: z.array(boundedSearchValue).max(FORMAT_FILTER_VALUES_MAX),
+  exclude: z.boolean(),
+  /** Include AI-derived values alongside human-authored values (default on). */
+  includeAi: z.boolean().optional(),
+  /**
+   * Color filter only: 0–100 similarity. Higher is a tighter HSL box.
+   * Ignored for non-color clauses.
+   */
+  similarity: z.number().int().min(0).max(100).optional(),
+  /**
+   * Color filter only: preset-id → hex overlay for customized standard chips.
+   */
+  swatches: z.record(z.string().min(1).max(32), z.string().regex(/^#[0-9A-Fa-f]{6}$/u)).optional(),
+}).superRefine((filter, context) => {
+  if (filter.field === 'format') return;
+  if (filter.values.length <= CATEGORICAL_FILTER_VALUES_MAX) return;
+  context.addIssue({
+    code: 'custom',
+    path: ['values'],
+    message: `At most ${CATEGORICAL_FILTER_VALUES_MAX} values.`,
+  });
+});
+
+const numericRangeSchema = z.strictObject({
+  min: z.number().finite().nonnegative().optional(),
+  max: z.number().finite().nonnegative().optional(),
+}).superRefine((range, context) => {
+  if (range.min === undefined && range.max === undefined) {
+    context.addIssue({ code: 'custom', message: 'A numeric range requires min or max.' });
+  }
+  if (range.min !== undefined && range.max !== undefined && range.min > range.max) {
+    context.addIssue({ code: 'custom', message: 'Numeric range min cannot exceed max.' });
+  }
+});
+
+const numericFilterClauseSchema = z.strictObject({
+  field: z.enum(['width', 'height', 'aspect_ratio', 'duration_ms', 'long_edge']),
+  ranges: z.array(numericRangeSchema).min(1).max(32),
+  exclude: z.boolean(),
+}).superRefine((filter, context) => {
+  if (filter.field === 'aspect_ratio') {
+    filter.ranges.forEach((range, index) => {
+      if (range.min === 0 || range.max === 0) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Aspect ratio bounds must be greater than zero.',
+          path: ['ranges', index],
+        });
+      }
+    });
+    return;
+  }
+  filter.ranges.forEach((range, index) => {
+    if ((range.min !== undefined && !Number.isInteger(range.min))
+      || (range.max !== undefined && !Number.isInteger(range.max))) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Pixel and duration bounds must be integers.',
+        path: ['ranges', index],
+      });
+    }
+  });
+});
+
+/**
+ * Categorical filters retain the v0.1 `values` shape. Technical metadata uses
+ * explicit numeric ranges so callers never encode comparison operators in
+ * strings. Multiple ranges in one clause are ORed; separate clauses are ANDed.
+ */
+export const filterClauseSchema = z.union([
+  categoricalFilterClauseSchema,
+  numericFilterClauseSchema,
+]);
+
+export type FilterClause = z.infer<typeof filterClauseSchema>;
+
+export const searchScopeSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('folder'),
+    folderId: z.string().min(1).max(4096).nullable(),
+    recursive: z.boolean(),
+  }),
+  z.strictObject({
+    kind: z.literal('collection'),
+    collectionId: nonBlankString,
+    recursive: z.boolean(),
+  }),
+  z.strictObject({
+    // A smart collection is a stored query, not a materialized asset list.
+    // Search resolves the saved definition in the Worker and ANDs the live
+    // user query/filter state with it so the current browse scope is retained.
+    kind: z.literal('smart_collection'),
+    collectionId: nonBlankString,
+  }),
+  z.strictObject({
+    kind: z.literal('trash'),
+  }),
+]);
+
+export type SearchScope = z.infer<typeof searchScopeSchema>;
+
+export const searchClauseSchema = z.strictObject({
+  field: z.enum([
+    'filename',
+    'tags',
+    'description',
+    'source_url',
+    'author',
+    'folder_path',
+    'metadata_text',
+  ]).nullable(),
+  values: z.array(boundedSearchValue).min(1).max(32),
+  exclude: z.boolean(),
+});
+
+export type SearchClause = z.infer<typeof searchClauseSchema>;
+
+const searchQueryDefinitionSchema = z.strictObject({
+  /**
+   * A backwards-compatible conjunction used by saved searches created before
+   * contextual `|` alternatives existed. When `groups` is absent, every
+   * clause here must match.
+   */
+  clauses: z.array(searchClauseSchema).max(32),
+  /**
+   * A disjunction of conjunctions: each inner group is ANDed and the groups
+   * are ORed. This keeps `name:hero tag:y2k | author:Jane` structured across
+   * renderer, preload, main and worker without passing a query string over
+   * the process boundary.
+   */
+  groups: z.array(z.array(searchClauseSchema).min(1).max(32)).min(1).max(32).optional(),
+}).superRefine((query, context) => {
+  if (query.groups !== undefined && query.clauses.length > 0) {
+    context.addIssue({
+      code: 'custom',
+      message: 'A search query must use either legacy clauses or contextual groups, not both.',
+      path: ['groups'],
+    });
+  }
+}).nullable();
+
+export const searchQuerySchema = searchQueryDefinitionSchema;
+
+export type SearchQuery = Exclude<z.infer<typeof searchQuerySchema>, null>;
+
+export const smartCollectionQueryDefinitionSchema = z.strictObject({
+  search: searchQueryDefinitionSchema.unwrap().optional(),
+  filters: z.array(filterClauseSchema).max(16).optional(),
+  sort: sortDefinitionSchema.optional(),
+});
+
+export type SmartCollectionQueryDefinition = z.infer<typeof smartCollectionQueryDefinitionSchema>;
+
+/**
+ * A provider-generated search plan is intentionally limited to values already
+ * understood by WorldlineBox's ordinary search engine. It cannot carry SQL,
+ * filesystem paths, arbitrary operators, or executable expressions.
+ */
+export const aiSearchPlanSchema = z.strictObject({
+  keywords: z.array(boundedSearchValue).max(16),
+  synonyms: z.array(boundedSearchValue).max(16),
+  exclusions: z.array(boundedSearchValue).max(16),
+  filters: z.array(filterClauseSchema).max(16),
+  sort: sortDefinitionSchema.optional(),
+}).superRefine((plan, context) => {
+  if (plan.keywords.length === 0
+    && plan.synonyms.length === 0
+    && plan.exclusions.length === 0
+    && plan.filters.length === 0
+    && plan.sort === undefined) {
+    context.addIssue({
+      code: 'custom',
+      message: 'An AI search plan requires a positive term, filter, or sort.',
+    });
+  }
+});
+
+export type AiSearchPlan = z.infer<typeof aiSearchPlanSchema>;
+
+export const smartCollectionSummarySchema = z.strictObject({
+  collectionId: nonBlankString,
+  name: nonBlankString,
+  queryDefinition: nonBlankString,
+  position: z.number().int().nonnegative(),
+  /** Live match count for the saved query (CU-M6); computed via search total. */
+  assetCount: z.number().int().nonnegative(),
+  appearance: entityAppearanceSchema.optional(),
+});
+
+export type SmartCollectionSummary = z.infer<typeof smartCollectionSummarySchema>;

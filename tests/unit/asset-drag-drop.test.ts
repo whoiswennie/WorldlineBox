@@ -1,0 +1,233 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  MANAGED_ASSETS_DRAG_TYPE,
+  dragCopyModifierLabel,
+  parseManagedAssetDrag,
+  resolveCollectionDrop,
+  resolveDragDropMode,
+  resolveDraggedAssetIds,
+  resolveFolderDrop,
+  resolveInternalAssetDropIds,
+  resolveManagedDropEffect,
+  resolveNewCollectionMembers,
+  resolveTrashDrop,
+  supportsManagedAssetDrag,
+  type DragAssetFact,
+} from '../../src/renderer/asset-drag-drop';
+
+function managed(assetId: string): DragAssetFact {
+  return {
+    assetId,
+    locationKind: 'managed',
+    availability: 'available',
+    deletedAt: null,
+  };
+}
+
+function transfer(types: string[], data?: string): DataTransfer {
+  return {
+    types,
+    getData: (type: string) => (type === MANAGED_ASSETS_DRAG_TYPE ? (data ?? '') : ''),
+  } as unknown as DataTransfer;
+}
+
+describe('resolveDraggedAssetIds (REQ-DND-001)', () => {
+  it('moves the whole selection when the dragged card is selected', () => {
+    expect(resolveDraggedAssetIds('a', ['a', 'b', 'c'])).toEqual(['a', 'b', 'c']);
+  });
+
+  it('moves only the dragged card when it is not in the selection', () => {
+    expect(resolveDraggedAssetIds('x', ['a', 'b'])).toEqual(['x']);
+  });
+});
+
+describe('drag payload helpers', () => {
+  it('recognizes the managed-assets type', () => {
+    expect(supportsManagedAssetDrag(transfer([MANAGED_ASSETS_DRAG_TYPE]))).toBe(true);
+    expect(supportsManagedAssetDrag(transfer(['Files']))).toBe(false);
+  });
+
+  it('parses a valid id list and rejects garbage', () => {
+    expect(parseManagedAssetDrag(transfer([MANAGED_ASSETS_DRAG_TYPE], '["a","b"]'))).toEqual([
+      'a',
+      'b',
+    ]);
+    expect(parseManagedAssetDrag(transfer([MANAGED_ASSETS_DRAG_TYPE], 'not-json'))).toBeNull();
+    expect(parseManagedAssetDrag(transfer([MANAGED_ASSETS_DRAG_TYPE], '[1,2]'))).toBeNull();
+    expect(parseManagedAssetDrag(transfer([MANAGED_ASSETS_DRAG_TYPE]))).toBeNull();
+  });
+});
+
+describe('resolveDragDropMode / resolveManagedDropEffect (WorldlineBox-aa3)', () => {
+  it('maps Option/Alt to copy and the matching dropEffect', () => {
+    expect(resolveDragDropMode({ altKey: true })).toBe('copy');
+    expect(resolveDragDropMode({ altKey: false })).toBe('move');
+    expect(resolveManagedDropEffect('copy')).toBe('copy');
+    expect(resolveManagedDropEffect('move')).toBe('move');
+  });
+
+  it('uses platform-correct modifier labels (WorldlineBox-2vn)', () => {
+    expect(dragCopyModifierLabel('mac')).toBe('Option');
+    expect(dragCopyModifierLabel('windows')).toBe('Alt');
+  });
+});
+
+describe('resolveFolderDrop (REQ-DND-001)', () => {
+  it('rejects dropping onto the current folder (and root onto root scope)', () => {
+    expect(
+      resolveFolderDrop({
+        targetFolderId: 'f1',
+        currentFolderId: 'f1',
+        assets: [managed('a')],
+      }),
+    ).toEqual({ kind: 'reject', reason: 'same-folder', skippedCount: 0 });
+    expect(
+      resolveFolderDrop({
+        targetFolderId: null,
+        currentFolderId: null,
+        assets: [managed('a')],
+      }),
+    ).toEqual({ kind: 'reject', reason: 'same-folder', skippedCount: 0 });
+  });
+
+  it('accepts available linked assets and skips only unavailable/trashed entries', () => {
+    const assets: DragAssetFact[] = [
+      managed('a'),
+      { assetId: 'b', locationKind: 'linked', availability: 'available', deletedAt: null },
+      { assetId: 'c', locationKind: 'managed', availability: 'missing', deletedAt: null },
+      { assetId: 'd', locationKind: 'managed', availability: 'available', deletedAt: '2026-07-17' },
+    ];
+    expect(
+      resolveFolderDrop({ targetFolderId: 'f2', currentFolderId: 'f1', assets }),
+    ).toEqual({ kind: 'move', assetIds: ['a', 'b'], skippedCount: 2 });
+  });
+
+  it('rejects when nothing is available for a folder drop', () => {
+    const assets: DragAssetFact[] = [
+      { assetId: 'b', locationKind: 'linked', availability: 'missing', deletedAt: null },
+    ];
+    expect(
+      resolveFolderDrop({ targetFolderId: 'f2', currentFolderId: 'f1', assets }),
+    ).toEqual({ kind: 'reject', reason: 'no-eligible-assets', skippedCount: 1 });
+  });
+
+  it('copies eligible managed assets including onto the current folder', () => {
+    expect(
+      resolveFolderDrop({
+        targetFolderId: 'f1',
+        currentFolderId: 'f1',
+        assets: [managed('a')],
+        mode: 'copy',
+      }),
+    ).toEqual({ kind: 'copy', assetIds: ['a'], skippedCount: 0 });
+    expect(
+      resolveFolderDrop({
+        targetFolderId: 'f2',
+        currentFolderId: 'f1',
+        assets: [managed('a')],
+        mode: 'copy',
+      }),
+    ).toEqual({ kind: 'copy', assetIds: ['a'], skippedCount: 0 });
+  });
+});
+
+describe('resolveCollectionDrop (WorldlineBox-aa3)', () => {
+  it('adds membership for both move and copy modes', () => {
+    const assets: DragAssetFact[] = [
+      managed('a'),
+      { assetId: 'b', locationKind: 'linked', availability: 'available', deletedAt: null },
+    ];
+    expect(resolveCollectionDrop({ assets, mode: 'move' })).toEqual({
+      kind: 'add-membership',
+      assetIds: ['a', 'b'],
+      skippedCount: 0,
+      mode: 'move',
+    });
+    expect(resolveCollectionDrop({ assets, mode: 'copy' })).toEqual({
+      kind: 'add-membership',
+      assetIds: ['a', 'b'],
+      skippedCount: 0,
+      mode: 'copy',
+    });
+  });
+
+  it('skips trashed assets and rejects when none remain', () => {
+    const assets: DragAssetFact[] = [
+      { assetId: 'd', locationKind: 'managed', availability: 'available', deletedAt: 'x' },
+    ];
+    expect(resolveCollectionDrop({ assets, mode: 'copy' })).toEqual({
+      kind: 'reject',
+      reason: 'no-eligible-assets',
+      skippedCount: 1,
+    });
+  });
+});
+
+describe('resolveTrashDrop (REQ-DND-002)', () => {
+  it('keeps only managed, available, non-trashed assets', () => {
+    const assets: DragAssetFact[] = [
+      managed('a'),
+      managed('b'),
+      { assetId: 'c', locationKind: 'linked', availability: 'available', deletedAt: null },
+      { assetId: 'd', locationKind: 'managed', availability: 'available', deletedAt: 'x' },
+    ];
+    expect(resolveTrashDrop(assets)).toEqual({ assetIds: ['a', 'b'], skippedCount: 2 });
+  });
+});
+
+// WorldlineBox-374266: dropping into a collection the assets already belong to
+// changes nothing, so the caller must not report an add that did not happen.
+describe('resolveInternalAssetDropIds', () => {
+  it('uses a non-empty HTML5 payload', () => {
+    expect(
+      resolveInternalAssetDropIds(
+        transfer([MANAGED_ASSETS_DRAG_TYPE], JSON.stringify(['asset-1'])),
+        ['fallback'],
+      ),
+    ).toEqual(['asset-1']);
+  });
+
+  it('ignores an empty snapshot so a native file drop can still resolve', () => {
+    expect(
+      resolveInternalAssetDropIds(transfer(['Files']), []),
+    ).toBeNull();
+    expect(
+      resolveInternalAssetDropIds(transfer(['Files']), null),
+    ).toBeNull();
+  });
+
+  it('uses the in-memory snapshot when the HTML5 payload is empty', () => {
+    expect(
+      resolveInternalAssetDropIds(transfer(['Files']), ['asset-root']),
+    ).toEqual(['asset-root']);
+  });
+});
+
+describe('resolveNewCollectionMembers', () => {
+  it('keeps only the assets that are not members of that collection yet', () => {
+    expect(
+      resolveNewCollectionMembers(
+        ['a', 'b', 'c'],
+        [
+          { assetId: 'a', collectionId: 'target' },
+          { assetId: 'c', collectionId: 'other' },
+        ],
+        'target',
+      ),
+    ).toEqual(['b', 'c']);
+  });
+
+  it('returns nothing when every asset is already a member', () => {
+    expect(
+      resolveNewCollectionMembers(
+        ['a', 'b'],
+        [
+          { assetId: 'a', collectionId: 'target' },
+          { assetId: 'b', collectionId: 'target' },
+        ],
+        'target',
+      ),
+    ).toEqual([]);
+  });
+});

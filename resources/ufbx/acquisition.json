@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "artifact": "ufbx wasm module",
+  "ufbxVersion": "0.23.0",
+  "sourceUrl": "https://codeload.github.com/bqqbarbhg/ufbx/tar.gz/refs/tags/v0.23.0",
+  "sourceSha256": "efaed6c51f9c202e35255775775e3929d0c6978ddbb5cb888299f14d36c3c365",
+  "emsdkVersion": "6.0.5",
+  "emccFlags": [
+    "-O2",
+    "-sWASM=1",
+    "-sMODULARIZE=1",
+    "-sENVIRONMENT=node",
+    "-sEXPORTED_FUNCTIONS=_worldlinebox_parse,_worldlinebox_error,_worldlinebox_out_ptr,_worldlinebox_out_size,_worldlinebox_free_out,_malloc,_free",
+    "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,HEAPU8,HEAPU32,HEAPF32",
+    "-sALLOW_MEMORY_GROWTH=1",
+    "-sMAXIMUM_MEMORY=2147483648",
+    "-sINITIAL_MEMORY=67108864",
+    "-sSTACK_SIZE=524288",
+    "-sFILESYSTEM=0",
+    "-sASSERTIONS=0",
+    "-g0"
+  ],
+  "wasmSha256": "a182580f868f99ebf9cf618e59603ebce8aaab5a42e351676bccd0d82b2cdceb",
+  "jsSha256": "26f27f58377ff4ad4cfe46d7c71691b183e8930b91ab76789c5be824040c1d69",
+  "builtAt": "2026-08-07T14:23:03.619Z",
+  "brandingTransform": "Public WASM export names updated to WorldlineBox; executable sections unchanged."
+}

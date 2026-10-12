@@ -1,0 +1,1728 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { LibraryService, LibraryServiceError } from '../../src/worker/library-service';
+
+const temporaryRoots: string[] = [];
+
+// LibraryService holds SQLite connections and recursive fs watchers; on
+// Windows those open handles block rm of the temp tree (POSIX unlinks open
+// files, which is why the leak is invisible on macOS). Always close first.
+const services: LibraryService[] = [];
+
+function newService(
+  ...args: ConstructorParameters<typeof LibraryService>
+): LibraryService {
+  const service = new LibraryService(...args);
+  services.push(service);
+  return service;
+}
+
+const require = createRequire(import.meta.url);
+
+interface TestDatabaseConnection {
+  close(): void;
+  prepare(source: string): {
+    all(...parameters: unknown[]): unknown[];
+    get(...parameters: unknown[]): unknown;
+    run(...parameters: unknown[]): { changes: number };
+  };
+  pragma(source: string): unknown;
+}
+
+const TestDatabase = require('better-sqlite3') as new (filename: string) => TestDatabaseConnection;
+
+function temporaryRoot(): string {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-org-test-'));
+  temporaryRoots.push(root);
+  return root;
+}
+
+function expectServiceCode(operation: () => unknown, code: LibraryServiceError['code']): LibraryServiceError {
+  let thrown: unknown;
+  try {
+    operation();
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBeInstanceOf(LibraryServiceError);
+  expect((thrown as LibraryServiceError).code).toBe(code);
+  return thrown as LibraryServiceError;
+}
+
+afterEach(() => {
+  for (const service of services.splice(0)) service.closeAll();
+  for (const root of temporaryRoots.splice(0)) {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+// ── Helper: create a library with a managed asset via direct DB insertion ──
+
+function createLibraryWithAsset(
+  serviceOptions?: ConstructorParameters<typeof LibraryService>[0],
+): {
+  service: LibraryService;
+  libraryId: string;
+  libraryPath: string;
+  assetId: string;
+} {
+  const root = temporaryRoot();
+  const service = serviceOptions === undefined ? newService() : newService(serviceOptions);
+  const library = service.createLibrary({ displayName: 'Org', selectedParentPath: root });
+
+  // Create a managed folder and an asset on disk + in DB so tags/collections can reference it.
+  const managedFolder = service.createManagedFolder({ libraryId: library.libraryId, name: 'Assets' });
+  const assetFileName = 'test.png';
+  const assetsPath = path.join(library.libraryPath, 'Assets', managedFolder.relativePath);
+  mkdirSync(assetsPath, { recursive: true });
+  writeFileSync(path.join(assetsPath, assetFileName), 'test content');
+
+  const db = new TestDatabase(path.join(library.libraryPath, '.worldlinebox', 'library.db'));
+  const assetId = randomUUID();
+  const revisionId = randomUUID();
+  const now = new Date().toISOString();
+  try {
+    db.prepare(
+      `INSERT INTO assets (asset_id, location_kind, managed_folder_id, linked_folder_id,
+        relative_file_path, current_revision_id, availability, path_identity, created_at, updated_at)
+       VALUES (?, 'managed', ?, NULL, ?, NULL, 'available', ?, ?, ?)`,
+    ).run(
+      assetId,
+      managedFolder.folderId,
+      `${managedFolder.relativePath}/${assetFileName}`,
+      `${managedFolder.relativePath}/${assetFileName}`,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO revisions (revision_id, asset_id, parent_revision_id, byte_size,
+        modified_at, original_filename, origin, accepted_at)
+       VALUES (?, ?, NULL, ?, ?, ?, 'import', ?)`,
+    ).run(revisionId, assetId, 12, now, assetFileName, now);
+    db.prepare('UPDATE assets SET current_revision_id = ?, updated_at = ? WHERE asset_id = ?').run(
+      revisionId,
+      now,
+      assetId,
+    );
+  } finally {
+    db.close();
+  }
+
+  return { service, libraryId: library.libraryId, libraryPath: library.libraryPath, assetId };
+}
+
+function createSecondAsset(
+  libraryPath: string,
+  managedFolderRelativePath: string,
+  managedFolderId: string,
+): string {
+  const db = new TestDatabase(path.join(libraryPath, '.worldlinebox', 'library.db'));
+  const assetId = randomUUID();
+  const revisionId = randomUUID();
+  const now = new Date().toISOString();
+  const fileName = `${assetId}.png`;
+  try {
+    db.prepare(
+      `INSERT INTO assets (asset_id, location_kind, managed_folder_id, linked_folder_id,
+        relative_file_path, current_revision_id, availability, path_identity, created_at, updated_at)
+       VALUES (?, 'managed', ?, NULL, ?, NULL, 'available', ?, ?, ?)`,
+    ).run(
+      assetId,
+      managedFolderId,
+      `${managedFolderRelativePath}/${fileName}`,
+      `${managedFolderRelativePath}/${fileName}`,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO revisions (revision_id, asset_id, parent_revision_id, byte_size,
+        modified_at, original_filename, origin, accepted_at)
+       VALUES (?, ?, NULL, ?, ?, ?, 'import', ?)`,
+    ).run(revisionId, assetId, 8, now, fileName, now);
+    db.prepare('UPDATE assets SET current_revision_id = ?, updated_at = ? WHERE asset_id = ?').run(
+      revisionId,
+      now,
+      assetId,
+    );
+  } finally {
+    db.close();
+  }
+  return assetId;
+}
+
+// ── Tags ──────────────────────────────────────────────────────────────
+
+describe('tags', () => {
+  it('creates a tag and lists it with assetCount', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+
+    const tag = service.createTag({ libraryId, name: '  Character  ' });
+    expect(tag).toMatchObject({ name: 'Character', assetCount: 0 });
+
+    const list = service.listTags(libraryId);
+    expect(list).toEqual([tag]);
+    service.closeAll();
+  });
+
+  it('enforces NOCASE-unique tag name per library', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+
+    service.createTag({ libraryId, name: 'Hero' });
+    expectServiceCode(
+      () => service.createTag({ libraryId, name: 'hero' }),
+      'FOLDER_ALREADY_EXISTS',
+    );
+    expectServiceCode(
+      () => service.createTag({ libraryId, name: 'HERO' }),
+      'FOLDER_ALREADY_EXISTS',
+    );
+    service.closeAll();
+  });
+
+  it('lists the most recently created tag first', () => {
+    const { service, libraryId, libraryPath } = createLibraryWithAsset();
+    const older = service.createTag({ libraryId, name: 'Older' });
+    const newer = service.createTag({ libraryId, name: 'Newer' });
+    const db = new TestDatabase(path.join(libraryPath, '.worldlinebox', 'library.db'));
+    try {
+      db.prepare('UPDATE tags SET created_at = ? WHERE tag_id = ?').run(
+        '2026-07-15T00:00:00.000Z',
+        older.tagId,
+      );
+      db.prepare('UPDATE tags SET created_at = ? WHERE tag_id = ?').run(
+        '2026-07-16T00:00:00.000Z',
+        newer.tagId,
+      );
+    } finally {
+      db.close();
+    }
+
+    expect(service.listTags(libraryId).map((tag) => tag.tagId)).toEqual([
+      newer.tagId,
+      older.tagId,
+    ]);
+    service.closeAll();
+  });
+
+  it('isolates tag names across libraries', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const root2 = temporaryRoot();
+    const lib2 = service.createLibrary({ displayName: 'Lib2', selectedParentPath: root2 });
+
+    service.createTag({ libraryId, name: 'Shared' });
+    // Same name in a different library should succeed.
+    const tag2 = service.createTag({ libraryId: lib2.libraryId, name: 'Shared' });
+    expect(tag2.name).toBe('Shared');
+
+    service.closeAll();
+  });
+
+  it('renames a tag with NOCASE-unique check', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+
+    service.createTag({ libraryId, name: 'Alpha' });
+    const beta = service.createTag({ libraryId, name: 'Beta' });
+
+    const renamed = service.renameTag({ libraryId, tagId: beta.tagId, name: '  Gamma  ' });
+    expect(renamed).toMatchObject({ tagId: beta.tagId, name: 'Gamma', assetCount: 0 });
+
+    // Cannot rename to an existing name (case-insensitive).
+    expectServiceCode(
+      () => service.renameTag({ libraryId, tagId: beta.tagId, name: 'ALPHA' }),
+      'FOLDER_ALREADY_EXISTS',
+    );
+
+    service.closeAll();
+  });
+
+  it('emits asset.changed when assigning or renaming a tag on an asset', () => {
+    const events: number[] = [];
+    const { service, libraryId, assetId } = createLibraryWithAsset({
+      onAssetsChanged: (event) => events.push(event.changedCount),
+    });
+    const tag = service.createTag({ libraryId, name: '可同步' });
+    events.length = 0;
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [tag.tagId] });
+    expect(events.some((count) => count >= 1)).toBe(true);
+    events.length = 0;
+    service.renameTag({ libraryId, tagId: tag.tagId, name: '已改名' });
+    expect(events.some((count) => count >= 1)).toBe(true);
+    service.closeAll();
+  });
+
+  it('throws FOLDER_NOT_FOUND when renaming a missing tag', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () => service.renameTag({ libraryId, tagId: 'nonexistent', name: 'Nope' }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('deletes a tag and cascades to human_asset_tags', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const tag = service.createTag({ libraryId, name: 'ToDelete' });
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [tag.tagId] });
+
+    const tagId = service.deleteTag({ libraryId, tagId: tag.tagId });
+    expect(tagId).toBe(tag.tagId);
+
+    // The tag should be gone from list.
+    const list = service.listTags(libraryId);
+    expect(list.find((t) => t.tagId === tag.tagId)).toBeUndefined();
+
+    service.closeAll();
+  });
+
+  it('throws FOLDER_NOT_FOUND when deleting a missing tag', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () => service.deleteTag({ libraryId, tagId: 'nonexistent' }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('deletes multiple tags in one call', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const alpha = service.createTag({ libraryId, name: 'BatchA' });
+    const beta = service.createTag({ libraryId, name: 'BatchB' });
+
+    const { deletedTagIds } = service.deleteTags({
+      libraryId,
+      tagIds: [alpha.tagId, beta.tagId],
+    });
+    expect(deletedTagIds.sort()).toEqual([alpha.tagId, beta.tagId].sort());
+    expect(service.listTags(libraryId)).toHaveLength(0);
+
+    service.closeAll();
+  });
+
+  it('merges tags into a newly named tag and deduplicates asset links', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const alpha = service.createTag({ libraryId, name: 'MergeA' });
+    const beta = service.createTag({ libraryId, name: 'MergeB' });
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [alpha.tagId] });
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [beta.tagId] });
+
+    const merged = service.mergeTags({
+      libraryId,
+      sourceTagIds: [alpha.tagId, beta.tagId],
+      name: 'Merged',
+    });
+    expect(merged.name).toBe('Merged');
+    expect(merged.assetCount).toBe(1);
+
+    const list = service.listTags(libraryId);
+    expect(list).toHaveLength(1);
+    expect(list[0]?.tagId).toBe(merged.tagId);
+    expect(list.find((tag) => tag.tagId === alpha.tagId)).toBeUndefined();
+
+    service.closeAll();
+  });
+
+  it('throws when merging fewer than two tags', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const tag = service.createTag({ libraryId, name: 'Solo' });
+    expectServiceCode(
+      () =>
+        service.mergeTags({
+          libraryId,
+          sourceTagIds: [tag.tagId],
+          name: 'Nope',
+        }),
+      'INVALID_FOLDER_NAME',
+    );
+    service.closeAll();
+  });
+
+  it('builds tag co-occurrence graph with weighted edges', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const alpha = service.createTag({ libraryId, name: 'CoAlpha' });
+    const beta = service.createTag({ libraryId, name: 'CoBeta' });
+    const solo = service.createTag({ libraryId, name: 'CoSolo' });
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [alpha.tagId, beta.tagId] });
+
+    const graph = service.getTagCooccurrenceGraph({ libraryId });
+    expect(graph.nodes).toHaveLength(2);
+    expect(graph.edges).toHaveLength(1);
+    const edge = graph.edges[0]!;
+    expect(edge.weight).toBe(1);
+    expect([edge.sourceTagId, edge.targetTagId].sort()).toEqual(
+      [alpha.tagId, beta.tagId].sort(),
+    );
+    expect(graph.nodes.find((node) => node.tagId === solo.tagId)).toBeUndefined();
+
+    service.closeAll();
+  });
+
+  it('respects minWeight when building co-occurrence edges', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const alpha = service.createTag({ libraryId, name: 'WeightA' });
+    const beta = service.createTag({ libraryId, name: 'WeightB' });
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [alpha.tagId, beta.tagId] });
+
+    const graph = service.getTagCooccurrenceGraph({ libraryId, minWeight: 2 });
+    expect(graph.edges).toHaveLength(0);
+
+    service.closeAll();
+  });
+});
+
+// ── Tag assignment ────────────────────────────────────────────────────
+
+describe('tag assignment', () => {
+  it('counts distinct assets across human and AI tag relationships', () => {
+    const { service, libraryId, libraryPath, assetId } = createLibraryWithAsset();
+    const tag = service.createTag({ libraryId, name: 'Shared source' });
+    const db = new TestDatabase(path.join(libraryPath, '.worldlinebox', 'library.db'));
+    try {
+      db.prepare(
+        `INSERT INTO ai_asset_tags
+           (asset_id, tag_id, revision_id, model_id, model_version)
+         VALUES (?, ?, NULL, 'test-model', '1')`,
+      ).run(assetId, tag.tagId);
+    } finally {
+      db.close();
+    }
+
+    expect(service.listTags(libraryId).find((item) => item.tagId === tag.tagId)?.assetCount).toBe(1);
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [tag.tagId] });
+    expect(service.listTags(libraryId).find((item) => item.tagId === tag.tagId)?.assetCount).toBe(1);
+    service.closeAll();
+  });
+
+  it('assigns tags to assets and counts assignments', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const alpha = service.createTag({ libraryId, name: 'Alpha' });
+    const beta = service.createTag({ libraryId, name: 'Beta' });
+
+    const result = service.assignTags({
+      libraryId,
+      assetIds: [assetId],
+      tagIds: [alpha.tagId, beta.tagId],
+    });
+    expect(result.assignedCount).toBe(2);
+    expect(result.skipped).toEqual([]);
+
+    // Verify assetCount on listed tags.
+    const list = service.listTags(libraryId);
+    const alphaSummary = list.find((t) => t.tagId === alpha.tagId);
+    const betaSummary = list.find((t) => t.tagId === beta.tagId);
+    expect(alphaSummary?.assetCount).toBe(1);
+    expect(betaSummary?.assetCount).toBe(1);
+
+    service.closeAll();
+  });
+
+  it('is idempotent on tag assignment', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const tag = service.createTag({ libraryId, name: 'Idem' });
+
+    const first = service.assignTags({ libraryId, assetIds: [assetId], tagIds: [tag.tagId] });
+    expect(first.assignedCount).toBe(1);
+
+    const second = service.assignTags({ libraryId, assetIds: [assetId], tagIds: [tag.tagId] });
+    expect(second.assignedCount).toBe(0);
+
+    const list = service.listTags(libraryId);
+    expect(list.find((t) => t.tagId === tag.tagId)?.assetCount).toBe(1);
+
+    service.closeAll();
+  });
+
+  it('skips nonexistent assets during assignment and reports them', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const tag = service.createTag({ libraryId, name: 'Ghost' });
+
+    const result = service.assignTags({
+      libraryId,
+      assetIds: [assetId, 'nonexistent'],
+      tagIds: [tag.tagId],
+    });
+    expect(result.assignedCount).toBe(1);
+    expect(result.skipped).toEqual([{ assetId: 'nonexistent', reason: 'asset_not_found' }]);
+
+    // The valid asset still received the tag.
+    const list = service.listTags(libraryId);
+    expect(list.find((t) => t.tagId === tag.tagId)?.assetCount).toBe(1);
+
+    service.closeAll();
+  });
+
+  it('reports every requested asset as skipped when none exist', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const tag = service.createTag({ libraryId, name: 'Ghost' });
+
+    const result = service.assignTags({
+      libraryId,
+      assetIds: ['nonexistent'],
+      tagIds: [tag.tagId],
+    });
+    expect(result.assignedCount).toBe(0);
+    expect(result.skipped).toEqual([{ assetId: 'nonexistent', reason: 'asset_not_found' }]);
+
+    // Nothing was assigned anywhere.
+    expect(service.listTags(libraryId).find((t) => t.tagId === tag.tagId)?.assetCount).toBe(0);
+
+    service.closeAll();
+  });
+
+  it('rejects assignment with nonexistent tag', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    expectServiceCode(
+      () => service.assignTags({ libraryId, assetIds: [assetId], tagIds: ['nonexistent'] }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('removes tags and counts removals', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const alpha = service.createTag({ libraryId, name: 'Alpha' });
+    const beta = service.createTag({ libraryId, name: 'Beta' });
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [alpha.tagId, beta.tagId] });
+
+    const result = service.removeTags({
+      libraryId,
+      assetIds: [assetId],
+      tagIds: [alpha.tagId],
+    });
+    expect(result.removedCount).toBe(1);
+    expect(result.skipped).toEqual([]);
+
+    const list = service.listTags(libraryId);
+    expect(list.find((t) => t.tagId === alpha.tagId)?.assetCount).toBe(0);
+    expect(list.find((t) => t.tagId === beta.tagId)?.assetCount).toBe(1);
+
+    service.closeAll();
+  });
+
+  it('removeTags also clears AI-authored tag links (WorldlineBox-h2i2)', () => {
+    const { service, libraryId, libraryPath, assetId } = createLibraryWithAsset();
+    const tag = service.createTag({ libraryId, name: 'AiOnly' });
+    const db = new TestDatabase(path.join(libraryPath, '.worldlinebox', 'library.db'));
+    try {
+      db.prepare(
+        `INSERT INTO ai_asset_tags
+           (asset_id, tag_id, revision_id, model_id, model_version)
+         VALUES (?, ?, NULL, 'test-model', '1')`,
+      ).run(assetId, tag.tagId);
+    } finally {
+      db.close();
+    }
+
+    const result = service.removeTags({
+      libraryId,
+      assetIds: [assetId],
+      tagIds: [tag.tagId],
+    });
+    expect(result.removedCount).toBe(1);
+
+    const after = new TestDatabase(path.join(libraryPath, '.worldlinebox', 'library.db'));
+    try {
+      const count = (
+        after
+          .prepare(
+            'SELECT COUNT(*) AS count FROM ai_asset_tags WHERE asset_id = ? AND tag_id = ?',
+          )
+          .get(assetId, tag.tagId) as { count: number }
+      ).count;
+      expect(count).toBe(0);
+    } finally {
+      after.close();
+    }
+
+    service.closeAll();
+  });
+
+  it('is idempotent on tag removal', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const tag = service.createTag({ libraryId, name: 'RemoveMe' });
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [tag.tagId] });
+
+    const first = service.removeTags({ libraryId, assetIds: [assetId], tagIds: [tag.tagId] });
+    expect(first.removedCount).toBe(1);
+
+    const second = service.removeTags({ libraryId, assetIds: [assetId], tagIds: [tag.tagId] });
+    expect(second.removedCount).toBe(0);
+
+    service.closeAll();
+  });
+
+  it('skips nonexistent assets during removal and reports them', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const tag = service.createTag({ libraryId, name: 'RemoveMe' });
+    service.assignTags({ libraryId, assetIds: [assetId], tagIds: [tag.tagId] });
+
+    const result = service.removeTags({
+      libraryId,
+      assetIds: [assetId, 'nonexistent'],
+      tagIds: [tag.tagId],
+    });
+    expect(result.removedCount).toBe(1);
+    expect(result.skipped).toEqual([{ assetId: 'nonexistent', reason: 'asset_not_found' }]);
+
+    // A removal targeting only unknown assets is a no-op, not an error.
+    const noop = service.removeTags({
+      libraryId,
+      assetIds: ['nonexistent'],
+      tagIds: [tag.tagId],
+    });
+    expect(noop.removedCount).toBe(0);
+    expect(noop.skipped).toEqual([{ assetId: 'nonexistent', reason: 'asset_not_found' }]);
+
+    service.closeAll();
+  });
+
+  it('supports bulk cross-product assignment', () => {
+    const { service, libraryId, assetId, libraryPath } = createLibraryWithAsset();
+    const managedFolder = service.listManagedFolders(libraryId)[0]!;
+    const assetId2 = createSecondAsset(libraryPath, managedFolder.relativePath, managedFolder.folderId);
+
+    const t1 = service.createTag({ libraryId, name: 'T1' });
+    const t2 = service.createTag({ libraryId, name: 'T2' });
+
+    const result = service.assignTags({
+      libraryId,
+      assetIds: [assetId, assetId2],
+      tagIds: [t1.tagId, t2.tagId],
+    });
+    // 2 assets x 2 tags = 4 assignments
+    expect(result.assignedCount).toBe(4);
+
+    const removeResult = service.removeTags({
+      libraryId,
+      assetIds: [assetId, assetId2],
+      tagIds: [t1.tagId, t2.tagId],
+    });
+    expect(removeResult.removedCount).toBe(4);
+
+    service.closeAll();
+  });
+});
+
+// ── Collections ───────────────────────────────────────────────────────
+
+describe('collections', () => {
+  it('creates a root collection with sequential positions', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const c1 = service.createCollection({ libraryId, name: '  First  ' });
+    const c2 = service.createCollection({ libraryId, name: 'Second' });
+
+    expect(c1).toMatchObject({
+      name: 'First', parentId: null, position: 0, assetCount: 0, childCollectionCount: 0,
+    });
+    expect(c2).toMatchObject({
+      name: 'Second', parentId: null, position: 1, assetCount: 0, childCollectionCount: 0,
+    });
+
+    const list = service.listCollections(libraryId);
+    expect(list).toEqual([c1, c2]);
+    service.closeAll();
+  });
+
+  it('creates a nested collection tree', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const parent = service.createCollection({ libraryId, name: 'Parent' });
+    const child = service.createCollection({ libraryId, parentId: parent.collectionId, name: 'Child' });
+    const sibling = service.createCollection({ libraryId, parentId: parent.collectionId, name: 'Sibling' });
+
+    expect(child.parentId).toBe(parent.collectionId);
+    expect(child.position).toBe(0);
+    expect(sibling.parentId).toBe(parent.collectionId);
+    expect(sibling.position).toBe(1);
+
+    const list = service.listCollections(libraryId);
+    const parentSummary = list.find((c) => c.collectionId === parent.collectionId);
+    expect(parentSummary?.childCollectionCount).toBe(2);
+
+    service.closeAll();
+  });
+
+  it('moves a nested collection back to the library root', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const parent = service.createCollection({ libraryId, name: 'Parent' });
+    const child = service.createCollection({
+      libraryId,
+      parentId: parent.collectionId,
+      name: 'Child',
+    });
+
+    const moved = service.updateCollection({
+      libraryId,
+      collectionId: child.collectionId,
+      parentId: null,
+      position: 1,
+    });
+
+    expect(moved).toMatchObject({
+      collectionId: child.collectionId,
+      parentId: null,
+      position: 1,
+    });
+    expect(
+      service.listCollections(libraryId)
+        .filter((collection) => collection.parentId === null)
+        .map((collection) => collection.collectionId),
+    ).toEqual([parent.collectionId, child.collectionId]);
+
+    service.closeAll();
+  });
+
+  it('nests a root collection under another collection', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const parent = service.createCollection({ libraryId, name: 'Parent' });
+    const child = service.createCollection({ libraryId, name: 'Child' });
+
+    const moved = service.updateCollection({
+      libraryId,
+      collectionId: child.collectionId,
+      parentId: parent.collectionId,
+      position: 0,
+    });
+
+    expect(moved).toMatchObject({
+      collectionId: child.collectionId,
+      parentId: parent.collectionId,
+      position: 0,
+    });
+    expect(
+      service.listCollections(libraryId)
+        .filter((collection) => collection.parentId === parent.collectionId)
+        .map((collection) => collection.collectionId),
+    ).toEqual([child.collectionId]);
+    expect(
+      service.listCollections(libraryId).find((collection) => collection.collectionId === parent.collectionId)
+        ?.childCollectionCount,
+    ).toBe(1);
+
+    service.closeAll();
+  });
+
+  it('rejects creating a collection under a nonexistent parent', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () => service.createCollection({ libraryId, parentId: 'nonexistent', name: 'Orphan' }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('deletes a collection and cascades to children', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const parent = service.createCollection({ libraryId, name: 'Parent' });
+    service.createCollection({ libraryId, parentId: parent.collectionId, name: 'Child' });
+
+    const deletedId = service.deleteCollection({ libraryId, collectionId: parent.collectionId });
+    expect(deletedId).toBe(parent.collectionId);
+
+    const list = service.listCollections(libraryId);
+    expect(list).toEqual([]);
+
+    service.closeAll();
+  });
+
+  it('throws FOLDER_NOT_FOUND when deleting a missing collection', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () => service.deleteCollection({ libraryId, collectionId: 'nonexistent' }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('updates collection fields partially', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const col = service.createCollection({ libraryId, name: 'Original' });
+
+    const updated = service.updateCollection({
+      libraryId,
+      collectionId: col.collectionId,
+      name: '  Renamed  ',
+      description: 'A description',
+    });
+    expect(updated).toMatchObject({
+      collectionId: col.collectionId,
+      name: 'Renamed',
+      description: 'A description',
+      parentId: null,
+      position: col.position,
+      coverAssetId: null,
+    });
+
+    // Partial: only update position.
+    const moved = service.updateCollection({
+      libraryId,
+      collectionId: col.collectionId,
+      position: 99,
+    });
+    expect(moved.position).toBe(99);
+    expect(moved.name).toBe('Renamed');
+    expect(moved.description).toBe('A description');
+
+    const cleared = service.updateCollection({
+      libraryId,
+      collectionId: col.collectionId,
+      description: null,
+      coverAssetId: null,
+    });
+    expect(cleared.description).toBeNull();
+    expect(cleared.coverAssetId).toBeNull();
+
+    service.closeAll();
+  });
+
+  it('renames a parent collection without breaking its child hierarchy', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const parent = service.createCollection({ libraryId, name: 'Parent' });
+    const child = service.createCollection({
+      libraryId,
+      parentId: parent.collectionId,
+      name: 'Child',
+    });
+
+    expect(
+      service.getCollectionHistorySnapshot({
+        libraryId,
+        collectionIds: [parent.collectionId],
+      }).map((item) => item.collectionId),
+    ).toEqual(expect.arrayContaining([parent.collectionId, child.collectionId]));
+
+    const updated = service.updateCollection({
+      libraryId,
+      collectionId: parent.collectionId,
+      name: 'Renamed parent',
+    });
+
+    expect(updated).toMatchObject({
+      collectionId: parent.collectionId,
+      name: 'Renamed parent',
+      parentId: null,
+      childCollectionCount: 1,
+    });
+    expect(service.listCollections(libraryId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          collectionId: child.collectionId,
+          parentId: parent.collectionId,
+          name: 'Child',
+        }),
+      ]),
+    );
+
+    service.closeAll();
+  });
+
+  it('throws FOLDER_NOT_FOUND when updating a missing collection', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () => service.updateCollection({ libraryId, collectionId: 'nonexistent', name: 'Nope' }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('reorders a complete sibling set atomically and rejects partial or mixed-parent sets', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const first = service.createCollection({ libraryId, name: 'First' });
+    const second = service.createCollection({ libraryId, name: 'Second' });
+    const third = service.createCollection({ libraryId, name: 'Third' });
+    const child = service.createCollection({ libraryId, parentId: first.collectionId, name: 'Child' });
+
+    expect(service.reorderCollections({
+      libraryId,
+      orderedCollectionIds: [third.collectionId, first.collectionId, second.collectionId],
+    })).toEqual([third.collectionId, first.collectionId, second.collectionId]);
+    expect(service.listCollections(libraryId).filter((item) => item.parentId === null).map((item) => item.collectionId))
+      .toEqual([third.collectionId, first.collectionId, second.collectionId]);
+
+    expectServiceCode(() => service.reorderCollections({
+      libraryId,
+      orderedCollectionIds: [first.collectionId, second.collectionId],
+    }), 'FOLDER_NOT_FOUND');
+    expectServiceCode(() => service.reorderCollections({
+      libraryId,
+      orderedCollectionIds: [first.collectionId, second.collectionId, child.collectionId],
+    }), 'FOLDER_NOT_FOUND');
+    expectServiceCode(() => service.reorderCollections({
+      libraryId,
+      orderedCollectionIds: [first.collectionId, first.collectionId, third.collectionId],
+    }), 'FOLDER_NOT_FOUND');
+    expect(service.listCollections(libraryId).filter((item) => item.parentId === null).map((item) => item.collectionId))
+      .toEqual([third.collectionId, first.collectionId, second.collectionId]);
+    service.closeAll();
+  });
+});
+
+// ── Collection assets ─────────────────────────────────────────────────
+
+describe('collection assets', () => {
+  it('preserves a linked asset location kind when listing a collection', () => {
+    const root = temporaryRoot();
+    const service = newService();
+    const library = service.createLibrary({ displayName: 'Linked Collection', selectedParentPath: root });
+    const linkedRoot = path.join(root, 'linked-collection-source');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'linked.png'), 'linked');
+    service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+    const [linkedAsset] = service.listAssets({ libraryId: library.libraryId, recursive: true });
+    const collection = service.createCollection({ libraryId: library.libraryId, name: 'Linked Assets' });
+    service.addCollectionAssets({
+      libraryId: library.libraryId,
+      collectionId: collection.collectionId,
+      assetIds: [linkedAsset!.assetId],
+    });
+
+    expect(service.listCollectionAssets({
+      libraryId: library.libraryId,
+      collectionId: collection.collectionId,
+      recursive: false,
+    })).toEqual([expect.objectContaining({
+      assetId: linkedAsset!.assetId,
+      locationKind: 'linked',
+    })]);
+    service.closeAll();
+  });
+
+  it('adds assets to a collection and lists them', () => {
+    const { service, libraryId, assetId, libraryPath } = createLibraryWithAsset();
+    const managedFolder = service.listManagedFolders(libraryId)[0]!;
+    const assetId2 = createSecondAsset(libraryPath, managedFolder.relativePath, managedFolder.folderId);
+
+    const col = service.createCollection({ libraryId, name: 'Coll' });
+
+    const addResult = service.addCollectionAssets({
+      libraryId,
+      collectionId: col.collectionId,
+      assetIds: [assetId, assetId2],
+    });
+    expect(addResult.collectionId).toBe(col.collectionId);
+
+    // Verify assetCount in list.
+    const list = service.listCollections(libraryId);
+    expect(list.find((c) => c.collectionId === col.collectionId)?.assetCount).toBe(2);
+
+    // List assets non-recursive.
+    const assets = service.listCollectionAssets({
+      libraryId,
+      collectionId: col.collectionId,
+      recursive: false,
+    });
+    expect(assets).toHaveLength(2);
+    expect(assets.map((a) => a.assetId).sort()).toEqual([assetId, assetId2].sort());
+
+    // CU-B4: memberships query returns only direct memberships for the asked assets.
+    const memberships = service.listAssetCollectionMemberships({
+      libraryId,
+      assetIds: [assetId, assetId2, 'missing-asset'],
+    });
+    expect(memberships).toEqual(
+      expect.arrayContaining([
+        { assetId, collectionId: col.collectionId },
+        { assetId: assetId2, collectionId: col.collectionId },
+      ]),
+    );
+    expect(memberships).toHaveLength(2);
+
+    service.closeAll();
+  });
+
+  it('counts recursive collection assets as a distinct union', () => {
+    const { service, libraryId, assetId, libraryPath } = createLibraryWithAsset();
+    const managedFolder = service.listManagedFolders(libraryId)[0]!;
+    const secondAssetId = createSecondAsset(
+      libraryPath,
+      managedFolder.relativePath,
+      managedFolder.folderId,
+    );
+    const parent = service.createCollection({ libraryId, name: 'Parent' });
+    const child = service.createCollection({
+      libraryId,
+      parentId: parent.collectionId,
+      name: 'Child',
+    });
+
+    service.addCollectionAssets({
+      libraryId,
+      collectionId: parent.collectionId,
+      assetIds: [assetId],
+    });
+    service.addCollectionAssets({
+      libraryId,
+      collectionId: child.collectionId,
+      assetIds: [assetId, secondAssetId],
+    });
+
+    const list = service.listCollections(libraryId);
+    expect(list.find((collection) => collection.collectionId === parent.collectionId))
+      .toMatchObject({ assetCount: 2, childCollectionCount: 1 });
+    expect(list.find((collection) => collection.collectionId === child.collectionId))
+      .toMatchObject({ assetCount: 2, childCollectionCount: 0 });
+
+    service.trashAssets({ libraryId, assetIds: [secondAssetId] });
+    expect(service.listCollections(libraryId).find(
+      (collection) => collection.collectionId === parent.collectionId,
+    )?.assetCount).toBe(1);
+    service.closeAll();
+  });
+
+  it('removes assets from a collection', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const col = service.createCollection({ libraryId, name: 'Coll' });
+    service.addCollectionAssets({ libraryId, collectionId: col.collectionId, assetIds: [assetId] });
+
+    const removeResult = service.removeCollectionAssets({
+      libraryId,
+      collectionId: col.collectionId,
+      assetIds: [assetId],
+    });
+    expect(removeResult.collectionId).toBe(col.collectionId);
+
+    const assets = service.listCollectionAssets({
+      libraryId,
+      collectionId: col.collectionId,
+      recursive: false,
+    });
+    expect(assets).toEqual([]);
+
+    // Idempotent: removing again does not error.
+    const again = service.removeCollectionAssets({
+      libraryId,
+      collectionId: col.collectionId,
+      assetIds: [assetId],
+    });
+    expect(again.collectionId).toBe(col.collectionId);
+
+    service.closeAll();
+  });
+
+  it('reorders collection assets with full position replacement', () => {
+    const { service, libraryId, assetId, libraryPath } = createLibraryWithAsset();
+    const managedFolder = service.listManagedFolders(libraryId)[0]!;
+    const assetId2 = createSecondAsset(libraryPath, managedFolder.relativePath, managedFolder.folderId);
+    const assetId3 = createSecondAsset(libraryPath, managedFolder.relativePath, managedFolder.folderId);
+
+    const col = service.createCollection({ libraryId, name: 'Coll' });
+    service.addCollectionAssets({
+      libraryId,
+      collectionId: col.collectionId,
+      assetIds: [assetId, assetId2, assetId3],
+    });
+
+    // Reverse the order.
+    const reorderResult = service.reorderCollectionAssets({
+      libraryId,
+      collectionId: col.collectionId,
+      orderedAssetIds: [assetId3, assetId2, assetId],
+    });
+    expect(reorderResult.collectionId).toBe(col.collectionId);
+
+    const assets = service.listCollectionAssets({
+      libraryId,
+      collectionId: col.collectionId,
+      recursive: false,
+    });
+    expect(assets.map((a) => a.assetId)).toEqual([assetId3, assetId2, assetId]);
+
+    service.closeAll();
+  });
+
+  it('rejects collection asset operations on nonexistent collection', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () =>
+        service.addCollectionAssets({
+          libraryId,
+          collectionId: 'nonexistent',
+          assetIds: ['also-fake'],
+        }),
+      'FOLDER_NOT_FOUND',
+    );
+    expectServiceCode(
+      () =>
+        service.listCollectionAssets({
+          libraryId,
+          collectionId: 'nonexistent',
+          recursive: false,
+        }),
+      'FOLDER_NOT_FOUND',
+    );
+    expectServiceCode(
+      () =>
+        service.reorderCollectionAssets({
+          libraryId,
+          collectionId: 'nonexistent',
+          orderedAssetIds: ['some-id'],
+        }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('rejects adding nonexistent assets', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    const col = service.createCollection({ libraryId, name: 'Coll' });
+    expectServiceCode(
+      () =>
+        service.addCollectionAssets({
+          libraryId,
+          collectionId: col.collectionId,
+          assetIds: ['nonexistent'],
+        }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('lists collection assets recursively with dedup', () => {
+    const { service, libraryId, assetId, libraryPath } = createLibraryWithAsset();
+    const managedFolder = service.listManagedFolders(libraryId)[0]!;
+    const assetId2 = createSecondAsset(libraryPath, managedFolder.relativePath, managedFolder.folderId);
+
+    // Tree: Parent -> Child
+    //   Parent has assetId
+    //   Child has assetId (duplicate) + assetId2
+    const parent = service.createCollection({ libraryId, name: 'Parent' });
+    const child = service.createCollection({ libraryId, parentId: parent.collectionId, name: 'Child' });
+
+    service.addCollectionAssets({ libraryId, collectionId: parent.collectionId, assetIds: [assetId] });
+    service.addCollectionAssets({ libraryId, collectionId: child.collectionId, assetIds: [assetId, assetId2] });
+
+    // Non-recursive on parent: only assetId.
+    const nonRecursive = service.listCollectionAssets({
+      libraryId,
+      collectionId: parent.collectionId,
+      recursive: false,
+    });
+    expect(nonRecursive).toHaveLength(1);
+    expect(nonRecursive[0]!.assetId).toBe(assetId);
+
+    // Recursive on parent: assetId (deduped) + assetId2 = 2.
+    const recursive = service.listCollectionAssets({
+      libraryId,
+      collectionId: parent.collectionId,
+      recursive: true,
+    });
+    const ids = recursive.map((a) => a.assetId).sort();
+    expect(ids).toEqual([assetId, assetId2].sort());
+    expect(recursive).toHaveLength(2);
+
+    service.closeAll();
+  });
+});
+
+// ── Asset Metadata ─────────────────────────────────────────────────────
+
+describe('asset metadata', () => {
+  it('returns defaults when no metadata row exists', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    const metadata = service.getAssetMetadata({ libraryId, assetId });
+    expect(metadata).toMatchObject({
+      assetId,
+      description: null,
+      rating: 0,
+      favorite: false,
+      palette: null,
+      sourcePageUrl: null,
+      author: null,
+      entityVersion: 0,
+    });
+    service.closeAll();
+  });
+
+  it('throws ASSET_NOT_FOUND for nonexistent asset', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () => service.getAssetMetadata({ libraryId, assetId: 'nonexistent' }),
+      'ASSET_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('creates metadata row on first set (expectedVersion=0) and increments version', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    const result = service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 0,
+      description: 'Hero description',
+      rating: 4,
+      favorite: true,
+    });
+    expect(result.entityVersion).toBe(1);
+    expect(result.description).toBe('Hero description');
+    expect(result.rating).toBe(4);
+    expect(result.favorite).toBe(true);
+
+    // Second set with expectedVersion=1 should succeed and bump to 2.
+    const result2 = service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 1,
+      rating: 5,
+    });
+    expect(result2.entityVersion).toBe(2);
+    expect(result2.rating).toBe(5);
+    expect(result2.description).toBe('Hero description'); // unchanged
+
+    service.closeAll();
+  });
+
+  it('throws VERSION_CONFLICT on optimistic lock mismatch', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    // First write: creates row with entityVersion=1.
+    service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 0,
+      description: 'First',
+    });
+
+    // Attempt with stale expectedVersion=0.
+    const staleConflict = expectServiceCode(
+      () =>
+        service.setAssetMetadata({
+          libraryId,
+          assetId,
+          expectedVersion: 0,
+          description: 'Stale',
+        }),
+      'VERSION_CONFLICT',
+    );
+    expect(staleConflict.currentEntityVersion).toBe(1);
+
+    // Attempt with wrong expectedVersion (should be 1).
+    const futureConflict = expectServiceCode(
+      () =>
+        service.setAssetMetadata({
+          libraryId,
+          assetId,
+          expectedVersion: 2,
+          description: 'Wrong',
+        }),
+      'VERSION_CONFLICT',
+    );
+    expect(futureConflict.currentEntityVersion).toBe(1);
+
+    service.closeAll();
+  });
+
+  it('throws VERSION_CONFLICT when inserting with expectedVersion != 0 and no row exists', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    const conflict = expectServiceCode(
+      () =>
+        service.setAssetMetadata({
+          libraryId,
+          assetId,
+          expectedVersion: 1,
+          description: 'Bad',
+        }),
+      'VERSION_CONFLICT',
+    );
+    expect(conflict.currentEntityVersion).toBe(0);
+    service.closeAll();
+  });
+
+  it('enforces rating boundary 0-5', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    // Valid boundaries.
+    service.setAssetMetadata({ libraryId, assetId, expectedVersion: 0, rating: 0 });
+    service.setAssetMetadata({ libraryId, assetId, expectedVersion: 1, rating: 5 });
+
+    // Out of bounds rejected at service level.
+    expectServiceCode(
+      () => service.setAssetMetadata({ libraryId, assetId, expectedVersion: 2, rating: -1 }),
+      'INVALID_ASSET_METADATA',
+    );
+    expectServiceCode(
+      () => service.setAssetMetadata({ libraryId, assetId, expectedVersion: 2, rating: 6 }),
+      'INVALID_ASSET_METADATA',
+    );
+    expectServiceCode(
+      () => service.setAssetMetadata({ libraryId, assetId, expectedVersion: 2, rating: 1.5 }),
+      'INVALID_ASSET_METADATA',
+    );
+
+    service.closeAll();
+  });
+
+  it('enforces description length at the service boundary', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    expectServiceCode(
+      () => service.setAssetMetadata({
+        libraryId,
+        assetId,
+        expectedVersion: 0,
+        description: 'a'.repeat(10_001),
+      }),
+      'INVALID_ASSET_METADATA',
+    );
+
+    service.closeAll();
+  });
+
+  it('ignores palette writes and leaves stored palette unchanged', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    // WorldlineBox-7pg: any palette payload is a no-op for the column / effective view.
+    const palette20 = Array.from({ length: 20 }, (_, i) => `#${String(i).padStart(6, '0')}`);
+    const first = service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 0,
+      palette: palette20,
+    });
+    expect(first).toMatchObject({
+      palette: null,
+      effectivePalette: [],
+      paletteSource: null,
+      entityVersion: 1,
+    });
+
+    const palette21 = Array.from({ length: 21 }, (_, i) => `#${String(i).padStart(6, '0')}`);
+    const second = service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 1,
+      palette: palette21,
+    });
+    expect(second).toMatchObject({
+      palette: null,
+      effectivePalette: [],
+      paletteSource: null,
+      entityVersion: 2,
+    });
+
+    service.closeAll();
+  });
+
+  it('ignores invalid manual palette payloads without rejecting the write', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    let expectedVersion = 0;
+    for (const invalidColor of ['red', '#FFF', '#12345G', 'rgb(1, 2, 3)', ' #112233']) {
+      const result = service.setAssetMetadata({
+        libraryId,
+        assetId,
+        expectedVersion,
+        palette: [invalidColor],
+      });
+      expect(result).toMatchObject({
+        palette: null,
+        effectivePalette: [],
+        paletteSource: null,
+      });
+      expectedVersion = result.entityVersion;
+    }
+
+    service.closeAll();
+  });
+
+  it('accepts only empty or HTTP(S) source-page URLs at the service boundary', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    for (const invalidUrl of [
+      'ftp://example.com/source',
+      '/relative/source',
+      'https://user:secret@example.com/source',
+      ' https://example.com/source ',
+      '   ',
+      `https://example.com/${'a'.repeat(8_193)}`,
+    ]) {
+      expectServiceCode(
+        () => service.setAssetMetadata({
+          libraryId,
+          assetId,
+          expectedVersion: 0,
+          sourcePageUrl: invalidUrl,
+        }),
+        'INVALID_ASSET_METADATA',
+      );
+    }
+
+    const longValidUrl = `https://example.com/${'a'.repeat(300)}`;
+    expect(service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 0,
+      sourcePageUrl: longValidUrl,
+    }).sourcePageUrl).toBe(longValidUrl);
+    expect(service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 1,
+      sourcePageUrl: '',
+    }).sourcePageUrl).toBeNull();
+
+    service.closeAll();
+  });
+
+  it('accepts only non-blank, whitespace-trimmed author values at the service boundary', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    for (const invalidAuthor of [
+      ' Jane Doe',
+      'Jane Doe ',
+      '   ',
+      'a'.repeat(256),
+    ]) {
+      expectServiceCode(
+        () => service.setAssetMetadata({
+          libraryId,
+          assetId,
+          expectedVersion: 0,
+          author: invalidAuthor,
+        }),
+        'INVALID_ASSET_METADATA',
+      );
+    }
+
+    const validAuthor = 'a'.repeat(255);
+    expect(service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 0,
+      author: validAuthor,
+    }).author).toBe(validAuthor);
+    expect(service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 1,
+      author: '',
+    }).author).toBeNull();
+
+    service.closeAll();
+  });
+
+  it('sets and reads back author independently of other metadata fields', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    const result = service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 0,
+      author: 'Jane Doe',
+      description: 'Hero description',
+    });
+    expect(result.author).toBe('Jane Doe');
+    expect(result.description).toBe('Hero description');
+
+    const fetched = service.getAssetMetadata({ libraryId, assetId });
+    expect(fetched.author).toBe('Jane Doe');
+
+    // Updating other fields without touching author must leave it unchanged.
+    const untouched = service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: result.entityVersion,
+      rating: 3,
+    });
+    expect(untouched.author).toBe('Jane Doe');
+
+    service.closeAll();
+  });
+
+  it('backfill is idempotent and fills missing rows', () => {
+    const { service, libraryId, assetId, libraryPath } = createLibraryWithAsset();
+    const managedFolder = service.listManagedFolders(libraryId)[0]!;
+    const assetId2 = createSecondAsset(libraryPath, managedFolder.relativePath, managedFolder.folderId);
+
+    // Initially no metadata rows exist.
+    const meta1 = service.getAssetMetadata({ libraryId, assetId });
+    expect(meta1.entityVersion).toBe(0);
+
+    // First backfill.
+    const first = service.backfillAssetMetadata(libraryId);
+    expect(first.backfilledCount).toBeGreaterThanOrEqual(2);
+
+    // Second backfill is idempotent.
+    const second = service.backfillAssetMetadata(libraryId);
+    expect(second.backfilledCount).toBe(0);
+
+    // Both assets now have metadata default rows.
+    const metaAfter1 = service.getAssetMetadata({ libraryId, assetId });
+    expect(metaAfter1.entityVersion).toBe(1);
+    expect(metaAfter1.rating).toBe(0);
+    expect(metaAfter1.favorite).toBe(false);
+
+    const metaAfter2 = service.getAssetMetadata({ libraryId, assetId: assetId2 });
+    expect(metaAfter2.entityVersion).toBe(1);
+
+    service.closeAll();
+  });
+
+  it('AssetSummary reflects rating/favorite after metadata.set', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+
+    // Before metadata: defaults.
+    const assetsBefore = service.listAssets({ libraryId, recursive: true });
+    const before = assetsBefore.find((a) => a.assetId === assetId)!;
+    expect(before.rating).toBe(0);
+    expect(before.favorite).toBe(false);
+
+    // Set metadata.
+    service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 0,
+      rating: 5,
+      favorite: true,
+    });
+
+    // After metadata: populated.
+    const assetsAfter = service.listAssets({ libraryId, recursive: true });
+    const after = assetsAfter.find((a) => a.assetId === assetId)!;
+    expect(after.rating).toBe(5);
+    expect(after.favorite).toBe(true);
+
+    service.closeAll();
+  });
+});
+
+// ── Smart Collections ───────────────────────────────────────────────────
+
+describe('smart collections', () => {
+  it('create allows draft empty/sort-only; update rejects them (CU-M5)', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+
+    // Sidebar inline-create (WorldlineBox-san / SMART-007) intentionally allows a
+    // draft `{}` or sort-only query at create time; the settings dialog
+    // attaches a meaningful condition afterwards. Validation therefore
+    // happens on update/save, not on create.
+    const draftEmpty = service.createSmartCollection({
+      libraryId,
+      name: 'All Assets Trap',
+      queryDefinitionJson: '{}',
+    });
+    expect(draftEmpty.collectionId).toBeTruthy();
+
+    const draftSortOnly = service.createSmartCollection({
+      libraryId,
+      name: 'Sort Only',
+      queryDefinitionJson: JSON.stringify({
+        sort: { field: 'name', order: 'asc' },
+      }),
+    });
+    expect(draftSortOnly.collectionId).toBeTruthy();
+
+    expectServiceCode(
+      () =>
+        service.updateSmartCollection({
+          libraryId,
+          collectionId: draftEmpty.collectionId,
+          queryDefinitionJson: '{}',
+        }),
+      'INVALID_SMART_COLLECTION_QUERY',
+    );
+    expectServiceCode(
+      () =>
+        service.updateSmartCollection({
+          libraryId,
+          collectionId: draftSortOnly.collectionId,
+          queryDefinitionJson: JSON.stringify({
+            sort: { field: 'name', order: 'asc' },
+          }),
+        }),
+      'INVALID_SMART_COLLECTION_QUERY',
+    );
+
+    service.closeAll();
+  });
+
+  it('lists smart collections with live asset counts (CU-M6)', () => {
+    const { service, libraryId, assetId } = createLibraryWithAsset();
+    service.setAssetMetadata({
+      libraryId,
+      assetId,
+      expectedVersion: 0,
+      favorite: true,
+    });
+
+    const sc = service.createSmartCollection({
+      libraryId,
+      name: 'Favorites',
+      queryDefinitionJson: JSON.stringify({
+        filters: [{ field: 'favorite', values: [], exclude: false }],
+      }),
+    });
+    expect(sc.assetCount).toBe(1);
+
+    const list = service.listSmartCollections(libraryId);
+    expect(list).toHaveLength(1);
+    expect(list[0]!.assetCount).toBe(1);
+
+    service.closeAll();
+  });
+
+  it('creates and lists smart collections', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+
+    const sc = service.createSmartCollection({
+      libraryId,
+      name: '  High Rated  ',
+      queryDefinitionJson: '{"filters":[{"field":"rating","values":["4","5"],"exclude":false}],"sort":{"field":"rating","order":"desc"}}',
+    });
+    expect(sc).toMatchObject({
+      name: 'High Rated',
+      queryDefinition: '{"filters":[{"field":"rating","values":["4","5"],"exclude":false}],"sort":{"field":"rating","order":"desc"}}',
+      position: 0,
+    });
+    expect(sc.collectionId).toBeTruthy();
+
+    const list = service.listSmartCollections(libraryId);
+    expect(list).toEqual([sc]);
+
+    service.closeAll();
+  });
+
+  it('updates smart collection fields partially', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+
+    const sc = service.createSmartCollection({
+      libraryId,
+      name: 'Original',
+      queryDefinitionJson: JSON.stringify({ filters: [{ field: 'favorite', values: [], exclude: false }] }),
+    });
+
+    const updated = service.updateSmartCollection({
+      libraryId,
+      collectionId: sc.collectionId,
+      name: '  Updated  ',
+      queryDefinitionJson: '{"filters":[{"field":"favorite","values":[],"exclude":false}]}',
+    });
+    expect(updated).toMatchObject({
+      collectionId: sc.collectionId,
+      name: 'Updated',
+      queryDefinition: '{"filters":[{"field":"favorite","values":[],"exclude":false}]}',
+      position: 0,
+    });
+
+    // Partial: only update position.
+    const updated2 = service.updateSmartCollection({
+      libraryId,
+      collectionId: sc.collectionId,
+      position: 5,
+    });
+    expect(updated2.name).toBe('Updated');
+    expect(updated2.position).toBe(5);
+
+    service.closeAll();
+  });
+
+  it('throws FOLDER_NOT_FOUND when updating a missing smart collection', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () =>
+        service.updateSmartCollection({
+          libraryId,
+          collectionId: 'nonexistent',
+          name: 'Nope',
+        }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('deletes a smart collection', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+
+    const sc = service.createSmartCollection({
+      libraryId,
+      name: 'ToDelete',
+      queryDefinitionJson: JSON.stringify({ filters: [{ field: 'favorite', values: [], exclude: false }] }),
+    });
+
+    const deletedId = service.deleteSmartCollection({
+      libraryId,
+      collectionId: sc.collectionId,
+    });
+    expect(deletedId).toBe(sc.collectionId);
+
+    const list = service.listSmartCollections(libraryId);
+    expect(list).toEqual([]);
+
+    service.closeAll();
+  });
+
+  it('throws FOLDER_NOT_FOUND when deleting a missing smart collection', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () =>
+        service.deleteSmartCollection({
+          libraryId,
+          collectionId: 'nonexistent',
+        }),
+      'FOLDER_NOT_FOUND',
+    );
+    service.closeAll();
+  });
+
+  it('enforces unique name per library', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    service.createSmartCollection({
+      libraryId,
+      name: 'Unique',
+      queryDefinitionJson: JSON.stringify({ filters: [{ field: 'favorite', values: [], exclude: false }] }),
+    });
+    expectServiceCode(
+      () =>
+        service.createSmartCollection({
+          libraryId,
+          name: 'Unique',
+          queryDefinitionJson: JSON.stringify({ filters: [{ field: 'favorite', values: [], exclude: false }] }),
+        }),
+      'FOLDER_ALREADY_EXISTS',
+    );
+    service.closeAll();
+  });
+
+  it('rejects invalid JSON in queryDefinitionJson', () => {
+    const { service, libraryId } = createLibraryWithAsset();
+    expectServiceCode(
+      () =>
+        service.createSmartCollection({ libraryId, name: 'Bad', queryDefinitionJson: 'not json' }),
+      'INVALID_SMART_COLLECTION_QUERY',
+    );
+    service.closeAll();
+  });
+
+  it('executes a smart collection and returns results', () => {
+    const { service, libraryId, assetId, libraryPath } = createLibraryWithAsset();
+    const managedFolder = service.listManagedFolders(libraryId)[0]!;
+    const assetId2 = createSecondAsset(libraryPath, managedFolder.relativePath, managedFolder.folderId);
+
+    // Set distinct ratings so we can filter.
+    service.setAssetMetadata({ libraryId, assetId, expectedVersion: 0, rating: 5 });
+    service.setAssetMetadata({ libraryId, assetId: assetId2, expectedVersion: 0, rating: 1 });
+
+    // Create smart collection for rating >= 4.
+    const sc = service.createSmartCollection({
+      libraryId,
+      name: 'High Rated',
+      queryDefinitionJson: JSON.stringify({
+        filters: [{ field: 'rating', values: ['4', '5'], exclude: false }],
+        sort: { field: 'rating', order: 'desc' },
+      }),
+    });
+
+    const result = service.executeSmartCollection({ libraryId, collectionId: sc.collectionId });
+    expect(result.total).toBe(1);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.assetId).toBe(assetId);
+    expect(result.items[0]!.rating).toBe(5);
+
+    service.closeAll();
+  });
+});

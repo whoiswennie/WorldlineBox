@@ -1,0 +1,262 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  isDialogEscapeLayerActive,
+  resolveDialogEscapeAction,
+  type DialogEscapeSnapshot,
+} from "../../src/renderer/dialog-escape-stack";
+
+const empty: DialogEscapeSnapshot = {
+  assetRenameOpen: false,
+  imageSequenceImportOpen: false,
+  imageSequenceDialogOpen: false,
+  batchRelinkOpen: false,
+  restoreOpen: false,
+  moveOpen: false,
+  undoMoveOpen: false,
+  collectionEditorOpen: false,
+  exportDialogOpen: false,
+  importLibraryChooserOpen: false,
+  openLibraryChooserOpen: false,
+  appSettingsOpen: false,
+  librarySettingsOpen: false,
+  appLogOpen: false,
+  scriptSandboxPreviewOpen: false,
+  aboutOpen: false,
+  openSourceLicensesOpen: false,
+  mediaJobsOpen: false,
+  linkedRulesEditorOpen: false,
+  convertLinkedOpen: false,
+  dialogOpen: false,
+  pluginTrustPromptOpen: false,
+  fatalAlertOpen: false,
+  aiConnectionFailureOpen: false,
+  conflictsImportId: null,
+};
+
+describe("dialog-escape-stack", () => {
+  it("returns none when no layer is open", () => {
+    expect(resolveDialogEscapeAction(empty)).toEqual({ kind: "none" });
+    expect(isDialogEscapeLayerActive(empty)).toBe(false);
+  });
+
+  it("prefers asset rename over later layers", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        assetRenameOpen: true,
+        dialogOpen: true,
+      }),
+    ).toEqual({ kind: "cancel-asset-rename" });
+  });
+
+  it("closes the topmost sequence import dialog before sequence settings", () => {
+    expect(resolveDialogEscapeAction({
+      ...empty,
+      imageSequenceImportOpen: true,
+      imageSequenceDialogOpen: true,
+    })).toEqual({ kind: "close-image-sequence-import" });
+    expect(resolveDialogEscapeAction({
+      ...empty,
+      imageSequenceDialogOpen: true,
+    })).toEqual({ kind: "close-image-sequence-dialog" });
+  });
+
+  it("prefers fatal alert over AI connection failure and other layers (WorldlineBox-99lv)", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        fatalAlertOpen: true,
+        aiConnectionFailureOpen: true,
+        assetRenameOpen: true,
+        mediaJobsOpen: true,
+      }),
+    ).toEqual({ kind: "dismiss-fatal-alert" });
+  });
+
+  it("prefers AI connection failure over other layers (WorldlineBox-kdnm)", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        aiConnectionFailureOpen: true,
+        assetRenameOpen: true,
+        mediaJobsOpen: true,
+      }),
+    ).toEqual({ kind: "abort-ai-connection-failure" });
+  });
+
+  it("cancels a blocking import overlay from Escape, and hides an uncancelable overlay", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        blockingImportOpen: true,
+        blockingImportCancelable: true,
+        dialogOpen: true,
+      }),
+    ).toEqual({ kind: "cancel-blocking-import" });
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        blockingImportOpen: true,
+        blockingImportCancelable: false,
+      }),
+    ).toEqual({ kind: "dismiss-blocking-import" });
+    expect(
+      isDialogEscapeLayerActive({
+        ...empty,
+        blockingImportOpen: true,
+        blockingImportCancelable: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("swallows Escape while a bulk delete overlay is covering the workspace", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        blockingDeleteOpen: true,
+        dialogOpen: true,
+      }),
+    ).toEqual({ kind: "hold-blocking-delete" });
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        blockingDeleteOpen: true,
+        blockingDeleteCancelable: true,
+        dialogOpen: true,
+      }),
+    ).toEqual({ kind: "cancel-blocking-delete" });
+    expect(
+      isDialogEscapeLayerActive({
+        ...empty,
+        blockingDeleteOpen: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("abandons import when only conflicts remain", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        conflictsImportId: "imp_9",
+      }),
+    ).toEqual({ kind: "abandon-import", importId: "imp_9" });
+    expect(
+      isDialogEscapeLayerActive({
+        ...empty,
+        conflictsImportId: "imp_9",
+      }),
+    ).toBe(true);
+  });
+
+  it("holds Escape on an in-flight import decision instead of abandoning (WorldlineBox-85e60c)", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        conflictsImportId: "imp_9",
+        importDecisionSubmitting: true,
+      }),
+    ).toEqual({ kind: "hold-import-decision" });
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        sourceFailureImportId: "imp_sf",
+        importDecisionSubmitting: true,
+      }),
+    ).toEqual({ kind: "hold-import-decision" });
+  });
+
+  it("abandons a source-failure skip plan with Escape", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        sourceFailureImportId: "imp_sf",
+      }),
+    ).toEqual({ kind: "abandon-import", importId: "imp_sf" });
+  });
+
+  it("lets import decision dialogs beat the progress overlay (WorldlineBox-224ac8)", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        blockingImportOpen: true,
+        blockingImportCancelable: true,
+        conflictsImportId: "imp_2",
+        dialogOpen: true,
+      }),
+    ).toEqual({ kind: "abandon-import", importId: "imp_2" });
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        blockingImportOpen: true,
+        blockingImportCancelable: true,
+        imageSequenceImportOpen: true,
+        conflictsImportId: "imp_2",
+      }),
+    ).toEqual({ kind: "close-image-sequence-import" });
+  });
+
+  it("treats embedded AI configuration as part of settings", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        appSettingsOpen: true,
+      }),
+    ).toEqual({ kind: "close-app-settings" });
+  });
+
+  it("closes app settings when that layer is open", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        appSettingsOpen: true,
+        mediaJobsOpen: true,
+      }),
+    ).toEqual({ kind: "close-app-settings" });
+  });
+
+  it("closes library settings when that layer is open", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        librarySettingsOpen: true,
+      }),
+    ).toEqual({ kind: "close-library-settings" });
+  });
+
+  it("closes diagnostics after settings but before background jobs", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        appLogOpen: true,
+        mediaJobsOpen: true,
+      }),
+    ).toEqual({ kind: "close-app-log" });
+  });
+
+  it("closes the script sandbox preview above background jobs", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        scriptSandboxPreviewOpen: true,
+        mediaJobsOpen: true,
+      }),
+    ).toEqual({ kind: "close-script-sandbox-preview" });
+  });
+
+  it("dismisses the plugin trust prompt below ordinary dialogs", () => {
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        pluginTrustPromptOpen: true,
+      }),
+    ).toEqual({ kind: "dismiss-plugin-trust-prompt" });
+    expect(
+      resolveDialogEscapeAction({
+        ...empty,
+        dialogOpen: true,
+        pluginTrustPromptOpen: true,
+      }),
+    ).toEqual({ kind: "close-dialog" });
+  });
+});

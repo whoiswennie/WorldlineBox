@@ -1,0 +1,83 @@
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { _electron as electron, expect, test } from '@playwright/test';
+
+import { closeLibraryViaSwitcher, electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath } from './electron-test-helpers';
+import { PLUGIN_LIBRARY_DATA_DIRECTORY } from '../../src/plugins/plugin-package';
+
+test.describe.configure({ timeout: 180_000 });
+
+const FIXTURE_ROOT = path.resolve('tests/fixtures/plugins/standard-host-probe');
+
+test('activates the fixed standard Host probe and writes library storage', async () => {
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'worldlinebox-plugin-host-e2e-'));
+  const libraryName = '标准Host探测';
+  const packageDirectory = path.join(temporaryRoot, 'standard-host-probe');
+  cpSync(FIXTURE_ROOT, packageDirectory, { recursive: true });
+
+  const executablePath = resolveElectronExecutablePath();
+  const applicationDirectory = process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
+  const application = await electron.launch({
+    args: [applicationDirectory],
+    cwd: applicationDirectory,
+    executablePath,
+    env: electronLaunchEnv({
+      WORLDLINEBOX_E2E: '1',
+      WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(temporaryRoot, 'user-data'),
+      WORLDLINEBOX_E2E_CREATE_PARENT_PATH: temporaryRoot,
+      WORLDLINEBOX_E2E_PLUGIN_PACKAGE: packageDirectory,
+    }),
+  });
+
+  try {
+    const window = await application.firstWindow();
+    await window.getByRole('button', { name: '创建资源库' }).click();
+    await window.getByRole('textbox', { name: '名称' }).fill(libraryName);
+    await window.getByRole('button', { name: '创建', exact: true }).click();
+
+    const dialog = await openAppSettingsDialog(application, window);
+    await openPluginSettingsTab(dialog);
+    await expect(dialog.getByText('暂未安装插件。', { exact: true }).first()).toBeVisible();
+    const installDialog = await openPluginAdvancedInstallDialog(window, dialog);
+    await installDialog.getByLabel('安装范围').selectOption('library');
+    await installDialog.getByRole('button', { name: '安装文件夹' }).click();
+    await expect(dialog.getByText(/Standard Host Probe\s*-\s*v1\.0\.0/)).toBeVisible({ timeout: 30_000 });
+    // Trust is now granted as part of enabling a library-scoped plugin; the
+    // old standalone「信任」button was removed from the settings card.
+    window.once('dialog', (browserDialog) => browserDialog.accept());
+    // The checkbox input is visually clipped inside the custom toggle. Click
+    // its label so Playwright follows the same hit target as a user.
+    await dialog.locator('label.plugin-settings-enable-toggle').click();
+    await expect(dialog.getByRole('checkbox', { name: '启用插件' })).toBeChecked();
+    await dialog.getByRole('button', { name: '关闭' }).click();
+
+    const libraryDirectory = path.join(temporaryRoot, libraryName);
+    const storagePath = path.join(
+      libraryDirectory,
+      PLUGIN_LIBRARY_DATA_DIRECTORY,
+      'com.worldlinebox.standard-host-probe.json',
+    );
+
+    await expect.poll(() => existsSync(storagePath), {
+      timeout: 30_000,
+      intervals: [250, 500, 1_000],
+    }).toBe(true);
+
+    const document = JSON.parse(readFileSync(storagePath, 'utf8')) as {
+      values: Record<string, { activated?: boolean; source?: string }>;
+    };
+    expect(document.values['host-probe']).toEqual({
+      activated: true,
+      source: 'standard-host-probe',
+      previous: null,
+    });
+
+    await closeLibraryViaSwitcher(window, libraryName);
+    await expect(window.getByRole('heading', { name: '创建本地资源库' })).toBeVisible();
+  } finally {
+    await application.close();
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});

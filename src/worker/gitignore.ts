@@ -1,0 +1,99 @@
+import ignore from "ignore";
+
+/** The two path kinds that are materialized from a library ignore file. */
+export type GitIgnorePathKind = "asset" | "folder";
+
+/**
+ * Managed assets live below Assets/; linked trees are matched from their
+ * own root. One .worldlineboxignore file serves both, so a basename rule such as
+ * ".*" with a trailing slash hides the same folder names in every tree.
+ */
+export type GitIgnoreRootKind = "managed" | "linked";
+
+type IgnoreMatcher = ReturnType<typeof ignore>;
+
+/**
+ * A compiled ignore file.  The matcher is deliberately kept behind this
+ * module so callers cannot accidentally apply directory rules to file paths
+ * without supplying the path kind.
+ */
+export type GitIgnoreMatcher = {
+  readonly matcher: IgnoreMatcher;
+};
+
+/**
+ * Compile the contents of a .worldlineboxignore file using the same glob grammar
+ * as .gitignore.  Invalid individual lines are ignored, matching Git's
+ * tolerant treatment of an unusable pattern without discarding the rest of
+ * the user's configuration.
+ */
+export function parseGitignore(text: string): GitIgnoreMatcher {
+  const matcher = ignore({ ignorecase: true });
+  for (const line of text.split(/\r?\n/u)) {
+    try {
+      matcher.add(line);
+    } catch {
+      // Keep valid rules active when an unrelated line is malformed.
+    }
+
+    // Managed assets live below the library's `Assets/` directory, while
+    // users naturally write rules relative to that directory (for example
+    // `renders/**/*.png`).  Compile a qualified spelling for path rules so
+    // the matcher can evaluate one canonical path and still retain Git's
+    // ordered positive/negative semantics.  Basename rules (`*.png`, `.*/`)
+    // already match at every depth and do not need a second spelling.
+    const qualified = assetsQualifiedPattern(line);
+    if (qualified === undefined) continue;
+    try {
+      matcher.add(qualified);
+    } catch {
+      // The original line was handled above; an invalid qualified form must
+      // not make an otherwise valid ignore file unusable.
+    }
+  }
+  return { matcher };
+}
+
+function assetsQualifiedPattern(line: string): string | undefined {
+  if (line.length === 0 || line.startsWith('#')) return undefined;
+
+  const negative = line.startsWith('!') && !line.startsWith('\\!');
+  const body = negative ? line.slice(1) : line;
+  // A leading slash is rooted at the .worldlineboxignore file's library root;
+  // `Assets/` is already the explicit library-root spelling.
+  if (body.startsWith('/') || body.startsWith('Assets/')) return undefined;
+  if (!body.includes('/')) return undefined;
+  return `${negative ? '!' : ''}Assets/${body}`;
+}
+
+function normalizeIgnorePath(relativePath: string): string {
+  return relativePath.replaceAll("\\", "/").replace(/^\/+|\/+$/gu, "");
+}
+
+function candidatePath(
+  relativePath: string,
+  pathKind: GitIgnorePathKind,
+  root: GitIgnoreRootKind,
+): string | undefined {
+  const normalized = normalizeIgnorePath(relativePath);
+  if (!normalized) return undefined;
+  const prefixed = root === "linked" ? normalized : `Assets/${normalized}`;
+  return pathKind === "folder" ? `${prefixed}/` : prefixed;
+}
+
+/**
+ * Match a path against the complete rule list while retaining Git's
+ * last-matching-rule and negation semantics.  Managed paths are evaluated as
+ * `Assets/<relative path>`; linked paths are evaluated from the linked root
+ * so the same file-backed rules apply to both trees. parseGitignore still
+ * adds qualified variants for path rules written relative to Assets/.
+ */
+export function gitignoreMatchesPath(
+  compiled: GitIgnoreMatcher,
+  relativePath: string,
+  pathKind: GitIgnorePathKind,
+  root: GitIgnoreRootKind = "managed",
+): boolean {
+  const candidate = candidatePath(relativePath, pathKind, root);
+  return candidate === undefined ? false : compiled.matcher.ignores(candidate);
+}

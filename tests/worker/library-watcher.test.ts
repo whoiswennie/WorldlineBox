@@ -1,0 +1,821 @@
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  LibraryService,
+  type AssetObserverEvent,
+  type AssetObserverFactory,
+  type DebounceScheduler,
+} from '../../src/worker/library-service';
+
+const temporaryRoots: string[] = [];
+const services: LibraryService[] = [];
+
+function newService(
+  ...args: ConstructorParameters<typeof LibraryService>
+): LibraryService {
+  const service = new LibraryService(...args);
+  services.push(service);
+  return service;
+}
+
+function temporaryRoot(): string {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-watcher-test-'));
+  temporaryRoots.push(root);
+  return root;
+}
+
+class ManualScheduler implements DebounceScheduler {
+  private nextId = 1;
+  private readonly tasks = new Map<number, () => void | Promise<void>>();
+  readonly cancelled: number[] = [];
+  readonly scheduled: number[] = [];
+
+  cancel(handle: unknown): void {
+    const id = handle as number;
+    this.cancelled.push(id);
+    this.tasks.delete(id);
+  }
+
+  async flush(): Promise<void> {
+    const tasks = [...this.tasks.values()];
+    this.tasks.clear();
+    for (const task of tasks) await task();
+  }
+
+  pendingCount(): number {
+    return this.tasks.size;
+  }
+
+  schedule(callback: () => void | Promise<void>): unknown {
+    const id = this.nextId++;
+    this.scheduled.push(id);
+    this.tasks.set(id, callback);
+    return id;
+  }
+}
+
+function observerHarness() {
+  const callbacks: Array<(event?: AssetObserverEvent) => void> = [];
+  const errorCallbacks: Array<(error: unknown) => void> = [];
+  const closed: number[] = [];
+  const roots: string[] = [];
+  const factory: AssetObserverFactory = (rootPath, onEvent, onError) => {
+    const index = callbacks.length;
+    roots.push(rootPath);
+    callbacks.push(onEvent);
+    errorCallbacks.push(onError);
+    return { close: () => closed.push(index) };
+  };
+  return { callbacks, closed, errorCallbacks, factory, roots };
+}
+
+/**
+ * Controllable clock for the client-mutation watcher-notification suppression
+ * window. Import/resolve are client-initiated filesystem mutations, so the
+ * service suppresses watcher "disk synced" notifications for `debounceMs * 6`
+ * after them (real wall-clock seconds). Tests drive the debounce scheduler
+ * manually and would otherwise sit inside that window; advancing this clock
+ * past it keeps them deterministic without wall-clock sleeps.
+ */
+function watchClock(startMs = 1_000_000) {
+  let current = startMs;
+  return {
+    advance: (ms: number) => {
+      current += ms;
+    },
+    clock: { now: () => current },
+  };
+}
+
+afterEach(() => {
+  for (const service of services.splice(0)) {
+    service.closeAll();
+  }
+  for (const root of temporaryRoots.splice(0)) {
+    rmSync(root, { force: true, recursive: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+describe('managed asset watcher', () => {
+  it('starts on create/open and closes observers and timers with the library', () => {
+    const root = temporaryRoot();
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const service = newService({ observerFactory: observers.factory, scheduler });
+    const library = service.createLibrary({ displayName: 'Observed', selectedParentPath: root });
+
+    expect(observers.roots).toEqual([path.join(library.libraryPath, 'Assets')]);
+    observers.callbacks[0]!();
+    expect(scheduler.pendingCount()).toBe(1);
+    service.closeLibrary(library.libraryId);
+    expect(observers.closed).toEqual([0]);
+    expect(scheduler.pendingCount()).toBe(0);
+
+    service.openLibrary(library.libraryPath);
+    expect(observers.roots).toHaveLength(2);
+    service.closeAll();
+    expect(observers.closed).toEqual([0, 1]);
+  });
+
+  it('coalesces event storms and derives deletion from a debounced stat refresh', async () => {
+    const root = temporaryRoot();
+    const source = path.join(root, 'watched.png');
+    writeFileSync(source, 'watched');
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const service = newService({ observerFactory: observers.factory, scheduler });
+    const library = service.createLibrary({ displayName: 'Storm', selectedParentPath: root });
+    const plan = service.prepareImport({ libraryId: library.libraryId, sourceKind: 'files', sourcePaths: [source] });
+    service.resolveImport({ importId: plan.importId, suspectedDuplicate: 'skip', nameConflict: 'keep-both' });
+    rmSync(path.join(library.libraryPath, 'Assets', 'watched.png'));
+
+    observers.callbacks[0]!();
+    observers.callbacks[0]!();
+    observers.callbacks[0]!();
+    expect(scheduler.scheduled).toHaveLength(3);
+    expect(scheduler.cancelled).toHaveLength(2);
+    expect(scheduler.pendingCount()).toBe(1);
+    await scheduler.flush();
+
+    expect(service.listAssets({ libraryId: library.libraryId, recursive: true })[0]?.availability).toBe('missing');
+    service.closeAll();
+  });
+
+  it('keeps one trailing refresh when a new event arrives during reconciliation', async () => {
+    const root = temporaryRoot();
+    const source = path.join(root, 'watched.png');
+    writeFileSync(source, 'watched');
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    let fingerprintStarted!: () => void;
+    const fingerprintReady = new Promise<void>((resolve) => {
+      fingerprintStarted = resolve;
+    });
+    let releaseFingerprint!: () => void;
+    const fingerprintGate = new Promise<void>((resolve) => {
+      releaseFingerprint = resolve;
+    });
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      watcherStableFileWindowMs: 0,
+      contentFingerprintAsync: async () => {
+        fingerprintStarted();
+        await fingerprintGate;
+        return 'watcher-fingerprint';
+      },
+    });
+    const library = service.createLibrary({ displayName: 'Trailing refresh', selectedParentPath: root });
+    const plan = service.prepareImport({
+      libraryId: library.libraryId,
+      sourceKind: 'files',
+      sourcePaths: [source],
+    });
+    service.resolveImport({ importId: plan.importId, suspectedDuplicate: 'skip', nameConflict: 'keep-both' });
+    const managedPath = path.join(library.libraryPath, 'Assets', 'watched.png');
+    writeFileSync(managedPath, 'changed');
+    const changedTime = new Date(Date.now() + 20_000);
+    utimesSync(managedPath, changedTime, changedTime);
+
+    observers.callbacks[0]!();
+    const firstRefresh = scheduler.flush();
+    await fingerprintReady;
+    observers.callbacks[0]!();
+    expect(scheduler.pendingCount()).toBe(0);
+
+    releaseFingerprint();
+    await firstRefresh;
+    expect(scheduler.pendingCount()).toBe(1);
+    await scheduler.flush();
+    service.closeAll();
+  });
+
+  it('settles an async close when a watcher refresh is cancelled', async () => {
+    const root = temporaryRoot();
+    const source = path.join(root, 'closing.png');
+    writeFileSync(source, 'closing');
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    let fingerprintStarted!: () => void;
+    const fingerprintReady = new Promise<void>((resolve) => {
+      fingerprintStarted = resolve;
+    });
+    let releaseFingerprint!: () => void;
+    const fingerprintGate = new Promise<void>((resolve) => {
+      releaseFingerprint = resolve;
+    });
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      watcherStableFileWindowMs: 0,
+      contentFingerprintAsync: async () => {
+        fingerprintStarted();
+        await fingerprintGate;
+        return 'closing-fingerprint';
+      },
+    });
+    const library = service.createLibrary({ displayName: 'Close watcher', selectedParentPath: root });
+    const plan = service.prepareImport({
+      libraryId: library.libraryId,
+      sourceKind: 'files',
+      sourcePaths: [source],
+    });
+    service.resolveImport({ importId: plan.importId, suspectedDuplicate: 'skip', nameConflict: 'keep-both' });
+    const managedPath = path.join(library.libraryPath, 'Assets', 'closing.png');
+    writeFileSync(managedPath, 'changed');
+    const changedTime = new Date(Date.now() + 20_000);
+    utimesSync(managedPath, changedTime, changedTime);
+    observers.callbacks[0]!();
+
+    const refresh = scheduler.flush();
+    await fingerprintReady;
+    const closing = service.closeLibraryAsync(library.libraryId);
+    releaseFingerprint();
+    await refresh;
+    await expect(closing).resolves.toBeUndefined();
+  });
+
+  it('ignores event payload meaning and derives overwrite from current stat', async () => {
+    const root = temporaryRoot();
+    const source = path.join(root, 'watched.png');
+    writeFileSync(source, 'first');
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const { advance, clock } = watchClock();
+    const events: unknown[] = [];
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      watchNotifyClock: clock,
+      onAssetsChanged: (event) => events.push(event),
+    });
+    const library = service.createLibrary({ displayName: 'Overwrite', selectedParentPath: root });
+    const plan = service.prepareImport({ libraryId: library.libraryId, sourceKind: 'files', sourcePaths: [source] });
+    const before = service.resolveImport({ importId: plan.importId, suspectedDuplicate: 'skip', nameConflict: 'keep-both' }).assets[0]!;
+    events.length = 0;
+    const managedPath = path.join(library.libraryPath, 'Assets', 'watched.png');
+    writeFileSync(managedPath, 'second');
+    const changedTime = new Date(Date.now() + 20_000);
+    utimesSync(managedPath, changedTime, changedTime);
+    // The import above is a client mutation: advance past the suppression
+    // window so this external overwrite is reported as a watcher change.
+    advance(10_000);
+
+    observers.callbacks[0]!();
+    await scheduler.flush();
+
+    const after = service.listAssets({ libraryId: library.libraryId, recursive: true })[0]!;
+    expect(after.assetId).toBe(before.assetId);
+    expect(after.currentRevisionId).not.toBe(before.currentRevisionId);
+    expect(events).toEqual([
+      { type: 'asset.changed', libraryId: library.libraryId, changedCount: 1, missingCount: 0, source: 'watcher' },
+    ]);
+    observers.callbacks[0]!();
+    await scheduler.flush();
+    expect(events).toHaveLength(1);
+    service.closeAll();
+  });
+
+  it('does not schedule after close and swallows refresh errors', async () => {
+    const root = temporaryRoot();
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    class ThrowingRefreshService extends LibraryService {
+      override refreshManagedAssets(): never {
+        throw new Error('injected refresh failure');
+      }
+    }
+    const diagnostics: Array<{ scope: string; error: unknown }> = [];
+    const service = new ThrowingRefreshService({
+      observerFactory: observers.factory,
+      scheduler,
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    services.push(service);
+    const library = service.createLibrary({ displayName: 'Errors', selectedParentPath: root });
+    // Ensure the open discovery path reaches the injected refresh override;
+    // an empty library legitimately has no refresh transaction to fail.
+    writeFileSync(path.join(library.libraryPath, 'Assets', 'refresh-target.txt'), 'refresh');
+    // WorldlineBox-tumv: the on-open refresh moved to the background reconciliation
+    // step; drive it explicitly so the injected failure lands on the same
+    // diagnostic scope.
+    await service.runOpenBackgroundReconciliation(library.libraryId);
+    observers.callbacks[0]!();
+    await expect(scheduler.flush()).resolves.not.toThrow();
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          scope: 'open.refresh-managed-assets',
+          error: expect.objectContaining({ message: 'injected refresh failure' }),
+        }),
+        expect.objectContaining({
+          scope: 'asset-watcher.refresh',
+          error: expect.objectContaining({ message: 'injected refresh failure' }),
+        }),
+      ]),
+    );
+
+    service.closeAll();
+    observers.callbacks[0]!();
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
+  it('reports native observer, startup, scheduler, and close failures without changing library lifecycle', () => {
+    const root = temporaryRoot();
+    const causes = {
+      native: new Error('native watch failure'),
+      schedule: new Error('scheduler failure'),
+      close: new Error('observer close failure'),
+      start: new Error('observer start failure'),
+    };
+    const diagnostics: Array<{ scope: string; error: unknown; context?: Record<string, unknown> }> = [];
+    const observers = observerHarness();
+    const scheduler: DebounceScheduler = {
+      cancel: () => undefined,
+      schedule: () => { throw causes.schedule; },
+    };
+    const service = newService({
+      observerFactory: (assetsPath, onEvent, onError) => {
+        const observer = observers.factory(assetsPath, onEvent, onError);
+        return { close: () => { observer.close(); throw causes.close; } };
+      },
+      scheduler,
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    const library = service.createLibrary({ displayName: 'Diagnostics', selectedParentPath: root });
+
+    observers.errorCallbacks[0]!(causes.native);
+    expect(() => observers.callbacks[0]!()).not.toThrow();
+    expect(() => service.closeLibrary(library.libraryId)).not.toThrow();
+
+    const startService = newService({
+      observerFactory: () => { throw causes.start; },
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    const unobserved = startService.createLibrary({ displayName: 'Startup', selectedParentPath: root });
+    expect(() => startService.closeLibrary(unobserved.libraryId)).not.toThrow();
+
+    expect(diagnostics.map(({ scope, error }) => ({ scope, error }))).toEqual([
+      { scope: 'asset-watcher.error', error: causes.native },
+      { scope: 'asset-watcher.schedule', error: causes.schedule },
+      { scope: 'asset-watcher.close', error: causes.close },
+      { scope: 'asset-watcher.start', error: causes.start },
+    ]);
+    expect(diagnostics[0]?.context).toMatchObject({ libraryId: library.libraryId });
+  });
+
+  it('ignores diagnostic callback failures', () => {
+    const root = temporaryRoot();
+    const service = newService({
+      observerFactory: () => { throw new Error('watch failure'); },
+      onDiagnostic: () => { throw new Error('diagnostic failure'); },
+    });
+    expect(() => service.createLibrary({ displayName: 'Best effort', selectedParentPath: root })).not.toThrow();
+    service.closeAll();
+  });
+
+  it('discovers new files in a managed folder after a debounced event', async () => {
+    const root = temporaryRoot();
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const events: unknown[] = [];
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      onAssetsChanged: (event) => events.push(event),
+    });
+    const library = service.createLibrary({ displayName: 'Managed watch', selectedParentPath: root });
+    const folder = service.createManagedFolder({
+      libraryId: library.libraryId,
+      name: 'FolderA',
+    });
+
+    writeFileSync(path.join(library.libraryPath, 'Assets', folder.relativePath, 'added-a.png'), 'a');
+    writeFileSync(path.join(library.libraryPath, 'Assets', folder.relativePath, 'added-b.png'), 'b');
+    observers.callbacks[0]!();
+    observers.callbacks[0]!();
+    expect(scheduler.pendingCount()).toBe(1);
+    await scheduler.flush();
+
+    expect(service.listAssets({
+      libraryId: library.libraryId,
+      folderId: folder.folderId,
+      recursive: false,
+    }).map((asset) => asset.relativeFilePath).sort()).toEqual([
+      'FolderA/added-a.png',
+      'FolderA/added-b.png',
+    ]);
+    expect(events).toEqual([
+      { type: 'asset.changed', libraryId: library.libraryId, changedCount: 2, missingCount: 0, source: 'watcher' },
+    ]);
+    service.closeAll();
+  });
+
+  it('uses a low-frequency network scan checkpoint instead of a managed-root watcher', async () => {
+    const root = temporaryRoot();
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const events: unknown[] = [];
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      storageKindOverrideForTests: 'network',
+      networkScanIntervalMs: 1,
+      watcherStableFileWindowMs: 0,
+      onAssetsChanged: (event) => events.push(event),
+    });
+    const library = service.createLibrary({ displayName: 'Network scan', selectedParentPath: root });
+
+    // A network-backed managed root has no high-frequency fs.watch observer.
+    expect(observers.roots).toEqual([]);
+    expect(scheduler.pendingCount()).toBe(1);
+
+    // First tick records the empty-tree checkpoint. The next tick sees the
+    // same fingerprint and must not emit a synthetic asset change.
+    await scheduler.flush();
+    await scheduler.flush();
+    expect(events).toEqual([]);
+
+    writeFileSync(path.join(library.libraryPath, 'Assets', 'remote.png'), 'remote');
+    await scheduler.flush();
+    await scheduler.flush();
+    expect(service.listAssets({ libraryId: library.libraryId, recursive: true })
+      .map((asset) => asset.relativeFilePath)).toEqual(['remote.png']);
+    expect(events).toEqual([
+      {
+        type: 'asset.changed',
+        libraryId: library.libraryId,
+        changedCount: 1,
+        missingCount: 0,
+        source: 'watcher',
+      },
+    ]);
+
+    service.closeLibrary(library.libraryId);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
+  it('does not arm another network scan until the active reconciliation settles', async () => {
+    const root = temporaryRoot();
+    const scheduler = new ManualScheduler();
+    let reconciliationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reconciliationStarted = resolve;
+    });
+    let releaseReconciliation!: () => void;
+    const reconciliationGate = new Promise<void>((resolve) => {
+      releaseReconciliation = resolve;
+    });
+    const service = newService({
+      scheduler,
+      storageKindOverrideForTests: 'network',
+      networkScanIntervalMs: 1,
+    });
+    const reconcile = vi.spyOn(
+      service as unknown as {
+        runWatcherReconciliation: (
+          libraryId: string,
+          reason: 'watcher' | 'network',
+        ) => Promise<void>;
+      },
+      'runWatcherReconciliation',
+    ).mockImplementation(async () => {
+      reconciliationStarted();
+      await reconciliationGate;
+    });
+    const library = service.createLibrary({ displayName: 'Network backpressure', selectedParentPath: root });
+
+    // The network timer starts one debounced reconciliation, but does not
+    // independently enqueue another periodic scan while that work is pending.
+    await scheduler.flush();
+    expect(scheduler.pendingCount()).toBe(1);
+    const activeRefresh = scheduler.flush();
+    await started;
+    expect(scheduler.pendingCount()).toBe(0);
+
+    releaseReconciliation();
+    await activeRefresh;
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(scheduler.pendingCount()).toBe(1);
+
+    service.closeLibrary(library.libraryId);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+});
+
+describe('linked folder watcher', () => {
+  it('refreshes a changed existing linked file without walking its root', async () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    const sourcePath = path.join(linkedRoot, 'changed.txt');
+    writeFileSync(sourcePath, 'before');
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const events: unknown[] = [];
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      watcherStableFileWindowMs: 0,
+      onAssetsChanged: (event) => events.push(event),
+    });
+    const library = service.createLibrary({ displayName: 'Linked changed file', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: library.libraryId,
+      sourceRootPath: linkedRoot,
+    });
+    const original = service.listAssets({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      recursive: true,
+    })[0]!;
+    const enumerateSources = vi.spyOn(
+      service as unknown as {
+        enumerateSourcesAsync(input: { rootPath: string }): Promise<unknown>;
+      },
+      'enumerateSourcesAsync',
+    );
+
+    writeFileSync(sourcePath, 'after with a larger payload');
+    const changedAt = new Date(Date.now() + 2_000);
+    utimesSync(sourcePath, changedAt, changedAt);
+    observers.callbacks[1]!({ eventType: 'change', filename: 'changed.txt' });
+    await scheduler.flush();
+
+    const changed = service.listAssets({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      recursive: true,
+    })[0]!;
+    expect(changed.byteSize).toBe(Buffer.byteLength('after with a larger payload'));
+    expect(changed.currentRevisionId).not.toBe(original.currentRevisionId);
+    expect(enumerateSources).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      {
+        type: 'asset.changed',
+        libraryId: library.libraryId,
+        changedCount: 1,
+        missingCount: 0,
+        source: 'watcher',
+      },
+    ]);
+  });
+
+  it('coalesces linked watcher events while reconciling only the changed roots', async () => {
+    const root = temporaryRoot();
+    const firstLinkedRoot = path.join(root, 'linked-a');
+    const secondLinkedRoot = path.join(root, 'linked-b');
+    mkdirSync(firstLinkedRoot);
+    mkdirSync(secondLinkedRoot);
+    writeFileSync(path.join(firstLinkedRoot, 'existing-a.png'), 'a');
+    writeFileSync(path.join(secondLinkedRoot, 'existing-b.png'), 'b');
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const events: unknown[] = [];
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      watcherStableFileWindowMs: 0,
+      onAssetsChanged: (event) => events.push(event),
+    });
+    const library = service.createLibrary({ displayName: 'Scoped linked refresh', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: firstLinkedRoot });
+    service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: secondLinkedRoot });
+
+    const enumerateSources = vi.spyOn(
+      service as unknown as {
+        enumerateSourcesAsync(input: { rootPath: string }): Promise<unknown>;
+      },
+      'enumerateSourcesAsync',
+    );
+    writeFileSync(path.join(firstLinkedRoot, 'added-a.png'), 'new-a');
+    writeFileSync(path.join(secondLinkedRoot, 'added-b.png'), 'new-b');
+    observers.callbacks[1]!();
+    observers.callbacks[2]!();
+    observers.callbacks[1]!();
+    expect(scheduler.pendingCount()).toBe(1);
+    await scheduler.flush();
+
+    expect(enumerateSources.mock.calls.map(([input]) => input.rootPath).sort()).toEqual([
+      realpathSync(firstLinkedRoot),
+      realpathSync(secondLinkedRoot),
+    ].sort());
+    expect(service.listAssets({ libraryId: library.libraryId, recursive: true })
+      .map((asset) => asset.relativeFilePath).sort()).toEqual([
+      'existing-a.png',
+      'existing-b.png',
+      'added-a.png',
+      'added-b.png',
+    ].sort());
+    expect(events).toEqual([
+      {
+        type: 'asset.changed',
+        libraryId: library.libraryId,
+        changedCount: 2,
+        missingCount: 0,
+        source: 'watcher',
+      },
+    ]);
+    service.closeAll();
+  });
+
+  it('starts one observer per available root and discovers new files after a debounced event', async () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'existing.png'), 'existing');
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const events: unknown[] = [];
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      onAssetsChanged: (event) => events.push(event),
+    });
+    const library = service.createLibrary({ displayName: 'Linked watch', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: library.libraryId,
+      sourceRootPath: linkedRoot,
+    });
+    expect(service.refreshManagedAssets(library.libraryId).changedCount).toBe(0);
+
+    expect(observers.roots).toEqual([
+      path.join(library.libraryPath, 'Assets'),
+      realpathSync(linkedRoot),
+    ]);
+
+    mkdirSync(path.join(linkedRoot, 'new'));
+    writeFileSync(path.join(linkedRoot, 'new', 'added.png'), 'added');
+    observers.callbacks[1]!();
+    observers.callbacks[1]!();
+    expect(scheduler.pendingCount()).toBe(1);
+    await scheduler.flush();
+
+    expect(service.listAssets({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      recursive: true,
+    }).map((asset) => asset.relativeFilePath).sort()).toEqual([
+      'existing.png',
+      'new/added.png',
+    ]);
+    expect(events).toEqual([
+      { type: 'asset.changed', libraryId: library.libraryId, changedCount: 1, missingCount: 0, source: 'watcher' },
+    ]);
+    service.closeAll();
+    expect(observers.closed.sort()).toEqual([0, 1]);
+
+    service.openLibrary(library.libraryPath);
+    expect(observers.roots.slice(2)).toEqual([
+      path.join(library.libraryPath, 'Assets'),
+      realpathSync(linkedRoot),
+    ]);
+    service.closeAll();
+    expect(observers.closed.sort()).toEqual([0, 1, 2, 3]);
+  });
+
+  it('keeps the same asset when a linked source is moved inside its root', async () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'moved.txt'), 'stable linked content');
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      watcherStableFileWindowMs: 0,
+    });
+    const library = service.createLibrary({ displayName: 'Linked move', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: library.libraryId,
+      sourceRootPath: linkedRoot,
+    });
+    const original = service.listAssets({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      recursive: true,
+    })[0]!;
+    const collection = service.createCollection({ libraryId: library.libraryId, name: 'Move metadata' });
+    service.addCollectionAssets({
+      libraryId: library.libraryId,
+      collectionId: collection.collectionId,
+      assetIds: [original.assetId],
+    });
+    service.setAssetMetadata({
+      libraryId: library.libraryId,
+      assetId: original.assetId,
+      expectedVersion: 0,
+      description: 'Preserve on move',
+    });
+
+    mkdirSync(path.join(linkedRoot, 'destination'));
+    renameSync(
+      path.join(linkedRoot, 'moved.txt'),
+      path.join(linkedRoot, 'destination', 'moved.txt'),
+    );
+    observers.callbacks[1]!();
+    await scheduler.flush();
+
+    const assets = service.listAssets({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      recursive: true,
+    });
+    expect(assets).toHaveLength(1);
+    expect(assets[0]).toMatchObject({
+      assetId: original.assetId,
+      availability: 'available',
+      relativeFilePath: 'destination/moved.txt',
+    });
+    expect(service.getAssetMetadata({ libraryId: library.libraryId, assetId: original.assetId })).toMatchObject({
+      description: 'Preserve on move',
+    });
+    expect(service.listCollectionAssets({
+      libraryId: library.libraryId,
+      collectionId: collection.collectionId,
+      recursive: false,
+    })).toEqual([expect.objectContaining({ assetId: original.assetId })]);
+  });
+
+  it('stops offline roots, restarts returned roots, and rebuilds an observer on relink', () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'a.png'), 'a');
+    const observers = observerHarness();
+    const service = newService({ observerFactory: observers.factory });
+    const library = service.createLibrary({ displayName: 'Lifecycle', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({
+      libraryId: library.libraryId,
+      sourceRootPath: linkedRoot,
+    });
+
+    rmSync(linkedRoot, { force: true, recursive: true });
+    service.refreshManagedAssets(library.libraryId);
+    expect(observers.closed).toContain(1);
+
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'a.png'), 'returned');
+    service.refreshManagedAssets(library.libraryId);
+    expect(observers.roots).toEqual([
+      path.join(library.libraryPath, 'Assets'),
+      realpathSync(linkedRoot),
+      realpathSync(linkedRoot),
+    ]);
+
+    rmSync(linkedRoot, { force: true, recursive: true });
+    service.refreshManagedAssets(library.libraryId);
+    const relocated = path.join(root, 'relocated');
+    mkdirSync(relocated);
+    writeFileSync(path.join(relocated, 'a.png'), 'relocated');
+    service.relinkMissingFolder({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      newRootPath: relocated,
+    });
+    expect(observers.roots.at(-1)).toBe(realpathSync(relocated));
+    service.closeAll();
+    expect(observers.closed).toContain(observers.roots.length - 1);
+  });
+
+  it('ignores default entries and symlinks discovered after import and emits a diagnostic', async () => {
+    const root = temporaryRoot();
+    const linkedRoot = path.join(root, 'linked');
+    mkdirSync(linkedRoot);
+    writeFileSync(path.join(linkedRoot, 'existing.png'), 'existing');
+    const observers = observerHarness();
+    const scheduler = new ManualScheduler();
+    const diagnostics: Array<{ scope: string; context?: Record<string, unknown> }> = [];
+    const service = newService({
+      observerFactory: observers.factory,
+      scheduler,
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    const library = service.createLibrary({ displayName: 'Ignore', selectedParentPath: root });
+    const linked = service.importFolderAsLinked({ libraryId: library.libraryId, sourceRootPath: linkedRoot });
+
+    mkdirSync(path.join(linkedRoot, '.git'));
+    writeFileSync(path.join(linkedRoot, '.git', 'config'), 'ignored');
+    writeFileSync(path.join(linkedRoot, '.DS_Store'), 'ignored');
+    writeFileSync(path.join(root, 'outside.png'), 'outside');
+    symlinkSync(path.join(root, 'outside.png'), path.join(linkedRoot, 'link.png'));
+    observers.callbacks[1]!();
+    await scheduler.flush();
+
+    expect(service.listAssets({
+      libraryId: library.libraryId,
+      folderId: linked.folderId,
+      recursive: true,
+    }).map((asset) => asset.relativeFilePath)).toEqual(['existing.png']);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      scope: 'linked-folder.symlink-skipped',
+      context: expect.objectContaining({ linkedFolderId: linked.folderId }),
+    }));
+    service.closeAll();
+  });
+});

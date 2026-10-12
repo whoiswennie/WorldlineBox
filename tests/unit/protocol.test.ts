@@ -1,0 +1,3148 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  parseNativeAssetDragRequest,
+  parseRendererRequest,
+  parseWorkerRequest,
+} from '../../src/shared/protocol/requests';
+import { classifyUnknownFailure, createPublicError, publicReasonFromError, toPublicError, PUBLIC_ERROR_MESSAGES } from '../../src/shared/protocol/errors';
+import {
+  importConflictPlanSchema,
+  parseAssetChangeEvent,
+  parseRendererResult,
+  parseWorkerResponse,
+  parseRendererLifecycleEvent,
+  parseProgressEvent,
+  parseAiProgressEvent,
+  parseAiAnalysisCompletedEvent,
+  parseAiContentClearedEvent,
+  parseAiInputReadyEvent,
+} from '../../src/shared/protocol/responses';
+
+describe('renderer request protocol', () => {
+  it('accepts the library-open cancellation request and acknowledgement', () => {
+    expect(parseRendererRequest({ type: 'library.open-cancel.request' })).toEqual({
+      type: 'library.open-cancel.request',
+    });
+    expect(parseRendererResult({
+      ok: true,
+      type: 'library.open-cancelled',
+    })).toEqual({
+      ok: true,
+      type: 'library.open-cancelled',
+    });
+  });
+
+  it('keeps pollIntervalMs on sync binding save (WorldlineBox-8c4920)', () => {
+    expect(parseRendererRequest({
+      type: 'sync.library.binding.save.request',
+      libraryId: 'lib-1',
+      serverId: 'server-1',
+      enabled: true,
+      pollIntervalMs: 60_000,
+    })).toMatchObject({
+      type: 'sync.library.binding.save.request',
+      pollIntervalMs: 60_000,
+    });
+  });
+
+  it('keeps showCardSyncStatus on sync binding save (WorldlineBox-871f34)', () => {
+    expect(parseRendererRequest({
+      type: 'sync.library.binding.save.request',
+      libraryId: 'lib-1',
+      serverId: 'server-1',
+      enabled: true,
+      showCardSyncStatus: false,
+    })).toMatchObject({
+      type: 'sync.library.binding.save.request',
+      showCardSyncStatus: false,
+    });
+    expect(parseRendererResult({
+      ok: true,
+      type: 'sync.binding.got',
+      libraryId: 'lib-1',
+      binding: {
+        serverId: 'server-1',
+        showCardSyncStatus: false,
+      },
+    })).toMatchObject({
+      binding: { showCardSyncStatus: false },
+    });
+  });
+
+  it('lists visible-card sync statuses without synced entries (WorldlineBox-871f34)', () => {
+    expect(parseRendererRequest({
+      type: 'sync.asset-card-status.request',
+      libraryId: 'lib-1',
+      assetIds: ['asset-1', 'asset-2'],
+    })).toEqual({
+      type: 'sync.asset-card-status.request',
+      libraryId: 'lib-1',
+      assetIds: ['asset-1', 'asset-2'],
+    });
+    expect(parseWorkerRequest({
+      requestId: 'sync-card-status-01',
+      command: {
+        type: 'sync.asset-card-status',
+        libraryId: 'lib-1',
+        assetIds: ['asset-1'],
+      },
+    }).command).toEqual({
+      type: 'sync.asset-card-status',
+      libraryId: 'lib-1',
+      assetIds: ['asset-1'],
+    });
+    expect(parseWorkerResponse({
+      requestId: 'sync-card-status-01',
+      result: {
+        ok: true,
+        type: 'sync.asset-card-status',
+        statuses: [{ assetId: 'asset-1', status: 'pending' }],
+      },
+    }).result).toMatchObject({
+      type: 'sync.asset-card-status',
+      statuses: [{ assetId: 'asset-1', status: 'pending' }],
+    });
+  });
+
+  it('keeps recovery report paths on the Worker/Main side', () => {
+    expect(parseRendererRequest({
+      type: 'library.recovery-report.request',
+      libraryId: 'library-01',
+    })).toEqual({
+      type: 'library.recovery-report.request',
+      libraryId: 'library-01',
+    });
+    expect(parseWorkerRequest({
+      requestId: 'recovery-report-01',
+      command: {
+        type: 'library.recovery-report',
+        libraryId: 'library-01',
+      },
+    }).command).toEqual({
+      type: 'library.recovery-report',
+      libraryId: 'library-01',
+    });
+    expect(parseWorkerResponse({
+      requestId: 'recovery-report-01',
+      result: {
+        ok: true,
+        type: 'library.recovery-report',
+        reportPath: '/private/internal/recovery-report.json',
+      },
+    }).result).toHaveProperty('reportPath', '/private/internal/recovery-report.json');
+    expect(parseRendererResult({
+      ok: true,
+      type: 'library.recovery-report.requested',
+      libraryId: 'library-01',
+    })).toEqual({
+      ok: true,
+      type: 'library.recovery-report.requested',
+      libraryId: 'library-01',
+    });
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'library.recovery-report.requested',
+      libraryId: 'library-01',
+      reportPath: '/private/internal/recovery-report.json',
+    })).toThrow();
+  });
+
+  it('round-trips the known-location missing-asset recovery probe', () => {
+    expect(parseRendererRequest({
+      type: 'asset.recovery-probe.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    })).toMatchObject({ type: 'asset.recovery-probe.request' });
+    expect(parseWorkerRequest({
+      requestId: 'recovery-probe-01',
+      command: {
+        type: 'asset.recovery-probe',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+      },
+    }).command).toMatchObject({ type: 'asset.recovery-probe' });
+    expect(parseWorkerResponse({
+      requestId: 'recovery-probe-01',
+      result: {
+        ok: true,
+        type: 'asset.recovery-probe',
+        assetId: 'asset-01',
+        probe: {
+          status: 'recoverable',
+          candidateKind: 'managed-source',
+          contentVerified: true,
+          checkedLocations: 1,
+        },
+      },
+    }).result).toMatchObject({ assetId: 'asset-01' });
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.recovery-probe.result',
+      assetId: 'asset-01',
+      probe: {
+        status: 'needs-location',
+        candidateKind: null,
+        contentVerified: false,
+        checkedLocations: 2,
+      },
+    })).toMatchObject({ type: 'asset.recovery-probe.result' });
+  });
+
+  it('accepts the optional linked-asset hint on delete-from-disk requests', () => {
+    // 2026-09-15：Main 的确认窗按这个提示写文案（链接资产 = 源文件永久删除）。
+    expect(parseRendererRequest({
+      type: 'asset.delete-from-disk.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01'],
+      locationKind: 'linked',
+    })).toMatchObject({ locationKind: 'linked' });
+    // 旧调用方与混合选择可以省略这一提示。
+    expect(parseRendererRequest({
+      type: 'asset.delete-from-disk.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01'],
+    })).not.toHaveProperty('locationKind');
+    expect(() => parseRendererRequest({
+      type: 'asset.delete-from-disk.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01'],
+      locationKind: 'external',
+    })).toThrow();
+  });
+
+  it('requires an opaque preview token to apply or cancel batch relinking', () => {
+    expect(parseRendererRequest({
+      type: 'asset.relink-batch.apply.request',
+      libraryId: 'library-01',
+      previewId: 'preview-01',
+      keepMetadata: true,
+    })).toMatchObject({ previewId: 'preview-01' });
+    expect(parseRendererRequest({
+      type: 'asset.relink-batch.cancel.request',
+      libraryId: 'library-01',
+      previewId: 'preview-01',
+    })).toMatchObject({ previewId: 'preview-01' });
+
+    expect(() => parseRendererRequest({
+      type: 'asset.relink-batch.apply.request',
+      libraryId: 'library-01',
+      keepMetadata: true,
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.relink-batch.apply.request',
+      libraryId: 'library-01',
+      previewId: 'preview-01',
+      keepMetadata: true,
+      newRootPath: '/must-not-cross-the-renderer-boundary',
+    })).toThrow();
+  });
+
+  it('exposes the relink preview token only on the renderer response', () => {
+    const preview = {
+      ok: true as const,
+      type: 'asset.relink-batch.preview' as const,
+      matchedCount: 1,
+      unmatchedCount: 1,
+      totalCount: 2,
+      examples: [{ relativeFilePath: 'image.png', matched: true }],
+    };
+    expect(parseWorkerResponse({
+      requestId: 'relink-preview-01',
+      result: preview,
+    }).result).not.toHaveProperty('previewId');
+    expect(parseRendererResult({ ...preview, previewId: 'preview-01' }))
+      .toMatchObject({ previewId: 'preview-01' });
+    expect(() => parseRendererResult(preview)).toThrow();
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.relink-batch.cancelled',
+      previewId: 'preview-01',
+    })).toMatchObject({ previewId: 'preview-01' });
+
+    for (const unsafePath of ['/tmp/private.png', 'C:\\private.png', '\\\\server\\share\\private.png']) {
+      expect(() => parseWorkerResponse({
+        requestId: 'unsafe-worker-preview',
+        result: {
+          ...preview,
+          examples: [{ relativeFilePath: unsafePath, matched: true }],
+        },
+      })).toThrow();
+      expect(() => parseRendererResult({
+        ...preview,
+        previewId: 'preview-unsafe',
+        examples: [{ relativeFilePath: unsafePath, matched: true }],
+      })).toThrow();
+    }
+  });
+
+  it('round-trips persisted linked-folder rule identifiers without requiring UUIDs', () => {
+    const rule = { ruleId: 'folder-id:default:0', action: 'exclude' as const, target: 'folder' as const, pattern: '.git', enabled: true };
+    expect(parseWorkerRequest({
+      requestId: 'rules-request',
+      command: { type: 'linked-folder.rules.set', libraryId: 'library', folderId: 'folder', rules: [rule] },
+    }).command).toMatchObject({ rules: [rule] });
+    expect(parseRendererResult({ ok: true, type: 'linked-folder.rules', rules: [rule] }))
+      .toEqual({ ok: true, type: 'linked-folder.rules', rules: [rule] });
+  });
+  it('validates typed technical metadata filter ranges', () => {
+    expect(parseRendererRequest({
+      type: 'asset.search.request',
+      libraryId: 'library-01',
+      query: null,
+      filters: [
+        { field: 'width', ranges: [{ min: 1920 }], exclude: false },
+        { field: 'aspect_ratio', ranges: [{ min: 1.7, max: 1.8 }], exclude: false },
+        { field: 'duration_ms', ranges: [{ max: 30_000 }], exclude: true },
+      ],
+    })).toMatchObject({ type: 'asset.search.request' });
+    expect(() => parseRendererRequest({
+      type: 'asset.search.request',
+      libraryId: 'library-01',
+      query: null,
+      filters: [{ field: 'width', ranges: [{ min: 2000, max: 1000 }], exclude: false }],
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.search.request',
+      libraryId: 'library-01',
+      query: null,
+      filters: [{ field: 'aspect_ratio', ranges: [{}], exclude: false }],
+    })).toThrow();
+  });
+
+  it('round-trips bounded BrowseSession asset id snapshots', () => {
+    expect(parseRendererRequest({
+      type: 'browse.session.ids.request',
+      libraryId: 'library-01',
+      sessionId: 'session-01',
+    })).toMatchObject({ type: 'browse.session.ids.request' });
+    expect(parseWorkerRequest({
+      requestId: 'ids-01',
+      command: {
+        type: 'browse.session.ids',
+        libraryId: 'library-01',
+        sessionId: 'session-01',
+      },
+    }).command).toMatchObject({ type: 'browse.session.ids' });
+    // Keep all three layers: the worker response shape is what the preload
+    // narrows on, so dropping it would leave the contract half-covered.
+    expect(parseWorkerResponse({
+      requestId: 'ids-01',
+      result: {
+        ok: true,
+        type: 'browse.session.ids',
+        libraryId: 'library-01',
+        sessionId: 'session-01',
+        changeSequence: 4,
+        assetIds: ['asset-1', 'asset-2'],
+      },
+    }).result).toMatchObject({ type: 'browse.session.ids' });
+  });
+
+  it('round-trips the coherent navigation summary request', () => {
+    expect(parseRendererRequest({
+      type: 'library.navigation-summary.request',
+      libraryId: 'library-01',
+      showIgnored: true,
+      includeTrashedFolders: true,
+    })).toMatchObject({ type: 'library.navigation-summary.request', showIgnored: true });
+    expect(parseWorkerRequest({
+      requestId: 'navigation-01',
+      command: {
+        type: 'library.navigation-summary',
+        libraryId: 'library-01',
+        showIgnored: true,
+        includeTrashedFolders: true,
+      },
+    }).command).toMatchObject({ type: 'library.navigation-summary' });
+    expect(parseWorkerResponse({
+      requestId: 'navigation-01',
+      result: {
+        ok: true,
+        type: 'library.navigation-summary',
+        summary: {
+          libraryId: 'library-01',
+          changeSequence: 4,
+          allAssetCount: 10,
+          rootAssetCount: 3,
+          trashedAssetCount: 1,
+          folders: [],
+          linkedFolders: [],
+          tags: [],
+          collections: [],
+          smartCollections: [],
+          trashedFolders: [],
+        },
+      },
+    }).result).toMatchObject({ type: 'library.navigation-summary' });
+  });
+
+  it('round-trips BrowseSession select-all ids without rebuilding the query', () => {
+    expect(parseRendererRequest({
+      type: 'browse.session.ids.request',
+      libraryId: 'library-01',
+      sessionId: 'session-01',
+    })).toEqual({
+      type: 'browse.session.ids.request',
+      libraryId: 'library-01',
+      sessionId: 'session-01',
+    });
+    expect(parseWorkerResponse({
+      requestId: 'session-ids-01',
+      result: {
+        ok: true,
+        type: 'browse.session.ids',
+        libraryId: 'library-01',
+        sessionId: 'session-01',
+        changeSequence: 4,
+        assetIds: ['asset-01', 'asset-02'],
+      },
+    }).result).toMatchObject({ type: 'browse.session.ids', assetIds: ['asset-01', 'asset-02'] });
+  });
+
+  it('rejects the retired Label field in search clauses', () => {
+    expect(() => parseRendererRequest({
+      type: 'asset.search.request',
+      libraryId: 'library-01',
+      query: {
+        clauses: [{ field: 'label', values: ['legacy alias'], exclude: false }],
+      },
+    })).toThrow();
+  });
+
+  it('accepts only explicit six-digit hex colors for manual palettes', () => {
+    const validPalette = ['#000000', '#a1B2c3', '#FFFFFF'];
+    expect(parseRendererRequest({
+      type: 'asset.metadata.set.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      expectedVersion: 0,
+      palette: validPalette,
+    })).toMatchObject({ palette: validPalette });
+    expect(parseWorkerRequest({
+      requestId: 'palette-01',
+      command: {
+        type: 'asset.metadata.set',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        expectedVersion: 0,
+        palette: validPalette,
+      },
+    })).toMatchObject({ command: { palette: validPalette } });
+
+    for (const invalidColor of ['red', '#FFF', '#12345G', 'rgb(1, 2, 3)', ' #112233']) {
+      expect(() => parseRendererRequest({
+        type: 'asset.metadata.set.request',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        expectedVersion: 0,
+        palette: [invalidColor],
+      })).toThrow();
+      expect(() => parseWorkerRequest({
+        requestId: 'palette-invalid',
+        command: {
+          type: 'asset.metadata.set',
+          libraryId: 'library-01',
+          assetId: 'asset-01',
+          expectedVersion: 0,
+          palette: [invalidColor],
+        },
+      })).toThrow();
+    }
+
+    const twentyColors = Array.from({ length: 20 }, (_, index) =>
+      `#${index.toString(16).padStart(6, '0')}`);
+    expect(parseRendererRequest({
+      type: 'asset.metadata.set.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      expectedVersion: 0,
+      palette: twentyColors,
+    })).toMatchObject({ palette: twentyColors });
+    expect(() => parseWorkerRequest({
+      requestId: 'palette-too-large',
+      command: {
+        type: 'asset.metadata.set',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        expectedVersion: 0,
+        palette: [...twentyColors, '#FFFFFF'],
+      },
+    })).toThrow();
+  });
+
+  it('accepts empty metadata text fields as explicit clear operations', () => {
+    const rendererRequest = parseRendererRequest({
+      type: 'asset.metadata.set.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      expectedVersion: 3,
+      description: '',
+      sourcePageUrl: '',
+    });
+    expect(rendererRequest).toMatchObject({
+      description: '',
+      sourcePageUrl: '',
+    });
+
+    const workerRequest = parseWorkerRequest({
+      requestId: 'metadata-clear',
+      command: {
+        type: 'asset.metadata.set',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        expectedVersion: 3,
+        description: '',
+        sourcePageUrl: '',
+      },
+    });
+    expect(workerRequest.command).toMatchObject({
+      description: '',
+      sourcePageUrl: '',
+    });
+  });
+
+  it('accepts collection membership list requests (CU-B4)', () => {
+    expect(
+      parseRendererRequest({
+        type: 'collection.assets.memberships.request',
+        libraryId: 'library-01',
+        assetIds: ['asset-01', 'asset-02'],
+      }),
+    ).toMatchObject({
+      type: 'collection.assets.memberships.request',
+      assetIds: ['asset-01', 'asset-02'],
+    });
+    expect(
+      parseWorkerRequest({
+        requestId: 'memberships',
+        command: {
+          type: 'collection.assets.memberships',
+          libraryId: 'library-01',
+          assetIds: ['asset-01'],
+        },
+      }).command,
+    ).toMatchObject({
+      type: 'collection.assets.memberships',
+      assetIds: ['asset-01'],
+    });
+  });
+
+  it('accepts only empty or HTTP(S) source-page URLs up to the URL limit', () => {
+    const longValidUrl = `https://example.com/${'a'.repeat(300)}`;
+    expect(parseRendererRequest({
+      type: 'asset.metadata.set.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      expectedVersion: 0,
+      sourcePageUrl: longValidUrl,
+    })).toMatchObject({ sourcePageUrl: longValidUrl });
+    expect(parseWorkerRequest({
+      requestId: 'metadata-source-url',
+      command: {
+        type: 'asset.metadata.set',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        expectedVersion: 0,
+        sourcePageUrl: 'http://example.com/source',
+      },
+    })).toMatchObject({ command: { sourcePageUrl: 'http://example.com/source' } });
+
+    for (const invalidUrl of [
+      'ftp://example.com/source',
+      '/relative/source',
+      'https://user:secret@example.com/source',
+      ' https://example.com/source ',
+      '   ',
+      `https://example.com/${'a'.repeat(8_193)}`,
+    ]) {
+      expect(() => parseRendererRequest({
+        type: 'asset.metadata.set.request',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        expectedVersion: 0,
+        sourcePageUrl: invalidUrl,
+      })).toThrow();
+      expect(() => parseWorkerRequest({
+        requestId: 'metadata-source-url-invalid',
+        command: {
+          type: 'asset.metadata.set',
+          libraryId: 'library-01',
+          assetId: 'asset-01',
+          expectedVersion: 0,
+          sourcePageUrl: invalidUrl,
+        },
+      })).toThrow();
+    }
+  });
+
+  it('accepts semantic preview and proxy retry requests without paths', () => {
+    expect(parseRendererRequest({
+      type: 'asset.preview.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      mode: 'fullscreen',
+      exrPlane: 2,
+    })).toMatchObject({ type: 'asset.preview.request', mode: 'fullscreen', exrPlane: 2 });
+    expect(parseRendererRequest({
+      type: 'asset.retry-artifact.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      kind: 'webm_proxy',
+    })).toMatchObject({ kind: 'webm_proxy' });
+    expect(parseRendererRequest({
+      type: 'asset.retry-artifact.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      kind: 'audio_proxy',
+    })).toMatchObject({ kind: 'audio_proxy' });
+  });
+
+  it('round-trips the optional library name used for export dialog defaults', () => {
+    expect(parseRendererRequest({
+      type: 'library.export.request',
+      libraryId: 'library-01',
+      libraryName: 'Reference Library',
+      format: 'zip',
+      includeLinkedContent: false,
+    })).toMatchObject({
+      type: 'library.export.request',
+      libraryName: 'Reference Library',
+    });
+    expect(parseRendererRequest({
+      type: 'library.export.request',
+      libraryId: 'library-01',
+      format: 'folder',
+      includeLinkedContent: true,
+    })).not.toHaveProperty('libraryName');
+  });
+
+  it('accepts path-free reveal-in-folder and copy-file-path requests by asset id only', () => {
+    expect(parseRendererRequest({
+      type: 'asset.reveal-in-folder.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    })).toEqual({
+      type: 'asset.reveal-in-folder.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    });
+    expect(parseRendererRequest({
+      type: 'asset.copy-file-path.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    })).toEqual({
+      type: 'asset.copy-file-path.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    });
+    expect(parseRendererRequest({
+      type: 'asset.copy-files.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01', 'asset-02'],
+    })).toEqual({
+      type: 'asset.copy-files.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01', 'asset-02'],
+    });
+    expect(parseNativeAssetDragRequest({
+      libraryId: 'library-01',
+      assetIds: ['asset-01', 'asset-02'],
+    })).toEqual({
+      libraryId: 'library-01',
+      assetIds: ['asset-01', 'asset-02'],
+    });
+    expect(() => parseNativeAssetDragRequest({
+      libraryId: 'library-01',
+      assetIds: ['asset-01'],
+      absolutePath: '/must-not-enter-renderer',
+    })).toThrow();
+    expect(parseRendererRequest({
+      type: 'asset.resolve-dropped-paths.request',
+      libraryId: 'library-01',
+      sourcePaths: ['/private/managed/asset.png'],
+    })).toEqual({
+      type: 'asset.resolve-dropped-paths.request',
+      libraryId: 'library-01',
+      sourcePaths: ['/private/managed/asset.png'],
+    });
+    expect(parseRendererRequest({
+      type: 'asset.open-with.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    })).toEqual({
+      type: 'asset.open-with.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    });
+    // REQ-COMMAND-003: the renderer must never supply filesystem paths.
+    expect(() => parseRendererRequest({
+      type: 'asset.reveal-in-folder.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.copy-file-path.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.copy-files.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01'],
+      absolutePaths: ['/private/forged/path'],
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.open-with.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.reveal-in-folder.request',
+      libraryId: 'library-01',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.copy-file-path.request',
+      libraryId: 'library-01',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.copy-files.request',
+      libraryId: 'library-01',
+      assetIds: [],
+    })).toThrow();
+    expect(() => parseNativeAssetDragRequest({
+      libraryId: 'library-01',
+      assetIds: [],
+    })).toThrow();
+  });
+
+  it('accepts path-free folder open-in-file-manager and copy-path requests by folder id only', () => {
+    expect(parseRendererRequest({
+      type: 'folder.open-in-file-manager.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    })).toEqual({
+      type: 'folder.open-in-file-manager.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    });
+    expect(parseRendererRequest({
+      type: 'folder.open-with.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    })).toEqual({
+      type: 'folder.open-with.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    });
+    expect(parseRendererRequest({
+      type: 'folder.copy-path.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    })).toEqual({
+      type: 'folder.copy-path.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    });
+    expect(parseRendererRequest({
+      type: 'folder.copy.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    })).toEqual({
+      type: 'folder.copy.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    });
+    expect(parseRendererRequest({
+      type: 'folder.paste.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    })).toEqual({
+      type: 'folder.paste.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    });
+    expect(parseRendererRequest({
+      type: 'folder.paste.request',
+      libraryId: 'library-01',
+    })).toEqual({
+      type: 'folder.paste.request',
+      libraryId: 'library-01',
+    });
+    expect(parseRendererRequest({
+      type: 'folder.clone.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    })).toEqual({
+      type: 'folder.clone.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    });
+    expect(parseRendererRequest({
+      type: 'folder.move.request',
+      libraryId: 'library-01',
+      folderIds: ['folder-01', 'folder-02'],
+      targetParentFolderId: null,
+      conflictStrategy: 'keep-both',
+    })).toEqual({
+      type: 'folder.move.request',
+      libraryId: 'library-01',
+      folderIds: ['folder-01', 'folder-02'],
+      targetParentFolderId: null,
+      conflictStrategy: 'keep-both',
+    });
+    expect(() => parseRendererRequest({
+      type: 'folder.open-with.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(parseWorkerRequest({
+      requestId: 'folder-path-01',
+      command: {
+        type: 'folder.get-path',
+        libraryId: 'library-01',
+        folderId: 'folder-01',
+      },
+    }).command).toEqual({
+      type: 'folder.get-path',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+    });
+    // REQ-COMMAND-003: the renderer must never supply filesystem paths.
+    expect(() => parseRendererRequest({
+      type: 'folder.open-in-file-manager.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'folder.copy-path.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(() => parseWorkerRequest({
+      requestId: 'folder-path-injection',
+      command: {
+        type: 'folder.get-path',
+        libraryId: 'library-01',
+        folderId: 'folder-01',
+        absolutePath: '/private/forged/path',
+      },
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'folder.open-in-file-manager.request',
+      libraryId: 'library-01',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'folder.copy-path.request',
+      libraryId: 'library-01',
+    })).toThrow();
+  });
+
+  it('accepts asset file rename by id and extension-less base name only', () => {
+    expect(parseRendererRequest({
+      type: 'asset.rename-file.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      newBaseName: 'hero concept',
+    })).toEqual({
+      type: 'asset.rename-file.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      newBaseName: 'hero concept',
+    });
+    expect(parseWorkerRequest({
+      requestId: 'rename-01',
+      command: {
+        type: 'asset.rename-file',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        newBaseName: 'hero concept',
+      },
+    }).command).toEqual({
+      type: 'asset.rename-file',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      newBaseName: 'hero concept',
+    });
+  });
+
+  it('accepts a complete file name when changing the asset extension', () => {
+    expect(parseWorkerRequest({
+      requestId: 'rename-ext',
+      command: {
+        type: 'asset.rename-file',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        newFileName: 'clip.webm',
+      },
+    }).command).toEqual({
+      type: 'asset.rename-file',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      newFileName: 'clip.webm',
+    });
+  });
+
+  it('rejects path-shaped and malformed asset rename base names at the schema layer', () => {
+    const rejectedBaseNames = [
+      '../escape',
+      '..',
+      '.',
+      '/abs/path',
+      'nested/name',
+      'back\\slash',
+      'C:\\Windows\\system32',
+      '',
+    ];
+    for (const newBaseName of rejectedBaseNames) {
+      expect(() => parseRendererRequest({
+        type: 'asset.rename-file.request',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        newBaseName,
+      })).toThrow();
+      expect(() => parseWorkerRequest({
+        requestId: 'rename-injection',
+        command: {
+          type: 'asset.rename-file',
+          libraryId: 'library-01',
+          assetId: 'asset-01',
+          newBaseName,
+        },
+      })).toThrow();
+    }
+    // Control characters, blank, and overlong input are rejected on both boundaries.
+    for (const newBaseName of ['line\nbreak', '\tab', '', '   ', 'a'.repeat(256)]) {
+      expect(() => parseRendererRequest({
+        type: 'asset.rename-file.request',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+        newBaseName,
+      })).toThrow();
+      expect(() => parseWorkerRequest({
+        requestId: 'rename-malformed',
+        command: {
+          type: 'asset.rename-file',
+          libraryId: 'library-01',
+          assetId: 'asset-01',
+          newBaseName,
+        },
+      })).toThrow();
+    }
+    // REQ-COMMAND-003: the renderer must never supply filesystem paths.
+    expect(() => parseRendererRequest({
+      type: 'asset.rename-file.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      newBaseName: 'hero',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    // Semantic name rules (reserved DOS names, trailing dot/space, byte limit)
+    // are service-layer concerns; these shapes still parse so the Worker can
+    // answer with a typed INVALID_ASSET_FILE_NAME error.
+    expect(parseRendererRequest({
+      type: 'asset.rename-file.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      newBaseName: 'CON',
+    })).toMatchObject({ newBaseName: 'CON' });
+    expect(parseRendererRequest({
+      type: 'asset.rename-file.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      newBaseName: 'trailing.',
+    })).toMatchObject({ newBaseName: 'trailing.' });
+  });
+
+  it('round-trips the asset file-renamed response on both boundaries', () => {
+    const asset = {
+      assetId: 'asset-01',
+      locationKind: 'managed' as const,
+      managedFolderId: 'folder-01',
+      relativeFilePath: 'Shots/bravo.png',
+      displayName: 'bravo.png',
+      currentRevisionId: 'revision-01',
+      byteSize: 4,
+      modifiedAt: '2026-07-18T00:00:00.000Z',
+      availability: 'available' as const,
+      rating: 0,
+      favorite: false,
+      deletedAt: null,
+      trashedFromPath: null,
+      remainingDays: null,
+      thumbnailStatus: null,
+      thumbnailArtifactId: null,
+      mediaType: 'image' as const,
+      width: null,
+      height: null,
+    };
+    expect(parseRendererResult({ ok: true, type: 'asset.file-renamed', asset }))
+      .toMatchObject({ type: 'asset.file-renamed', asset: { relativeFilePath: 'Shots/bravo.png' } });
+    expect(parseWorkerResponse({
+      requestId: 'rename-response',
+      result: { ok: true, type: 'asset.file-renamed', asset },
+    }).result).toMatchObject({ type: 'asset.file-renamed' });
+    // The response carries no absolute path, and extra fields are stripped by schema.
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'asset.file-renamed',
+      asset: { ...asset, absolutePath: '/private/leak' },
+    })).toThrow();
+  });
+
+  it('accepts managed folder rename by id and display name only', () => {
+    expect(parseRendererRequest({
+      type: 'folder.rename.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+      newName: 'References 2026',
+    })).toEqual({
+      type: 'folder.rename.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+      newName: 'References 2026',
+    });
+    expect(parseWorkerRequest({
+      requestId: 'folder-rename-01',
+      command: {
+        type: 'folder.rename',
+        libraryId: 'library-01',
+        folderId: 'folder-01',
+        newName: 'References 2026',
+      },
+    }).command).toEqual({
+      type: 'folder.rename',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+      newName: 'References 2026',
+    });
+  });
+
+  it('accepts appearance.set by entity id and catalog values only', () => {
+    const appearance = { glyphKind: 'emoji', glyphValue: '🎨', colorId: 'blue' };
+    const target = { kind: 'managed-folder', id: 'folder-01' };
+    expect(parseRendererRequest({
+      type: 'appearance.set.request',
+      libraryId: 'library-01',
+      target,
+      appearance,
+    })).toEqual({
+      type: 'appearance.set.request',
+      libraryId: 'library-01',
+      target,
+      appearance,
+    });
+    expect(parseWorkerRequest({
+      requestId: 'appearance-set-01',
+      command: {
+        type: 'appearance.set',
+        libraryId: 'library-01',
+        target,
+        appearance,
+      },
+    }).command).toEqual({
+      type: 'appearance.set',
+      libraryId: 'library-01',
+      target,
+      appearance,
+    });
+    expect(parseRendererResult({
+      ok: true,
+      type: 'appearance.updated',
+      target,
+      appearance,
+    })).toEqual({
+      ok: true,
+      type: 'appearance.updated',
+      target,
+      appearance,
+    });
+  });
+
+  it('rejects injected and malformed folder rename requests at the schema layer', () => {
+    // REQ-COMMAND-003: the renderer must never supply filesystem paths.
+    expect(() => parseRendererRequest({
+      type: 'folder.rename.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+      newName: 'Renamed',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(() => parseWorkerRequest({
+      requestId: 'folder-rename-injection',
+      command: {
+        type: 'folder.rename',
+        libraryId: 'library-01',
+        folderId: 'folder-01',
+        newName: 'Renamed',
+        relativePath: 'forged/path',
+      },
+    })).toThrow();
+    // Blank, missing, and overlong names are rejected on both boundaries.
+    for (const newName of ['', '   ', 'a'.repeat(256)]) {
+      expect(() => parseRendererRequest({
+        type: 'folder.rename.request',
+        libraryId: 'library-01',
+        folderId: 'folder-01',
+        newName,
+      })).toThrow();
+      expect(() => parseWorkerRequest({
+        requestId: 'folder-rename-malformed',
+        command: {
+          type: 'folder.rename',
+          libraryId: 'library-01',
+          folderId: 'folder-01',
+          newName,
+        },
+      })).toThrow();
+    }
+    expect(() => parseRendererRequest({
+      type: 'folder.rename.request',
+      libraryId: 'library-01',
+      newName: 'Renamed',
+    })).toThrow();
+    // Semantic name rules (separators, dot segments, reserved DOS names) are
+    // service-layer concerns; these shapes still parse so the Worker can
+    // answer with a typed INVALID_FOLDER_NAME error.
+    expect(parseRendererRequest({
+      type: 'folder.rename.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+      newName: 'a/b',
+    })).toMatchObject({ newName: 'a/b' });
+    expect(parseRendererRequest({
+      type: 'folder.rename.request',
+      libraryId: 'library-01',
+      folderId: 'folder-01',
+      newName: '..',
+    })).toMatchObject({ newName: '..' });
+  });
+
+  it('round-trips the folder.renamed response on both boundaries', () => {
+    const folder = {
+      folderId: 'folder-01',
+      parentFolderId: null,
+      name: 'Renamed',
+      relativePath: 'Renamed',
+      directAssetCount: 0,
+      childFolderCount: 0,
+    };
+    expect(parseRendererResult({ ok: true, type: 'folder.renamed', folder }))
+      .toMatchObject({ type: 'folder.renamed', folder: { relativePath: 'Renamed' } });
+    expect(parseWorkerResponse({
+      requestId: 'folder-rename-response',
+      result: { ok: true, type: 'folder.renamed', folder },
+    }).result).toMatchObject({ type: 'folder.renamed' });
+    // The response carries no absolute path, and extra fields are stripped by schema.
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'folder.renamed',
+      folder: { ...folder, absolutePath: '/private/leak' },
+    })).toThrow();
+  });
+
+  it('accepts the semantic create-library request', () => {
+    expect(
+      parseRendererRequest({
+        type: 'library.create.request',
+        displayName: 'Concept Art',
+      }),
+    ).toEqual({
+      type: 'library.create.request',
+      displayName: 'Concept Art',
+    });
+  });
+
+  it('rejects paths supplied by the renderer', () => {
+    expect(() =>
+      parseRendererRequest({
+        type: 'library.create.request',
+        displayName: 'Concept Art',
+        selectedParentPath: '/private/forged/path',
+      }),
+    ).toThrow();
+    expect(() =>
+      parseRendererRequest({
+        type: 'asset.import-files.request',
+        libraryId: 'library-01',
+        targetFolderId: 'folder-01',
+        sourcePaths: ['/private/forged/path'],
+      }),
+    ).toThrow();
+  });
+
+  it('accepts semantic asset and folder requests without filesystem paths', () => {
+    expect(
+      parseRendererRequest({
+        type: 'folder.create.request',
+        libraryId: 'library-01',
+        parentFolderId: 'folder-01',
+        name: 'References',
+      }),
+    ).toMatchObject({ type: 'folder.create.request', name: 'References' });
+    expect(
+      parseRendererRequest({
+        type: 'asset.import.resolve',
+        importId: 'import-01',
+        suspectedDuplicate: 'skip',
+        nameConflict: 'keep-both',
+      }),
+    ).toEqual({
+      type: 'asset.import.resolve',
+      importId: 'import-01',
+      suspectedDuplicate: 'skip',
+      nameConflict: 'keep-both',
+    });
+    expect(
+      parseRendererRequest({
+        type: 'asset.import.skip-source-failure',
+        importId: 'import-01',
+        applyToRest: true,
+      }),
+    ).toEqual({
+      type: 'asset.import.skip-source-failure',
+      importId: 'import-01',
+      applyToRest: true,
+    });
+    expect(parseRendererRequest({ type: 'asset.import.abandon', importId: 'import-01' }))
+      .toEqual({ type: 'asset.import.abandon', importId: 'import-01' });
+  });
+
+  it('accepts path-free managed move and one-shot undo requests', () => {
+    expect(parseRendererRequest({
+      type: 'asset.move.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01', 'asset-02'],
+      targetFolderId: null,
+      conflictStrategy: 'keep-both',
+    })).toMatchObject({ type: 'asset.move.request', targetFolderId: null });
+    expect(parseRendererRequest({
+      type: 'asset.move-undo.request',
+      libraryId: 'library-01',
+      operationId: 'operation-01',
+      conflictStrategy: 'error',
+    })).toMatchObject({ type: 'asset.move-undo.request', conflictStrategy: 'error' });
+    expect(() => parseRendererRequest({
+      type: 'asset.move.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01', 'asset-01'],
+      targetFolderId: 'folder-01',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.move.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01'],
+      targetFolderId: 'folder-01',
+      destinationPath: '/forged/path',
+    })).toThrow();
+  });
+
+  it('accepts path-free managed copy and one-shot undo requests (WorldlineBox-2vn)', () => {
+    expect(parseRendererRequest({
+      type: 'asset.copy.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01', 'asset-02'],
+      targetFolderId: null,
+      conflictStrategy: 'keep-both',
+    })).toMatchObject({ type: 'asset.copy.request', targetFolderId: null });
+    expect(parseRendererRequest({
+      type: 'asset.copy-undo.request',
+      libraryId: 'library-01',
+      operationId: 'operation-01',
+      conflictStrategy: 'error',
+    })).toMatchObject({ type: 'asset.copy-undo.request', conflictStrategy: 'error' });
+    expect(() => parseRendererRequest({
+      type: 'asset.copy.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01', 'asset-01'],
+      targetFolderId: 'folder-01',
+    })).toThrow();
+  });
+
+  it('accepts preload-resolved drops and path-free clipboard requests', () => {
+    expect(parseRendererRequest({
+      type: 'asset.import-drop.request',
+      libraryId: 'library-01',
+      targetFolderId: 'folder-01',
+      targetCollectionId: 'collection-01',
+      sourcePaths: ['/private/preload-resolved/asset.png'],
+    })).toMatchObject({ type: 'asset.import-drop.request', sourcePaths: ['/private/preload-resolved/asset.png'] });
+    expect(parseRendererRequest({
+      type: 'asset.import-clipboard.request',
+      libraryId: 'library-01',
+      targetFolderId: 'folder-01',
+    })).toEqual({
+      type: 'asset.import-clipboard.request',
+      libraryId: 'library-01',
+      targetFolderId: 'folder-01',
+    });
+    expect(() => parseRendererRequest({
+      type: 'asset.import-clipboard.request',
+      libraryId: 'library-01',
+      sourcePath: '/private/forged/clipboard.png',
+    })).toThrow();
+    expect(parseRendererRequest({
+      type: 'asset.import-drop-invalid.report',
+      libraryId: 'library-01',
+    })).toEqual({ type: 'asset.import-drop-invalid.report', libraryId: 'library-01' });
+    expect(parseRendererRequest({
+      type: 'asset.import-web.request',
+      libraryId: 'library-01',
+      targetFolderId: 'folder-01',
+      targetCollectionId: 'collection-01',
+      mediaUrl: 'https://cdn.example.com/image.png',
+      mediaType: 'image',
+    })).toMatchObject({ type: 'asset.import-web.request', mediaUrl: 'https://cdn.example.com/image.png' });
+    expect(parseRendererRequest({
+      type: 'asset.import-web-invalid.report',
+      libraryId: 'library-01',
+      failure: 'WEB_MEDIA_URL_INVALID',
+    })).toMatchObject({ failure: 'WEB_MEDIA_URL_INVALID' });
+    expect(() => parseRendererRequest({
+      type: 'asset.import-web.request',
+      libraryId: 'library-01',
+      mediaUrl: 'file:///private/forged.png',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.import-web.request',
+      libraryId: 'library-01',
+      mediaUrl: 'https://user:secret@example.com/forged.png',
+    })).toThrow();
+    expect(() => parseRendererRequest({
+      type: 'asset.import-web.request',
+      libraryId: 'library-01',
+      mediaUrl: 'https://cdn.example.com/image.png',
+      sourcePageUrl: 'https://example.com/forged-source-page',
+    })).toThrow();
+  });
+
+  it('accepts explicit restore destinations and conflict strategies', () => {
+    expect(parseRendererRequest({
+      type: 'asset.restore.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01'],
+      targetFolderId: null,
+      conflictStrategy: 'replace',
+    })).toMatchObject({ targetFolderId: null, conflictStrategy: 'replace' });
+    expect(() => parseRendererRequest({
+      type: 'asset.restore.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01'],
+      conflictStrategy: 'overwrite',
+    })).toThrow();
+  });
+
+  it('accepts transfer cancellation by opaque operation id only', () => {
+    expect(parseRendererRequest({
+      type: 'library.export.cancel.request',
+      exportId: 'export-01',
+    })).toEqual({ type: 'library.export.cancel.request', exportId: 'export-01' });
+    expect(parseRendererRequest({
+      type: 'library.import.cancel.request',
+      importId: 'import-01',
+    })).toEqual({ type: 'library.import.cancel.request', importId: 'import-01' });
+    expect(parseRendererRequest({
+      type: 'library.import.cancel.request',
+      importId: 'import-01',
+      mode: 'stop',
+    })).toEqual({
+      type: 'library.import.cancel.request',
+      importId: 'import-01',
+      mode: 'stop',
+    });
+    expect(() => parseRendererRequest({
+      type: 'library.export.cancel.request',
+      exportId: 'export-01',
+      destinationPath: '/private/forged/path',
+    })).toThrow();
+  });
+
+  it('accepts media job controls by opaque IDs and rejects empty selections', () => {
+    expect(parseRendererRequest({
+      type: 'media.list-jobs.request',
+      libraryId: 'library-01',
+    })).toMatchObject({ type: 'media.list-jobs.request' });
+    expect(parseRendererRequest({
+      type: 'media.list-jobs.request',
+      libraryId: 'library-01',
+      summaryOnly: true,
+    })).toMatchObject({ type: 'media.list-jobs.request', summaryOnly: true });
+    expect(parseRendererRequest({
+      type: 'media.job-summary.request',
+      libraryId: 'library-01',
+    })).toMatchObject({ type: 'media.job-summary.request' });
+    expect(parseRendererRequest({
+      type: 'media.list-jobs.request',
+      libraryId: 'library-01',
+      cursor: { createdAt: '2026-09-16T12:00:00.000Z', jobId: 'job-01' },
+      limit: 100,
+    })).toMatchObject({
+      type: 'media.list-jobs.request',
+      cursor: { createdAt: '2026-09-16T12:00:00.000Z', jobId: 'job-01' },
+      limit: 100,
+    });
+    expect(parseRendererRequest({
+      type: 'plugin.list-jobs.request',
+      libraryId: 'library-01',
+    })).toMatchObject({ type: 'plugin.list-jobs.request' });
+    expect(parseRendererRequest({
+      type: 'media.cancel-jobs.request',
+      libraryId: 'library-01',
+      jobIds: ['job-01'],
+    })).toMatchObject({ jobIds: ['job-01'] });
+    expect(() => parseRendererRequest({
+      type: 'media.retry-jobs.request',
+      libraryId: 'library-01',
+      jobIds: [],
+    })).toThrow();
+  });
+
+  it('accepts one atomic collection sibling order and rejects duplicates only at the domain layer', () => {
+    expect(parseRendererRequest({
+      type: 'collection.reorder.request',
+      libraryId: 'library-01',
+      orderedCollectionIds: ['collection-03', 'collection-01', 'collection-02'],
+    })).toMatchObject({ orderedCollectionIds: ['collection-03', 'collection-01', 'collection-02'] });
+    expect(() => parseRendererRequest({
+      type: 'collection.reorder.request',
+      libraryId: 'library-01',
+      orderedCollectionIds: [],
+    })).toThrow();
+  });
+
+  it('rejects unknown channels and malformed values', () => {
+    expect(() => parseRendererRequest({ type: 'ipc.send', channel: '*' })).toThrow();
+    expect(() =>
+      parseRendererRequest({ type: 'library.close.request', libraryId: '' }),
+    ).toThrow();
+  });
+});
+
+describe('plugin job worker protocol', () => {
+  it('requires an instance-scoped owner and preserves rich completion fields', () => {
+    const owner = {
+      ownerPluginId: 'com.example.worker',
+      ownerPackageHash: 'a'.repeat(64),
+      ownerPluginInstanceId: 'instance-01',
+      ownerScope: 'library' as const,
+      ownerLibraryId: 'library-01',
+    };
+    expect(parseWorkerRequest({
+      requestId: 'job-enqueue-01',
+      command: {
+        type: 'plugin.jobs.enqueue',
+        libraryId: 'library-01',
+        ...owner,
+        pluginHandlerId: 'upscale',
+        payload: { assetIds: ['asset-01'] },
+        recoveryStrategy: 'checkpoint',
+      },
+    }).command).toMatchObject(owner);
+
+    expect(parseWorkerRequest({
+      requestId: 'job-complete-01',
+      command: {
+        type: 'plugin.jobs.complete',
+        libraryId: 'library-01',
+        jobId: '00000000-0000-4000-8000-000000000001',
+        ...owner,
+        status: 'succeeded',
+        completed: 2,
+        total: 2,
+        phase: 'writeback',
+        message: 'Done',
+        itemResults: [{ itemId: 'asset-01', status: 'succeeded' }],
+        checkpoint: {
+          version: 'v1',
+          data: { cursor: '2' },
+          savedAt: '2026-08-02T00:00:00.000Z',
+        },
+      },
+    }).command).toMatchObject({ completed: 2, total: 2, phase: 'writeback' });
+
+    expect(() => parseWorkerRequest({
+      requestId: 'job-enqueue-legacy',
+      command: {
+        type: 'plugin.jobs.enqueue',
+        libraryId: 'library-01',
+        ownerPluginId: 'com.example.worker',
+        ownerPackageHash: 'a'.repeat(64),
+        pluginHandlerId: 'upscale',
+      },
+    })).toThrow();
+  });
+});
+
+describe('preview response protocol', () => {
+  it('carries only opaque URLs and actionable artifact state', () => {
+    const result = parseRendererResult({
+      ok: true,
+      type: 'asset.preview.resolved',
+      assetId: 'asset-01',
+      mediaType: 'video',
+      status: 'failed',
+      kind: 'webm_proxy',
+      posterUrl: 'worldlinebox://preview/library-01/poster-01',
+      errorCode: 'FFMPEG_REQUIRED',
+    });
+    expect(result).toMatchObject({ status: 'failed', errorCode: 'FFMPEG_REQUIRED' });
+    expect(JSON.stringify(result)).not.toContain('/Users/');
+  });
+
+  it('allows an audio proxy response without exposing a source path', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.preview.resolved',
+      assetId: 'asset-01',
+      mediaType: 'audio',
+      status: 'ready',
+      kind: 'audio_proxy',
+      url: 'worldlinebox://proxy/library-01/artifact-01',
+      playbackMode: 'proxy',
+    })).toMatchObject({ kind: 'audio_proxy', playbackMode: 'proxy' });
+  });
+
+  it('carries only numeric EXR part selection and labels to the renderer', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.preview.resolved',
+      assetId: 'asset-01',
+      mediaType: 'image',
+      status: 'ready',
+      kind: 'thumbnail',
+      url: 'worldlinebox://preview/library-01/artifact-01',
+      exrPlanes: [
+        { index: 0, label: 'Part 0: beauty' },
+        { index: 1, label: 'Part 1: depth' },
+      ],
+      selectedExrPlane: 1,
+    })).toMatchObject({ selectedExrPlane: 1 });
+    expect(() => parseRendererRequest({
+      type: 'asset.preview.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+      mode: 'client',
+      exrPlane: -1,
+    })).toThrow();
+  });
+
+  it('validates the renderer-safe media job listing', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'media.jobs.listed',
+      libraryId: 'library-01',
+      queued: 1,
+      running: 0,
+      succeeded: 0,
+      failed: 0,
+      paused: 0,
+      cancelled: 0,
+      nextCursor: null,
+      hasMore: false,
+      jobs: [{
+        jobId: 'job-01',
+        assetId: 'asset-01',
+        revisionId: 'revision-01',
+        kind: 'extract_palette',
+        status: 'queued',
+        progress: 0,
+        attemptCount: 0,
+        errorCode: null,
+        errorDetail: null,
+        createdAt: '2026-07-13T00:00:00.000Z',
+        updatedAt: '2026-07-13T00:00:00.000Z',
+      }],
+    })).toMatchObject({ type: 'media.jobs.listed', queued: 1 });
+  });
+
+  it('validates automatic palette provenance without exposing artifact paths', () => {
+    const result = parseRendererResult({
+      ok: true,
+      type: 'asset.metadata.got',
+      metadata: {
+        assetId: 'asset-01',
+        description: null,
+        rating: 0,
+        favorite: false,
+        palette: null,
+        automaticPalette: [{ hex: '#FF0000', ratio: 0.75 }, { hex: '#0000FF', ratio: 0.25 }],
+        effectivePalette: ['#FF0000', '#0000FF'],
+        paletteSource: 'automatic',
+        sourcePageUrl: null,
+        author: null,
+        entityVersion: 0,
+        updatedAt: '1970-01-01T00:00:00.000Z',
+      },
+    });
+    expect(result).toMatchObject({
+      type: 'asset.metadata.got',
+      metadata: { paletteSource: 'automatic', effectivePalette: ['#FF0000', '#0000FF'] },
+    });
+    expect(JSON.stringify(result)).not.toContain('.worldlinebox');
+  });
+
+  it('carries only the asset id for reveal-in-folder and copy-file-path results', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.reveal-in-folder.requested',
+      assetId: 'asset-01',
+    })).toEqual({
+      ok: true,
+      type: 'asset.reveal-in-folder.requested',
+      assetId: 'asset-01',
+    });
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.copy-file-path.requested',
+      assetId: 'asset-01',
+    })).toEqual({
+      ok: true,
+      type: 'asset.copy-file-path.requested',
+      assetId: 'asset-01',
+    });
+    // REQ-COMMAND-003: absolute paths never cross back to the renderer.
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'asset.reveal-in-folder.requested',
+      assetId: 'asset-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'asset.copy-file-path.requested',
+      assetId: 'asset-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.dropped-paths.resolved',
+      assetIds: ['asset-01'],
+    })).toEqual({
+      ok: true,
+      type: 'asset.dropped-paths.resolved',
+      assetIds: ['asset-01'],
+    });
+  });
+
+  it('carries only the folder id for folder open-in-file-manager and copy-path results', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'folder.open-in-file-manager.requested',
+      folderId: 'folder-01',
+    })).toEqual({
+      ok: true,
+      type: 'folder.open-in-file-manager.requested',
+      folderId: 'folder-01',
+    });
+    expect(parseRendererResult({
+      ok: true,
+      type: 'folder.copy-path.requested',
+      folderId: 'folder-01',
+    })).toEqual({
+      ok: true,
+      type: 'folder.copy-path.requested',
+      folderId: 'folder-01',
+    });
+    // The resolved path stays on the Worker→Main boundary: the worker result
+    // carries it, the renderer result must never accept it (REQ-COMMAND-003).
+    expect(parseWorkerResponse({
+      requestId: 'folder-path-01',
+      result: {
+        ok: true,
+        type: 'folder.path',
+        folderId: 'folder-01',
+        absolutePath: '/libraries/demo/Assets/concepts',
+      },
+    }).result).toMatchObject({ type: 'folder.path' });
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'folder.open-in-file-manager.requested',
+      folderId: 'folder-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'folder.copy-path.requested',
+      folderId: 'folder-01',
+      absolutePath: '/private/forged/path',
+    })).toThrow();
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'folder.path',
+      folderId: 'folder-01',
+      absolutePath: '/libraries/demo/Assets/concepts',
+    })).toThrow();
+  });
+});
+
+describe('linked asset delete response protocol', () => {
+  it('reports partial failures with stable IDs and safe reasons only', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.deleted-linked',
+      deletedCount: 1,
+      failedCount: 1,
+      failures: [{ assetId: 'asset-02', reason: 'SOURCE_TRASH_FAILED' }],
+    })).toEqual({
+      ok: true,
+      type: 'asset.deleted-linked',
+      deletedCount: 1,
+      failedCount: 1,
+      failures: [{ assetId: 'asset-02', reason: 'SOURCE_TRASH_FAILED' }],
+    });
+
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'asset.deleted-linked',
+      deletedCount: 0,
+      failedCount: 1,
+      failures: [{
+        assetId: 'asset-02',
+        reason: 'SOURCE_TRASH_FAILED',
+        sourcePath: '/private/linked/asset.png',
+      }],
+    })).toThrow();
+
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'asset.deleted-linked',
+      deletedCount: 0,
+      failedCount: 0,
+      failures: [{ assetId: 'asset-02', reason: 'SOURCE_TRASH_FAILED' }],
+    })).toThrow();
+  });
+});
+
+describe('tag batch operation response protocol', () => {
+  it('carries per-asset skips with stable reason codes only', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'tag.assigned',
+      assignedCount: 1,
+      skipped: [{ assetId: 'asset-02', reason: 'asset_not_found' }],
+    })).toEqual({
+      ok: true,
+      type: 'tag.assigned',
+      assignedCount: 1,
+      skipped: [{ assetId: 'asset-02', reason: 'asset_not_found' }],
+    });
+
+    expect(parseRendererResult({
+      ok: true,
+      type: 'tag.removed',
+      removedCount: 2,
+      skipped: [],
+    })).toEqual({
+      ok: true,
+      type: 'tag.removed',
+      removedCount: 2,
+      skipped: [],
+    });
+
+    // Extra fields (e.g. leaked paths) are rejected by the strict schema.
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'tag.assigned',
+      assignedCount: 1,
+      skipped: [{
+        assetId: 'asset-02',
+        reason: 'asset_not_found',
+        sourcePath: '/private/library/asset.png',
+      }],
+    })).toThrow();
+
+    // Reason codes are a closed enum, not free-form strings.
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'tag.assigned',
+      assignedCount: 1,
+      skipped: [{ assetId: 'asset-02', reason: 'asset_deleted' }],
+    })).toThrow();
+  });
+});
+
+describe('batch rating protocol', () => {
+  it('round-trips the renderer request and worker command with integer 0-5 ratings', () => {
+    for (const rating of [0, 5]) {
+      expect(parseRendererRequest({
+        type: 'asset.rating.set.request',
+        libraryId: 'library-01',
+        assetIds: ['asset-01', 'asset-02'],
+        rating,
+      })).toEqual({
+        type: 'asset.rating.set.request',
+        libraryId: 'library-01',
+        assetIds: ['asset-01', 'asset-02'],
+        rating,
+      });
+      expect(parseWorkerRequest({
+        requestId: `rating-${rating}`,
+        command: {
+          type: 'asset.rating.set',
+          libraryId: 'library-01',
+          assetIds: ['asset-01', 'asset-02'],
+          rating,
+        },
+      }).command).toEqual({
+        type: 'asset.rating.set',
+        libraryId: 'library-01',
+        assetIds: ['asset-01', 'asset-02'],
+        rating,
+      });
+    }
+  });
+
+  it('rejects out-of-range ratings, empty id lists, and unexpected fields', () => {
+    for (const rating of [-1, 6, 2.5, '4']) {
+      expect(() => parseRendererRequest({
+        type: 'asset.rating.set.request',
+        libraryId: 'library-01',
+        assetIds: ['asset-01'],
+        rating,
+      })).toThrow();
+      expect(() => parseWorkerRequest({
+        requestId: 'rating-invalid',
+        command: {
+          type: 'asset.rating.set',
+          libraryId: 'library-01',
+          assetIds: ['asset-01'],
+          rating,
+        },
+      })).toThrow();
+    }
+    expect(() => parseRendererRequest({
+      type: 'asset.rating.set.request',
+      libraryId: 'library-01',
+      assetIds: [],
+      rating: 3,
+    })).toThrow();
+    // The batch contract is last-write-wins: an expectedVersion must not
+    // leak in from the single-asset metadata contract.
+    expect(() => parseRendererRequest({
+      type: 'asset.rating.set.request',
+      libraryId: 'library-01',
+      assetIds: ['asset-01'],
+      rating: 3,
+      expectedVersion: 2,
+    })).toThrow();
+  });
+
+  it('round-trips the batch rating result with the shared skip shape', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.rating.updated',
+      updatedCount: 2,
+      skipped: [{ assetId: 'asset-03', reason: 'asset_not_found' }],
+    })).toEqual({
+      ok: true,
+      type: 'asset.rating.updated',
+      updatedCount: 2,
+      skipped: [{ assetId: 'asset-03', reason: 'asset_not_found' }],
+    });
+    expect(parseWorkerResponse({
+      requestId: 'rating-response',
+      result: {
+        ok: true,
+        type: 'asset.rating.updated',
+        updatedCount: 0,
+        skipped: [],
+      },
+    }).result).toEqual({
+      ok: true,
+      type: 'asset.rating.updated',
+      updatedCount: 0,
+      skipped: [],
+    });
+
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'asset.rating.updated',
+      updatedCount: 1,
+      skipped: [{ assetId: 'asset-03', reason: 'asset_deleted' }],
+    })).toThrow();
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'asset.rating.updated',
+      updatedCount: 1,
+      skipped: [],
+      sourcePath: '/private/library/asset.png',
+    })).toThrow();
+  });
+
+  it('accepts asset.list.request with an explicit id set larger than the old 200 cap', () => {
+    const assetIds = Array.from({ length: 151 }, (_, index) => `asset-${index + 1}`);
+    expect(
+      parseRendererRequest({
+        type: 'asset.list.request',
+        libraryId: 'library-01',
+        recursive: true,
+        assetIds,
+      }),
+    ).toEqual({
+      type: 'asset.list.request',
+      libraryId: 'library-01',
+      recursive: true,
+      assetIds,
+    });
+  });
+});
+
+describe('worker request protocol', () => {
+  it('accepts the Main-only native drag cache primer and keeps its paths out of Renderer results', () => {
+    expect(parseWorkerRequest({
+      requestId: 'request-asset-drag',
+      command: {
+        type: 'media.get-asset-drag-infos',
+        libraryId: 'library-1',
+        assetIds: ['asset-1', 'asset-2'],
+      },
+    })).toMatchObject({
+      command: { type: 'media.get-asset-drag-infos', assetIds: ['asset-1', 'asset-2'] },
+    });
+
+    expect(parseWorkerResponse({
+      requestId: 'response-asset-drag',
+      result: {
+        ok: true,
+        type: 'media.asset-drag-infos',
+        entries: [{
+          assetId: 'asset-1',
+          absolutePath: '/private/library/asset-1.png',
+          thumbnailAbsolutePath: '/private/library/.worldlinebox/artifacts/thumb.webp',
+        }],
+      },
+    }).result).toMatchObject({
+      type: 'media.asset-drag-infos',
+      entries: [{
+        thumbnailAbsolutePath: '/private/library/.worldlinebox/artifacts/thumb.webp',
+      }],
+    });
+
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'media.asset-drag-infos',
+      entries: [{
+        assetId: 'asset-1',
+        absolutePath: '/private/library/asset-1.png',
+        thumbnailAbsolutePath: '/private/library/.worldlinebox/artifacts/thumb.webp',
+      }],
+    })).toThrow();
+  });
+
+  it('accepts a path-free remote media command and rejects non-HTTP addresses', () => {
+    expect(parseWorkerRequest({
+      requestId: 'request-web-drop',
+      command: {
+        type: 'extension.save-from-url',
+        libraryId: 'library-1',
+        targetFolderId: 'folder-1',
+        mediaUrl: 'https://cdn.example.com/image.png',
+      },
+    })).toMatchObject({ command: { type: 'extension.save-from-url' } });
+    expect(() => parseWorkerRequest({
+      requestId: 'request-web-drop-invalid',
+      command: {
+        type: 'extension.save-from-url',
+        libraryId: 'library-1',
+        mediaUrl: 'http://user:secret@example.com/image.png',
+      },
+    })).toThrow();
+  });
+
+  it('bounds linked source deletion and rejects duplicate asset IDs', () => {
+    const request = {
+      requestId: 'request-linked-delete',
+      command: {
+        type: 'asset.delete-linked',
+        libraryId: 'library-1',
+        assetIds: ['asset-1'],
+        deleteSourceFile: true,
+      },
+    } as const;
+    expect(parseWorkerRequest(request).command).toEqual(request.command);
+    expect(() => parseWorkerRequest({
+      ...request,
+      command: { ...request.command, assetIds: ['asset-1', 'asset-1'] },
+    })).toThrow();
+    expect(() => parseWorkerRequest({
+      ...request,
+      command: {
+        ...request.command,
+        assetIds: Array.from({ length: 21 }, (_, index) => `asset-${index}`),
+      },
+    })).toThrow();
+  });
+
+  it('accepts a bounded AI queue-processing command with ephemeral credentials', () => {
+    const parsed = parseWorkerRequest({
+      requestId: 'request-ai-1',
+      command: {
+        type: 'ai.process-queue',
+        libraryId: 'library-1',
+        apiFormat: 'openai_chat',
+        model: 'gpt-4o-mini',
+        apiKey: 'ephemeral-key',
+        enabledFields: { description: true, tags: true, rating: false },
+        analysisSettings: {
+          forceExistingTags: false,
+          maxTags: 8,
+          maxDescriptionCharsZh: 100,
+          maxDescriptionWordsEn: 60,
+          outputStyle: 'normal',
+          ratingRubric: '1-5 aesthetic score',
+          customDescriptionPrompt: '',
+          customTagPrompt: '',
+        },
+        languages: ['zh-CN', 'en'],
+        concurrencyLimit: 16,
+        requestTimeoutMs: 120_000,
+        maxAttempts: 3,
+        maxJobs: 10,
+      },
+    });
+    expect(parsed.command.type).toBe('ai.process-queue');
+    expect(() => parseWorkerRequest({
+      requestId: 'request-ai-2',
+      command: { ...parsed.command, maxJobs: 101 },
+    })).toThrow();
+    expect(() => parseWorkerRequest({
+      requestId: 'request-ai-3',
+      command: { ...parsed.command, concurrencyLimit: 33 },
+    })).toThrow();
+    expect(() => parseWorkerRequest({
+      requestId: 'request-ai-4',
+      command: { ...parsed.command, requestTimeoutMs: 14_999 },
+    })).toThrow();
+    expect(parseWorkerRequest({
+      requestId: 'request-ai-concurrency',
+      command: { type: 'ai.set-concurrency-limit', concurrencyLimit: 16 },
+    }).command).toEqual({ type: 'ai.set-concurrency-limit', concurrencyLimit: 16 });
+    expect(() => parseWorkerRequest({
+      requestId: 'request-ai-concurrency-invalid',
+      command: { type: 'ai.set-concurrency-limit', concurrencyLimit: 33 },
+    })).toThrow();
+  });
+
+  it('accepts AI job status commands and complete status results', () => {
+    expect(parseRendererRequest({
+      type: 'ai.status.request',
+      libraryId: 'library-1',
+    })).toMatchObject({ type: 'ai.status.request', libraryId: 'library-1' });
+
+    expect(parseWorkerRequest({
+      requestId: 'request-ai-status',
+      command: { type: 'ai.status', libraryId: 'library-1' },
+    })).toMatchObject({ command: { type: 'ai.status' } });
+    expect(parseRendererRequest({
+      type: 'ai.status.request',
+      libraryId: 'library-1',
+      jobIds: ['job-1', 'job-2'],
+    })).toMatchObject({ jobIds: ['job-1', 'job-2'] });
+    expect(parseWorkerRequest({
+      requestId: 'request-ai-status-filtered',
+      command: { type: 'ai.status', libraryId: 'library-1', jobIds: ['job-1'] },
+    })).toMatchObject({ command: { jobIds: ['job-1'] } });
+
+    expect(parseRendererResult({
+      ok: true,
+      type: 'ai.jobs.status',
+      libraryId: 'library-1',
+      queued: 1,
+      running: 0,
+      succeeded: 2,
+      failed: 1,
+      paused: 0,
+      cancelled: 3,
+      jobs: [{
+        jobId: 'job-1',
+        assetId: 'asset-1',
+        kind: 'ai.image.analysis',
+        status: 'queued',
+        errorCode: null,
+        errorDetail: null,
+        updatedAt: '2026-07-13T00:00:00.000Z',
+      }],
+    })).toMatchObject({ type: 'ai.jobs.status', queued: 1, cancelled: 3 });
+  });
+
+  it('accepts one atomic renderer request for a selected AI batch', () => {
+    expect(parseRendererRequest({
+      type: 'assets.analyze.request',
+      libraryId: 'library-1',
+      assetIds: ['asset-1', 'asset-2'],
+    })).toMatchObject({ assetIds: ['asset-1', 'asset-2'] });
+    expect(parseRendererResult({
+      ok: true,
+      type: 'assets.analyze-queued',
+      assetIds: ['asset-1', 'asset-2'],
+      jobIds: ['job-1', 'job-2'],
+      skippedAssetIds: [],
+      enqueued: 2,
+    })).toMatchObject({ jobIds: ['job-1', 'job-2'] });
+  });
+
+  it('accepts an atomic AI batch response with only skipped assets', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'assets.analyze-queued',
+      assetIds: ['asset-1'],
+      jobIds: [],
+      skippedAssetIds: ['asset-1'],
+      enqueued: 0,
+    })).toMatchObject({ jobIds: [], skippedAssetIds: ['asset-1'] });
+  });
+
+  it('validates AI progress and completion events before Main forwards them', () => {
+    expect(parseAiProgressEvent({
+      type: 'ai.progress',
+      libraryId: 'library-1',
+      queued: 2,
+      running: 1,
+      succeeded: 4,
+      failed: 1,
+      changedJobs: [{ jobId: 'job-1', status: 'succeeded' }],
+    })).toMatchObject({
+      running: 1,
+      succeeded: 4,
+      changedJobs: [{ jobId: 'job-1', status: 'succeeded' }],
+    });
+    expect(parseAiAnalysisCompletedEvent({
+      type: 'ai.analysis.completed',
+      libraryId: 'library-1',
+      assetId: 'asset-1',
+      fieldCount: 2,
+      tagCount: 3,
+    })).toMatchObject({ assetId: 'asset-1', tagCount: 3 });
+    // WorldlineBox-c9r3: the cleared event carries the affected IDs (strict).
+    expect(parseAiContentClearedEvent({
+      type: 'ai.content.cleared',
+      libraryId: 'library-1',
+      affectedAssetCount: 2,
+      affectedAssetIds: ['asset-1', 'asset-2'],
+    })).toMatchObject({ affectedAssetCount: 2, affectedAssetIds: ['asset-1', 'asset-2'] });
+    expect(() => parseAiContentClearedEvent({
+      type: 'ai.content.cleared',
+      libraryId: 'library-1',
+      affectedAssetCount: 1,
+    })).toThrow();
+    expect(() => parseAiProgressEvent({
+      type: 'ai.progress', libraryId: 'library-1', queued: -1,
+      running: 0, succeeded: 0, failed: 0,
+    })).toThrow();
+    expect(() => parseAiProgressEvent({
+      type: 'ai.progress', libraryId: 'library-1', queued: 0,
+      running: 0, succeeded: 0, failed: 0,
+      inFlight: 1,
+    })).toThrow();
+  });
+
+  it('validates the internal video AI-input-ready event', () => {
+    expect(parseAiInputReadyEvent({
+      type: 'asset.ai-input.ready',
+      libraryId: 'library-1',
+      assetId: 'asset-1',
+      artifactId: 'contact-sheet-1',
+    })).toMatchObject({ assetId: 'asset-1', artifactId: 'contact-sheet-1' });
+    expect(() => parseAiInputReadyEvent({
+      type: 'asset.ai-input.ready',
+      libraryId: 'library-1',
+      assetId: 'asset-1',
+    })).toThrow();
+  });
+
+  it('keeps media and AI job commands as distinct protocol variants', () => {
+    expect(parseWorkerRequest({
+      requestId: 'request-media-1',
+      command: {
+        type: 'media.pause-jobs',
+        libraryId: 'library-1',
+        jobIds: ['media-job-1'],
+      },
+    }).command.type).toBe('media.pause-jobs');
+  });
+
+  it('round-trips the Main-owned import id for library validation', () => {
+    expect(parseWorkerRequest({
+      requestId: 'request-1',
+      command: {
+        type: 'library.import-validate',
+        importId: 'import-1',
+        sourceFolderPath: '/tmp/library',
+      },
+    }).command).toEqual({
+      type: 'library.import-validate',
+      importId: 'import-1',
+      sourceFolderPath: '/tmp/library',
+    });
+  });
+
+  it('requires an internal request id and a selected path', () => {
+    expect(
+      parseWorkerRequest({
+        requestId: 'req-01',
+        command: {
+          type: 'library.open',
+          selectedLibraryPath: '/Users/example/Library',
+        },
+      }),
+    ).toEqual({
+      requestId: 'req-01',
+      command: {
+        type: 'library.open',
+        selectedLibraryPath: '/Users/example/Library',
+      },
+    });
+
+    expect(
+      parseWorkerRequest({
+        requestId: 'req-01',
+        command: {
+          type: 'library.open',
+          selectedLibraryPath: '/Users/example/Library',
+          replaceExisting: true,
+        },
+      }),
+    ).toEqual({
+      requestId: 'req-01',
+      command: {
+        type: 'library.open',
+        selectedLibraryPath: '/Users/example/Library',
+        replaceExisting: true,
+      },
+    });
+
+    expect(() =>
+      parseWorkerRequest({
+        requestId: 'req-01',
+        command: { type: 'library.open' },
+      }),
+    ).toThrow();
+  });
+
+  it('requires both Eagle source and WorldlineBox destination paths to open Eagle', () => {
+    expect(
+      parseWorkerRequest({
+        requestId: 'req-01',
+        command: {
+          type: 'library.open-eagle',
+          sourceRootPath: '/Users/example/Reference.library',
+          selectedParentPath: '/Users/example/Libraries',
+          displayName: 'Reference',
+        },
+      }).command,
+    ).toEqual({
+      type: 'library.open-eagle',
+      sourceRootPath: '/Users/example/Reference.library',
+      selectedParentPath: '/Users/example/Libraries',
+      displayName: 'Reference',
+    });
+    expect(() =>
+      parseWorkerRequest({
+        requestId: 'req-01',
+        command: {
+          type: 'library.open-eagle',
+          sourceRootPath: '/Users/example/Reference.library',
+          selectedParentPath: '/Users/example/Libraries',
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseWorkerRequest({
+        requestId: 'req-01',
+        command: {
+          type: 'library.open-eagle',
+          sourceRootPath: '/Users/example/Reference.library',
+        },
+      }),
+    ).toThrow();
+  });
+
+  it('inspects Eagle without exposing a filesystem path on the renderer request', () => {
+    expect(
+      parseRendererRequest({
+        type: 'library.inspect-eagle.request',
+      }),
+    ).toEqual({ type: 'library.inspect-eagle.request' });
+    expect(() =>
+      parseRendererRequest({
+        type: 'library.inspect-eagle.request',
+        sourceRootPath: '/Users/example/Reference.library',
+      }),
+    ).toThrow();
+    expect(
+      parseRendererRequest({
+        type: 'library.open-eagle.request',
+        displayName: 'Studio refs',
+      }),
+    ).toEqual({
+      type: 'library.open-eagle.request',
+      displayName: 'Studio refs',
+    });
+    expect(() =>
+      parseRendererRequest({
+        type: 'library.open-eagle.request',
+        displayName: 'Studio refs',
+        sourceRootPath: '/Users/example/Reference.library',
+      }),
+    ).toThrow();
+  });
+
+  it('inspects Billfish without exposing a filesystem path on the renderer request', () => {
+    expect(
+      parseRendererRequest({
+        type: 'library.inspect-billfish.request',
+      }),
+    ).toEqual({ type: 'library.inspect-billfish.request' });
+    expect(() =>
+      parseRendererRequest({
+        type: 'library.inspect-billfish.request',
+        sourceRootPath: '/Users/example/BillfishLibrary',
+      }),
+    ).toThrow();
+    expect(
+      parseRendererRequest({
+        type: 'library.open-billfish.request',
+        displayName: 'Billfish refs',
+      }),
+    ).toEqual({
+      type: 'library.open-billfish.request',
+      displayName: 'Billfish refs',
+    });
+    expect(
+      parseWorkerRequest({
+        requestId: 'req-billfish-01',
+        command: {
+          type: 'library.open-billfish',
+          sourceRootPath: '/Users/example/BillfishLibrary',
+          selectedParentPath: '/Users/example/Libraries',
+          displayName: 'Billfish refs',
+        },
+      }).command,
+    ).toEqual({
+      type: 'library.open-billfish',
+      sourceRootPath: '/Users/example/BillfishLibrary',
+      selectedParentPath: '/Users/example/Libraries',
+        displayName: 'Billfish refs',
+      });
+
+    expect(
+      parseWorkerRequest({
+        requestId: 'req-billfish-inspect-01',
+        command: {
+          type: 'library.inspect-billfish',
+          sourceRootPath: '/tmp/billfish',
+          sourceDisplayName: '动画OPED',
+        },
+      }).command,
+    ).toEqual({
+      type: 'library.inspect-billfish',
+      sourceRootPath: '/tmp/billfish',
+      sourceDisplayName: '动画OPED',
+    });
+  });
+
+  it('accepts source paths only on the internal prepare-import command', () => {
+    expect(
+      parseWorkerRequest({
+        requestId: 'req-02',
+        command: {
+          type: 'asset.import.prepare',
+          libraryId: 'library-01',
+          sourceKind: 'files',
+          sourcePaths: ['/private/selected/source.png'],
+        },
+      }),
+    ).toMatchObject({
+      command: { type: 'asset.import.prepare', sourceKind: 'files' },
+    });
+    expect(
+      parseWorkerRequest({
+        requestId: 'req-03',
+        command: {
+          type: 'asset.import.prepare',
+          createImageSequence: false,
+          libraryId: 'library-01',
+          sourceKind: 'files',
+          sourcePaths: ['/private/selected/source-001.png'],
+        },
+      }).command,
+    ).toMatchObject({ createImageSequence: false });
+    expect(parseRendererRequest({
+      type: 'asset.import-sequence.confirm',
+      action: 'import-sequence',
+      applyToRest: true,
+      libraryId: 'library-01',
+      offerId: 'offer-01',
+    })).toMatchObject({ applyToRest: true });
+  });
+});
+
+describe('public errors', () => {
+  it.each([
+    'AI_AUTH',
+    'AI_PERMISSION',
+    'AI_QUOTA',
+    'AI_RATE_LIMIT',
+    'AI_NETWORK',
+    'AI_TIMEOUT',
+    'AI_INVALID_RESPONSE',
+    'AI_REQUEST_REJECTED',
+  ] as const)('accepts safe actionable AI reason %s', (reason) => {
+    expect(createPublicError('AI_ANALYSIS_FAILED', reason)).toMatchObject({
+      code: 'AI_ANALYSIS_FAILED',
+      reason,
+    });
+  });
+
+  it('does not expose internal errors or paths', () => {
+    const publicError = toPublicError(
+      new Error('SQLITE_CANTOPEN at /Users/private/secret/library.db'),
+    );
+
+    expect(publicError).toEqual({
+      code: 'INTERNAL_ERROR',
+      message: PUBLIC_ERROR_MESSAGES.INTERNAL_ERROR,
+    });
+    expect(JSON.stringify(publicError)).not.toContain('/Users/private');
+    expect(JSON.stringify(publicError)).not.toContain('SQLITE');
+  });
+
+  it('classifies a missing SQLite native module as an engine failure, not library damage', () => {
+    const sqliteError = Object.assign(
+      new Error(
+        'The specified module could not be found.\r\n\\\\?\\C:\\Program Files\\WorldlineBox\\resources\\app.asar.unpacked\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node',
+      ),
+      { code: 'ERR_DLOPEN_FAILED' },
+    );
+    expect(classifyUnknownFailure(sqliteError)).toEqual({ code: 'LIBRARY_ENGINE_UNAVAILABLE' });
+    const publicError = toPublicError(sqliteError);
+    expect(publicError.code).toBe('LIBRARY_ENGINE_UNAVAILABLE');
+    expect(publicError.message).toBe(PUBLIC_ERROR_MESSAGES.LIBRARY_ENGINE_UNAVAILABLE);
+    expect(JSON.stringify(publicError)).not.toContain('Program Files');
+  });
+
+  it('classifies a SQLite build without FTS5 as an engine failure', () => {
+    const sqliteError = Object.assign(new Error('no such module: fts5'), {
+      code: 'SQLITE_ERROR',
+    });
+    expect(classifyUnknownFailure(sqliteError)).toEqual({ code: 'LIBRARY_ENGINE_UNAVAILABLE' });
+  });
+
+  it('classifies a closed better-sqlite3 handle as LIBRARY_NOT_OPEN', () => {
+    expect(classifyUnknownFailure(new TypeError('The database connection is not open'))).toEqual({
+      code: 'LIBRARY_NOT_OPEN',
+    });
+  });
+
+  it('classifies unqualified SQLite IOERR as a disk I/O library error without copying the message', () => {
+    const sqliteError = Object.assign(new Error('disk I/O error at /secret/library.db'), {
+      code: 'SQLITE_IOERR_IN_PAGE',
+    });
+    expect(classifyUnknownFailure(sqliteError)).toEqual({ code: 'LIBRARY_IO_ERROR', reason: 'IO_ERROR' });
+    const publicError = toPublicError(sqliteError);
+    expect(publicError.code).toBe('LIBRARY_IO_ERROR');
+    expect(publicError.reason).toBe('IO_ERROR');
+    expect(JSON.stringify(publicError)).not.toContain('/secret');
+  });
+
+  it('classifies Sharp missing-input as a vanished asset, not a read-only library', () => {
+    const sharpError = new Error('Input file is missing: /secret/library/Assets/photo.png');
+    expect(classifyUnknownFailure(sharpError)).toEqual({
+      code: 'ASSET_NOT_FOUND',
+      reason: 'SOURCE_NOT_FOUND',
+    });
+    const publicError = toPublicError(sharpError);
+    expect(publicError.code).toBe('ASSET_NOT_FOUND');
+    expect(publicError.reason).toBe('SOURCE_NOT_FOUND');
+    expect(JSON.stringify(publicError)).not.toContain('/secret');
+  });
+
+  it('attaches a filesystem reason to INTERNAL_ERROR when the errno is known', () => {
+    const accessError = Object.assign(new Error('EACCES: permission denied, open /secret/file'), {
+      code: 'EACCES',
+    });
+    expect(toPublicError(accessError)).toEqual({
+      code: 'INTERNAL_ERROR',
+      message: PUBLIC_ERROR_MESSAGES.INTERNAL_ERROR,
+      reason: 'PERMISSION_DENIED',
+    });
+    expect(JSON.stringify(toPublicError(accessError))).not.toContain('/secret');
+  });
+
+  it('carries only a stable renderer-safe failure reason', () => {
+    expect(createPublicError('IMPORT_APPLY_FAILED', 'PATH_LIMIT_EXCEEDED')).toEqual({
+      code: 'IMPORT_APPLY_FAILED',
+      message: PUBLIC_ERROR_MESSAGES.IMPORT_APPLY_FAILED,
+      reason: 'PATH_LIMIT_EXCEEDED',
+    });
+  });
+
+  it('keeps library-parent and transfer-timeout reasons renderer-safe (WorldlineBox-sq4i)', () => {
+    expect(createPublicError('INVALID_LIBRARY_PATH', 'LIBRARY_PARENT_MISSING')).toMatchObject({
+      code: 'INVALID_LIBRARY_PATH',
+      reason: 'LIBRARY_PARENT_MISSING',
+    });
+  });
+
+  it('exposes a specific safe error for invalid asset metadata', () => {
+    expect(createPublicError('INVALID_ASSET_METADATA')).toEqual({
+      code: 'INVALID_ASSET_METADATA',
+      message: 'Choose valid asset metadata values, including six-digit hex colors and an HTTP(S) source page URL.',
+    });
+  });
+
+  it('preserves the current metadata version through Worker and Preload validation', () => {
+    const conflict = createPublicError('VERSION_CONFLICT', undefined, 7);
+    const workerResponse = parseWorkerResponse({
+      requestId: 'metadata-conflict',
+      result: { ok: false, error: conflict },
+    });
+    const rendererResult = parseRendererResult(workerResponse.result);
+
+    expect(rendererResult).toEqual({
+      ok: false,
+      error: {
+        code: 'VERSION_CONFLICT',
+        message: 'The metadata has been modified by another operation. Please refresh and try again.',
+        currentEntityVersion: 7,
+      },
+    });
+    expect(() => parseRendererResult({
+      ok: false,
+      error: {
+        code: 'VERSION_CONFLICT',
+        message: 'The metadata has been modified by another operation. Please refresh and try again.',
+      },
+    })).toThrow();
+    expect(() => parseRendererResult({
+      ok: false,
+      error: {
+        code: 'ASSET_NOT_FOUND',
+        message: 'The requested asset could not be found.',
+        currentEntityVersion: 7,
+      },
+    })).toThrow();
+  });
+});
+
+describe('renderer lifecycle events', () => {
+  it('accepts stable lifecycle events and rejects unknown data', () => {
+    expect(
+      parseRendererLifecycleEvent({ type: 'library.opening', operation: 'create' }),
+    ).toEqual({ type: 'library.opening', operation: 'create' });
+    expect(
+      parseRendererLifecycleEvent({ type: 'library.opening', operation: 'open-eagle' }),
+    ).toEqual({ type: 'library.opening', operation: 'open-eagle' });
+    expect(
+      parseRendererLifecycleEvent({ type: 'library.opening', operation: 'open-billfish' }),
+    ).toEqual({ type: 'library.opening', operation: 'open-billfish' });
+    expect(parseRendererLifecycleEvent({
+      type: 'library.opened',
+      source: 'mcp',
+      library: {
+        libraryId: 'mcp-library',
+        displayName: 'MCP Library',
+        displayPath: '/libraries/mcp-library',
+      },
+    })).toMatchObject({ type: 'library.opened', source: 'mcp' });
+    expect(parseRendererLifecycleEvent({
+      type: 'library.opened',
+      source: 'replacement-restore',
+      library: {
+        libraryId: 'restored-library',
+        displayName: 'Restored',
+        displayPath: '/libraries/restored',
+      },
+    })).toMatchObject({ type: 'library.opened', source: 'replacement-restore' });
+    expect(parseRendererLifecycleEvent({
+      type: 'library.opening',
+      operation: 'open',
+      source: 'mcp',
+    })).toEqual({ type: 'library.opening', operation: 'open', source: 'mcp' });
+    expect(parseRendererLifecycleEvent({
+      type: 'library.closed',
+      libraryId: 'mcp-library',
+      source: 'mcp',
+    })).toEqual({ type: 'library.closed', libraryId: 'mcp-library', source: 'mcp' });
+    expect(() =>
+      parseRendererLifecycleEvent({ type: 'library.opened', libraryPath: '/private/path' }),
+    ).toThrow();
+  });
+});
+
+describe('renderer library recovery boundary', () => {
+  it('exposes report availability without leaking the worker report path', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'library.opened',
+      library: {
+        libraryId: 'recovered-library',
+        displayName: 'Recovered library',
+        displayPath: '/libraries/recovered-library',
+        recovery: { mode: 'rescue', reportAvailable: true },
+      },
+    })).toMatchObject({
+      type: 'library.opened',
+      library: { recovery: { mode: 'rescue', reportAvailable: true } },
+    });
+    expect(() => parseRendererResult({
+      ok: true,
+      type: 'library.opened',
+      library: {
+        libraryId: 'recovered-library',
+        displayName: 'Recovered library',
+        displayPath: '/libraries/recovered-library',
+        recovery: { mode: 'rescue', reportPath: '/private/recovery-report.json' },
+      },
+    })).toThrow();
+  });
+});
+
+describe('external import progress events', () => {
+  it('accepts determinate non-cancellable progress updates', () => {
+    expect(parseProgressEvent({
+      type: 'import.progress',
+      importId: 'eagle-import-01',
+      phase: 'copy',
+      cancelable: false,
+      sequence: 12,
+      filesProcessed: 32,
+      totalFiles: 385,
+      bytesProcessed: 1024,
+      totalBytes: 2048,
+    })).toMatchObject({
+      phase: 'copy',
+      cancelable: false,
+      sequence: 12,
+      filesProcessed: 32,
+      totalFiles: 385,
+    });
+  });
+
+  it('accepts bulk delete progress updates', () => {
+    expect(parseProgressEvent({
+      type: 'delete.progress',
+      operationId: 'delete-01',
+      libraryId: 'library-01',
+      kind: 'disk',
+      phase: 'run',
+      cancelable: true,
+      filesProcessed: 12,
+      totalFiles: 80,
+    })).toMatchObject({
+      kind: 'disk',
+      cancelable: true,
+      filesProcessed: 12,
+      totalFiles: 80,
+    });
+    expect(parseProgressEvent({
+      type: 'delete.progress',
+      operationId: 'delete-01',
+      libraryId: 'library-01',
+      kind: 'disk',
+      phase: 'cancelled',
+      filesProcessed: 5,
+      totalFiles: 80,
+    }).phase).toBe('cancelled');
+  });
+});
+
+describe('renderer-safe import plans', () => {
+  it('rejects examples containing source paths', () => {
+    expect(() => importConflictPlanSchema.parse({
+      importId: 'import-01',
+      fileCount: 1,
+      totalBytes: 100,
+      suspectedDuplicateCount: 1,
+      libraryDuplicateCount: 0,
+      nameConflictCount: 0,
+      examples: [{ displayName: '/private/source.png', kind: 'suspected-duplicate' }],
+    })).toThrow();
+  });
+});
+
+describe('background asset change events', () => {
+  it('accepts semantic summaries and rejects paths or asset payloads', () => {
+    expect(parseAssetChangeEvent({
+      type: 'asset.changed',
+      libraryId: 'library-01',
+      changedCount: 3,
+      missingCount: 1,
+    })).toEqual({
+      type: 'asset.changed',
+      libraryId: 'library-01',
+      changedCount: 3,
+      missingCount: 1,
+    });
+    expect(parseAssetChangeEvent({
+      type: 'asset.changed',
+      libraryId: 'library-01',
+      changedCount: 1,
+      missingCount: 0,
+      source: 'content-replace',
+    })).toEqual({
+      type: 'asset.changed',
+      libraryId: 'library-01',
+      changedCount: 1,
+      missingCount: 0,
+      source: 'content-replace',
+    });
+    expect(parseAssetChangeEvent({
+      type: 'asset.changed',
+      libraryId: 'library-01',
+      changedCount: 1,
+      missingCount: 0,
+      source: 'sync',
+    })).toEqual({
+      type: 'asset.changed',
+      libraryId: 'library-01',
+      changedCount: 1,
+      missingCount: 0,
+      source: 'sync',
+    });
+    expect(() => parseAssetChangeEvent({
+      type: 'asset.changed',
+      libraryId: 'library-01',
+      changedCount: 1,
+      missingCount: 0,
+      sourcePath: '/private/source.png',
+    })).toThrow();
+  });
+});
+
+describe('batch content replacement protocol', () => {
+  it('keeps large content behind opaque staging tokens and accepts one Worker batch', () => {
+    const staged = parseWorkerRequest({
+      requestId: '11111111-1111-4111-8111-111111111111',
+      command: {
+        type: 'asset.content.stage',
+        libraryId: '22222222-2222-4222-8222-222222222222',
+        assetId: '33333333-3333-4333-8333-333333333333',
+        dataBase64: 'AQID',
+        complete: true,
+      },
+    });
+    expect(staged.command).toMatchObject({
+      type: 'asset.content.stage',
+      dataBase64: 'AQID',
+    });
+    expect(() => parseWorkerRequest({
+      requestId: '11111111-1111-4111-8111-111111111111',
+      command: {
+        type: 'asset.content.replace-batch',
+        libraryId: '22222222-2222-4222-8222-222222222222',
+        items: [{
+          assetId: '33333333-3333-4333-8333-333333333333',
+          stagingToken: '44444444-4444-4444-8444-444444444444',
+          expectedRevisionId: '55555555-5555-4555-8555-555555555555',
+        }],
+      },
+    })).not.toThrow();
+    expect(parseWorkerResponse({
+      requestId: '11111111-1111-4111-8111-111111111111',
+      result: {
+        ok: true,
+        type: 'asset.content.batch-replaced',
+        operationId: '66666666-6666-4666-8666-666666666666',
+        items: [{
+          assetId: '33333333-3333-4333-8333-333333333333',
+          revisionId: '77777777-7777-4777-8777-777777777777',
+          byteSize: 3,
+        }],
+      },
+    })).toMatchObject({
+      result: { type: 'asset.content.batch-replaced' },
+    });
+  });
+});
+
+describe('model companion protocol (slice A, WorldlineBox-fu2i)', () => {
+  it('accepts model.resolve-companions as a read-only worker command', () => {
+    expect(parseWorkerRequest({
+      requestId: 'companions-01',
+      command: {
+        type: 'model.resolve-companions',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+      },
+    }).command).toEqual({
+      type: 'model.resolve-companions',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    });
+    // Slice C (WorldlineBox-qvc6) opened the renderer request surface for the 3D
+    // viewer; the request maps 1:1 onto the worker command with no extra
+    // fields (still no paths, no arbitrary input).
+    expect(parseRendererRequest({
+      type: 'model.resolve-companions.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    })).toEqual({
+      type: 'model.resolve-companions.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    });
+  });
+
+  it('validates the companions payload shape and path safety', () => {
+    expect(parseWorkerResponse({
+      requestId: 'companions-01',
+      result: {
+        ok: true,
+        type: 'model.companions',
+        assetId: 'asset-01',
+        companions: [
+          { relativeFilePath: 'props/robot/textures/albedo.png', assetId: 'asset-02', revisionId: 'rev-02', extension: '.png' },
+          { relativeFilePath: 'props/robot/robot.mtl', assetId: 'asset-03', revisionId: 'rev-03', extension: '.mtl' },
+        ],
+      },
+    })).toMatchObject({
+      result: { type: 'model.companions', assetId: 'asset-01' },
+    });
+
+    // No absolute paths, no backslash separators, no dot segments: the
+    // portable-relative-path schema rejects traversal before any consumer sees
+    // the payload.
+    for (const badPath of [
+      '/etc/passwd',
+      'C:\\models\\x.png',
+      '../outside.png',
+      'props//robot.png',
+      '',
+    ]) {
+      expect(() => parseWorkerResponse({
+        requestId: 'companions-bad',
+        result: {
+          ok: true,
+          type: 'model.companions',
+          assetId: 'asset-01',
+          companions: [{ relativeFilePath: badPath, assetId: 'asset-02', extension: '.png' }],
+        },
+      })).toThrow();
+    }
+  });
+
+  it('keeps model preview resolutions out of the other/unsupported branch', () => {
+    expect(parseWorkerResponse({
+      requestId: 'preview-01',
+      result: {
+        ok: true,
+        type: 'media.preview-artifact',
+        assetId: 'asset-01',
+        mediaType: 'model',
+        status: 'ready',
+        kind: 'thumbnail',
+        mimeType: 'model/fbx',
+        playbackMode: 'source',
+        sourceRevisionId: 'revision-01',
+        sourceMimeType: 'model/fbx',
+      },
+    })).toMatchObject({
+      result: { mediaType: 'model', status: 'ready' },
+    });
+    expect(() => parseWorkerResponse({
+      requestId: 'preview-bad',
+      result: {
+        ok: true,
+        type: 'media.preview-artifact',
+        assetId: 'asset-01',
+        mediaType: 'model',
+        status: 'ready',
+        kind: 'thumbnail',
+        mimeType: 'model/fbx',
+        playbackMode: 'source',
+        sourceRevisionId: 'revision-01',
+        sourceMimeType: 'model/fbx',
+        playbackToken: 'must-not-exist',
+      },
+    })).toThrow();
+  });
+
+  it('accepts a thumbnail no-op result without an artifact (model has no raster generator)', () => {
+    expect(parseRendererResult({
+      ok: true,
+      type: 'asset.thumbnail.generated',
+      assetId: 'asset-01',
+    })).toMatchObject({ type: 'asset.thumbnail.generated' });
+    expect(parseWorkerResponse({
+      requestId: 'thumb-01',
+      result: {
+        ok: true,
+        type: 'media.thumbnail.generated',
+        assetId: 'asset-01',
+      },
+    })).toMatchObject({ result: { type: 'media.thumbnail.generated' } });
+  });
+});
+
+describe('model convert-fbx protocol (slice B, WorldlineBox-5ygi)', () => {
+  it('accepts model.convert-fbx as a worker command (not forgeable by renderer)', () => {
+    expect(parseWorkerRequest({
+      requestId: 'convert-01',
+      command: {
+        type: 'model.convert-fbx',
+        libraryId: 'library-01',
+        assetId: 'asset-01',
+      },
+    }).command).toEqual({
+      type: 'model.convert-fbx',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    });
+    // Slice C (WorldlineBox-qvc6) drives the conversion from the 3D viewer; the
+    // renderer request surface is open but carries only library/asset ids.
+    expect(parseRendererRequest({
+      type: 'model.convert-fbx.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    })).toEqual({
+      type: 'model.convert-fbx.request',
+      libraryId: 'library-01',
+      assetId: 'asset-01',
+    });
+  });
+
+  it('validates ready and failed conversion results', () => {
+    expect(parseWorkerResponse({
+      requestId: 'convert-01',
+      result: {
+        ok: true,
+        type: 'model.convert-fbx.done',
+        assetId: 'asset-01',
+        status: 'ready',
+        glbArtifactId: 'artifact-01',
+        glbRelativePath: 'artifact-01.model_glb',
+        stats: {
+          triangles: 12,
+          vertices: 24,
+          meshes: 1,
+          instances: 1,
+          materials: 0,
+          textures: 0,
+          missingTextures: 0,
+          sourceBytes: 11020,
+          glbBytes: 1580,
+          sourceUnitMeters: 1,
+        },
+        missingTextures: [],
+        warnings: [],
+      },
+    })).toMatchObject({
+      result: { type: 'model.convert-fbx.done', status: 'ready', glbArtifactId: 'artifact-01' },
+    });
+
+    expect(parseWorkerResponse({
+      requestId: 'convert-02',
+      result: {
+        ok: true,
+        type: 'model.convert-fbx.done',
+        assetId: 'asset-01',
+        status: 'failed',
+        errorCode: 'FBX_NOT_FBX',
+      },
+    })).toMatchObject({
+      result: { type: 'model.convert-fbx.done', status: 'failed', errorCode: 'FBX_NOT_FBX' },
+    });
+
+    // Unknown error codes are rejected so the fallback router never sees typos.
+    expect(() => parseWorkerResponse({
+      requestId: 'convert-03',
+      result: {
+        ok: true,
+        type: 'model.convert-fbx.done',
+        assetId: 'asset-01',
+        status: 'failed',
+        errorCode: 'FBX_BROKE',
+      },
+    })).toThrow();
+  });
+});
+
+describe('publicReasonFromError', () => {
+  it('maps EBUSY to FILE_BUSY (folder/file held open)', () => {
+    expect(
+      publicReasonFromError(Object.assign(new Error('busy'), { code: 'EBUSY' })),
+    ).toBe('FILE_BUSY');
+  });
+
+  it('maps EPERM to FILE_BUSY on Windows (lock/delete-pending, not ACL)', () => {
+    expect(
+      publicReasonFromError(Object.assign(new Error('denied'), { code: 'EPERM' })),
+    ).toBe(process.platform === 'win32' ? 'FILE_BUSY' : 'PERMISSION_DENIED');
+  });
+
+  it('maps EACCES to PERMISSION_DENIED on every platform', () => {
+    expect(
+      publicReasonFromError(Object.assign(new Error('denied'), { code: 'EACCES' })),
+    ).toBe('PERMISSION_DENIED');
+  });
+
+  it('maps ENOTEMPTY to FILE_BUSY on Windows (lingering child handle)', () => {
+    expect(
+      publicReasonFromError(Object.assign(new Error('not empty'), { code: 'ENOTEMPTY' })),
+    ).toBe(process.platform === 'win32' ? 'FILE_BUSY' : 'IO_ERROR');
+  });
+
+  it('walks the cause chain of a wrapped LibraryServiceError', () => {
+    const wrapped = Object.assign(new Error('LIBRARY_NOT_WRITABLE'), {
+      cause: Object.assign(new Error('locked'), { code: 'EPERM' }),
+    });
+    expect(publicReasonFromError(wrapped)).toBe(
+      process.platform === 'win32' ? 'FILE_BUSY' : 'PERMISSION_DENIED',
+    );
+  });
+});
+
+describe('sync open-remote-libraries protocol (WorldlineBox-xffq)', () => {
+  it('accepts the list-remote-libraries renderer request and worker command', () => {
+    expect(parseRendererRequest({
+      type: 'sync.list-remote-libraries.request',
+      serverId: 'server-01',
+    })).toEqual({ type: 'sync.list-remote-libraries.request', serverId: 'server-01' });
+
+    expect(parseWorkerRequest({
+      requestId: 'list-01',
+      command: {
+        type: 'sync.list-remote-libraries',
+        baseUrl: 'http://127.0.0.1:9000/dav/',
+        username: 'u',
+        password: 'p',
+      },
+    }).command).toEqual({
+      type: 'sync.list-remote-libraries',
+      baseUrl: 'http://127.0.0.1:9000/dav/',
+      username: 'u',
+      password: 'p',
+    });
+  });
+
+  it('validates the remote-libraries response on both worker and renderer surfaces', () => {
+    const payload = {
+      ok: true,
+      type: 'sync.remote-libraries',
+      remoteLibraries: [
+        { libraryId: 'lib-01', displayName: '远端库', directoryName: '远端库' },
+      ],
+    } as const;
+    expect(parseWorkerResponse({ requestId: 'r', result: payload })).toMatchObject({ result: { type: 'sync.remote-libraries' } });
+    expect(parseRendererResult(payload)).toMatchObject({ type: 'sync.remote-libraries' });
+  });
+
+  it('accepts the open-remote-library request and command', () => {
+    expect(parseRendererRequest({
+      type: 'sync.open-remote-library.request',
+      serverId: 'server-01',
+      libraryId: 'lib-01',
+      displayName: '远端库',
+      directoryName: '远端库',
+    })).toMatchObject({ type: 'sync.open-remote-library.request' });
+
+    expect(parseWorkerRequest({
+      requestId: 'open-01',
+      command: {
+        type: 'sync.open-remote-library',
+        baseUrl: 'http://127.0.0.1:9000/dav/',
+        libraryId: 'lib-01',
+        displayName: '远端库',
+        directoryName: '远端库',
+        selectedParentPath: 'C:/Libraries',
+      },
+    }).command).toEqual({
+      type: 'sync.open-remote-library',
+      baseUrl: 'http://127.0.0.1:9000/dav/',
+      libraryId: 'lib-01',
+      displayName: '远端库',
+      directoryName: '远端库',
+      selectedParentPath: 'C:/Libraries',
+    });
+  });
+});
+
+describe('library deletion deferred-cleanup protocol (WorldlineBox-65d837)', () => {
+  it('parses a worker deletion carrying a pending aside path', () => {
+    const response = parseWorkerResponse({
+      requestId: 'req-01',
+      result: {
+        ok: true,
+        type: 'library.deleted',
+        libraryId: 'library-01',
+        displayName: 'Art',
+        libraryPath: 'C:/media/Art',
+        pendingAsidePath: 'C:/media/Art.del-123',
+      },
+    });
+    expect(response.result).toMatchObject({ ok: true, type: 'library.deleted' });
+    expect((response.result as { pendingAsidePath?: string }).pendingAsidePath).toBe('C:/media/Art.del-123');
+  });
+
+  it('parses a fully cleaned worker deletion without a pending aside', () => {
+    const response = parseWorkerResponse({
+      requestId: 'req-02',
+      result: {
+        ok: true,
+        type: 'library.deleted',
+        libraryId: 'library-01',
+        displayName: 'Art',
+        libraryPath: 'C:/media/Art',
+      },
+    });
+    expect(response.result).toMatchObject({ ok: true, type: 'library.deleted' });
+    expect((response.result as { pendingAsidePath?: string }).pendingAsidePath).toBe(undefined);
+  });
+
+  it('parses the renderer-facing pendingCleanup flag', () => {
+    const result = parseRendererResult({
+      ok: true,
+      type: 'library.deleted',
+      libraryId: 'library-01',
+      displayName: 'Art',
+      pendingCleanup: true,
+    });
+    expect((result as { pendingCleanup?: boolean }).pendingCleanup).toBe(true);
+  });
+
+  it('parses the pending cleanup command and rejects an empty path list', () => {
+    expect(parseWorkerRequest({
+      requestId: 'cleanup-01',
+      command: {
+        type: 'system.cleanup-pending-deletions',
+        asidePaths: ['C:/media/Art.del-123'],
+      },
+    }).command).toEqual({
+      type: 'system.cleanup-pending-deletions',
+      asidePaths: ['C:/media/Art.del-123'],
+    });
+    expect(() =>
+      parseWorkerRequest({
+        requestId: 'cleanup-02',
+        command: { type: 'system.cleanup-pending-deletions', asidePaths: [] },
+      }),
+    ).toThrow();
+  });
+
+  it('accepts asset.list by 151 ids so create-sequence can resolve a paged-out folder', () => {
+    const assetIds = Array.from({ length: 151 }, (_, index) => `asset-${index + 1}`);
+    expect(
+      parseWorkerRequest({
+        requestId: 'list-by-ids-01',
+        command: {
+          type: 'asset.list',
+          libraryId: 'library-01',
+          recursive: true,
+          assetIds,
+        },
+      }).command,
+    ).toEqual({
+      type: 'asset.list',
+      libraryId: 'library-01',
+      recursive: true,
+      assetIds,
+    });
+  });
+});

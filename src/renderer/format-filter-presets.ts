@@ -1,0 +1,68 @@
+// REQ-FILTER-025 follow-up (WorldlineBox-1d4w): the format filter quick-chips are
+// derived from the product format registries instead of a hardcoded list, so
+// every supported format (images incl. RAW, video, audio, documents, 3D models) is
+// clickable without touching this module when the registry grows.
+//
+// The special `text` token (WorldlineBox-4l7) is NOT an extension — the worker
+// expands it to TEXT_EXTENSIONS when building the query — so it stays a
+// standalone chip rendered after the registry groups.
+import {
+  IMAGE_EXTENSIONS,
+  MODEL_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+  DOCUMENT_EXTENSIONS,
+  FONT_EXTENSIONS,
+} from "../shared/media-formats";
+import { AUDIO_EXTENSION_NAMES } from "../shared/audio-media";
+
+export interface FormatFilterGroup {
+  /** i18n key for the group label (filter.formatGroup*). */
+  labelKey: string;
+  /** Dotless extension tokens as they appear in the comma field. */
+  extensions: readonly string[];
+}
+
+function dotless(extensions: readonly string[]): string[] {
+  return extensions.map((extension) => extension.slice(1));
+}
+
+/** Formats shown in the catch-all filter group. */
+export const OTHER_FORMAT_EXTENSIONS = ["html", "hdf", "htm"] as const;
+const otherFormatExtensionSet = new Set<string>(OTHER_FORMAT_EXTENSIONS);
+const documentFilterExtensions = dotless(DOCUMENT_EXTENSIONS).filter(
+  (extension) => !otherFormatExtensionSet.has(extension),
+);
+
+export const FORMAT_FILTER_GROUPS: readonly FormatFilterGroup[] = [
+  {
+    labelKey: "filter.formatGroupImage",
+    extensions: dotless(IMAGE_EXTENSIONS),
+  },
+  {
+    labelKey: "filter.formatGroupVideo",
+    extensions: dotless(VIDEO_EXTENSIONS),
+  },
+  {
+    labelKey: "filter.formatGroupAudio",
+    extensions: AUDIO_EXTENSION_NAMES,
+  },
+  {
+    labelKey: "filter.formatGroupModel",
+    extensions: dotless(MODEL_EXTENSIONS),
+  },
+  {
+    labelKey: "filter.formatGroupDocument",
+    extensions: documentFilterExtensions,
+  },
+  {
+    // WorldlineBox-485aeb: fonts are their own category instead of falling into 其他.
+    labelKey: "filter.formatGroupFont",
+    extensions: dotless(FONT_EXTENSIONS),
+  },
+];
+
+/** The non-extension token chip rendered after the registry groups. */
+export const FORMAT_TEXT_TOKEN = "text" as const;
+
+/** Checkbox token for types WorldlineBox does not classify. */
+export const FORMAT_UNKNOWN_TOKEN = "unknown" as const;

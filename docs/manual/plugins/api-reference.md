@@ -1,0 +1,523 @@
+# WorldlineBox 插件 API 参考
+
+本参考对应当前 Plugin API `1`、Manifest `1`。它描述可发布插件可依赖的 schema 和 Guest API；实现仍在开发态，
+未列出的字段和方法不应被插件使用。restricted 与 unrestricted 共享同一套 `worldlinebox.*` API；后者只是额外拥有 Node 能力。
+
+## 1. 入口上下文
+
+```ts
+export async function setup(context: PluginSetupContext): Promise<void>;
+export async function dispose(reason: unknown): Promise<void>;
+```
+
+`context` 的稳定字段：
+
+```ts
+interface PluginSetupContext {
+  pluginId: string;
+  pluginInstanceId: string;
+  installationScope: 'user' | 'library';
+  instanceScope: { kind: 'global' } | { kind: 'library' };
+  worldlinebox: WorldlineBoxPluginApi;
+  subscriptions: { add(value: (() => void) | { dispose(): void }): void };
+  signal: AbortSignal;
+}
+```
+
+`subscriptions` 由 Host 在 dispose 时逆序清理；`signal` 在实例停用、关库、崩溃隔离或 deadline 时 abort。插件必须释放自己的
+Worker、模型、外部进程和循环，`dispose` 必须幂等。Contribution 目前由 Manifest 声明，本文不提供动态 Registrar。
+
+## 2. Manifest schema
+
+```ts
+interface PluginManifest {
+  manifestVersion: 1;
+  id: string;
+  version: string;                 // SemVer
+  name: string;
+  description: string;
+  author: string;
+  license: string;
+  repository?: `https://github.com/${string}/${string}`;
+  engines: { worldlinebox: string; pluginApi: 1 };
+  runtime: PluginRuntime;
+  ui?: { entry: string };
+  permissions: PluginPermission[];
+  contributes: PluginContributes;
+  mcp?: { expose: string[] };
+}
+
+type PluginRuntime =
+  | { mode: 'restricted'; entry: string; instanceScope?: 'global' | 'library' }
+  | {
+      mode: 'unrestricted'; entry: string;
+      instanceScope?: 'global' | 'library';
+      nativeModules?: { platform: 'darwin' | 'win32' | 'linux'; arch: 'arm64' | 'x64' | 'ia32'; nodeAbi: number }[];
+    };
+```
+
+规范运行模式只有 `restricted` 和 `unrestricted`；当前读取时兼容旧别名 `standard`→`restricted`、`trusted`→`unrestricted`，
+新插件应只写规范值。ID 长度 3–64，local ID 通常 1–64；包内路径必须是相对路径。`permissions` 最多 64 个且不能重复。
+
+### 权限枚举
+
+当前 `pluginPermissionSchema` 的完整枚举为：
+
+```text
+library.read  history.write  folder.read  folder.write  asset.read  metadata.read
+tag.read  collection.read  job.read  metadata.write  tag.write
+collection.write  ai.enqueue  job.manage  file.import  file.move
+file.rename  trash.write  clipboard.read  clipboard.write  content.read
+content.write  net.fetch  storage.read  storage.write  data.files
+secrets.read  secrets.write  ui.workspace  ui.inspector  ui.viewer
+ui.settings  ui.notify  ui.dialogs  media.binaries  input.shortcut  input.capture.viewer
+input.capture.application  hook.blocking  preview.provider
+thumbnail.provider  metadata.extractor  import.provider export.provider
+ai.provider  derived-field.provider  search.provider  theme.trusted-css
+```
+
+权限是 Gateway/Host 的能力门槛和风险披露。对 unrestricted 的直接 Node 行为不能形成强制拦截。
+
+## 3. Contribution schema
+
+```ts
+interface PluginContributes {
+  commands?: CommandContribution[];       // max 256
+  menus?: Record<string, MenuItem[]>;     // each max 256
+  toolbar?: ToolbarContribution[];        // max 64
+  inspector?: InspectorContribution[];   // max 64
+  viewerActions?: ViewerActionContribution[];
+  shortcuts?: ShortcutContribution[];
+  views?: ViewContribution[];             // max 128
+  settings?: SettingContribution[];       // max 128
+  hooks?: HookContribution[];             // max 128
+  jobs?: JobContribution[];               // max 128
+  providers?: ProviderContribution[];     // max 128
+  themes?: ThemeContribution[];           // max 8
+}
+
+interface CommandContribution {
+  id: string;
+  title: string;
+  mcp?: { export: true };
+  when?: ContextExpression;
+  enablement?: ContextExpression;
+  checked?: ContextExpression;
+}
+
+interface ToolbarContribution { id: string; command: string; title?: string }
+interface InspectorContribution { id: string; command: string; title?: string }
+interface ViewerActionContribution { id: string; command: string; title?: string }
+interface ShortcutContribution { id: string; command: string; accelerator: string }
+interface ViewContribution {
+  id: string; title: string;
+  location: 'sidebar' | 'workspace' | 'inspector' | 'viewer' | 'settings';
+  entry?: string;
+}
+
+interface SettingContribution {
+  id: string;
+  title: string;
+  description?: string;
+  type: 'boolean' | 'string' | 'number' | 'slider' | 'select';
+  default?: boolean | number | string;
+  minimum?: number;
+  maximum?: number;
+  step?: number;                       // slider/number, > 0
+  options?: Array<{ value: string; label: string }>; // select only
+}
+
+interface ThemeContribution {
+  id: string;
+  version: 1;
+  light?: ThemeMode;
+  dark?: ThemeMode;
+}
+
+interface ThemeMode {
+  references?: Record<string, ThemeReference>;
+  tokens?: Record<string, ThemeColor>;
+}
+
+type ThemeReference =
+  | 'surface.canvas' | 'surface.pane' | 'surface.raised' | 'surface.overlay'
+  | 'content.primary' | 'content.secondary' | 'content.tertiary'
+  | 'border.divider' | 'border.control' | 'border.focus'
+  | 'action.accent' | 'state.info' | 'state.success' | 'state.warning' | 'state.error';
+
+type ThemeColor = string; // Host schema accepts only bounded color literals.
+```
+
+所有这些 Contribution 的 ID 在插件内共享同一命名空间，必须唯一。菜单中的 command 必须引用已声明命令。
+
+## 4. 菜单、条件和上下文
+
+Manifest 菜单的 key 当前是 `asset`、`folder`、`collection`、`workspace`：
+
+```ts
+interface MenuItem {
+  command?: string;
+  id?: string;                         // submenu 必填，command item 禁止
+  title?: string;                      // submenu 必填
+  icon?: string;                        // Host 内置图标名
+  group?: string;
+  before?: string;
+  after?: string;
+  first?: boolean;
+  last?: boolean;
+  when?: ContextExpression;
+  enablement?: ContextExpression;
+  checked?: ContextExpression;
+  submenu?: MenuItem[];
+}
+```
+
+一项必须恰好是 command 或 submenu；`before`/`after` 只能选一个；`first`/`last` 不能同时为 true；子菜单最大三级。Host 保留树形结构，
+用稳定 ID、group 和相对锚点求确定顺序；缺少锚点降级到 group 末尾，循环只拒绝相关边。
+
+`ContextExpression` 是最多 4096 字符的只读表达式，支持：
+
+```text
+&&  ||  !  ==  !=  in  intersects  matches  ( )  [ ... ]
+```
+
+`when=false` 不渲染，`enablement=false` 置灰，`checked` 控制选中态。`matches` 支持通配和受限正则。表达式不能执行 JS、RPC、I/O
+或 Domain API。当前没有公开的 Manifest Predicate Resolver 字段；不要自行添加。
+
+### Theme Contract v1
+
+`themes` 是版本化的语义主题契约，而不是任意 CSS 注入点。每个 mode 最多声明 32 个 `references` 和 32 个 `tokens`；名称必须是小写的
+插件本地名（例如 `accent`、`badge`），值只能是有限颜色值。Host 会将引用解析为 iframe 隔离变量：
+
+```text
+references.accent  -> --worldlinebox-plugin-ref-accent
+tokens.badge       -> --worldlinebox-plugin-token-badge
+```
+
+Host 自己的语义变量以 `--ui-*` 形式提供给 iframe，但它们属于只读公共输出；插件不得覆盖这些变量，也不得写入任意 `--xxx` 名称。
+主题变化通过下列 Host 消息发送：
+
+```ts
+interface PluginUiThemeChanged {
+  type: 'plugin-ui.theme-changed';
+  contributionId: string;
+  instanceId: string;
+  theme: 'light' | 'dark';
+  contrast: 'normal' | 'high';
+  revision: number;
+  tokens: Record<string, string>;
+}
+```
+
+插件 UI 应在 `revision` 变大时应用消息。`contrast` 当前由 Host 保留为契约字段，正常主题为 `normal`；不要根据旧的
+`plugin-ui.theme` 消息或 `--accent`/`--canvas` 变量编写新代码。
+
+Host 外观设置还支持 `vscode-dark`、`worldlinebox-dark`、`worldlinebox-light`、`soft-light` 四套 profile，以及应用背景颜色、
+本地图片和 overlay opacity。它们是 Host 设置，不属于插件 API；插件只能读取 theme bridge 提供的公开语义 token。
+
+### Contribution Context
+
+Host 发布带 `contextId`、`revision` 的有界快照：
+
+```ts
+interface PluginContributionContext {
+  contextId: string; revision: number;
+  app: { platform: string; locale: string; theme: 'light' | 'dark' | 'system'; busy: boolean };
+  surface: { id: string; kind: string };
+  window: { windowId: string };
+  library: { id?: string; open: boolean; writable: boolean; offline: boolean };
+  selection: {
+    ref?: string; count: number; primaryId?: string; assetCount: number; folderCount: number;
+    mixed: boolean; extensions: string[]; mimeTypes: string[]; mediaKinds: string[];
+    summary: { managedCount: number; unmanagedCount: number; availableCount: number; unavailableCount: number; deletedCount: number; hasDeleted: boolean; hasUnavailable: boolean };
+    hasDeleted: boolean; hasUnavailable: boolean;
+  };
+  browse: { folderId?: string; collectionId?: string; tagId?: string; search?: string; filter?: string };
+  viewer: { active: boolean; assetId?: string; extension?: string; mimeType?: string; mediaKind?: string; fullscreen: boolean };
+}
+```
+
+它只用于 UI 条件，不是资产对象，也不是功能 API。`selection.ref` 是 Host 管理的引用；完整对象请调用 `worldlinebox.assets`。
+
+### Invocation Context
+
+命令触发时 Host 冻结目标：
+
+```ts
+interface PluginInvocationContext {
+  contextId: string; revision: number; libraryId: string;
+  app?: { locale: string };
+  selection: {
+    ref?: string; refs: string[]; assetIds: string[]; folderIds: string[]; collectionIds: string[];
+    assets?: Array<{
+      id: string; name: string; relativeFilePath: string; mediaType: string; byteSize: number;
+      durationMs?: number | null; currentRevisionId?: string; folderId?: string | null;
+      locationKind: 'managed' | 'linked'; linkedFolderId?: string | null;
+    }>;
+  };
+  browse: { folderId?: string; collectionId?: string; tagId?: string; search?: string; filter?: string };
+  viewer: { active: boolean; assetId?: string };
+}
+```
+
+异步命令必须使用这份快照，不要在等待之后读取新的 UI 选择。命令 handler 的 `context.invocation` 提供这份快照；顶层
+`targetLibraryId` 与 ID 数组仍保留为便捷字段。`collectionIds` 只表示触发时的合集目标，合集浏览范围仍在 `invocation.browse.collectionId`。
+菜单、工具栏、Inspector、查看页会带上当前选中资产的有界快照（`selection.assets`，最多 256 项，只有库内相对路径，没有绝对路径）。
+快照包含 `currentRevisionId` 和 `folderId`，替换原资产和导入到同一文件夹时不要再 `assets.list` 去补。插件要用这份快照识别「选中了谁」和媒体类型，不要为当前选择再调用 `assets.list`。只有 MCP/脚本等只给了 ID、没有快照时才按 `assetIds` 回查。
+
+#### 写回所需的最小选中快照
+
+Host 必须为 `invocation.selection.assets` 填充以下字段。插件应直接使用这份触发时快照，不要调用
+`assets.list` 重新发现当前选择：
+
+| 字段 | 约束与用途 |
+| --- | --- |
+| `id` | 稳定资产 ID |
+| `name` | 当前文件名/资产名称 |
+| `relativeFilePath` | 资源库内相对 POSIX 路径，绝不能是绝对路径 |
+| `mediaType` | `image`、`video`、`audio` 等媒体类型 |
+| `byteSize` | 当前内容字节数 |
+| `currentRevisionId` | 当前内容修订 ID；写回时作为 `replaceContent` 的 `expectedRevisionId` |
+| `locationKind` | `managed` 或 `linked` |
+
+如果 Host 仍因兼容旧版本而省略 `currentRevisionId`，插件不得猜测或回退到另一项资产；应刷新快照后再执行写回。
+
+## 5. Guest API
+
+以下为当前生成 SDK 的公共面，所有方法均返回 Promise 或受约束的 AsyncIterable；具体领域输入/输出继续服从 Gateway schema。
+
+### `worldlinebox.assets`
+
+```ts
+worldlinebox.assets.search({ query: string | null, limit?: number, offset?: number }): Promise<unknown>
+worldlinebox.assets.readContent(assetId, { maxBytes?: number }): Promise<{
+  assetId: string; revisionId: string; byteSize: number; dataBase64: string;
+  truncated: boolean; mimeType: string | null;
+}>
+worldlinebox.assets.replaceContent(assetId, dataBase64, options?): Promise<{
+  assetId: string; revisionId: string; byteSize: number;
+}>
+worldlinebox.assets.stageContent(assetId, dataBase64, options?): Promise<{
+  assetId: string; stagingToken: string; byteSize: number; complete: boolean;
+}>
+worldlinebox.assets.replaceContentBatch(items): Promise<{ operationId: string; items: unknown[] }>
+```
+
+`readContent` 有字节上限并可能返回 `truncated`；`replaceContent` 接受托管（managed）与链接（linked）可用资产，须 `content.write`，并经过计划确认。
+批量替换使用 staging 和 `expectedRevisionId` 做统一预检，不能假定多文件系统原子性。
+
+通过 Automation Gateway 暴露的公共分页列表 API（包括 `folder.list`、`asset.list` 和资产搜索）的 `limit` 都是正整数，默认值由 API
+决定，最大值为 **200**（包含 200）；传入 201 或更大值会得到 `AUTOMATION_INVALID_REQUEST`。插件应按页读取结果，不要把 256 当作合法页大小。
+`assets.list({ recursive: true })` 才会包含文件夹内的资产；省略 `recursive` 时只返回库根下的资产。已知一组资产 ID 且 **invocation 没有快照** 时，用 `assets.list({ assetIds, limit })` 按 ID 查询（每页最多 200 个）。当前选中项必须读 `invocation.selection.assets` / `assetIds`，不要为找几个选中 ID 去递归扫全库。Guest 页投影提供 `id`、`name`、`mediaType`、`mimeType`、`byteSize`、`currentRevisionId`、库内 `relativeFilePath`（POSIX 相对路径）；绝对路径、盘符路径和 `..` 段会被清空，不含库绝对路径。
+
+权限是独立的门槛：例如读取 extracted metadata 需要 `metadata.read`，不能因为已经拥有 `asset.read` 或 `content.read` 就假定
+`asset.extracted-metadata.get` 一定可用。权限不足应作为结构化失败处理；插件可以在有权限时读取 metadata，否则用已声明的 content 能力自行解析。
+
+其他领域面与 Automation Gateway 对齐，包括 folders、tags、collections、metadata、library、files、clipboard、secrets、net、ai。
+使用哪个命令必须同时满足对应 permission；当前实现不向插件提供任意 SQL 或库绝对路径读写。
+
+### `worldlinebox.forLibrary`
+
+```ts
+const scoped = worldlinebox.forLibrary(libraryId);
+await scoped.assets.search({ query: null, limit: 20, offset: 0 });
+await scoped.jobs.enqueue({ handlerId: 'process', payload: { assetIds } });
+```
+
+global 插件必须显式绑定已打开库；library 插件只能绑定自己的库。Scoped API 不包含 `forLibrary`、events、hooks、jobs 注册、providers、
+storage、data、commands、input 或 contributions，只保留领域面和 Job 的 `enqueue`、`reportProgress`、`cancel`、`pause`、`resume`、`retry`。
+
+### `worldlinebox.storage` 与 `worldlinebox.data`
+
+```ts
+await worldlinebox.storage.get(key, { scope: 'user' | 'library' });
+await worldlinebox.storage.set(key, value, { scope: 'user' | 'library' });
+await worldlinebox.storage.delete(key, { scope: 'user' | 'library' });
+await worldlinebox.storage.listKeys({ scope: 'user' | 'library' });
+
+const { path, scope } = await worldlinebox.data.getDirectory({ scope: 'user' | 'library' });
+```
+
+storage 是小型命名空间 KV，需要 `storage.read`/`storage.write`。data 需要 `data.files`，返回的路径是插件专属目录：
+`{userData}/plugin-files/<pluginId>/` 或 `<library>/.worldlinebox/plugin-files/<pluginId>/`。库级目录要求库已打开；restricted 没有 Node fs，
+unrestricted 才能用 Node 读写该目录。
+
+storage 的公开返回值是裸值，不带 IPC 包装层：
+
+- `get` 返回保存的值；键不存在时返回 `null`，不是 `{ value: null }`。
+- `set` 成功时只解析为 `void`。
+- `delete` 返回布尔值，表示是否删除了已有键。
+- `listKeys` 返回排序后的 `string[]`。
+
+只有 `data.getDirectory` 保留 `{ path, scope }` 结构。不要读取 `{ value }`、`{ ok }`、`{ deleted }` 或 `{ keys }`；这些是 Host
+内部传输结果，不属于插件 API 契约。
+
+### `worldlinebox.ui` 与 `worldlinebox.media`
+
+```ts
+await worldlinebox.ui.notify({ severity: 'info', message: '…', title?: string });
+
+const result = await worldlinebox.ui.openDialog({
+  title: '媒体压缩',
+  submitLabel: '开始处理',
+  render(ui) {
+    const mode = ui.state('percent');
+    return ui.column(
+      ui.heading('图像设置'),
+      ui.note('将压缩选中的图片。'),
+      ui.select({
+        id: 'imageTargetMode',
+        label: '压缩目标',
+        value: mode.get(),
+        onChange: mode.set,
+        options: [
+          { value: 'percent', label: '按原体积百分比' },
+          { value: 'size', label: '目标文件大小' },
+        ],
+      }),
+      mode.get() === 'percent'
+        ? ui.number({ id: 'imagePercent', label: '目标体积（%）', value: 50, min: 5, max: 95 })
+        : null,
+    );
+  },
+});
+// result 是各控件 id 对应的当前值；取消或关闭时为 null。
+
+const { ffmpegPath, ffprobePath } = await worldlinebox.media.getBinaryPaths();
+```
+
+`openDialog({ title, render })` 需要 `ui.dialogs`，widget kit 是标准表单的默认路径。`render` 在插件进程里执行，产出有界
+widget 树；Host 用已有 primitive（`DialogShell` / `Field` / `Select` / `Switch` / `Slider` / `TextField`）绘制，页脚负责取消与提交。
+需要展示多列对比或结果时，可使用 `ui.list({ columns, rows, emptyText })`；Host 会以统一的可滚动、交替行背景列表渲染，单元格支持换行。
+列表单元格也可以传入 `{ segments: [{ text, tone: 'match' | 'change' }] }`，用于统一显示匹配和改动标记。需要紧凑的二态选项时使用
+`ui.toggle({ id, label, value, description, onChange })`；控件会使用 Host 的标准按钮样式。
+需要把相关控件放进标准卡片时使用 `ui.group(title, ...children)`；标题可省略以使用无标题卡片。需要在多个功能面板之间切换时使用
+`ui.tabs({ id, value, tabs: [{ id, label, children }], onChange })`；Host 会负责绘制可访问的标签页并只展示当前面板。
+这个路径不使用 HTML/CSS，也不把 Manifest JSON 当作对话框 UI 语言。对于复杂界面或交互、WebGL、第三方页面，HTML/iframe
+对话框 `openDialog({ dialogId, payload })` 是受支持的一等路径，并引用 `contributes.dialogs` 的 local id；它是复杂 UI 的正式能力，
+不是待删除的临时方案。`getBinaryPaths` 需要 `media.binaries`，返回宿主内置（或 `WORLDLINEBOX_FFMPEG_PATH` 覆盖）的 FFmpeg/ffprobe 绝对路径；
+插件不要再让用户填写路径，也不要捆绑第二套 FFmpeg。这两条命令不读写资源库，**全局插件可以直接调用，不必先
+`worldlinebox.forLibrary()`**。
+
+#### 宿主媒体二进制与 FFmpeg 方言
+
+- 使用 `worldlinebox.media.getBinaryPaths()` 获取宿主的 `ffmpegPath` 和 `ffprobePath`；不要捆绑第二套 FFmpeg，也不要让用户填写路径。
+- 当前捆绑二进制锁定为 FFmpeg 8.x，来源锁见 `resources/media-binaries/bundle-lock.json`，媒体包版本为 `media-v0.1.2`。
+- ffprobe JSON 输出使用 `-output_format json` 或 `-of json`；不要使用 `-print-format`，FFmpeg 8 会拒绝该写法。
+- 编码前始终在运行时执行 `ffmpeg -encoders` 探测，不要假设存在 `libx264` 或 `libx265`。非 GPL 构建会禁用这些编码器，Windows 常见可用的是 `libopenh264`；GPL 与非 GPL 构建差异见 `tests/unit/media-binaries.test.ts`。
+- 只有实际支持 CRF 的编码器才传 CRF 参数；不要把 CRF 当作所有编码器的通用选项。
+- 当前不提供 `getCapabilities()` API。
+
+### `worldlinebox.events` 与 `worldlinebox.hooks`
+
+```ts
+worldlinebox.events.on('library.changed' | 'asset.changed' | '*', async (event) => {
+  // event.eventId、kind、libraryId、occurredAt、causeChain、summary
+});
+await worldlinebox.events.next();
+
+worldlinebox.hooks.onWill('asset.trash', async (context) => ({ action: 'allow' }));
+```
+
+事件至少一次投递，按 `eventId` 去重。当前 Hook 事件只有 `asset.trash`，返回 `allow`、`warn` 或带 code/message 的 `block`；阻断需 Manifest
+声明 blocking 且拥有 `hook.blocking`，运行在预检阶段而非事务内。Hook 默认 2 秒超时并 fail-open。
+
+### `worldlinebox.jobs`
+
+```ts
+worldlinebox.jobs.registerHandler('process', async (payload, job, signal) => {
+  signal.throwIfAborted();
+});
+const { jobId } = await worldlinebox.jobs.enqueue({
+  handlerId: 'process', payload: { assetIds }, recoveryStrategy: 'checkpoint'
+});
+await worldlinebox.jobs.reportProgress({ jobId, completed: 1, total: 10, phase: 'processing', message: 'done' });
+await worldlinebox.jobs.cancel({ jobId, reason: 'user-requested' });
+await worldlinebox.jobs.pause({ jobId, checkpoint: { cursor: 'asset-42' } });
+await worldlinebox.jobs.resume({ jobId });
+await worldlinebox.jobs.retry({ jobId, retryInput: { onlyFailed: true } });
+```
+
+Job handler 必须在 Manifest `contributes.jobs` 中存在。`recoveryStrategy` 为 `idempotent` 或 `checkpoint`；只有 checkpoint handler 可暂停/恢复。
+进度 payload 有界。`completed/total` 是数量进度的权威来源；当 `total` 为 0 时才使用可选的 `progress`（0 到 1）作为比例。后台 UI 的插件任务区会显示 `completed/total`、百分比、`phase` 和 `message`；失败时优先显示错误详情。逐项结果和重试输入由 Job 状态保留，后续任务面板可据此展开或定向重试。
+
+Host 不对 Job handler 设置统一的墙钟超时。插件应自行决定处理失败时机：handler 抛出错误会记录为失败，handler 也必须响应 `signal` 的取消请求；Host 只在插件实例停用、进程崩溃或协议故障时结束该执行。
+
+Job 运行或排队时，Host 主界面会显示一个非阻塞的插件任务活动条，工具栏的「后台任务」入口同步显示活动标记。点击「后台运行」或关闭按钮只收起前台提示，Job 继续执行，仍可从工具栏打开完整任务面板。任务完成、失败或取消后，任务面板中的历史状态仍可查看。
+
+### `worldlinebox.commands`、`providers`、`input` 与日志
+
+```ts
+worldlinebox.commands.register('inspect', async (context) => { /* 使用冻结目标 */ });
+worldlinebox.providers.register('preview', { id: 'probe', compute: async (batch, context) => [] });
+worldlinebox.providers.registerSearch({ id: 'search', search: async (request, signal) => [] });
+
+const capture = await worldlinebox.input.capture({ scope: 'viewer', keyboard: true, pointer: false });
+for await (const event of capture.events) { /* bounded input */ }
+capture.release();
+worldlinebox.console.log('message', { safe: true });
+```
+
+Provider kind 为 `preview`、`thumbnail`、`metadata`、`import`、`export`、`ai`、`derived-field` 或 `search`。Manifest 对 Provider 的
+扩展名/MIME、derived field id/type 有额外校验；返回媒体、metadata、import plan、export descriptor 和 AI analysis 都有大小与字段约束，
+禁止路径和秘密。Input scope 为 `application`、`viewer`、`view`，需相应权限；它不是全局系统 Hook。日志限量并带插件标记。
+
+## 6. MCP 导出
+
+二选一即可导出命令：
+
+```json
+{ "id": "inspect", "title": "Inspect", "mcp": { "export": true } }
+```
+
+或：
+
+```jsonc
+"mcp": { "expose": ["inspect"] }
+```
+
+激活后会成为 MCP 候选工具，但当前只有 **Full Access** credential 在 `tools/list` 中看到并调用它们；Auto credential 不暴露插件工具。Full Access 也不能绕过危险操作的一次性 challenge。插件命令目前按可能产生副作用处理；只导出稳定、有界、可校验的命令，不能导出任意 eval、秘密、路径
+或 Node 接口。
+
+插件 MCP 命令的输入必须包含至少一个非空的 `assetIds`、`folderIds` 或 `collectionIds` 数组；`tools/list` 的 JSON Schema 与运行时均以
+`minItems: 1` 校验，空数组或完全没有上下文 ID 会被拒绝。
+
+## 7. 设置与 iframe 页面
+
+```ts
+type Setting =
+  | { id: string; title: string; description?: string; type: 'boolean'; default?: boolean }
+  | { id: string; title: string; description?: string; type: 'number'; default?: number; minimum?: number; maximum?: number }
+  | { id: string; title: string; description?: string; type: 'string'; default?: string }
+  | { id: string; title: string; description?: string; type: 'select'; default?: string; options: { value: string; label: string }[] };
+```
+
+`select` option value 不得重复，default 必须存在；number 范围和 default 必须一致。持久化值的错误代码为 `invalid-type`、`out-of-range`、
+`invalid-option`，只影响该字段。静态 schema 错误则安装/激活失败并指出 JSON path。
+
+iframe view 的 Host target 为 `sidebar.entries`、`workspace.views`、`inspector.views`、`viewer.overlays`、`settings.pages`；Manifest 对应
+`views[].location`。页面只能经 typed bridge 通信，不直接获得宿主 React、DOM 或 CSS；需要标准控件时使用下述 Host-rendered descriptor，而不是在 iframe 中猜测宿主样式。
+
+Host-rendered Plugin UI Contract v1 通过 `contributes.ui` 提供 settings group、menu/submenu、notice、activity 和 job descriptor。
+设置组引用同一 manifest 的 `contributes.settings`，菜单复用现有 command/condition/placement 语义；descriptor 只接受版本化 JSON 数据，不接受函数、HTML、CSS 或宿主 DOM 引用。
+字段级诊断会跳过非法条目而保留其他合法 UI。完整示例与限制见插件开发手册的 [Plugin UI Contract v1](development.md#81-plugin-ui-contract-v1)，设计决策见
+[`0029 UI 标准化执行方案与插件原生 UI 契约`](https://github.com/whoiswennie/WorldlineBox/blob/dev/docs/internal/implementation/0029-ui-standardization-execution-and-plugin-ui-contract.md)。
+在实现发布前，不要从宿主 CSS class、React 结构或 DOM 层级推导插件行为。
+
+## 8. 错误与测试契约
+
+- 权限缺失、库未打开、实例范围不符、资产 revision 冲突、超时和取消必须作为可处理失败；不要把失败吞掉后报告成功。
+- setup 失败只隔离该实例；连续崩溃会 quarantine。dispose、Hook、Provider、Input 和 Job 都有取消/背压/deadline。
+- 非关键未知事件可记录后忽略；未知控制消息或协议版本错误可终止并隔离当前实例。
+- 不要在事务/文件锁内等待插件 Hook，也不要让菜单打开等待插件 RPC。
+
+仓库 fixture 是可执行示例：`standard-host-probe`、`trusted-host-probe`、`menu-command-probe`、`unrestricted-settings-probe`、
+`iframe-workspace-probe`、`job-probe`、`hook-blocking-probe`、`preview-thumbnail-probe`、`derived-field-probe`、`input-capture-probe`。
+实现新插件时至少补充对应 fixture/单测，并执行相关 `tests/unit`、`tests/worker` 和后台 Electron E2E；E2E 使用临时
+`WORLDLINEBOX_E2E_USER_DATA_PATH`，完整退出再启动才能证明持久化恢复。packaged、Windows 或 Computer Use 未执行时必须写明未验证。
+
+## 9. 当前开发态限制
+
+不要依赖动态 Registrar、UI primitives、`openLibrary`、通用 Host GPU/VRAM/CPU/内存 API、Host 共享模型 Worker、Python runtime、
+任意 SQL、宿主 DOM 注入或 unrestricted 行为的强制权限拦截。它们不是当前 Plugin API 1 的承诺。类型声明以仓库
+`generatePluginSdkTypeDeclaration()` 生成结果为准；文档中未列出的 API 不属于稳定契约。

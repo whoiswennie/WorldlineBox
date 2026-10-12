@@ -1,0 +1,50 @@
+/**
+ * Masonry card preview sizing for portrait assets (WorldlineBox-woa / WorldlineBox-5p45).
+ *
+ * A masonry card owns the full width of its column. The preview must therefore
+ * grow to the natural aspect-ratio height. Applying a fixed max-height while
+ * keeping the column width creates a wider frame than the image; `contain`
+ * then paints the exact horizontal letterbox reported on Windows.
+ */
+
+export function estimateMasonryPreviewHeightPx(
+  width: number | null | undefined,
+  height: number | null | undefined,
+  columnWidthPx: number,
+  mediaType?: string | null,
+): number {
+  // `.asset-card` is a border-box with a transparent 1px border on both
+  // sides. The masonry column owns the outer card width, while the preview
+  // itself occupies the card's content width. Use that content width here so
+  // portrait previews preserve their source ratio at the smallest stops too
+  // (the two-pixel discrepancy is visible on narrow columns).
+  const outerColumn = Number.isFinite(columnWidthPx) && columnWidthPx > 0
+    ? columnWidthPx
+    : 0;
+  if (outerColumn <= 0) return 1;
+  const col = Math.max(1, outerColumn - 2);
+  if (!width || !height || width <= 0 || height <= 0) {
+    // Font cards render a 16:9 specimen sheet even though the source has no
+    // pixel resolution. The generic 1.3 frame made their virtual slot taller
+    // than the rendered card.
+    const fallbackAspect = mediaType === "font" ? 16 / 9 : 1.3;
+    return col / fallbackAspect;
+  }
+  return col * (height / width);
+}
+
+/** Inline style for `.asset-preview` in masonry with usable dimensions.
+ *  Do not apply this on windowed masonry cards: the slot owns height via
+ *  `--masonry-preview-height`. An inline aspect-ratio would beat that lock
+ *  and leave a truncated empty band (WorldlineBox-1s3d).
+ */
+export function resolveMasonryPreviewStyle(
+  width: number | null | undefined,
+  height: number | null | undefined,
+): { aspectRatio: string; maxHeight: "none" } | undefined {
+  if (!width || !height || width <= 0 || height <= 0) return undefined;
+  return {
+    aspectRatio: `${width} / ${height}`,
+    maxHeight: "none",
+  };
+}
