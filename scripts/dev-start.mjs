@@ -75,6 +75,8 @@ const child = spawn(forgeBin, ["start", ...forgeArgs], {
   cwd: projectRoot,
   env: {
     ...process.env,
+    // Readiness was checked before launch; native builds belong to explicit setup.
+    WORLDLINEBOX_SKIP_NATIVE_REBUILD: '1',
     WORLDLINEBOX_VITE_PORT: String(port),
   },
   stdio: "inherit",

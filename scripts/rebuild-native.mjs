@@ -15,7 +15,7 @@
 // MSBuild imports as properties) keeps the build hermetic from vcpkg.
 
 import { spawn } from 'node:child_process';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +35,11 @@ if (typeof electronPath !== 'string') {
 const rebuildCli = require.resolve('@electron/rebuild/lib/cli.js');
 const betterSqlite3Root = path.dirname(require.resolve('better-sqlite3/package.json'));
 const buildDir = path.join(betterSqlite3Root, 'build');
+const nativeParent = realpathSync(path.join(repoRoot, 'node_modules'));
+const nativeRelative = path.relative(nativeParent, realpathSync(betterSqlite3Root));
+if (!nativeRelative || nativeRelative.startsWith('..') || path.isAbsolute(nativeRelative) || (existsSync(buildDir) && lstatSync(buildDir).isSymbolicLink())) {
+  throw new Error('Refusing to clean a native build outside this checkout dependency directory.');
+}
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -68,7 +73,8 @@ if (existsSync(buildDir)) {
 }
 
 console.log('[rebuild-native] Rebuilding better-sqlite3 for Electron (VcpkgEnabled=false)...');
-await run(process.execPath, [rebuildCli, '-f', '-w', 'better-sqlite3'], {
+// --which-module is additive; --only prevents unrelated node-pty NAPI builds.
+await run(process.execPath, [rebuildCli, '-f', '--only', 'better-sqlite3'], {
   env: { VcpkgEnabled: 'false' },
 });
 

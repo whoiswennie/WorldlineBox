@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { dshExecutionAccessModeSchema, dshExecutionAccessSettingsSchema } from './dsh-access';
 import { dshMarketplaceStateSchema, dshMarketPageSchema, dshSkillInspectionSchema, dshSkillTargetSchema, dshInstalledSkillSchema, dshRepositorySchema, dshSkillNameSchema } from './dsh-marketplace';
 import { dshPackDistributionSchema, dshPackPublicationSchema } from './dsh-pack-distribution';
 import { dshInstalledPluginSchema } from './dsh-plugins';
@@ -111,10 +112,12 @@ export const dshLauncherStateSchema = z.object({
   marketplace: dshMarketplaceStateSchema.optional(),
   packPublications: z.array(dshPackPublicationRecordSchema).optional(),
   tasks: z.array(dshTaskRecordSchema).optional(),
+  taskAccess: dshExecutionAccessSettingsSchema.optional(),
 });
 export type DshLauncherState = z.infer<typeof dshLauncherStateSchema>;
 
 export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('task.access.save'), mode: dshExecutionAccessModeSchema }),
   z.strictObject({ type: z.literal('state') }),
   z.strictObject({ type: z.literal('runtime.download'), expectedSha256: sha256.optional() }),
   z.strictObject({ type: z.literal('versions.refresh') }),
@@ -128,8 +131,10 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('operation.clear-finished') }),
   dshTaskInputSchema.extend({ type: z.literal('task.run') }),
   z.strictObject({ type: z.literal('task.cancel'), taskId: id }),
+  z.strictObject({ type: z.literal('task.terminate'), taskId: id }),
   z.strictObject({ type: z.literal('task.result'), taskId: id }),
   z.strictObject({ type: z.literal('task.events'), taskId: id, after: z.number().int().min(-1).optional() }),
+  z.strictObject({ type: z.literal('task.message'), taskId: id, content: z.string().trim().min(1).max(16000), mode: z.enum(['steer', 'queue']), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional() }),
   z.strictObject({ type: z.literal('instance.create'), name, runtimeId: id, dataScope: z.enum(['shared', 'isolated']).optional() }),
   z.strictObject({ type: z.literal('instance.rename'), instanceId: id, name }),
   z.strictObject({ type: z.literal('instance.default'), instanceId: id }),

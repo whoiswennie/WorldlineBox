@@ -15,6 +15,11 @@ out/
 coverage/
 playwright-report/
 test-results/
+# Real user desktop task receipts stay local; fixture UI screenshots may be tracked.
+artifacts/companions/live/
+# Generated model acceptance outputs remain local; source and fixture screenshots are public.
+artifacts/companions/novel-loop-*/
+artifacts/companions/recovery-loop-*/
 *.log
 .env
 .env.*

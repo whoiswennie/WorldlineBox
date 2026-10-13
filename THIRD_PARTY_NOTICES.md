@@ -73,6 +73,12 @@ DSH 安装包提取使用 [7zip-bin 5.2.0](https://github.com/develar/7zip-bin) 
 - ufbx：`resources/ufbx/LICENSE`
 - 各 npm 依赖：`node_modules/<包名>/LICENSE*`（随源码构建时可用）
 
+## 内置伙伴参考图
+
+`assets/companions/deepseek.jpg`、`deepseek-sister.jpg` 与 `deepseek-flash.jpg` 为维护者在设计请求中提供的第三方角色参考图，用于大肥鱼姐妹的联系人形象。图片不属于 WorldlineBox 的 MIT 源码许可。
+
+公开形象调研参考上善无形的[原型说明](https://www.bilibili.com/opus/1231977657712771073)与 [ZipZipPipe](https://space.bilibili.com/4168597) 的女仆形象。原型的许可说明不自动涵盖维护者提供的每张二创设定图；这些具体图片的作者及许可尚未独立确认。本项目的姐妹人格、提示与聊天实现为独立设计，不声明为 DeepSeek 官方人设。
+
 ## worldline-harness 网易云音乐播放器
 
 本项目移植并改写了 worldline-harness 的 `packages/host/netease-music` 和 `packages/client/ui-netease-music` 源码：公开歌单与歌词解析、播放与歌词同步、歌单管理。使用 WorldlineBox 自有 IPC、全局用户数据存储与设置界面。网易云歌曲与服务由其权利人提供，不属于随安装包分发的代码许可。

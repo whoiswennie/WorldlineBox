@@ -152,7 +152,10 @@ const config: ForgeConfig = {
       return !file.startsWith('/.vite') && !file.startsWith('/node_modules');
     },
   },
-  rebuildConfig: { ignoreModules: ['node-pty'] },
+  rebuildConfig: {
+    onlyModules: process.env.WORLDLINEBOX_SKIP_NATIVE_REBUILD === '1' ? [] : ['better-sqlite3'],
+    ignoreModules: ['node-pty'],
+  },
   makers: [
     // Windows 安装器不在此处（2026-08-08 决策：WiX MSI 已回退——MSI 语言
     // 切换需自定义 bootstrapper（社区确认），Inno/NSIS 内置多语言选择
@@ -192,6 +195,11 @@ const config: ForgeConfig = {
         {
           entry: 'src/worker/index.ts',
           config: 'vite.worker.config.ts',
+          target: 'main',
+        },
+        {
+          entry: 'src/companions/worker.ts',
+          config: 'vite.companion-worker.config.ts',
           target: 'main',
         },
         {

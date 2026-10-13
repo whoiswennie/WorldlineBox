@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { dshExecutionAccessModeSchema } from './dsh-access';
 
 const id = z.string().regex(/^[a-z0-9-]{1,80}$/);
 export const dshTaskSessionIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/);
@@ -8,11 +9,18 @@ export const dshTaskInputSchema = z.strictObject({ prompt: z.string().min(1).max
 export type DshTaskInput = z.infer<typeof dshTaskInputSchema>;
 export const dshTaskRecordSchema = z.object({ id, operationId: id, instanceId: id, runtimeId: id, runtimeVersion: z.string().max(128),
   title: z.string().max(100), status: z.enum(['running', 'succeeded', 'failed', 'cancelled', 'interrupted']),
+  accessMode: dshExecutionAccessModeSchema.optional(),
+  workspacePath: z.string().max(4096).optional(), pid: z.number().int().positive().optional(),
   sessionId: dshTaskSessionIdSchema.optional(), startedAt: z.string(), finishedAt: z.string().optional(), error: z.string().max(1000).optional(), code: z.number().int().nullable().optional() });
 export type DshTaskRecord = z.infer<typeof dshTaskRecordSchema>;
 export const dshTaskResultSchema = z.object({ taskId: id, instanceId: id, runtimeId: id, runtimeVersion: z.string().max(128),
   sessionId: dshTaskSessionIdSchema.optional(), text: z.string().max(1024 * 1024).optional(), code: z.number().int().nullable().optional() });
 export type DshTaskResult = z.infer<typeof dshTaskResultSchema>;
 export const dshTaskEventSchema = z.object({ taskId: id, sequence: z.number().int().min(0), type: z.string().max(100), receivedAt: z.string(),
-  sessionId: dshTaskSessionIdSchema.optional(), text: z.string().max(1024 * 1024).optional(), code: z.string().max(100).optional() });
+  sessionId: dshTaskSessionIdSchema.optional(), text: z.string().max(1024 * 1024).optional(), code: z.string().max(100).optional(),
+  stage: z.enum(['preparing', 'starting', 'session', 'turn_start', 'step_start', 'step_end', 'turn_end', 'tool_prepare', 'tool_start', 'tool_end', 'message', 'completed', 'failed']).optional(),
+  contentKind: z.enum(['input', 'output', 'message']).optional(), callId: z.string().max(200).optional(),
+  streamId: z.string().max(100).optional(),
+  outputState: z.enum(['draft', 'committed', 'abandoned']).optional(),
+  toolName: z.string().max(100).optional(), summary: z.string().max(1000).optional() });
 export type DshTaskEvent = z.infer<typeof dshTaskEventSchema>;

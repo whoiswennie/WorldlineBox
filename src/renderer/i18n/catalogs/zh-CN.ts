@@ -22,6 +22,7 @@ export const zhCN = {
     modules: "功能模块",
     assets: "资产管理",
     launcher: "启动器",
+    companions: "伙伴",
   },
   tabs: {
     label: "工作区标签页",

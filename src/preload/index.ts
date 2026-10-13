@@ -4,6 +4,7 @@ import { appUpdate } from './bridge/app-update';
 import { dshLauncher } from './bridge/dsh-launcher';
 import { llm } from './bridge/llm';
 import { music } from './bridge/music';
+import { companions } from './bridge/companions';
 import { automation } from './bridge/automation';
 import {
   armE2eBrowseSessionDelay,
@@ -49,6 +50,7 @@ contextBridge.exposeInMainWorld(
     dshLauncher,
     llm,
     music,
+    companions,
     automation,
     mcp,
     plugins,

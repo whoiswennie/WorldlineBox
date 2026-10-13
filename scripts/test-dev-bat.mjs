@@ -95,6 +95,7 @@ function childEnvironment(tempRoot, cdpPort, vitePort) {
 }
 async function run() {
   const setup = await preflight();
+  const launchStartedAt = Date.now();
   if (process.argv.includes('--check')) { console.log(JSON.stringify({ checked: true, batch, ...setup })); return; }
   if (process.argv.some(arg => arg.startsWith('--') && arg !== '--check')) throw new Error('Usage: node scripts/test-dev-bat.mjs [--check]');
   const toolsRoot = path.join(projectRoot, '.tools'); await ordinary(toolsRoot, true);
@@ -133,6 +134,9 @@ async function run() {
     }), 'the actual Forge renderer');
     page.setDefaultTimeout(30_000);
     await expect(page.locator('.application-navigation')).toBeVisible({ timeout: 60_000 });
+    const launchDurationMs = Date.now() - launchStartedAt;
+    expect(stdout).toContain('No dependency installation or native rebuild will run.');
+    expect(stdout + stderr).not.toMatch(/\[rebuild-native\]|Installing locked npm dependencies|Building module:|> .* rebuild:native/);
     const initial = await launcherState(page);
     if (!same(initial.rootPath, root)) throw new Error('CDP connected to a different application profile; no UI mutation is allowed.');
     verifiedOwnedApp = true;
@@ -161,7 +165,8 @@ async function run() {
     expect(entries.some(entry => entry.scope === 'main.window.mount-failed' || entry.scope === 'dsh.launcher.initialization' && entry.level === 'error')).toBe(false);
     const final = await launcherState(page); expect(final.instances).toHaveLength(0); expect(final.runtimes).toHaveLength(0);
     await writeFile(path.join(report, 'launcher-state.json'), JSON.stringify(final, null, 2));
-    result = { ok: true, batch, setup, cdpPort, vitePort, cmdPid: child.pid, rendererUrl: page.url(),
+    result = { ok: true, batch, setup, cdpPort, vitePort, cmdPid: child.pid, rendererUrl: page.url(), launchDurationMs,
+      dependencyInstallation: false, nativeRebuild: false,
       firstModule: 'dsh', settingsPreserveModule: true, themes: ['light', 'dark'], portableToolsAutoload: true,
       nativePreloadIpc: true, isolatedUserData: userData, runtimeInstalls: 0, modelCalls: 0 };
   } catch (error) { failure = error; }

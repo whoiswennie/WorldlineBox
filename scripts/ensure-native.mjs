@@ -2,7 +2,7 @@
 // Keep the native better-sqlite3 addon aligned with the Electron runtime used
 // by Worker/E2E tests. Host Node and Electron intentionally expose different
 // NODE_MODULE_VERSION values; probe first so the normal path does not rebuild
-// on every test invocation.
+// on every test invocation. Development uses --check-only: repairs belong to setup.
 
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -56,19 +56,29 @@ const electronReady = await run(
       "const db = new Database(':memory:');",
       "db.exec('CREATE VIRTUAL TABLE worldlinebox_native_probe USING fts5(value)');",
       'db.close();',
+      "if (process.platform === 'win32') {",
+      "const { loadNativeModule } = require('node-pty/lib/utils');",
+      "loadNativeModule('conpty'); loadNativeModule('conpty_console_list');",
+      "} else { require('node-pty'); }",
     ].join(''),
   ],
   {
     // A mismatch is expected on the first invocation after a host-Node
     // install/rebuild; keep Electron's native stack trace out of normal logs.
     stdio: 'ignore',
+    timeout: 15_000,
     env: { ELECTRON_RUN_AS_NODE: '1' },
   },
 );
 
 if (electronReady) {
-  console.log('[ensure-native] better-sqlite3 matches the Electron ABI and FTS5 is available.');
+  console.log('[ensure-native] Electron SQLite/FTS5 and terminal native modules are ready.');
   process.exit(0);
+}
+
+if (process.argv.includes('--check-only')) {
+  console.error('[ensure-native] Native runtime is missing or incompatible. Run 01-Setup-Environment.bat (or npm run rebuild:native) to repair it. Development startup will not rebuild or install packages.');
+  process.exit(1);
 }
 
 console.log('[ensure-native] Electron ABI or FTS5 probe failed; rebuilding better-sqlite3 for Electron...');

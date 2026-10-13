@@ -1,0 +1,119 @@
+import { useState, type ReactNode } from 'react';
+import type { Companion, CompanionConversation, CompanionDraft, CompanionMessage, CompanionsRequest, CompanionsResponse } from '../../shared/companions';
+import { useDialogFocusTrap } from '../use-dialog-focus-trap';
+import { Avatar } from './CompanionVisuals';
+import { companionGroupTitle } from '../../shared/companion-titles';
+
+export type CompanionRequest = (input: CompanionsRequest) => Promise<CompanionsResponse | undefined>;
+export type CompanionDialog =
+  | { kind: 'companion'; companion?: Companion }
+  | { kind: 'group'; conversation?: CompanionConversation }
+  | { kind: 'action'; message: CompanionMessage; conversation: CompanionConversation }
+  | { kind: 'delete'; companion: Companion };
+
+function Modal({ title, children, onClose, busy }: { title: string; children: ReactNode; onClose: () => void; busy: boolean }) {
+  useDialogFocusTrap(true, title);
+  return <div className="companions-modal-backdrop" onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.stopPropagation(); onClose(); } }}>
+    <section className="companions-modal" role="dialog" aria-modal="true" aria-label={title}>
+      <header><h2>{title}</h2><button type="button" className="companion-icon-button" aria-label="关闭弹窗" onClick={onClose} disabled={busy}>×</button></header>
+      {children}
+    </section>
+  </div>;
+}
+
+export function CompanionDialogs({ dialog, companions, request, onClose, onOpen, onCreated, builtins, requestError }: {
+  dialog: CompanionDialog; companions: Companion[]; request: CompanionRequest; onClose: () => void;
+  onOpen: (companionId: string) => void; onCreated: (conversation: CompanionConversation) => void;
+  builtins: readonly (CompanionDraft & { id: string })[];
+  requestError?: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [tab, setTab] = useState<'builtin' | 'custom'>(dialog.kind === 'companion' && dialog.companion ? 'custom' : 'builtin');
+  const initial = dialog.kind === 'companion' ? dialog.companion : undefined;
+  const [draft, setDraft] = useState<CompanionDraft>(() => ({ name: initial?.name ?? '', description: initial?.description ?? '', persona: initial?.persona ?? '', model: '', avatar: initial?.avatar ?? 'custom', proactive: initial?.proactive ?? false, ...(initial?.avatarAttachmentId ? { avatarAttachmentId: initial.avatarAttachmentId } : {}) }));
+  const [connectionMode, setConnectionMode] = useState<'global' | 'independent'>(initial?.llm ? 'independent' : 'global');
+  const [connection, setConnection] = useState<NonNullable<CompanionDraft['llm']>>(() => ({ apiFormat: initial?.llm?.apiFormat ?? 'openai_chat', baseUrl: initial?.llm?.baseUrl ?? '', model: initial?.llm?.model ?? '' }));
+  const [apiKey, setApiKey] = useState('');
+  const group = dialog.kind === 'group' ? dialog.conversation : undefined;
+  const [title, setTitle] = useState(group?.title ?? '');
+  const [members, setMembers] = useState<string[]>(group?.memberIds ?? companions.map(item => item.id));
+  const [actionOwner, setActionOwner] = useState(dialog.kind === 'action' ? dialog.conversation.memberIds[0] ?? '' : '');
+  const [actionPrompt, setActionPrompt] = useState(dialog.kind === 'action' ? dialog.message.content : '');
+  const [actionTitle, setActionTitle] = useState(dialog.kind === 'action' ? dialog.message.content.slice(0, 50) || '处理这条消息的附件' : '');
+  async function submit(input: CompanionsRequest) {
+    setBusy(true); setError('');
+    const response = await request(input);
+    setBusy(false);
+    if (!response) { setError('request'); return; }
+    if (response.conversation) onCreated(response.conversation);
+    onClose();
+  }
+  async function chooseAvatar() {
+    setError(''); setBusy(true);
+    const response = await request({ type: 'attachment.pick', kind: 'image' });
+    setBusy(false);
+    if (!response) { setError('request'); return; }
+    const image = response.attachments?.[0];
+    if (!image) return;
+    if (!image.mime.startsWith('image/')) { setError('请选择图片文件作为头像。'); return; }
+    setDraft(current => ({ ...current, avatar: 'custom', avatarAttachmentId: image.id }));
+  }
+  const modalTitle = dialog.kind === 'companion' ? (initial ? '编辑伙伴资料' : '添加联系人') : dialog.kind === 'group' ? (group ? '管理群聊' : '创建群聊') : dialog.kind === 'action' ? '交给伙伴处理' : '移除联系人';
+  return <Modal title={modalTitle} onClose={onClose} busy={busy}>
+    {dialog.kind === 'companion' && <>
+      {!initial && <div className="companions-dialog-tabs" role="tablist" aria-label="角色来源"><button role="tab" aria-selected={tab === 'builtin'} onClick={() => setTab('builtin')}>内置角色</button><button role="tab" aria-selected={tab === 'custom'} onClick={() => setTab('custom')}>自定义角色</button></div>}
+      {tab === 'builtin' && !initial ? <div className="companions-builtin-picker">
+        <p className="companions-subtle">认识大肥鱼姐妹。她们有自己的性格，也会记住与你的相处。</p>
+        {builtins.map(item => {
+          const existing = companions.find(companion => companion.id === item.id && companion.builtin);
+          return <article className="companions-builtin-card" key={item.id}><Avatar companion={item} large /><div><h3>{item.name}</h3><p>{item.description}</p><span>{item.avatar === 'sister' ? '姐姐 · Pro' : '妹妹 · Flash'}</span></div>
+            <button className={existing ? 'companion-secondary-button' : 'companion-primary-button'} disabled={busy} onClick={() => {
+              if (existing) { onOpen(existing.id); onClose(); }
+              else void submit({ type: 'companion.add-builtin', templateId: item.avatar === 'sister' ? 'sister' : 'flash' });
+            }}>{existing ? '已添加 · 打开' : '添加'}</button>
+          </article>;
+        })}
+        <p className="companions-subtle">默认使用全局 LLM 服务，名字和人设不绑定模型。添加后可在资料中单独配置连接。</p>
+      </div> : <form className="companions-form" onSubmit={event => {
+        event.preventDefault();
+        const companion: CompanionDraft = { ...draft, model: '', ...(connectionMode === 'independent' ? { llm: connection } : {}) };
+        const credential = apiKey.trim() && connectionMode === 'independent' ? { apiKey: apiKey.trim() } : {};
+        void submit(initial ? { type: 'companion.update', id: initial.id, companion, ...credential } : { type: 'companion.create', companion, ...credential });
+      }}>
+        <label>名字<input data-dialog-initial-focus="true" required maxLength={60} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} placeholder="她希望你如何称呼她？" /></label>
+        <div className="companions-avatar-editor"><Avatar companion={draft} large /><div><button type="button" className="companion-secondary-button" disabled={busy} onClick={() => void chooseAvatar()}>选择本地头像</button><button type="button" className="companions-avatar-reset" disabled={busy} onClick={() => setDraft({ ...draft, avatar: 'custom', avatarAttachmentId: undefined })}>恢复名字头像</button><p className="companions-subtle">选择一张图片，作为她在聊天中的头像。</p></div></div>
+        <label>个性签名<input maxLength={500} value={draft.description} onChange={event => setDraft({ ...draft, description: event.target.value })} placeholder="显示在联系人资料中的一句话" /></label>
+        <label>人设<textarea required rows={5} maxLength={12000} value={draft.persona} onChange={event => setDraft({ ...draft, persona: event.target.value })} placeholder="身份、性格、表达习惯、喜欢什么，以及你们如何相处……" /></label>
+        <label>形象<select value={draft.avatar} onChange={event => setDraft({ ...draft, avatar: event.target.value as CompanionDraft['avatar'], avatarAttachmentId: undefined })}><option value="custom">{draft.avatarAttachmentId ? '本地头像' : '名字头像'}</option><option value="sister">大肥鱼姐姐</option><option value="flash">小肥鱼妹妹</option></select></label>
+        <label>LLM 服务<select aria-label="伙伴 LLM 服务" value={connectionMode} onChange={event => setConnectionMode(event.target.value as 'global' | 'independent')}><option value="global">使用全局 LLM 服务（默认）</option><option value="independent">为此伙伴单独配置</option></select></label>
+        {connectionMode === 'global' ? <p className="companions-subtle">共用设置中的全局 LLM 服务，继承连接方式、地址、密钥和模型。角色名字、人设与记忆独立保存。</p> : <fieldset className="companions-independent-connection"><legend>此伙伴的独立连接</legend>
+          <label>连接方式<select aria-label="连接方式" value={connection.apiFormat} onChange={event => setConnection({ ...connection, apiFormat: event.target.value as NonNullable<CompanionDraft['llm']>['apiFormat'] })}><option value="openai_chat">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option><option value="gemini_native">Gemini 原生 API</option><option value="dashscope_native">DashScope 原生 API</option></select></label>
+          <label>API URL<input aria-label="API URL" maxLength={4096} value={connection.baseUrl} onChange={event => setConnection({ ...connection, baseUrl: event.target.value })} placeholder="服务的 API 地址" /></label>
+          <label>API Key<input aria-label="API Key" type="password" autoComplete="new-password" maxLength={4096} value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder={initial?.llm?.hasKey ? '已保存，留空保留' : '输入此服务的 API Key'} /></label>
+          <label>模型<input aria-label="模型" required maxLength={160} value={connection.model} onChange={event => setConnection({ ...connection, model: event.target.value })} placeholder="该服务支持的模型名" /></label>
+          <p className="companions-subtle">独立配置只用于这位伙伴。已保存的密钥不会回显。</p>
+        </fieldset>}
+        <label className="companions-checkbox"><input type="checkbox" checked={draft.proactive} onChange={event => setDraft({ ...draft, proactive: event.target.checked })} />允许她在应用运行时主动联系我</label>
+        <footer><button type="button" className="companion-secondary-button" onClick={onClose} disabled={busy}>取消</button><button className="companion-primary-button" disabled={busy}>{busy ? '保存中…' : initial ? '保存资料' : '添加伙伴'}</button></footer>
+      </form>}
+    </>}
+    {dialog.kind === 'group' && <form className="companions-form" onSubmit={event => { event.preventDefault(); void submit(group ? { type: 'conversation.update', id: group.id, title, memberIds: members } : { type: 'conversation.create-group', title, memberIds: members }); }}>
+      <label>群聊名称<input data-dialog-initial-focus="true" maxLength={100} value={title} onChange={event => setTitle(event.target.value)} placeholder={companionGroupTitle(members.map(id => companions.find(item => item.id === id)?.name ?? '伙伴'))} /></label>
+      <p className="companions-subtle">留空会按成员名字显示。也可以给这个群取一个名字。</p>
+      <fieldset><legend>群成员 · 你会自动加入</legend><div className="companions-member-picker">{companions.map(item => <label className="companions-checkbox" key={item.id}><input type="checkbox" checked={members.includes(item.id)} onChange={event => setMembers(event.target.checked ? [...members, item.id] : members.filter(id => id !== item.id))} /><Avatar companion={item} /><span>{item.name}</span></label>)}</div></fieldset>
+      {!companions.length && <p>先添加一个伙伴，就可以一起群聊了。</p>}
+      <footer><button type="button" className="companion-secondary-button" onClick={onClose} disabled={busy}>取消</button><button className="companion-primary-button" disabled={busy || !members.length}>{busy ? '保存中…' : group ? '保存群聊' : '创建群聊'}</button></footer>
+    </form>}
+    {dialog.kind === 'action' && <form className="companions-form" onSubmit={event => { event.preventDefault(); void submit({ type: 'action.run', conversationId: dialog.conversation.id, companionId: actionOwner, sourceMessageId: dialog.message.id, title: actionTitle, prompt: actionPrompt }); }}>
+      <blockquote className="companions-dialog-quote">{dialog.message.content || dialog.message.attachments.map(item => item.name).join('、')}</blockquote>
+      <label>交给谁<select value={actionOwner} onChange={event => setActionOwner(event.target.value)}>{companions.filter(item => dialog.conversation.memberIds.includes(item.id)).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <label>事情名称<input data-dialog-initial-focus="true" required maxLength={120} value={actionTitle} onChange={event => setActionTitle(event.target.value)} /></label>
+      <label>希望她怎么做<textarea required maxLength={16000} rows={5} value={actionPrompt} onChange={event => setActionPrompt(event.target.value)} placeholder="明确目标、需要的资料和完成标准" /></label>
+      <p className="companions-subtle">她会使用自己的能力处理这件事。你们可以继续聊天，结果会回到这里。</p>
+      <footer><button type="button" className="companion-secondary-button" onClick={onClose} disabled={busy}>取消</button><button className="companion-primary-button" disabled={busy || !actionOwner}>{busy ? '提交中…' : '开始处理'}</button></footer>
+    </form>}
+    {dialog.kind === 'delete' && <div className="companions-form"><p>确定将“{dialog.companion.name}”从联系人移除吗？已有聊天记录保留。内置角色可以重新添加。</p><footer><button className="companion-secondary-button" disabled={busy} onClick={onClose}>保留联系人</button><button className="companion-danger-button" disabled={busy} onClick={() => void submit({ type: 'companion.delete', id: dialog.companion.id })}>移除联系人</button></footer></div>}
+    {error && <p className="companions-modal-error" role="alert">{error === 'request' ? requestError || '操作未完成，请查看错误信息后重试。' : error}</p>}
+  </Modal>;
+}

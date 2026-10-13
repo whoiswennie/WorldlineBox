@@ -16,10 +16,12 @@ describe("worldlinebox protocol privileges", () => {
     expect(WORLDLINEBOX_PROTOCOL_PRIVILEGES.supportFetchAPI).toBe(true);
 
     const schemes = worldlineboxProtocolSchemes();
-    expect(schemes).toHaveLength(2);
+    expect(schemes).toHaveLength(3);
     expect(schemes[0]?.scheme).toBe("worldlinebox");
     expect(schemes[0]?.privileges.stream).toBe(true);
     expect(schemes[1]?.scheme).toBe(WORLDLINEBOX_PLUGIN_PROTOCOL_SCHEME);
     expect(schemes[1]?.privileges.stream).toBe(true);
+    expect(schemes[2]?.scheme).toBe('worldlinebox-companion');
+    expect(schemes[2]?.privileges.secure).toBe(true);
   });
 });

@@ -198,6 +198,13 @@ await build({
   },
 });
 
+// Persistent companion messages have their own SQLite UtilityProcess.
+await build({
+  configFile: path.join(projectRoot, 'vite.companion-worker.config.ts'),
+  resolve: nodeResolve,
+  build: { emptyOutDir: false, outDir: mainBuildDirectory, rollupOptions: { external: electronExternals } },
+});
+
 // Desktop Console scripts now execute in a separate UtilityProcess. The E2E
 // application uses a `.vite/build` layout like Forge, so this entry must be
 // rebuilt alongside Main/Preload/Library Worker; otherwise an old

@@ -31,6 +31,7 @@ export const en = {
     modules: "Modules",
     assets: "Assets",
     launcher: "Launcher",
+    companions: "Companions",
   },
   tabs: {
     label: "Workspace tabs",

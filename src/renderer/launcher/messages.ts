@@ -1,4 +1,5 @@
 export const launcherZh = {
+  taskAccess: "执行权限",
   pauseDownload: '暂停下载', resumeDownload: '继续下载', downloadPaused: '已暂停', retryOperation: '重新下载', cancellingOperation: '正在取消…',
   closeNamedTerminal: "关闭终端：{name}", preparingCli: "正在准备 CLI 环境…", noInstalledSkills: "此实例尚未安装技能。",
   dataScope: "存档模式", sharedDataScope: "共享会话与账号（已验证版本）", isolatedDataScope: "独立存档（旧版本兼容）", sharedDataScopeNote: "共享会话、默认工作区、账号与模型设置；插件、技能和浏览器存储仍独立。", isolatedDataScopeNote: "这个版本尚未验证共享数据兼容性，使用独立会话、账号、工作区和模型配置。", privateWorkspace: "实例独立工作区",
@@ -57,6 +58,7 @@ export const launcherZh = {
 } as const;
 
 export const launcherEn = {
+  taskAccess: "Execution access",
   pauseDownload: 'Pause download', resumeDownload: 'Resume download', downloadPaused: 'Paused', retryOperation: 'Retry download', cancellingOperation: 'Cancelling…',
   closeNamedTerminal: "Close terminal: {name}", preparingCli: "Preparing CLI environment…", noInstalledSkills: "No skills installed in this instance.",
   dataScope: "Data mode", sharedDataScope: "Shared sessions and accounts (verified releases)", isolatedDataScope: "Independent data (legacy compatibility)", sharedDataScopeNote: "Shares sessions, default workspace, accounts and models. Plugins, skills and browser storage stay separate.", isolatedDataScopeNote: "Shared data compatibility has not been verified for this release. Its sessions, accounts, workspace and models remain independent.", privateWorkspace: "Private instance workspace",

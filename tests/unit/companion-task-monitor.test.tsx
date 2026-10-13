@@ -1,0 +1,52 @@
+// @vitest-environment happy-dom
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, expect, it, vi } from 'vitest';
+import { CompanionTaskMonitor } from '../../src/renderer/companions/CompanionTaskMonitor';
+import { companionTimestamp, companionTimezone } from '../../src/shared/companion-time';
+import type { Companion, CompanionAction, CompanionsRequest } from '../../src/shared/companions';
+let root: Root | undefined, container: HTMLDivElement | undefined;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+afterEach(async () => { await act(() => root?.unmount()); container?.remove(); root = undefined; container = undefined; });
+it('switches durable history pages and roles, preserves the live selected stream, and shows exact timestamps', async () => {
+  const roles: Companion[] = ['姐姐', '妹妹'].map((name, index) => ({ id: 'role' + index, name, avatar: 'custom', description: '', persona: '伙伴', model: '', builtin: false, proactive: false, createdAt: '2026-10-13T02:00:00.123Z' }));
+  const tasks: CompanionAction[] = Array.from({ length: 45 }, (_, index) => ({ id: 'task' + index, conversationId: 'group', companionId: 'role' + index % 2, sourceMessageId: 'source', title: '任务' + index, status: index === 0 ? 'running' : 'succeeded', createdAt: new Date(Date.UTC(2026, 9, 13, 2, 45 - index, 0, 123)).toISOString(), updatedAt: '2026-10-13T03:00:00.456Z', result: '历史结果' + index }));
+  const request = vi.fn(async (input: CompanionsRequest) => {
+    if (input.type === 'action.get') return { ok: true, action: tasks.find(task => task.id === input.id) };
+    if (input.type !== 'actions.page') return { ok: true };
+    const filtered = tasks.filter(task => !input.companionId || task.companionId === input.companionId), limit = input.limit ?? 20;
+    const start = input.before ? filtered.findIndex(task => task.id === input.before!.id) + 1 : 0;
+    const items = filtered.slice(start, start + limit), last = items.at(-1)!;
+    return { ok: true, actionPage: { items, total: filtered.length, hasMore: start + limit < filtered.length, ...(start + limit < filtered.length ? { nextCursor: { id: last.id, createdAt: last.createdAt } } : {}), owners: roles.map((role, index) => ({ companionId: role.id, name: role.name, count: index ? 22 : 23 })) } };
+  });
+  const onClose = vi.fn(), props = { actions: [tasks[0]!], companions: roles, conversationId: 'group', request, now: Date.now(), onClose, onStop: vi.fn(), onGuide: vi.fn(), onOpenUrl: vi.fn() };
+  container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  await act(async () => root!.render(<CompanionTaskMonitor {...props} />));
+  const history = () => container!.querySelector('nav[aria-label="选择伙伴任务"]')!;
+  const button = (label: string) => [...container!.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === label)!;
+  expect(history().querySelectorAll('button')).toHaveLength(20);
+  expect(container.textContent).toContain(companionTimestamp(tasks[0]!.createdAt));
+  expect(container.textContent).toContain(companionTimezone(tasks[0]!.createdAt));
+  await act(async () => button('下一页').click());
+  expect(container.textContent).toContain('第 2 页');
+  expect(container.textContent).toContain('历史结果20');
+  const select = container.querySelector<HTMLSelectElement>('#companion-task-owner')!;
+  await act(async () => { select.value = 'role1'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(container.textContent).toContain('共 22 条 · 每页 20 条');
+  expect(container.textContent).toContain('第 1 页');
+  expect(history().textContent).not.toContain('姐姐');
+  await act(async () => { select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(container.textContent).toContain('共 45 条 · 每页 20 条');
+  await act(async () => history().querySelector<HTMLButtonElement>('button')!.click());
+  await act(async () => root!.render(<CompanionTaskMonitor {...props} actions={[{ ...tasks[0]!, events: [{ sequence: 1, type: 'message', summary: '流式输出', contentKind: 'message', content: '实时的新输出', receivedAt: '2026-10-13T03:00:01.789Z' }] }]} />));
+  expect(container.textContent).toContain('实时的新输出');
+  expect(container.textContent).toContain(companionTimestamp('2026-10-13T03:00:01.789Z'));
+  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(onClose).toHaveBeenCalledOnce();
+});
+it('keeps milliseconds and calendar fields exact rather than replacing missing timestamps with the current time', () => {
+  const value = '2026-10-13T02:03:04.007Z', date = new Date(value), shown = companionTimestamp(value);
+  expect(shown).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:03:04\.007$/);
+  expect(shown.startsWith(String(date.getFullYear()))).toBe(true);
+  expect(companionTimestamp('invalid')).toBe('时间不可用');
+});

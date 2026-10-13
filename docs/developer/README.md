@@ -12,6 +12,7 @@
 - [构建与打包](build-packaging.md)——package / make / 发布流水线 / 签名
 - [架构](architecture.md)——进程模型、目录结构、关键设计
 - [应用侧边栏](application-navigation.md)——功能模块登记、状态保留与设置入口
+- [伙伴消息系统](companions.md)——独立 SQLite owner、角色模型连接、记忆与 DSH 行动回流
 - [DSH 启动器](dsh-launcher.md)——固定运行时、实例隔离、进程监督、快照与离线备份
 - [DSH 整合包格式](dsh-packs-format.md)——依赖封存、来源锁与导入校验
 - [测试](testing.md)——测试体系与运行方式

@@ -77,6 +77,7 @@ export class InstanceService {
   private snapshotRecords: DshSnapshot[] = [];
   private readonly processes = new Map<string, ManagedProcess>();
   private readonly busy = new Set<string>();
+  private readonly cliPreparations = new Map<string, Promise<void>>();
   private readonly recoveryBlocked = new Set<string>();
   private writes = Promise.resolve();
   private closing = false;
@@ -126,9 +127,36 @@ export class InstanceService {
   getUrl(instanceId: string): string | undefined { return this.processes.get(instanceId)?.url; }
   get(instanceId: string): DshInstance { return { ...this.require(instanceId) }; }
   launchPlan(instanceId: string): RuntimeLaunchPlan { return this.options.runtimes.plan(this.require(instanceId).runtimeId); }
-  async prepareCli(instanceId: string, signal?: AbortSignal): Promise<DshCliSelection> {
+  async prepareCli(instanceId: string, signal?: AbortSignal, runtimeId?: string): Promise<DshCliSelection> {
+    // Serialize only private profile preparation. The returned pinned CLI tasks
+    // run concurrently; one prepare must not look like a conflicting mutation.
+    const previous = this.cliPreparations.get(instanceId) ?? Promise.resolve();
+    let release!: () => void;
+    const own = new Promise<void>(resolve => { release = resolve; });
+    const turn = previous.catch(() => undefined).then(() => own);
+    this.cliPreparations.set(instanceId, turn);
+    let removeAbort = () => {};
+    try {
+      signal?.throwIfAborted();
+      await Promise.race([previous, new Promise<never>((_resolve, reject) => {
+        if (!signal) return;
+        const abort = () => reject(signal.reason ?? new Error('CLI preparation cancelled.'));
+        signal.addEventListener('abort', abort, { once: true });
+        removeAbort = () => signal.removeEventListener('abort', abort);
+      })]);
+      signal?.throwIfAborted();
+      return await this.prepareCliNow(instanceId, signal, runtimeId);
+    } finally {
+      removeAbort(); release();
+      if (this.cliPreparations.get(instanceId) === turn) {
+        void turn.then(() => { if (this.cliPreparations.get(instanceId) === turn) this.cliPreparations.delete(instanceId); });
+      }
+    }
+  }
+  private async prepareCliNow(instanceId: string, signal?: AbortSignal, runtimeId?: string): Promise<DshCliSelection> {
     signal?.throwIfAborted();
-    const instance = this.ensureAvailable(instanceId);
+    const original = this.ensureAvailable(instanceId);
+    const instance = runtimeId ? { ...original, runtimeId } : original;
     if (instance.status === 'starting' || instance.status === 'stopping') throw new Error('Wait for the DSH instance to finish starting or stopping before selecting its CLI environment.');
     this.busy.add(instanceId);
     try {

@@ -1,6 +1,9 @@
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
 import type { DshLauncher } from './dsh/launcher';
+import type { CompanionService } from './companions/service';
+import type { MusicService } from './music/service';
+import { COMPANIONS_CHANNEL } from '../shared/companions';
 import { DSH_LAUNCHER_CHANNEL } from '../shared/dsh-launcher';
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -494,7 +497,8 @@ const hasSingleInstanceLock = allowMultiInstance
 
 let mainWindow: BrowserWindow | undefined;
 let dshLauncher: DshLauncher | undefined;
-let musicService: import('./music/service').MusicService | undefined;
+let musicService: MusicService | undefined;
+let companionService: CompanionService | undefined;
 /** Effective UI locale for native dialogs; synced from Renderer (WorldlineBox-bwb). */
 let appLocale: AppLocale = "en";
 let workerClient: LibraryWorkerClient | undefined;
@@ -3693,6 +3697,22 @@ async function startApplication(): Promise<void> {
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
+  try {
+    const { CompanionService } = await import('./companions/service');
+    companionService = new CompanionService({
+      userData: app.getPath('userData'), workerPath: path.join(__dirname, 'companion_worker.js'),
+      window: () => mainWindow, hasConfig: () => loadAiConfig().hasKey,
+      getConfig: () => {
+        const config = loadAiConfig();
+        return { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: getDecryptedApiKey() };
+      },
+      dsh: () => dshLauncher, report: error => logger?.error('companions.service', error),
+    });
+    companionService.registerIpc();
+  } catch (error) {
+    logger.error('companions.initialization', error);
+    ipcMain.handle(COMPANIONS_CHANNEL, () => ({ ok: false, error: '伙伴服务无法初始化，请查看诊断日志。' }));
+  }
   bindRendererKeyboardFocusLogger(logger);
   void sweepOrphanExternalLibraryStagingOnStartup();
   appUpdateService = createAppUpdateService({
@@ -6163,7 +6183,7 @@ if (!hasSingleInstanceLock) {
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !dshLauncher)) return;
+    if (quitAfterShutdown || (!workerClient && !dshLauncher && !companionService)) return;
     event.preventDefault();
     if (shutdownStarted) return;
     shutdownStarted = true;
@@ -6183,7 +6203,7 @@ if (!hasSingleInstanceLock) {
     }
 
     const mcpClose = embeddedMcpServer?.close() ?? Promise.resolve();
-    void Promise.all([mcpClose, dshLauncher?.shutdown() ?? Promise.resolve(), musicService?.flush() ?? Promise.resolve()])
+    void Promise.all([mcpClose, dshLauncher?.shutdown() ?? Promise.resolve(), musicService?.flush() ?? Promise.resolve(), companionService?.shutdown() ?? Promise.resolve()])
       .catch((error: unknown) => {
         logger?.error("automation.mcp.close", error);
       })

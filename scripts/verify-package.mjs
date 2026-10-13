@@ -81,6 +81,7 @@ const requiredAsarEntries = [
   'plugin_standard_host.js',
   'plugin_trusted_host.js',
   'script_runtime_utility.js',
+  'companion_worker.js',
 ];
 const missingAsarEntries = requiredAsarEntries.filter((entry) => {
   const normalized = entry.replaceAll('\\', '/');

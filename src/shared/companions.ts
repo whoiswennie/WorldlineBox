@@ -1,0 +1,128 @@
+import { z } from 'zod';
+import { dshExecutionAccessModeSchema } from './dsh-access';
+
+export const COMPANIONS_CHANNEL = 'worldlinebox:companions';
+export const COMPANIONS_CHANGED_CHANNEL = 'worldlinebox:companions-changed';
+export const companionIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+export const companionLlmSchema = z.object({
+  apiFormat: z.enum(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native']),
+  baseUrl: z.string().trim().max(4096), model: z.string().trim().min(1).max(160), hasKey: z.boolean().optional(),
+});
+export const companionSchema = z.object({
+  id: companionIdSchema, name: z.string().trim().min(1).max(60),
+  description: z.string().max(500), persona: z.string().min(1).max(12000),
+  model: z.string().max(160), avatar: z.enum(['sister', 'flash', 'custom']),
+  builtin: z.boolean(), proactive: z.boolean(), createdAt: z.string(),
+  llm: companionLlmSchema.optional(),
+  avatarAttachmentId: companionIdSchema.optional(),
+});
+export type Companion = z.infer<typeof companionSchema>;
+export const conversationSchema = z.object({
+  id: companionIdSchema, kind: z.enum(['private', 'group']), title: z.string().max(100),
+  memberIds: z.array(companionIdSchema).max(20), pinned: z.boolean(), muted: z.boolean(),
+  unread: z.number().int().min(0), updatedAt: z.string(), lastMessage: z.string().max(500),
+});
+export type CompanionConversation = z.infer<typeof conversationSchema>;
+export const attachmentSchema = z.object({ id: companionIdSchema, name: z.string().max(240),
+  mime: z.string().max(120), size: z.number().int().min(0), url: z.string().max(4096).optional() });
+export type CompanionAttachment = z.infer<typeof attachmentSchema>;
+export const messageSchema = z.object({
+  id: companionIdSchema, sequence: z.number().int().min(1), conversationId: companionIdSchema,
+  authorId: companionIdSchema, kind: z.enum(['text', 'notice', 'action']), content: z.string().max(65536),
+  createdAt: z.string(), replyToId: companionIdSchema.optional(),
+  status: z.enum(['sent', 'failed']), actionId: companionIdSchema.optional(),
+  attachments: z.array(attachmentSchema).max(10),
+});
+export type CompanionMessage = z.infer<typeof messageSchema>;
+export const memorySchema = z.object({ id: companionIdSchema, companionId: companionIdSchema,
+  content: z.string().trim().min(1).max(4000), sourceMessageId: companionIdSchema.optional(),
+  sourceConversationId: companionIdSchema.optional(),
+  createdAt: z.string(), updatedAt: z.string(), origin: z.enum(['user', 'companion']) });
+export type CompanionMemory = z.infer<typeof memorySchema>;
+export const companionActionEventSchema = z.object({ sequence: z.number().int().min(0), type: z.string().max(100),
+  summary: z.string().max(1000), toolName: z.string().max(160).optional(), receivedAt: z.string(),
+  content: z.string().max(16000).optional(), contentKind: z.enum(['input', 'output', 'message']).optional(), callId: z.string().max(200).optional(), streamId: z.string().max(100).optional(), outputState: z.enum(['draft', 'committed', 'abandoned']).optional() });
+export type CompanionActionEvent = z.infer<typeof companionActionEventSchema>;
+export const actionSchema = z.object({ id: companionIdSchema, conversationId: companionIdSchema,
+  companionId: companionIdSchema, sourceMessageId: companionIdSchema, title: z.string().max(120),
+  status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']),
+  taskId: companionIdSchema.optional(), sessionId: z.string().max(200).optional(),
+  result: z.string().max(65536).optional(), error: z.string().max(1000).optional(),
+  createdAt: z.string(), updatedAt: z.string(),
+  startedAt: z.string().optional(), finishedAt: z.string().optional(),
+  canResume: z.boolean().optional(), pid: z.number().int().positive().optional(), attempt: z.number().int().positive().optional(), attemptCreatedAt: z.string().optional(),
+  stage: z.string().max(1000).optional(), events: z.array(companionActionEventSchema).max(150).optional(),
+  accessMode: dshExecutionAccessModeSchema.optional(),
+});
+export type CompanionAction = z.infer<typeof actionSchema>;
+export const companionActionPageQuerySchema = z.object({
+  conversationId: companionIdSchema, companionId: companionIdSchema.optional(),
+  before: z.object({ createdAt: z.iso.datetime(), id: companionIdSchema }).optional(),
+  limit: z.number().int().min(1).max(50).default(20),
+});
+export type CompanionActionPageQuery = z.input<typeof companionActionPageQuerySchema>;
+export const companionActionPageSchema = z.object({
+  items: z.array(actionSchema).max(50), hasMore: z.boolean(),
+  nextCursor: z.object({ createdAt: z.iso.datetime(), id: companionIdSchema }).optional(),
+  total: z.number().int().nonnegative(),
+  owners: z.array(z.object({ companionId: companionIdSchema, name: z.string().max(60), count: z.number().int().nonnegative() })),
+});
+export type CompanionActionPage = z.infer<typeof companionActionPageSchema>;
+export const companionActivitySchema = z.object({ companionId: companionIdSchema, conversationId: companionIdSchema,
+  status: z.enum(['thinking', 'working']), startedAt: z.string().optional() });
+export type CompanionActivity = z.infer<typeof companionActivitySchema>;
+export const companionReplyRecoverySchema = z.object({ conversationId: companionIdSchema, sourceMessageId: companionIdSchema,
+  status: z.enum(['pending', 'interrupted', 'done', 'cancelled']), delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']),
+  completedIds: z.array(companionIdSchema).max(20), updatedAt: z.string() });
+export type CompanionReplyRecovery = z.infer<typeof companionReplyRecoverySchema>;
+export const companionStateSchema = z.object({ companions: z.array(companionSchema), conversations: z.array(conversationSchema),
+  activities: z.array(companionActivitySchema), configured: z.boolean(), recoveries: z.array(companionReplyRecoverySchema).optional() });
+export type CompanionState = z.infer<typeof companionStateSchema>;
+
+export const companionDraftSchema = companionSchema.pick({ name: true, description: true, persona: true, model: true, avatar: true, proactive: true, avatarAttachmentId: true })
+  .extend({ llm: companionLlmSchema.omit({ hasKey: true }).optional() });
+export type CompanionDraft = z.infer<typeof companionDraftSchema>;
+export const companionsRequestSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('state') }),
+  z.strictObject({ type: z.literal('companion.add-builtin'), templateId: z.enum(['sister', 'flash']) }),
+  z.strictObject({ type: z.literal('companion.create'), companion: companionDraftSchema, apiKey: z.string().max(8192).optional() }),
+  z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, apiKey: z.string().max(8192).optional() }),
+  z.strictObject({ type: z.literal('companion.delete'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('conversation.open'), companionId: companionIdSchema }),
+  z.strictObject({ type: z.literal('conversation.create-group'), title: z.string().trim().max(100).default(''), memberIds: z.array(companionIdSchema).min(1).max(20) }),
+  z.strictObject({ type: z.literal('conversation.update'), id: companionIdSchema, title: z.string().trim().max(100).optional(), memberIds: z.array(companionIdSchema).min(1).max(20).optional(), pinned: z.boolean().optional(), muted: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('conversation.read'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('messages'), conversationId: companionIdSchema, before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).optional() }),
+  z.strictObject({ type: z.literal('message.get'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('message.send'), conversationId: companionIdSchema, content: z.string().max(16000), replyToId: companionIdSchema.optional(), attachmentIds: z.array(companionIdSchema).max(10).optional(), clientId: companionIdSchema,
+    delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']).optional(), targetActionId: companionIdSchema.optional() }),
+  z.strictObject({ type: z.literal('message.search'), conversationId: companionIdSchema.optional(), query: z.string().trim().min(1).max(200) }),
+  z.strictObject({ type: z.literal('reply.retry'), conversationId: companionIdSchema }),
+  z.strictObject({ type: z.literal('reply.cancel'), conversationId: companionIdSchema }),
+  z.strictObject({ type: z.literal('reply.resume'), conversationId: companionIdSchema }),
+  z.strictObject({ type: z.literal('memory.list'), companionId: companionIdSchema }),
+  z.strictObject({ type: z.literal('memory.save'), companionId: companionIdSchema, id: companionIdSchema.optional(), content: z.string().trim().min(1).max(4000), sourceMessageId: companionIdSchema.optional() }),
+  z.strictObject({ type: z.literal('memory.delete'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema }),
+  companionActionPageQuerySchema.extend({ type: z.literal('actions.page') }).strict(),
+  z.strictObject({ type: z.literal('action.get'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('action.run'), conversationId: companionIdSchema, companionId: companionIdSchema, sourceMessageId: companionIdSchema, title: z.string().trim().min(1).max(120), prompt: z.string().trim().min(1).max(16000) }),
+  z.strictObject({ type: z.literal('action.cancel'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('action.resume'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('action.terminate'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('attachment.pick'), kind: z.literal('image').optional() }),
+  z.strictObject({ type: z.literal('attachment.open'), id: companionIdSchema }),
+]);
+export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
+export const companionsResponseSchema = z.object({
+  ok: z.boolean(), error: z.string().optional(), state: companionStateSchema.optional(),
+  conversation: conversationSchema.optional(), messages: z.array(messageSchema).optional(), hasMore: z.boolean().optional(),
+  memories: z.array(memorySchema).optional(), actions: z.array(actionSchema).optional(), attachments: z.array(attachmentSchema).optional(),
+  action: actionSchema.optional(), actionPage: companionActionPageSchema.optional(),
+  message: messageSchema.optional(), companion: companionSchema.optional(),
+});
+export type CompanionsResponse = z.infer<typeof companionsResponseSchema>;
+export interface WorldlineBoxCompanionsApi {
+  request(input: CompanionsRequest): Promise<CompanionsResponse>;
+  onChanged(listener: () => void): () => void;
+}

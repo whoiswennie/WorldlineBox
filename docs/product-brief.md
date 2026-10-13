@@ -1,6 +1,6 @@
 # WorldlineBox 产品愿景与架构边界
 
-> 0.1.0 基础现已增加 Windows DSH 实例、运行版本、整合包和备份管理，见[启动器实现](developer/dsh-launcher.md)。角色与世界相关部分仍描述后续设计方向。
+> 0.1.0 基础现已增加 Windows DSH 实例、运行版本、整合包和备份管理，见[启动器实现](developer/dsh-launcher.md)。伙伴私聊、群聊、联系人与来源记忆已开始实现，见[伙伴消息系统](developer/companions.md)；完整世界状态与游戏运行器仍描述后续设计方向。
 
 ## 产品目标
 

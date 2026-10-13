@@ -100,7 +100,7 @@ npm run release:local -- --skip-verify --build-media-locally
 
 ### Windows 安装器（Inno Setup）
 
-Windows 安装器 `WorldlineBoxSetup.exe` 用 **Inno Setup 6** 构建（脚本 `assets/inno/worldlineboxsetup.iss`，输出至 `out/make/inno/WorldlineBoxSetup.exe`）。Windows 用户可双击根目录的 `01-Setup-Environment.bat` 准备环境、`02-Start-Development.bat` 启动开发模式、`03-Build-Installer.bat` 生成安装包。脚本自动准备 Node.js（版本来自 `.nvmrc`）、npm 依赖、Electron 原生模块、校验过的媒体组件及 Inno Setup 6.7.3，工具保存在 `.tools/` 中。正常开发启动和安装版共享当前用户 `%APPDATA%\WorldlineBox`，DSH 下载缓存、运行版本与实例放在其 `dsh-launcher` 下，不放项目 `.tools`。
+Windows 安装器 `WorldlineBoxSetup.exe` 用 **Inno Setup 6** 构建（脚本 `assets/inno/worldlineboxsetup.iss`，输出至 `out/make/inno/WorldlineBoxSetup.exe`）。Windows 用户可双击根目录的 `01-Setup-Environment.bat` 准备环境、`02-Start-Development.bat` 启动开发模式、`03-Build-Installer.bat` 生成安装包。仅 `01` 安装 Node.js（版本来自 `.nvmrc`）、npm 依赖、Electron 原生模块、校验过的媒体组件及 Inno Setup 6.7.3，工具保存在 `.tools/` 中。`02` 不安装依赖、不重编译原生模块，缺环境或依赖锁变化时提示先运行 `01`；正常启动仍会编译当前源码。`03` 检查已有环境并构建 EXE 安装包。原生修复用 `--only better-sqlite3`，保留 `node-pty` 自带的 NAPI 预编译模块。正常开发启动和安装版共享当前用户 `%APPDATA%\WorldlineBox`，DSH 下载缓存、运行版本与实例放在其 `dsh-launcher` 下，不放项目 `.tools`。
 
 统一自定义目录使用绝对路径 `WORLDLINEBOX_USER_DATA_PATH`，开发版与安装版均生效。
 E2E 优先使用独立 `WORLDLINEBOX_E2E_USER_DATA_PATH` 或临时目录；显式

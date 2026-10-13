@@ -20,6 +20,8 @@ import { ApplicationShell, type ApplicationShellState } from "./ApplicationShell
 import { MusicProvider } from './music/MusicProvider';
 import type { WorldlineBoxMusicApi } from '../shared/music';
 import { DshLauncher } from './launcher/DshLauncher';
+import { Companions } from './companions/Companions';
+import type { WorldlineBoxCompanionsApi } from '../shared/companions';
 import type { WorldlineBoxDshLauncherApi } from '../shared/dsh-launcher';
 import { ThemeBackground } from "./theme/AnimatedBackground";
 import { iconActionAttrs } from "./icon-action-attrs";
@@ -665,6 +667,7 @@ type RendererWindow = Window & {
     shell?: WorldlineBoxShellApi;
     appUpdate?: WorldlineBoxAppUpdateApi;
     dshLauncher?: WorldlineBoxDshLauncherApi;
+    companions?: WorldlineBoxCompanionsApi;
     automation?: WorldlineBoxAutomationScriptApi;
     plugins?: WorldlineBoxPluginManagerApi;
     mcp?: WorldlineBoxMcpSettingsApi;
@@ -15942,6 +15945,12 @@ export function App() {
           label: t('appNavigation.launcher'),
           icon: 'box',
           content: <DshLauncher api={(window as RendererWindow).worldlinebox?.dshLauncher} />,
+        },
+        {
+          id: 'companions',
+          label: t('appNavigation.companions'),
+          icon: 'users',
+          content: <Companions api={(window as RendererWindow).worldlinebox?.companions} dshApi={(window as RendererWindow).worldlinebox?.dshLauncher} onOpenSettings={openSettings} isActive={activeModuleId === 'companions'} />,
         },
         {
           id: "assets",

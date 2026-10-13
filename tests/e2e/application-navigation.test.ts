@@ -48,7 +48,7 @@ test("application rail keeps asset navigation and opens settings in both themes"
     const assets = window.getByRole("button", { name: "资产管理", exact: true });
     const settings = window.getByRole("button", { name: "设置", exact: true });
     await expect(assets).toHaveAttribute("aria-current", "page");
-    await expect(window.locator("[data-application-module]")).toHaveCount(2);
+    await expect(window.locator("[data-application-module]")).toHaveCount(3);
     const rail = await window.locator(".application-navigation").boundingBox();
     const settingsBox = await settings.boundingBox();
     expect(rail).not.toBeNull();

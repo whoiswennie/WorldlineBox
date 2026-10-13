@@ -12,7 +12,6 @@ $npmCmd = Join-Path $nodeRoot 'npm.cmd'
 $innoRoot = Join-Path $toolsRoot 'inno'
 $setupState = Join-Path $toolsRoot 'setup-state.json'
 Set-Location -LiteralPath $projectRoot
-New-Item -ItemType Directory -Path $toolsRoot -Force | Out-Null
 
 function Download-File([string]$Url, [string]$Destination) {
     Write-Host "Downloading $Url"
@@ -55,8 +54,9 @@ function Expand-Zip([string]$ArchivePath, [string]$Destination) {
     } finally { $archive.Dispose() }
 }
 
-function Prepare-Node {
+function Prepare-Node([switch]$Install) {
     if (-not (Test-Path -LiteralPath $nodeExe)) {
+        if (-not $Install) { throw 'Local Node.js is missing. Run 01-Setup-Environment.bat first.' }
         $archiveName = "node-v$nodeVersion-win-x64.zip"
         $archivePath = Join-Path $toolsRoot $archiveName
         $hashPath = Join-Path $toolsRoot 'node-SHASUMS256.txt'
@@ -145,44 +145,73 @@ function Prepare-NativeBuildTools {
 }
 
 function Setup-Environment {
+    # A failed setup must never leave a previous success receipt behind.
+    if (Test-Path -LiteralPath $setupState) { Remove-Item -LiteralPath $setupState -Force }
+    Write-Host '[Setup 1/6] Checking native build tools...'
     Prepare-NativeBuildTools
+    Write-Host '[Setup 2/6] Installing locked npm dependencies (this may take several minutes)...'
     $env:ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
-    Run-Npm @('ci', '--registry=https://registry.npmjs.org')
+    Run-Npm @('ci', '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund')
+    Write-Host '[Setup 3/6] Preparing Electron and rebuilding only better-sqlite3...'
     Prepare-Electron -RequireArchive
     Run-Npm @('run', 'rebuild:native')
+    & $nodeExe (Join-Path $projectRoot 'scripts\ensure-native.mjs') --check-only
+    if ($LASTEXITCODE -ne 0) { throw 'Native runtime verification failed.' }
+    Write-Host '[Setup 4/6] Preparing verified media components...'
     $mediaArchive = Join-Path $toolsRoot 'worldlinebox-media-win32-x64.zip'
     if (Test-Path -LiteralPath $mediaArchive) {
         Run-Npm @('run', 'media:ensure', '--', '--archive', $mediaArchive)
     } else { Run-Npm @('run', 'media:ensure') }
+    Write-Host '[Setup 5/6] Verifying bundled tools and generating declarations...'
+    & $nodeExe (Join-Path $projectRoot 'scripts\portable-tools.mjs') ensure
+    if ($LASTEXITCODE -ne 0) { throw 'Bundled tool verification failed.' }
     & $nodeExe (Join-Path $projectRoot 'scripts\generate-automation-declarations.mjs')
     if ($LASTEXITCODE -ne 0) { throw 'Automation API generation failed.' }
     & $nodeExe (Join-Path $projectRoot 'scripts\verify-ufbx-wasm.mjs')
     if ($LASTEXITCODE -ne 0) { throw 'FBX component verification failed.' }
+    Write-Host '[Setup 6/6] Preparing the installer compiler...'
     Prepare-Inno
     $lockHash = File-Sha256 (Join-Path $projectRoot 'package-lock.json')
     @{ nodeVersion = $nodeVersion; lockHash = $lockHash } | ConvertTo-Json | Set-Content -LiteralPath $setupState -Encoding UTF8
     Write-Host 'WorldlineBox environment is ready.' -ForegroundColor Green
 }
 
-try {
-    Prepare-Node
-    $needsSetup = -not (Test-Path -LiteralPath $setupState) -or -not (Test-Path -LiteralPath (Join-Path $projectRoot 'node_modules\electron\dist\electron.exe'))
-    if (-not $needsSetup) {
-        $saved = Get-Content -LiteralPath $setupState -Raw | ConvertFrom-Json
-        $lockHash = File-Sha256 (Join-Path $projectRoot 'package-lock.json')
-        $needsSetup = $saved.nodeVersion -ne $nodeVersion -or $saved.lockHash -ne $lockHash
+function Require-PreparedEnvironment {
+    if (-not (Test-Path -LiteralPath $setupState)) { throw 'Environment setup is incomplete. Run 01-Setup-Environment.bat first.' }
+    try { $saved = Get-Content -LiteralPath $setupState -Raw | ConvertFrom-Json }
+    catch { throw 'Environment setup receipt is invalid. Run 01-Setup-Environment.bat again.' }
+    $lockHash = File-Sha256 (Join-Path $projectRoot 'package-lock.json')
+    if ($saved.nodeVersion -ne $nodeVersion -or $saved.lockHash -ne $lockHash) {
+        throw 'Project dependencies have changed. Run 01-Setup-Environment.bat to update them; this script does not install packages.'
     }
-    if ($Action -eq 'Setup' -or $needsSetup) { Setup-Environment }
+    foreach ($required in @('node_modules\electron\dist\electron.exe', 'node_modules\.bin\electron-forge.cmd')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $projectRoot $required))) { throw "Missing $required. Run 01-Setup-Environment.bat first." }
+    }
+}
+
+try {
+    if ($Action -eq 'Setup') {
+        New-Item -ItemType Directory -Path $toolsRoot -Force | Out-Null
+        Prepare-Node -Install
+        Setup-Environment
+    } else {
+        Prepare-Node
+        Require-PreparedEnvironment
+    }
     if ($Action -eq 'Dev') {
-        & $nodeExe (Join-Path $projectRoot 'scripts\portable-tools.mjs') ensure
-        if ($LASTEXITCODE -ne 0) { throw 'Bundled tool preparation failed.' }
+        Write-Host 'Starting development. No dependency installation or native rebuild will run.'
         $env:WORLDLINEBOX_DISTRIBUTION = 'development'
         # Development and installed applications use the same user-owned profile.
         Run-Npm @('start')
     }
     if ($Action -eq 'Installer') {
-        Prepare-Inno
-        Prepare-Electron -RequireArchive
+        if (-not (Test-Path -LiteralPath (Join-Path $innoRoot 'ISCC.exe'))) { throw 'Installer compiler is missing. Run 01-Setup-Environment.bat first.' }
+        $env:WORLDLINEBOX_INNO_TOOLS = $innoRoot
+        $electronVersion = (Get-Content -LiteralPath (Join-Path $projectRoot 'node_modules\electron\package.json') -Raw | ConvertFrom-Json).version
+        $archiveName = "electron-v$electronVersion-win32-x64.zip"
+        $archivePath = Join-Path $toolsRoot $archiveName
+        $checksums = Get-Content -LiteralPath (Join-Path $projectRoot 'node_modules\electron\checksums.json') -Raw | ConvertFrom-Json
+        if (-not (Test-Path -LiteralPath $archivePath) -or (File-Sha256 $archivePath) -ne $checksums.$archiveName) { throw 'Verified Electron archive is missing. Run 01-Setup-Environment.bat first.' }
         $env:WORLDLINEBOX_ELECTRON_ZIP_DIR = $toolsRoot
         Run-Npm @('run', 'typecheck')
         Run-Npm @('run', 'package')

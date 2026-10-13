@@ -18,7 +18,9 @@ The current code provides an Electron / React / TypeScript desktop app with loca
 
 Windows x64 now includes a [DSH launcher](docs/user-guide/dsh-launcher.md) with exact runtime artifacts, private plugin instances, process controls, packs, snapshots and complete offline backups. Versions and packs share sessions, the default workspace, account authorization and model/API settings. Plugins, skills and execution configuration remain private. The launcher is the first application module and opens by default.
 
-**Character cognition, persistent world state and game/world adapters remain planned features.** Actual cross-version data migrations and third-party plugin compatibility require version-specific validation.
+The new [Companions and Messages module](docs/user-guide/companions.md) sits between Launcher and Assets. It provides persistent direct and group chats, built-in whale companions, custom contacts, source-linked memories, opt-in proactive contact and DSH action cards. A separate SQLite database owns messages and relationships. Characters inherit the complete global LLM connection by default, or use their own API format, URL, encrypted key and model; personality and names do not select providers.
+
+**Complete persistent world state and game/world adapters remain planned features.** Actual cross-version data migrations and third-party plugin compatibility require version-specific validation.
 
 ## Target architecture
 
@@ -40,10 +42,10 @@ We study PCL's instance/isolation mechanisms and DSH's native profile and bundle
 Double-click these files in the project root:
 
 - `01-Setup-Environment.bat`: prepare pinned Node.js, npm dependencies, Electron, native database modules, verified media tools and Inno Setup.
-- `02-Start-Development.bat`: run development using an isolated `.tools/dev-user-data` profile.
+- `02-Start-Development.bat`: check the existing environment and run development using the current user's `%APPDATA%\WorldlineBox` profile, shared with the installed app.
 - `03-Build-Installer.bat`: type-check, package the app and create `out/make/inno/WorldlineBoxSetup.exe`.
 
-Initial setup needs internet access. Missing Python/C++ Build Tools are installed through winget when available and may require system permission or a restart. Portable tools live under `.tools/`; global Node.js is not replaced. The development and installer scripts prepare missing prerequisites automatically. Build tools, dependencies, caches and outputs are excluded from Git.
+Initial setup needs internet access. Only `01` installs dependencies, native modules and missing Python/C++ Build Tools (through winget when available). Portable tools live under `.tools/`; global Node.js is not replaced. `02` never installs dependencies or rebuilds native modules; Forge/Vite still compile the current source. `03` builds the installer. If setup is incomplete or the dependency lock changes, run `01` explicitly. Build tools, dependencies, caches and outputs are excluded from Git.
 
 ## Roadmap and documentation
 
