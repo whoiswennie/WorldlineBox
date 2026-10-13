@@ -1,4 +1,7 @@
+import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
+import type { DshLauncher } from './dsh/launcher';
+import { DSH_LAUNCHER_CHANNEL } from '../shared/dsh-launcher';
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -7,6 +10,7 @@ import {
   readFileSync,
   writeFileSync,
   existsSync,
+  mkdirSync,
   rmSync,
 } from "node:fs";
 
@@ -24,6 +28,15 @@ import {
   utilityProcess,
 } from "electron";
 import type { MessageBoxOptions, NativeImage } from "electron";
+// Local acceptance of the BAT entry uses an isolated profile and a loopback-only CDP port.
+if (process.env.WORLDLINEBOX_E2E === '1') {
+  const port = Number(process.env.WORLDLINEBOX_E2E_REMOTE_DEBUGGING_PORT);
+  if (Number.isInteger(port) && port >= 1024 && port <= 65535) {
+    app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+    app.commandLine.appendSwitch('remote-debugging-port', String(port));
+  }
+}
+import { resolveApplicationUserData } from "./application-user-data";
 
 import {
   installApplicationMenu,
@@ -384,8 +397,6 @@ import {
 import {
   DEFAULT_AI_API_FORMAT,
   DEFAULT_AI_LANGUAGES,
-  DEFAULT_AI_MODELS,
-  migrateLegacyProviderToApiFormat,
   normalizeAiLanguages,
   type AiApiFormat,
 } from "../shared/ai-endpoints";
@@ -447,34 +458,20 @@ if (
   app.commandLine.appendSwitch("use-angle", "swiftshader");
 }
 
-// The one-click dev launcher uses a checkout-local profile so another
-// installed application with the same display name cannot share its state.
-const devUserDataPath = process.env.WORLDLINEBOX_DEV_USER_DATA_PATH;
-if (!app.isPackaged && devUserDataPath && path.isAbsolute(devUserDataPath)) {
-  app.setPath("userData", devUserDataPath);
-}
-
-if (process.env.WORLDLINEBOX_E2E === "1") {
-  const explicitUserDataPath = process.env.WORLDLINEBOX_E2E_USER_DATA_PATH;
-  app.setPath(
-    "userData",
-    explicitUserDataPath && path.isAbsolute(explicitUserDataPath)
-      ? explicitUserDataPath
-      : path.join(tmpdir(), "worldlinebox-e2e-user-data", String(process.pid)),
-  );
-}
+// Development and installed applications share the current user's profile.
+// Only explicit test/multi-instance modes choose an isolated profile.
+const applicationUserData = resolveApplicationUserData({
+  appDataPath: app.getPath("appData"), tmpDirectory: tmpdir(), pid: process.pid, env: process.env,
+});
+mkdirSync(applicationUserData.userDataPath, { recursive: true });
+app.setPath("userData", applicationUserData.userDataPath);
+app.setPath("sessionData", applicationUserData.userDataPath);
 
 // Dev multi-instance (WorldlineBox-i6xg): isolate userData so SingletonLock / prefs
 // do not collide. Prefer `npm run start:multi`. Do not open the same library
 // for writes from two GUIs — SQLite write coordination is CLI/desktop lease
 // territory (ADR-0021), not dual-GUI.
 const allowMultiInstance = process.env.WORLDLINEBOX_ALLOW_MULTI_INSTANCE === "1";
-if (allowMultiInstance && process.env.WORLDLINEBOX_E2E !== "1") {
-  app.setPath(
-    "userData",
-    path.join(app.getPath("userData"), "dev-instances", `pid-${process.pid}`),
-  );
-}
 
 // Before app.ready: stream privilege is required for seekable <video>/<audio>
 // over worldlinebox:// Range responses (WorldlineBox-jh2).
@@ -496,6 +493,8 @@ const hasSingleInstanceLock = allowMultiInstance
   : app.requestSingleInstanceLock();
 
 let mainWindow: BrowserWindow | undefined;
+let dshLauncher: DshLauncher | undefined;
+let musicService: import('./music/service').MusicService | undefined;
 /** Effective UI locale for native dialogs; synced from Renderer (WorldlineBox-bwb). */
 let appLocale: AppLocale = "en";
 let workerClient: LibraryWorkerClient | undefined;
@@ -675,6 +674,8 @@ function initializePreviewCache(): void {
 /** Slice E: shared offscreen window that renders model thumbnails (WorldlineBox-hnmg). */
 let offscreenThumbnailRenderer: OffscreenThumbnailRenderer | undefined;
 let quitAfterShutdown = false;
+let applicationClosing = false;
+let shutdownStarted = false;
 let startupComplete = false;
 let logger: AppLogger | undefined;
 const VIEWER_TIMING_LOG = process.env.WORLDLINEBOX_VIEWER_TIMING_LOG === "1";
@@ -1101,8 +1102,8 @@ interface AiConfig {
 
 const DEFAULT_AI_CONFIG: AiConfig = {
   apiFormat: DEFAULT_AI_API_FORMAT,
-  model: DEFAULT_AI_MODELS[DEFAULT_AI_API_FORMAT],
-  baseUrl: "",
+  model: DEFAULT_GLOBAL_LLM_CONFIG.model,
+  baseUrl: DEFAULT_GLOBAL_LLM_CONFIG.baseUrl,
   descriptionEnabled: true,
   tagEnabled: true,
   ratingEnabled: true,
@@ -1193,19 +1194,15 @@ function loadAiConfig(): AiConfig & { hasKey: boolean } {
       apiFormat?: string;
       languages?: unknown;
     };
-    const apiFormat =
-      migrateLegacyProviderToApiFormat(parsed.apiFormat) ??
-      migrateLegacyProviderToApiFormat(parsed.provider) ??
-      DEFAULT_AI_CONFIG.apiFormat;
+    const llmConfig = resolveStoredLlmConfig(parsed);
+    const apiFormat = llmConfig.apiFormat;
     const languages = normalizeAiLanguages(
       parsed.languages ?? parsed.language ?? DEFAULT_AI_LANGUAGES,
     );
     const merged: AiConfig = {
       ...DEFAULT_AI_CONFIG,
-      model: typeof parsed.model === "string" && parsed.model.trim()
-        ? parsed.model
-        : DEFAULT_AI_CONFIG.model,
-      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
+      model: llmConfig.model,
+      baseUrl: llmConfig.baseUrl,
       descriptionEnabled:
         parsed.descriptionEnabled ?? DEFAULT_AI_CONFIG.descriptionEnabled,
       tagEnabled: parsed.tagEnabled ?? DEFAULT_AI_CONFIG.tagEnabled,
@@ -1436,8 +1433,8 @@ async function loadRendererDevUrl(
 function attachRendererDiagnostics(window: BrowserWindow): void {
   window.webContents.on(
     "console-message",
-    (_event, level, message, line, sourceId) => {
-      logRendererConsoleMessage(logger, level, message, line, sourceId);
+    (details) => {
+      logRendererConsoleMessage(logger, details);
     },
   );
   window.webContents.on("render-process-gone", (_event, details) => {
@@ -1598,14 +1595,17 @@ async function createMainWindow(): Promise<void> {
 
   const publishWindowFocus = () => {
     if (window.isDestroyed()) return;
-    if (window.isFocused()) {
+    const focused = window.isFocused() && !window.isMinimized();
+    if (focused) {
       lastExtensionTargetWindowId = window.id;
     }
     sendToLiveWebContents(window.webContents, WINDOW_FOCUS_CHANNEL, {
-      focused: window.isFocused(),
+      focused,
     });
   };
   window.on("focus", publishWindowFocus);
+  window.on("minimize", publishWindowFocus);
+  window.on("restore", publishWindowFocus);
   window.on("blur", () => {
     pluginInputCaptureBroker?.releaseForWindowBlur();
     publishWindowFocus();
@@ -1625,7 +1625,7 @@ async function createMainWindow(): Promise<void> {
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
-      if (errorCode === -3) return; // aborted
+      if (applicationClosing || errorCode === -3) return; // aborted
       const detail = [
         `Failed to load renderer (${errorCode}): ${errorDescription}`,
         validatedURL ? `URL: ${validatedURL}` : null,
@@ -1640,6 +1640,7 @@ async function createMainWindow(): Promise<void> {
     try {
       await loadRendererDevUrl(window, MAIN_WINDOW_VITE_DEV_SERVER_URL);
     } catch (error) {
+      if (applicationClosing) return;
       logger?.error("main.window.dev-load", error);
       dialog.showErrorBox(
         "WorldlineBox renderer failed to load",
@@ -3648,15 +3649,50 @@ async function startApplication(): Promise<void> {
   if (process.platform === "win32") {
     app.setAppUserModelId("com.worldlinebox.app");
   }
-  // Isolated E2E runs must not write the log into the real user profile
-  // (~/Library/Logs/WorldlineBox); pin it under the temp userData instead.
-  if (process.env.WORLDLINEBOX_E2E === "1" && process.env.WORLDLINEBOX_E2E_USER_DATA_PATH) {
-    app.setAppLogsPath(path.join(process.env.WORLDLINEBOX_E2E_USER_DATA_PATH, "logs"));
-  } else {
-    app.setAppLogsPath();
-  }
+  app.setAppLogsPath(path.join(app.getPath("userData"), "logs"));
   appLogPath = chooseUniqueSessionLogPath(app.getPath("logs"), new Date());
   logger = new AppLogger(appLogPath);
+  logger.info("main.user-data", "Application data directory selected.", {
+    path: app.getPath("userData"), mode: applicationUserData.mode,
+  });
+  if (process.platform === 'win32' && process.arch === 'x64') {
+    try {
+      const { loadApplicationPortableTools } = await import('./portable-tools');
+      const tools = await loadApplicationPortableTools();
+      logger.info('main.portable-tools', 'Bundled tools loaded into the application environment.', { node: tools.nodeVersion, npm: tools.npmVersion });
+    } catch (error) {
+      logger.error('main.portable-tools', error);
+    }
+  }
+  if (applicationUserData.mode === "shared" || applicationUserData.mode === "override") {
+    try {
+      const { migrateLegacyDshStorage } = await import("./legacy-dsh-storage");
+      const migration = await migrateLegacyDshStorage({
+        projectRoot: app.getAppPath(), userDataPath: app.getPath("userData"),
+        legacyUserDataPath: process.env.WORLDLINEBOX_DEV_USER_DATA_PATH,
+      });
+      if (migration.status !== "missing" && migration.status !== "target-exists") {
+        logger.info("dsh.legacy-storage", migration.message, { ...migration });
+      }
+    } catch (error) {
+      logger.error("dsh.legacy-storage", error);
+    }
+  }
+  try {
+    const { DshLauncher: LauncherService } = await import('./dsh/launcher');
+    dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error));
+    dshLauncher.registerIpc();
+  } catch (error) {
+    logger.error('dsh.launcher.initialization', error);
+    // An unavailable execution environment must not prevent the asset manager from starting.
+    ipcMain.handle(DSH_LAUNCHER_CHANNEL, (event) => {
+      if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: 'Unauthorized DSH launcher sender.' };
+      return { ok: false, error: 'DSH launcher initialization failed. Open application diagnostics for details; the asset manager remains available.' };
+    });
+  }
+  const { MusicService } = await import('./music/service');
+  musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
+  musicService.registerIpc();
   bindRendererKeyboardFocusLogger(logger);
   void sweepOrphanExternalLibraryStagingOnStartup();
   appUpdateService = createAppUpdateService({
@@ -3762,8 +3798,8 @@ async function startApplication(): Promise<void> {
       const offscreenWindow = new BrowserWindow(options);
       offscreenWindow.webContents.on(
         "console-message",
-        (_event, level, message, line, sourceId) => {
-          logRendererConsoleMessage(logger, level, message, line, sourceId);
+        (details) => {
+          logRendererConsoleMessage(logger, details);
         },
       );
       offscreenWindow.webContents.on(
@@ -6091,6 +6127,9 @@ if (!hasSingleInstanceLock) {
     .whenReady()
     .then(startApplication)
     .catch((error: unknown) => {
+      // Closing a newly created window can interrupt its still-pending initial
+      // navigation. The authorized shutdown must not open a blocking error box.
+      if (applicationClosing) return;
       logger?.error("main.startup", error);
       dialog.showErrorBox(
         "WorldlineBox could not start",
@@ -6118,13 +6157,16 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("before-quit", (event) => {
+    applicationClosing = true;
     aiQueueScheduler.clearAll();
     criticalConfirmationWindowManager?.dispose();
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || !workerClient) return;
+    if (quitAfterShutdown || (!workerClient && !dshLauncher)) return;
     event.preventDefault();
+    if (shutdownStarted) return;
+    shutdownStarted = true;
 
     // Slice E: fail in-flight model thumbnail renders and destroy the window.
     offscreenThumbnailRenderer?.dispose();
@@ -6141,7 +6183,7 @@ if (!hasSingleInstanceLock) {
     }
 
     const mcpClose = embeddedMcpServer?.close() ?? Promise.resolve();
-    void Promise.all([mcpClose])
+    void Promise.all([mcpClose, dshLauncher?.shutdown() ?? Promise.resolve(), musicService?.flush() ?? Promise.resolve()])
       .catch((error: unknown) => {
         logger?.error("automation.mcp.close", error);
       })

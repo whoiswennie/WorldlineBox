@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schemas.linxin666.org/dsh-skin/v2.json",
+  "skinManifestVersion": 2,
+  "id": "whale-fantasy",
+  "name": "鲸鱼娘 · 未至之境",
+  "nameEn": "Whale Girl · The Unreached",
+  "version": "1.0.0",
+  "author": "stushansusu",
+  "license": "CC BY-NC-SA 4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "attribution": "皮肤工程（skin.css / patches.css 的全部全息化规则、调色板与几何约定）由 stushansusu 原创。背景视频：源片由作者提供；构建时代码用 bake-ff-loop.py 裁掉上下各 46px 黑边、降到 1664 宽 / CRF 28，并把尾部 1.2s 与头部 1.2s 交叉淡入成无缝循环（25.46s / 611 帧 / 6.63 MB）。",
+  "tagline": "冷黑蓝 · 电光蓝 · 青色数据雨 · 赛博全息 HUD",
+  "description": "未至之境的一路：背景是作者给的赛博动画（蓝发少女的脸部与眼睛特写、眼里淌着代码、青色数据雨），配色全部从画面里量出来 —— 地面取那片夜 #05070D，结构线取暗部那一档冷蓝 #1E3A6B，品牌色取字标的电光蓝 #3A7BFF，强调色取眼睛与数据雨里的青 #39FFD1，正文取银白 #E8F1FF。语言是「悬浮在夜里的一块全息仪表盘」：面全是薄玻璃（背后永远是正在流动的画面），结构是 1px 冷蓝线，青色只给状态（当前行、聚焦中的输入卡、链接、选中文本），全屏唯一的实心是新会话那颗电光蓝按钮。**暗色专用**，左上角品牌行换成「鲸鱼娘 · 未至之境」。",
+  "tags": [
+    "cyberpunk",
+    "sci-fi",
+    "the-unreached",
+    "anime",
+    "hologram",
+    "hud",
+    "cold-blue",
+    "electric-blue",
+    "cyan",
+    "data-rain",
+    "whale-girl",
+    "video-background",
+    "dark",
+    "dark-only"
+  ],
+  "accent": "#3A7BFF",
+  "order": 48,
+  "preview": {
+    "light": "preview/light.jpg",
+    "dark": "preview/dark.jpg"
+  },
+  "contributes": {
+    "stylesheet": "skin.css",
+    "patches": "patches.css",
+    "backgroundMedia": {
+      "light": {
+        "type": "video",
+        "src": "assets/whale-fantasy-loop.mp4",
+        "scrim": "linear-gradient(180deg, rgba(5,7,13,0) 0%, rgba(5,7,13,0) 86%, rgba(5,7,13,0.16) 96%, rgba(5,7,13,0.22) 100%)"
+      },
+      "dark": {
+        "type": "video",
+        "src": "assets/whale-fantasy-loop.mp4",
+        "scrim": "linear-gradient(180deg, rgba(5,7,13,0) 0%, rgba(5,7,13,0) 86%, rgba(5,7,13,0.16) 96%, rgba(5,7,13,0.22) 100%)"
+      }
+    }
+  }
+}

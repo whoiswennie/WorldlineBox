@@ -1,0 +1,105 @@
+import { Activity, useEffect, type ReactNode } from "react";
+
+import startupLogo from "../../assets/icons/startup-logo.png";
+import { Icon, type IconName } from "./Icons";
+import { iconActionAttrs } from "./icon-action-attrs";
+import { useT } from "./i18n";
+import { isImeKeyboardEvent } from "./ime-safe-dismiss";
+import "./application-shell.css";
+
+/** Register complete feature views here, separately from asset workspaces. */
+export interface ApplicationModule {
+  readonly id: string;
+  readonly label: string;
+  readonly icon: IconName;
+  readonly content: ReactNode;
+  /** Keep a module's dialog controller active while its view stays hidden. */
+  readonly keepEffectsActive?: boolean;
+}
+
+export interface ApplicationShellState {
+  readonly settingsOpen: boolean;
+  readonly settingsDisabled: boolean;
+}
+
+export function ApplicationShell({
+  modules,
+  activeModuleId,
+  onSelectModule,
+  onOpenSettings,
+  settingsOpen = false,
+  settingsDisabled = false,
+}: {
+  readonly modules: readonly ApplicationModule[];
+  readonly activeModuleId: string;
+  readonly onSelectModule: (id: string) => void;
+  readonly onOpenSettings: () => void;
+  readonly settingsOpen?: boolean;
+  readonly settingsDisabled?: boolean;
+}) {
+  const t = useT();
+  const selectedId = modules.some((module) => module.id === activeModuleId)
+    ? activeModuleId
+    : modules[0]?.id;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (settingsDisabled || event.repeat || isImeKeyboardEvent(event)) return;
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === ",") {
+        event.preventDefault();
+        onOpenSettings();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onOpenSettings, settingsDisabled]);
+
+  return (
+    <div className="application-shell">
+      <aside aria-label={t("appNavigation.label")} className="application-navigation">
+        <div className="application-navigation-brand">
+          <img alt="WorldlineBox" draggable={false} src={startupLogo} />
+        </div>
+        <nav aria-label={t("appNavigation.modules")} className="application-navigation-modules">
+          {modules.map((module) => (
+            <button
+              {...iconActionAttrs(module.label)}
+              aria-current={selectedId === module.id ? "page" : undefined}
+              className={`application-navigation-item${selectedId === module.id ? " is-active" : ""}`}
+              data-application-module={module.id}
+              key={module.id}
+              onClick={() => onSelectModule(module.id)}
+              type="button"
+            >
+              <Icon name={module.icon} size={22} />
+              <span className="application-navigation-item-label">{module.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="application-navigation-footer">
+          <button
+            {...iconActionAttrs(t("toolbar.appSettings"))}
+            aria-expanded={settingsOpen}
+            aria-haspopup="dialog"
+            className={`application-navigation-item application-navigation-settings${settingsOpen ? " is-active" : ""}`}
+            disabled={settingsDisabled}
+            onClick={onOpenSettings}
+            type="button"
+          >
+            <Icon name="settings" size={22} />
+            <span className="application-navigation-item-label">{t("toolbar.appSettings")}</span>
+          </button>
+        </div>
+      </aside>
+      <div className="application-module-host">
+        {modules.map((module) => (
+          <Activity key={module.id} mode={selectedId === module.id || module.keepEffectsActive ? "visible" : "hidden"}>
+            <div className="application-module-view" data-application-view={module.id} hidden={selectedId !== module.id}>
+              {module.content}
+            </div>
+          </Activity>
+        ))}
+      </div>
+    </div>
+  );
+}

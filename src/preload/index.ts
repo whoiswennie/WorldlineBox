@@ -1,6 +1,9 @@
 import { contextBridge } from 'electron';
 
 import { appUpdate } from './bridge/app-update';
+import { dshLauncher } from './bridge/dsh-launcher';
+import { llm } from './bridge/llm';
+import { music } from './bridge/music';
 import { automation } from './bridge/automation';
 import {
   armE2eBrowseSessionDelay,
@@ -43,6 +46,9 @@ contextBridge.exposeInMainWorld(
     library,
     shell,
     appUpdate,
+    dshLauncher,
+    llm,
+    music,
     automation,
     mcp,
     plugins,

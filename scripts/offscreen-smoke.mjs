@@ -77,8 +77,8 @@ app.whenReady().then(async () => {
   });
 
   try {
-    win.webContents.on('console-message', (_event, level, message) => {
-      if (level >= 2) console.error(`[smoke page] ${message}`);
+    win.webContents.on('console-message', ({ level, message }) => {
+      if (level === 'warning' || level === 'error') console.error(`[smoke page] ${message}`);
     });
     await win.loadFile(path.join(__dirname, 'offscreen-smoke-page.html'));
 

@@ -94,14 +94,17 @@ export function useDialogEscapeDismiss({
     if (!isDialogEscapeLayerActive(snapshot)) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       if (isImeKeyboardEvent(event)) return;
+      const action = resolveDialogEscapeAction(snapshot);
+      // Leave fatal/confirmation layers authoritative; a settings popover
+      // consumes Escape only when its own parent would otherwise close.
+      if (action.kind === 'close-app-settings' && document.querySelector('[data-escape-owned-popover]:not([hidden])')) return;
       event.preventDefault();
       // Dialogs are the topmost interaction layer. Handle Escape during the
       // capture phase so a viewer/workspace listener cannot close a surface
       // underneath the dialog first.
       event.stopPropagation();
-      const action = resolveDialogEscapeAction(snapshot);
       switch (action.kind) {
         case "none":
           return;

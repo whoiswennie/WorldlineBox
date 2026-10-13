@@ -1,6 +1,9 @@
+import { getGlobalLlmApi } from "./global-llm";
+import { DEFAULT_GLOBAL_LLM_CONFIG } from "../shared/llm";
 import {
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -8,10 +11,17 @@ import {
   type CSSProperties,
   type FormEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
 
 import { Icon, type IconName } from "./Icons";
+import { ApplicationShell, type ApplicationShellState } from "./ApplicationShell";
+import { MusicProvider } from './music/MusicProvider';
+import type { WorldlineBoxMusicApi } from '../shared/music';
+import { DshLauncher } from './launcher/DshLauncher';
+import type { WorldlineBoxDshLauncherApi } from '../shared/dsh-launcher';
+import { ThemeBackground } from "./theme/AnimatedBackground";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { EditTextContextMenuHost } from "./edit-text-context-menu";
 import { HoverTipHost } from "./hover-tip";
@@ -173,7 +183,7 @@ import {
 import { resolveSearchFolderResults } from "./search-folder-results";
 import { useT, useLocale, translateForLocale, type AppLocale } from "./i18n";
 import type { AiApiFormat } from "../shared/ai-endpoints";
-import { DEFAULT_AI_API_FORMAT, DEFAULT_AI_MODELS } from "../shared/ai-endpoints";
+import { DEFAULT_AI_API_FORMAT } from "../shared/ai-endpoints";
 import type { WorldlineBoxMcpSettingsApi } from "../shared/mcp";
 import type { HistoryStatus } from "../shared/protocol/responses";
 import { isEditableTextTarget } from "../shared/edit-context-menu";
@@ -293,7 +303,6 @@ import type {
   AppUpdateProgress,
   WorldlineBoxAppUpdateApi,
 } from "../shared/app-update";
-import { AppSettingsEntry } from "./AppSettingsEntry";
 import type { AppSettingsCategoryId } from "./app-settings-sections";
 import {
   loadAiUiPreferences,
@@ -655,6 +664,7 @@ type RendererWindow = Window & {
     library?: WorldlineBoxLibraryApi;
     shell?: WorldlineBoxShellApi;
     appUpdate?: WorldlineBoxAppUpdateApi;
+    dshLauncher?: WorldlineBoxDshLauncherApi;
     automation?: WorldlineBoxAutomationScriptApi;
     plugins?: WorldlineBoxPluginManagerApi;
     mcp?: WorldlineBoxMcpSettingsApi;
@@ -815,7 +825,23 @@ function ToolButton({
   );
 }
 
-function AppInner() {
+interface AssetManagerHandle {
+  openSettings: () => void;
+}
+
+function renderApplicationDialog(content: ReactNode) {
+  return createPortal(<div className="application-global-dialogs">{content}</div>, document.body);
+}
+
+function AssetManager({
+  settingsRef,
+  onShellStateChange,
+  isModuleActive,
+}: {
+  readonly settingsRef: Ref<AssetManagerHandle>;
+  readonly onShellStateChange: (state: ApplicationShellState) => void;
+  readonly isModuleActive: boolean;
+}) {
   const t = useT();
   const { locale } = useLocale();
   const rawLibraryApi = (window as RendererWindow).worldlinebox?.library;
@@ -1781,6 +1807,14 @@ function AppInner() {
   const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   const [appSettingsCategory, setAppSettingsCategory] =
     useState<AppSettingsCategoryId>("general");
+
+  useImperativeHandle(settingsRef, () => ({
+    openSettings: () => {
+      setAppSettingsCategory("general");
+      setAppSettingsOpen(true);
+    },
+  }), []);
+
   const [pluginContributionEpoch, setPluginContributionEpoch] = useState(0);
   const pluginContributionRefreshKey = `${appSettingsOpen ? "settings" : "browse"}:${pluginContributionEpoch}`;
   const pluginSidebarRefreshKey = pluginContributionRefreshKey;
@@ -2037,8 +2071,8 @@ function AppInner() {
 
   // AI analysis state
   const [aiApiFormat, setAiApiFormat] = useState<AiApiFormat>(DEFAULT_AI_API_FORMAT);
-  const [aiModel, setAiModel] = useState(DEFAULT_AI_MODELS[DEFAULT_AI_API_FORMAT]);
-  const [aiBaseUrl, setAiBaseUrl] = useState("");
+  const [aiModel, setAiModel] = useState<string>(DEFAULT_GLOBAL_LLM_CONFIG.model);
+  const [aiBaseUrl, setAiBaseUrl] = useState<string>(DEFAULT_GLOBAL_LLM_CONFIG.baseUrl);
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiHasKey, setAiHasKey] = useState(false);
   const [aiDescriptionEnabled, setAiDescriptionEnabled] = useState(true);
@@ -2067,8 +2101,8 @@ function AppInner() {
   const aiVerifiedFingerprintRef = useRef<string | null>(null);
   const aiConfigPersistDraftRef = useRef({
     apiFormat: DEFAULT_AI_API_FORMAT as AiApiFormat,
-    model: DEFAULT_AI_MODELS[DEFAULT_AI_API_FORMAT],
-    baseUrl: "",
+    model: DEFAULT_GLOBAL_LLM_CONFIG.model as string,
+    baseUrl: DEFAULT_GLOBAL_LLM_CONFIG.baseUrl as string,
     apiKey: "",
     hasKey: false,
     descriptionEnabled: true,
@@ -3482,7 +3516,7 @@ function AppInner() {
   ]);
 
   useSelectionKeyboard({
-    enabled: Boolean(library),
+    enabled: isModuleActive && Boolean(library),
     platform: SHORTCUT_PLATFORM,
     previewOpen: Boolean(previewAsset),
     browseScopeAssetIds,
@@ -3883,7 +3917,7 @@ function AppInner() {
   // Browse canvas Cmd/Ctrl+=|-|0 — discrete card stops; 0 = default size
   // (WorldlineBox-46i9 / WorldlineBox-7ny). Viewer owns the chord while preview is open.
   useEffect(() => {
-    if (previewAsset) return;
+    if (!isModuleActive || previewAsset) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (shouldIgnoreGlobalZoomShortcut(event.target)) return;
       const action = matchGlobalZoomShortcut(event, SHORTCUT_PLATFORM);
@@ -3914,7 +3948,7 @@ function AppInner() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [assetCardSize, previewAsset, resizeAssetCards]);
+  }, [isModuleActive, assetCardSize, previewAsset, resizeAssetCards]);
 
   const saveCurrentWorkspaceHistoryViewport = useCallback(() => {
     if (workspaceHistoryReplayActiveRef.current) {
@@ -4608,7 +4642,7 @@ function AppInner() {
   // WorldlineBox-kipk: no-library surface is the shared create dialog (start phase),
   // full-window centered with backdrop — not a card inside the canvas.
   useEffect(() => {
-    if (library) return;
+    if (!isModuleActive || library) return;
     if (scriptSandboxPreviewOpen) return;
     // Keep the required start surface closed while any import flow owns the
     // foreground. The native ZIP picker can take long enough for the chooser
@@ -4623,6 +4657,7 @@ function AppInner() {
       setDialog("library");
     });
   }, [
+    isModuleActive,
     library,
     dialog,
     importLibraryChooserOpen,
@@ -11088,38 +11123,39 @@ function AppInner() {
 
   const dialogEscapeSnapshot = useMemo((): DialogEscapeSnapshot => {
     return {
-      assetRenameOpen: Boolean(assetRenameDialog),
-      imageSequenceImportOpen: Boolean(imageSequenceImportOffer),
-      imageSequenceDialogOpen: Boolean(imageSequenceDialog),
-      batchRelinkOpen: Boolean(batchRelinkPreview),
-      restoreOpen: Boolean(restoreDialog),
-      moveOpen: Boolean(moveDialog),
-      collectionEditorOpen: Boolean(collectionEditor),
-      exportDialogOpen,
-      importLibraryChooserOpen,
-      openLibraryChooserOpen,
+      assetRenameOpen: isModuleActive && Boolean(assetRenameDialog),
+      imageSequenceImportOpen: isModuleActive && Boolean(imageSequenceImportOffer),
+      imageSequenceDialogOpen: isModuleActive && Boolean(imageSequenceDialog),
+      batchRelinkOpen: isModuleActive && Boolean(batchRelinkPreview),
+      restoreOpen: isModuleActive && Boolean(restoreDialog),
+      moveOpen: isModuleActive && Boolean(moveDialog),
+      collectionEditorOpen: isModuleActive && Boolean(collectionEditor),
+      exportDialogOpen: isModuleActive && exportDialogOpen,
+      importLibraryChooserOpen: isModuleActive && importLibraryChooserOpen,
+      openLibraryChooserOpen: isModuleActive && openLibraryChooserOpen,
       appSettingsOpen,
-      librarySettingsOpen,
+      librarySettingsOpen: isModuleActive && librarySettingsOpen,
       appLogOpen,
       scriptSandboxPreviewOpen,
       aboutOpen,
       openSourceLicensesOpen,
-      mediaJobsOpen: Boolean(mediaJobsOpen && library !== null),
-      linkedRulesEditorOpen: Boolean(linkedRulesEditor),
-      convertLinkedOpen: Boolean(convertLinkedDialog.folderId),
-      dialogOpen: Boolean(dialog),
+      mediaJobsOpen: isModuleActive && Boolean(mediaJobsOpen && library !== null),
+      linkedRulesEditorOpen: isModuleActive && Boolean(linkedRulesEditor),
+      convertLinkedOpen: isModuleActive && Boolean(convertLinkedDialog.folderId),
+      dialogOpen: isModuleActive && Boolean(dialog),
       pluginTrustPromptOpen: false,
-      fatalAlertOpen: Boolean(fatalAlertMessage),
+      fatalAlertOpen: isModuleActive && Boolean(fatalAlertMessage),
       aiConnectionFailureOpen: aiConnectionFailureGate.open,
-      conflictsImportId: conflictPhase ? (conflicts?.importId ?? null) : null,
-      sourceFailureImportId: importSourceFailurePlan?.importId ?? null,
+      conflictsImportId: isModuleActive && conflictPhase ? (conflicts?.importId ?? null) : null,
+      sourceFailureImportId: isModuleActive ? importSourceFailurePlan?.importId ?? null : null,
       importDecisionSubmitting,
-      blockingImportOpen: blockingImportOverlayVisible,
+      blockingImportOpen: isModuleActive && blockingImportOverlayVisible,
       blockingImportCancelable,
-      blockingDeleteOpen: blockingDeleteOverlayVisible,
+      blockingDeleteOpen: isModuleActive && blockingDeleteOverlayVisible,
       blockingDeleteCancelable,
     };
   }, [
+    isModuleActive,
     assetRenameDialog,
     imageSequenceImportOffer,
     imageSequenceDialog,
@@ -11220,8 +11256,15 @@ function AppInner() {
 
   const criticalConfirmation = useCriticalConfirmationPrompt(shellApi);
 
+  const globalSettingsOverlayOpen = appSettingsOpen || appLogOpen ||
+    scriptSandboxPreviewOpen || aboutOpen || openSourceLicensesOpen ||
+    aiConnectionFailureGate.open || pluginUiDialogOpen || criticalConfirmation.request !== null;
+  useEffect(() => {
+    onShellStateChange({ settingsOpen: globalSettingsOverlayOpen, settingsDisabled: busy });
+  }, [globalSettingsOverlayOpen, busy, onShellStateChange]);
+
   const dialogFocusTrapActive = Boolean(
-    dialog ||
+    globalSettingsOverlayOpen || (isModuleActive && (dialog ||
       conflicts ||
       importSourceFailurePlan ||
       assetRenameDialog ||
@@ -11254,7 +11297,7 @@ function AppInner() {
         exportProgress &&
           !["complete", "cancelled", "failed"].includes(exportProgress.phase),
       ) ||
-      criticalConfirmation.request !== null,
+      criticalConfirmation.request !== null)),
   );
   useDialogFocusTrap(
     dialogFocusTrapActive,
@@ -11263,7 +11306,7 @@ function AppInner() {
 
   useWindowsBrowseShortcutBridge({
     shell: shellApi,
-    enabled: Boolean(library) && !showTagManagement && !showPluginSidebarView,
+    enabled: isModuleActive && Boolean(library) && !showTagManagement && !showPluginSidebarView,
     acceleratorsBlocked:
       dialogFocusTrapActive ||
       Boolean(previewAsset) ||
@@ -11290,7 +11333,7 @@ function AppInner() {
   }
 
   useBrowseCommandKeyboard({
-    enabled: Boolean(library) && !showTagManagement && !showPluginSidebarView,
+    enabled: isModuleActive && Boolean(library) && !showTagManagement && !showPluginSidebarView,
     platform: SHORTCUT_PLATFORM,
     previewOpen: Boolean(previewAsset),
     showTrash,
@@ -11348,7 +11391,7 @@ function AppInner() {
   });
 
   usePluginShortcutKeyboard({
-    enabled: Boolean(library) && !showTagManagement && !showPluginSidebarView,
+    enabled: isModuleActive && Boolean(library) && !showTagManagement && !showPluginSidebarView,
     platform: SHORTCUT_PLATFORM,
     pluginApi: (window as RendererWindow).worldlinebox?.plugins,
     libraryId: library?.libraryId,
@@ -11361,7 +11404,7 @@ function AppInner() {
 
   usePluginInputCaptureFanIn({
     shell: shellApi,
-    enabled: Boolean(library),
+    enabled: isModuleActive && Boolean(library),
     previewOpen: Boolean(previewAsset),
   });
   usePluginInputCaptureModalSeam({
@@ -11370,7 +11413,7 @@ function AppInner() {
   });
 
   useWorkspaceMouseNavigation({
-    enabled: Boolean(library),
+    enabled: isModuleActive && Boolean(library),
     onBack: () => {
       void goWorkspaceBack();
     },
@@ -11383,6 +11426,10 @@ function AppInner() {
   useEffect(() => {
     if (!shellApi) return;
     return shellApi.onCopySelection(() => {
+      if (!isModuleActive) {
+        void shellApi.nativeEditCopy();
+        return;
+      }
       const target = document.activeElement;
       if (
         target instanceof HTMLInputElement ||
@@ -11409,6 +11456,7 @@ function AppInner() {
       void shellApi.nativeEditCopy();
     });
   }, [
+    isModuleActive,
     shellApi,
     previewAsset,
     showTrash,
@@ -11464,6 +11512,7 @@ function AppInner() {
     const onPaste = (event: ClipboardEvent) => {
       const target = event.target;
       if (
+        !isModuleActive ||
         !library ||
         busy ||
         showTrash ||
@@ -11495,6 +11544,7 @@ function AppInner() {
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
   }, [
+    isModuleActive,
     library,
     busy,
     showTrash,
@@ -11506,7 +11556,7 @@ function AppInner() {
 
   useEffect(() => {
     if (
-      dialog ||
+      !isModuleActive || dialog ||
       conflicts ||
       batchRelinkPreview ||
       restoreDialog ||
@@ -11579,6 +11629,7 @@ function AppInner() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
+    isModuleActive,
     batchRelinkPreview,
     closeAssetPreview,
     collectionEditor,
@@ -11666,12 +11717,12 @@ function AppInner() {
 
   async function loadAiConfig() {
     if (!api) return;
-    const result = await api.getAiConfig();
+    const result = await (getGlobalLlmApi()?.getConfig() ?? api.getAiConfig());
     if (!result.ok) return;
     setAiApiFormat(
       (result.value.apiFormat as AiApiFormat) ?? DEFAULT_AI_API_FORMAT,
     );
-    setAiModel(result.value.model ?? DEFAULT_AI_MODELS[DEFAULT_AI_API_FORMAT]);
+    setAiModel(result.value.model ?? DEFAULT_GLOBAL_LLM_CONFIG.model);
     setAiBaseUrl(result.value.baseUrl ?? "");
     setAiHasKey(result.value.hasKey);
     setAiDescriptionEnabled(result.value.enabledFields.description);
@@ -11722,7 +11773,7 @@ function AppInner() {
       aiBaseUrl.trim(),
       aiApiKey.trim() || (aiHasKey ? "__stored__" : ""),
     ].join("\u0001");
-    const result = await api.testAiConnection({
+    const result = await (getGlobalLlmApi()?.testConnection ?? api.testAiConnection)({
       apiFormat: aiApiFormat,
       model: aiModel.trim(),
       ...(aiApiKey.trim() ? { apiKey: aiApiKey.trim() } : {}),
@@ -11748,7 +11799,7 @@ function AppInner() {
         setAiHasKey(true);
       } else {
         // Probe OK with unsaved key: refresh from disk (still false until save).
-        void api.getAiConfig().then((cfg) => {
+        void (getGlobalLlmApi()?.getConfig() ?? api.getAiConfig()).then((cfg) => {
           if (cfg.ok) setAiHasKey(cfg.value.hasKey);
         });
       }
@@ -11797,7 +11848,7 @@ function AppInner() {
       }
       return false;
     }
-    const result = await api.setAiConfig({
+    const result = await (getGlobalLlmApi()?.setConfig ?? api.setAiConfig)({
       apiFormat: draft.apiFormat,
       model: draft.model,
       baseUrl: draft.baseUrl.trim(),
@@ -11925,14 +11976,14 @@ function AppInner() {
     setAiConnectionState((prev) =>
       prev === "connected" || prev === "connecting" ? prev : "connecting",
     );
-    const cfg = await api.getAiConfig();
+    const cfg = await (getGlobalLlmApi()?.getConfig() ?? api.getAiConfig());
     if (!cfg.ok || !cfg.value.hasKey || !cfg.value.apiFormat || !cfg.value.model) {
       setAiConnectionState("disconnected");
       setAiConnectionReason(t("aiConfig.testFailed"));
       aiVerifiedFingerprintRef.current = null;
       return;
     }
-    const result = await api.testAiConnection({
+    const result = await (getGlobalLlmApi()?.testConnection ?? api.testAiConnection)({
       apiFormat: cfg.value.apiFormat,
       model: cfg.value.model,
       baseUrl: cfg.value.baseUrl.trim() || undefined,
@@ -11986,7 +12037,7 @@ function AppInner() {
     reason?: string;
   }> {
     if (!api) return { models: [], reason: t("aiConfig.fetchModelsFailed") };
-    const result = await api.listAiModels({
+    const result = await (getGlobalLlmApi()?.listModels ?? api.listAiModels)({
       apiFormat: aiApiFormat,
       ...(aiApiKey.trim() ? { apiKey: aiApiKey.trim() } : {}),
       baseUrl: aiBaseUrl.trim() || undefined,
@@ -12677,7 +12728,7 @@ function AppInner() {
   // so the business undo/redo shortcuts live in the renderer. A focused text
   // field keeps Ctrl+Z/Ctrl+Shift+Z for Chromium's native text undo/redo.
   useEffect(() => {
-    if (!IS_WINDOWS_PLATFORM) return;
+    if (!isModuleActive || !IS_WINDOWS_PLATFORM) return;
     const onUndoRedoKeyDown = (event: KeyboardEvent) => {
       if (editableTextFocused || busy) return;
       if (!event.ctrlKey || event.metaKey || event.altKey) return;
@@ -12693,7 +12744,7 @@ function AppInner() {
     };
     document.addEventListener("keydown", onUndoRedoKeyDown);
     return () => document.removeEventListener("keydown", onUndoRedoKeyDown);
-  }, [busy, editableTextFocused, operationHistory, undoLastFileOp, redoLastOperation]);
+  }, [isModuleActive, busy, editableTextFocused, operationHistory, undoLastFileOp, redoLastOperation]);
 
   // WorldlineBox-f74e48: during a text search the ordinary folder-card-row is
   // reused directly (matching folders appear as the same cards as browsing)
@@ -12836,9 +12887,7 @@ function AppInner() {
 
   return (
     <>
-    <HoverTipHost />
-    <PluginUiDialogHost onOpenChange={setPluginUiDialogOpen} pluginApi={pluginManagerApi} />
-    <EditTextContextMenuHost />
+    {renderApplicationDialog(<PluginUiDialogHost onOpenChange={setPluginUiDialogOpen} pluginApi={pluginManagerApi} />)}
     {libraryLoading && libraryLoadingVisible && !blockingImportOverlayVisible && !blockingDeleteOverlayVisible ? (
       <LibraryLoadingOverlay
         name={libraryLoading.name}
@@ -13025,16 +13074,11 @@ function AppInner() {
                 onForward={() => void goWorkspaceForward()}
               />
               {IS_WINDOWS_PLATFORM ? (
-                <MainMenu disabled={busy} sections={mainMenuSections} />
-              ) : (
-                <AppSettingsEntry
+                <MainMenu
                   disabled={busy}
-                  onOpen={() => {
-                    setAppSettingsCategory("general");
-                    setAppSettingsOpen(true);
-                  }}
+                  sections={mainMenuSections.filter((section) => section.id !== "settings")}
                 />
-              )}
+              ) : null}
             </div>
             <WorkspaceTabs
               activeTabId={workspaceTabsState.activeTabId}
@@ -13201,9 +13245,6 @@ function AppInner() {
             pressed={rightOpen}
           />
         </div>
-        {IS_WINDOWS_PLATFORM ? (
-          <WindowsWindowControls shell={shellApi} />
-        ) : null}
       </header>
       <NavigationSidebar
         library={library}
@@ -14972,7 +15013,7 @@ function AppInner() {
         }}
         onCancel={() => setRenameTarget(null)}
       />
-      <AppSettingsDialog
+      {renderApplicationDialog(<AppSettingsDialog
         activeCategory={appSettingsCategory}
         aiConfigPanel={
           <AiConfigDialog
@@ -15144,6 +15185,7 @@ function AppInner() {
           },
         }}
       />
+      )}
       <LibrarySettingsDialog
         key={`${library?.libraryId ?? "none"}:${librarySettingsOpen ? "open" : "closed"}`}
         library={library}
@@ -15262,7 +15304,7 @@ function AppInner() {
         }}
         open={openSyncLibraryOpen}
       />
-      <AppLogDialog
+      {renderApplicationDialog(<AppLogDialog
         automationCorrelationId={appLogAutomationCorrelationId}
         entries={appLogEntries}
         errorCode={appLogErrorCode}
@@ -15272,7 +15314,7 @@ function AppInner() {
         onRefresh={() => void refreshAppLog()}
         onReveal={revealAppLog}
         open={appLogOpen}
-      />
+      />)}
       {library?.recovery && (
         <LibraryRecoveryDialog
           onClose={() => setLibraryRecoveryDialogOpen(false)}
@@ -15281,7 +15323,7 @@ function AppInner() {
           recovery={library.recovery}
         />
       )}
-      <ScriptSandboxPreviewDialog
+      {renderApplicationDialog(<ScriptSandboxPreviewDialog
         automation={(window as RendererWindow).worldlinebox?.automation}
         libraryId={library?.libraryId ?? null}
         onClose={() => {
@@ -15293,8 +15335,8 @@ function AppInner() {
           openAppLog(logId);
         }}
         open={scriptSandboxPreviewOpen}
-      />
-      <AboutDialog
+      />)}
+      {renderApplicationDialog(<AboutDialog
         open={aboutOpen}
         version={WORLDLINEBOX_VERSION}
         onClose={() => setAboutOpen(false)}
@@ -15317,10 +15359,11 @@ function AppInner() {
           void bridge.openExternalUrl(url);
         }}
       />
-      <OpenSourceLicensesDialog
+      )}
+      {renderApplicationDialog(<OpenSourceLicensesDialog
         open={openSourceLicensesOpen}
         onClose={() => setOpenSourceLicensesOpen(false)}
-      />
+      />)}
       {smartCollectionSettings ? (
         <SmartCollectionSettingsDialog
           key={smartCollectionSettings.collectionId}
@@ -15501,13 +15544,13 @@ function AppInner() {
         onApply={() => void applyBatchRelink()}
         onCancel={() => void cancelBatchRelink()}
       />
-      <AiConnectionFailureDialog
+      {renderApplicationDialog(<AiConnectionFailureDialog
         failedCount={aiConnectionFailureGate.failedJobIds.length}
         failureCode={aiConnectionFailureGate.failureCode}
         onAbort={onAiConnectionFailureAbort}
         onRetry={handleAiConnectionFailureRetry}
         open={aiConnectionFailureGate.open}
-      />
+      />)}
       <FatalAlertDialog
         cancelLabel={fatalAlertAlreadyOpen ? t("common.cancel") : null}
         confirmLabel={fatalAlertAlreadyOpen ? t("common.confirm") : null}
@@ -15518,10 +15561,10 @@ function AppInner() {
         onDismiss={fatalAlertAlreadyOpen ? dismissAlreadyOpenPrompt : dismissFatalAlert}
         onSwitchLibrary={fatalAlertAlreadyOpen ? undefined : openLibraryChooserFromError}
       />
-      <CriticalConfirmationDialog
+      {renderApplicationDialog(<CriticalConfirmationDialog
         onDecide={criticalConfirmation.decide}
         request={criticalConfirmation.request}
-      />
+      />)}
       <MediaJobsDialog
         open={mediaJobsOpen && library !== null}
         mediaJobs={mediaJobs}
@@ -15852,9 +15895,71 @@ function AppInner() {
 }
 
 export function App() {
+  const t = useT();
+  const [activeModuleId, setActiveModuleId] = useState("dsh");
+  const assetManagerRef = useRef<AssetManagerHandle>(null);
+  const pendingSettings = useRef(false);
+  const [settingsController, setSettingsController] = useState<"idle" | "opening" | "open">("idle");
+  const attachAssetManager = useCallback((handle: AssetManagerHandle | null) => {
+    assetManagerRef.current = handle;
+    if (handle && pendingSettings.current) {
+      pendingSettings.current = false;
+      handle.openSettings();
+    }
+  }, []);
+  const [shellState, setShellState] = useState<ApplicationShellState>({
+    settingsOpen: false,
+    settingsDisabled: false,
+  });
+  const reportShellState = useCallback((state: ApplicationShellState) => {
+    setShellState(state);
+    // The first activation reports its initial closed state before the
+    // imperative open takes effect. Wait for a confirmed open before closing.
+    setSettingsController((current) => state.settingsOpen ? "open" : current === "open" ? "idle" : current);
+  }, []);
+  const openSettings = useCallback(() => {
+    pendingSettings.current = true;
+    setSettingsController((current) => current === "idle" ? "opening" : current);
+    if (assetManagerRef.current) {
+      pendingSettings.current = false;
+      assetManagerRef.current.openSettings();
+    }
+  }, []);
+
   return (
     <ContextMenuProvider>
-      <AppInner />
+    <MusicProvider api={(window as Window & { worldlinebox?: { music?: WorldlineBoxMusicApi } }).worldlinebox?.music}>
+    <div className="application-root">
+    <ThemeBackground />
+    <HoverTipHost />
+    <EditTextContextMenuHost />
+    {IS_WINDOWS_PLATFORM ? <WindowsWindowControls shell={(window as RendererWindow).worldlinebox?.shell} /> : null}
+    <ApplicationShell
+      activeModuleId={activeModuleId}
+      modules={[
+        {
+          id: 'dsh',
+          label: t('appNavigation.launcher'),
+          icon: 'box',
+          content: <DshLauncher api={(window as RendererWindow).worldlinebox?.dshLauncher} />,
+        },
+        {
+          id: "assets",
+          label: t("appNavigation.assets"),
+          icon: "grid",
+          keepEffectsActive: settingsController !== "idle",
+          content: (
+            <AssetManager settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === "assets"} />
+          ),
+        },
+      ]}
+      onSelectModule={setActiveModuleId}
+      onOpenSettings={openSettings}
+      settingsOpen={shellState.settingsOpen}
+      settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
+    />
+    </div>
+    </MusicProvider>
     </ContextMenuProvider>
   );
 }

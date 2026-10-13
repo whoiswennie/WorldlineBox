@@ -1,10 +1,12 @@
-# AI analysis
+# Global model and AI analysis
 
 WorldlineBox’s AI analysis connects to a cloud AI service that you provide. Prepare a provider account, API key, a vision-capable model, and check the provider’s pricing first.
 
 ## Configure AI
 
-On Windows open `Main menu → Settings → AI`; on macOS open `Settings → AI` from the system menu.
+Open `Settings → Global model` from the bottom of the application rail on Windows or macOS. The connection is stored for the application independently of an asset library; asset analysis options are grouped separately below it.
+
+New installations default to DeepSeek's OpenAI Chat Completions endpoint, `https://api.deepseek.com`, and `deepseek-flash`. Built-in model choices are available without a key; actual requests require your API key. Previously saved custom providers and models are retained. Windows development and installed applications both use `%APPDATA%\WorldlineBox\ai-config.json`, with the key encrypted separately in `ai-key.enc`. Native DSH accounts and model configuration continue to belong to the launcher's shared save data.
 
 ![AI configuration](../assets/ui/AI-config.png)
 

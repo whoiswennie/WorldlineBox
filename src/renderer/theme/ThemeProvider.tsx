@@ -15,6 +15,8 @@ import {
   saveBackgroundPreferences,
   type BackgroundPreferences,
 } from './background-preferences';
+import { loadBackgroundMotion, saveBackgroundMotion } from './animated-background-preferences';
+import { isAnimatedTheme } from './dsh-background-media';
 import {
   clearCustomTheme,
   loadCustomTheme,
@@ -55,6 +57,8 @@ type ThemeContextValue = {
   readonly themeAccentHex: string | null;
   readonly themeProfile: ThemeProfile;
   readonly backgroundPreferences: BackgroundPreferences;
+  readonly backgroundMotion: boolean;
+  readonly setBackgroundMotion: (enabled: boolean) => boolean;
   readonly themeRevision: number;
   readonly setTheme: (theme: ThemePreference) => void;
   readonly setCustomTheme: (theme: CustomTheme) => void;
@@ -90,6 +94,7 @@ export function ThemeProvider({
   );
   const [themeProfile, setThemeProfileState] = useState<ThemeProfile>(() => loadThemeProfile(storage));
   const [backgroundPreferences, setBackgroundPreferencesState] = useState<BackgroundPreferences>(() => loadBackgroundPreferences(storage));
+  const [backgroundMotion, setBackgroundMotionState] = useState(() => loadBackgroundMotion(storage));
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() =>
     readSystemTheme(),
   );
@@ -125,7 +130,16 @@ export function ThemeProvider({
 
   useEffect(() => {
     applyBackgroundPreferences(backgroundPreferences);
-  }, [backgroundPreferences]);
+    const root = document.documentElement;
+    if (isAnimatedTheme(themeProfile.preset) && backgroundPreferences.imageDataUrl === null) {
+      root.dataset.animatedBackground = themeProfile.preset;
+      root.style.setProperty('--ui-background-surface-opacity', '0%');
+      root.style.setProperty('--ui-backdrop-image', 'none');
+    } else {
+      delete root.dataset.animatedBackground;
+      root.style.removeProperty('--ui-backdrop-image');
+    }
+  }, [backgroundPreferences, themeProfile.preset]);
 
   useEffect(() => {
     const signature = `${resolved}:${JSON.stringify(customTheme)}:${JSON.stringify(themeAccentHex)}:${JSON.stringify(themeProfile)}:${JSON.stringify(backgroundPreferences)}`;
@@ -192,6 +206,12 @@ export function ThemeProvider({
     return saved;
   }, [storage]);
 
+  const setBackgroundMotion = useCallback((enabled: boolean) => {
+    const saved = saveBackgroundMotion(enabled, storage);
+    if (saved) setBackgroundMotionState(enabled);
+    return saved;
+  }, [storage]);
+
   const value = useMemo(
     () => ({
       preference,
@@ -200,6 +220,8 @@ export function ThemeProvider({
       themeAccentHex,
       themeProfile,
       backgroundPreferences,
+      backgroundMotion,
+      setBackgroundMotion,
       themeRevision,
       setTheme,
       setCustomTheme,
@@ -208,7 +230,7 @@ export function ThemeProvider({
       setThemeAccent,
       setBackgroundPreferences,
     }),
-    [backgroundPreferences, customTheme, preference, resetCustomTheme, resolved, setBackgroundPreferences, setCustomTheme, setTheme, setThemeAccent, setThemeProfile, themeAccentHex, themeProfile, themeRevision],
+    [backgroundMotion, backgroundPreferences, customTheme, preference, resetCustomTheme, resolved, setBackgroundMotion, setBackgroundPreferences, setCustomTheme, setTheme, setThemeAccent, setThemeProfile, themeAccentHex, themeProfile, themeRevision],
   );
 
   return (

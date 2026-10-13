@@ -53,7 +53,7 @@ const defaultPreferences = (): BackgroundPreferences => ({
   imageDataUrl: null,
   imageSource: null,
   mode: 'cover',
-  imageOpacity: 0.8,
+  imageOpacity: 0.7,
 });
 
 export const DEFAULT_BACKGROUND_PREFERENCES: BackgroundPreferences =
@@ -155,7 +155,7 @@ export function normalizeBackgroundDisplayMode(
  * Normalize the image-opacity slider value. Legacy v1/v2 records stored the
  * inverse semantics (readability-overlay opacity, where 1 hid the image), so
  * they migrate to `1 - overlayOpacity` — e.g. the old default 0.2 becomes the
- * new default 0.8, keeping the same rendered wallpaper.
+ * value 0.8, keeping the same rendered wallpaper. Fresh defaults are 0.7.
  */
 export function normalizeBackgroundImageOpacity(
   value: unknown,

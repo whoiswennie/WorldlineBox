@@ -44,13 +44,15 @@ export const DEFAULT_AI_BASE_URLS: Record<AiApiFormat, string> = {
 };
 
 /**
- * Format used when nothing is stored yet (user decision 2026-09-13).
+ * Wire format used when nothing is stored yet. The application-level preset
+ * uses DeepSeek's OpenAI-compatible endpoint; per-format fallback URLs below
+ * remain stable for existing saved providers with an empty custom prefix.
  *
  * Format and model are one pair: a fresh profile must not end up with the
  * Anthropic wire protocol and a DashScope model id, so both defaults live here
  * and every storage/probe fallback reads them from one place.
  */
-export const DEFAULT_AI_API_FORMAT: AiApiFormat = 'anthropic';
+export const DEFAULT_AI_API_FORMAT: AiApiFormat = 'openai_chat';
 
 /** Model placeholder / default per format, shown when the user has none. */
 export const DEFAULT_AI_MODELS: Record<AiApiFormat, string> = {
@@ -133,7 +135,8 @@ export function joinAiApiUrl(baseUrl: string, ...pathParts: string[]): string {
 }
 
 /**
- * OpenAI-compatible roots: host-only bases need `/v1` (official shape).
+ * OpenAI-compatible roots normally use `/v1`; DeepSeek's documented host-only
+ * root exposes /chat/completions and /models directly.
  * Bases that already end with `/v1`/`/v1beta`, or already have a path prefix
  * (e.g. `https://relay/openai`), are left alone — mirrors common CC Switch
  * provider URLs such as `…/openai` + `/responses`.
@@ -144,6 +147,7 @@ export function ensureOpenAiCompatibleRoot(baseUrl: string): string {
   try {
     const parsed = new URL(base);
     if (parsed.pathname === '/' || parsed.pathname === '') {
+      if (parsed.protocol === 'https:' && parsed.hostname === 'api.deepseek.com') return base;
       return `${base}/v1`;
     }
   } catch {

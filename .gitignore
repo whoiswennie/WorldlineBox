@@ -24,6 +24,7 @@ test-results/
 # acquired from a checksum-pinned release. Never commit local/system binaries.
 resources/ffmpeg/
 resources/oiio/
+resources/portable-tools/win32-x64/
 resources/media-binaries/*/manifest.json
 resources/media-binaries/*/licenses/
 resources/media-binaries/vcpkg/vcpkg_installed/

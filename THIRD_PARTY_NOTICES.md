@@ -8,6 +8,8 @@ WorldlineBox (MIT, see [LICENSE](LICENSE)) 依赖以下开源组件。各组件�
 
 ## 运行时依赖
 
+Windows x64 启动器另行携带独立命令行工具，置于 `resources/portable-tools/win32-x64`，不要求用户安装或修改系统环境变量。Node.js 24.15.0 / npm 11.12.1 / pnpm 11.7.0 使用 MIT 及包内第三方许可；CPython 3.13.12 使用 PSF 许可，附带 pip 25.3（MIT）；Git for Windows 2.48.1 使用 GPLv2 及其组件许可；用户指定的 Gyan FFmpeg / ffplay / ffprobe 8.0.1 essentials 使用 GPLv3，原始许可证与完整构建配置保存在工具目录。各工具保持独立进程，资产 Worker 的 LGPL FFmpeg 清单继续单独校验。来源与对应源码链接详见随包 `SOURCES.md`；公开分发 Git / FFmpeg 二进制时，还须按各自许可证提供包含启用依赖的对应源码。
+
 Windows 安装器简体中文翻译来自 [kira-96/Inno-Setup-Chinese-Simplified-Translation](https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation)，使用 MIT 许可；原始署名保留在 `assets/inno/ChineseSimplified.isl`，许可全文随安装器安装到 `resources/ChineseSimplified.LICENSE.txt`。
 
 | 组件 | 许可证 | 用途 |
@@ -49,9 +51,50 @@ Windows 安装器简体中文翻译来自 [kira-96/Inno-Setup-Chinese-Simplified
 
 Electron Forge (MIT)、@electron/rebuild (MIT)、ESLint (MIT)、Playwright (Apache-2.0)、node-gyp (MIT)、Inno Setup（免费使用，非开源）、vcpkg (MIT)、Emscripten (MIT/BSD，构建 ufbx WASM 时)、BtbN FFmpeg-Builds（LGPL）。
 
+## 两套动态背景
+
+「鲸鱼娘 · 未至之境」和「鲸鱼娘 · 水墨丹青」来自
+[dsh-web](https://github.com/zhu1090093659/dsh-web/tree/b89497fe1eb8436285b0a984e4261b47685b227a/market/dist/assets/skins)，
+皮肤作者为 stushansusu。上游皮肤事实源是 dsh-skins；本次仅提取这两套原视频、
+从视频生成静态封面，并将配色适配到 WorldlineBox，没有引入 DSH 插件或宠物。
+视频文件未经重新编码、剪辑或调色。
+
+这部分素材不属于 WorldlineBox 的 MIT 许可。两套 skin.json 声明 CC BY-NC-SA 4.0；
+水墨丹青的 README 另有对美术素材授权范围的说明。上游 LICENSE、README 和清单
+原文保存在 `assets/backgrounds/attribution/<skin>/`，应用包中保存在 `attribution/<skin>/`。
+来源提交、字节数和 SHA-256 保存在 `assets/backgrounds/sources.json`。
+
 ## 完整许可文本
+
+DSH 安装包提取使用 [7zip-bin 5.2.0](https://github.com/develar/7zip-bin) 的未修改 7za 二进制（Windows x64 21.07）。npm 包装代码采用 MIT，7-Zip 二进制采用 LGPL-2.1-or-later；本项目通过独立进程调用它。许可证保存在 `resources/dsh-tools/`，随应用资源分发。7-Zip 的原始源码与历史版本可从 [7-Zip 官方下载目录](https://www.7-zip.org/download.html) 获取。本项目不把 7-Zip 二进制或用户获取的 DSH 程序归入 WorldlineBox 的 MIT 许可。
 
 - 主项目：`LICENSE`（MIT）
 - 媒体二进制（ffmpeg/OIIO）：`resources/media-binaries/<platform>/licenses/`（随 media 包分发）
 - ufbx：`resources/ufbx/LICENSE`
 - 各 npm 依赖：`node_modules/<包名>/LICENSE*`（随源码构建时可用）
+
+## worldline-harness 网易云音乐播放器
+
+本项目移植并改写了 worldline-harness 的 `packages/host/netease-music` 和 `packages/client/ui-netease-music` 源码：公开歌单与歌词解析、播放与歌词同步、歌单管理。使用 WorldlineBox 自有 IPC、全局用户数据存储与设置界面。网易云歌曲与服务由其权利人提供，不属于随安装包分发的代码许可。
+
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

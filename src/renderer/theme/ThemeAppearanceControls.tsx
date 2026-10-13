@@ -1,7 +1,8 @@
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
 import { useT } from '../i18n';
-import { Select, Slider } from '../ui/primitives';
+import { Select, Slider, Switch } from '../ui/primitives';
+import { DSH_BACKGROUND_MEDIA, isAnimatedTheme } from './dsh-background-media';
 import { BackgroundImagePanel } from './BackgroundImageControls';
 import {
   BACKGROUND_DISPLAY_MODES,
@@ -24,6 +25,8 @@ const PROFILE_LABELS = {
   worldlinebox: 'settings.themeProfileWorldlineBox',
   vscode: 'settings.themeProfileVscode',
   soft: 'settings.themeProfileSoft',
+  'whale-fantasy': 'settings.themeProfileWhaleFantasy',
+  'shuimo-danqing': 'settings.themeProfileShuimoDanqing',
 } as const;
 
 const BACKGROUND_MODE_LABELS = {
@@ -93,6 +96,7 @@ export function ThemeProfilePicker(): ReactNode {
             }}
           >
             <span aria-hidden="true" className="app-settings-theme-profile-preview">
+              {isAnimatedTheme(profile) ? <img alt="" className="app-settings-theme-profile-art" loading="lazy" src={DSH_BACKGROUND_MEDIA[profile].poster} /> : null}
               <span className="app-settings-theme-profile-preview-sidebar" />
               <span className="app-settings-theme-profile-preview-content">
                 <span className="app-settings-theme-profile-preview-line is-long" />
@@ -197,7 +201,7 @@ export function ThemeModePicker(): ReactNode {
 
 export function BackgroundSettings(): ReactNode {
   const t = useT();
-  const { backgroundPreferences, setBackgroundPreferences } = useTheme();
+  const { backgroundPreferences, setBackgroundPreferences, themeProfile, backgroundMotion, setBackgroundMotion } = useTheme();
   const [error, setError] = useState<string | null>(null);
   const [notices, setNotices] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -269,6 +273,33 @@ export function BackgroundSettings(): ReactNode {
 
   return (
     <div className="app-settings-background-settings">
+      <div className="app-settings-background-opacity">
+        <Slider
+          aria-label={t('settings.backgroundOpacity')}
+          label={t('settings.backgroundOpacity')}
+          max={1}
+          min={0}
+          onValueChange={(value) => update({ imageOpacity: value })}
+          showValue
+          step={0.05}
+          value={backgroundPreferences.imageOpacity}
+          valueText={`${Math.round(backgroundPreferences.imageOpacity * 100)}%`}
+        />
+      </div>
+      {isAnimatedTheme(themeProfile.preset) ? (
+        <div className="app-settings-background-animation">
+          <img alt={t(PROFILE_LABELS[themeProfile.preset])} src={DSH_BACKGROUND_MEDIA[themeProfile.preset].poster} />
+          <Switch
+            checked={backgroundMotion}
+            description={t('settings.backgroundMotionHint')}
+            label={t('settings.backgroundMotion')}
+            onCheckedChange={(enabled) => {
+              if (!setBackgroundMotion(enabled)) setError(t('settings.backgroundSaveError'));
+            }}
+          />
+          {backgroundPreferences.imageDataUrl !== null ? <p className="app-settings-background-animation-note">{t('settings.backgroundPersonalImagePriority')}</p> : null}
+        </div>
+      ) : null}
       <BackgroundImagePanel
         busy={busy}
         error={error}
@@ -289,19 +320,6 @@ export function BackgroundSettings(): ReactNode {
             label: t(BACKGROUND_MODE_LABELS[mode]),
           }))}
           value={backgroundPreferences.mode}
-        />
-      </div>
-      <div className="app-settings-background-opacity">
-        <Slider
-          aria-label={t('settings.backgroundOpacity')}
-          label={t('settings.backgroundOpacity')}
-          max={1}
-          min={0}
-          onValueChange={(value) => update({ imageOpacity: value })}
-          showValue
-          step={0.05}
-          value={backgroundPreferences.imageOpacity}
-          valueText={`${Math.round(backgroundPreferences.imageOpacity * 100)}%`}
         />
       </div>
     </div>

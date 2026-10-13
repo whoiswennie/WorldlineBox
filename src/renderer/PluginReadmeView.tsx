@@ -47,9 +47,9 @@ function ReadmeBlock({
   switch (block.type) {
     case 'heading': {
       const children = <ReadmeInlines imageLabel={imageLabel} nodes={block.children} onOpenUrl={onOpenUrl} />;
-      if (block.level === 1) return <h4 data-level={block.level}>{children}</h4>;
-      if (block.level === 2) return <h5 data-level={block.level}>{children}</h5>;
-      return <h6 data-level={block.level}>{children}</h6>;
+      if (block.level === 1) return <h4 data-level={block.level} id={block.id}>{children}</h4>;
+      if (block.level === 2) return <h5 data-level={block.level} id={block.id}>{children}</h5>;
+      return <h6 data-level={block.level} id={block.id}>{children}</h6>;
     }
     case 'table':
       return (

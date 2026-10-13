@@ -49,7 +49,7 @@ describe('background preferences contract v3', () => {
       imageDataUrl: null,
       imageSource: null,
       mode: 'cover',
-      imageOpacity: 0.8,
+      imageOpacity: 0.7,
     });
     expect(backgroundPreferencesSchema.parse(DEFAULT_BACKGROUND_PREFERENCES)).toEqual(
       DEFAULT_BACKGROUND_PREFERENCES,

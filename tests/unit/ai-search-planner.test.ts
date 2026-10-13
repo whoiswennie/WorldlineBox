@@ -26,6 +26,12 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe('AI natural-language search planner', () => {
+  it('uses the official DeepSeek JSON mode and avoids a reasoning-only response for the global default', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ choices: [{ message: { content: JSON.stringify(rawPlan) } }] }));
+    await planAiSearch({ apiFormat: 'openai_chat', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com', apiKey: 'fixture-key', naturalQuery: '城市', fetchFn });
+    expect(fetchFn.mock.calls[0]![0]).toBe('https://api.deepseek.com/chat/completions');
+    expect(JSON.parse(String(fetchFn.mock.calls[0]![1]!.body))).toMatchObject({ thinking: { type: 'disabled' }, response_format: { type: 'json_object' } });
+  });
   it('uses OpenAI strict structured output and normalizes to ordinary typed search inputs', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
       choices: [{ message: { content: JSON.stringify(rawPlan) } }],

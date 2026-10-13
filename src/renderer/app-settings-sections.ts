@@ -39,6 +39,7 @@ export type AppSettingsCategoryId =
   | "appearance"
   | "browse"
   | "ai"
+  | "music"
   | "mcp"
   | "plugins"
   | "safety"
@@ -58,6 +59,7 @@ export type AppSettingsCategory = {
     | "settings.categoryAppearance"
     | "settings.categoryBrowse"
     | "settings.categoryAi"
+    | "settings.categoryMusic"
     | "settings.categoryMcp"
     | "settings.categoryPlugins"
     | "settings.categorySync";
@@ -94,6 +96,7 @@ export const APP_SETTINGS_CATEGORIES: readonly AppSettingsCategory[] = [
     icon: "globe",
     labelKey: "settings.categoryMcp",
   },
+  { id: "music", icon: "music", labelKey: "settings.categoryMusic" },
   {
     id: "plugins",
     icon: "box",

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "repository": "https://github.com/zhu1090093659/dsh-web",
+  "commit": "b89497fe1eb8436285b0a984e4261b47685b227a",
+  "author": "stushansusu",
+  "entries": [
+    {
+      "id": "whale-fantasy",
+      "upstream": "market/dist/assets/skins/whale-fantasy/assets/whale-fantasy-loop.mp4",
+      "file": "assets/backgrounds/whale-fantasy-loop.mp4",
+      "sha256": "db8a022ac3bf877efb764ca4962e79c9b32cc07fa4be2cbc8ac98d4df0310e4d",
+      "bytes": 6630589,
+      "poster": "assets/backgrounds/whale-fantasy-poster.jpg",
+      "posterSourceTimeSeconds": 16,
+      "declaration": "assets/backgrounds/attribution/whale-fantasy/README.zh.md"
+    },
+    {
+      "id": "shuimo-danqing",
+      "upstream": "market/dist/assets/skins/shuimo-danqing/assets/shuimo-danqing-loop.mp4",
+      "file": "assets/backgrounds/shuimo-danqing-loop.mp4",
+      "sha256": "bc32b814bb06cfe44ff27887ba81c2d74f64131b19067fb13aeb1fb4b6fd1f81",
+      "bytes": 24204601,
+      "poster": "assets/backgrounds/shuimo-danqing-poster.jpg",
+      "posterSourceTimeSeconds": 16,
+      "declaration": "assets/backgrounds/attribution/shuimo-danqing/README.zh.md"
+    }
+  ]
+}

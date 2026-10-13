@@ -26,7 +26,7 @@ export const THEME_PROFILE_PREF_KEY = 'worldlinebox.theme-profile.v3';
 /** v2 persisted key: four fixed presets (vscode-dark/worldlinebox-dark/worldlinebox-light/soft-light). */
 export const THEME_PROFILE_LEGACY_KEY = 'worldlinebox.theme-profile.v2';
 
-export const THEME_PROFILE_IDS = ['worldlinebox', 'vscode', 'soft'] as const;
+export const THEME_PROFILE_IDS = ['worldlinebox', 'vscode', 'soft', 'whale-fantasy', 'shuimo-danqing'] as const;
 
 export type ThemeProfileId = (typeof THEME_PROFILE_IDS)[number];
 export type ThemeProfileColorToken = CustomThemeColorToken;
@@ -485,6 +485,80 @@ export const THEME_PROFILE_PRESETS: Readonly<
     id: 'soft',
     label: 'Soft',
     tokens: { dark: softDark, light: softLight },
+  },
+  // Palettes adapted to WorldlineBox semantic tokens from stushansusu's two
+  // selected DSH skins. Original asset notices: assets/backgrounds/attribution.
+  'whale-fantasy': {
+    id: 'whale-fantasy',
+    label: 'Whale Girl · The Unreached',
+    tokens: {
+      dark: {
+        ...worldlineboxDark,
+        '--ui-surface-canvas': '#05070d',
+        '--ui-surface-pane': '#0a1020b8',
+        '--ui-surface-raised': '#0a1020ed',
+        '--ui-surface-raised-subtle': '#142847ed',
+        '--ui-surface-overlay': '#0a1020f5',
+        '--ui-surface-hover': '#142847',
+        '--ui-surface-selected': '#142847cc',
+        '--ui-content-primary': '#e8f1ff',
+        '--ui-content-secondary': '#b6cae6',
+        '--ui-content-tertiary': '#8fa8cc',
+        '--ui-content-accent': '#39ffd1',
+        '--ui-border-divider': '#1e3a6b',
+        '--ui-border-control': '#2d518e',
+        '--ui-border-focus': '#39ffd1',
+        '--ui-action-accent': '#3a7bff',
+        '--ui-action-accent-hover': '#548eff',
+        '--ui-action-accent-pressed': '#2966df',
+      },
+      light: {
+        ...softLight,
+        '--ui-surface-canvas': '#edf3ff',
+        '--ui-surface-pane': '#f3f7ffe6',
+        '--ui-content-accent': '#2365b8',
+        '--ui-action-accent': '#3275cf',
+        '--ui-action-accent-hover': '#4386df',
+        '--ui-action-accent-pressed': '#245ea9',
+      },
+    },
+  },
+  'shuimo-danqing': {
+    id: 'shuimo-danqing',
+    label: 'Whale Girl · Ink Wash',
+    tokens: {
+      dark: {
+        ...worldlineboxDark,
+        '--ui-surface-canvas': '#171a20',
+        '--ui-surface-pane': '#202a32b8',
+        '--ui-surface-raised': '#202a32ed',
+        '--ui-surface-raised-subtle': '#2b3942ed',
+        '--ui-surface-overlay': '#202a32f5',
+        '--ui-surface-hover': '#30434a',
+        '--ui-surface-selected': '#304940cc',
+        '--ui-content-primary': '#eef0e8',
+        '--ui-content-secondary': '#c1cec9',
+        '--ui-content-tertiary': '#a0b3b2',
+        '--ui-content-accent': '#8ec6a6',
+        '--ui-border-divider': '#425853',
+        '--ui-border-control': '#62746f',
+        '--ui-border-focus': '#8ec6a6',
+        '--ui-action-accent': '#48785e',
+        '--ui-action-accent-hover': '#5b8b70',
+        '--ui-action-accent-pressed': '#37634a',
+      },
+      light: {
+        ...softLight,
+        '--ui-surface-canvas': '#f0f2ed',
+        '--ui-surface-pane': '#f4f6efe6',
+        '--ui-content-primary': '#273c38',
+        '--ui-content-secondary': '#526965',
+        '--ui-content-accent': '#326750',
+        '--ui-action-accent': '#48785e',
+        '--ui-action-accent-hover': '#5b8b70',
+        '--ui-action-accent-pressed': '#37634a',
+      },
+    },
   },
 };
 

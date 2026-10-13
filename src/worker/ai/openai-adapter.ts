@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { deepseekStructuredRequestDefaults } from '../../shared/llm';
 
 import { buildAiAnalysisSystemPrompt } from '../../shared/ai-analysis-settings';
 import {
@@ -248,6 +249,7 @@ export class OpenAIVendorAdapter implements VendorAdapter {
               ],
               max_tokens: 16,
               temperature: 0,
+              ...deepseekStructuredRequestDefaults(this.baseUrl, this.model),
             }),
             signal,
           },
@@ -298,6 +300,7 @@ export class OpenAIVendorAdapter implements VendorAdapter {
           model: this.model,
           messages,
           temperature: 0.2,
+          ...deepseekStructuredRequestDefaults(this.baseUrl, this.model),
         };
         if (mode !== 'text') {
           body.response_format = buildOpenAiStructuredResponseFormat(

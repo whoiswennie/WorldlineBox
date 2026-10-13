@@ -1,0 +1,110 @@
+.app-theme-background {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.app-theme-background[data-wallpaper='image'] {
+  background-image: var(--ui-backdrop-image, none);
+  background-position: var(--ui-backdrop-position, center);
+  background-repeat: var(--ui-backdrop-repeat, no-repeat);
+  background-size: var(--ui-backdrop-size, cover);
+}
+
+.app-animated-background {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: var(--ui-background-image-opacity, 0.7);
+}
+
+.app-theme-background > .app-animated-background {
+  z-index: 0;
+}
+
+.app-animated-background-poster,
+.app-animated-background-video {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: var(--animated-background-fit, cover);
+}
+
+.app-animated-background-video:not([data-ready='true']) {
+  visibility: hidden;
+}
+
+.app-animated-background-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 86%, #05070d38 100%);
+}
+
+[data-animated-background='shuimo-danqing'] .app-animated-background-scrim {
+  background: linear-gradient(180deg, #171a2059, #171a2094);
+}
+
+[data-theme='light'] .app-animated-background-scrim {
+  background: linear-gradient(180deg, #f6f8fdbd, #eff3fbc7);
+}
+
+/* A single root layer owns both static and animated wallpaper. */
+.application-root:has(> .app-theme-background[data-wallpaper]) .app-shell,
+.application-root:has(> .app-theme-background[data-wallpaper]) .dsh-launcher {
+  background-color: transparent;
+  background-image: none;
+}
+
+.application-root:has(> .app-theme-background[data-wallpaper]) .app-toolbar {
+  background: color-mix(in srgb, var(--ui-surface-pane) 32%, transparent);
+}
+
+.application-root:has(> .app-theme-background[data-wallpaper]) .app-toolbar,
+.application-root:has(> .app-theme-background[data-wallpaper]) .navigation-pane,
+.application-root:has(> .app-theme-background[data-wallpaper]) .inspector-pane {
+  backdrop-filter: none;
+}
+
+.app-settings-theme-profile-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.6;
+}
+
+.app-settings-theme-profile-preview:has(.app-settings-theme-profile-art) {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.app-settings-theme-profile-art + .app-settings-theme-profile-preview-sidebar,
+.app-settings-theme-profile-art ~ .app-settings-theme-profile-preview-content {
+  position: relative;
+}
+
+.app-settings-background-animation {
+  display: grid;
+  gap: 12px;
+}
+
+.app-settings-background-animation img {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: var(--ui-radius-control);
+}
+
+.app-settings-background-animation-note {
+  margin: 0;
+  color: var(--ui-content-secondary);
+  font-size: var(--ui-font-size-caption);
+}

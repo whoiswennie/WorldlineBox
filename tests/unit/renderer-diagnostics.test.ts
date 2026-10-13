@@ -30,10 +30,10 @@ describe("renderer diagnostics", () => {
   it("forwards only renderer warnings and errors, while preserving console context", () => {
     const logger = createLogger();
 
-    logRendererConsoleMessage(logger, 0, "verbose", 1, "source.ts");
-    logRendererConsoleMessage(logger, 1, "info", 2, "source.ts");
-    logRendererConsoleMessage(logger, 2, "warning", 3, "source.ts");
-    logRendererConsoleMessage(logger, 3, "error", 4, "source.ts");
+    logRendererConsoleMessage(logger, { level: "debug", message: "verbose", lineNumber: 1, sourceId: "source.ts" });
+    logRendererConsoleMessage(logger, { level: "info", message: "info", lineNumber: 2, sourceId: "source.ts" });
+    logRendererConsoleMessage(logger, { level: "warning", message: "warning", lineNumber: 3, sourceId: "source.ts" });
+    logRendererConsoleMessage(logger, { level: "error", message: "error", lineNumber: 4, sourceId: "source.ts" });
 
     expect(logger.infos).toEqual([{
       scope: "renderer.console.warning",

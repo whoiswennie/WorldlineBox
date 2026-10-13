@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { forgePreloadCodeSplitting } from './scripts/vite-forge-preload';
 
 /**
  * Offscreen thumbnail preload (slice E, WorldlineBox-hnmg): a second preload entry
@@ -8,11 +9,13 @@ import { defineConfig } from 'vite';
  * `path.join(__dirname, 'offscreen.js')`.
  */
 export default defineConfig({
+  plugins: [forgePreloadCodeSplitting()],
   build: {
     lib: {
       entry: 'src/preload/offscreen.ts',
       formats: ['cjs'],
       fileName: () => 'offscreen.js',
     },
+    rolldownOptions: { output: { codeSplitting: false } },
   },
 });

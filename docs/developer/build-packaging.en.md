@@ -27,6 +27,39 @@ npm run media:ensure
 Set `WORLDLINEBOX_MEDIA_AUTO_ACQUIRE=0` in an offline environment to make a failed
 verification stop immediately instead of downloading.
 
+## Shared user-data location
+
+Normal development launches and installed applications share `appData/WorldlineBox`
+(`%APPDATA%\WorldlineBox` on Windows). DSH downloads, staging, installed runtimes and
+instances live in its `dsh-launcher` subdirectory, outside the checkout's `.tools`.
+An absolute `WORLDLINEBOX_USER_DATA_PATH` overrides this location for both distributions.
+E2E profiles remain isolated; only explicit `WORLDLINEBOX_ALLOW_MULTI_INSTANCE=1`
+creates a separate `dev-instances/pid-*` profile. The old development-only override
+is used solely as an optional legacy migration source.
+
+Legacy DSH stores with no instances or installed environments, no pending operation
+and no unfinished download are copied only when the destination DSH store is absent.
+Physical files and SHA-256 inventories are checked before committing. Existing
+shared data and the old profile remain intact. Chromium preferences are not migrated;
+old instances must be exported as complete backups or packs and imported explicitly.
+
+## Forge / Vite configuration checks
+
+```bash
+node scripts/verify-vite-forge-builds.mjs
+```
+
+This check uses Forge's actual configuration merging to build every entry in development
+and production modes. Outputs and `report.json` go into a new `.tools/vite-forge-smoke-*`
+directory, leaving the development `.vite` untouched and starting no servers. It also
+checks that preloads, QuickJS and plugin UtilityProcess entries remain single CJS bundles.
+
+Forge 7's preload template injects the old `inlineDynamicImports` option. A project-owned
+config hook migrates the merged option to `codeSplitting: false`, retaining single-file
+semantics without the Vite 8 / Rolldown deprecation warning. See the
+[Rolldown option](https://rolldown.rs/reference/OutputOptions.codeSplitting).
+Do not patch dependencies, suppress warnings or inline all of Main; DSH stays lazily loaded.
+
 ## Release pipeline (release:local)
 
 One command for the full flow:

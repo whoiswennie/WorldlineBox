@@ -157,6 +157,17 @@ if (!mainSource.includes(`AUTOMATION_API_VERSION`) || !mainSource.includes(Strin
 }
 
 const mediaResourcesPath = path.join(resourcesPath, 'resources');
+if (process.platform === 'win32') {
+  const toolResult = spawnSync(process.execPath, [path.join(projectRoot, 'scripts/portable-tools.mjs'), 'verify', '--root', path.join(mediaResourcesPath, 'portable-tools', 'win32-x64')], {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: 'inherit',
+    shell: false,
+    windowsHide: true,
+  });
+  if (toolResult.error) throw toolResult.error;
+  if (toolResult.status !== 0) throw new Error('Packaged portable tool payload failed verification.');
+}
 const mediaPlatform = currentPlatformKey();
 verifyBundle({ root: mediaResourcesPath, platform: mediaPlatform });
 if (process.env.WORLDLINEBOX_MEDIA_SKIP_PROVENANCE === '1') {

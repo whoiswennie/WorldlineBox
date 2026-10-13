@@ -2899,6 +2899,15 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
 }
 
 .workspace-ai-progress {
+  position: fixed;
+  z-index: var(--ui-layer-notice);
+  right: 20px;
+  bottom: 20px;
+  width: min(520px, calc(100vw - 100px));
+  box-sizing: border-box;
+  border: 1px solid var(--divider);
+  border-radius: 10px;
+  box-shadow: var(--ui-shadow-menu);
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -7285,6 +7294,17 @@ body.worldlinebox-modal-open .app-shell {
   padding: 12px 0 0;
   border-top: 1px solid var(--divider);
 }
+
+/* Connection probes and model-list feedback float; opening settings keeps its fields fixed. */
+.ai-config-embedded .ai-config-header { display: none; }
+.ai-config-section-title { margin: 24px 0 0; padding-top: 18px; border-top: 1px solid var(--divider); font-size: var(--ui-font-size-body); font-weight: 600; }
+.ai-config-asset-options { margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--divider); }
+.ai-config-asset-options > summary { padding: 6px 0; color: var(--text); font-weight: 550; cursor: pointer; }
+.ai-config-asset-options[open] > summary { margin-bottom: 8px; }
+.ai-config-note { line-height: 1.7; }
+.ai-config-embedded .ai-config-note { padding: 12px 14px; border-radius: 8px; background: var(--ui-action-accent-soft); color: var(--secondary); }
+.ai-config-embedded .ai-config-input { min-height: 38px; border-radius: 8px; }
+.ai-config-embedded .ai-config-actions { padding-top: 18px; margin-top: 18px; }
 
 .ai-config-field {
   margin-top: 12px;

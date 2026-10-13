@@ -18,6 +18,7 @@ export default tseslint.config(
       'node_modules/**',
       // Emscripten-generated glue (acquired by scripts/build-ufbx-wasm.mjs).
       'resources/ufbx/**',
+      'resources/portable-tools/win32-x64/**',
     ],
   },
   js.configs.recommended,

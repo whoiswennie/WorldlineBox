@@ -36,6 +36,7 @@ describe("app-settings-sections (WorldlineBox-97l / WorldlineBox-9es / Worldline
       "browse",
       "ai",
       "mcp",
+      "music",
       "plugins",
       "sync",
     ]);

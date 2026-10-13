@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig, deepseekStructuredRequestDefaults } from '../../src/shared/llm';
 
 import {
   AI_API_FORMATS,
@@ -18,10 +19,18 @@ import {
   resolveOpenAiResponsesUrl,
 } from '../../src/shared/ai-endpoints';
 
-describe('AI API format defaults (user decision 2026-09-13)', () => {
-  it('defaults to Anthropic Messages', () => {
-    expect(DEFAULT_AI_API_FORMAT).toBe('anthropic');
+describe('global model defaults', () => {
+  it('uses the DeepSeek OpenAI-compatible preset without redirecting legacy empty OpenAI endpoints', () => {
+    expect(DEFAULT_AI_API_FORMAT).toBe('openai_chat');
     expect(AI_API_FORMATS).toContain(DEFAULT_AI_API_FORMAT);
+    expect(resolveOpenAiChatCompletionsUrl(DEFAULT_GLOBAL_LLM_CONFIG.baseUrl)).toBe('https://api.deepseek.com/chat/completions');
+    expect(resolveOpenAiChatCompletionsUrl('')).toBe('https://api.openai.com/v1/chat/completions');
+    expect(DEFAULT_GLOBAL_LLM_CONFIG.model).toBe('deepseek-flash');
+    expect(deepseekStructuredRequestDefaults(DEFAULT_GLOBAL_LLM_CONFIG.baseUrl, DEFAULT_GLOBAL_LLM_CONFIG.model)).toEqual({ thinking: { type: 'disabled' } });
+    expect(deepseekStructuredRequestDefaults('https://api.openai.com/v1', 'gpt-4o-mini')).toEqual({});
+    expect(resolveStoredLlmConfig({})).toEqual(DEFAULT_GLOBAL_LLM_CONFIG);
+    expect(resolveStoredLlmConfig({ apiFormat: 'openai_chat', model: 'custom-user-model', baseUrl: '' })).toEqual({ apiFormat: 'openai_chat', model: 'custom-user-model', baseUrl: '' });
+    expect(resolveStoredLlmConfig({ provider: 'anthropic', baseUrl: 'https://custom.example' })).toEqual({ apiFormat: 'anthropic', model: DEFAULT_AI_MODELS.anthropic, baseUrl: 'https://custom.example' });
   });
 
   /**
@@ -31,7 +40,7 @@ describe('AI API format defaults (user decision 2026-09-13)', () => {
    * for every format rather than only for the default.
    */
   it('pairs every format with a non-empty default model', () => {
-    expect(DEFAULT_AI_MODELS[DEFAULT_AI_API_FORMAT]).toBe('claude-sonnet-4-20250514');
+    expect(DEFAULT_AI_MODELS.anthropic).toBe('claude-sonnet-4-20250514');
     for (const format of AI_API_FORMATS) {
       expect(DEFAULT_AI_MODELS[format]?.trim().length ?? 0).toBeGreaterThan(0);
       expect(DEFAULT_AI_BASE_URLS[format]?.trim().length ?? 0).toBeGreaterThan(0);

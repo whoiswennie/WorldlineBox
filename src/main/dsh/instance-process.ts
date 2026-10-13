@@ -1,0 +1,228 @@
+import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { promisify, stripVTControlCharacters } from 'node:util';
+import path from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import type { DshInstance } from '../../shared/dsh-launcher';
+import { redact } from './files';
+import { attachProcessJob, type WindowsProcessJob } from './windows-job';
+const processJobs = new WeakMap<ChildProcessWithoutNullStreams, WindowsProcessJob>();
+
+const execute = promisify(execFile);
+export interface RuntimeLaunchPlan { executable: string; cli: string; env: NodeJS.ProcessEnv }
+export interface ProcessIdentity { pid: number; executable: string; cli: string; createdAt?: string }
+export interface OwnedWindowsProcess { pid: number; parentPid: number; executable: string; createdAt: string }
+export interface WindowsTerminationTools {
+  inspect(pids: number[]): Promise<OwnedWindowsProcess[]>;
+  killTree(pid: number): Promise<void>;
+  killIdentity(identity: OwnedWindowsProcess): Promise<void>;
+  pause(): Promise<void>;
+}
+
+function powershellPath(): string {
+  return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+function validPid(pid: number): void { if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('Invalid process ID.'); }
+function parseProcessIdentities(stdout: string): OwnedWindowsProcess[] {
+  if (!stdout.trim()) return [];
+  const decoded: unknown = JSON.parse(stdout); const values = Array.isArray(decoded) ? decoded : [decoded];
+  return values.map((value: unknown) => {
+    if (!value || typeof value !== 'object') throw new Error('Could not identify the owned Harness process tree.');
+    const fields = value as Record<string, unknown>;
+    if (typeof fields.pid !== 'number' || typeof fields.parentPid !== 'number' || typeof fields.executable !== 'string'
+      || typeof fields.createdAt !== 'string' || !Number.isFinite(Date.parse(fields.createdAt))) throw new Error('Could not identify the owned Harness process tree.');
+    validPid(fields.pid);
+    return { pid: fields.pid, parentPid: fields.parentPid, executable: fields.executable, createdAt: fields.createdAt };
+  });
+}
+
+/** A child predating its parent belongs to an old use of that parent's PID. */
+export function buildOwnedProcessTree(processes: OwnedWindowsProcess[], rootPid: number): OwnedWindowsProcess[] {
+  const root = processes.find(process => process.pid === rootPid); if (!root) return [];
+  const owned = [root]; const visited = new Set([rootPid]);
+  for (let index = 0; index < owned.length; index++) {
+    const parent = owned[index]!;
+    for (const process of processes) if (!visited.has(process.pid) && process.parentPid === parent.pid
+      && Date.parse(process.createdAt) >= Date.parse(parent.createdAt)) { visited.add(process.pid); owned.push(process); }
+  }
+  return owned;
+}
+
+/** Read only executable and creation identity for this root's descendants; never print command lines or environment. */
+export async function inspectOwnedWindowsTree(rootPid: number): Promise<OwnedWindowsProcess[]> {
+  validPid(rootPid);
+  const command = `$all = @(Get-CimInstance Win32_Process); $root = $all | Where-Object { $_.ProcessId -eq ${rootPid} }; $owned = @(); $seen = @{}; if ($root) { $owned = @($root); $seen[${rootPid}] = $true; for ($index = 0; $index -lt $owned.Count; $index++) { $parent = $owned[$index]; foreach ($child in $all) { if ($child.ParentProcessId -eq $parent.ProcessId -and !$seen.ContainsKey([int]$child.ProcessId) -and $child.CreationDate -ge $parent.CreationDate) { $seen[[int]$child.ProcessId] = $true; $owned += $child } } } }; $values = @($owned | ForEach-Object { @{ pid = [int]$_.ProcessId; parentPid = [int]$_.ParentProcessId; executable = $_.ExecutablePath; createdAt = $_.CreationDate.ToUniversalTime().ToString('o') } }); ConvertTo-Json -InputObject $values -Compress`;
+  const { stdout } = await execute(powershellPath(), ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, timeout: 15_000 });
+  return parseProcessIdentities(stdout);
+}
+
+async function inspectWindowsIdentities(pids: number[]): Promise<OwnedWindowsProcess[]> {
+  if (!pids.length) return [];
+  pids.forEach(validPid);
+  const filter = pids.map(pid => `ProcessId = ${pid}`).join(' OR ');
+  const command = `$values = @(Get-CimInstance Win32_Process -Filter '${filter}' | ForEach-Object { @{ pid = [int]$_.ProcessId; parentPid = [int]$_.ParentProcessId; executable = $_.ExecutablePath; createdAt = $_.CreationDate.ToUniversalTime().ToString('o') } }); ConvertTo-Json -InputObject $values -Compress`;
+  const { stdout } = await execute(powershellPath(), ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, timeout: 10_000 });
+  return parseProcessIdentities(stdout);
+}
+function matchesIdentity(expected: OwnedWindowsProcess, current: OwnedWindowsProcess | undefined): boolean {
+  return !!current && current.pid === expected.pid && current.createdAt === expected.createdAt
+    && path.resolve(current.executable).toLowerCase() === path.resolve(expected.executable).toLowerCase();
+}
+
+const windowsTerminationTools: WindowsTerminationTools = {
+  inspect: inspectWindowsIdentities,
+  killTree: async pid => { const taskkill = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'); await execute(taskkill, ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 20_000 }); },
+  killIdentity: async identity => {
+    validPid(identity.pid);
+    const executable = identity.executable.replaceAll("'", "''"); const createdAt = identity.createdAt.replaceAll("'", "''");
+    // Acquire the native process handle before checking identity, then Kill through that handle. A reused PID cannot redirect the kill.
+    const command = `$ErrorActionPreference = 'Stop'; try { $native = [System.Diagnostics.Process]::GetProcessById(${identity.pid}); $handle = $native.Handle } catch [System.ArgumentException] { exit 0 }; try { $current = Get-CimInstance Win32_Process -Filter 'ProcessId = ${identity.pid}'; if ($current -and $current.ExecutablePath -ieq '${executable}' -and $current.CreationDate.ToUniversalTime().ToString('o') -ceq '${createdAt}' -and $native.Path -ieq '${executable}' -and [Math]::Abs(($native.StartTime.ToUniversalTime() - [DateTimeOffset]::Parse('${createdAt}').UtcDateTime).TotalMilliseconds) -lt 1) { $native.Kill() } } finally { $native.Dispose() }`;
+    await execute(powershellPath(), ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, timeout: 10_000 });
+  },
+  pause: () => new Promise(resolve => setTimeout(resolve, 100)),
+};
+
+/** taskkill can report stale child errors after the tree has already exited. Identity, not its exit status, decides success. */
+export async function stopOwnedWindowsTree(tree: OwnedWindowsProcess[], tools: WindowsTerminationTools = windowsTerminationTools): Promise<void> {
+  if (!tree.length) return;
+  const remaining = async () => {
+    const current = await tools.inspect(tree.map(process => process.pid));
+    return tree.filter(expected => matchesIdentity(expected, current.find(process => process.pid === expected.pid)));
+  };
+  const root = tree[0]!;
+  const currentRoot = (await tools.inspect([root.pid])).find(process => process.pid === root.pid);
+  if (matchesIdentity(root, currentRoot)) {
+    try { await tools.killTree(root.pid); } catch { /* Inspect exact saved identities before deciding whether anything remains. */ }
+  }
+  let alive: OwnedWindowsProcess[] = [];
+  for (let attempt = 0; attempt < 3; attempt++) { alive = await remaining(); if (!alive.length) return; await tools.pause(); }
+  for (const identity of alive.toReversed()) {
+    const current = (await tools.inspect([identity.pid])).find(process => process.pid === identity.pid);
+    if (!matchesIdentity(identity, current)) continue;
+    try { await tools.killIdentity(identity); } catch { /* A racing exit is accepted only after the final identity check. */ }
+  }
+  for (let attempt = 0; attempt < 8; attempt++) { alive = await remaining(); if (!alive.length) return; await tools.pause(); }
+  throw new Error(`Owned Harness processes did not stop: ${alive.map(process => process.pid).join(', ')}. Instance data remains locked.`);
+}
+
+/** Environment variables are an isolation boundary, not an operating-system sandbox. */
+export async function instanceEnvironment(root: string, instance: DshInstance, plan: RuntimeLaunchPlan): Promise<NodeJS.ProcessEnv> {
+  const user = path.join(root, 'user');
+  const cache = path.join(root, 'cache');
+  const directories = [instance.homePath, instance.agentsPath, instance.workspacePath, user,
+    path.join(user, 'AppData', 'Roaming'), path.join(user, 'AppData', 'Local'),
+    path.join(cache, 'tmp'), path.join(cache, 'pnpm-store'), path.join(cache, 'pnpm-cache'), path.join(user, '.pnpm-state'), path.join(cache, 'npm'), path.join(cache, 'xdg'), path.join(cache, 'run'), path.join(user, 'python-userbase')];
+  await Promise.all(directories.map(directory => mkdir(directory, { recursive: true })));
+  const env = { ...process.env };
+  // Never inherit another Harness instance's boot controls, Node loaders or profile credentials.
+  for (const key of Object.keys(env)) if (/^(DSH_|NODE_OPTIONS$|NODE_PATH$|ELECTRON_|DEEPSEEK_|OPENAI_|ANTHROPIC_|GEMINI_|GOOGLE_API_KEY$|AZURE_OPENAI_|AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)$|NPM_TOKEN$|NPM_CONFIG_|PNPM_)/i.test(key)) delete env[key];
+  Object.assign(env, plan.env, {
+    DSH_HOME: instance.homePath, DSH_AGENTS_HOME: instance.agentsPath,
+    DSH_DESKTOP_NODE_EXECUTABLE: plan.executable,
+    HOME: user, USERPROFILE: user, HOMEDRIVE: path.parse(user).root.replace(/[\\/]$/, ''),
+    HOMEPATH: user.slice(path.parse(user).root.length - 1),
+    APPDATA: path.join(user, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(user, 'AppData', 'Local'),
+    TEMP: path.join(cache, 'tmp'), TMP: path.join(cache, 'tmp'), TMPDIR: path.join(cache, 'tmp'),
+    XDG_CONFIG_HOME: path.join(user, '.config'), XDG_DATA_HOME: path.join(user, '.local', 'share'),
+    XDG_CACHE_HOME: path.join(cache, 'xdg'), npm_config_cache: path.join(cache, 'npm'),
+    npm_config_store_dir: path.join(cache, 'pnpm-store'),
+    pnpm_config_store_dir: path.join(cache, 'pnpm-store'), pnpm_config_cache_dir: path.join(cache, 'pnpm-cache'),
+    pnpm_config_state_dir: path.join(user, '.pnpm-state'), PNPM_HOME: path.join(cache, 'pnpm'),
+    XDG_RUNTIME_DIR: path.join(cache, 'run'), PYTHONPYCACHEPREFIX: path.join(cache, 'python'),
+    PIP_CACHE_DIR: path.join(cache, 'pip'), UV_CACHE_DIR: path.join(cache, 'uv'),
+    PYTHONUSERBASE: path.join(user, 'python-userbase'), PIP_USER: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUTF8: '1',
+    PSModulePath: path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
+    PLAYWRIGHT_BROWSERS_PATH: path.join(cache, 'ms-playwright'), PUPPETEER_CACHE_DIR: path.join(cache, 'puppeteer'),
+    GIT_CONFIG_GLOBAL: path.join(user, '.gitconfig'), HISTFILE: path.join(user, '.shell-history'),
+    NODE_REPL_HISTORY: path.join(user, '.node_repl_history'),
+    NO_COLOR: '1', FORCE_COLOR: '0',
+  });
+  delete env.PYTHONHOME; delete env.PYTHONPATH; delete env.PYTHONNOUSERSITE;
+  return env;
+}
+
+export async function launchCli(plan: RuntimeLaunchPlan, args: string[], env: NodeJS.ProcessEnv, cwd: string, options?: { ipc?: boolean }): Promise<ChildProcessWithoutNullStreams> {
+  const child = spawn(plan.executable, ['--expose-internals', plan.cli, ...args], {
+    cwd, env, shell: false, windowsHide: true, stdio: options?.ipc ? ['pipe', 'pipe', 'pipe', 'ipc'] : ['pipe', 'pipe', 'pipe'],
+  }) as ChildProcessWithoutNullStreams;
+  // Keep spawn errors observed across the async handoff; the supervisor also attaches its own diagnostic listener.
+  child.once('error', () => undefined);
+  try { const job = attachProcessJob(child); if (job) processJobs.set(child, job); }
+  catch (error) { await terminateOwnedProcess(child); throw error; }
+  return child;
+}
+
+export function sanitizeOutput(value: string): string {
+  return redact(value.replace(/(https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+\/[^\s?#]*)\?[^\s"']+/gi, '$1?[redacted]')
+    .replace(/((?:api[_-]?key|password|secret|access[_-]?token|refresh[_-]?token)\s*["']?\s*[:=]\s*["']?)[^\s,"'\r\n}]+/gi, '$1[redacted]'));
+}
+
+export function parseReadyUrl(line: string): string | undefined {
+  const match = stripVTControlCharacters(line).match(/^dsh web:\s+(http:\/\/127\.0\.0\.1:\d+\/\?[^\s]+)\s*$/);
+  if (!match?.[1]) return undefined;
+  const url = new URL(match[1]);
+  const port = Number(url.port);
+  if (port < 1 || port > 65535 || !url.search || url.username || url.password || url.hash) return undefined;
+  return url.href;
+}
+
+/** Validate the owned Host's token exchange, instead of accepting any service on the port. */
+export async function verifyReadyUrl(url: string, signal: AbortSignal): Promise<void> {
+  const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
+  const location = response.headers.get('location');
+  const cookie = response.headers.get('set-cookie');
+  await response.body?.cancel();
+  if (response.status !== 303 || location !== './' || !cookie) throw new Error('Harness Host did not complete its authenticated readiness exchange.');
+}
+
+/** The identity is checked before recovering an orphan; a reused PID is never terminated. */
+export async function inspectProcess(pid: number): Promise<{ executable: string; commandLine: string; createdAt: string } | undefined> {
+  if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('Invalid process ID.');
+  if (process.platform !== 'win32') return undefined;
+  const command = `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; if ($p) { @{ executable = $p.ExecutablePath; commandLine = $p.CommandLine; createdAt = $p.CreationDate.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress }`;
+  const { stdout } = await execute(powershellPath(), ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, timeout: 10_000 });
+  if (!stdout.trim()) return undefined;
+  const value = JSON.parse(stdout) as Record<string, unknown>;
+  if (typeof value.executable !== 'string' || typeof value.commandLine !== 'string' || typeof value.createdAt !== 'string') throw new Error('Could not identify the owned Harness process.');
+  return { executable: value.executable, commandLine: value.commandLine, createdAt: value.createdAt };
+}
+
+/** A short-lived CLI can exit while CIM is formatting its record; an observed exit is authoritative. */
+export async function inspectManagedProcess(child: ChildProcessWithoutNullStreams): Promise<Awaited<ReturnType<typeof inspectProcess>>> {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return undefined;
+  try { return await inspectProcess(child.pid); }
+  catch (error) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    if (child.exitCode !== null || child.signalCode !== null) return undefined;
+    throw error;
+  }
+}
+
+export async function terminateOwnedProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const job = processJobs.get(child);
+  job?.terminate();
+  if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+  const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+  if (process.platform === 'win32' && !job) {
+    await stopOwnedWindowsTree(await inspectOwnedWindowsTree(child.pid));
+  } else if (process.platform !== 'win32') child.kill('SIGTERM');
+  let timeout: NodeJS.Timeout | undefined;
+  try { if (child.exitCode === null && child.signalCode === null) await Promise.race([exited, new Promise<void>((_, reject) => { timeout = setTimeout(() => reject(new Error('Owned Harness process did not stop.')), 15_000); timeout.unref(); })]); }
+  finally { if (timeout) clearTimeout(timeout); }
+}
+
+export async function recoverOwnedProcess(identity: ProcessIdentity): Promise<boolean> {
+  if (process.platform !== 'win32') {
+    try { process.kill(identity.pid, 0); throw new Error('A previously owned Harness process may still be running; its identity cannot be verified on this platform.'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; throw error; }
+  }
+  const current = await inspectProcess(identity.pid);
+  if (!current) return false;
+  if (path.resolve(current.executable).toLowerCase() !== path.resolve(identity.executable).toLowerCase()
+    || !current.commandLine.toLowerCase().includes(identity.cli.toLowerCase())) return false;
+  if (!identity.createdAt) throw new Error('A Harness process still exists but its saved creation identity is missing. Stop it before changing this instance.');
+  if (current.createdAt !== identity.createdAt) return false;
+  const tree = await inspectOwnedWindowsTree(identity.pid);
+  if (!tree[0] || tree[0].createdAt !== identity.createdAt || path.resolve(tree[0].executable).toLowerCase() !== path.resolve(identity.executable).toLowerCase()) return false;
+  await stopOwnedWindowsTree(tree);
+  return true;
+}

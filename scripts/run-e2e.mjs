@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { rm } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { builtinModules, createRequire } from 'node:module';
 import process from 'node:process';
@@ -17,8 +17,10 @@ if (typeof playwrightBin !== 'string') {
   throw new TypeError('The local Playwright package does not expose its CLI entry point.');
 }
 
-const projectRoot = process.cwd();
-const buildRoot = path.join(projectRoot, '.vite');
+const projectRoot = path.resolve(process.cwd());
+const isolatedBuild = process.env.WORLDLINEBOX_E2E_ISOLATED_BUILD === '1';
+const applicationRoot = isolatedBuild ? path.join(projectRoot, '.tools', 'e2e-app') : projectRoot;
+const buildRoot = path.join(applicationRoot, '.vite');
 const mainBuildDirectory = path.join(buildRoot, 'build');
 const electronExternals = [
   'electron',
@@ -33,6 +35,80 @@ const nodeResolve = {
   mainFields: ['module', 'jsnext:main', 'jsnext'],
 };
 
+function requireContainedPath(root, target) {
+  const relative = path.relative(root, target);
+  if (!path.isAbsolute(root) || !path.isAbsolute(target) || !relative
+    || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`E2E build path must stay inside its expected root: ${target}`);
+  }
+}
+
+async function existingStats(target) {
+  try { return await lstat(target); }
+  catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
+}
+
+async function ensureOwnedDirectory(parent, directory) {
+  requireContainedPath(parent, directory);
+  const stats = await existingStats(directory);
+  if (stats?.isSymbolicLink() || (stats && !stats.isDirectory())) {
+    throw new Error(`Refusing an E2E build directory that is a link or non-directory: ${directory}`);
+  }
+  if (!stats) await mkdir(directory);
+  if (path.relative(await realpath(parent), path.dirname(await realpath(directory))) !== '') {
+    throw new Error(`E2E build directory resolves outside its expected parent: ${directory}`);
+  }
+}
+
+async function ensureStaticDirectoryLink(name) {
+  const target = path.join(projectRoot, name);
+  const link = path.join(applicationRoot, name);
+  requireContainedPath(projectRoot, target);
+  requireContainedPath(applicationRoot, link);
+  const targetStats = await lstat(target);
+  const resolvedTarget = await realpath(target);
+  requireContainedPath(await realpath(projectRoot), resolvedTarget);
+  if (!targetStats.isDirectory() || targetStats.isSymbolicLink()) {
+    throw new Error(`Expected a trusted project static directory: ${target}`);
+  }
+  const linkStats = await existingStats(link);
+  if (linkStats) {
+    if (!linkStats.isSymbolicLink() || path.relative(resolvedTarget, await realpath(link)) !== '') {
+      throw new Error(`Existing E2E static directory link points to an unexpected target: ${link}`);
+    }
+    return;
+  }
+  // Never remove these links recursively: their targets are the user's assets.
+  await symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+}
+
+if (isolatedBuild) {
+  const toolsRoot = path.join(projectRoot, '.tools');
+  await ensureOwnedDirectory(projectRoot, toolsRoot);
+  await ensureOwnedDirectory(toolsRoot, applicationRoot);
+  const packagePath = path.join(applicationRoot, 'package.json');
+  if ((await existingStats(packagePath))?.isSymbolicLink()) {
+    throw new Error(`Refusing to overwrite a linked E2E package manifest: ${packagePath}`);
+  }
+  const sourcePackage = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
+  await writeFile(packagePath, `${JSON.stringify({
+    name: sourcePackage.name,
+    productName: sourcePackage.productName,
+    version: sourcePackage.version,
+    main: '.vite/build/main.js',
+  }, null, 2)}\n`);
+  await ensureStaticDirectoryLink('assets');
+  await ensureStaticDirectoryLink('resources');
+}
+
+// Check the final absolute deletion target and its real parent first. In
+// isolated mode only .tools/e2e-app/.vite is cleared; the dev .vite is untouched.
+requireContainedPath(applicationRoot, buildRoot);
+const buildStats = await existingStats(buildRoot);
+if (buildStats?.isSymbolicLink() || (buildStats && !buildStats.isDirectory())
+  || path.relative(await realpath(applicationRoot), await realpath(path.dirname(buildRoot))) !== '') {
+  throw new Error(`Refusing to clear an unexpected E2E build target: ${buildRoot}`);
+}
 await rm(buildRoot, { force: true, recursive: true });
 
 // E2E launches Electron itself, so build a production-like file:// application.
@@ -123,8 +199,8 @@ await build({
 });
 
 // Desktop Console scripts now execute in a separate UtilityProcess. The E2E
-// application uses the same `.vite/build` directory as Forge, so this entry
-// must be rebuilt alongside Main/Preload/Library Worker; otherwise an old
+// application uses a `.vite/build` layout like Forge, so this entry must be
+// rebuilt alongside Main/Preload/Library Worker; otherwise an old
 // runtime artifact could make a current Console test exercise stale code.
 await build({
   configFile: path.join(projectRoot, 'vite.script-runtime.config.ts'),
@@ -177,6 +253,7 @@ const playwrightPath = require.resolve('@playwright/test/cli');
 // for the Playwright child and every Electron process it launches.
 const playwrightEnv = { ...process.env };
 delete playwrightEnv.ELECTRON_RUN_AS_NODE;
+if (isolatedBuild) playwrightEnv.WORLDLINEBOX_E2E_APP_PATH = applicationRoot;
 const child = spawn(process.execPath, [playwrightPath, 'test', ...process.argv.slice(2)], {
   cwd: projectRoot,
   env: playwrightEnv,

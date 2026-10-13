@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schemas.linxin666.org/dsh-skin/v2.json",
+  "skinManifestVersion": 2,
+  "id": "shuimo-danqing",
+  "name": "鲸鱼娘 · 水墨丹青",
+  "nameEn": "Whale Girl · Ink Wash",
+  "version": "1.0.0",
+  "author": "stushansusu",
+  "tagline": "宣纸与蓝墨 · 墨分五色 · 一点墨绿 · 笔锋与墨点 · 静帧墨画",
+  "description": "鲸鱼娘 · 水墨丹青：背景是作者 2026-10-05 交付的视频 —— 一张满幅宣纸，墨从左侧漫进来、铺满，然后停在一张静止的墨画上（25.333s / 608 帧一帧不丢，源片原生 24fps；源片是 HEVC，而 HEVC 在 Chromium 家族（Electron / WebView2）是平台相关的支持 —— 实测 Edge 123 不支持、Chrome 154 支持，所以发行档把**编码格式**转成 H.264，帧数 / 帧率 / 时长 / 回接方式一律不动）。配色是用户给的 14 支，**逐支对着这条片子量过命中率**：深墨蓝 25.4%、夜色蓝 30.0%、长发蓝黑 29.0%、竹林墨青 11.2%、靛青蓝 9.5% 是画面里真实存在的墨阶；朱红 0.067%、暖黄 0.009% 稀有到只能当钤记与警示；而**青绿眼眸 0.000%** —— 她的眼睛不在画里，所以那一支只能来自界面，它只给「活着」的地方：当前行、聚焦、链接、悬停、新会话的四角墨点。语言是「墨分五色，一点墨绿」：面是五个深度的墨玻璃，骨架是**笔锋**（两端收笔的细线）与**墨点**，边框是画出来的，全屏唯一的实心是那颗**墨绿**的发送键。**暗色专用**，左上角品牌行换成「**鲸鱼娘 · 水墨丹青**」，左边落一方朱印。",
+  "tags": [
+    "shuimo",
+    "ink-wash",
+    "chinese-painting",
+    "rice-paper",
+    "blue-ink",
+    "mineral-green",
+    "seal-red",
+    "brushstroke",
+    "calligraphy",
+    "songti",
+    "kaiti",
+    "video-background",
+    "dark",
+    "dark-only"
+  ],
+  "accent": "#7d9aaa",
+  "order": 51,
+  "preview": {
+    "light": "preview/light.jpg",
+    "dark": "preview/dark.jpg"
+  },
+  "contributes": {
+    "stylesheet": "skin.css",
+    "patches": "patches.css",
+    "backgroundMedia": {
+      "light": {
+        "type": "video",
+        "src": "assets/shuimo-danqing-loop.mp4",
+        "scrim": "linear-gradient(180deg, rgba(23,26,32,0.35) 0%, rgba(23,26,32,0.37) 30%, rgba(23,26,32,0.46) 62%, rgba(23,26,32,0.58) 100%), linear-gradient(90deg, rgba(23,26,32,0.08) 0%, rgba(23,26,32,0.3) 13%, rgba(23,26,32,0.55) 30%, rgba(23,26,32,0.56) 100%)"
+      },
+      "dark": {
+        "type": "video",
+        "src": "assets/shuimo-danqing-loop.mp4",
+        "scrim": "linear-gradient(180deg, rgba(23,26,32,0.35) 0%, rgba(23,26,32,0.37) 30%, rgba(23,26,32,0.46) 62%, rgba(23,26,32,0.58) 100%), linear-gradient(90deg, rgba(23,26,32,0.08) 0%, rgba(23,26,32,0.3) 13%, rgba(23,26,32,0.55) 30%, rgba(23,26,32,0.56) 100%)"
+      }
+    }
+  },
+  "license": "CC BY-NC-SA 4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "attribution": "皮肤工程（skin.css / patches.css 的全部机壳规则、14 支调色板、几何、「墨分五色 · 笔锋与墨点」的装饰语言，以及两族程序化纹理的生成脚本）由 stushansusu 原创。角色「鲸鱼娘」是作者自有的角色线（与 whale-fantasy（未至之境）、rainy-night（雨夜）是同一个角色）；背景视频为 AI 生成素材（作者自撰提示词、自备参考图，生成式视频模型渲染后经 ffmpeg 导出，非转载、不含第三方素材）。源片由作者 2026-10-05 交付，内嵌该次导出的容器元数据（encoder=Lavf61.1.100、te_is_reencode=1、creation_time=2026-10-05T14:21:51Z、major_brand=isom、minor_version=512）：25.333s / 608 帧 / 1920x1080 / 24fps / HEVC Main 6.93 Mbps / 21.96 MB。**发行档是纯转码（HEVC → H.264）**：HEVC 在 Chromium 家族里是平台相关的支持 ——同一台机器上实测 Edge 123 的 hvc1/hev1 canPlayType 为空（不支持）、Chrome 154 为 probably，而 DSH 的桌面壳是 Electron，属于前一类，零重编（-c:v copy）那一版装上去画面定住不动。转码只换编码格式：不缝合回接（硬切照旧）、不重定时、不缩放、不裁，帧数 / 帧率 / 时长 / 分辨率原样，CRF 19 / preset slow / tune film → 24,204,601 字节（23.08 MiB）/ 与源片 SSIM 0.9936。回接差 171.06（全片帧间差 p95 为 8.70，末帧是墨 mean 67.6、首帧是纸 mean 237.8）；要无缝需做自交叠重编（本片实测 21.54 MB / 回接差 0.01 / SSIM 0.9930），当前未采用。体积由商店的硬限制定：上架资产是单个 zip，Cloudflare Workers 单文件上限 25 MiB（26,214,400 字节），**整包 zip 实测 24.70 MB（23.56 MiB）→ 余量 1.44 MiB**（单文件余量不是商店余量）。两族纸纹（sm-paper-grain.webp / sm-paper-grain-strong.webp）由皮肤工程侧的脚本程序化生成，不涉及任何第三方纹理素材。美术素材不在 CC BY-NC-SA 4.0 的授权范围内，本皮肤仅限个人非商业使用，为非官方作品，与本仓库无隶属或关联关系；**版权与合规责任由贡献者（stushansusu）承担**。"
+}

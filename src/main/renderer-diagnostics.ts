@@ -1,3 +1,5 @@
+import type { WebContentsConsoleMessageEventParams } from "electron";
+
 export interface RendererDiagnosticLogger {
   info(scope: string, message: string, context?: Record<string, unknown>): void;
   error(scope: string, error: unknown, context?: Record<string, unknown>): void;
@@ -5,12 +7,12 @@ export interface RendererDiagnosticLogger {
 
 export function logRendererConsoleMessage(
   logger: RendererDiagnosticLogger | undefined,
-  level: number,
-  message: string,
-  line: number,
-  sourceId: string,
+  details: Pick<WebContentsConsoleMessageEventParams, "level" | "message" | "lineNumber" | "sourceId">,
 ): void {
   if (logger === undefined) return;
+  const { message, lineNumber: line, sourceId } = details;
+  // Keep existing log context levels while consuming Electron's modern event.
+  const level = { debug: 0, info: 1, warning: 2, error: 3 }[details.level];
   const context = { level, line, sourceId };
   if (level >= 3) {
     logger.error("renderer.console.error", new Error(message), context);

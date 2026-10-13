@@ -21,7 +21,8 @@ const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 process.env.VcpkgEnabled = 'false';
 
 // Orphan Electron after Ctrl+C is the most common black-screen restart path.
-killStaleWorldlineBoxDevProcesses(projectRoot);
+// Acceptance runs have their own userData; never interrupt the user's live development session.
+if (process.env.WORLDLINEBOX_E2E !== '1') killStaleWorldlineBoxDevProcesses(projectRoot);
 await new Promise((resolve) => setTimeout(resolve, 400));
 
 if (
@@ -67,7 +68,7 @@ const forgeBin = path.join(
 const forgeArgs = process.argv.slice(2).filter((arg) => arg !== "--multi");
 
 function cleanupDevTree() {
-  killStaleWorldlineBoxDevProcesses(projectRoot);
+  if (process.env.WORLDLINEBOX_E2E !== '1') killStaleWorldlineBoxDevProcesses(projectRoot);
 }
 
 const child = spawn(forgeBin, ["start", ...forgeArgs], {

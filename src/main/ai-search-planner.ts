@@ -1,3 +1,4 @@
+import { deepseekStructuredRequestDefaults, isDeepseekOfficialEndpoint } from '../shared/llm';
 import {
   formatAiLanguagesForPrompt,
   resolveAnthropicMessagesUrl,
@@ -257,8 +258,9 @@ function providerRequest(
       body: JSON.stringify({
         model: input.model,
         temperature: 0,
+        ...deepseekStructuredRequestDefaults(input.baseUrl, input.model),
         messages: [{ role: 'system', content: system }, { role: 'user', content: input.naturalQuery }],
-        response_format: {
+        response_format: input.baseUrl && isDeepseekOfficialEndpoint(input.baseUrl) ? { type: 'json_object' } : {
           type: 'json_schema',
           json_schema: { name: 'worldlinebox_search_plan', strict: true, schema: AI_SEARCH_PLAN_JSON_SCHEMA },
         },

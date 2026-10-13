@@ -66,8 +66,8 @@ afterEach(() => {
 });
 
 describe('theme profile contract v3', () => {
-  it('exposes three themes, each with complete dark and light tone variants', () => {
-    expect(THEME_PROFILE_IDS).toEqual(['worldlinebox', 'vscode', 'soft']);
+  it('exposes the original themes and the two selected animated skins, each with complete tone variants', () => {
+    expect(THEME_PROFILE_IDS).toEqual(['worldlinebox', 'vscode', 'soft', 'whale-fantasy', 'shuimo-danqing']);
 
     for (const id of THEME_PROFILE_IDS) {
       const preset = THEME_PROFILE_PRESETS[id];
@@ -89,7 +89,7 @@ describe('theme profile contract v3', () => {
     }
   });
 
-  it('ships a default theme color (blue family) per tone variant', () => {
+  it('keeps the original profiles in the blue family', () => {
     function isBlueFamily(hex: string): boolean {
       const r = parseInt(hex.slice(1, 3), 16);
       const g = parseInt(hex.slice(3, 5), 16);
@@ -97,7 +97,7 @@ describe('theme profile contract v3', () => {
       // Blue-family: the blue channel dominates over red and green.
       return b >= r && b >= g;
     }
-    for (const id of THEME_PROFILE_IDS) {
+    for (const id of ['worldlinebox', 'vscode', 'soft'] as const) {
       for (const mode of ['dark', 'light'] as const) {
         const tokens = THEME_PROFILE_PRESETS[id].tokens[mode];
         for (const token of [
@@ -113,6 +113,12 @@ describe('theme profile contract v3', () => {
         }
       }
     }
+  });
+
+  it('keeps the selected skins distinct: electric blue/cyan and mineral green', () => {
+    expect(THEME_PROFILE_PRESETS['whale-fantasy'].tokens.dark['--ui-action-accent']).toBe('#3a7bff');
+    expect(THEME_PROFILE_PRESETS['whale-fantasy'].tokens.dark['--ui-content-accent']).toBe('#39ffd1');
+    expect(THEME_PROFILE_PRESETS['shuimo-danqing'].tokens.dark['--ui-action-accent']).toBe('#48785e');
   });
 
   it('accepts semantic color overrides and rejects unsafe or unknown fields', () => {

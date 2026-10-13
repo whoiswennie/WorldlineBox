@@ -11,6 +11,8 @@ import {
 } from "../shared/ai-analysis-settings";
 import { normalizeAiAnalysisImageEdgePx } from "../shared/ai-analysis-image";
 import { normalizeAiAnalysisConcurrency } from "../shared/ai-concurrency";
+import { DEEPSEEK_OFFICIAL_MODELS, isDeepseekOfficialEndpoint } from "../shared/llm";
+import { LauncherNotification } from "./launcher/LauncherNotification";
 import {
   AI_API_FORMATS,
   AI_API_FORMAT_LABELS,
@@ -23,6 +25,7 @@ import {
 import { Icon } from "./Icons";
 import { AiConfigNumberInput } from "./ai-config-number-input";
 import { iconActionAttrs } from "./icon-action-attrs";
+import { isImeKeyboardEvent } from "./ime-safe-dismiss";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
 
@@ -138,6 +141,7 @@ export function AiConfigDialog({
 }: AiConfigDialogProps) {
   const t = useT();
   const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const availableModels = modelOptions.length ? modelOptions : apiFormat === 'openai_chat' && isDeepseekOfficialEndpoint(baseUrl) ? [...DEEPSEEK_OFFICIAL_MODELS] : [];
   const [busyAction, setBusyAction] = useState<"test" | "models" | null>(null);
   const [modelsMessage, setModelsMessage] = useState<string | null>(null);
   const [testInline, setTestInline] = useState<{
@@ -236,7 +240,7 @@ export function AiConfigDialog({
   }
 
   async function toggleModelPicker() {
-    if (!canUseKey) return;
+    if (!canUseKey && availableModels.length === 0) return;
     if (modelPickerOpen) {
       setModelPickerOpen(false);
       setModelPickerMenuBox(null);
@@ -246,7 +250,7 @@ export function AiConfigDialog({
     syncModelPickerMenuBox();
     if (
       fetchedForRef.current !== modelsFetchKey ||
-      modelOptions.length === 0
+      availableModels.length === 0
     ) {
       await runFetchModels();
       syncModelPickerMenuBox();
@@ -278,7 +282,7 @@ export function AiConfigDialog({
       return;
     }
     if (!canUseKey) return;
-    if (fetchedForRef.current === modelsFetchKey && modelOptions.length > 0) {
+    if (fetchedForRef.current === modelsFetchKey && availableModels.length > 0) {
       return;
     }
     void runFetchModels({ quiet: true });
@@ -297,6 +301,12 @@ export function AiConfigDialog({
       setModelPickerMenuBox(null);
     };
     const onReposition = () => syncModelPickerMenuBox();
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || isImeKeyboardEvent(event)) return;
+      event.preventDefault(); event.stopPropagation();
+      setModelPickerOpen(false); setModelPickerMenuBox(null); modelPickerTriggerRef.current?.focus();
+    };
+    document.addEventListener('keydown', onEscape, true);
     document.addEventListener("mousedown", onPointerDown);
     window.addEventListener("resize", onReposition);
     // Dialog body scrolls clip absolute menus; keep fixed menu glued to trigger.
@@ -305,6 +315,7 @@ export function AiConfigDialog({
       document.removeEventListener("mousedown", onPointerDown);
       window.removeEventListener("resize", onReposition);
       document.removeEventListener("scroll", onReposition, true);
+      document.removeEventListener('keydown', onEscape, true);
     };
   }, [modelPickerOpen]);
 
@@ -315,9 +326,9 @@ export function AiConfigDialog({
   const pickerLabel =
     busyAction === "models"
       ? t("aiConfig.fetchingModels")
-      : modelOptions.includes(model)
+      : availableModels.includes(model)
         ? model
-        : modelOptions.length > 0
+        : availableModels.length > 0
           ? t("aiConfig.modelPick")
           : t("aiConfig.modelPickEmpty");
 
@@ -471,11 +482,11 @@ export function AiConfigDialog({
                   aria-haspopup="listbox"
                   aria-label={t("aiConfig.modelPick")}
                   className="text-field ai-config-input ai-config-model-picker-trigger"
-                  disabled={!canUseKey}
+                  disabled={!canUseKey && availableModels.length === 0}
                   onClick={() => void toggleModelPicker()}
                   ref={modelPickerTriggerRef}
                   title={
-                    !canUseKey
+                    !canUseKey && availableModels.length === 0
                       ? t("aiConfig.modelPickEmpty")
                       : t("aiConfig.modelPick")
                   }
@@ -489,6 +500,7 @@ export function AiConfigDialog({
                 {modelPickerOpen && modelPickerMenuBox
                   ? createPortal(
                       <ul
+                        data-escape-owned-popover="model-picker"
                         aria-label={t("aiConfig.modelPick")}
                         className="ai-config-model-picker-menu is-portaled"
                         ref={modelPickerMenuRef}
@@ -500,14 +512,14 @@ export function AiConfigDialog({
                         }}
                       >
                         {busyAction === "models" &&
-                        modelOptions.length === 0 ? (
+                        availableModels.length === 0 ? (
                           <li
                             className="ai-config-model-picker-empty"
                             role="option"
                           >
                             {t("aiConfig.fetchingModels")}
                           </li>
-                        ) : modelOptions.length === 0 ? (
+                        ) : availableModels.length === 0 ? (
                           <li
                             className="ai-config-model-picker-empty"
                             role="option"
@@ -515,7 +527,7 @@ export function AiConfigDialog({
                             {modelsMessage ?? t("aiConfig.modelPickEmpty")}
                           </li>
                         ) : (
-                          modelOptions.map((id) => (
+                          availableModels.map((id) => (
                             <li key={id} role="presentation">
                               <button
                                 aria-selected={id === model}
@@ -544,12 +556,8 @@ export function AiConfigDialog({
                   : null}
               </div>
             </div>
-            {modelsMessage ? (
-              <p className="ai-config-hint" role="status">
-                {modelsMessage}
-              </p>
-            ) : null}
           </div>
+          <details className="ai-config-asset-options"><summary>{t("aiConfig.assetOptions")}</summary>
           <div className="editor-field ai-config-field">
             <label className="micro-label" htmlFor="ai-config-language">
               {t("aiConfig.language")}
@@ -808,6 +816,7 @@ export function AiConfigDialog({
               {t("aiConfig.autoAnalyze")}
             </label>
           </div>
+          </details>
         </div>
         <div className="dialog-actions ai-config-actions">
           <div className="ai-config-test-cluster">
@@ -821,15 +830,8 @@ export function AiConfigDialog({
                 ? t("aiConfig.testing")
                 : t("aiConfig.testConnection")}
             </button>
-            {testInline ? (
-              <span
-                className="ai-config-test-inline"
-                data-ok={testInline.ok ? "true" : "false"}
-                role="status"
-              >
-                {testInline.text}
-              </span>
-            ) : null}
+            {testInline ? <LauncherNotification error={!testInline.ok} message={testInline.text} onDismiss={() => setTestInline(null)} />
+              : modelsMessage ? <LauncherNotification message={modelsMessage} onDismiss={() => setModelsMessage(null)} /> : null}
           </div>
           <button
             className="primary-button"
@@ -840,11 +842,7 @@ export function AiConfigDialog({
             {saveVerifying ? t("aiConfig.savingVerifying") : t("aiConfig.save")}
           </button>
         </div>
-        {saveVerifying ? (
-          <p className="ai-config-save-wait" role="status">
-            {t("aiConfig.saveVerifyingHint")}
-          </p>
-        ) : null}
+        {saveVerifying ? <LauncherNotification pending message={t("aiConfig.saveVerifyingHint")} onDismiss={() => undefined} /> : null}
     </>
   );
 

@@ -1,5 +1,6 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import { MakerDMG } from '@electron-forge/maker-dmg';
@@ -9,6 +10,9 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 
 const projectRoot = import.meta.dirname;
 const appIconBase = path.join(projectRoot, 'assets', 'icons', 'app');
+const packagedResourcesRoot = process.platform === 'win32'
+  ? path.join(projectRoot, '.tools', 'portable-release', randomUUID(), 'resources')
+  : path.join(projectRoot, 'resources');
 
 // WorldlineBox Windows: keep MSBuild builds hermetic from user-wide vcpkg integration
 process.env.VcpkgEnabled = 'false';
@@ -56,6 +60,7 @@ const config: ForgeConfig = {
       // Recover ignored media executables from the pinned WorldlineBox-Build
       // release when a clean checkout or a local replacement fails the gate.
       runNodeGate('scripts/media-binaries.mjs', ['ensure', '--platform', mediaPlatform]);
+      if (mediaPlatform === 'win32-x64') runNodeGate('scripts/portable-tools.mjs', ['release', '--release-root', packagedResourcesRoot]);
       // The browser extension is not shipped to a store yet; it ships inside
       // the app bundle (Contents/Resources/extension) for manual loading.
       // Rebuild it so the package always carries the current sources.
@@ -75,6 +80,7 @@ const config: ForgeConfig = {
     preMake: async () => {
       const mediaPlatform = nativeMediaPlatform(process.platform, process.arch);
       runNodeGate('scripts/media-binaries.mjs', ['ensure', '--platform', mediaPlatform]);
+      if (mediaPlatform === 'win32-x64') runNodeGate('scripts/portable-tools.mjs', ['release', '--release-root', packagedResourcesRoot]);
       runNodeGate('scripts/verify-package.mjs', [], {
         WORLDLINEBOX_PACKAGE_ROOT: path.join(projectRoot, 'out', `WorldlineBox-${mediaPlatform}`),
       });
@@ -86,6 +92,9 @@ const config: ForgeConfig = {
     icon: appIconBase,
     asar: {
       unpack:
+        '**/node_modules/7zip-bin/**,' +
+        // ConPTY loads DLL/executable helpers and worker JavaScript beside its NAPI binding.
+        '**/node_modules/node-pty/**,' +
         // 2026-09-15：链接删除改为永久删除源文件后，产品不再调用系统回收站，
         // `trash` 依赖与其本地 helper 已移除，这里不再需要解包它。
         '**/node_modules/libarchive-wasm/dist/libarchive.wasm,' +
@@ -121,7 +130,7 @@ const config: ForgeConfig = {
     // platform bundle before packaging; `verify:package` repeats the same
     // checks against this copied directory.
     extraResource: [
-      'resources',
+      packagedResourcesRoot,
       // Browser extension bundle (manual-load distribution): installed at
       // WorldlineBox.app/Contents/Resources/extension (macOS) or
       // resources/extension (Windows) so users can load it unpacked.
@@ -132,6 +141,7 @@ const config: ForgeConfig = {
       'assets/icons/app.icns',
       // Third-party attribution ships inside the package next to the LICENSE.
       'THIRD_PARTY_NOTICES.md',
+      'assets/backgrounds/attribution',
       'LICENSE',
     ],
     // Forge's Vite plugin otherwise excludes all node_modules. Keep them in the
@@ -142,7 +152,7 @@ const config: ForgeConfig = {
       return !file.startsWith('/.vite') && !file.startsWith('/node_modules');
     },
   },
-  rebuildConfig: {},
+  rebuildConfig: { ignoreModules: ['node-pty'] },
   makers: [
     // Windows 安装器不在此处（2026-08-08 决策：WiX MSI 已回退——MSI 语言
     // 切换需自定义 bootstrapper（社区确认），Inno/NSIS 内置多语言选择

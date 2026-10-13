@@ -1,0 +1,13 @@
+{
+  "format": "worldlinebox-portable-tools-lock-v1",
+  "platform": "win32-x64",
+  "manifestSha256": "3476588e5cb935f3a72a778c08d163c6b276d6d7b3f1d73161527dade63233eb",
+  "versions": {
+    "node": "24.15.0",
+    "npm": "11.12.1",
+    "pnpm": "11.7.0",
+    "python": "3.13.12",
+    "git": "2.48.1.windows.1",
+    "ffmpeg": "8.0.1"
+  }
+}

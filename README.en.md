@@ -16,7 +16,9 @@ The character-facing brain can maintain its identity during a conversation while
 
 The current code provides an Electron / React / TypeScript desktop app with local asset libraries, import and organization, tagging, collections, search, workspaces, media and 3D previews, asset AI analysis, WebDAV asset synchronization, browser extension, plugins, scripts and MCP integration. Windows development and installer scripts are included.
 
-**Character cognition, persistent world state, DSH instance/version management, pack installation and game/world adapters are planned features and are not implemented yet.** The current interface remains an asset manager. Product plans must not be read as shipped capabilities.
+Windows x64 now includes a [DSH launcher](docs/user-guide/dsh-launcher.md) with exact runtime artifacts, private plugin instances, process controls, packs, snapshots and complete offline backups. Versions and packs share sessions, the default workspace, account authorization and model/API settings. Plugins, skills and execution configuration remain private. The launcher is the first application module and opens by default.
+
+**Character cognition, persistent world state and game/world adapters remain planned features.** Actual cross-version data migrations and third-party plugin compatibility require version-specific validation.
 
 ## Target architecture
 
@@ -29,7 +31,7 @@ The current code provides an Electron / React / TypeScript desktop app with loca
 | Packs | Reproducible, shareable combinations of engine, plugins, configuration and content. |
 | Adapters | DSH execution, games, world runners, voice and other tools. |
 
-DSH is an early integration target. Version management should separate immutable installations from mutable instances, give each instance its own `DSH_HOME`, support multiple packs on the same engine version, preserve compatibility evidence, and test upgrades in copies before switching. Reverting an executable version does not guarantee data-format downgrade compatibility. The manager should remain available when an execution instance fails.
+DSH is an early integration target. Version management separates immutable programs, private plugin environments and shared saves. Each instance retains its own `DSH_HOME`, profile, plugins and skills while native adapters route sessions, the default workspace, accounts and model choices to shared storage. Multiple packs can use one engine version. Upgrades are tested in copies; reverting the executable does not guarantee data-format downgrade compatibility. The manager remains available when an execution instance fails.
 
 We study PCL's instance/isolation mechanisms and DSH's native profile and bundle contracts. No PCL source code is included. PackForge is a reference for pack exchange and workflows, rather than a claim that our future system already exists.
 

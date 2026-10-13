@@ -28,6 +28,7 @@ import { useT } from "./i18n";
 import type { WorldlineBoxPluginManagerApi } from "../shared/plugin-manager-api";
 import type { WorldlineBoxMcpSettingsApi } from "../shared/mcp";
 import { DialogShell } from "./ui/patterns";
+import { MusicSettingsSlot } from './music/MusicProvider';
 
 export interface AppSettingsDialogProps {
   open: boolean;
@@ -291,6 +292,7 @@ export function AppSettingsDialog({
               />
             ) : null}
             {!showingPluginSettings && activeCategory === "mcp" ? <McpSettingsPage api={mcpApi} onOpenAppLog={onOpenAppLog} /> : null}
+            {!showingPluginSettings && activeCategory === "music" ? <MusicSettingsSlot /> : null}
             {!showingPluginSettings && !showingCommunity && activeCategory === "plugins" ? (
               <PluginSettingsPage
                 api={pluginApi}

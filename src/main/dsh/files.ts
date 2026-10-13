@@ -1,0 +1,127 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { readChunks, copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from './disk';
+import path from 'node:path';
+
+export function contained(root: string, relative: string): string {
+  const target = path.resolve(root, relative);
+  const rel = path.relative(path.resolve(root), target);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('Path escapes managed directory.');
+  return target;
+}
+
+export function safeRelative(value: string): string {
+  const normalized = value.replaceAll('\\', '/');
+  if (!normalized || normalized.length > 2000 || normalized.includes('\0') || normalized.startsWith('/')) throw new Error('Invalid archive path.');
+  const parts = normalized.replace(/\/$/, '').split('/');
+  if (parts.some(p => !p || p === '.' || p === '..' || /[:<>"|?*]/.test(p) || /[. ]$/.test(p) || /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(p))) throw new Error('Unsafe archive path.');
+  return parts.join('/');
+}
+
+export async function atomicJson(file: string, value: unknown): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  await writeFile(temporary, JSON.stringify(value, null, 2), { flag: 'wx' });
+  await rename(temporary, file);
+}
+
+export async function readJson<T>(file: string): Promise<T | undefined> {
+  try { return JSON.parse(await readFile(file, 'utf8')) as T; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
+}
+
+export async function hashFile(file: string, signal?: AbortSignal, size?: number): Promise<string> {
+  const digest = createHash('sha256');
+  signal?.throwIfAborted();
+  if (size !== undefined && size < 1024 * 1024) digest.update(await readFile(file, { signal }));
+  else for await (const chunk of readChunks(file, signal)) digest.update(chunk);
+  return digest.digest('hex');
+}
+
+export interface TreeFile { path: string; sha256: string; size: number }
+export interface TreeInventory { files: TreeFile[]; contentSha256: string; fileCount: number; byteLength: number }
+export async function inventoryTree(root: string, signal?: AbortSignal, progress?: (count: number, file: string) => Promise<void>): Promise<TreeInventory> {
+  let active = 0; let count = 0;
+  const queue: Array<() => void> = [];
+  const limit = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (active >= 32) await new Promise<void>(resolve => queue.push(resolve));
+    else active++;
+    try { signal?.throwIfAborted(); return await work(); }
+    finally { const waiting = queue.shift(); if (waiting) waiting(); else active--; }
+  };
+  const walk = async (directory: string, prefix: string): Promise<TreeFile[]> => {
+    const entries = (await limit(() => readdir(directory, { withFileTypes: true }))).sort((a,b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    const groups = await Promise.allSettled(entries.map(async entry => {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      safeRelative(relative);
+      if (++count > 150_000) throw new Error('Too many entries in managed tree.');
+      const stat = await limit(() => lstat(path.join(directory, entry.name)));
+      if (stat.isSymbolicLink()) throw new Error(`Linked file is not allowed in a sealed tree: ${relative}`);
+      if (stat.isDirectory()) return walk(path.join(directory, entry.name), relative);
+      if (!stat.isFile()) throw new Error(`Unsupported file: ${relative}`);
+      return [{ path: relative, sha256: '', size: stat.size }];
+    }));
+    const failure = groups.find(result => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+    return groups.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+  };
+  const files = await walk(root, '');
+  let next = 0;
+  // Bounded parallel I/O avoids serial event-loop turns for thousands of tiny dependency files.
+  const hashed = await Promise.allSettled(Array.from({ length: Math.min(32, files.length) }, async () => {
+    while (next < files.length) {
+      const index = next++; const file = files[index]!;
+      await progress?.(index, file.path);
+      file.sha256 = await hashFile(contained(root, file.path), signal, file.size);
+    }
+  }));
+  const failure = hashed.find(result => result.status === 'rejected');
+  if (failure?.status === 'rejected') throw failure.reason;
+  const contentSha256 = createHash('sha256').update(JSON.stringify(files)).digest('hex');
+  return { files, contentSha256, fileCount: files.length, byteLength: files.reduce((sum, file) => sum + file.size, 0) };
+}
+
+/** Flatten only links whose targets stay inside explicitly owned roots. Never copy external links. */
+export async function copyTree(source: string, destination: string, options: {
+  signal?: AbortSignal; skip?: (relative: string) => boolean; allowedLinkRoots?: string[];
+} = {}): Promise<void> {
+  const roots = await Promise.all([source, ...(options.allowedLinkRoots ?? [])].map(p => realpath(p)));
+  let count = 0;
+  const walk = async (from: string, to: string, relative: string, ancestors: Set<string>) => {
+    options.signal?.throwIfAborted();
+    if (options.skip?.(relative)) return;
+    const actual = await realpath(from);
+    if (!roots.some(root => { const rel = path.relative(root, actual); return !rel.startsWith('..') && !path.isAbsolute(rel); })) throw new Error(`Link points outside managed data: ${relative}`);
+    const stat = await lstat(actual);
+    if (stat.isDirectory()) {
+      if (ancestors.has(actual.toLowerCase())) throw new Error(`Recursive directory link: ${relative}`);
+      const next = new Set(ancestors).add(actual.toLowerCase());
+      await mkdir(to, { recursive: true });
+      for (const entry of await readdir(actual)) {
+        const child = relative ? `${relative}/${entry}` : entry;
+        safeRelative(child);
+        await walk(path.join(actual, entry), path.join(to, entry), child, next);
+      }
+    } else if (stat.isFile()) {
+      if (++count > 150_000) throw new Error('Too many files to copy.');
+      await mkdir(path.dirname(to), { recursive: true });
+      await copyFile(actual, to);
+    } else throw new Error(`Unsupported data file: ${relative}`);
+  };
+  await walk(source, destination, '', new Set());
+}
+
+export async function removeManaged(root: string, target: string): Promise<void> {
+  const managedRoot = await realpath(root);
+  const actual = await realpath(target).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+  if (actual === undefined) return;
+  const rel = path.relative(managedRoot, actual);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('Refusing to remove outside managed storage.');
+  await rm(actual, { recursive: true, force: true });
+}
+
+export function redact(text: string): string {
+  return text.replace(/(https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+[^?\s"']*\?)[^\s"']+/gi, '$1[redacted]')
+    .replace(/([?&](?:token|key|api_key|auth|access_token)=)[^\s&#"']+/gi, '$1[redacted]')
+    .replace(/\b(sk-[a-z0-9_-]{8,})\b/gi, '[redacted]')
+    .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,"'}]+/gi, '$1[redacted]');
+}

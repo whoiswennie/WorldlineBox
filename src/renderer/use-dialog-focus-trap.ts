@@ -89,7 +89,7 @@ export function useDialogFocusTrap(active: boolean, focusKey?: string): void {
       cancelAnimationFrame(raf);
       document.removeEventListener("keydown", onKeyDown);
       const previous = previousFocusRef.current;
-      if (previous && document.contains(previous)) {
+      if (previous && document.contains(previous) && !hasHiddenAncestor(previous)) {
         previous.focus();
       }
     };
@@ -101,6 +101,11 @@ function getTopmostModal(): HTMLElement | null {
     document.querySelectorAll<HTMLElement>(
       '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]',
     ),
-  ).filter((modal) => !modal.hidden && modal.getAttribute("aria-hidden") !== "true");
+  ).filter((modal) => !hasHiddenAncestor(modal));
   return modals.at(-1) ?? null;
+}
+
+/** A retained module may contain open dialogs while its whole view is hidden. */
+function hasHiddenAncestor(element: HTMLElement): boolean {
+  return element.closest('[hidden], [inert], [aria-hidden="true"]') !== null;
 }

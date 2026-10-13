@@ -25,6 +25,21 @@ npm run media:ensure
 
 离线环境可设置 `WORLDLINEBOX_MEDIA_AUTO_ACQUIRE=0`，此时校验失败会直接报错，不会联网下载。
 
+## Forge / Vite 配置验证
+
+```bash
+node scripts/verify-vite-forge-builds.mjs
+```
+
+这个检查通过 Forge 实际配置合并路径，分别构建开发模式与生产模式的所有入口。
+产物和 `report.json` 放在新建的 `.tools/vite-forge-smoke-*` 目录；不会重写开发 `.vite`
+或启动服务。检查还确认 preload、QuickJS 和插件 UtilityProcess 仍是单个 CJS 入口。
+
+Forge 7 的 preload 模板自动加入旧 `inlineDynamicImports`。项目在配置 hook 中将最终
+合并选项迁移为 `codeSplitting: false`，保持单文件语义，避免 Vite 8 / Rolldown 的弃用警告。
+说明见 [Rolldown 输出选项](https://rolldown.rs/reference/OutputOptions.codeSplitting)。
+不要修改依赖目录、屏蔽日志或让 Main 全部内联；Main 的 DSH 懒加载继续保留。
+
 ## 发布流水线（release:local）
 
 一键全流程：
@@ -85,7 +100,17 @@ npm run release:local -- --skip-verify --build-media-locally
 
 ### Windows 安装器（Inno Setup）
 
-Windows 安装器 `WorldlineBoxSetup.exe` 用 **Inno Setup 6** 构建（脚本 `assets/inno/worldlineboxsetup.iss`，输出至 `out/make/inno/WorldlineBoxSetup.exe`）。Windows 用户可双击根目录的 `01-Setup-Environment.bat` 准备环境、`02-Start-Development.bat` 启动开发模式、`03-Build-Installer.bat` 生成安装包。脚本自动准备 Node.js（版本来自 `.nvmrc`）、npm 依赖、Electron 原生模块、校验过的媒体组件及 Inno Setup 6.7.3，工具保存在 `.tools/` 中。开发模式的数据和缓存使用 `.tools/dev-user-data`，与其他同名应用隔离。
+Windows 安装器 `WorldlineBoxSetup.exe` 用 **Inno Setup 6** 构建（脚本 `assets/inno/worldlineboxsetup.iss`，输出至 `out/make/inno/WorldlineBoxSetup.exe`）。Windows 用户可双击根目录的 `01-Setup-Environment.bat` 准备环境、`02-Start-Development.bat` 启动开发模式、`03-Build-Installer.bat` 生成安装包。脚本自动准备 Node.js（版本来自 `.nvmrc`）、npm 依赖、Electron 原生模块、校验过的媒体组件及 Inno Setup 6.7.3，工具保存在 `.tools/` 中。正常开发启动和安装版共享当前用户 `%APPDATA%\WorldlineBox`，DSH 下载缓存、运行版本与实例放在其 `dsh-launcher` 下，不放项目 `.tools`。
+
+统一自定义目录使用绝对路径 `WORLDLINEBOX_USER_DATA_PATH`，开发版与安装版均生效。
+E2E 优先使用独立 `WORLDLINEBOX_E2E_USER_DATA_PATH` 或临时目录；显式
+`WORLDLINEBOX_ALLOW_MULTI_INSTANCE=1` 才使用共享目录下 `dev-instances/pid-*`。
+旧 `WORLDLINEBOX_DEV_USER_DATA_PATH` 不再决定正常启动目录，只能作为旧 DSH 存储迁移来源。
+
+旧项目 `.tools/dev-user-data/dsh-launcher` 在无实例与已安装环境、无运行操作且目标
+`dsh-launcher` 不存在时，以物理文件复制和前后 SHA-256 校验迁入共享目录。旧目录保留，
+已有用户资产、世界和 Chromium 首选项不复制或覆盖。有实例的旧存储需通过完整备份或整合包导入，
+不会直接合并绝对路径。已有目标目录时跳过自动迁移。
 
 媒体组件由 `bundle-lock.json` 中的不可变上游发布 ID 定位，下载后仍校验原有 ZIP 和清单的 SHA-256。如果 GitHub API 暂时限流，可使用 `node scripts/media-binaries.mjs acquire --archive <可信ZIP路径>` 离线导入；校验不通过时停止，不会忽略发布检查。
 

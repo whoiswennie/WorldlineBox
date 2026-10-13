@@ -14,6 +14,7 @@ import path from "node:path";
 
 import {
   importFilesThroughBridge,
+  resolveElectronAppPath,
   resolveElectronExecutablePath,
 } from "./electron-test-helpers";
 
@@ -29,8 +30,7 @@ function launchApp(
   importFiles: string,
   extraEnv: Record<string, string> = {},
 ) {
-  const applicationDirectory =
-    process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
+  const applicationDirectory = resolveElectronAppPath();
   return electron.launch({
     args: [applicationDirectory],
     cwd: applicationDirectory,
@@ -326,6 +326,7 @@ test("keeps navigation inside explicit tabs and exposes contextual tab actions",
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await createLibrary(window, libraryName);
     await createFolder(window, "角色原画");
     await importFilesThroughBridge(window, "角色原画");
@@ -493,7 +494,7 @@ test("keeps navigation inside explicit tabs and exposes contextual tab actions",
     await window.getByRole("button", { name: "前进" }).click();
     await expect(tabs.first()).toHaveAccessibleName("角色原画");
     await waitForWorkspaceNavigation(window);
-    await window.getByRole("searchbox", { name: "搜索资源库" }).fill("blue metal");
+    await window.getByRole("combobox", { name: "搜索资源库" }).fill("blue metal");
     await expect(searchedAsset).toBeVisible({ timeout: 15_000 });
     await searchedAsset.click();
     await expect(searchedAsset).toHaveClass(/is-selected/);
@@ -501,7 +502,7 @@ test("keeps navigation inside explicit tabs and exposes contextual tab actions",
     await window.getByRole("button", { name: "新建标签页" }).click();
     await expect(tabs).toHaveCount(2);
     await expect(tabs.nth(1)).toHaveAccessibleName("所有资产");
-    await expect(window.getByRole("searchbox", { name: "搜索资源库" })).toHaveValue("");
+    await expect(window.getByRole("combobox", { name: "搜索资源库" })).toHaveValue("");
 
     await collectionRow(window, "灵感合集").click();
     await expect(tabs).toHaveCount(2);
@@ -514,13 +515,13 @@ test("keeps navigation inside explicit tabs and exposes contextual tab actions",
 
     await tabs.first().click();
     await expect(window.locator(".scope-crumb-label.is-current")).toHaveText("角色原画");
-    await expect(window.getByRole("searchbox", { name: "搜索资源库" })).toHaveValue("blue metal");
+    await expect(window.getByRole("combobox", { name: "搜索资源库" })).toHaveValue("blue metal");
     await expect(searchedAsset).toHaveClass(/is-selected/, { timeout: 15_000 });
 
     await startNoBlankFrameProbe(window);
     await tabs.nth(1).click();
     await expect(window.locator(".scope-crumb-label.is-current")).toContainText("灵感合集");
-    await expect(window.getByRole("searchbox", { name: "搜索资源库" })).toHaveValue("");
+    await expect(window.getByRole("combobox", { name: "搜索资源库" })).toHaveValue("");
     await tabs.first().click();
     await expect(window.locator(".scope-crumb-label.is-current")).toHaveText("角色原画");
     await tabs.nth(1).click();
@@ -551,7 +552,7 @@ test("keeps navigation inside explicit tabs and exposes contextual tab actions",
 
     await expect(tabs).toHaveCount(1);
     await expect(tabs.first()).toHaveAccessibleName("角色原画");
-    await expect(window.getByRole("searchbox", { name: "搜索资源库" })).toHaveValue("blue metal");
+    await expect(window.getByRole("combobox", { name: "搜索资源库" })).toHaveValue("blue metal");
 
     // The last tab can never be closed away: no X, and no close item in its menu.
     await expect(
@@ -637,6 +638,7 @@ test("restores the saved tab strip after a relaunch", async () => {
   });
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await createLibrary(window, libraryName);
     await createFolder(window, "恢复夹甲");
     await createFolder(window, "恢复夹乙");
@@ -681,6 +683,7 @@ test("restores the saved tab strip after a relaunch", async () => {
   });
   try {
     const window = await relaunched.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await expect(
       window.getByRole("button", { name: `当前资源库 ${libraryName}` }),
     ).toBeVisible({ timeout: 20_000 });

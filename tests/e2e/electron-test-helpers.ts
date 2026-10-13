@@ -40,6 +40,13 @@ export function resolveElectronExecutablePath(): string {
   return executablePath;
 }
 
+/** Launch an isolated E2E build when selected, otherwise the project app. */
+export function resolveElectronAppPath(): string {
+  return process.env.WORLDLINEBOX_E2E_APP_PATH
+    ?? process.env.WORLDLINEBOX_E2E_APP_DIRECTORY
+    ?? process.cwd();
+}
+
 /** Locate a browse card by filename, independent of caption formatting. */
 export function assetCard(window: Page, displayName: string): Locator {
   const escaped = displayName.replaceAll('"', '\\"');
@@ -211,17 +218,12 @@ export function electronLaunchEnv(
   );
 }
 
-/** Open the in-app settings dialog (Windows uses the shell main menu). */
+/** Open global settings from the application sidebar on either platform. */
 export async function openAppSettingsDialog(
   application: ElectronApplication,
   window: Page,
 ): Promise<Locator> {
-  if (process.platform === 'win32') {
-    await window.getByRole('button', { name: '主菜单' }).click();
-    await window.getByRole('menuitem', { name: '设置', exact: true }).click();
-  } else {
-    await window.getByRole('button', { name: '设置' }).click();
-  }
+  await window.getByRole('button', { name: '设置', exact: true }).click();
   const dialog = window.getByRole('dialog', { name: '通用设置' });
   await expect(dialog).toBeVisible();
   return dialog;

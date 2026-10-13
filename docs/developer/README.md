@@ -11,6 +11,9 @@
 - [环境搭建](setup.md)——依赖、首次构建、开发环境
 - [构建与打包](build-packaging.md)——package / make / 发布流水线 / 签名
 - [架构](architecture.md)——进程模型、目录结构、关键设计
+- [应用侧边栏](application-navigation.md)——功能模块登记、状态保留与设置入口
+- [DSH 启动器](dsh-launcher.md)——固定运行时、实例隔离、进程监督、快照与离线备份
+- [DSH 整合包格式](dsh-packs-format.md)——依赖封存、来源锁与导入校验
 - [测试](testing.md)——测试体系与运行方式
 - [新增媒体格式支持](media-format-support.md)——从共享注册表到导入、预览、过滤、协议和验收
 - [分支与开发工作流](workflow.md)——分支策略、开源贡献流程与维护者工作纪律

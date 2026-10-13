@@ -46,6 +46,7 @@ test('the packaged application starts and completes a real Worker import', async
     );
 
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await expect(window.getByRole('heading', { name: '创建本地资源库' })).toBeVisible();
     expect(
       await window.evaluate(() => ({
@@ -120,6 +121,7 @@ test('the packaged application FTS5 search finds and filters imported assets', a
     );
 
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await expect(window.getByRole('heading', { name: '创建本地资源库' })).toBeVisible();
 
     // Create library

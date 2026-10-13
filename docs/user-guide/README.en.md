@@ -15,7 +15,7 @@ A WorldlineBox usage guide for end users. For Chinese, switch the site language;
 ## Quick start
 
 1. Install WorldlineBox (see [Install](installation.md))
-2. Launch the app and create a local library
+2. Launch the app to open the DSH launcher. To manage assets, select Assets and create a local library
 3. Drag images, videos, audio, 3D models, or text into the window, or click Import
 4. Assets appear on the canvas. Double-click to open the viewer; right-click for more actions. Thumbnails, metadata, and AI analysis complete progressively in the background
 
@@ -23,7 +23,7 @@ Data stays in your local library directory; for syncing across machines, use Web
 
 ## Interface at a glance
 
-A typical workspace has library navigation on the left, the asset canvas in the center, and the Inspector on the right. On Windows, the upper-left Main menu contains File, Edit, Library, Window, About, and Settings (where you can view diagnostic logs and check for updates under About); macOS provides equivalent commands in the native system menu. Import, search, filtering, and sorting stay in the top toolbar.
+The application rail starts with the DSH launcher, the default home page, followed by Assets. Settings stays at the bottom and opens over the current module, also with Ctrl+, (⌘, on macOS). Animated and personal wallpapers apply across modules; switching preserves playback progress. The launcher does not require an asset library. The asset workspace has library navigation, an asset canvas, and an Inspector. On Windows, the Main menu contains File, Edit, Library, Window, and About, including diagnostics and update checks; macOS retains its native menu. Import, search, filtering, and sorting stay in the top toolbar.
 
 ![WorldlineBox library overview](../assets/ui/WorldlineBox-Preview.png)
 

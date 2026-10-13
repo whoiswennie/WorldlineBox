@@ -6,6 +6,7 @@ import { _electron as electron, expect, test } from "@playwright/test";
 
 import {
   clickNativeApplicationMenuItem,
+  resolveElectronAppPath,
   resolveElectronExecutablePath,
 } from "./electron-test-helpers";
 
@@ -32,8 +33,7 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
   writeFileSync(sourcePath, VALID_PNG);
 
   const executablePath = resolveElectronExecutablePath();
-  const applicationDirectory =
-    process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
+  const applicationDirectory = resolveElectronAppPath();
   const application = await electron.launch({
     args: [applicationDirectory],
     cwd: applicationDirectory,
@@ -50,6 +50,7 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
@@ -74,22 +75,24 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
       .toContain("blur");
     await libraryTrigger.click();
 
-    // History controls live in the browse column: the nav toggle is in the
-    // leading shell cluster, followed by history, the Windows main menu (or
-    // the macOS settings entry), and then the breadcrumbs trail.
+    // Application settings live at the foot of the outer rail; asset history
+    // and the Windows file/edit menu remain inside the asset workspace.
     const backButton = window.getByRole("button", { name: "后退" });
     const forwardButton = window.getByRole("button", { name: "前进" });
-    const settingsButton =
+    const menuButton =
       process.platform === "win32"
         ? window.locator(".main-menu-trigger")
-        : window.getByRole("button", { name: /主菜单|设置/ });
+        : null;
+    const settingsButton = window.getByRole("button", { name: "设置", exact: true });
+    const moduleButton = window.getByRole("button", { name: "资产管理", exact: true });
+    await expect(moduleButton).toHaveAttribute("aria-current", "page");
     await expect(backButton).toBeVisible();
     await expect(forwardButton).toBeVisible();
     await expect(settingsButton).toBeVisible();
     if (process.platform === "win32") {
-      await settingsButton.hover();
+      await menuButton!.hover();
       await expect(window.getByRole("menu", { name: "主菜单" })).toHaveCount(0);
-      await settingsButton.click();
+      await menuButton!.click();
       await expect(
         window.getByRole("menu", { name: "主菜单" }),
       ).toBeVisible();
@@ -101,11 +104,12 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
         )
         .toContain("blur");
       await expect(window.locator(".main-menu-submenu")).toHaveCount(0);
-      for (const label of ["文件", "编辑", "资源库", "窗口", "关于", "设置"]) {
+      for (const label of ["文件", "编辑", "资源库", "窗口", "关于"]) {
         await expect(
           window.getByRole("menuitem", { name: label, exact: true }),
         ).toBeVisible();
       }
+      await expect(window.getByRole("menuitem", { name: "设置", exact: true })).toHaveCount(0);
       await window.getByRole("menuitem", { name: "文件", exact: true }).hover();
       const mainSubmenu = window.locator(".main-menu-submenu");
       await expect(mainSubmenu).toBeVisible();
@@ -128,9 +132,8 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
       expect(submenuBox!.y).toBeCloseTo(fileBox!.y, 0);
       expect(submenuBox!.x).toBeCloseTo(fileBox!.x + fileBox!.width, 0);
       expect(submenuBox!.width).toBeLessThan(278);
-      await window.getByRole("menuitem", { name: "设置", exact: true }).hover();
-      await expect(mainSubmenu).toHaveCount(0);
-      await window.getByRole("menuitem", { name: "设置", exact: true }).click();
+      await window.keyboard.press("Escape");
+      await settingsButton.click();
       await expect(window.getByRole("dialog")).toBeVisible();
       // 2026-09-13 user decision: a modal must not close because the user clicked
       // beside it. Click on the scrim, well left of the panel, and keep it open.
@@ -145,17 +148,17 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
       await window.keyboard.press("Escape");
       await expect(window.getByRole("dialog")).toHaveCount(0);
 
-      // The macOS native About menu must expose the same diagnostics route as
-      // the Windows renderer menu; exercise the actual native command rather
-      // than only checking the template shape.
-      await clickNativeApplicationMenuItem(application, "about.diagnostics");
+      // Windows has no native application menu; exercise its visible route.
+      await menuButton!.click();
+      await window.getByRole("menuitem", { name: "关于", exact: true }).hover();
+      await window.getByRole("menuitem", { name: "查看诊断日志", exact: true }).click();
       await expect(
         window.getByRole("dialog", { name: "诊断日志" }),
       ).toBeVisible();
       await window.keyboard.press("Escape");
       await expect(window.getByRole("dialog")).toHaveCount(0);
 
-      await settingsButton.click();
+      await menuButton!.click();
       await window.getByRole("menuitem", { name: "关于", exact: true }).hover();
       await expect(window.locator(".main-menu-submenu")).toBeVisible();
       await window
@@ -167,7 +170,7 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
       await window.keyboard.press("Escape");
       await expect(window.getByRole("dialog")).toHaveCount(0);
 
-      await settingsButton.click();
+      await menuButton!.click();
       await window.getByRole("menuitem", { name: "关于", exact: true }).hover();
       await window.getByRole("menuitem", { name: "关于 WorldlineBox", exact: true }).click();
       const aboutDialog = window.getByRole("dialog", { name: "WorldlineBox" });
@@ -259,12 +262,7 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
     // Typography is an app preference, not Chromium page zoom. Exercise all
     // four tiers through the real Appearance settings and verify that the
     // shared root scale and a visible control both change.
-    if (process.platform === "win32") {
-      await settingsButton.click();
-      await window.getByRole("menuitem", { name: "设置", exact: true }).click();
-    } else {
-      await settingsButton.click();
-    }
+    await settingsButton.click();
     const fontSettingsDialog = window.getByRole("dialog");
     await expect(fontSettingsDialog).toBeVisible();
     await fontSettingsDialog.getByRole("tab", { name: "外观", exact: true }).click();
@@ -323,9 +321,11 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
     expect(crumbsBox).not.toBeNull();
     expect(workspaceBox).not.toBeNull();
     expect(toggleBox!.x).toBeLessThan(backBox!.x);
-    expect(backBox!.x).toBeLessThan(settingsBox!.x);
+    expect(settingsBox!.x).toBeLessThan(toggleBox!.x);
+    expect(settingsBox!.y).toBeGreaterThan(backBox!.y);
     expect(backBox!.x).toBeLessThan(crumbsBox!.x);
-    expect(backBox!.x - workspaceBox!.x).toBeCloseTo(14, 0);
+    expect(backBox!.x).toBeGreaterThanOrEqual(workspaceBox!.x);
+    expect(backBox!.x + backBox!.width).toBeLessThan(workspaceBox!.x + workspaceBox!.width);
 
     // Left sidebar status dots (top/bottom) were removed as redundant.
     await expect(window.locator(".navigation-pane .pane-header")).toHaveCount(

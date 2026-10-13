@@ -21,7 +21,7 @@
 :root {
   --ui-background-color: var(--ui-surface-canvas);
   --ui-background-image: none;
-  --ui-background-image-opacity: 0.8;
+  --ui-background-image-opacity: 0.7;
   --ui-background-surface-opacity: 100%;
   --ui-background-size: cover;
   --ui-background-position: center;
@@ -37,13 +37,13 @@
       color-mix(
         in srgb,
         var(--ui-surface-canvas)
-          calc((1 - var(--ui-background-image-opacity, 0.8)) * 100%),
+          calc((1 - var(--ui-background-image-opacity, 0.7)) * 100%),
         transparent
       ),
       color-mix(
         in srgb,
         var(--ui-surface-canvas)
-          calc((1 - var(--ui-background-image-opacity, 0.8)) * 100%),
+          calc((1 - var(--ui-background-image-opacity, 0.7)) * 100%),
         transparent
       )
     ),

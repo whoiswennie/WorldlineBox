@@ -174,9 +174,10 @@ try {
     }
     if ($Action -eq 'Setup' -or $needsSetup) { Setup-Environment }
     if ($Action -eq 'Dev') {
+        & $nodeExe (Join-Path $projectRoot 'scripts\portable-tools.mjs') ensure
+        if ($LASTEXITCODE -ne 0) { throw 'Bundled tool preparation failed.' }
         $env:WORLDLINEBOX_DISTRIBUTION = 'development'
-        # This checkout's development profile is isolated from installed apps.
-        $env:WORLDLINEBOX_DEV_USER_DATA_PATH = Join-Path $toolsRoot 'dev-user-data'
+        # Development and installed applications use the same user-owned profile.
         Run-Npm @('start')
     }
     if ($Action -eq 'Installer') {

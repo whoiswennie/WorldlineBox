@@ -1,10 +1,14 @@
-# AI 分析
+# 全局模型与 AI 分析
 
 WorldlineBox 的 AI 分析需要连接你自己的云端 AI 服务。你需要准备服务商账号、API Key、支持图像输入的模型，并确认服务费用。
 
 ## 配置
 
-Windows 从左上角 `主菜单 → 设置 → AI` 打开，macOS 从系统菜单打开 `设置 → AI`。
+从最左侧应用栏底部的 `设置 → 全局模型` 打开，Windows 与 macOS 使用相同入口。连接配置由应用全局保存，不依赖当前资源库；资产分析选项单独折叠在下方。
+
+首次使用预设为 DeepSeek 官方 `OpenAI Chat Completions`、`https://api.deepseek.com`、`deepseek-flash`。内置模型候选无需密钥即可选择；真正调用仍需要自己的 API Key。已经保存的其他服务商和自定义模型不会被预设覆盖。接口和模型名称参考 [DeepSeek 官方 API 文档](https://api-docs.deepseek.com/zh-cn/)。
+
+Windows 开发版和安装版均使用 `%APPDATA%\WorldlineBox\ai-config.json`，密钥单独保存到 `ai-key.enc` 并通过 Electron safeStorage 加密。文件不在资源库或源码目录。DSH 原生账号与模型配置由启动器共享存档管理，这份应用模型配置不会自动覆盖它们。
 
 ![AI 配置界面](../assets/ui/AI-config.png)
 

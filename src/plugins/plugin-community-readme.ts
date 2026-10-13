@@ -23,7 +23,7 @@ export type PluginReadmeInline =
 export type PluginReadmeTableAlign = 'left' | 'center' | 'right';
 
 export type PluginReadmeBlock =
-  | { readonly type: 'heading'; readonly level: 1 | 2 | 3 | 4 | 5 | 6; readonly children: readonly PluginReadmeInline[] }
+  | { readonly type: 'heading'; readonly level: 1 | 2 | 3 | 4 | 5 | 6; readonly children: readonly PluginReadmeInline[]; readonly id?: string }
   | { readonly type: 'paragraph'; readonly children: readonly PluginReadmeInline[] }
   | { readonly type: 'list'; readonly ordered: boolean; readonly items: readonly (readonly PluginReadmeInline[])[] }
   | { readonly type: 'code'; readonly value: string }
@@ -126,7 +126,8 @@ function tableStartsAt(lines: readonly string[], index: number): boolean {
     && splitTableCells(header).length === splitTableCells(separator).length;
 }
 
-function parseMarkdownDocument(
+/** Structural Markdown only: raw HTML is stripped and URLs pass the caller's resolver. */
+export function parseMarkdownDocument(
   markdown: string,
   resolveHref: (href: string) => string | undefined,
 ): readonly PluginReadmeBlock[] {

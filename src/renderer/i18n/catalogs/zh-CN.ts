@@ -1,4 +1,5 @@
 import type { MessageTree } from '../types';
+import { launcherZh } from '../../launcher/messages';
 
 /**
  * zh-CN message catalog (REQ-I18N-001).
@@ -15,6 +16,13 @@ import type { MessageTree } from '../types';
  *   call-site migration should compose with placeholders rather than one mega-template.
  */
 export const zhCN = {
+  launcher: launcherZh,
+  appNavigation: {
+    label: "应用侧边栏",
+    modules: "功能模块",
+    assets: "资产管理",
+    launcher: "启动器",
+  },
   tabs: {
     label: "工作区标签页",
     add: "新建标签页",
@@ -1189,8 +1197,9 @@ export const zhCN = {
     }
   },
   aiConfig: {
-    title: "AI 配置",
-    note: "此模型用于资产 AI 分析（自动生成描述、标签等）。",
+    title: "全局模型配置",
+    note: "应用各模块共用这份 LLM 配置。下方的分析选项仅影响资产处理。",
+    assetOptions: "资产分析选项",
     provider: "供应商",
     apiFormat: "API 格式",
     apiFormatHint: "选择上游接口协议，不是模型品牌名。例如中转站若只提供 Chat Completions，请选 OpenAI Chat Completions。",
@@ -1264,7 +1273,8 @@ export const zhCN = {
     categoryAssets: "资产",
     categoryAppearance: "外观",
     categoryBrowse: "浏览",
-    categoryAi: "AI分析",
+    categoryAi: "全局模型",
+    categoryMusic: "音乐",
     categoryMcp: "MCP",
     categoryPlugins: "插件",
     categoryPluginSettings: "插件设置",
@@ -1405,6 +1415,11 @@ export const zhCN = {
     themeProfileWorldlineBox: "WorldlineBox",
     themeProfileVscode: "VS Code",
     themeProfileSoft: "柔和",
+    themeProfileWhaleFantasy: "鲸鱼娘 · 未至之境",
+    themeProfileShuimoDanqing: "鲸鱼娘 · 水墨丹青",
+    backgroundMotion: "播放背景动画",
+    backgroundMotionHint: "静音循环播放；窗口最小化、失焦或系统要求减少动态效果时暂停。关闭后显示静态封面。",
+    backgroundPersonalImagePriority: "当前使用自选图片，移除图片后恢复主题动画。",
     themeAccent: "主题色",
     themeAccentHint: "快速搭配当前主题的强调色，点击后立即生效。",
     themeAccentBlue: "蓝色",
@@ -1416,16 +1431,16 @@ export const zhCN = {
     themeAccentTeal: "青色",
     themeAccentRed: "红色",
     backgroundSection: "应用背景",
-    backgroundSectionHint: "为应用壳设置背景图片，并调整图片不透明度。",
+    backgroundSectionHint: "调整主题动画、自选图片和背景不透明度。",
     backgroundDropHint: "拖拽图片到这里，或点击选择",
     backgroundFormatsHint: "支持 PNG、JPEG、WebP、GIF、BMP、AVIF",
-    backgroundMode: "图片适配",
+    backgroundMode: "背景适配",
     backgroundModeCover: "铺满",
     backgroundModeFill: "拉伸",
     backgroundModeTile: "平铺",
     backgroundReplaceImage: "替换背景图片",
     backgroundRemoveImage: "移除图片",
-    backgroundOpacity: "不透明度",
+    backgroundOpacity: "背景不透明度",
     backgroundSaveError: "背景无法保存，图片可能超过本地存储容量。",
     backgroundImageUnsupported: "请选择支持的栅格图片（PNG、JPEG、WebP、GIF、BMP 或 AVIF）。",
     backgroundProcessing: "正在压缩图片…",

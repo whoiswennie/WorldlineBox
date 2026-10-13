@@ -1,0 +1,157 @@
+.application-root {
+  --application-navigation-width: 68px;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  isolation: isolate;
+  background: var(--ui-surface-canvas);
+}
+
+.application-shell {
+  --application-navigation-width: 68px;
+  display: grid;
+  grid-template-columns: var(--application-navigation-width) minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: color-mix(in srgb, var(--ui-surface-pane) 94%, var(--ui-action-accent));
+}
+
+.application-root:has(> .app-theme-background[data-wallpaper]) > .application-shell {
+  background: transparent;
+}
+
+.application-root:has(> .app-theme-background[data-wallpaper]) .application-navigation {
+  background: color-mix(in srgb, var(--ui-surface-pane) 32%, transparent);
+}
+
+.application-navigation {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-height: 0;
+  color: var(--ui-content-secondary);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.application-navigation-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 var(--shell-toolbar-height, 44px);
+}
+
+.application-navigation-brand img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.application-navigation-modules {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--ui-space-3) var(--ui-space-2);
+  scrollbar-width: thin;
+  -webkit-app-region: no-drag;
+}
+
+.application-navigation-item {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 52px;
+  min-height: 56px;
+  padding: 8px 2px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--ui-content-secondary);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.application-navigation-item:hover {
+  background: var(--ui-surface-hover);
+  color: var(--ui-content-primary);
+}
+
+.application-navigation-item.is-active {
+  background: var(--ui-action-accent-soft);
+  color: var(--ui-content-primary);
+}
+
+.application-navigation-item:focus-visible {
+  outline: 2px solid var(--ui-border-focus);
+  outline-offset: 2px;
+}
+
+.application-navigation-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.application-navigation-item-label {
+  max-width: 100%;
+  font-size: var(--ui-font-size-micro);
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.application-navigation-footer {
+  display: flex;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin: 0 var(--ui-space-2);
+  padding: var(--ui-space-3) 0;
+  border-top: 1px solid var(--ui-border-subtle);
+  -webkit-app-region: no-drag;
+}
+
+.application-module-host,
+.application-module-view {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Module dialogs leave the application rail accessible without changing fixed-position coordinate systems. */
+.application-module-view .dialog-backdrop {
+  left: var(--application-navigation-width);
+}
+
+/* Portaled settings remain above the current module and leave the rail visible. */
+.application-global-dialogs .dialog-backdrop {
+  left: var(--application-navigation-width, 68px);
+}
+
+.application-module-host {
+  border-left: 1px solid var(--ui-border-subtle);
+  border-radius: 16px 0 0 16px;
+}
+
+.application-module-view > .app-shell {
+  min-width: 0;
+  border-radius: 16px 0 0 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .application-navigation-item {
+    transition: none;
+  }
+}

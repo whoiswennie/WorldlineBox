@@ -128,8 +128,7 @@ test("Inspector refreshes immediately after AI analysis completes", async () => 
       .click();
 
     // Configure the API key through the settings UI (safeStorage encryption).
-    await window.getByRole("button", { name: "主菜单" }).click();
-    await window.getByRole("menuitem", { name: "设置" }).click();
+    await window.getByRole("button", { name: "设置", exact: true }).click();
     const dialog = window.getByRole("dialog", { name: "通用设置" });
     await dialog.getByRole("tab", { name: "AI", exact: true }).click();
     await dialog.locator("#ai-config-base-url").fill(`http://127.0.0.1:${port}/v1`);
@@ -287,8 +286,7 @@ test("Inspector refreshes after a BATCH AI analysis completes", async () => {
       .click();
 
     // Configure the API key (probe must land).
-    await window.getByRole("button", { name: "主菜单" }).click();
-    await window.getByRole("menuitem", { name: "设置" }).click();
+    await window.getByRole("button", { name: "设置", exact: true }).click();
     const dialog = window.getByRole("dialog", { name: "通用设置" });
     await dialog.getByRole("tab", { name: "AI", exact: true }).click();
     await dialog.locator("#ai-config-base-url").fill(`http://127.0.0.1:${port}/v1`);

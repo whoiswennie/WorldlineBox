@@ -1,4 +1,5 @@
 import type { zhCN } from './zh-CN';
+import { launcherEn } from '../../launcher/messages';
 
 /**
  * Widen leaf literals to `string` while keeping the zh-CN key tree.
@@ -24,6 +25,13 @@ type CatalogMessages<T> = {
 
  */
 export const en = {
+  launcher: launcherEn,
+  appNavigation: {
+    label: "Application sidebar",
+    modules: "Modules",
+    assets: "Assets",
+    launcher: "Launcher",
+  },
   tabs: {
     label: "Workspace tabs",
     add: "New tab",
@@ -1205,8 +1213,9 @@ export const en = {
     }
   },
   aiConfig: {
-    title: "AI settings",
-    note: "Used for asset AI analysis (description, tags, and related fields).",
+    title: "Global model configuration",
+    note: "Application modules share this LLM configuration. Analysis options below apply only to assets.",
+    assetOptions: "Asset analysis options",
     provider: "Provider",
     apiFormat: "API format",
     apiFormatHint: "Choose the upstream protocol, not a model brand. If your relay only speaks Chat Completions, select OpenAI Chat Completions.",
@@ -1283,7 +1292,8 @@ export const en = {
     categoryAssets: "Assets",
     categoryAppearance: "Appearance",
     categoryBrowse: "Browse",
-    categoryAi: "AI Analysis",
+    categoryAi: "Global model",
+    categoryMusic: "Music",
     categoryMcp: "MCP",
     categoryPlugins: "Plugins",
     categoryPluginSettings: "Plugin settings",
@@ -1424,6 +1434,11 @@ export const en = {
     themeProfileWorldlineBox: "WorldlineBox",
     themeProfileVscode: "VS Code",
     themeProfileSoft: "Soft",
+    themeProfileWhaleFantasy: "Whale Girl · The Unreached",
+    themeProfileShuimoDanqing: "Whale Girl · Ink Wash",
+    backgroundMotion: "Play background animation",
+    backgroundMotionHint: "Loops silently; pauses when minimized, unfocused or reduced motion is requested. Turn off to show a still cover.",
+    backgroundPersonalImagePriority: "Your personal wallpaper is active. Remove it to restore the theme animation.",
     themeAccent: "Theme color",
     themeAccentHint: "Quickly pair the current theme with an accent color. Changes apply immediately.",
     themeAccentBlue: "Blue",
@@ -1435,16 +1450,16 @@ export const en = {
     themeAccentTeal: "Teal",
     themeAccentRed: "Red",
     backgroundSection: "App background",
-    backgroundSectionHint: "Set a background image for the application shell and adjust its opacity.",
+    backgroundSectionHint: "Adjust the theme animation, personal wallpaper and background opacity.",
     backgroundDropHint: "Drag an image here or click to browse",
     backgroundFormatsHint: "PNG, JPEG, WebP, GIF, BMP, or AVIF",
-    backgroundMode: "Image fit",
+    backgroundMode: "Background fit",
     backgroundModeCover: "Fill (proportional)",
     backgroundModeFill: "Stretch",
     backgroundModeTile: "Tile",
     backgroundReplaceImage: "Replace background image",
     backgroundRemoveImage: "Remove image",
-    backgroundOpacity: "Opacity",
+    backgroundOpacity: "Background opacity",
     backgroundSaveError: "The background could not be saved. The image may be too large for local storage.",
     backgroundImageUnsupported: "Choose a supported raster image (PNG, JPEG, WebP, GIF, BMP, or AVIF).",
     backgroundProcessing: "Compressing image…",
