@@ -325,15 +325,13 @@ it('creates a group and manages its name and membership in the same conversation
   expect(container!.querySelector('.companions-chat-header h2')!.textContent).toContain('一起看海');
 });
 
-it('saves and corrects a memory with its source message and dispatches DSH only through an explicit message action', async () => {
+it('saves and corrects sourced memory without a second manual capability dispatch entry', async () => {
   const f = fixture(); await mount(f.api); await click('记住消息 1'); await fill('textarea[aria-label="共同记忆内容"]', '喜欢把照片按旅行地点整理'); await click('记住这件事');
   expect(f.request).toHaveBeenCalledWith({ type: 'memory.save', companionId: 'deepseek-sister', content: '喜欢把照片按旅行地点整理', sourceMessageId: 'message-1' });
   await click('编辑记忆 memory-a'); await fill('textarea[aria-label="共同记忆内容"]', '这次照片按地点整理'); await click('保存修正');
   expect(f.memories()[0]!.content).toBe('这次照片按地点整理');
-  await click('处理消息 1'); await submitDialog();
-  expect(f.request).toHaveBeenCalledWith({ type: 'action.run', conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: 'message-1', title: '帮我整理照片', prompt: '帮我整理照片' });
-  await f.publish(); expect(container!.textContent).toContain('正在处理');
-  await click('停止处理 action-a'); expect(f.request).toHaveBeenCalledWith({ type: 'action.cancel', id: 'action-a' });
+  expect(container!.querySelector('[title="交给伙伴处理"]')).toBeNull();
+  expect(f.request.mock.calls.some(([input]) => input.type === 'action.run')).toBe(false);
 });
 
 it('resolves a reference outside the loaded page and jumps to its original history', async () => {

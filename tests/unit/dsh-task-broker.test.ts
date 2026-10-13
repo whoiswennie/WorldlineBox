@@ -85,7 +85,7 @@ describe('Pinned DSH task broker', () => {
     expect(binding.keyPresent).toBe(false);
     expect(binding.patch).toContainEqual({ id: 'tool-fs', disabled: false });
     expect(binding.patch).toContainEqual({ id: 'tool-fs-search', disabled: false });
-    expect(binding.patch.every(entry => !entry.config)).toBe(true);
+    expect(binding.patch.every(entry => !entry.config || entry.id === 'tools')).toBe(true);
     expect(result.text).toContain('native configuration');
     await expect(readFile(binding.patchPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await test.broker.shutdown();
@@ -279,13 +279,13 @@ describe('Pinned DSH task broker', () => {
     const restarted = new DshTaskBroker({ rootPath: test.rootPath, getSelection: async () => test.captured[0]!, pin: async () => { throw new Error('Never auto-run interrupted jobs'); } });
     await restarted.init(); expect(restarted.state()[0]?.status).toBe('interrupted'); expect(restarted.state()[0]?.sessionId).toBe(result.sessionId); expect(restarted.result(result.taskId)).toBeUndefined(); await restarted.shutdown();
   });
-  it('enforces four in-flight reservations and frees every job and pin during shutdown', async () => {
-    const test = await fixture(); const tasks = Array.from({ length: 4 }, () => test.broker.execute({ prompt: 'sleep' }, test.operation()));
+  it('enforces twenty in-flight reservations and frees every job and pin during shutdown', async () => {
+    const test = await fixture(); const tasks = Array.from({ length: 20 }, () => test.broker.execute({ prompt: 'sleep' }, test.operation()));
     for (const task of tasks) void task.catch(() => undefined);
-    await expect(test.broker.execute({ prompt: 'fifth' }, test.operation())).rejects.toThrow('Four DSH tasks');
-    while (test.broker.state().length < 4) await new Promise(resolve => setTimeout(resolve, 10));
+    await expect(test.broker.execute({ prompt: 'twenty-first' }, test.operation())).rejects.toThrow('Twenty DSH tasks');
+    while (test.broker.state().length < 20) await new Promise(resolve => setTimeout(resolve, 10));
     await test.broker.shutdown(); expect((await Promise.allSettled(tasks)).every(result => result.status === 'rejected')).toBe(true);
-    expect(test.broker.state().every(record => record.status === 'cancelled')).toBe(true); expect(test.removed).toHaveLength(4);
+    expect(test.broker.state().every(record => record.status === 'cancelled')).toBe(true); expect(test.removed).toHaveLength(20);
   });
   it('cancels an abort-aware context preparation before creating any pin or process and releases the reservation', async () => {
     const test = await fixture(); const controller = new AbortController(); let entered!: () => void; const preparing = new Promise<void>(resolve => { entered = resolve; }); let pinned = false;

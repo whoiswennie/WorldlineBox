@@ -13,6 +13,33 @@ const seeds: CompanionSeed[] = [
   { id: 'deepseek-sister', name: '大肥鱼', description: '姐姐', persona: '温柔沉稳', model: '', avatar: 'sister', proactive: false },
   { id: 'deepseek-flash', name: '小肥鱼', description: '妹妹', persona: '活泼好奇', model: '', avatar: 'flash', proactive: false },
 ];
+
+it('persists a FIFO queue, admits at most 20 globally and 5 per role, and refills after release and restart', () => {
+  const f = fixture();
+  const roles = [f.store.openPrivate('deepseek-sister'), f.store.openPrivate('deepseek-flash')];
+  for (let index = 0; index < 2; index++) {
+    const role = f.store.createCompanion({ name: '队列角色' + index, persona: '队列验收', description: '', model: '', avatar: 'custom', proactive: false });
+    roles.push(f.store.openPrivate(role.id));
+  }
+  for (let round = 0; round < 7; round++) for (const [index, conversation] of roles.entries()) {
+    const source = f.store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: '队列消息 ' + round, replyDirective: 'auto' });
+    f.store.request({ type: 'work.enqueue', work: { id: 'work_' + round + '_' + index, conversationId: conversation.id, sourceMessageId: source.id,
+      companionId: conversation.memberIds[0]!, status: 'queued', proactive: false, createdAt: source.createdAt, updatedAt: source.createdAt } });
+  }
+  const claimed = Array.from({ length: 20 }, () => f.store.request({ type: 'work.claim' }).work!);
+  expect(claimed.every(Boolean)).toBe(true);
+  expect(f.store.request({ type: 'work.claim' }).work).toBeUndefined();
+  for (const conversation of roles) expect(claimed.filter(work => work.companionId === conversation.memberIds[0])).toHaveLength(5);
+  f.store.request({ type: 'work.status', id: 'work_0_0', status: 'done' });
+  expect(f.store.request({ type: 'work.claim' }).work?.id).toBe('work_5_0');
+  close(f.store);
+  const reopened = open(f.databasePath);
+  expect(reopened.request({ type: 'work.list' }).works).toHaveLength(28);
+  reopened.request({ type: 'work.interrupt-running' });
+  const resumed = Array.from({ length: 7 }, () => reopened.request({ type: 'work.claim' }).work!);
+  expect(resumed.map(work => work.id)).toEqual(['work_5_1', 'work_5_2', 'work_5_3', 'work_6_0', 'work_6_1', 'work_6_2', 'work_6_3']);
+  expect(reopened.request({ type: 'work.claim' }).work).toBeUndefined();
+});
 const welcomes = { 'deepseek-sister': '内置欢迎：我是大肥鱼。', 'deepseek-flash': '内置欢迎：我是小肥鱼。' };
 const roots: string[] = [];
 const stores: CompanionsStore[] = [];

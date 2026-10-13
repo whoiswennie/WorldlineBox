@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 const { createUserMessage } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-llm')));
 const { installModelSelection } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-agent')));
 export const name = 'worldlinebox-companion-runtime';
-export const inject = ['agents', 'agentDefaultModel', 'sessions'];
+export const inject = ['agents', 'agentDefaultModel', 'sessions', 'agentPresets'];
 export function apply(ctx) {
   const exit = ctx.get('appExit');
   if (typeof exit !== 'function') throw Error('Companion CLI requires its owning app exit boundary');
@@ -100,7 +100,10 @@ export function apply(ctx) {
       return seen;
     };
     const options = { agentOptions: { provider: selection.provider, model: selection.model },
-      setup: (scope, subject) => {
+      setup: async (scope, subject) => {
+        // Mount the instance's declared standard composition, including user-edited plugins.
+        // A host-only catalog is incomplete when the Web profile owns per-Agent presets.
+        await ctx.get('agentPresets').mount(scope, 'standard');
         installModelSelection(scope, { current: selection, assembled: undefined });
         if (!recovery) return;
         const seen = collectInputs(subject);

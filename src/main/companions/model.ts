@@ -7,6 +7,7 @@ import type { Companion } from '../../shared/companions';
 import { isDeepseekOfficialEndpoint } from '../../shared/llm';
 import { buildCompanionContext, type CompanionReplyInput } from './context';
 import { COMPANION_DSH_TOOL, companionDshArgumentsSchema } from '../../shared/companion-dsh-tool';
+import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
 
 export type { CompanionReplyInput } from './context';
 export interface CompanionModelConfig {
@@ -15,8 +16,8 @@ export interface CompanionModelConfig {
   baseUrl?: string;
   apiKey: string;
 }
-export interface CompanionReply { text: string; memories?: string[]; topic?: string; action?: { title: string; prompt: string }; actions?: Array<{ title: string; prompt: string; companionId?: string }> }
-export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number }
+export interface CompanionReply { text: string; memories?: string[]; topic?: string; turn?: CompanionLoopTurn; action?: { title: string; prompt: string }; actions?: Array<{ title: string; prompt: string; companionId?: string }> }
+export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[] }
 export type CompanionModelErrorCode = 'CONFIG' | 'AUTH' | 'RATE_LIMIT' | 'NETWORK' | 'TIMEOUT' | 'CANCELLED' | 'INVALID_RESPONSE' | 'REFUSED';
 export class CompanionModelError extends Error {
   constructor(readonly code: CompanionModelErrorCode, message: string) {
@@ -44,7 +45,7 @@ export async function generateCompanionReply(
   validateConfig(config);
   const model = resolveCompanionModel(input.companion, config);
   if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
-  const context = buildCompanionContext(input);
+  const context = buildCompanionContext({ ...input, agentLoop: options.loop });
   const controller = new AbortController();
   let rejectAbort: (error: CompanionModelError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
@@ -61,15 +62,24 @@ export async function generateCompanionReply(
   try {
     if (signal?.aborted) cancel();
     const operation = async (): Promise<CompanionReply> => {
-      const response = await fetchFn(...providerRequest({ ...config, model }, context, controller.signal, !input.proactive && !input.actionResult && !input.chatOnly));
+      const request = providerRequest({ ...config, model }, context, controller.signal, options.loop || !input.proactive && !input.actionResult && !input.chatOnly);
+      if (options.loop) appendLoopHistory(request, config.apiFormat, options.turns ?? [], options.supplements ?? []);
+      const response = await fetchFn(...request);
       if (!response.ok) {
         void response.body?.cancel().catch(() => undefined);
         throw httpError(response.status);
       }
       const body = await readBoundedJson(response);
       const calls = extractDshCalls(config.apiFormat, body);
-      const raw = extractProviderText(config.apiFormat, body, calls.length > 0);
-      const result = raw.trim() ? parseCompanionReply(raw, input.proactive === true || input.conversation.kind === 'group') : { text: '我来处理，进度随时可以查看。', memories: [] } as CompanionReply;
+      const loopCalls = options.loop ? extractLoopCalls(config.apiFormat, body) : [];
+      const raw = extractProviderText(config.apiFormat, body, options.loop ? loopCalls.length > 0 : calls.length > 0);
+      const result = options.loop ? parseLoopText(raw, loopCalls.length > 0) : raw.trim() ? parseCompanionReply(raw, input.proactive === true || input.conversation.kind === 'group') : { text: '我来处理，进度随时可以查看。', memories: [] } as CompanionReply;
+      if (options.loop) {
+        if (!raw.trim() && !loopCalls.length) throw new CompanionModelError('INVALID_RESPONSE', '模型没有返回正文或能力调用。');
+        result.turn = { text: result.text, rawText: raw, calls: loopCalls };
+        delete result.action; delete result.actions;
+        return result;
+      }
       if (calls.length) result.actions = calls;
       if (!result.text.trim() || input.proactive || input.actionResult || !input.messages.some((message) => message.conversationId === input.conversation.id && message.authorId === 'user')) {
         result.memories = [];
@@ -180,6 +190,67 @@ function extractDshCalls(format: AiApiFormat, body: unknown): NonNullable<Compan
   return tasks.slice(0, 4);
 }
 
+function extractLoopCalls(format: AiApiFormat, body: unknown): CompanionLoopCall[] {
+  const root = asRecord(body);
+  const calls: CompanionLoopCall[] = [];
+  const add = (id: unknown, name: unknown, args: unknown) => {
+    if (typeof name !== 'string' || name.length > 100 || calls.length >= 16) return;
+    const argumentText = typeof args === 'string' ? args : JSON.stringify(args ?? {});
+    if (argumentText.length > 65536) throw new CompanionModelError('INVALID_RESPONSE', '能力调用参数过长。');
+    calls.push({ id: typeof id === 'string' && id.length <= 200 ? id : `call_${calls.length}`, name, arguments: argumentText });
+  };
+  if (format === 'openai_chat' || format === 'dashscope_native') {
+    const message = asRecord(asRecord(asArray((format === 'dashscope_native' ? asRecord(root.output) : root).choices)[0]).message);
+    for (const value of asArray(message.tool_calls)) { const call = asRecord(value); const fn = asRecord(call.function); add(call.id, fn.name, fn.arguments); }
+  } else if (format === 'openai_responses') {
+    for (const call of asArray(root.output).map(asRecord).filter(item => item.type === 'function_call')) add(call.call_id, call.name, call.arguments);
+  } else if (format === 'anthropic') {
+    for (const call of asArray(root.content).map(asRecord).filter(item => item.type === 'tool_use')) add(call.id, call.name, call.input);
+  } else {
+    for (const part of asArray(asRecord(asRecord(asArray(root.candidates)[0]).content).parts)) { const call = asRecord(asRecord(part).functionCall); add(call.id, call.name, call.args); }
+  }
+  if (new Set(calls.map(call => call.id)).size !== calls.length) throw new CompanionModelError('INVALID_RESPONSE', '模型返回了重复的能力调用标识。');
+  return calls;
+}
+
+/** Real assistant/function-result pairs preserve native IDs; the next inference follows every result. */
+function appendLoopHistory(request: Parameters<typeof fetch>, format: AiApiFormat, turns: readonly CompanionLoopTurn[], supplements: readonly { id: string; content: string }[]): void {
+  const init = request[1]!;
+  const body = JSON.parse(String(init.body));
+  delete body.response_format;
+  if (body.text) delete body.text.format;
+  if (body.parameters) delete body.parameters.response_format;
+  if (body.generationConfig) delete body.generationConfig.responseMimeType;
+  const args = (call: CompanionLoopCall) => { try { return JSON.parse(call.arguments); } catch { return {}; } };
+  for (const turn of turns) {
+    if (format === 'openai_chat' || format === 'dashscope_native') {
+      const messages = format === 'openai_chat' ? body.messages : body.input.messages;
+      messages.push({ role: 'assistant', content: turn.rawText || null,
+        ...(turn.calls.length ? { tool_calls: turn.calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) } : {}) });
+      for (const result of turn.results ?? []) messages.push({ role: 'tool', tool_call_id: result.callId, content: result.content });
+    } else if (format === 'openai_responses') {
+      if (turn.rawText) body.input.push({ role: 'assistant', content: turn.rawText });
+      for (const call of turn.calls) body.input.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments });
+      for (const result of turn.results ?? []) body.input.push({ type: 'function_call_output', call_id: result.callId, output: result.content });
+    } else if (format === 'anthropic') {
+      const content = [...(turn.rawText ? [{ type: 'text', text: turn.rawText }] : []), ...turn.calls.map(call => ({ type: 'tool_use', id: call.id, name: call.name, input: args(call) }))];
+      if (content.length) body.messages.push({ role: 'assistant', content });
+      if (turn.results?.length) body.messages.push({ role: 'user', content: turn.results.map(result => ({ type: 'tool_result', tool_use_id: result.callId, content: result.content })) });
+    } else {
+      const parts = [...(turn.rawText ? [{ text: turn.rawText }] : []), ...turn.calls.map(call => ({ functionCall: { name: call.name, args: args(call) } }))];
+      if (parts.length) body.contents.push({ role: 'model', parts });
+      if (turn.results?.length) body.contents.push({ role: 'user', parts: turn.results.map(result => ({ functionResponse: { name: turn.calls.find(call => call.id === result.callId)!.name, response: { result: result.content } } })) });
+    }
+  }
+  if (supplements.length) {
+    const text = '用户在本次执行过程中给出的补充要求：\n' + supplements.map(item => item.content).join('\n');
+    if (format === 'gemini_native') body.contents.push({ role: 'user', parts: [{ text }] });
+    else if (format === 'openai_responses') body.input.push({ role: 'user', content: text });
+    else (format === 'dashscope_native' ? body.input.messages : body.messages).push({ role: 'user', content: text });
+  }
+  init.body = JSON.stringify(body);
+}
+
 async function readBoundedJson(response: Response): Promise<unknown> {
   const advertisedLength = Number(response.headers.get('content-length'));
   if (advertisedLength > RESPONSE_LIMIT) {
@@ -285,6 +356,14 @@ export function parseCompanionReply(raw: string, allowSilence = false): Companio
     }
   }
   return result;
+}
+
+function parseLoopText(raw: string, hasCalls: boolean): CompanionReply {
+  const text = raw.trim().replace(/<(think|analysis|reasoning)>[\s\S]*?<\/\1>/giu, '').trim();
+  if (/<(?:think|analysis|reasoning)>/iu.test(text)) throw new CompanionModelError('INVALID_RESPONSE', '模型只返回了未完成的内部内容。');
+  if (hasCalls && /^(?:\{|\[|```(?:json)?\s*)$/u.test(text)) return { text: '' };
+  try { const value = JSON.parse(text.replace(/^```json\s*/u, '').replace(/\s*```$/u, '')); if (value && typeof value.text === 'string') return parseCompanionReply(text, true); } catch { /* Ordinary Markdown is the normal loop output. */ }
+  return validateReplyText(text === '[PASS]' ? '' : text, true);
 }
 
 /** A deliberately conservative intent gate, used with a bounded model proposal and the original user statement. */

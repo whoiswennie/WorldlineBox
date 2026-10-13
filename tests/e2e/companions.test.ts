@@ -18,12 +18,43 @@ interface ProviderRequest {
   memories: unknown[]; reply: string;
 }
 interface ProviderFixture { baseUrl: string; requests: ProviderRequest[]; release(): void; close(): Promise<void> }
+test('shows a durable FIFO inbox after the fifth private reply and resumes unstarted messages automatically', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-queue-'));
+  const profile = path.join(root, 'profile');
+  const provider = await providerFixture({ roleId: 'deepseek-flash', userText: '队列验收' });
+  let application: ElectronApplication | undefined;
+  try {
+    let started = await launch(profile); application = started.application;
+    await started.page.evaluate(config => (window as unknown as CompanionBridgeWindow).worldlinebox.llm.setConfig(config),
+      { apiFormat: 'openai_chat' as const, baseUrl: provider.baseUrl, model: 'fixture-queue', apiKey: 'fixture-queue-key' });
+    await started.page.locator('[data-application-module="companions"]').click();
+    await started.page.locator('[data-companion-conversation="private-deepseek-flash"]').click();
+    const sources: string[] = [];
+    for (let index = 0; index < 6; index++) sources.push((await request(started.page, { type: 'message.send', conversationId: 'private-deepseek-flash', content: '队列验收', clientId: randomUUID() })).message!.id);
+    await expect.poll(() => provider.requests.length).toBe(5);
+    await expect(started.page.getByRole('complementary', { name: '待发消息队列' })).toBeVisible();
+    await expect(started.page.getByRole('button', { name: '消息模式' })).toHaveCount(0);
+    await started.page.getByRole('button', { name: '立即引导', exact: true }).click();
+    const chooser = started.page.getByRole('dialog', { name: '选择要引导的回复' });
+    await expect(chooser).toBeVisible();
+    await expect(chooser.locator('.companions-guide-target')).toHaveCount(5);
+    await chooser.getByRole('button', { name: '关闭引导选择' }).click();
+    await application.close(); application = undefined; provider.release();
+    started = await launch(profile); application = started.application;
+    await expect.poll(() => provider.requests.length).toBe(6);
+    await expect.poll(async () => (await request(started.page, { type: 'messages', conversationId: 'private-deepseek-flash' })).messages
+      ?.filter(message => message.authorId === 'deepseek-flash' && message.replyToId === sources[5] && message.content)).toHaveLength(1);
+    const state = (await request(started.page, { type: 'state' })).state!;
+    expect(state.queue?.filter(work => work.status === 'queued')).toHaveLength(0);
+    expect(state.queue?.filter(work => work.status === 'interrupted')).toHaveLength(5);
+  } finally { if (application) await application.close(); await provider.close(); cleanup(root); }
+});
 const richReply = ['## 格式示例', '', '**重点**与~~删除线~~，行内公式 $E=mc^2$。', '', '- [x] 已完成', '- [ ] 待办', '',
   '| 类型 | 状态 |', '| --- | :---: |', '| 代码 | 可复制 |', '', '~~~ts', 'const answer: number = 42;', '~~~', '',
   '$$', '\\int_0^1 x^2\\,dx = \\frac{1}{3}', '$$', '', '~~~mermaid', 'flowchart LR', ' A[需求] --> B[执行]', ' B --> C[结果]', '~~~',
   '', '[参考链接](https://example.test/reference)'].join('\n');
 
-test('renders rich messages and diagrams, keeps the composer mode below the input, and reuses a group with the same members', async () => {
+test('renders rich messages and diagrams, has no composer delivery-mode menu, and reuses a group with the same members', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-rich-'));
   const provider = await providerFixture(); let application: ElectronApplication | undefined;
   try {
@@ -37,10 +68,7 @@ test('renders rich messages and diagrams, keeps the composer mode below the inpu
     await expect(page.locator('.companions-diagram-svg')).toContainText('需求');
     await expect(page.locator('.companions-diagram-svg script, .companions-diagram-svg foreignObject')).toHaveCount(0);
     await expect(page.locator('.companions-delivery')).toHaveCount(0);
-    await expect(page.locator('.companions-composer-toolbar').getByRole('button', { name: '消息模式' })).toBeVisible();
-    await page.getByRole('button', { name: '消息模式' }).click();
-    await expect(page.getByRole('menu', { name: '消息用途' })).toBeVisible();
-    await page.getByRole('menuitemradio', { name: /自动安排/ }).click();
+    await expect(page.getByRole('button', { name: '消息模式' })).toHaveCount(0);
     const first = await request(page, { type: 'conversation.create-group', title: '', memberIds: ['deepseek-sister', 'deepseek-flash'] });
     expect(first.conversation?.title).toBe('我、大肥鱼和小肥鱼的群聊');
     const again = await request(page, { type: 'conversation.create-group', title: '另一个名字', memberIds: ['deepseek-flash', 'deepseek-sister'] });
@@ -312,7 +340,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     await expect(page.locator('[data-companion-messages]').getByText('好呀，我记住你喜欢看海了。周末可以留些时间慢慢逛。', { exact: true })).toBeVisible();
     const learned = (await request(page, { type: 'memory.list', companionId: 'deepseek-sister' })).memories!;
     expect(learned).toHaveLength(1);
-    expect(learned[0]).toMatchObject({ content: '用户喜欢看海。', origin: 'companion' });
+    expect(learned[0]).toMatchObject({ content: '我喜欢看海，周末想慢慢逛。', origin: 'user' });
     expect((await request(page, { type: 'memory.list', companionId: 'deepseek-flash' })).memories).toEqual([]);
 
     // Remove and re-add a built-in through the actual contact management flow.
@@ -368,7 +396,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     expect(attachmentMessage.attachments).toHaveLength(1);
     const attachment = attachmentMessage.attachments[0]!;
     expect(attachment).toMatchObject({ name: 'deepseek.jpg', mime: 'image/jpeg', size: readFileSync(selectedImagePath).length,
-      url: `worldlinebox-companion://attachment/${attachment.id}` });
+      url: `worldlinebox-companion://attachment/${attachment.id}`, path: selectedImagePath });
     await expect(page.locator('.companions-attachment img')).toHaveAttribute('src', attachment.url!);
     await expect(page.locator('.companions-attachment img')).toBeVisible();
     await decodeLocalImage(page, attachment.id);

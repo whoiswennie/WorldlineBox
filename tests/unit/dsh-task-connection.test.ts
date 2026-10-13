@@ -17,7 +17,8 @@ describe('Main-only DSH task connection', () => {
     expect(windows).not.toContainEqual({ id: 'modules', disabled: false });
     expect(windows).not.toContainEqual({ id: 'tool-bash', disabled: false });
     expect(dshCompanionTaskToolPatch('linux')).toContainEqual({ id: 'tool-bash', disabled: false });
-    expect(dshTaskExecutionPatch({ toolkit: true })).toEqual(dshCompanionTaskToolPatch());
+    expect(dshTaskExecutionPatch({ toolkit: true })).toEqual([...dshCompanionTaskToolPatch(), { id: 'tools', config: { mode: 'native' } }]);
+    expect(dshTaskExecutionPatch({ toolkit: true, interactive: true })).toEqual([{ id: 'tools', config: { mode: 'native' } }]);
     expect(dshTaskExecutionPatch({})).toEqual([]);
   });
 
@@ -35,6 +36,7 @@ describe('Main-only DSH task connection', () => {
   it('projects only transient credential-reference and route metadata without replacing the native catalog', () => {
     expect(dshTaskConnectionPatch(connection)).toEqual([
       { id: 'llm-deepseek', config: { baseURL: connection.baseURL, apiKeyEnv: DSH_TASK_API_KEY_REF } },
+      { id: 'web-search-deepseek', config: { apiKeyEnv: DSH_TASK_API_KEY_REF } },
       { id: 'agent-default-model', config: { provider: 'deepseek-official', model: 'deepseek-flash' } },
     ]);
     expect(JSON.stringify(dshTaskConnectionPatch(connection))).not.toContain(connection.apiKey);

@@ -12,7 +12,7 @@ SQLite 使用 WAL、外键、事务迁移和 FTS5。私聊身份由角色 ID 确
 
 ## 推理与并发
 
-每个聊天空间串行提交角色回复。用户发送新消息先取消旧推理，再持久化新消息；已经运行的 DSH 行动具有独立生命周期。群聊被提及成员优先，否则每轮至多三个成员按顺序生成，每位成员只接收自己的人格、可见消息和允许的记忆，支持空回复/PASS。
+用户消息先持久化，再为参与的每个角色登记独立工作项。FIFO 事务调度限制全局20、每角色5；新消息不会取消旧推理，超额工作等待空位。群聊被点名成员优先，否则所有成员均有独立发言机会，允许空回复/PASS。每位成员只接收自己的稳定人格、当前聊天消息、公开成员资料和允许的记忆。
 
 模型层支持五种现有 API 格式，限制响应大小、上下文长度和调用时间。最近消息不等于完整存档；模型上下文由人格、当前聊天消息及记忆组装。来源聊天空间由数据库从源消息派生，不能由 Renderer 声明。群内长期记忆按来源空间过滤，私人记忆不自动注入。
 
@@ -20,25 +20,19 @@ SQLite 使用 WAL、外键、事务迁移和 FTS5。私聊身份由角色 ID 确
 
 主动检查在 Main 常驻，不依赖 React Activity。默认关闭；启用后本地 09:00–22:00，四小时联系间隔、每天两次上限、一次未答后等待用户新消息，另有三十分钟尝试冷却。时间、次数与来源用户消息在 SQLite 中保存。
 
-## DSH 回流
+## 主脑循环与标准 DSH
 
-用户委托先登记行动，再通过 `task.run` 固定执行实例。主脑五种协议均发布同一份 `dsh` 函数说明：每次可提交最多四个独立完整目标，依赖步骤留在同一任务。自然任务识别覆盖时间、新闻和写作等请求，短确认只解析最近尚未执行的真实用户请求；模型未发出 action 时仍有基于授权任务的实际执行回退。群内明确指定其他成员时才允许任务转交。主动事件、聊天模式与结果回流不启动新行动。来源消息已登记的行动不会因重生成而重放。
+所有 message.send 进入同一个主脑循环。原生 function call 的 id、参数、assistant 正文与 tool result 成对保留，五种协议分别序列化实际调用历史。主脑只公开 dsh；不使用意图正则决定是否提供能力，不再走单轮聊天加后台反馈路径。每步等待本批全部能力结束，再继续推理。正文直接使用 Markdown，避免官方 DeepSeek 在 JSON 正文与工具调用并用时返回未完成 JSON。
 
-`companion-runtime-source.ts` 是对已安装官方 SDK 的薄 CLI 插件。原生 Agent 持有模型调用、上下文、工具调度、并行安全边界、收件箱、重试和 session 持久化；本项目没有复制或另写该 loop。关闭原生一次性 stdin 驱动，保留带回执的 NDJSON 输入：`steer` 使用原生下一步骤入口，`queue` 使用原生下一轮入口，取消调用原生 cancel。结束等待原生 whenIdle，并用输入修订号和短 admission 检查处理空闲边界。主进程与角色推理独立管理每条任务，排队任务可取消；实例仅在短暂准备 CLI profile 时串行，执行阶段允许并发。
+loop/<source>/<role> 与 message-loop/<message> 保存完整决策、结果与段落；一个来源和角色使用稳定 clientId，恢复不产生第二个气泡。决策先提交再开始外部操作，重启按父消息、步骤、toolCallId 找回已登记行动。有结果的不重做，没有结果的同一原生会话核对后继续。
 
-轮询同时检查 TaskRecord 和 Operation，覆盖环境准备失败而尚无 TaskRecord 的情况，另有硬性截止。取消期间的晚到启动或结果不能覆盖 cancelled；关闭应用只将仍未完成的行动保留为 interrupted，已确认的 cancelled 保持原状态。
+companion_work_queue 是 UtilityProcess 独占的 SQLite FIFO 队列，事务 claim 限制全局20、单角色5。消息与待调度标记原子保存，启动时补齐提交后尚未 enqueue 的消息。尚未开始的 queued 自动调度；running 转 interrupted，等待用户明确恢复。原生 CLI 能力还有独立20/5容量队列，超过上限等待，不通过失败丢弃目标。引导从队列摘取是原子事务，避免与 claim 竞争。
 
-完整结果独立持久保存于行动卡。角色反馈使用独立 `actionResult` 资料事件，有明确来源消息与状态；工具输出不能覆盖人格或成为新的系统指令。进程退出成功只表示执行器完成，角色仍须依据结果内容判断用户目标是否实际达成。
+companion-runtime-source.ts 是已安装官方 SDK 的薄适配器。它在 create/resume 的 unpublished setup 中通过 agentPresets.mount(scope, 'standard') 挂载实例的标准预设，不另造精简工具名单，不覆盖用户预设的插件或技能。tools 使用 native 呈现，新的伙伴能力显式采用 danger-full-access。headless 仅提供进程与输入输出载体，模型/工具循环、收件箱、上下文压缩、子代理与原生 session 仍属于 DSH。
 
-Main 通过 `requestTask` 的内部参数启用伙伴工具集。临时 patch 启用选定 SDK 已有的文件、图片、搜索、平台 shell、后台作业与技能基础模块，补齐原生 headless runner 未加载 Web preset 时缺少执行工具的差异。不会移除基础模块或改写用户的 CLI 长期 profile。当前 native overlay 验证版本为 0.2.0-rc.2 与 0.2.1-alpha.2。
+官方 DeepSeek 临时连接同时设置 llm-deepseek 和 web-search-deepseek 的凭据引用；实际密钥只在子进程环境。公开 token、工具参数草稿、调用与返回通过带序号 NDJSON 流投影到前端，私有推理与凭据不进入进度。Main 记录真实启动、退出与原生会话，手动结束只针对自己拥有的进程树。
 
-启动器在 `execution-access.json` 中保存统一权限，默认 `danger-full-access`。Main 初始化完成后读取当前设置，并在任务环境准备前冻结权限快照。原生 patch 同时配置 sandbox policy、文件与平台 shell 执行器、permission preset 和 approval policy，权限不是提示词约定。伙伴的新任务使用新的执行 session；原生 session 持有已记录的策略，因此禁止用新权限续跑旧 session。受限模式是 DSH 对文件效果的约束，Windows 原生 SDK 报告 shell enforcement 为 partial，不宣称为独立 OS 容器或权限提升。
-
-官方 DeepSeek 全局连接通过 Main 私有参数临时注入 DSH 官方 provider，映射其 Anthropic 兼容入口。密钥仅存在子进程环境，patch 使用环境变量引用；上下文、任务元数据、公开 IPC、SQLite 和事件都不携带密钥。任务结束清除非秘密临时 patch。其他全局 provider 沿用 DSH 原生配置，角色专属连接只影响对应人格推理。
-
-Broker 投影原生 session/status/tool_call/tool_result/final/error，并订阅 `agent/assistant-stream` 的公开文本与工具参数增量，约 100 ms 合并为有界快照。草稿、提交和放弃状态分别显示，参数生成不被当作已执行；reasoning-delta 不进入流。Key、Authorization、环境变量秘密、像素 base64 等经过脱敏，跨帧密钥尾部会暂缓发布。Renderer 直接订阅实时 IPC，再用序号合并持久快照，晚到的 SQLite 读取不能回退流内容。任务保留最多 1000 个事件，伙伴行动保留最近 150 个合并事件；完整 native session 仍由 DSH 保存，不承诺窗口无限保留原始日志。
-
-底部模式菜单、群聊任务弹窗与历史分页独立于任务生命周期。消息渲染采用 react-markdown / GFM / KaTeX / highlight.js；Mermaid 懒加载，严格固定配置并通过 DOMPurify 限制 SVG，不执行原始 HTML。Markdown 外部图片显示链接，应用附件通过受控协议预览。
+附件登记绝对路径，不读取字节进入主脑请求；头像单独缓存。原文件引用通过主进程的受控协议预览，原路径由文件选择器登记。正文、附件与能力结果均为数据，不可覆盖角色身份或扩大用户任务。
 
 ## 参考机制
 

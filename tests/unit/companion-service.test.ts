@@ -145,7 +145,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     const reopened = new CompanionsStore(f.databasePath, seeds, {}); stores.add(reopened); bindStorage(reopened);
     const restarted = startService(f.root, dsh);
     expect((await restarted.handle({ type: 'state' })).state?.recoveries).toEqual([expect.objectContaining({ completedIds: ['sister'], status: 'interrupted' })]);
-    transport.fetch.mockResolvedValue(modelResponse('妹妹继续之前的话题。'));
+    transport.fetch.mockImplementation(async () => modelResponse('妹妹继续之前的话题。'));
     await restarted.handle({ type: 'reply.resume', conversationId: group.id });
     await vi.waitFor(() => expect(reopened.messages({ conversationId: group.id }).messages.some(message => message.content === '妹妹继续之前的话题。')).toBe(true), { timeout: 200 });
     const messages = reopened.messages({ conversationId: group.id }).messages;
@@ -154,47 +154,9 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     expect(requestTask).not.toHaveBeenCalled();
     await closeService(restarted);
   });
-  it('starts the actual capability for a natural time request even when the chat model omits an action', async () => {
-    const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true, operationId: 'dsh-task' });
-    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [{ id: 'dsh-task', status: 'failed' }] }), requestTask));
-    transport.fetch.mockResolvedValue(modelResponse('要不要我委托 DSH 查一下？'));
-    await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '大肥鱼看看现在几点了', clientId: 'natural-time' });
-    await vi.waitFor(() => expect(f.store.listAction()).toHaveLength(1), { timeout: 500 });
-    expect(f.store.listAction()[0]?.title).toBe('查看当前时间');
-    expect(requestTask.mock.calls.find(([request]) => request.type === 'task.run')?.[1]).toMatchObject({ toolkit: true, interactive: true });
-    expect(f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'sister' && message.kind === 'text').map(message => message.content).join('')).not.toContain('DSH');
-    await closeService(f.service);
-  });
-  it('dispatches a contextual 都行 against the earlier real task instead of losing its object', async () => {
-    const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true, operationId: 'dsh-task' });
-    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [{ id: 'dsh-task', status: 'failed' }] }), requestTask));
-    const news = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '你帮我搜一下最近的新闻' });
-    f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'sister', content: '想看哪方面？' });
-    transport.fetch.mockResolvedValue(modelResponse('我去看看最近的新闻。'));
-    await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '都行', clientId: 'news-followup' });
-    await vi.waitFor(() => expect(f.store.listAction()[0]?.sourceMessageId).toBe(news.id), { timeout: 500 });
-    const task = requestTask.mock.calls.find(([request]) => request.type === 'task.run')?.[0];
-    expect(task?.type === 'task.run' ? task.prompt : '').toContain('综合新闻');
-    await closeService(f.service);
-  });
-  it('starts two independent native loops from one allowed dsh function call and attributes them to the requested partners', async () => {
-    let next = 0;
-    const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => request.type === 'task.run'
-      ? { ok: true, operationId: 'native-' + (++next) } : { ok: true });
-    const f = fixture(fakeDsh(() => ({ tasks: [], operations: Array.from({ length: next }, (_, index) => ({ id: 'native-' + (index + 1), status: 'failed' })) }), requestTask));
-    const flash = f.store.createCompanion({ name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false });
-    const group = f.store.createConversation('共同写作', ['sister', flash.id]);
-    transport.fetch.mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ type: 'function', function: {
-      name: 'dsh', arguments: JSON.stringify({ tasks: [
-        { title: '写前五章', prompt: '大肥鱼在公共文件夹写前五章并核验。', companionId: 'sister' },
-        { title: '写后五章', prompt: '小肥鱼在公共文件夹写后五章并核验。', companionId: flash.id },
-      ] }),
-    } }] } }] }), { headers: { 'Content-Type': 'application/json' } }));
-    await f.service.handle({ type: 'message.send', conversationId: group.id, content: '请帮我让大肥鱼和小肥鱼在公共文件夹写10章小说，每人5章。', clientId: 'two-loops', delivery: 'parallel' });
-    await vi.waitFor(() => expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(2), { timeout: 500 });
-    expect(f.store.listAction(group.id).map(action => action.companionId).sort()).toEqual(['sister', flash.id].sort());
-    await closeService(f.service);
-  });
+
+
+
   it('reports an executor result without claiming the user goal succeeded when companion feedback fails', async () => {
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => {
       if (request.type === 'task.run') return { ok: true, operationId: 'dsh-task' };
@@ -394,29 +356,6 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     await closeService(restarted);
   });
 
-  it('automatically delegates an explicit group request through only its first speaker and never replays it on reply.retry', async () => {
-    const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => request.type === 'task.run'
-      ? { ok: true, operationId: 'dsh-task' } : { ok: true, taskEvents: [] });
-    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [{ id: 'dsh-task', status: 'failed' }] }), requestTask));
-    const second = f.store.createCompanion({ name: '小肥鱼', description: '妹妹', persona: '活泼好奇', model: '', avatar: 'flash', proactive: false });
-    const group = f.store.createConversation('一起查看', ['sister', second.id]);
-    const content = '请帮我检查桌面图片，不要删除或修改文件。';
-    transport.fetch.mockImplementation(async () => modelResponse('我交给 DSH 只读检查。', { title: '只读检查图片', prompt: '检查桌面图片，不要删除或修改文件。' }));
-    await f.service.handle({ type: 'message.send', conversationId: group.id, content, clientId: 'auto-group-send' });
-    await vi.waitFor(() => expect(f.store.messages({ conversationId: group.id }).messages.filter(value => value.kind === 'text' && value.authorId !== 'user')).toHaveLength(2), { timeout: 500 });
-    await vi.waitFor(() => expect(f.store.listAction(group.id)[0]?.status).toBe('failed'), { timeout: 200 });
-    const source = f.store.messages({ conversationId: group.id }).messages.find(value => value.authorId === 'user')!;
-    expect(f.store.listAction(group.id)).toHaveLength(1);
-    expect(f.store.listAction(group.id)[0]).toMatchObject({ companionId: 'sister', sourceMessageId: source.id });
-    const started = requestTask.mock.calls.map(([request]) => request).find(request => request.type === 'task.run');
-    expect(started?.type === 'task.run' ? started.prompt : '').toContain(content);
-
-    await f.service.handle({ type: 'reply.retry', conversationId: group.id });
-    await vi.waitFor(() => expect(f.store.messages({ conversationId: group.id }).messages.filter(value => value.kind === 'text' && value.authorId !== 'user')).toHaveLength(4), { timeout: 500 });
-    expect(f.store.listAction(group.id)).toHaveLength(1);
-    expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(1);
-    await closeService(f.service);
-  });
 
   it('does not start DSH when a model proposes an action during ordinary conversation', async () => {
     const requestTask = vi.fn<DshLauncher['requestTask']>();
@@ -429,21 +368,124 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     await closeService(f.service);
   });
 
-  it('supersedes an old inference and never commits its late response after a newer user message', async () => {
-    const first = deferred<Response>();
-    transport.fetch.mockImplementationOnce(() => first.promise).mockImplementationOnce(async () => modelResponse('这是对新消息的回复。'));
-    const requestTask = vi.fn<DshLauncher['requestTask']>();
-    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), requestTask));
-    await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '旧问题', clientId: 'first-send' });
-    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(1), { timeout: 200 });
-    await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '新的问题', clientId: 'second-send' });
-    await vi.waitFor(() => expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(value => value.content === '这是对新消息的回复。')).toBe(true), { timeout: 200 });
-    first.resolve(modelResponse('这是过时的旧回复。'));
-    await vi.advanceTimersByTimeAsync(1);
-    const content = f.store.messages({ conversationId: f.conversation.id }).messages.map(value => value.content);
-    expect(content).not.toContain('这是过时的旧回复。');
-    expect(content.filter(value => value === '这是对新消息的回复。')).toHaveLength(1);
-    expect(requestTask).not.toHaveBeenCalled();
+
+});
+
+
+function capabilityResponse(text: string, tasks: Array<{ title: string; prompt: string }>, callId = 'call-real'): Response {
+  return new Response(JSON.stringify({ choices: [{ message: { content: text ? JSON.stringify({ text, memories: [] }) : null,
+    tool_calls: [{ id: callId, type: 'function', function: { name: 'dsh', arguments: JSON.stringify({ tasks }) } }] } }] }),
+    { headers: { 'Content-Type': 'application/json' } });
+}
+describe('one durable bubble per source and native multi-step main loop', () => {
+  it('waits for a genuine tool result, then continues the same loop and bubble', async () => {
+    let finished = false;
+    const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => {
+      if (request.type === 'task.run') return { ok: true, operationId: 'dsh-task' };
+      if (request.type === 'task.result') return { ok: true, taskResult: { taskId: 'dsh-task', instanceId: 'instance', runtimeId: 'runtime', runtimeVersion: '1.0', text: '实际系统时间 23:58:01 UTC+08:00' } };
+      return { ok: true };
+    });
+    const f = fixture(fakeDsh(() => ({ tasks: [taskRecord(finished ? 'succeeded' : 'running')], operations: [] }), requestTask));
+    transport.fetch.mockResolvedValueOnce(capabilityResponse('我看看现在几点了。', [{ title: '查看时间', prompt: '实际读取系统时间与时区' }]))
+      .mockImplementation(async () => modelResponse('系统时间是23:58:01，UTC+08:00。'));
+    await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '几点了', clientId: 'loop-clock' });
+    await vi.waitFor(() => expect(f.store.listAction()[0]?.status).toBe('running'), { timeout: 500 });
+    expect(transport.fetch).toHaveBeenCalledTimes(1);
+    expect(f.store.messages({ conversationId: f.conversation.id }).messages.filter(item => item.authorId === 'sister' && item.kind === 'text')).toHaveLength(1);
+    finished = true; await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 500 });
+    const request = JSON.parse(String(transport.fetch.mock.calls[1]![1]?.body));
+    expect(request.messages.find((item: { role: string }) => item.role === 'tool')).toMatchObject({ tool_call_id: 'call-real' });
+    expect(request.messages.find((item: { role: string }) => item.role === 'tool').content).toContain('实际系统时间');
+    const bubble = f.store.messages({ conversationId: f.conversation.id }).messages.find(item => item.authorId === 'sister' && item.kind === 'text')!;
+    expect(bubble.segments?.map(segment => segment.text)).toEqual(['我看看现在几点了。', '系统时间是23:58:01，UTC+08:00。']);
+    expect(bubble.segments?.[0]?.actionIds).toHaveLength(1);
+    expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(item => item.kind === 'action')).toBe(false);
+    expect(requestTask.mock.calls.find(([item]) => item.type === 'task.run')?.[1]).toMatchObject({ toolkit: true, interactive: true, access: { mode: 'danger-full-access' } });
+  });
+  it('preserves tool-only steps without inventing a text message', async () => {
+    const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => request.type === 'task.run' ? { ok: true, operationId: 'dsh-task' }
+      : request.type === 'task.result' ? { ok: true, taskResult: { taskId: 'dsh-task', instanceId: 'instance', runtimeId: 'runtime', runtimeVersion: '1.0', text: '三个实际来源' } } : { ok: true });
+    const f = fixture(fakeDsh(() => ({ tasks: [taskRecord('succeeded')], operations: [] }), requestTask));
+    transport.fetch.mockResolvedValueOnce(capabilityResponse('', [{ title: '搜索 AI 新闻', prompt: '用标准 web_search 和 web_fetch 检索最新资料并核对来源' }]))
+      .mockImplementation(async () => modelResponse('我查到三个来源。'));
+    await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '最近有啥ai新闻啊', clientId: 'loop-news' });
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 500 });
+    const bubble = f.store.messages({ conversationId: f.conversation.id }).messages.find(item => item.kind === 'text' && item.authorId === 'sister')!;
+    expect(bubble.segments?.[0]).toMatchObject({ text: '', actionIds: [expect.any(String)] });
+    expect(bubble.content).toBe('我查到三个来源。');
+    const body = JSON.parse(String(transport.fetch.mock.calls[0]![1]?.body));
+    expect(body.tools.map((item: { function: { name: string } }) => item.function.name)).toEqual(['dsh']);
+  });
+  it('admits independent DSH calls concurrently and waits for all of them', async () => {
+    let count = 0; const done = new Set<string>();
+    const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => request.type === 'task.run' ? { ok: true, operationId: 'parallel-' + (++count) }
+      : request.type === 'task.result' ? { ok: true, taskResult: { taskId: request.taskId, instanceId: 'instance', runtimeId: 'runtime', runtimeVersion: '1.0', text: '结果 ' + request.taskId } } : { ok: true });
+    const f = fixture(fakeDsh(() => ({ tasks: Array.from({ length: count }, (_, index) => ({ ...taskRecord(done.has('parallel-' + (index + 1)) ? 'succeeded' : 'running'), id: 'parallel-' + (index + 1), operationId: 'parallel-' + (index + 1) })), operations: [] }), requestTask));
+    transport.fetch.mockResolvedValueOnce(capabilityResponse('同时核对两个独立来源。', [{ title: '来源A', prompt: '核对A' }, { title: '来源B', prompt: '核对B' }]))
+      .mockImplementation(async () => modelResponse('两个来源都核对好了。'));
+    await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '帮我核对两个来源', clientId: 'loop-parallel' });
+    await vi.waitFor(() => expect(count).toBe(2), { timeout: 500 });
+    done.add('parallel-2'); await vi.advanceTimersByTimeAsync(1000);
+    expect(transport.fetch).toHaveBeenCalledTimes(1);
+    done.add('parallel-1'); await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 500 });
+    const bubble = f.store.messages({ conversationId: f.conversation.id }).messages.find(item => item.kind === 'text' && item.authorId === 'sister')!;
+    expect(bubble.segments?.[0]?.actionIds).toHaveLength(2);
+    expect(f.store.listAction().every(item => item.parentMessageId === bubble.id)).toBe(true);
+  });
+  it('admits five independent messages in source order and queues the sixth without losing it', async () => {
+    const replies = Array.from({ length: 6 }, () => deferred<Response>());
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const context = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      const text = context.messages.filter((item: { speaker: string }) => item.speaker === 'user').at(-1).content;
+      return replies[Number(text.match(/第(\d+)条/)[1]) - 1]!.promise;
+    });
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true })));
+    const sources: string[] = [];
+    for (let index = 1; index <= 6; index++) sources.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '第' + index + '条', clientId: 'burst-' + index })).message!.id);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(5), { timeout: 500 });
+    const state = (await f.service.handle({ type: 'state' })).state!;
+    expect(state.queue?.filter(item => item.status === 'running')).toHaveLength(5);
+    expect(state.queue?.filter(item => item.status === 'queued').map(item => item.sourceMessageId)).toEqual([sources[5]]);
+    replies[0]!.resolve(modelResponse('第一项完成。'));
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(6), { timeout: 500 });
+    const bubbles = f.store.messages({ conversationId: f.conversation.id }).messages.filter(item => item.authorId === 'sister' && item.kind === 'text');
+    expect(bubbles.map(item => item.replyToId)).toEqual(sources);
+    expect(state.companions[0]?.availability).toBe('working');
+  });
+  it('promotes a queued message into one explicitly selected active reply', async () => {
+    const pending = Array.from({ length: 5 }, () => deferred<Response>());
+    let initial = 0;
+    transport.fetch.mockImplementation(async (_url, init) => String(init?.body).includes('用户在本次执行过程中给出的补充要求')
+      ? modelResponse('我已按补充改成蓝色。') : pending[initial++]!.promise);
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true })));
+    const sources: string[] = [];
+    for (let index = 0; index < 5; index++) sources.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '独立任务' + index, clientId: 'guide-slot-' + index })).message!.id);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(5), { timeout: 500 });
+    const queued = await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '补充：改成蓝色', clientId: 'guide-queued' });
+    await f.service.handle({ type: 'message.guide', id: queued.message!.id, targetSourceMessageId: sources[0] });
+    pending[0]!.resolve(modelResponse('这个旧决定必须被重新考虑。'));
+    await vi.waitFor(() => expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(item => item.content === '我已按补充改成蓝色。')).toBe(true), { timeout: 500 });
+    const bubbles = f.store.messages({ conversationId: f.conversation.id }).messages.filter(item => item.authorId === 'sister' && item.kind === 'text');
+    expect(bubbles).toHaveLength(5);
+    expect(bubbles.some(item => item.replyToId === queued.message!.id)).toBe(false);
+    expect(bubbles.find(item => item.replyToId === sources[0])?.content).not.toContain('旧决定');
+    expect((await f.service.handle({ type: 'state' })).state?.queue?.some(item => item.sourceMessageId === queued.message!.id)).toBe(false);
+  });
+  it('automatically starts durable unstarted messages after restart while interrupted work stays recoverable', async () => {
+    transport.fetch.mockImplementation(() => new Promise<Response>(() => undefined));
+    const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true }));
+    const f = fixture(dsh); const ids: string[] = [];
+    for (let index = 0; index < 7; index++) ids.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '重启队列' + index, clientId: 'restart-queue-' + index })).message!.id);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(5), { timeout: 500 });
     await closeService(f.service);
+    const reopened = new CompanionsStore(f.databasePath, seeds, {}); stores.add(reopened); bindStorage(reopened);
+    transport.fetch.mockReset(); transport.fetch.mockImplementation(async () => modelResponse('自动继续未开始的排队消息。'));
+    const restarted = startService(f.root, dsh);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 500 });
+    await vi.waitFor(() => expect(reopened.messages({ conversationId: f.conversation.id }).messages.filter(item => item.content === '自动继续未开始的排队消息。')).toHaveLength(2), { timeout: 500 });
+    expect(reopened.request({ type: 'work.list' }).works?.filter(item => item.status === 'done').map(item => item.sourceMessageId)).toEqual(ids.slice(5));
+    await closeService(restarted);
   });
 });

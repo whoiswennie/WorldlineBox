@@ -140,7 +140,7 @@ export class DshTaskBroker {
     const sanitizeTaskOutput = (value: string) => sanitizeOutput(redactDshTaskConnection(value, connection));
     if (Buffer.byteLength(input.prompt) > 65536) throw new Error('The task prompt exceeds its UTF-8 size limit.');
     if (this.closed) throw new Error('The DSH task broker is closing.');
-    if (this.reservations >= 4) throw new Error('Four DSH tasks are already running. Wait for one to finish.');
+    if (this.reservations >= 20) throw new Error('Twenty DSH tasks are already running. Wait for one to finish.');
     if (this.active.has(operation.id) || this.records.some(record => record.id === operation.id)) throw new Error('This task operation identity is already in use.');
     this.reservations++;
     if (resume?.sessionId) this.resumedSessions.add(resume.sessionId);

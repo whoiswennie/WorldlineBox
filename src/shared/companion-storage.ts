@@ -5,6 +5,7 @@ import {
   companionsResponseSchema, memorySchema, companionActionPageQuerySchema, companionReplyRecoverySchema,
 } from './companions';
 import { dshTaskRecordSchema } from './dsh-tasks';
+import { companionLoopCheckpointSchema, companionWorkSchema } from './companion-loop';
 
 export const appendCompanionMessageSchema = z.strictObject({
   conversationId: companionIdSchema, authorId: companionIdSchema,
@@ -15,6 +16,7 @@ export const appendCompanionMessageSchema = z.strictObject({
   status: z.enum(['sent', 'failed']).default('sent'),
   replyDirective: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat', 'none']).optional(),
   replyCompletion: z.object({ sourceMessageId: companionIdSchema, companionId: companionIdSchema }).optional(),
+  loopStep: z.number().int().nonnegative().optional(),
 });
 export type AppendCompanionMessage = z.input<typeof appendCompanionMessageSchema>;
 
@@ -23,6 +25,7 @@ export type AppendCompanionMessage = z.input<typeof appendCompanionMessageSchema
 export const storedCompanionAttachmentSchema = z.strictObject({
   attachment: attachmentSchema.omit({ url: true }),
   relativePath: z.string().regex(/^attachments\/[a-zA-Z0-9_-]{1,100}(?:\.[a-zA-Z0-9]{1,16})?$/),
+  sourcePath: z.string().max(4096).optional(),
 });
 export type StoredCompanionAttachment = z.infer<typeof storedCompanionAttachmentSchema>;
 
@@ -71,7 +74,15 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('checkpoint.execution'), id: companionIdSchema, execution: dshTaskRecordSchema }),
   z.strictObject({ type: z.literal('checkpoint.input'), id: companionIdSchema, input: z.strictObject({ id: companionIdSchema, content: z.string().max(16000), mode: z.enum(['steer', 'queue']) }) }),
   z.strictObject({ type: z.literal('action.resume'), id: companionIdSchema }),
-  z.strictObject({ type: z.literal('reply.checkpoint.get'), conversationId: companionIdSchema }),
+  z.strictObject({ type: z.literal('reply.checkpoint.get'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema.optional() }),
+  z.strictObject({ type: z.literal('loop.get'), sourceMessageId: companionIdSchema, companionId: companionIdSchema }),
+  z.strictObject({ type: z.literal('loop.save'), checkpoint: companionLoopCheckpointSchema }),
+  z.strictObject({ type: z.literal('work.enqueue'), work: companionWorkSchema, resume: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('work.claim') }),
+  z.strictObject({ type: z.literal('work.list') }),
+  z.strictObject({ type: z.literal('work.interrupt-running') }),
+  z.strictObject({ type: z.literal('work.promote'), sourceMessageId: companionIdSchema }),
+  z.strictObject({ type: z.literal('work.status'), id: companionIdSchema, status: companionWorkSchema.shape.status }),
   z.strictObject({ type: z.literal('reply.checkpoint.status'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema, status: z.enum(['pending', 'interrupted', 'done', 'cancelled']) }),
   z.strictObject({ type: z.literal('reply.checkpoint.complete'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema, companionId: companionIdSchema }),
   z.strictObject({ type: z.literal('reply.checkpoint.reset'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema, delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']) }),
@@ -89,6 +100,8 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   action: actionSchema.optional(),
   proactive: companionProactiveStateSchema.optional(),
   checkpoint: companionTaskCheckpointSchema.optional(), replyRecovery: companionReplyRecoverySchema.optional(),
+  loop: companionLoopCheckpointSchema.optional(),
+  work: companionWorkSchema.optional(), works: z.array(companionWorkSchema).optional(),
 });
 export type CompanionStorageResponse = z.infer<typeof companionStorageResponseSchema>;
 

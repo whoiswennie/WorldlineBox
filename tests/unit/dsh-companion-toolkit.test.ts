@@ -49,7 +49,7 @@ try{
   process.stdout.write('__PROBE_STAGE__ host prepared\n');
  });
  process.stdout.write('__PROBE_STAGE__ profile booted\n');
- const created=await ctx.get('agents').create({sessionId:'probe-session',meta:{cwd:process.cwd()},agentOptions:{provider:'deepseek-official',model:'deepseek-flash'},setup:()=>{}});
+ const created=await ctx.get('agents').create({sessionId:'probe-session',meta:{cwd:process.cwd()},agentOptions:{provider:'deepseek-official',model:'deepseek-flash'},setup:async scope=>{if(process.env.PROBE_STANDARD==='1')await ctx.get('agentPresets').mount(scope,'standard') }});
  await created.agent.whenIdle();
  process.stdout.write('__PROBE_STAGE__ agent idle\n');
  const catalog=ctx.get('tools').schemas(scopeOf(created.agent.ctx)).map(schema=>schema.name);
@@ -76,7 +76,7 @@ async function nativeCatalog(versionId: string, toolkit: boolean) {
   Object.assign(env, { DSH_HOME: path.join(root, 'home'), DSH_AGENTS_HOME: path.join(root, 'agents'),
     HOME: path.join(root, 'user'), USERPROFILE: path.join(root, 'user'), APPDATA: path.join(root, 'user/AppData/Roaming'),
     LOCALAPPDATA: path.join(root, 'user/AppData/Local'), TEMP: path.join(root, 'temp'), TMP: path.join(root, 'temp'),
-    DSH_TELEMETRY_DISABLED: '1', PROBE_DISABLED_IDS: JSON.stringify(DSH_NATIVE_CLI_DISABLED_IDS), NO_COLOR: '1', FORCE_COLOR: '0' });
+    DSH_TELEMETRY_DISABLED: '1', PROBE_DISABLED_IDS: JSON.stringify(DSH_NATIVE_CLI_DISABLED_IDS), PROBE_STANDARD: toolkit ? '1' : '0', NO_COLOR: '1', FORCE_COLOR: '0' });
   const output = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(path.join(program, 'bin/node.exe'), ['--expose-internals', source, program, root, toolkitFile], {
       env, cwd: path.join(root, 'workspace'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
@@ -107,7 +107,7 @@ describe.skipIf(!available)('Actual official SDK companion tool scope (no model 
       expect(baseline.catalog).not.toContain('read_image');
       expect(baseline.catalog).not.toContain('pwsh');
       const enabled = await nativeCatalog(id, true);
-      expect(enabled.catalog).toEqual(expect.arrayContaining(['read', 'read_image', 'write', 'edit', 'glob', 'grep', 'pwsh']));
+      expect(enabled.catalog).toEqual(expect.arrayContaining(['read', 'read_image', 'write', 'edit', 'glob', 'grep', 'pwsh', 'web_search', 'web_fetch']));
       expect(baseline.modelRequests).toBe(0);
       expect(enabled.modelRequests).toBe(0);
     }, 90_000);

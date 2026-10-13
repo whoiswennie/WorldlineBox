@@ -19,8 +19,9 @@ import {
   type SaveCompanionMemory, type StoredCompanionAttachment, type UpdateCompanionAction, type CompanionProactiveState,
   companionTaskCheckpointSchema, type CompanionTaskCheckpoint,
 } from '../shared/companion-storage';
-import { BUILTIN_COMPANIONS, BUILTIN_WELCOMES } from '../shared/companion-personas';
+import { BUILTIN_COMPANIONS, BUILTIN_WELCOMES, LEGACY_BUILTIN_PERSONAS } from '../shared/companion-personas';
 import { companionGroupTitle } from '../shared/companion-titles';
+import { companionLoopCheckpointSchema, companionWorkSchema, type CompanionWork, type CompanionLoopCheckpoint } from '../shared/companion-loop';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -73,7 +74,16 @@ export class CompanionsStore {
       if (version === 0) this.#migrate();
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_chronology ON actions(conversation_id,json_extract(data,'$.createdAt') DESC,id DESC)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_live_status ON actions(status,conversation_id)");
+      this.#db.exec("CREATE INDEX IF NOT EXISTS actions_parent_message ON actions(json_extract(data,'$.parentMessageId'))");
+      this.#db.exec("CREATE TABLE IF NOT EXISTS companion_work_queue(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,companion_id TEXT NOT NULL,data TEXT NOT NULL)");
+      this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_status ON companion_work_queue(status,ordinal)");
       this.#seed();
+      for (const seed of this.#seeds) {
+        const found = this.#db.prepare('SELECT data FROM companions WHERE id=? AND deleted_at IS NULL').get(seed.id);
+        if (!found) continue;
+        const saved = decode<Companion>(row(found).data);
+        if (saved.builtin && LEGACY_BUILTIN_PERSONAS[seed.id] === saved.persona) this.#db.prepare('UPDATE companions SET data=? WHERE id=?').run(JSON.stringify({ ...saved, persona: seed.persona }), seed.id);
+      }
       this.#coalesceGroups();
     } catch (error) {
       this.#db.close();
@@ -253,7 +263,12 @@ export class CompanionsStore {
   state(): CompanionState {
     return { companions: rows(this.#db.prepare('SELECT data FROM companions WHERE deleted_at IS NULL ORDER BY rowid').all()).map((item) => decode<Companion>(item.data)),
       conversations: rows(this.#db.prepare('SELECT * FROM conversations ORDER BY pinned DESC,updated_at DESC,rowid DESC').all()).map((item) => this.#conversation(item)),
-      activities: [], configured: false, recoveries: rows(this.#db.prepare("SELECT value FROM metadata WHERE key LIKE 'reply-checkpoint/%'").all()).map(item => companionReplyRecoverySchema.parse(decode(item.value))).filter(item => item.status === 'interrupted') };
+      activities: [], configured: false, recoveries: this.replyRecoveries() };
+  }
+  private replyRecoveries(): CompanionReplyRecovery[] {
+    const found = rows(this.#db.prepare("SELECT value FROM metadata WHERE key LIKE 'reply-source/%' OR key LIKE 'reply-checkpoint/%'").all()).map(item => companionReplyRecoverySchema.parse(decode(item.value)));
+    return [...new Map(found.map(item => [item.sourceMessageId, item])).values()].filter(item => item.status === 'interrupted' || item.status === 'pending')
+      .sort((a, b) => this.getMessage(a.sourceMessageId).sequence - this.getMessage(b.sourceMessageId).sequence);
   }
 
   createCompanion(draft: CompanionDraft): Companion {
@@ -381,7 +396,68 @@ export class CompanionsStore {
     return { id: String(found.id), sequence: Number(found.sequence), conversationId: String(found.conversation_id),
       authorId: String(found.author_id), kind: found.kind as CompanionMessage['kind'], content: String(found.content),
       createdAt: String(found.created_at), status: found.status as CompanionMessage['status'], attachments,
+      segments: this.messageSegments(String(found.id)),
       ...(found.reply_to_id ? { replyToId: String(found.reply_to_id) } : {}), ...(found.action_id ? { actionId: String(found.action_id) } : {}) };
+  }
+
+  private messageSegments(id: string): CompanionMessage['segments'] {
+    const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + id);
+    if (!found) return undefined;
+    const turns = decode<CompanionLoopCheckpoint>(row(found).value).turns;
+    const actions = rows(this.#db.prepare("SELECT id,data FROM actions WHERE json_extract(data,'$.parentMessageId')=? ORDER BY rowid").all(id));
+    return turns.map((turn, index) => ({ text: turn.text, actionIds: actions.filter(item => decode<CompanionAction>(item.data).loopStep === index).map(item => String(item.id)) }));
+  }
+  private workList(): CompanionWork[] {
+    return rows(this.#db.prepare('SELECT ordinal,data FROM companion_work_queue ORDER BY ordinal').all()).map(found => ({ ...companionWorkSchema.parse(decode(found.data)), ordinal: Number(found.ordinal) }));
+  }
+  private enqueueWork(input: CompanionWork, resume = false): void {
+    const work = companionWorkSchema.parse(input);
+    if (this.getMessage(work.sourceMessageId).conversationId !== work.conversationId) throw new Error('队列消息不属于这个聊天。');
+    this.#requireMember(work.conversationId, work.companionId);
+    const found = this.#db.prepare('SELECT data FROM companion_work_queue WHERE id=?').get(work.id);
+    if (found) {
+      if (resume && ['interrupted', 'cancelled'].includes(decode<CompanionWork>(row(found).data).status)) this.workStatus(work.id, 'queued');
+      return;
+    }
+    this.#db.prepare('INSERT INTO companion_work_queue(id,status,companion_id,data) VALUES(?,?,?,?)').run(work.id, 'queued', work.companionId, JSON.stringify({ ...work, status: 'queued' }));
+  }
+  private workStatus(id: string, status: CompanionWork['status']): void {
+    const found = this.#db.prepare('SELECT data FROM companion_work_queue WHERE id=?').get(id);
+    if (!found) throw new Error('队列任务不存在。');
+    const previous = decode<CompanionWork>(row(found).data);
+    const work = { ...previous, status, updatedAt: stamp() };
+    this.#db.prepare('UPDATE companion_work_queue SET status=?,data=? WHERE id=?').run(status, JSON.stringify(work), id);
+  }
+  private claimWork(): CompanionWork | undefined {
+    return this.#db.transaction(() => {
+      const all = this.workList();
+      const active = all.filter(item => item.status === 'running');
+      if (active.length >= 20) return;
+      const next = all.find(item => item.status === 'queued' && active.filter(other => other.companionId === item.companionId).length < 5);
+      if (!next) return;
+      this.workStatus(next.id, 'running');
+      return { ...next, status: 'running' as const };
+    }).immediate();
+  }
+  private loopCheckpoint(sourceMessageId: string, companionId: string): CompanionLoopCheckpoint | undefined {
+    const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get(`loop/${sourceMessageId}/${companionId}`);
+    return found ? companionLoopCheckpointSchema.parse(decode(row(found).value)) : undefined;
+  }
+  private saveLoop(input: CompanionLoopCheckpoint): void {
+    const checkpoint = companionLoopCheckpointSchema.parse(input);
+    this.#db.transaction(() => {
+      if (this.getMessage(checkpoint.sourceMessageId).conversationId !== this.#conversationId(checkpoint.conversationId)) throw new Error('循环来源不属于这个聊天。');
+      this.#requireMember(checkpoint.conversationId, checkpoint.companionId);
+      this.#setMetadata(`loop/${checkpoint.sourceMessageId}/${checkpoint.companionId}`, checkpoint);
+      if (checkpoint.messageId) {
+        const message = this.getMessage(checkpoint.messageId);
+        if (message.authorId !== checkpoint.companionId || message.conversationId !== checkpoint.conversationId) throw new Error('循环消息不属于当前伙伴。');
+        this.#setMetadata('message-loop/' + checkpoint.messageId, checkpoint);
+        const content = checkpoint.turns.map(turn => turn.text).filter(Boolean).join('\n\n').slice(0, 65536);
+        this.#db.prepare('UPDATE messages SET content=? WHERE id=?').run(content, checkpoint.messageId);
+        this.#db.prepare('UPDATE conversations SET updated_at=? WHERE id=?').run(stamp(), checkpoint.conversationId);
+      }
+    }).immediate();
   }
 
   getMessage(id: string): CompanionMessage {
@@ -438,7 +514,7 @@ export class CompanionsStore {
       }
       this.#requireConversation(message.conversationId);
       if (message.authorId !== 'user' && message.authorId !== 'system') this.#requireMember(message.conversationId, message.authorId);
-      if (!message.content.trim() && !message.attachmentIds.length) throw new Error('消息不能为空。');
+      if (!message.content.trim() && !message.attachmentIds.length && !(message.loopStep !== undefined && message.authorId !== 'user' && message.authorId !== 'system')) throw new Error('消息不能为空。');
       if (message.replyToId) {
         const replied = this.#db.prepare('SELECT conversation_id FROM messages WHERE id=?').get(message.replyToId);
         if (!replied || row(replied).conversation_id !== message.conversationId) throw new Error('引用的消息不属于这个聊天。');
@@ -459,7 +535,8 @@ export class CompanionsStore {
       this.#db.prepare('UPDATE conversations SET updated_at=? WHERE id=?').run(createdAt, message.conversationId);
       const stored = this.#message(row(this.#db.prepare('SELECT * FROM messages WHERE id=?').get(id)));
       if (message.authorId === 'user' && message.replyDirective) {
-        this.#setMetadata('reply-checkpoint/' + message.conversationId, { conversationId: message.conversationId, sourceMessageId: id,
+        this.saveReplyCheckpoint({ conversationId: message.conversationId, sourceMessageId: id,
+          dispatcher: 'queue-v1',
           status: message.replyDirective === 'none' ? 'done' : 'pending', delivery: message.replyDirective === 'none' ? 'chat' : message.replyDirective, completedIds: [], updatedAt: createdAt });
       }
       if (message.replyCompletion) this.completeReply(message.conversationId, message.replyCompletion.sourceMessageId, message.replyCompletion.companionId);
@@ -536,24 +613,36 @@ export class CompanionsStore {
       this.saveCheckpoint(id, checkpoint);
     }).immediate();
   }
-  replyCheckpoint(conversationId: string): CompanionReplyRecovery | undefined {
+  private saveReplyCheckpoint(checkpoint: CompanionReplyRecovery): void {
+    this.#setMetadata('reply-source/' + checkpoint.sourceMessageId, checkpoint);
+    this.#setMetadata('reply-checkpoint/' + checkpoint.conversationId, checkpoint);
+  }
+  replyCheckpoint(conversationId: string, sourceMessageId?: string): CompanionReplyRecovery | undefined {
     conversationId = this.#conversationId(conversationId);
+    if (sourceMessageId) {
+      const stored = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('reply-source/' + sourceMessageId);
+      if (stored) { const result = companionReplyRecoverySchema.parse(decode(row(stored).value)); if (result.conversationId === conversationId) return result; }
+    }
+    if (!sourceMessageId) {
+      const oldest = this.replyRecoveries().find(item => item.conversationId === conversationId);
+      if (oldest) return oldest;
+    }
     const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('reply-checkpoint/' + conversationId);
     return found ? companionReplyRecoverySchema.parse(decode(row(found).value)) : undefined;
   }
   setReplyStatus(conversationId: string, sourceMessageId: string, status: CompanionReplyRecovery['status']): void {
-    const checkpoint = this.replyCheckpoint(conversationId);
-    if (checkpoint?.sourceMessageId === sourceMessageId) this.#setMetadata('reply-checkpoint/' + checkpoint.conversationId, { ...checkpoint, status, updatedAt: stamp() });
+    const checkpoint = this.replyCheckpoint(conversationId, sourceMessageId);
+    if (checkpoint?.sourceMessageId === sourceMessageId) this.saveReplyCheckpoint({ ...checkpoint, status, updatedAt: stamp() });
   }
   resetReply(conversationId: string, sourceMessageId: string, delivery: CompanionReplyRecovery['delivery']): void {
     conversationId = this.#conversationId(conversationId);
     if (this.getMessage(sourceMessageId).conversationId !== conversationId) throw new Error('回复恢复来源不属于当前聊天。');
-    this.#setMetadata('reply-checkpoint/' + conversationId, { conversationId, sourceMessageId, delivery, status: 'pending', completedIds: [], updatedAt: stamp() });
+    this.saveReplyCheckpoint({ conversationId, sourceMessageId, delivery, status: 'pending', completedIds: [], updatedAt: stamp() });
   }
   completeReply(conversationId: string, sourceMessageId: string, companionId: string): void {
     this.#requireMember(this.#conversationId(conversationId), companionId);
-    const checkpoint = this.replyCheckpoint(conversationId);
-    if (checkpoint?.sourceMessageId === sourceMessageId) this.#setMetadata('reply-checkpoint/' + checkpoint.conversationId, { ...checkpoint, completedIds: [...new Set([...checkpoint.completedIds, companionId])], updatedAt: stamp() });
+    const checkpoint = this.replyCheckpoint(conversationId, sourceMessageId);
+    if (checkpoint?.sourceMessageId === sourceMessageId) this.saveReplyCheckpoint({ ...checkpoint, completedIds: [...new Set([...checkpoint.completedIds, companionId])], updatedAt: stamp() });
   }
   resumeAction(id: string): CompanionAction {
     return this.#db.transaction(() => {
@@ -644,7 +733,7 @@ export class CompanionsStore {
         const value: CompanionAction = { ...decode<CompanionAction>(found.data), status: 'interrupted', error: '应用上次退出时行动尚未完成，请重新发起。', updatedAt, finishedAt: updatedAt };
         this.#db.prepare("UPDATE actions SET data=?,status='interrupted' WHERE id=?").run(JSON.stringify(value), found.id);
       }
-      for (const found of rows(this.#db.prepare("SELECT key,value FROM metadata WHERE key LIKE 'reply-checkpoint/%'").all())) {
+      for (const found of rows(this.#db.prepare("SELECT key,value FROM metadata WHERE key LIKE 'reply-checkpoint/%' OR key LIKE 'reply-source/%'").all())) {
         const checkpoint = companionReplyRecoverySchema.parse(decode(found.value));
         if (checkpoint.status === 'pending') this.#setMetadata(String(found.key), { ...checkpoint, status: 'interrupted', updatedAt: stamp() });
       }
@@ -655,7 +744,7 @@ export class CompanionsStore {
     const value = storedCompanionAttachmentSchema.parse(input);
     const basename = path.posix.basename(value.relativePath);
     if (basename.split('.')[0] !== value.attachment.id) throw new Error('附件文件名必须与文件标识一致。');
-    this.#db.prepare('INSERT INTO attachments(id,data,relative_path) VALUES(?,?,?)').run(value.attachment.id, JSON.stringify(value.attachment), value.relativePath);
+    this.#db.prepare('INSERT INTO attachments(id,data,relative_path) VALUES(?,?,?)').run(value.attachment.id, JSON.stringify({ ...value.attachment, ...(value.sourcePath ? { path: value.sourcePath } : {}) }), value.relativePath);
     return value;
   }
 
@@ -663,7 +752,8 @@ export class CompanionsStore {
     companionIdSchema.parse(id);
     const found = this.#db.prepare('SELECT data,relative_path FROM attachments WHERE id=?').get(id);
     if (!found) throw new Error('附件不存在。');
-    return { attachment: decode<StoredCompanionAttachment['attachment']>(row(found).data), relativePath: String(row(found).relative_path) };
+    const attachment = decode<StoredCompanionAttachment['attachment']>(row(found).data);
+    return { attachment, relativePath: String(row(found).relative_path), ...(attachment.path ? { sourcePath: attachment.path } : {}) };
   }
 
   getProactive(companionId: string): CompanionProactiveState {
@@ -731,7 +821,25 @@ export class CompanionsStore {
       case 'checkpoint.execution': this.updateCheckpoint(command.id, { execution: command.execution }); return { ok: true };
       case 'checkpoint.input': this.updateCheckpoint(command.id, { input: command.input }); return { ok: true };
       case 'action.resume': return { ok: true, action: this.resumeAction(command.id) };
-      case 'reply.checkpoint.get': return { ok: true, replyRecovery: this.replyCheckpoint(command.conversationId) };
+      case 'reply.checkpoint.get': return { ok: true, replyRecovery: this.replyCheckpoint(command.conversationId, command.sourceMessageId) };
+      case 'loop.get': return { ok: true, loop: this.loopCheckpoint(command.sourceMessageId, command.companionId) };
+      case 'loop.save': this.saveLoop(command.checkpoint); return { ok: true };
+      case 'work.enqueue': this.enqueueWork(command.work, command.resume); return { ok: true };
+      case 'work.claim': return { ok: true, work: this.claimWork() };
+      case 'work.list': return { ok: true, works: this.workList() };
+      case 'work.status': this.workStatus(command.id, command.status); return { ok: true };
+      case 'work.promote': {
+        this.#db.transaction(() => {
+          const works = this.workList().filter(work => work.sourceMessageId === command.sourceMessageId);
+          if (works.some(work => work.status === 'running' || work.status === 'done')) throw new Error('这条消息已经开始处理，不能再从队列转为引导。');
+          for (const work of works) if (work.status === 'queued') this.workStatus(work.id, 'cancelled');
+        }).immediate();
+        return { ok: true };
+      }
+      case 'work.interrupt-running': {
+        for (const work of this.workList()) if (work.status === 'running') this.workStatus(work.id, 'interrupted');
+        return { ok: true };
+      }
       case 'reply.checkpoint.status': this.setReplyStatus(command.conversationId, command.sourceMessageId, command.status); return { ok: true };
       case 'reply.checkpoint.complete': this.completeReply(command.conversationId, command.sourceMessageId, command.companionId); return { ok: true };
       case 'reply.checkpoint.reset': this.resetReply(command.conversationId, command.sourceMessageId, command.delivery); return { ok: true };

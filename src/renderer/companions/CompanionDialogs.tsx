@@ -51,7 +51,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
   }
   async function chooseAvatar() {
     setError(''); setBusy(true);
-    const response = await request({ type: 'attachment.pick', kind: 'image' });
+    const response = await request({ type: 'attachment.pick', kind: 'image', purpose: 'avatar' });
     setBusy(false);
     if (!response) { setError('request'); return; }
     const image = response.attachments?.[0];

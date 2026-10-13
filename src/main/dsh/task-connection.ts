@@ -35,13 +35,13 @@ export function snapshotDshTaskExecution(input?: DshTaskExecutionConnection | Ds
 // Web disables these existing base rows because browser Agents mount a preset.
 // Headless Agents do not mount that preset. Re-enable only first-party rows for
 // one companion task; keep the user's profile, plugins and shell sandbox intact.
-export const DSH_COMPANION_TASK_TOOL_IDS = ['tool-fs', 'tool-fs-search', 'tool-jobs', 'skill-filesystem', 'tool-skill', 'agent-instructions'] as const;
+export const DSH_COMPANION_TASK_TOOL_IDS = ['tool-fs', 'tool-fs-search', 'tool-jobs', 'skill-filesystem', 'tool-skill', 'agent-instructions', 'tool-web'] as const;
 export function dshCompanionTaskToolPatch(platform: NodeJS.Platform = process.platform) {
   return [...DSH_COMPANION_TASK_TOOL_IDS, platform === 'win32' ? 'tool-pwsh' : 'tool-bash'].map(id => ({ id, disabled: false }));
 }
 
 export function dshTaskExecutionPatch(execution: DshTaskExecutionOptions, workspaceRoot?: string) {
-  return [...(execution.toolkit ? dshCompanionTaskToolPatch() : []), ...(execution.connection ? dshTaskConnectionPatch(execution.connection) : []),
+  return [...(execution.toolkit ? [...(execution.interactive ? [] : dshCompanionTaskToolPatch()), { id: 'tools', config: { mode: 'native' } }] : []), ...(execution.connection ? dshTaskConnectionPatch(execution.connection) : []),
     ...(execution.access ? dshTaskAccessPatch(execution.access, workspaceRoot ?? '') : [])];
 }
 
@@ -83,6 +83,7 @@ export function dshTaskConnectionPatch(input: DshTaskExecutionConnection) {
   const connection = snapshotDshTaskConnection(input);
   return [
     { id: 'llm-deepseek', config: { baseURL: connection.baseURL, apiKeyEnv: DSH_TASK_API_KEY_REF } },
+    { id: 'web-search-deepseek', config: { apiKeyEnv: DSH_TASK_API_KEY_REF } },
     { id: 'agent-default-model', config: { provider: connection.provider, model: connection.model } },
   ];
 }
