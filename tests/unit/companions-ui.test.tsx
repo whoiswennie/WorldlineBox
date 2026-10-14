@@ -73,6 +73,11 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
       }
       case 'memory.delete': memories = memories.filter(item => item.id !== input.id); return { ok: true };
       case 'actions': return { ok: true, actions: actions.filter(item => item.conversationId === input.conversationId) };
+      case 'action.get': return { ok: true, action: actions.find(item => item.id === input.id) };
+      case 'actions.page': {
+        const items = actions.filter(item => item.conversationId === input.conversationId && (!input.companionId || item.companionId === input.companionId));
+        return { ok: true, actionPage: { items: items.slice(0, input.limit), total: items.length, hasMore: false, owners: [] } };
+      }
       case 'action.run': {
         actions = [...actions, { id: 'action-a', companionId: input.companionId, conversationId: input.conversationId, sourceMessageId: input.sourceMessageId, title: input.title, status: 'running', createdAt: date, updatedAt: date }]; return { ok: true, actions };
       }
@@ -279,6 +284,23 @@ it('fetches an older capability detail on demand instead of loading every histor
   await f.publish(); expect(container!.textContent).toContain('原来的文件处理');
 });
 
+it('opens the exact parallel capability from a lightweight message entry and keeps logs out of the bubble', async () => {
+  const first: CompanionAction = { id: 'weather-task', conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: 'message-1', title: '查询上海天气', status: 'running', createdAt: date, updatedAt: date };
+  const second: CompanionAction = { ...first, id: 'clock-task', title: '读取系统时间', events: [{ sequence: 0, type: 'tool_start', summary: '开始读取时间', content: 'CLOCK TOOL STREAM', contentKind: 'output', receivedAt: date }] };
+  const f = fixture({}, [message(1, '我看看。', { segments: [{ text: '我看看。', actionIds: [first.id, second.id] }] })]);
+  await mount(f.api); await f.publishActions([first, second]);
+  const bubble = container!.querySelector('.companions-message-bubble')!;
+  expect(bubble.querySelectorAll('.companions-capability-link')).toHaveLength(2);
+  expect(bubble.querySelector('.companions-action-card')).toBeNull();
+  expect(bubble.querySelector('details')).toBeNull();
+  expect(bubble.textContent).not.toContain('CLOCK TOOL STREAM');
+  await click('查看任务进度 读取系统时间');
+  const monitor = container!.querySelector('[role="dialog"][aria-label="伙伴实时任务"]')!;
+  expect(monitor.querySelector('main')!.textContent).toContain('CLOCK TOOL STREAM');
+  expect(monitor.querySelector('main')!.textContent).toContain('读取系统时间');
+  await click('关闭任务监视'); expect(bubble.textContent).not.toContain('CLOCK TOOL STREAM');
+});
+
 it('keeps incoming messages unread while viewing history and clears them when returning to the latest page', async () => {
   const f = fixture({}, Array.from({ length: 80 }, (_, index) => message(index + 1))); await mount(f.api);
   await click('查看更早的消息'); f.request.mockClear();
@@ -448,12 +470,13 @@ it('shows actual action steps and elapsed time, hides private thinking, and keep
     { sequence: 3, type: 'tool_result', toolName: 'read_directory', summary: '找到三张旅行照片', receivedAt: date },
   ] };
   const f = fixture({}, [message(1), message(2, '', { kind: 'action', actionId: action.id })], [action]); await mount(f.api);
+  expect(container!.querySelector('[data-companion-action="action-a"]')).toBeNull();
+  await click('查看任务进度 整理照片');
   const card = container!.querySelector('[data-companion-action="action-a"]')!;
   expect(card.textContent).toContain('正在调用工具'); expect(card.textContent).toContain('已用时 5 秒');
   expect(card.querySelector('.companions-action-latest-step')!.textContent).toContain('找到三张旅行照片');
   expect(card.textContent).not.toContain('私人原始推理'); expect(card.textContent).not.toContain('%');
-  expect(card.querySelector('.companions-live-progress')).toBeNull();
-  await act(() => (card.querySelector('.companions-progress-toggle') as HTMLButtonElement).click());
+  expect(card.querySelector('.companions-live-progress')).not.toBeNull();
   expect(card.querySelectorAll('.companions-live-output article')).toHaveLength(2);
   await click('停止处理 action-a'); expect(f.request).toHaveBeenCalledWith({ type: 'action.cancel', id: action.id });
   await f.publishActions([{ ...action, status: 'succeeded', stage: 'completed', updatedAt: '2026-10-13T08:00:09.000Z', result: '生成了整理清单。' }]);

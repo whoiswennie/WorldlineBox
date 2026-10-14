@@ -422,6 +422,71 @@ function capabilityResponse(text: string, tasks: Array<{ title: string; prompt: 
     { headers: { 'Content-Type': 'application/json' } });
 }
 describe('one durable bubble per source and native multi-step main loop', () => {
+  it('keeps concurrent weather and clock requests in separate loops even when the clock finishes first', async () => {
+    const jobs: DshTaskRecord[] = [];
+    const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => {
+      if (request.type === 'task.run') {
+        const id = 'independent-' + jobs.length;
+        jobs.push({ ...taskRecord(), id, operationId: id, title: request.title ?? '' });
+        return { ok: true, operationId: id };
+      }
+      if (request.type === 'task.result') return { ok: true, taskResult: { taskId: request.taskId, instanceId: 'instance',
+        runtimeId: 'runtime', runtimeVersion: '1.0', text: request.taskId === 'independent-0' ? '上海天气查询结果' : '系统时间查询结果' } };
+      return { ok: true, taskEvents: [] };
+    });
+    const f = fixture(fakeDsh(() => ({ tasks: jobs, operations: [] }), requestTask));
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const context = JSON.parse(body.messages[1].content);
+      const tool = body.messages.find((item: { role: string }) => item.role === 'tool');
+      if (tool) return modelResponse(JSON.parse(tool.content).tasks[0].result);
+      const clock = context.taskRequest?.prompt === '现在几点了';
+      return capabilityResponse('', [{ title: clock ? '读取系统时间' : '查询上海天气', prompt: clock ? '读取系统时间与时区' : '查询上海实时天气' }]);
+    });
+    const weather = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '上海天气如何', clientId: 'weather-source' })).message!;
+    await vi.waitFor(() => expect(jobs).toHaveLength(1), { timeout: 500 });
+    const clock = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '现在几点了', clientId: 'clock-source' })).message!;
+    await vi.waitFor(() => expect(jobs).toHaveLength(2), { timeout: 500 });
+    expect(jobs.map(item => item.title)).toEqual(['查询上海天气', '读取系统时间']);
+    const weatherSnapshot = f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop!.context!;
+    const clockSnapshot = f.store.request({ type: 'loop.get', sourceMessageId: clock.id, companionId: 'sister' }).loop!.context!;
+    expect(weatherSnapshot.user).not.toContain('现在几点了');
+    expect(JSON.parse(clockSnapshot.user).taskRequest).toEqual({ sourceMessageId: clock.id, prompt: '现在几点了' });
+    jobs[1]!.status = 'succeeded'; await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: clock.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 500 });
+    expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('running');
+    jobs[0]!.status = 'succeeded'; await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 500 });
+    const replies = f.store.messages({ conversationId: f.conversation.id }).messages.filter(item => item.authorId === 'sister');
+    expect(replies).toHaveLength(2);
+    expect(replies.find(item => item.replyToId === clock.id)?.content).toBe('系统时间查询结果');
+    expect(replies.find(item => item.replyToId === weather.id)?.content).toBe('上海天气查询结果');
+    const bases = transport.fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).messages[1].content);
+    expect(bases.filter(value => value === weatherSnapshot.user)).toHaveLength(2);
+    expect(bases.filter(value => value === clockSnapshot.user)).toHaveLength(2);
+  });
+
+  it('restores a saved source context after newer history has filled the latest page', async () => {
+    const pending = deferred<Response>();
+    const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true }));
+    const f = fixture(dsh);
+    transport.fetch.mockImplementation(() => pending.promise);
+    const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '只回答这个最早的问题', clientId: 'old-source' })).message!;
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledOnce(), { timeout: 500 });
+    const snapshot = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!.context!;
+    for (let i = 0; i < 150; i++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '后来的其他消息 ' + i });
+    const closing = closeService(f.service); pending.resolve(modelResponse('已停止的回复')); await closing;
+    const reopened = new CompanionsStore(f.databasePath, seeds, {}); stores.add(reopened); bindStorage(reopened);
+    const restarted = startService(f.root, dsh);
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.messages[1].content).toBe(snapshot.user);
+      expect(JSON.parse(body.messages[1].content).taskRequest.sourceMessageId).toBe(source.id);
+      return modelResponse('这个最早的问题已回复');
+    });
+    await restarted.handle({ type: 'reply.resume', conversationId: f.conversation.id });
+    await vi.waitFor(() => expect(reopened.getMessage(reopened.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!.messageId!).content).toBe('这个最早的问题已回复'), { timeout: 500 });
+  });
   it('waits for a genuine tool result, then continues the same loop and bubble', async () => {
     let finished = false;
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => {

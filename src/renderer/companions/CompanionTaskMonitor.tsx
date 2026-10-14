@@ -15,10 +15,10 @@ const PAGE_SIZE = 20;
 const running = (action: CompanionAction) => ['queued', 'running'].includes(action.status);
 
 /** Paged durable history and independent live streams within this conversation. */
-export function CompanionTaskMonitor({ actions, companions, conversationId, request, dshApi, now, onClose, onStop, onGuide, onResume, onTerminate, onOpenUrl }: {
+export function CompanionTaskMonitor({ actions, companions, conversationId, request, dshApi, initialActionId, now, onClose, onStop, onGuide, onResume, onTerminate, onOpenUrl }: {
   actions: CompanionAction[]; companions: Companion[]; conversationId: string; request: CompanionRequest; now: number; onClose(): void;
   onStop(id: string): void; onGuide(id: string): void; onOpenUrl(url: string): void;
-  dshApi?: WorldlineBoxDshLauncherApi; onResume?(id: string): void | Promise<unknown>; onTerminate?(id: string): void | Promise<unknown>;
+  dshApi?: WorldlineBoxDshLauncherApi; initialActionId?: string; onResume?(id: string): void | Promise<unknown>; onTerminate?(id: string): void | Promise<unknown>;
 }) {
   useDialogFocusTrap(true, '伙伴实时任务');
   const [owner, setOwner] = useState('');
@@ -28,7 +28,8 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
-  const [selectedId, setSelectedId] = useState<string>();
+  const [selectedId, setSelectedId] = useState<string | undefined>(initialActionId);
+  const linkedSelection = useRef(initialActionId);
   const [detail, setDetail] = useState<CompanionAction>();
   const [detailError, setDetailError] = useState('');
   const streams = useRef(new Map<string, CompanionActionEvent[]>());
@@ -49,7 +50,7 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
       setLoading(false);
       if (!response?.actionPage) { setError('任务记录读取失败，请重试。'); return; }
       setError(''); setPage(response.actionPage);
-      setSelectedId(current => response.actionPage!.items.some(item => item.id === current) ? current : response.actionPage!.items[0]?.id);
+      setSelectedId(current => current && (current === linkedSelection.current || response.actionPage!.items.some(item => item.id === current)) ? current : response.actionPage!.items[0]?.id);
     });
     return () => { cancelled = true; };
   }, [conversationId, owner, cursor, request, refresh, revision]);
@@ -58,19 +59,19 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
     if (!selectedId) return;
     const load = () => { void request({ type: 'action.get', id: selectedId }).then(response => {
       if (cancelled) return;
-      if (response?.action) { const action = response.action; setDetail({ ...action, events: mergeCompanionProgress(action.events ?? [], streams.current.get(action.taskId ?? '') ?? []) }); setDetailError(''); }
+      if (response?.action?.conversationId === conversationId) { const action = response.action; setDetail({ ...action, events: mergeCompanionProgress(action.events ?? [], streams.current.get(action.taskId ?? '') ?? []) }); setDetailError(''); }
       else setDetailError('任务详情读取失败，请重试。');
     }); };
     load();
     const timer = selectedStatus && ['queued', 'running'].includes(selectedStatus) ? setInterval(load, 1000) : undefined;
     return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [selectedId, request, revision, refresh, selectedStatus]);
+  }, [selectedId, conversationId, request, revision, refresh, selectedStatus]);
   useEffect(() => { const handle = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); }; document.addEventListener('keydown', handle); return () => document.removeEventListener('keydown', handle); }, [onClose]);
   const live = actions.find(action => action.id === selectedId);
   const stored = detail?.id === selectedId ? detail : undefined;
   const selected = live && stored ? { ...(live.updatedAt >= stored.updatedAt ? live : stored), events: mergeCompanionProgress(stored.events ?? [], live.events ?? []) } : live ?? stored;
   const owners = page?.owners ?? companions.map(role => ({ companionId: role.id, name: role.name, count: 0 }));
-  function reset(nextOwner = owner) { setLoading(true); setOwner(nextOwner); setCursors([undefined]); setPageNumber(0); setRefresh(value => value + 1); }
+  function reset(nextOwner = owner) { linkedSelection.current = undefined; setLoading(true); setOwner(nextOwner); setCursors([undefined]); setPageNumber(0); setRefresh(value => value + 1); }
   return <div className="companions-task-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="companions-task-monitor" role="dialog" aria-modal="true" aria-label="伙伴实时任务">
     <header><div><h2>伙伴正在做什么</h2><p>{actions.filter(running).length} 件正在进行 · 按创建时间从新到旧</p></div><button className="companion-icon-button" aria-label="关闭任务监视" onClick={onClose}><Icon name="close" /></button></header>
     <div className="companions-task-monitor-body"><aside className="companions-task-history">
@@ -79,7 +80,7 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
         const action = actions.find(value => value.id === item.id) ?? item;
         const companion = companions.find(role => role.id === action.companionId);
         const name = companion?.name ?? owners.find(role => role.companionId === action.companionId)?.name ?? '伙伴';
-        return <button key={action.id} className={selectedId === action.id ? 'is-selected' : ''} aria-pressed={selectedId === action.id} onClick={() => setSelectedId(action.id)}>
+        return <button key={action.id} className={selectedId === action.id ? 'is-selected' : ''} aria-pressed={selectedId === action.id} onClick={() => { linkedSelection.current = undefined; setSelectedId(action.id); }}>
           <Avatar companion={companion} /><div><strong>{name}</strong><span>{action.title}</span><time dateTime={action.createdAt} title={companionTimezone(action.createdAt)}>{companionTimestamp(action.createdAt)}</time><small data-working={running(action)}>{running(action) ? action.stage || '正在处理' : action.status === 'succeeded' ? '已返回结果' : action.status === 'cancelled' ? '已停止' : action.status === 'failed' ? '处理失败' : '执行中断'}</small></div>
         </button>;
       })}</nav>

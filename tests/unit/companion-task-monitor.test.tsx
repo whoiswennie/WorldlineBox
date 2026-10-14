@@ -50,3 +50,21 @@ it('keeps milliseconds and calendar fields exact rather than replacing missing t
   expect(shown.startsWith(String(date.getFullYear()))).toBe(true);
   expect(companionTimestamp('invalid')).toBe('时间不可用');
 });
+
+it('opens an older linked task outside the first page and follows its own stream until the user chooses another task', async () => {
+  const action: CompanionAction = { id: 'linked-old', conversationId: 'group', companionId: 'role', sourceMessageId: 'source',
+    title: '从聊天打开的旧任务', status: 'running', createdAt: '2026-10-13T02:00:00.123Z', updatedAt: '2026-10-13T03:00:00.456Z',
+    events: [{ sequence: 0, type: 'message', summary: '原始过程', contentKind: 'message', content: '旧任务的实时过程', receivedAt: '2026-10-13T03:00:00.456Z' }] };
+  const newer = { ...action, id: 'newer', title: '较新的其他任务', events: [] };
+  const request = vi.fn(async (input: CompanionsRequest) => input.type === 'action.get' ? { ok: true, action: input.id === action.id ? action : newer }
+    : { ok: true, actionPage: { items: [newer], total: 2, hasMore: false, owners: [] } });
+  container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  const props = { actions: [], companions: [], conversationId: 'group', initialActionId: action.id, request, now: Date.now(), onClose: vi.fn(), onStop: vi.fn(), onGuide: vi.fn(), onOpenUrl: vi.fn() };
+  await act(async () => root!.render(<CompanionTaskMonitor {...props} />));
+  expect(container.querySelector('main')!.textContent).toContain('旧任务的实时过程');
+  await act(async () => root!.render(<CompanionTaskMonitor {...props} actions={[newer]} />));
+  expect(container.querySelector('main')!.textContent).toContain('旧任务的实时过程');
+  await act(async () => container!.querySelector<HTMLButtonElement>('nav button')!.click());
+  expect(container.querySelector('main')!.textContent).toContain('较新的其他任务');
+  expect(container.querySelector('main')!.textContent).not.toContain('旧任务的实时过程');
+});

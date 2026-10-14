@@ -10,6 +10,7 @@ import { CompanionActionCard, elapsedTime, useCompanionClock } from './Companion
 import { CompanionImagePreview } from './CompanionImagePreview';
 import { MessageContent } from './MessageContent';
 import { CompanionTaskMonitor } from './CompanionTaskMonitor';
+import { CompanionCapabilityLink } from './CompanionCapabilityLink';
 import { CompanionHistorySearch } from './CompanionHistorySearch';
 import { CompanionPresencePanel } from './CompanionPresencePanel';
 import { companionPresence, COMPANION_PRESENCE_LABELS } from '../../shared/companion-presence';
@@ -65,6 +66,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const [sending, setSending] = useState(false);
   const [guideMessageId, setGuideMessageId] = useState<string | null>(null);
   const [showTaskMonitor, setShowTaskMonitor] = useState(false);
+  const [selectedTaskActionId, setSelectedTaskActionId] = useState<string>();
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -402,10 +404,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const response = await request({ type: 'action.cancel', id });
     if (response && selectedRef.current) void loadActions(selectedRef.current);
   }
-  async function loadHistoricalAction(id: string) {
-    const conversation = selectedRef.current;
-    const response = await request({ type: 'action.get', id });
-    if (response?.action && selectedRef.current === conversation) setActions(current => [...current.filter(action => action.id !== id), response.action!].slice(-250));
+  function openTaskProgress(id?: string) {
+    setSelectedTaskActionId(id); setShowTaskMonitor(true);
   }
   async function manageAction(type: 'action.resume' | 'action.terminate', id: string) {
     const response = await request({ type, id });
@@ -492,15 +492,12 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
                 const newDay = index === 0 || dayLabel(messages[index - 1]!.createdAt) !== dayLabel(message.createdAt);
                 return <div key={message.id}>{newDay && <div className="companions-date-separator">{dayLabel(message.createdAt)}</div>}
                   {message.kind === 'notice' ? <div className={`companions-notice${message.status === 'failed' ? ' is-failed' : ''}`} data-companion-message={message.id}>{message.authorId !== 'system' && <small>内置欢迎 · {authorName(message.authorId)}</small>}<span>{message.content}</span>{message.status === 'failed' && <button onClick={() => void request({ type: 'reply.retry', conversationId: selected.id })}>重试回复</button>}</div> : <article className={`companions-message${own ? ' is-own' : ''}${highlightedId === message.id ? ' is-highlighted' : ''}`} data-companion-message={message.id}>
-                    <Avatar companion={author} showPresence={false} /><div className="companions-message-body"><div className="companions-message-author">{authorName(message.authorId)}<time title={companionTimestamp(message.createdAt) + ' · ' + companionTimezone(message.createdAt)}>{clockTime(message.createdAt)}</time></div><div className={`companions-message-bubble${message.kind === 'action' ? ' is-action' : ''}`}>
-                      {message.replyToId && !message.segments && <button className="companions-reply-quote" aria-label={`查看引用消息 ${message.replyToId}`} onClick={() => void jumpToReference(message.replyToId!)}><strong>{replied ? authorName(replied.authorId) : '引用消息'}</strong><span>{replied?.content || (replied ? replied.attachments.map(item => item.name).join('、') : '点击查看引用的消息')}</span></button>}
-                      {message.kind === 'action' && action ? <CompanionActionCard action={action} now={clock} onStop={() => void stopAction(action.id)} onResume={() => manageAction('action.resume', action.id)} onTerminate={() => manageAction('action.terminate', action.id)} onGuide={() => { composerRef.current?.focus(); }} onOpenUrl={url => void openMessageLink(url)} /> : message.segments ? <div className="companions-loop-segments">{!message.segments.length && <p className="companions-loop-pending">正在回复，进度会保存在这个气泡中…</p>}{message.segments.map((segment, step) => <section className="companions-loop-segment" key={step} data-loop-step={step}>
+                    <Avatar companion={author} showPresence={false} /><div className="companions-message-body"><div className="companions-message-author">{authorName(message.authorId)}<time title={companionTimestamp(message.createdAt) + ' · ' + companionTimezone(message.createdAt)}>{clockTime(message.createdAt)}</time></div><div className={`companions-message-bubble${message.kind === 'action' ? ' is-action' : ''}${message.kind === 'action' || message.segments && !message.segments.some(segment => segment.text) ? ' is-capability-only' : ''}`}>
+                      {message.replyToId && !message.segments && <button className="companions-reply-quote" aria-label={`查看引用消息 ${message.replyToId}`} onClick={() => void jumpToReference(message.replyToId!)}><span className="companions-reply-quote-heading"><ChatGlyph name="reply" /><strong>{replied ? authorName(replied.authorId) : '引用消息'}</strong></span><span className="companions-reply-quote-excerpt">{replied?.content || (replied ? replied.attachments.map(item => item.name).join('、') : '点击查看引用的消息')}</span></button>}
+                      {message.kind === 'action' && message.actionId ? <CompanionCapabilityLink action={action} actionId={message.actionId} now={clock} onOpen={openTaskProgress} /> : message.segments ? <div className="companions-loop-segments">{!message.segments.length && <p className="companions-loop-pending">正在回复…</p>}{message.segments.map((segment, step) => <section className="companions-loop-segment" key={step} data-loop-step={step}>
                         {segment.text && <MessageContent content={segment.text} onOpenUrl={url => void openMessageLink(url)} />}
                         {!!segment.actionIds.length && <div className="companions-loop-capabilities" aria-label={'第 ' + (step + 1) + ' 步能力调用'}>{segment.actionIds.map(id => {
-                          const item = actions.find(value => value.id === id); return item ? <details key={id} className="companions-capability-fold" data-loop-action={id}>
-                            <summary><Icon name="activity" /><strong>{item.title}</strong><span data-status={item.status}>{item.status === 'running' || item.status === 'queued' ? '进行中' : item.status === 'succeeded' ? '已返回' : item.status === 'interrupted' ? '已中断' : item.status === 'cancelled' ? '已停止' : '失败'}</span><Icon name="chevron" /></summary>
-                            <CompanionActionCard action={item} now={clock} defaultShowProgress onStop={() => void stopAction(id)} onResume={() => manageAction('action.resume', id)} onTerminate={() => manageAction('action.terminate', id)} onOpenUrl={url => void openMessageLink(url)} />
-                          </details> : <button key={id} className="companion-secondary-button" onClick={() => void loadHistoricalAction(id)}>查看这次能力调用</button>;
+                          return <CompanionCapabilityLink key={id} action={actions.find(value => value.id === id)} actionId={id} now={clock} onOpen={openTaskProgress} />;
                         })}</div>}
                       </section>)}</div> : message.content && (own ? <p>{message.content}</p> : <MessageContent content={message.content} onOpenUrl={url => void openMessageLink(url)} />)}
                       {!!message.attachments.length && <div className="companions-message-attachments">{message.attachments.map(item => <button className={`companions-attachment${item.mime.startsWith('image/') ? ' is-image' : ''}`} key={item.id} onClick={() => openAttachment(item)}>{item.mime.startsWith('image/') ? <img src={item.url || `worldlinebox-companion://attachment/${encodeURIComponent(item.id)}`} alt={item.name} /> : <Icon name="file" />}<span><strong>{item.name}</strong><small>{bytes(item.size)} · {item.mime.startsWith('image/') ? '点击预览' : '查看文件位置'}</small></span></button>)}</div>}
@@ -553,6 +550,6 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     }} />}
     {dialog && <CompanionDialogs key={dialog.kind === 'companion' ? 'companion-' + (dialog.companion?.id ?? 'new') : dialog.kind === 'group' ? 'group-' + (dialog.conversation?.id ?? 'new') : dialog.kind === 'action' ? 'action-' + dialog.message.id : dialog.kind === 'delete' ? 'delete-' + dialog.companion.id : dialog.kind === 'delete-conversation' ? 'delete-conversation-' + dialog.conversation.id : 'chat'} dialog={dialog} companions={companions} request={request} requestError={error} onClose={() => { setDialog(null); void refreshState(); }} onOpen={id => void openPrivate(id)} onCreated={selectConversation} builtins={BUILTIN_COMPANIONS} />}
     {previewAttachment && <CompanionImagePreview key={previewAttachment.id} attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} onReveal={() => void request({ type: 'attachment.open', id: previewAttachment.id })} />}
-    {showTaskMonitor && <CompanionTaskMonitor conversationId={selectedId!} request={request} dshApi={dshApi} actions={actions} companions={companions} now={clock} onClose={() => setShowTaskMonitor(false)} onStop={id => void stopAction(id)} onResume={id => manageAction('action.resume', id)} onTerminate={id => manageAction('action.terminate', id)} onGuide={() => { setShowTaskMonitor(false); setTimeout(() => composerRef.current?.focus(), 0); }} onOpenUrl={url => void openMessageLink(url)} />}
+    {showTaskMonitor && <CompanionTaskMonitor initialActionId={selectedTaskActionId} conversationId={selectedId!} request={request} dshApi={dshApi} actions={actions} companions={companions} now={clock} onClose={() => { setShowTaskMonitor(false); setSelectedTaskActionId(undefined); }} onStop={id => void stopAction(id)} onResume={id => manageAction('action.resume', id)} onTerminate={id => manageAction('action.terminate', id)} onGuide={() => { setShowTaskMonitor(false); setSelectedTaskActionId(undefined); setTimeout(() => composerRef.current?.focus(), 0); }} onOpenUrl={url => void openMessageLink(url)} />}
   </div>;
 }

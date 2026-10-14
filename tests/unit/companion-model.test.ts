@@ -27,6 +27,19 @@ function chatResponse(text = '{"text":"那就慢慢来。","memories":["用户�
 }
 
 describe('persistent companion model context', () => {
+  it('pins the current task independently of older requests and excludes messages after its source cursor', () => {
+    const prompt = '现在几点了？' + '补充信息'.repeat(2_000) + '只查时间，不要重新查天气。';
+    const context = buildCompanionContext({ ...input, agentLoop: true,
+      messages: [message('weather', 1, '上海天气如何'), message('clock', 2, prompt),
+        message('future', 3, '下一件任务：读取桌面图片')],
+      taskRequest: { sourceMessageId: 'clock', prompt } });
+    const payload = JSON.parse(context.user);
+    expect(payload.taskRequest).toEqual({ sourceMessageId: 'clock', prompt });
+    expect(payload.messages.map((item: { id: string }) => item.id)).toEqual(['weather', 'clock']);
+    expect(payload.memoryEvidenceMessageId).toBe('clock');
+    expect(context.user).not.toContain('读取桌面图片');
+    expect(context.system.length + context.user.length).toBeLessThanOrEqual(COMPANION_CONTEXT_LIMIT);
+  });
   it('keeps identity and own memories while limiting history to the latest 50 messages', () => {
     const context = buildCompanionContext({ ...input,
       messages: Array.from({ length: 90 }, (_value, i) => message(`message_${i}`, i + 1, `你好 ${i}`)),

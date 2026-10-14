@@ -17,7 +17,7 @@ export interface CompanionModelConfig {
   apiKey: string;
 }
 export interface CompanionReply { text: string; memories?: string[]; topic?: string; turn?: CompanionLoopTurn; action?: { title: string; prompt: string }; actions?: Array<{ title: string; prompt: string; companionId?: string }> }
-export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[] }
+export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; context?: ReturnType<typeof buildCompanionContext>; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[] }
 export type CompanionModelErrorCode = 'CONFIG' | 'AUTH' | 'RATE_LIMIT' | 'NETWORK' | 'TIMEOUT' | 'CANCELLED' | 'INVALID_RESPONSE' | 'REFUSED';
 export class CompanionModelError extends Error {
   constructor(readonly code: CompanionModelErrorCode, message: string) {
@@ -45,7 +45,7 @@ export async function generateCompanionReply(
   validateConfig(config);
   const model = resolveCompanionModel(input.companion, config);
   if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
-  const context = buildCompanionContext({ ...input, agentLoop: options.loop });
+  const context = options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop });
   const controller = new AbortController();
   let rejectAbort: (error: CompanionModelError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });

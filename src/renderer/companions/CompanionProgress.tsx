@@ -38,7 +38,7 @@ export function CompanionActionCard({ action, now, onStop, onGuide, onResume, on
   const events = (action.events ?? []).filter(event => !/(?:^|[._-])(reasoning|thinking|analysis)(?:$|[._-])/i.test(event.type)).sort((a, b) => a.sequence - b.sequence);
   const last = events.at(-1);
   const access = action.accessMode && DSH_EXECUTION_ACCESS_OPTIONS.find(option => option.value === action.accessMode);
-  const label = action.status === 'succeeded' ? statusLabels.succeeded : action.stage ? stageLabels[action.stage] || action.stage : statusLabels[action.status];
+  const label = running && action.stage ? stageLabels[action.stage] || action.stage : statusLabels[action.status];
   useLayoutEffect(() => { if (showProgress && follow && outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight; }, [action.events, showProgress, follow]);
   return <article className={`companions-action-card${compact ? ' is-compact' : ''}`} data-companion-action={action.id}>
     <div className="companions-action-card-heading"><span className="companions-action-card-symbol"><Icon name="activity" /></span><strong>{action.title}</strong>{running && <button className="companions-stop-action" aria-label={`停止处理 ${action.id}`} title="停止这件事" onClick={onStop}><Icon name="stop" /><span>停止</span></button>}</div>

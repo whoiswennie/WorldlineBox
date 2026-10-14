@@ -303,6 +303,65 @@ test('task monitor pages durable role history and shows complete local timestamp
   } finally { if (application) await application.close(); cleanup(root); }
 });
 
+test('keeps capability entries and quoted messages compact and opens the linked task in its monitor', async () => {
+  test.setTimeout(90_000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-entries-'));
+  const profile = path.join(root, 'profile'); let application: ElectronApplication | undefined;
+  try {
+    let started = await launch(profile); application = started.application;
+    const room = (await request(started.page, { type: 'conversation.open', companionId: 'deepseek-sister' })).conversation!;
+    await application.close(); application = undefined;
+    // A closed, isolated fixture database supplies saved loop steps and a legacy quote; no real model or files are used.
+    const sourceCode = `const db=new (require('better-sqlite3'))(process.argv[1]),room=process.argv[2],stamp='2026-10-14T01:39:00.000Z';
+      db.function('companion_search_tokens',{deterministic:true},s=>Array.from(s.normalize('NFKC').toLowerCase(),c=>'u'+c.codePointAt(0).toString(16)).join(' '));
+      db.function('companion_search_facet',{deterministic:true},s=>Array.from(s,c=>c.codePointAt(0).toString(16)).join('x'));
+      const insert=db.prepare("INSERT INTO messages(id,conversation_id,author_id,kind,content,created_at,status,reply_to_id,action_id) VALUES(?,?,?,?,?,?,'sent',?,?)");
+      db.transaction(()=>{
+        insert.run('weather-source',room,'user','text','看看上海现在天气如何',stamp,null,null);
+        insert.run('weather-reply',room,'deepseek-sister','text','我看看上海的实况，再告诉你出门怎么穿。\\n\\n上海多云，23°C。出门带件薄外套就好。',stamp,'weather-source',null);
+        insert.run('clock-source',room,'user','text','现在几点了？',stamp,null,null);
+        insert.run('clock-reply',room,'deepseek-sister','text','',stamp,'clock-source',null);
+        insert.run('quoted-source',room,'user','text','周末去海边散步，记得带相机。',stamp,null,null);
+        insert.run('quoted-reply',room,'deepseek-sister','text','好呀，给你留一个慢慢看海的下午。',stamp,'quoted-source',null);
+        const turns=[{text:'我看看上海的实况，再告诉你出门怎么穿。',rawText:'',calls:[]},{text:'上海多云，23°C。出门带件薄外套就好。',rawText:'',calls:[]}];
+        const checkpoint={conversationId:room,sourceMessageId:'weather-source',companionId:'deepseek-sister',messageId:'weather-reply',status:'done',turns,supplements:[]};
+        db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run('message-loop/weather-reply',JSON.stringify(checkpoint));
+        db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run('message-loop/clock-reply',JSON.stringify({...checkpoint,sourceMessageId:'clock-source',messageId:'clock-reply',turns:[{text:'',rawText:'',calls:[]}]}));
+        for(const [id,parent,title,source] of [['weather-task','weather-reply','查询上海实时天气','weather-source'],['clock-task','clock-reply','读取系统时间','clock-source']]){
+          const action={id,parentMessageId:parent,loopStep:0,conversationId:room,companionId:'deepseek-sister',sourceMessageId:source,title,status:'succeeded',createdAt:stamp,updatedAt:stamp,result:id==='weather-task'?'天气的独立结果':'时间的独立结果',events:[{sequence:1,type:'tool_end',toolName:id==='weather-task'?'web_search':'pwsh',summary:'工具实际返回结果',contentKind:'output',content:id==='weather-task'?'天气的原始工具输出':'时间的原始工具输出',receivedAt:stamp}]};
+          db.prepare('INSERT INTO actions(id,conversation_id,companion_id,status,data) VALUES(?,?,?,?,?)').run(id,room,'deepseek-sister','succeeded',JSON.stringify(action));
+        }
+      })();db.close();`;
+    const seeded = spawnSync(resolveElectronExecutablePath(), ['-e', sourceCode, path.join(profile, 'companions/messages.sqlite'), room.id], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
+    expect(seeded.status, seeded.stderr).toBe(0);
+    started = await launch(profile); application = started.application; const page = started.page;
+    await page.locator('[data-application-module="companions"]').click();
+    await page.locator(`[data-companion-conversation="${room.id}"]`).click();
+    const timeline = page.locator('[data-companion-messages]');
+    await expect(timeline.locator('.companions-capability-link')).toHaveCount(2);
+    await expect(timeline.locator('.companions-action-card')).toHaveCount(0);
+    await expect(timeline.locator('.companions-capability-fold')).toHaveCount(0);
+    await expect(timeline.locator('[data-companion-message="clock-reply"] .is-capability-only')).toBeVisible();
+    const entrySize = await timeline.locator('[data-loop-action="clock-task"] .companions-capability-title').evaluate(element => {
+      const range = document.createRange(); range.selectNodeContents(element);
+      return { text: range.getBoundingClientRect().width, available: element.getBoundingClientRect().width,
+        parents: [element, element.parentElement!, element.parentElement!.parentElement!, element.closest('.companions-message-bubble')!, element.closest('.companions-message-body')!].map(node => ({ width: node.getBoundingClientRect().width, scroll: node.scrollWidth, css: getComputedStyle(node).width })) };
+    });
+    expect(entrySize.text <= entrySize.available + 1, JSON.stringify(entrySize)).toBe(true);
+    await expect(timeline.locator('.companions-reply-quote')).toHaveCount(1);
+    await expect(timeline.locator('.companions-reply-quote-excerpt')).toHaveText('周末去海边散步，记得带相机。');
+    await page.screenshot({ path: path.resolve('artifacts/companions/verified-capability-entries.png') });
+    await page.getByRole('button', { name: '查看任务进度 读取系统时间', exact: true }).click();
+    const modal = page.getByRole('dialog', { name: '伙伴实时任务' });
+    await expect(modal.locator('main')).toContainText('时间的原始工具输出');
+    await expect(modal.locator('main')).not.toContainText('天气的原始工具输出');
+    await page.screenshot({ path: path.resolve('artifacts/companions/verified-linked-task.png') });
+    await modal.getByRole('button', { name: '关闭任务监视', exact: true }).click();
+    await page.getByRole('button', { name: '查看引用消息 quoted-source', exact: true }).click();
+    await expect(timeline.locator('[data-companion-message="quoted-source"]')).toHaveClass(/is-highlighted/);
+  } finally { if (application) await application.close(); cleanup(root); }
+});
+
 test('launcher persists the shared DSH access policy, defaulting every companion to full access', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-'));
   const profile = path.join(root, 'profile');
