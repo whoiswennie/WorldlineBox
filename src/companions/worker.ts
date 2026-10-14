@@ -8,6 +8,17 @@ import { CompanionsStore } from './store';
 const port = process.parentPort;
 if (!port) throw new Error('Companion storage requires an Electron UtilityProcess.');
 let store: CompanionsStore | undefined;
+let indexing: ReturnType<typeof setTimeout> | undefined;
+function indexNextBatch() {
+  if (!store) return;
+  try {
+    const ready = store.backfillSearchIndex();
+    port!.postMessage({ type: 'storage.index-changed' });
+    if (!ready) indexing = setTimeout(indexNextBatch, 50);
+  } catch (error) {
+    port!.postMessage({ type: 'storage.index-failed', error: error instanceof Error ? error.message : '消息搜索索引更新失败。' });
+  }
+}
 const initializeSchema = z.strictObject({ type: z.literal('storage.initialize'), databasePath: z.string().min(1).max(4096) });
 
 port.on('message', (event: { data: unknown }) => {
@@ -20,12 +31,14 @@ port.on('message', (event: { data: unknown }) => {
       if (!path.isAbsolute(databasePath)) throw new Error('伙伴存储路径必须是绝对路径。');
       store = new CompanionsStore(databasePath);
       port.postMessage({ type: 'storage.ready' });
+      indexing = setTimeout(indexNextBatch, 50);
     } catch (error) {
       port.postMessage({ type: 'storage.failed', error: error instanceof Error ? error.message : '伙伴存储无法启动。' });
     }
     return;
   }
   if ('type' in input && input.type === 'storage.close') {
+    if (indexing) clearTimeout(indexing);
     store?.close();
     store = undefined;
     port.postMessage({ type: 'storage.closed' });

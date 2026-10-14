@@ -8,7 +8,7 @@ import {
   companionDraftSchema, companionIdSchema, companionActionPageQuerySchema, type CompanionActionPageQuery, type CompanionActionPage, type Companion,
   type CompanionAction, type CompanionConversation, type CompanionDraft,
   type CompanionMemory, type CompanionMessage, type CompanionState,
-  companionReplyRecoverySchema, type CompanionReplyRecovery,
+  companionReplyRecoverySchema, type CompanionReplyRecovery, type CompanionSearchQuery, type CompanionSearchPage,
 } from '../shared/companions';
 import {
   appendCompanionMessageSchema, companionStorageCommandSchema,
@@ -22,6 +22,7 @@ import {
 import { BUILTIN_COMPANIONS, BUILTIN_WELCOMES, LEGACY_BUILTIN_PERSONAS } from '../shared/companion-personas';
 import { companionGroupTitle } from '../shared/companion-titles';
 import { companionLoopCheckpointSchema, companionWorkSchema, type CompanionWork, type CompanionLoopCheckpoint } from '../shared/companion-loop';
+import { companionSearchTokens, companionSearchMatch, companionSearchExcerpt, companionSearchFacet } from '../shared/companion-search';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -29,6 +30,7 @@ interface Statement {
   run(...args: unknown[]): { changes: number; lastInsertRowid: number | bigint };
 }
 interface Connection {
+  function(name: string, options: { deterministic: boolean }, fn: (text: string) => string): void;
   prepare(sql: string): Statement;
   exec(sql: string): void;
   pragma(sql: string, options?: { simple?: boolean }): unknown;
@@ -36,7 +38,7 @@ interface Connection {
   close(): void;
 }
 const Database = BetterSqlite3 as { new(filename: string): Connection };
-export const COMPANION_SCHEMA_VERSION = 1;
+export const COMPANION_SCHEMA_VERSION = 2;
 export type CompanionSeed = CompanionDraft & { id: string };
 type Row = Record<string, string | number | null>;
 const row = (value: unknown): Row => value as Row;
@@ -48,14 +50,13 @@ const decode = <T>(value: string | number | null | undefined): T => JSON.parse(S
 export class CompanionsStore {
   readonly #db: Connection;
   readonly #seeds: readonly CompanionSeed[];
-  readonly #welcomes: Readonly<Record<string, string>>;
 
   constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS,
     welcomes: Readonly<Record<string, string>> = BUILTIN_WELCOMES) {
     mkdirSync(path.dirname(databasePath), { recursive: true });
     this.#db = new Database(databasePath);
     this.#seeds = seeds;
-    this.#welcomes = welcomes;
+    void welcomes; // Legacy constructor compatibility; contacts no longer seed chats.
     try {
       // Inspect before changing journal mode or touching schema. A newer original
       // remains intact and can be opened by the version that created it.
@@ -71,12 +72,19 @@ export class CompanionsStore {
       this.#db.pragma('busy_timeout = 5000');
       this.#db.pragma('journal_mode = WAL');
       this.#db.pragma('synchronous = FULL');
+      this.#db.function('companion_search_tokens', { deterministic: true }, companionSearchTokens);
+      this.#db.function('companion_search_facet', { deterministic: true }, companionSearchFacet);
       if (version === 0) this.#migrate();
+      if (version < 2) this.#migrateHistory();
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_chronology ON actions(conversation_id,json_extract(data,'$.createdAt') DESC,id DESC)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_live_status ON actions(status,conversation_id)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_parent_message ON actions(json_extract(data,'$.parentMessageId'))");
       this.#db.exec("CREATE TABLE IF NOT EXISTS companion_work_queue(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,companion_id TEXT NOT NULL,data TEXT NOT NULL)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_status ON companion_work_queue(status,ordinal)");
+      this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_source ON companion_work_queue(json_extract(data,'$.sourceMessageId'))");
+      this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_conversation ON companion_work_queue(json_extract(data,'$.conversationId'),status)");
+      this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_role_status ON companion_work_queue(companion_id,status)");
+      this.#db.exec("CREATE INDEX IF NOT EXISTS companion_reply_pending ON metadata(json_extract(value,'$.status')) WHERE key GLOB 'reply-source/*' OR key GLOB 'reply-checkpoint/*'");
       this.#seed();
       for (const seed of this.#seeds) {
         const found = this.#db.prepare('SELECT data FROM companions WHERE id=? AND deleted_at IS NULL').get(seed.id);
@@ -85,6 +93,7 @@ export class CompanionsStore {
         if (saved.builtin && LEGACY_BUILTIN_PERSONAS[seed.id] === saved.persona) this.#db.prepare('UPDATE companions SET data=? WHERE id=?').run(JSON.stringify({ ...saved, persona: seed.persona }), seed.id);
       }
       this.#coalesceGroups();
+      this.backfillSearchIndex();
     } catch (error) {
       this.#db.close();
       throw error;
@@ -142,8 +151,75 @@ export class CompanionsStore {
           INSERT INTO message_search(message_search,rowid,content) VALUES('delete',old.sequence,old.content);
           INSERT INTO message_search(rowid,content) VALUES(new.sequence,new.content);
         END;
-        PRAGMA user_version = ${COMPANION_SCHEMA_VERSION};
+        PRAGMA user_version = 1;
       `);
+    }).immediate();
+  }
+
+  #migrateHistory(): void {
+    this.#db.transaction(() => {
+      this.#db.exec(`
+        ALTER TABLE conversations ADD COLUMN hidden_at TEXT;
+        ALTER TABLE conversations ADD COLUMN dissolved_at TEXT;
+        UPDATE conversations SET hidden_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE kind='private'
+          AND EXISTS(SELECT 1 FROM messages WHERE conversation_id=conversations.id)
+          AND NOT EXISTS(SELECT 1 FROM messages WHERE conversation_id=conversations.id AND (client_id IS NULL OR client_id NOT LIKE 'builtin-welcome-%'))
+          AND NOT EXISTS(SELECT 1 FROM actions WHERE conversation_id=conversations.id);
+        CREATE INDEX messages_author_sequence ON messages(author_id,sequence DESC);
+        CREATE INDEX messages_conversation_time ON messages(conversation_id,created_at,sequence);
+        CREATE INDEX messages_time_sequence ON messages(created_at,sequence);
+        CREATE INDEX message_attachments_attachment ON message_attachments(attachment_id,message_id);
+        DROP TRIGGER message_search_insert;
+        DROP TRIGGER message_search_update;
+        DROP TRIGGER message_search_delete;
+        DROP TABLE message_search;
+        CREATE VIRTUAL TABLE message_search USING fts5(tokens, scope, content='', contentless_delete=1);
+        CREATE TRIGGER message_search_insert AFTER INSERT ON messages BEGIN
+          INSERT INTO message_search(rowid,tokens,scope) VALUES(new.sequence,companion_search_tokens(new.content),'c'||companion_search_facet(new.conversation_id)||' a'||companion_search_facet(new.author_id)||' d'||replace(substr(new.created_at,1,10),'-','')||CASE WHEN instr(lower(new.content),'https://')>0 OR instr(lower(new.content),'http://')>0 THEN ' weblink' ELSE '' END||CASE WHEN EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=new.id AND json_extract(a.data,'$.mime') LIKE 'image/%') THEN ' picture' ELSE '' END||CASE WHEN EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=new.id AND json_extract(a.data,'$.mime') NOT LIKE 'image/%') THEN ' document' ELSE '' END);
+        END;
+        CREATE TRIGGER message_search_delete AFTER DELETE ON messages BEGIN
+          DELETE FROM message_search WHERE rowid=old.sequence;
+        END;
+        CREATE TRIGGER message_search_update AFTER UPDATE OF content,conversation_id,author_id ON messages WHEN old.content!=new.content OR old.conversation_id!=new.conversation_id OR old.author_id!=new.author_id BEGIN
+          DELETE FROM message_search WHERE rowid=old.sequence;
+          INSERT INTO message_search(rowid,tokens,scope) SELECT new.sequence,companion_search_tokens(new.content || char(10) || COALESCE((
+            SELECT group_concat(json_extract(a.data,'$.name'),char(10)) FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=new.id),'')),'c'||companion_search_facet(new.conversation_id)||' a'||companion_search_facet(new.author_id)||' d'||replace(substr(new.created_at,1,10),'-','')||CASE WHEN instr(lower(new.content),'https://')>0 OR instr(lower(new.content),'http://')>0 THEN ' weblink' ELSE '' END||CASE WHEN EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=new.id AND json_extract(a.data,'$.mime') LIKE 'image/%') THEN ' picture' ELSE '' END||CASE WHEN EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=new.id AND json_extract(a.data,'$.mime') NOT LIKE 'image/%') THEN ' document' ELSE '' END;
+        END;
+        CREATE TRIGGER message_search_attachment_insert AFTER INSERT ON message_attachments BEGIN
+          DELETE FROM message_search WHERE rowid=(SELECT sequence FROM messages WHERE id=new.message_id);
+          INSERT INTO message_search(rowid,tokens,scope) SELECT m.sequence,companion_search_tokens(m.content || char(10) || COALESCE((
+            SELECT group_concat(json_extract(a.data,'$.name'),char(10)) FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id),'')),'c'||companion_search_facet(m.conversation_id)||' a'||companion_search_facet(m.author_id)||' d'||replace(substr(m.created_at,1,10),'-','')||CASE WHEN instr(lower(m.content),'https://')>0 OR instr(lower(m.content),'http://')>0 THEN ' weblink' ELSE '' END||CASE WHEN EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id AND json_extract(a.data,'$.mime') LIKE 'image/%') THEN ' picture' ELSE '' END||CASE WHEN EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id AND json_extract(a.data,'$.mime') NOT LIKE 'image/%') THEN ' document' ELSE '' END FROM messages m WHERE m.id=new.message_id;
+        END;
+        CREATE TRIGGER message_search_attachment_delete AFTER DELETE ON message_attachments BEGIN
+          DELETE FROM message_search WHERE rowid=(SELECT sequence FROM messages WHERE id=old.message_id);
+          INSERT INTO message_search(rowid,tokens,scope) SELECT m.sequence,companion_search_tokens(m.content || char(10) || COALESCE((
+            SELECT group_concat(json_extract(a.data,'$.name'),char(10)) FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id),'')),'c'||companion_search_facet(m.conversation_id)||' a'||companion_search_facet(m.author_id)||' d'||replace(substr(m.created_at,1,10),'-','')||CASE WHEN instr(lower(m.content),'https://')>0 OR instr(lower(m.content),'http://')>0 THEN ' weblink' ELSE '' END||CASE WHEN EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id AND json_extract(a.data,'$.mime') LIKE 'image/%') THEN ' picture' ELSE '' END||CASE WHEN EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id AND json_extract(a.data,'$.mime') NOT LIKE 'image/%') THEN ' document' ELSE '' END FROM messages m WHERE m.id=old.message_id;
+        END;
+        INSERT INTO metadata(key,value) SELECT 'message-index-target',CAST(COALESCE(MAX(sequence),0) AS TEXT) FROM messages;
+        INSERT INTO metadata(key,value) VALUES('message-index-through','0');
+        PRAGMA user_version = 2;
+      `);
+    }).immediate();
+  }
+
+  /** Bounded, crash-safe upgrade batches; the worker yields between batches. */
+  backfillSearchIndex(): boolean {
+    return this.#db.transaction(() => {
+      const target = Number(row(this.#db.prepare("SELECT value FROM metadata WHERE key='message-index-target'").get()).value);
+      const through = Number(row(this.#db.prepare("SELECT value FROM metadata WHERE key='message-index-through'").get()).value);
+      if (through >= target) return true;
+      const batch = rows(this.#db.prepare(`SELECT m.sequence,m.content,m.conversation_id,m.author_id,m.created_at,COALESCE((SELECT group_concat(json_extract(a.data,'$.name'),char(10))
+        FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id),'') AS filenames
+        ,EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id AND json_extract(a.data,'$.mime') LIKE 'image/%') AS has_images
+        ,EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id AND json_extract(a.data,'$.mime') NOT LIKE 'image/%') AS has_files
+        FROM messages m WHERE sequence>? AND sequence<=? ORDER BY sequence LIMIT 500`).all(through, target));
+      const remove = this.#db.prepare('DELETE FROM message_search WHERE rowid=?');
+      const insert = this.#db.prepare('INSERT INTO message_search(rowid,tokens,scope) VALUES(?,?,?)');
+      for (const item of batch) { remove.run(item.sequence); insert.run(item.sequence, companionSearchTokens(String(item.content) + '\n' + item.filenames), 'c' + companionSearchFacet(String(item.conversation_id)) + ' a' + companionSearchFacet(String(item.author_id)) + ' d' + String(item.created_at).slice(0,10).replaceAll('-','')
+        + (item.has_images ? ' picture' : '') + (item.has_files ? ' document' : '') + (/https?:\/\//iu.test(String(item.content)) ? ' weblink' : '')); }
+      const next = batch.length === 500 ? Number(batch.at(-1)!.sequence) : target;
+      this.#db.prepare("UPDATE metadata SET value=? WHERE key='message-index-through'").run(String(next));
+      return next >= target;
     }).immediate();
   }
 
@@ -155,18 +231,9 @@ export class CompanionsStore {
         if (this.#db.prepare('SELECT 1 FROM companions WHERE id=?').get(seed.id)) continue;
         const companion: Companion = { ...companionDraftSchema.parse(seed), id: companionIdSchema.parse(seed.id), builtin: true, createdAt: stamp() };
         this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(companion.id, JSON.stringify(companion));
-        const conversation = this.openPrivate(companion.id);
-        this.#welcome(companion.id, conversation.id);
       }
       this.#db.prepare("INSERT OR IGNORE INTO metadata(key,value) VALUES('builtin-seeded','1')").run();
     }).immediate();
-  }
-
-  #welcome(companionId: string, conversationId: string): void {
-    if (this.#db.prepare('SELECT 1 FROM messages WHERE client_id=?').get(`builtin-welcome-${companionId}`)) return;
-    const content = this.#welcomes[companionId];
-    if (content) this.appendMessage({ conversationId, authorId: companionId,
-      content, kind: 'notice', clientId: `builtin-welcome-${companionId}` });
   }
 
   close(): void { this.#db.close(); }
@@ -197,7 +264,7 @@ export class CompanionsStore {
   #coalesceGroups(): void {
     this.#db.transaction(() => {
       const known = new Map<string, string>();
-      for (const group of rows(this.#db.prepare("SELECT * FROM conversations WHERE kind='group' ORDER BY rowid").all())) {
+      for (const group of rows(this.#db.prepare("SELECT * FROM conversations WHERE kind='group' AND dissolved_at IS NULL ORDER BY rowid").all())) {
         const id = String(group.id), key = JSON.stringify(this.#memberIds(id).sort());
         const canonical = known.get(key);
         if (!canonical) { known.set(key, id); continue; }
@@ -237,6 +304,7 @@ export class CompanionsStore {
   }
 
   #requireMember(conversationId: string, companionId: string): void {
+    if (this.#requireConversation(conversationId).dissolved_at) throw new Error('这个群聊已经解散。');
     this.#requireCompanion(companionId);
     if (!this.#db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(conversationId, companionId)) {
       throw new Error('这个伙伴不是聊天成员。');
@@ -262,13 +330,13 @@ export class CompanionsStore {
     }));
   }
 
-  state(): CompanionState {
+  state(includeHidden = false): CompanionState {
     return { companions: rows(this.#db.prepare('SELECT data FROM companions WHERE deleted_at IS NULL ORDER BY rowid').all()).map((item) => decode<Companion>(item.data)),
-      conversations: rows(this.#db.prepare('SELECT * FROM conversations ORDER BY pinned DESC,updated_at DESC,rowid DESC').all()).map((item) => this.#conversation(item)),
+      conversations: rows(this.#db.prepare(`SELECT * FROM conversations WHERE dissolved_at IS NULL ${includeHidden ? '' : 'AND hidden_at IS NULL'} ORDER BY pinned DESC,updated_at DESC,rowid DESC`).all()).map((item) => this.#conversation(item)),
       activities: [], configured: false, recoveries: this.replyRecoveries() };
   }
   private replyRecoveries(): CompanionReplyRecovery[] {
-    const found = rows(this.#db.prepare("SELECT value FROM metadata WHERE key LIKE 'reply-source/%' OR key LIKE 'reply-checkpoint/%'").all()).map(item => companionReplyRecoverySchema.parse(decode(item.value)));
+    const found = rows(this.#db.prepare("SELECT value FROM metadata WHERE (key GLOB 'reply-source/*' OR key GLOB 'reply-checkpoint/*') AND json_extract(value,'$.status') IN ('pending','interrupted')").all()).map(item => companionReplyRecoverySchema.parse(decode(item.value)));
     return [...new Map(found.map(item => [item.sourceMessageId, item])).values()].filter(item => item.status === 'interrupted' || item.status === 'pending')
       .sort((a, b) => this.getMessage(a.sourceMessageId).sequence - this.getMessage(b.sourceMessageId).sequence);
   }
@@ -323,8 +391,6 @@ export class CompanionsStore {
         companion = { ...companionDraftSchema.parse(seed), id, builtin: true, createdAt: stamp() };
         this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(id, JSON.stringify(companion));
       }
-      const conversation = this.openPrivate(id);
-      this.#welcome(id, conversation.id);
       return companion;
     }).immediate();
   }
@@ -333,7 +399,10 @@ export class CompanionsStore {
     return this.#db.transaction(() => {
       const companion = this.#requireCompanion(companionId);
       const existing = this.#db.prepare('SELECT * FROM conversations WHERE private_companion_id=?').get(companionId);
-      if (existing) return this.#conversation(row(existing));
+      if (existing) {
+        this.#db.prepare('UPDATE conversations SET hidden_at=NULL WHERE id=?').run(row(existing).id);
+        return this.#conversation(row(existing));
+      }
       const id = `private-${companionId}`;
       this.#db.prepare("INSERT INTO conversations(id,kind,title,private_companion_id,updated_at) VALUES(?,'private',?,?,?)").run(id, companion.name, companionId, stamp());
       this.#db.prepare('INSERT INTO conversation_members(conversation_id,companion_id) VALUES(?,?)').run(id, companionId);
@@ -348,9 +417,12 @@ export class CompanionsStore {
       const members = [...new Set(input.memberIds)];
       members.forEach((id) => this.#requireCompanion(id));
       const key = JSON.stringify([...members].sort());
-      const existing = rows(this.#db.prepare("SELECT * FROM conversations WHERE kind='group' ORDER BY rowid").all())
+      const existing = rows(this.#db.prepare("SELECT * FROM conversations WHERE kind='group' AND dissolved_at IS NULL ORDER BY rowid").all())
         .find(group => JSON.stringify(this.#memberIds(String(group.id)).sort()) === key);
-      if (existing) return this.#conversation(existing);
+      if (existing) {
+        this.#db.prepare('UPDATE conversations SET hidden_at=NULL WHERE id=?').run(existing.id);
+        return this.#conversation(existing);
+      }
       const id = randomUUID();
       this.#db.prepare("INSERT INTO conversations(id,kind,title,updated_at) VALUES(?,'group',?,?)").run(id, input.title, stamp());
       for (const member of members) this.#db.prepare('INSERT INTO conversation_members(conversation_id,companion_id) VALUES(?,?)').run(id, member);
@@ -365,6 +437,7 @@ export class CompanionsStore {
     if (input.type !== 'conversation.update') throw new Error('Invalid conversation request.');
     return this.#db.transaction(() => {
       const existing = this.#requireConversation(id);
+      if (existing.dissolved_at) throw new Error('这个群聊已经解散。');
       const keepAutomatic = existing.kind === 'group' && this.#automaticGroupTitle(existing) && input.title === this.#groupTitle(id);
       if (input.memberIds) {
         if (existing.kind !== 'group') throw new Error('私聊的伙伴不能替换。');
@@ -382,6 +455,20 @@ export class CompanionsStore {
     }).immediate();
   }
 
+  deleteConversation(id: string, mode: 'hide' | 'dissolve'): void {
+    id = this.#conversationId(companionIdSchema.parse(id));
+    this.#db.transaction(() => {
+      const conversation = this.#requireConversation(id);
+      if (mode === 'dissolve' && conversation.kind !== 'group') throw new Error('只能解散群聊。');
+      this.#db.prepare(`UPDATE conversations SET hidden_at=?,pinned=0 ${mode === 'dissolve' ? ',dissolved_at=?' : ''} WHERE id=?`)
+        .run(...(mode === 'dissolve' ? [stamp(), stamp(), id] : [stamp(), id]));
+      if (mode === 'dissolve') {
+        for (const work of this.workList(undefined, true, id)) this.workStatus(work.id, 'cancelled');
+        for (const reply of this.replyRecoveries()) if (reply.conversationId === id) this.setReplyStatus(id, reply.sourceMessageId, 'cancelled');
+      }
+    }).immediate();
+  }
+
   markRead(id: string, sequence?: number): CompanionConversation {
     id = this.#conversationId(id);
     return this.#db.transaction(() => {
@@ -393,12 +480,12 @@ export class CompanionsStore {
     }).immediate();
   }
 
-  #message(found: Row): CompanionMessage {
+  #message(found: Row, includeSegments = true): CompanionMessage {
     const attachments = rows(this.#db.prepare('SELECT a.data FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=? ORDER BY ma.ordinal').all(found.id)).map((item) => decode<StoredCompanionAttachment['attachment']>(item.data));
     return { id: String(found.id), sequence: Number(found.sequence), conversationId: String(found.conversation_id),
       authorId: String(found.author_id), kind: found.kind as CompanionMessage['kind'], content: String(found.content),
       createdAt: String(found.created_at), status: found.status as CompanionMessage['status'], attachments,
-      segments: this.messageSegments(String(found.id)),
+      segments: includeSegments ? this.messageSegments(String(found.id)) : undefined,
       ...(found.reply_to_id ? { replyToId: String(found.reply_to_id) } : {}), ...(found.action_id ? { actionId: String(found.action_id) } : {}) };
   }
 
@@ -409,8 +496,12 @@ export class CompanionsStore {
     const actions = rows(this.#db.prepare("SELECT id,data FROM actions WHERE json_extract(data,'$.parentMessageId')=? ORDER BY rowid").all(id));
     return turns.map((turn, index) => ({ text: turn.text, actionIds: actions.filter(item => decode<CompanionAction>(item.data).loopStep === index).map(item => String(item.id)) }));
   }
-  private workList(): CompanionWork[] {
-    return rows(this.#db.prepare('SELECT ordinal,data FROM companion_work_queue ORDER BY ordinal').all()).map(found => ({ ...companionWorkSchema.parse(decode(found.data)), ordinal: Number(found.ordinal) }));
+  private workList(sourceMessageId?: string, unfinishedOnly = false, conversationId?: string): CompanionWork[] {
+    const clauses: string[] = []; const args: unknown[] = [];
+    if (sourceMessageId) { clauses.push("json_extract(data,'$.sourceMessageId')=?"); args.push(sourceMessageId); }
+    if (conversationId) { clauses.push("json_extract(data,'$.conversationId')=?"); args.push(conversationId); }
+    if (unfinishedOnly) clauses.push("status IN ('queued','running','interrupted')");
+    return rows(this.#db.prepare(`SELECT ordinal,data FROM companion_work_queue ${clauses.length ? 'WHERE ' + clauses.join(' AND ') : ''} ORDER BY ordinal`).all(...args)).map(found => ({ ...companionWorkSchema.parse(decode(found.data)), ordinal: Number(found.ordinal) }));
   }
   private enqueueWork(input: CompanionWork, resume = false): void {
     const work = companionWorkSchema.parse(input);
@@ -427,16 +518,17 @@ export class CompanionsStore {
     const found = this.#db.prepare('SELECT data FROM companion_work_queue WHERE id=?').get(id);
     if (!found) throw new Error('队列任务不存在。');
     const previous = decode<CompanionWork>(row(found).data);
+    if (previous.status === 'cancelled' && status !== 'queued') return;
     const work = { ...previous, status, updatedAt: stamp() };
     this.#db.prepare('UPDATE companion_work_queue SET status=?,data=? WHERE id=?').run(status, JSON.stringify(work), id);
   }
   private claimWork(): CompanionWork | undefined {
     return this.#db.transaction(() => {
-      const all = this.workList();
-      const active = all.filter(item => item.status === 'running');
-      if (active.length >= 20) return;
-      const next = all.find(item => item.status === 'queued' && active.filter(other => other.companionId === item.companionId).length < 5);
-      if (!next) return;
+      if (Number(row(this.#db.prepare("SELECT count(*) AS total FROM companion_work_queue WHERE status='running'").get()).total) >= 20) return;
+      const found = this.#db.prepare(`SELECT data,ordinal FROM companion_work_queue queued WHERE status='queued' AND
+        (SELECT count(*) FROM companion_work_queue running WHERE running.companion_id=queued.companion_id AND running.status='running')<5 ORDER BY ordinal LIMIT 1`).get();
+      if (!found) return;
+      const next = { ...companionWorkSchema.parse(decode(row(found).data)), ordinal: Number(row(found).ordinal) };
       this.workStatus(next.id, 'running');
       return { ...next, status: 'running' as const };
     }).immediate();
@@ -470,30 +562,69 @@ export class CompanionsStore {
     return this.#message(row(found));
   }
 
-  messages(input: { conversationId: string; before?: number; limit?: number }): { messages: CompanionMessage[]; hasMore: boolean } {
+  messages(input: { conversationId: string; before?: number; after?: number; around?: string; limit?: number }): { messages: CompanionMessage[]; hasMore: boolean; hasNewer: boolean } {
     input = { ...input, conversationId: this.#conversationId(input.conversationId) };
     const request = companionStorageCommandSchema.parse({ type: 'messages', ...input });
     if (request.type !== 'messages') throw new Error('Invalid message request.');
     this.#requireConversation(request.conversationId);
     const limit = request.limit ?? 50;
-    const found = rows(this.#db.prepare('SELECT * FROM messages WHERE conversation_id=? AND sequence<? ORDER BY sequence DESC LIMIT ?').all(request.conversationId, request.before ?? Number.MAX_SAFE_INTEGER, limit + 1));
-    return { messages: found.slice(0, limit).reverse().map((item) => this.#message(item)), hasMore: found.length > limit };
+    if ([request.before !== undefined, request.after !== undefined, !!request.around].filter(Boolean).length > 1) throw new Error('只能选择一种历史翻页方向。');
+    let found: Row[];
+    if (request.around) {
+      const anchor = this.getMessage(request.around);
+      if (anchor.conversationId !== request.conversationId) throw new Error('定位消息不属于这个聊天。');
+      found = [...rows(this.#db.prepare('SELECT * FROM messages WHERE conversation_id=? AND sequence<=? ORDER BY sequence DESC LIMIT ?').all(request.conversationId, anchor.sequence, Math.ceil(limit / 2))).reverse(),
+        ...rows(this.#db.prepare('SELECT * FROM messages WHERE conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?').all(request.conversationId, anchor.sequence, Math.floor(limit / 2)))];
+    } else if (request.after !== undefined) {
+      found = rows(this.#db.prepare('SELECT * FROM messages WHERE conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?').all(request.conversationId, request.after, limit));
+    } else {
+      found = rows(this.#db.prepare('SELECT * FROM messages WHERE conversation_id=? AND sequence<? ORDER BY sequence DESC LIMIT ?').all(request.conversationId, request.before ?? Number.MAX_SAFE_INTEGER, limit)).reverse();
+    }
+    const hasMore = !!found.length && !!this.#db.prepare('SELECT 1 FROM messages WHERE conversation_id=? AND sequence<? LIMIT 1').get(request.conversationId, found[0]!.sequence);
+    const hasNewer = !!found.length && !!this.#db.prepare('SELECT 1 FROM messages WHERE conversation_id=? AND sequence>? LIMIT 1').get(request.conversationId, found.at(-1)!.sequence);
+    return { messages: found.map((item) => this.#message(item)), hasMore, hasNewer };
   }
 
-  search(input: { conversationId?: string; query: string; before?: number; limit?: number }): { messages: CompanionMessage[]; hasMore: boolean } {
+  search(input: CompanionSearchQuery): { messages: CompanionMessage[]; hasMore: boolean; searchPage: CompanionSearchPage } {
     if (input.conversationId) input = { ...input, conversationId: this.#conversationId(input.conversationId) };
     const request = companionStorageCommandSchema.parse({ type: 'message.search', ...input });
     if (request.type !== 'message.search') throw new Error('Invalid search request.');
     if (request.conversationId) this.#requireConversation(request.conversationId);
-    const limit = request.limit ?? 50;
-    const useFts = [...request.query].length >= 3;
-    const args: unknown[] = [useFts ? `"${request.query.replaceAll('"', '""')}"` : request.query.toLowerCase()];
-    const conditions = [useFts ? 'message_search MATCH ?' : 'instr(lower(m.content),?) > 0', 'm.sequence<?'];
-    args.push(request.before ?? Number.MAX_SAFE_INTEGER);
-    if (request.conversationId) { conditions.push('m.conversation_id=?'); args.push(request.conversationId); }
+    if (request.from && request.to && request.from >= request.to) throw new Error('结束时间需要晚于开始时间。');
+    const limit = request.limit;
+    const snapshot = request.snapshot ?? Number(row(this.#db.prepare('SELECT COALESCE(MAX(sequence),0) AS total FROM messages').get()).total);
+    const args: unknown[] = [];
+    const conditions = ['c.dissolved_at IS NULL', 'm.sequence<=?', 'm.sequence<?'];
+    args.push(snapshot, request.before ?? Number.MAX_SAFE_INTEGER);
+    const indexed = !!request.query || request.category !== 'all';
+    const facets = [request.query ? 'tokens : (' + companionSearchMatch(request.query) + ')' : '',
+      indexed && request.conversationId ? 'scope : "c' + companionSearchFacet(request.conversationId) + '"' : '',
+      indexed && request.authorId ? 'scope : "a' + companionSearchFacet(request.authorId) + '"' : '',
+      request.category !== 'all' ? 'scope : "' + ({ images: 'picture', files: 'document', links: 'weblink' }[request.category]) + '"' : ''].filter(Boolean);
+    if (indexed && request.from && request.to) {
+      const first = new Date(request.from); first.setUTCHours(0, 0, 0, 0);
+      const last = new Date(request.to).getTime();
+      if ((last - first.getTime()) / 86400_000 <= 366) {
+        const days: string[] = [];
+        for (let time = first.getTime(); time < last; time += 86400_000) days.push('"d' + new Date(time).toISOString().slice(0, 10).replaceAll('-', '') + '"');
+        if (days.length) facets.push('scope : (' + days.join(' OR ') + ')');
+      }
+    }
+    const match = facets.join(' AND ');
+    if (match) { conditions.unshift('message_search MATCH ?'); args.unshift(match); }
+    if (!indexed && request.conversationId) { conditions.push('m.conversation_id=?'); args.push(request.conversationId); }
+    if (!indexed && request.authorId) { conditions.push('m.author_id=?'); args.push(request.authorId); }
+    if (request.from) { conditions.push('m.created_at>=?'); args.push(request.from); }
+    if (request.to) { conditions.push('m.created_at<?'); args.push(request.to); }
     args.push(limit + 1);
-    const found = rows(this.#db.prepare(`SELECT m.* FROM messages m ${useFts ? 'JOIN message_search ON message_search.rowid=m.sequence' : ''} WHERE ${conditions.join(' AND ')} ORDER BY m.sequence DESC LIMIT ?`).all(...args));
-    return { messages: found.slice(0, limit).map((item) => this.#message(item)), hasMore: found.length > limit };
+    const found = rows(this.#db.prepare(`SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id ${indexed ? 'JOIN message_search ON message_search.rowid=m.sequence' : ''} WHERE ${conditions.join(' AND ')} ORDER BY ${indexed ? 'message_search.rowid' : 'm.sequence'} DESC LIMIT ?`).all(...args));
+    const messages = found.slice(0, limit).map((item) => this.#message(item, !request.compact));
+    const hasMore = found.length > limit;
+    const indexReady = row(this.#db.prepare("SELECT value FROM metadata WHERE key='message-index-through'").get()).value === row(this.#db.prepare("SELECT value FROM metadata WHERE key='message-index-target'").get()).value;
+    return { messages: request.compact ? [] : messages, hasMore, searchPage: { items: messages.map(message => ({ id: message.id, sequence: message.sequence, conversationId: message.conversationId,
+      authorId: message.authorId, createdAt: message.createdAt, attachments: message.attachments,
+      excerpt: companionSearchExcerpt(message.content + (message.attachments.length ? '\n' + message.attachments.map(file => file.name).join('\n') : ''), request.query) })),
+      hasMore, ...(hasMore && messages.length ? { nextBefore: messages.at(-1)!.sequence } : {}), snapshot, indexReady } };
   }
 
   appendMessage(input: AppendCompanionMessage): CompanionMessage {
@@ -514,7 +645,7 @@ export class CompanionsStore {
           return { message: this.#message(row(found)), inserted: false };
         }
       }
-      this.#requireConversation(message.conversationId);
+      if (this.#requireConversation(message.conversationId).dissolved_at) throw new Error('这个群聊已经解散。');
       if (message.authorId !== 'user' && message.authorId !== 'system') this.#requireMember(message.conversationId, message.authorId);
       if (!message.content.trim() && !message.attachmentIds.length && !(message.loopStep !== undefined && message.authorId !== 'user' && message.authorId !== 'system')) throw new Error('消息不能为空。');
       if (message.replyToId) {
@@ -534,7 +665,7 @@ export class CompanionsStore {
         id, message.conversationId, message.authorId, message.kind, message.content, createdAt, message.replyToId ?? null,
         message.status, message.actionId ?? null, message.clientId ?? null, fingerprint);
       attachmentIds.forEach((attachmentId, ordinal) => this.#db.prepare('INSERT INTO message_attachments(message_id,attachment_id,ordinal) VALUES(?,?,?)').run(id, attachmentId, ordinal));
-      this.#db.prepare('UPDATE conversations SET updated_at=? WHERE id=?').run(createdAt, message.conversationId);
+      this.#db.prepare('UPDATE conversations SET updated_at=?,hidden_at=NULL WHERE id=?').run(createdAt, message.conversationId);
       const stored = this.#message(row(this.#db.prepare('SELECT * FROM messages WHERE id=?').get(id)));
       if (message.authorId === 'user' && message.replyDirective) {
         this.saveReplyCheckpoint({ conversationId: message.conversationId, sourceMessageId: id,
@@ -633,6 +764,7 @@ export class CompanionsStore {
     return found ? companionReplyRecoverySchema.parse(decode(row(found).value)) : undefined;
   }
   setReplyStatus(conversationId: string, sourceMessageId: string, status: CompanionReplyRecovery['status']): void {
+    if (this.#requireConversation(conversationId).dissolved_at) status = 'cancelled';
     const checkpoint = this.replyCheckpoint(conversationId, sourceMessageId);
     if (checkpoint?.sourceMessageId === sourceMessageId) this.saveReplyCheckpoint({ ...checkpoint, status, updatedAt: stamp() });
   }
@@ -798,7 +930,7 @@ export class CompanionsStore {
     if (command.type === 'action.create') command.action.conversationId = this.#conversationId(command.action.conversationId);
     if (command.type === 'conversation.update' || command.type === 'conversation.read') command.id = this.#conversationId(command.id);
     switch (command.type) {
-      case 'state': return { ok: true, state: this.state() };
+      case 'state': return { ok: true, state: this.state(command.includeHidden) };
       case 'companion.create': return { ok: true, companion: this.createCompanion(command.companion) };
       case 'companion.update': return { ok: true, companion: this.updateCompanion(command.id, command.companion) };
       case 'companion.delete': this.deleteCompanion(command.id); return { ok: true };
@@ -807,6 +939,13 @@ export class CompanionsStore {
       case 'conversation.create-group': return { ok: true, conversation: this.createConversation(command.title, command.memberIds) };
       case 'conversation.update': return { ok: true, conversation: this.updateConversation(command.id, command) };
       case 'conversation.read': return { ok: true, conversation: this.markRead(command.id, command.sequence) };
+      case 'conversation.delete': this.deleteConversation(command.id, command.mode); return { ok: true };
+      case 'conversation.reopen': {
+        const conversation = this.#requireConversation(command.id);
+        if (conversation.dissolved_at) throw new Error('这个群聊已经解散。');
+        this.#db.prepare('UPDATE conversations SET hidden_at=NULL WHERE id=?').run(conversation.id);
+        return { ok: true, conversation: this.#conversation(conversation) };
+      }
       case 'messages': return { ok: true, ...this.messages(command) };
       case 'message.get': return { ok: true, message: this.getMessage(command.id) };
       case 'message.search': return { ok: true, ...this.search(command) };
@@ -828,18 +967,18 @@ export class CompanionsStore {
       case 'loop.save': this.saveLoop(command.checkpoint); return { ok: true };
       case 'work.enqueue': this.enqueueWork(command.work, command.resume); return { ok: true };
       case 'work.claim': return { ok: true, work: this.claimWork() };
-      case 'work.list': return { ok: true, works: this.workList() };
+      case 'work.list': return { ok: true, works: this.workList(command.sourceMessageId, command.unfinishedOnly) };
       case 'work.status': this.workStatus(command.id, command.status); return { ok: true };
       case 'work.promote': {
         this.#db.transaction(() => {
-          const works = this.workList().filter(work => work.sourceMessageId === command.sourceMessageId);
+          const works = this.workList(command.sourceMessageId);
           if (works.some(work => work.status === 'running' || work.status === 'done')) throw new Error('这条消息已经开始处理，不能再从队列转为引导。');
           for (const work of works) if (work.status === 'queued') this.workStatus(work.id, 'cancelled');
         }).immediate();
         return { ok: true };
       }
       case 'work.interrupt-running': {
-        for (const work of this.workList()) if (work.status === 'running') this.workStatus(work.id, 'interrupted');
+        for (const work of this.workList(undefined, true)) if (work.status === 'running') this.workStatus(work.id, 'interrupted');
         return { ok: true };
       }
       case 'reply.checkpoint.status': this.setReplyStatus(command.conversationId, command.sourceMessageId, command.status); return { ok: true };

@@ -1260,6 +1260,7 @@ function saveAiConfig(config: AiConfig): void {
   toSave.autoAnalyzeEnabled = config.autoAnalyzeEnabled;
   toSave.disclaimerAccepted = config.disclaimerAccepted;
   writeFileSync(aiConfigPath(), JSON.stringify(toSave, null, 2), "utf-8");
+  companionService?.configurationChanged();
 }
 
 function getDecryptedApiKey(): string {

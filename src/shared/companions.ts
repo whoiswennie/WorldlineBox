@@ -17,7 +17,7 @@ export const companionSchema = z.object({
   builtin: z.boolean(), proactive: z.boolean(), createdAt: z.string(),
   llm: companionLlmSchema.optional(),
   avatarAttachmentId: companionIdSchema.optional(),
-  availability: z.enum(['ready', 'working', 'waiting']).optional(), activeCount: z.number().int().nonnegative().optional(), queuedCount: z.number().int().nonnegative().optional(),
+  availability: z.enum(['ready', 'working', 'waiting', 'offline']).optional(), availabilityReason: z.string().max(500).optional(), activeCount: z.number().int().nonnegative().optional(), queuedCount: z.number().int().nonnegative().optional(),
 });
 export type Companion = z.infer<typeof companionSchema>;
 export const conversationSchema = z.object({
@@ -38,6 +38,28 @@ export const messageSchema = z.object({
   segments: z.array(z.object({ text: z.string().max(65536), actionIds: z.array(companionIdSchema).max(16) })).max(64).optional(),
 });
 export type CompanionMessage = z.infer<typeof messageSchema>;
+export const companionMessagesQuerySchema = z.object({
+  conversationId: companionIdSchema, before: z.number().int().positive().optional(),
+  after: z.number().int().nonnegative().optional(), around: companionIdSchema.optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+export const companionSearchQuerySchema = z.object({
+  conversationId: companionIdSchema.optional(), query: z.string().trim().max(200).default(''),
+  authorId: companionIdSchema.optional(), category: z.enum(['all', 'images', 'files', 'links']).default('all'),
+  from: z.iso.datetime().optional(), to: z.iso.datetime().optional(),
+  before: z.number().int().positive().optional(), snapshot: z.number().int().nonnegative().optional(),
+  limit: z.number().int().min(1).max(100).default(30),
+  compact: z.boolean().optional(),
+});
+export type CompanionSearchQuery = z.input<typeof companionSearchQuerySchema>;
+export const companionSearchHitSchema = messageSchema.pick({ id: true, sequence: true, conversationId: true, authorId: true, createdAt: true, attachments: true })
+  .extend({ excerpt: z.string().max(600) });
+export type CompanionSearchHit = z.infer<typeof companionSearchHitSchema>;
+export const companionSearchPageSchema = z.object({
+  items: z.array(companionSearchHitSchema).max(100), hasMore: z.boolean(), nextBefore: z.number().int().positive().optional(),
+  snapshot: z.number().int().nonnegative(), indexReady: z.boolean(),
+});
+export type CompanionSearchPage = z.infer<typeof companionSearchPageSchema>;
 export const memorySchema = z.object({ id: companionIdSchema, companionId: companionIdSchema,
   content: z.string().trim().min(1).max(4000), sourceMessageId: companionIdSchema.optional(),
   sourceConversationId: companionIdSchema.optional(),
@@ -100,12 +122,14 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('conversation.create-group'), title: z.string().trim().max(100).default(''), memberIds: z.array(companionIdSchema).min(1).max(20) }),
   z.strictObject({ type: z.literal('conversation.update'), id: companionIdSchema, title: z.string().trim().max(100).optional(), memberIds: z.array(companionIdSchema).min(1).max(20).optional(), pinned: z.boolean().optional(), muted: z.boolean().optional() }),
   z.strictObject({ type: z.literal('conversation.read'), id: companionIdSchema }),
-  z.strictObject({ type: z.literal('messages'), conversationId: companionIdSchema, before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).optional() }),
+  z.strictObject({ type: z.literal('conversation.delete'), id: companionIdSchema, mode: z.enum(['hide', 'dissolve']) }),
+  z.strictObject({ type: z.literal('conversation.reopen'), id: companionIdSchema }),
+  companionMessagesQuerySchema.extend({ type: z.literal('messages') }).strict(),
   z.strictObject({ type: z.literal('message.get'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('message.send'), conversationId: companionIdSchema, content: z.string().max(16000), replyToId: companionIdSchema.optional(), attachmentIds: z.array(companionIdSchema).max(10).optional(), clientId: companionIdSchema,
     targetSourceMessageId: companionIdSchema.optional(),
     delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']).optional(), targetActionId: companionIdSchema.optional() }),
-  z.strictObject({ type: z.literal('message.search'), conversationId: companionIdSchema.optional(), query: z.string().trim().min(1).max(200) }),
+  companionSearchQuerySchema.extend({ type: z.literal('message.search') }).strict(),
   z.strictObject({ type: z.literal('reply.retry'), conversationId: companionIdSchema }),
   z.strictObject({ type: z.literal('reply.cancel'), conversationId: companionIdSchema }),
   z.strictObject({ type: z.literal('reply.resume'), conversationId: companionIdSchema }),
@@ -126,6 +150,7 @@ export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
 export const companionsResponseSchema = z.object({
   ok: z.boolean(), error: z.string().optional(), state: companionStateSchema.optional(),
   conversation: conversationSchema.optional(), messages: z.array(messageSchema).optional(), hasMore: z.boolean().optional(),
+  hasNewer: z.boolean().optional(), searchPage: companionSearchPageSchema.optional(),
   memories: z.array(memorySchema).optional(), actions: z.array(actionSchema).optional(), attachments: z.array(attachmentSchema).optional(),
   action: actionSchema.optional(), actionPage: companionActionPageSchema.optional(),
   message: messageSchema.optional(), companion: companionSchema.optional(),

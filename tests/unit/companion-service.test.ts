@@ -106,6 +106,50 @@ async function closeService(service: CompanionService) {
 }
 
 describe('CompanionService DSH action lifecycle with real SQLite', () => {
+  it('reports offline on an observed authentication failure and clears that observation after the connection changes', async () => {
+    const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
+    const f = fixture(dsh);
+    let configured = false; let apiKey = 'original-test-key';
+    await closeService(f.service);
+    const reopened = new CompanionsStore(f.databasePath, seeds, {}); stores.add(reopened); bindStorage(reopened);
+    const service = new CompanionService({ userData: f.root, workerPath: 'mocked-worker', window: () => undefined,
+      getConfig: () => ({ apiFormat: 'openai_chat', model: 'selected-model', baseUrl: 'https://provider.invalid', apiKey }), hasConfig: () => configured,
+      dsh: () => dsh, report: vi.fn() }); services.add(service);
+    expect((await service.handle({ type: 'state' })).state!.companions[0]?.availability).toBe('offline');
+    configured = true;
+    expect((await service.handle({ type: 'state' })).state!.companions[0]?.availability).toBe('ready');
+    transport.fetch.mockImplementation(async () => new Response('{}', { status: 401, headers: { 'Content-Type': 'application/json' } }));
+    await service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '连接状态验证', clientId: 'presence-auth' });
+    await vi.waitFor(async () => expect((await service.handle({ type: 'state' })).state!.companions[0]?.availability).toBe('offline'), { timeout: 200 });
+    const unavailable = (await service.handle({ type: 'state' })).state!.companions[0]!;
+    expect(unavailable.availabilityReason).toBeTruthy(); expect(JSON.stringify(unavailable)).not.toContain(apiKey);
+    apiKey = 'replacement-test-key';
+    expect((await service.handle({ type: 'state' })).state!.companions[0]?.availability).toBe('ready');
+  });
+  it('dissolves a group, cancels its native task and durable queue, and never resumes them on restart', async () => {
+    let stopped = false;
+    const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => {
+      if (request.type === 'task.cancel') stopped = true;
+      return request.type === 'task.run' ? { ok: true, operationId: 'dsh-task' } : { ok: true };
+    });
+    const f = fixture(fakeDsh(() => ({ tasks: [taskRecord(stopped ? 'cancelled' : 'running')], operations: [] }), requestTask));
+    const group = f.store.createConversation('', ['sister']);
+    const source = f.store.appendMessage({ conversationId: group.id, authorId: 'user', content: '群里的工作', replyDirective: 'auto' });
+    await f.service.handle({ type: 'action.run', conversationId: group.id, companionId: 'sister', sourceMessageId: source.id, title: '群聊能力', prompt: '运行这个群的任务' });
+    await vi.waitFor(() => expect(f.store.listAction(group.id)[0]?.taskId).toBe('dsh-task'), { timeout: 200 });
+    f.store.request({ type: 'work.enqueue', work: { id: 'group-queue', sourceMessageId: source.id, conversationId: group.id, companionId: 'sister', status: 'queued', proactive: false, createdAt: source.createdAt, updatedAt: source.createdAt } });
+    await f.service.handle({ type: 'conversation.delete', id: group.id, mode: 'dissolve' });
+    expect(requestTask).toHaveBeenCalledWith({ type: 'task.cancel', taskId: 'dsh-task' });
+    expect(f.store.listAction(group.id)[0]?.status).toBe('cancelled');
+    expect(f.store.request({ type: 'work.list' }).works?.find(work => work.id === 'group-queue')?.status).toBe('cancelled');
+    expect(f.store.state().conversations.some(room => room.id === group.id)).toBe(false);
+    await closeService(f.service);
+    const reopened = new CompanionsStore(f.databasePath, seeds, {}); stores.add(reopened); bindStorage(reopened);
+    const restarted = startService(f.root, fakeDsh(() => ({ tasks: [], operations: [] }), requestTask));
+    await restarted.handle({ type: 'state' }); await vi.advanceTimersByTimeAsync(1000);
+    expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(1);
+    expect(reopened.state().recoveries).toHaveLength(0);
+  });
   it('resumes the same native session and original access after closing the app mid-task', async () => {
     let resumed = false, stopped = false;
     const original = { ...taskRecord(), runtimeVersion: '0.2.1-alpha.2', sessionId: 'session-original', accessMode: 'read-only' as const, workspacePath: process.cwd() };

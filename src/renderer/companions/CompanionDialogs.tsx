@@ -7,10 +7,12 @@ import { builtinCompanionProfile, BUILTIN_COMPANION_PROFILES } from '../../share
 
 export type CompanionRequest = (input: CompanionsRequest) => Promise<CompanionsResponse | undefined>;
 export type CompanionDialog =
+  | { kind: 'chat' }
   | { kind: 'companion'; companion?: Companion }
   | { kind: 'group'; conversation?: CompanionConversation }
   | { kind: 'action'; message: CompanionMessage; conversation: CompanionConversation }
-  | { kind: 'delete'; companion: Companion };
+  | { kind: 'delete'; companion: Companion }
+  | { kind: 'delete-conversation'; conversation: CompanionConversation; mode: 'hide' | 'dissolve' };
 
 function Modal({ title, children, onClose, busy, catalogue = false }: { title: string; children: ReactNode; onClose: () => void; busy: boolean; catalogue?: boolean }) {
   useDialogFocusTrap(true, title);
@@ -30,6 +32,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [dissolving, setDissolving] = useState(false);
   const [tab, setTab] = useState<'builtin' | 'custom'>(dialog.kind === 'companion' && dialog.companion ? 'custom' : 'builtin');
   const [catalogueQuery, setCatalogueQuery] = useState('');
   const [catalogueCategory, setCatalogueCategory] = useState('全部');
@@ -62,13 +65,14 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
     if (!image.mime.startsWith('image/')) { setError('请选择图片文件作为头像。'); return; }
     setDraft(current => ({ ...current, avatar: 'custom', avatarAttachmentId: image.id }));
   }
-  const modalTitle = dialog.kind === 'companion' ? (initial ? '编辑伙伴资料' : '添加联系人') : dialog.kind === 'group' ? (group ? '管理群聊' : '创建群聊') : dialog.kind === 'action' ? '交给伙伴处理' : '移除联系人';
+  const modalTitle = dialog.kind === 'chat' ? '发起聊天' : dialog.kind === 'companion' ? (initial ? '编辑伙伴资料' : '添加联系人') : dialog.kind === 'group' ? (group ? '管理群聊' : '创建群聊') : dialog.kind === 'action' ? '交给伙伴处理' : dialog.kind === 'delete-conversation' ? (dialog.mode === 'dissolve' ? '解散群聊' : '删除聊天') : '移除联系人';
   const visibleBuiltins = builtins.filter(item => {
     const profile = builtinCompanionProfile(item.id);
     return (catalogueCategory === '全部' || profile?.category === catalogueCategory)
       && `${item.name} ${item.description} ${profile?.introduction ?? ''} ${item.id}`.toLowerCase().includes(catalogueQuery.trim().toLowerCase());
   });
   return <Modal title={modalTitle} onClose={onClose} busy={busy} catalogue={dialog.kind === 'companion' && !initial && tab === 'builtin'}>
+    {dialog.kind === 'chat' && <div className="companions-form"><p className="companions-subtle">选一位联系人开始私聊，或勾选多位伙伴创建群聊。</p><input aria-label="选择聊天联系人" placeholder="搜索联系人…" value={catalogueQuery} onChange={event => setCatalogueQuery(event.target.value)} /><div className="companions-start-chat-list">{companions.filter(role => `${role.name} ${role.description}`.toLowerCase().includes(catalogueQuery.toLowerCase())).map(role => <div key={role.id}><input type="checkbox" aria-label={`选择 ${role.name}`} checked={members.includes(role.id)} onChange={event => setMembers(event.target.checked ? [...members, role.id] : members.filter(id => id !== role.id))} /><button disabled={busy} onClick={() => { onOpen(role.id); onClose(); }}><Avatar companion={role} /><span><strong>{role.name}</strong><small>{role.description}</small></span></button></div>)}</div><footer><button className="companion-secondary-button" onClick={onClose}>取消</button><button className="companion-primary-button" disabled={busy || !members.length} onClick={() => members.length === 1 ? (onOpen(members[0]!), onClose()) : void submit({ type: 'conversation.create-group', title: '', memberIds: members })}>{members.length > 1 ? `创建群聊（${members.length + 1}人）` : '开始聊天'}</button></footer></div>}
     {dialog.kind === 'companion' && <>
       {!initial && <div className="companions-dialog-tabs" role="tablist" aria-label="角色来源"><button role="tab" aria-selected={tab === 'builtin'} onClick={() => setTab('builtin')}>内置角色</button><button role="tab" aria-selected={tab === 'custom'} onClick={() => setTab('custom')}>自定义角色</button></div>}
       {tab === 'builtin' && !initial ? <div className="companions-builtin-picker">
@@ -116,6 +120,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
       <p className="companions-subtle">留空会按成员名字显示。也可以给这个群取一个名字。</p>
       <fieldset><legend>群成员 · 你会自动加入</legend><div className="companions-member-picker">{companions.map(item => <label className="companions-checkbox" key={item.id}><input type="checkbox" checked={members.includes(item.id)} onChange={event => setMembers(event.target.checked ? [...members, item.id] : members.filter(id => id !== item.id))} /><Avatar companion={item} /><span>{item.name}</span></label>)}</div></fieldset>
       {!companions.length && <p>先添加一个伙伴，就可以一起群聊了。</p>}
+      {group && <div className="companions-group-danger">{dissolving ? <><p>确定解散“{group.title}”吗？该群正在运行和排队的回复会停止。聊天记录留在本地，同一批成员以后可以重新建群。</p><button type="button" className="companion-danger-button" disabled={busy} onClick={() => void submit({ type: 'conversation.delete', id: group.id, mode: 'dissolve' })}>确认解散群聊</button><button type="button" className="companion-secondary-button" onClick={() => setDissolving(false)}>保留群聊</button></> : <button type="button" className="companion-text-danger" onClick={() => setDissolving(true)}>解散群聊</button>}</div>}
       <footer><button type="button" className="companion-secondary-button" onClick={onClose} disabled={busy}>取消</button><button className="companion-primary-button" disabled={busy || !members.length}>{busy ? '保存中…' : group ? '保存群聊' : '创建群聊'}</button></footer>
     </form>}
     {dialog.kind === 'action' && <form className="companions-form" onSubmit={event => { event.preventDefault(); void submit({ type: 'action.run', conversationId: dialog.conversation.id, companionId: actionOwner, sourceMessageId: dialog.message.id, title: actionTitle, prompt: actionPrompt }); }}>
@@ -127,6 +132,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
       <footer><button type="button" className="companion-secondary-button" onClick={onClose} disabled={busy}>取消</button><button className="companion-primary-button" disabled={busy || !actionOwner}>{busy ? '提交中…' : '开始处理'}</button></footer>
     </form>}
     {dialog.kind === 'delete' && <div className="companions-form"><p>确定将“{dialog.companion.name}”从联系人移除吗？已有聊天记录保留。内置角色可以重新添加。</p><footer><button className="companion-secondary-button" disabled={busy} onClick={onClose}>保留联系人</button><button className="companion-danger-button" disabled={busy} onClick={() => void submit({ type: 'companion.delete', id: dialog.companion.id })}>移除联系人</button></footer></div>}
+    {dialog.kind === 'delete-conversation' && <div className="companions-form"><p>{dialog.mode === 'dissolve' ? `确定解散“${dialog.conversation.title}”吗？该群正在运行和排队的回复会停止。` : `从消息列表删除“${dialog.conversation.title}”吗？聊天记录会保留，重新发起聊天时可以找回。`}</p><footer><button className="companion-secondary-button" disabled={busy} onClick={onClose}>取消</button><button className="companion-danger-button" disabled={busy} onClick={() => void submit({ type: 'conversation.delete', id: dialog.conversation.id, mode: dialog.mode })}>{dialog.mode === 'dissolve' ? '确认解散群聊' : '删除聊天'}</button></footer></div>}
     {error && <p className="companions-modal-error" role="alert">{error === 'request' ? requestError || '操作未完成，请查看错误信息后重试。' : error}</p>}
   </Modal>;
 }

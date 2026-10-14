@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import {
   actionSchema, attachmentSchema, companionDraftSchema, companionIdSchema,
-  companionsResponseSchema, memorySchema, companionActionPageQuerySchema, companionReplyRecoverySchema,
+  companionsResponseSchema, memorySchema, companionActionPageQuerySchema, companionReplyRecoverySchema, companionMessagesQuerySchema, companionSearchQuerySchema,
 } from './companions';
 import { dshTaskRecordSchema } from './dsh-tasks';
 import { companionLoopCheckpointSchema, companionWorkSchema } from './companion-loop';
@@ -47,7 +47,7 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('state') }),
+  z.strictObject({ type: z.literal('state'), includeHidden: z.boolean().optional() }),
   z.strictObject({ type: z.literal('companion.create'), companion: companionDraftSchema }),
   z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema }),
   z.strictObject({ type: z.literal('companion.delete'), id: companionIdSchema }),
@@ -56,9 +56,11 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('conversation.create-group'), title: z.string().trim().max(100).default(''), memberIds: z.array(companionIdSchema).min(1).max(20) }),
   z.strictObject({ type: z.literal('conversation.update'), id: companionIdSchema, title: z.string().trim().max(100).optional(), memberIds: z.array(companionIdSchema).min(1).max(20).optional(), pinned: z.boolean().optional(), muted: z.boolean().optional() }),
   z.strictObject({ type: z.literal('conversation.read'), id: companionIdSchema, sequence: z.number().int().nonnegative().optional() }),
-  z.strictObject({ type: z.literal('messages'), conversationId: companionIdSchema, before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).optional() }),
+  z.strictObject({ type: z.literal('conversation.delete'), id: companionIdSchema, mode: z.enum(['hide', 'dissolve']) }),
+  z.strictObject({ type: z.literal('conversation.reopen'), id: companionIdSchema }),
+  companionMessagesQuerySchema.extend({ type: z.literal('messages') }).strict(),
   z.strictObject({ type: z.literal('message.get'), id: companionIdSchema }),
-  z.strictObject({ type: z.literal('message.search'), conversationId: companionIdSchema.optional(), query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(100).optional(), before: z.number().int().positive().optional() }),
+  companionSearchQuerySchema.extend({ type: z.literal('message.search') }).strict(),
   z.strictObject({ type: z.literal('message.append'), message: appendCompanionMessageSchema }),
   z.strictObject({ type: z.literal('memory.list'), companionId: companionIdSchema }),
   z.strictObject({ type: z.literal('memory.save'), memory: saveCompanionMemorySchema }),
@@ -79,7 +81,7 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('loop.save'), checkpoint: companionLoopCheckpointSchema }),
   z.strictObject({ type: z.literal('work.enqueue'), work: companionWorkSchema, resume: z.boolean().optional() }),
   z.strictObject({ type: z.literal('work.claim') }),
-  z.strictObject({ type: z.literal('work.list') }),
+  z.strictObject({ type: z.literal('work.list'), sourceMessageId: companionIdSchema.optional(), unfinishedOnly: z.boolean().optional() }),
   z.strictObject({ type: z.literal('work.interrupt-running') }),
   z.strictObject({ type: z.literal('work.promote'), sourceMessageId: companionIdSchema }),
   z.strictObject({ type: z.literal('work.status'), id: companionIdSchema, status: companionWorkSchema.shape.status }),

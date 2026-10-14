@@ -40,6 +40,7 @@ export class CompanionService {
   private readonly inputJobs = new Set<Promise<void>>();
   private readonly recoveringActions = new Set<string>();
   private readonly activeLoops = new Map<string, CompanionLoopCheckpoint>();
+  private readonly unavailableCompanions = new Map<string, { connection: string | undefined; reason: string }>();
   private readonly replyControllers = new Map<AbortController, string>();
   private pumping = false;
   private pumpAgain = false;
@@ -53,7 +54,7 @@ export class CompanionService {
   constructor(private readonly options: CompanionServiceOptions) {
     this.root = path.join(options.userData, 'companions');
     this.credentials = new CompanionCredentials(this.root);
-    this.storage = new CompanionStorageClient(options.workerPath, path.join(this.root, 'messages.sqlite'));
+    this.storage = new CompanionStorageClient(options.workerPath, path.join(this.root, 'messages.sqlite'), () => this.changed(), options.report);
     this.initialization = this.storage.start().then(async () => {
       await this.call({ type: 'action.interrupt-pending' });
       await this.call({ type: 'work.interrupt-running' });
@@ -71,6 +72,7 @@ export class CompanionService {
     const window = this.options.window();
     if (window && !window.isDestroyed()) window.webContents.send(COMPANIONS_CHANGED_CHANNEL);
   }
+  configurationChanged() { this.changed(); }
   registerIpc() {
     ipcMain.handle(COMPANIONS_CHANNEL, async (event, input: unknown) => {
       const window = this.options.window();
@@ -104,7 +106,7 @@ export class CompanionService {
       case 'state': {
         const response = await this.call(request);
         if (response.state) {
-          const works = (await this.call({ type: 'work.list' })).works ?? [];
+          const works = (await this.call({ type: 'work.list', unfinishedOnly: true })).works ?? [];
           response.state.queue = works.filter(work => !['done', 'cancelled'].includes(work.status));
           response.state.companions = response.state.companions.map(companion => {
             const activeCount = works.filter(work => work.companionId === companion.id && work.status === 'running').length;
@@ -117,8 +119,22 @@ export class CompanionService {
             return action ? { ...activity, conversationId: action.conversationId } : activity;
           }); response.state.configured = this.options.hasConfig();
           const keys = await this.credentials.ids();
-          response.state.companions = response.state.companions.map(companion => companion.llm
-            ? { ...companion, llm: { ...companion.llm, hasKey: keys.has(companion.id) } } : companion);
+          const globalConfigured = response.state.configured;
+          response.state.companions = await Promise.all(response.state.companions.map(async companion => {
+            const connected = companion.llm ? keys.has(companion.id) : globalConfigured;
+            let unavailable = this.unavailableCompanions.get(companion.id);
+            if (unavailable && connected) {
+              try {
+                if (unavailable.connection !== connectionIdentity(await this.configFor(companion))) {
+                  this.unavailableCompanions.delete(companion.id); unavailable = undefined;
+                }
+              } catch { /* A missing/invalid connection is represented as offline. */ }
+            }
+            const offline = !connected || !!unavailable && !companion.activeCount;
+            return { ...companion, ...(companion.llm ? { llm: { ...companion.llm, hasKey: connected } } : {}),
+              availability: offline ? 'offline' as const : companion.availability,
+              availabilityReason: offline ? unavailable?.reason ?? (companion.llm ? '此伙伴尚未保存模型服务密钥' : '尚未配置全局模型服务') : undefined };
+          }));
         }
         return response;
       }
@@ -160,6 +176,21 @@ export class CompanionService {
           else await this.launchReply(response.message?.conversationId ?? request.conversationId, false, 'auto', false, response.message?.id);
         }
         return response;
+      }
+      case 'conversation.delete': {
+        // Tombstone first, so an in-flight response cannot append or restart a
+        // dissolved room while cancellation crosses process boundaries.
+        const response = await this.call(request);
+        if (request.mode === 'dissolve') {
+          for (const [controller, conversationId] of this.replyControllers) if (conversationId === request.id) controller.abort();
+          const active = ((await this.call({ type: 'actions', conversationId: request.id })).actions ?? []).filter(action => ['running', 'queued'].includes(action.status));
+          await Promise.all(active.map(async action => {
+            this.cancelledActions.add(action.id); this.actionControllers.get(action.id)?.abort();
+            if (action.taskId) await this.options.dsh()?.requestTask({ type: 'task.cancel', taskId: action.taskId }).catch(this.options.report);
+            await this.call({ type: 'action.update', id: action.id, patch: { status: 'cancelled', finishedAt: new Date().toISOString() } });
+          }));
+        }
+        this.changed(); return response;
       }
       case 'message.guide': {
         const source = (await this.call({ type: 'message.get', id: request.id })).message;
@@ -251,6 +282,7 @@ export class CompanionService {
       }
       default: {
         if (request.type === 'companion.delete') {
+          this.unavailableCompanions.delete(request.id);
           const state = (await this.call({ type: 'state' })).state;
           for (const conversation of state?.conversations ?? []) {
             if (conversation.memberIds.includes(request.id)) this.replies.get(conversation.id)?.controller.abort();
@@ -267,7 +299,7 @@ export class CompanionService {
   private async launchReply(conversationId: string, proactive = false, _delivery: 'auto' | 'queue' | 'parallel' | 'steer' | 'chat' = 'auto', recovery = false, sourceMessageId?: string) {
     void _delivery; // Legacy transport vocabulary never disables the loop or changes its scheduler.
     await this.initialization;
-    const state = (await this.call({ type: 'state' })).state;
+    const state = (await this.call({ type: 'state', includeHidden: true })).state;
     const conversation = state?.conversations.find(item => item.id === conversationId);
     const checkpoint = (await this.call({ type: 'reply.checkpoint.get', conversationId, sourceMessageId })).replyRecovery;
     const sourceId = sourceMessageId ?? checkpoint?.sourceMessageId;
@@ -290,9 +322,8 @@ export class CompanionService {
   private async restoreQueue() {
     await this.initialization;
     const state = (await this.call({ type: 'state' })).state;
-    const works = (await this.call({ type: 'work.list' })).works ?? [];
     // A crash between message commit and enqueue is reconciled from the durable source.
-    for (const recovery of state?.recoveries ?? []) if (recovery.dispatcher === 'queue-v1' && !works.some(item => item.sourceMessageId === recovery.sourceMessageId)) {
+    for (const recovery of state?.recoveries ?? []) if (recovery.dispatcher === 'queue-v1' && !(await this.call({ type: 'work.list', sourceMessageId: recovery.sourceMessageId })).works?.length) {
       await this.launchReply(recovery.conversationId, false, 'auto', false, recovery.sourceMessageId);
     }
     await this.pumpQueue();
@@ -316,7 +347,7 @@ export class CompanionService {
             this.replyControllers.delete(controller); this.replies.delete(work.id);
             const loop = (await this.call({ type: 'loop.get', sourceMessageId: work.sourceMessageId, companionId: work.companionId })).loop;
             await this.call({ type: 'work.status', id: work.id, status: loop?.status === 'done' ? 'done' : 'interrupted' });
-            const others = ((await this.call({ type: 'work.list' })).works ?? []).filter(item => item.sourceMessageId === work.sourceMessageId);
+            const others = (await this.call({ type: 'work.list', sourceMessageId: work.sourceMessageId })).works ?? [];
             await this.call({ type: 'reply.checkpoint.status', conversationId: work.conversationId, sourceMessageId: work.sourceMessageId,
               status: others.some(item => item.status === 'running' || item.status === 'queued') ? 'pending' : others.some(item => item.status === 'interrupted') ? 'interrupted' : 'done' });
             this.changed(); if (!this.closed) void this.pumpQueue();
@@ -336,7 +367,7 @@ export class CompanionService {
   }
   private async respond(conversationId: string, controller: AbortController, proactive: boolean, delivery: 'auto' | 'queue' | 'parallel' | 'steer' | 'chat', recovery = false, sourceMessageId?: string, onlyCompanionId?: string, workId?: string) {
     if (controller.signal.aborted || this.closed) return;
-    const state = (await this.call({ type: 'state' })).state;
+    const state = (await this.call({ type: 'state', includeHidden: true })).state;
     const conversation = state?.conversations.find(value => value.id === conversationId);
     if (!conversation) return;
     const savedReply = (await this.call({ type: 'reply.checkpoint.get', conversationId, sourceMessageId })).replyRecovery;
@@ -369,8 +400,10 @@ export class CompanionService {
       this.activeLoops.set(loopKey, checkpoint);
       this.activities.set(key, { companionId: id, conversationId, sourceMessageId: userMessage.id, status: 'thinking', startedAt: new Date().toISOString() });
       this.changed();
+      let connection: string | undefined;
       try {
         const config = await this.configFor(companion);
+        connection = connectionIdentity(config);
         let memories = (await this.call({ type: 'memory.list', companionId: id })).memories ?? [];
         // Explicit autobiographical statements retain their original source, without a second chat response.
         if (!proactive && /^(?:请(?:你)?记住|记一下|记得[：:]|我叫|我喜欢|我的(?:名字|生日|职业)|my name is|i like)/iu.test(userMessage.content)
@@ -392,6 +425,7 @@ export class CompanionService {
                   members: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name, description: role.description })) }, config, controller.signal,
                   { loop: true, turns: checkpoint.turns, supplements: checkpoint.supplements,
                     fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
+                this.unavailableCompanions.delete(id);
                 if (revision !== checkpoint.supplements.length) { retry--; continue; }
                 break;
               } catch (error) {
@@ -458,6 +492,9 @@ export class CompanionService {
           if (step === 63) throw new Error('这次循环已到步骤上限，进度已保存，可以继续恢复。');
         }
       } catch (error) {
+        if (!controller.signal.aborted && error instanceof CompanionModelError && ['CONFIG', 'AUTH', 'NETWORK', 'TIMEOUT', 'RATE_LIMIT'].includes(error.code)) {
+          this.unavailableCompanions.set(id, { connection, reason: publicError(error).slice(0, 500) });
+        }
         if (!controller.signal.aborted && !this.closed) await this.call({ type: 'message.append', message: { conversationId, authorId: 'system', kind: 'notice', status: 'failed', content: publicError(error) } });
       } finally { this.activeLoops.delete(loopKey); this.activities.delete(key); this.changed(); }
     }));
@@ -777,6 +814,11 @@ function publicError(error: unknown): string {
   const message = error instanceof Error ? error.message : '伙伴服务暂时不可用，请稍后重试。';
   // Do not expose arbitrary provider/native error bodies or encrypted credential paths.
   return /[\u4e00-\u9fff]/.test(message) ? message.replace(/(?:sk-|ghp_)[A-Za-z0-9_-]+/g, '[已隐藏]').slice(0, 500) : '伙伴服务暂时不可用，请查看应用诊断或稍后重试。';
+}
+function connectionIdentity(config: CompanionModelConfig): string {
+  // A private fingerprint invalidates observed failures after URL/key/model
+  // changes. Neither the key nor this fingerprint is persisted or exposed.
+  return createHash('sha256').update(JSON.stringify([config.apiFormat, config.baseUrl, config.model, config.apiKey])).digest('hex');
 }
 function localDate(now = new Date()) { return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`; }
 function isImage(mime: string) { return ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mime); }

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import { companionStorageCommandSchema } from '../../src/shared/companion-storage';
-import { BUILTIN_COMPANIONS, BUILTIN_WELCOMES } from '../../src/shared/companion-personas';
+import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 
 const seeds: CompanionSeed[] = [
   { id: 'deepseek-sister', name: '大肥鱼', description: '姐姐', persona: '温柔沉稳', model: '', avatar: 'sister', proactive: false },
@@ -48,7 +48,12 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-'));
   roots.push(root);
   const databasePath = path.join(root, 'companions', 'messages.sqlite');
-  return { databasePath, store: open(databasePath) };
+  const store = open(databasePath);
+  // These persistence fixtures deliberately include historical welcome rows.
+  // Production seeds contacts only; history.test covers that empty-first flow.
+  for (const seed of seeds) store.appendMessage({ conversationId: store.openPrivate(seed.id).id, authorId: seed.id,
+    content: welcomes[seed.id as keyof typeof welcomes], kind: 'notice', clientId: 'builtin-welcome-' + seed.id });
+  return { databasePath, store };
 }
 function open(filename: string): CompanionsStore {
   const store = new CompanionsStore(filename, seeds, welcomes);
@@ -81,7 +86,7 @@ describe('CompanionsStore real SQLite persistence', () => {
     expect(upgraded.listMemory('deepseek-sister').map(item => item.content)).toContain('迁移前的约定');
     for (const profile of BUILTIN_COMPANIONS.slice(2)) {
       expect(state.companions.find(item => item.id === profile.id)).toMatchObject({ avatar: profile.avatar, builtin: true, model: '' });
-      expect(upgraded.messages({ conversationId: 'private-' + profile.id }).messages.filter(item => item.content === BUILTIN_WELCOMES[profile.id])).toHaveLength(1);
+      expect(upgraded.messages({ conversationId: upgraded.openPrivate(profile.id).id }).messages).toHaveLength(0);
     }
     upgraded.updateCompanion('gpt', { ...BUILTIN_COMPANIONS.find(item => item.id === 'gpt')!, name: '小白龙', avatar: 'custom', avatarAttachmentId: undefined, persona: '我修改了白龙的设定' });
     upgraded.deleteCompanion('doro');
@@ -92,7 +97,7 @@ describe('CompanionsStore real SQLite persistence', () => {
     const restored = reopened.restoreBuiltin('doro');
     expect(restored.id).toBe('doro');
     expect(reopened.restoreBuiltin('doro').id).toBe(restored.id);
-    expect(reopened.messages({ conversationId: 'private-doro' }).messages.filter(item => item.content === BUILTIN_WELCOMES.doro)).toHaveLength(1);
+    expect(reopened.messages({ conversationId: reopened.openPrivate('doro').id }).messages).toHaveLength(0);
   });
   it('recovers a partial group reply and the same task identity with atomic checkpoint inputs after reopening', () => {
     const { store, databasePath } = fixture();

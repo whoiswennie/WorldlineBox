@@ -21,7 +21,8 @@ export class CompanionStorageClient {
   #pending = new Map<string, Pending>();
   #closedAck: (() => void) | undefined;
 
-  constructor(private readonly workerPath: string, private readonly databasePath: string) {}
+  constructor(private readonly workerPath: string, private readonly databasePath: string,
+    private readonly onIndexChanged: () => void = () => undefined, private readonly onIndexError: (error: Error) => void = () => undefined) {}
 
   async start(): Promise<void> {
     if (this.#closing) throw new Error('伙伴存储正在关闭。');
@@ -71,6 +72,10 @@ export class CompanionStorageClient {
             fail(new Error('error' in message && typeof message.error === 'string' ? message.error : '伙伴存储无法启动。'));
           } else if (message.type === 'storage.closed') {
             this.#closedAck?.();
+          } else if (message.type === 'storage.index-changed') {
+            this.onIndexChanged();
+          } else if (message.type === 'storage.index-failed') {
+            this.onIndexError(new Error('error' in message ? String(message.error) : '消息搜索索引更新失败。'));
           }
           return;
         }

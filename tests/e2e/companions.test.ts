@@ -19,6 +19,94 @@ interface ProviderRequest {
 }
 interface ProviderFixture { baseUrl: string; requests: ProviderRequest[]; release(): void; close(): Promise<void> }
 
+test('starts empty, bounds long history, searches with filters and context, and deletes or dissolves chats', async () => {
+  test.setTimeout(120_000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-paging-'));
+  const profile = path.join(root, 'profile'); let application: ElectronApplication | undefined;
+  try {
+    let started = await launch(profile, false); application = started.application; let page = started.page;
+    await page.locator('[data-application-module="companions"]').click();
+    expect((await request(page, { type: 'state' })).state!.conversations).toHaveLength(0);
+    await expect(page.locator('[data-companion-conversation]')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '添加联系人', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: '发起聊天', exact: true }).click();
+    const chooser = page.getByRole('dialog', { name: '发起聊天' });
+    await chooser.locator('.companions-start-chat-list button').filter({ has: page.getByText('GPT', { exact: true }) }).click();
+    await expect(chooser).toHaveCount(0); await expect(page.locator('[data-companion-conversation="private-gpt"]')).toBeVisible();
+    expect(await messages(page, 'private-gpt')).toHaveLength(0);
+    await expect(page.locator('[data-presence-trigger] .companion-avatar-presence')).toHaveAttribute('data-status', 'offline');
+    await expect(page.locator('.companions-config-hint')).toHaveCount(0);
+    await page.getByRole('button', { name: '查看伙伴状态', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '伙伴状态' })).toContainText('离线');
+    await page.getByRole('button', { name: '关闭伙伴状态', exact: true }).click();
+    await setGlobal(page, { apiFormat: 'openai_chat', baseUrl: 'https://example.invalid', model: 'presence-fixture', apiKey: 'fixture-presence-key' });
+    await expect(page.locator('[data-presence-trigger] .companion-avatar-presence')).toHaveAttribute('data-status', 'ready');
+    await application.close(); application = undefined;
+    const script = `const db=new (require('better-sqlite3'))(process.argv[1]);
+      db.function('companion_search_tokens',{deterministic:true},s=>Array.from(s.normalize('NFKC').toLowerCase(),c=>'u'+c.codePointAt(0).toString(16)).join(' '));
+      db.function('companion_search_facet',{deterministic:true},s=>Array.from(s,c=>c.codePointAt(0).toString(16)).join('x'));
+      const insert=db.prepare("INSERT INTO messages(id,conversation_id,author_id,kind,content,created_at,status) VALUES(?,'private-gpt',?,'text',?,?,'sent')");
+      db.transaction(()=>{for(let i=1;i<=1800;i++)insert.run('history_'+i,i%2?'user':'gpt','历史编号 '+i+'：一起讨论小说、图片和生活。'+(i%10===0?' 星海合同':'')+' 这是一段足够长的聊天内容，验证连续滚动的阅读位置。',new Date(Date.UTC(2026,0,1)+Math.floor(i/50)*86400000).toISOString());})();db.close();`;
+    const seeded = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(profile, 'companions/messages.sqlite')], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
+    expect(seeded.status, seeded.stderr).toBe(0);
+    started = await launch(profile, false); application = started.application; page = started.page;
+    await page.locator('[data-application-module="companions"]').click(); await page.locator('[data-companion-conversation="private-gpt"]').click();
+    const pane = page.locator('[data-companion-messages]'); await expect(pane).toHaveAttribute('data-window-count', '50');
+    for (let turn = 0; turn < 18; turn++) {
+      const first = await pane.locator('[data-companion-message]').first().getAttribute('data-companion-message');
+      await pane.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
+      await expect.poll(() => pane.locator('[data-companion-message]').first().getAttribute('data-companion-message')).not.toBe(first);
+      expect(Number(await pane.getAttribute('data-window-count'))).toBeLessThanOrEqual(200);
+    }
+    await expect(page.getByRole('button', { name: '回到最新消息', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '回到最新消息', exact: true }).click();
+    await expect(pane).toHaveAttribute('data-window-count', '50'); await expect(pane.locator('[data-companion-message="history_1800"]')).toBeVisible();
+    await page.getByRole('button', { name: '搜索聊天记录', exact: true }).click();
+    const search = page.getByRole('dialog', { name: '查找聊天记录' });
+    await search.getByRole('textbox', { name: '搜索聊天内容' }).fill('合同');
+    await expect(search.locator('[data-search-message]')).toHaveCount(30);
+    await search.getByRole('button', { name: '下一页', exact: true }).click();
+    await expect(search.locator('footer')).toContainText('第 2 页'); await expect(search.locator('[data-search-message]')).toHaveCount(30);
+    await search.getByLabel('搜索发送者', { exact: true }).selectOption('gpt');
+    await search.getByLabel('开始日期', { exact: true }).fill('2026-01-02'); await search.getByLabel('结束日期', { exact: true }).fill('2026-01-03');
+    await expect(search.locator('[data-search-message]')).toHaveCount(10);
+    await expect(search.locator('mark').first()).toHaveText('合同');
+    await expect(search.locator('time').first()).toHaveText(/2026-01-03 08:00:00\.000/);
+    mkdirSync(path.resolve('artifacts/companions'), { recursive: true }); await page.screenshot({ path: path.resolve('artifacts/companions/verified-history-search.png') });
+    const hit = await search.locator('[data-search-message]').first().getAttribute('data-search-message');
+    await search.locator('[data-search-message]').first().click(); await expect(search).toHaveCount(0);
+    await expect(pane.locator('[data-companion-message="' + hit + '"]')).toBeVisible();
+    await expect(pane.locator('[data-companion-message="' + hit + '"]')).toHaveClass(/is-highlighted/);
+    await expect(page.locator('.companions-history-banner')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '正在查看历史消息', exact: true })).toBeVisible();
+    await expect(pane.locator('[data-companion-message="history_1800"]')).toHaveCount(0);
+    const bubbleGeometry = await pane.locator('[data-companion-message="' + hit + '"]').evaluate(element => {
+      const bubble = element.querySelector('.companions-message-bubble')!;
+      return { rowBackground: getComputedStyle(element).backgroundColor, bubbleBackground: getComputedStyle(bubble).backgroundColor,
+        bubbleWidth: bubble.getBoundingClientRect().width, rowWidth: element.getBoundingClientRect().width };
+    });
+    expect(bubbleGeometry.rowBackground).toBe('rgba(0, 0, 0, 0)'); expect(bubbleGeometry.bubbleBackground).not.toBe('rgba(0, 0, 0, 0)');
+    expect(bubbleGeometry.bubbleWidth).toBeLessThan(bubbleGeometry.rowWidth * .8);
+    await page.screenshot({ path: path.resolve('artifacts/companions/verified-history-context.png') });
+    await page.getByRole('button', { name: '回到最新消息', exact: true }).click(); await expect(pane.locator('[data-companion-message="history_1800"]')).toBeVisible();
+    await page.getByRole('button', { name: '删除聊天', exact: true }).click(); await page.getByRole('dialog', { name: '删除聊天' }).getByRole('button', { name: '删除聊天', exact: true }).click();
+    await expect(page.locator('[data-companion-conversation]')).toHaveCount(0);
+    await request(page, { type: 'conversation.open', companionId: 'gpt' }); await expect(page.locator('[data-companion-conversation="private-gpt"]')).toBeVisible();
+    expect((await messages(page, 'private-gpt')).at(-1)?.id).toBe('history_1800');
+    const group = (await request(page, { type: 'conversation.create-group', title: '', memberIds: ['gpt', 'kimi'] })).conversation!;
+    await page.locator('[data-companion-conversation="' + group.id + '"]').click(); await page.getByRole('button', { name: '管理群聊', exact: true }).click();
+    await page.getByRole('dialog', { name: '管理群聊' }).getByRole('button', { name: '解散群聊', exact: true }).click();
+    await page.getByRole('dialog', { name: '管理群聊' }).getByRole('button', { name: '确认解散群聊', exact: true }).click();
+    await expect(page.locator('[data-companion-conversation="' + group.id + '"]')).toHaveCount(0);
+    const recreated = (await request(page, { type: 'conversation.create-group', title: '', memberIds: ['kimi', 'gpt'] })).conversation!;
+    expect(recreated.id).not.toBe(group.id);
+    await application.close(); application = undefined;
+    started = await launch(profile, false); application = started.application;
+    const final = (await request(started.page, { type: 'state' })).state!;
+    expect(final.conversations.map(room => room.id)).not.toContain(group.id); expect(final.conversations.map(room => room.id)).toContain(recreated.id);
+  } finally { if (application) await application.close(); cleanup(root); }
+});
+
 test('loads all migrated portraits, restores an edited contact and chats privately and in a mixed-role group', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-catalogue-'));
   const profile = path.join(root, 'profile'); const provider = await providerFixture();
@@ -71,7 +159,7 @@ test('loads all migrated portraits, restores an edited contact and chats private
     expect((await request(page, { type: 'state' })).state!.companions.some(item => item.id === 'gpt')).toBe(false);
     const restored = (await request(page, { type: 'companion.add-builtin', templateId: 'gpt' })).companion!;
     expect(restored).toMatchObject({ id: 'gpt', name: '小白龙', description: '我的白龙签名', persona: '用户编辑的白龙人设' });
-    expect((await messages(page, 'private-gpt')).filter(item => item.kind === 'notice')).toHaveLength(1);
+    expect((await messages(page, 'private-gpt')).filter(item => item.kind === 'notice')).toHaveLength(0);
     await page.locator('[data-application-module="companions"]').click();
     await page.getByRole('button', { name: '联系人', exact: true }).click();
     await page.locator('[data-companion-contact="gpt"]').click();
@@ -171,7 +259,7 @@ test('task monitor pages durable role history and shows complete local timestamp
   try {
     let started = await launch(profile); application = started.application;
     const group = (await request(started.page, { type: 'conversation.create-group', memberIds: ['deepseek-sister', 'deepseek-flash'], title: '' })).conversation!;
-    const source = (await request(started.page, { type: 'messages', conversationId: 'private-deepseek-sister', limit: 1 })).messages![0]!;
+    const source = (await request(started.page, { type: 'message.send', conversationId: group.id, content: '任务历史来源', clientId: randomUUID() })).message!;
     await application.close(); application = undefined;
     // Offline fixture: the app and its database owner are closed during seeding.
     const data = Array.from({ length: 45 }, (_, index) => {
@@ -289,7 +377,7 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
     close: () => new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections(); }) };
 }
 
-async function launch(profilePath: string): Promise<{ application: ElectronApplication; page: Page }> {
+async function launch(profilePath: string, openDefaultChats = true): Promise<{ application: ElectronApplication; page: Page }> {
   const appPath = resolveElectronAppPath();
   const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [appPath], cwd: appPath,
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profilePath }) });
@@ -297,6 +385,7 @@ async function launch(profilePath: string): Promise<{ application: ElectronAppli
   const nativeWindow = await application.browserWindow(page);
   await nativeWindow.evaluate(win => { win.unmaximize(); win.setSize(1440, 900); win.setFocusable(false); win.setOpacity(0); win.hide(); });
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
+  if (openDefaultChats) for (const companionId of ['deepseek-sister', 'deepseek-flash']) await request(page, { type: 'conversation.open', companionId });
   return { application, page };
 }
 
@@ -336,6 +425,7 @@ async function sendUi(page: Page, conversationId: string, content: string, autho
 }
 
 async function sendBridge(page: Page, conversationId: string, content: string, authors: string[]) {
+  if (conversationId.startsWith('private-')) await request(page, { type: 'conversation.open', companionId: conversationId.slice(8) });
   const result = await request(page, { type: 'message.send', conversationId, content, clientId: randomUUID() });
   if (!result.message) throw new Error('Actual message send did not return a persisted message.');
   await waitForReplies(page, conversationId, authors, result.message.sequence);
@@ -389,7 +479,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     await page.locator('[data-application-module="companions"]').click();
     await expect(page.locator('[data-companions]')).toBeVisible();
     await expect(page.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
-    await expect(page.locator('[data-companion-conversation]')).toHaveCount(15);
+    await expect(page.locator('[data-companion-conversation]')).toHaveCount(2);
     const state = (await request(page, { type: 'state' })).state!;
     expect(state.configured).toBe(true);
     expect(state.companions.every(companion => !companion.llm && companion.model === '')).toBe(true);
@@ -405,7 +495,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     expect((await request(page, { type: 'memory.list', companionId: 'deepseek-flash' })).memories).toEqual([]);
 
     // Remove and re-add a built-in through the actual contact management flow.
-    const flashWelcome = (await messages(page, 'private-deepseek-flash'))[0]!.id;
+    const flashBefore = (await messages(page, 'private-deepseek-flash')).map(message => message.id);
     await page.getByRole('button', { name: '联系人', exact: true }).click();
     await page.locator('[data-companion-contact="deepseek-flash"]').click();
     await page.getByRole('button', { name: '移除联系人', exact: true }).click();
@@ -418,7 +508,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     await add.locator('.companions-builtin-card').filter({ has: page.getByRole('heading', { name: '小肥鱼', exact: true }) }).getByRole('button', { name: '添加', exact: true }).click();
     await expect(add).toHaveCount(0);
     await expect(page.locator('[data-companion-contact="deepseek-flash"]')).toHaveCount(1);
-    expect((await messages(page, 'private-deepseek-flash')).map(message => message.id)).toEqual([flashWelcome]);
+    expect((await messages(page, 'private-deepseek-flash')).map(message => message.id)).toEqual(flashBefore);
 
     await page.getByRole('button', { name: '添加联系人', exact: true }).click();
     await add.getByRole('tab', { name: '自定义角色', exact: true }).click();
@@ -544,7 +634,7 @@ test('global routing updates immediately while an independent encrypted role con
     const page = launched.page;
     await setGlobal(page, { apiFormat: 'openai_chat', baseUrl: `${provider.baseUrl}/global-a/v1`, model: 'global-one', apiKey: globalOne });
     await page.locator('[data-application-module="companions"]').click();
-    await expect(page.locator('[data-companion-conversation]')).toHaveCount(15);
+    await expect(page.locator('[data-companion-conversation]')).toHaveCount(2);
     await sendBridge(page, 'private-deepseek-sister', '第一组全局连接', ['deepseek-sister']);
     expect(provider.requests.at(-1)).toMatchObject({ path: '/global-a/v1/chat/completions', model: 'global-one', companionId: 'deepseek-sister' });
     expect(provider.requests.at(-1)?.headers.authorization).toBe(`Bearer ${globalOne}`);
