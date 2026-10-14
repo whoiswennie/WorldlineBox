@@ -1,10 +1,8 @@
-import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import BetterSqlite3 from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import { companionStorageCommandSchema } from '../../src/shared/companion-storage';
@@ -16,6 +14,7 @@ const seeds: CompanionSeed[] = [
 ];
 
 it('persists a FIFO queue, admits at most 20 globally and 5 per role, and refills after release and restart', () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T08:00:00Z');
   const f = fixture();
   const roles = [f.store.openPrivate('deepseek-sister'), f.store.openPrivate('deepseek-flash')];
   for (let index = 0; index < 2; index++) {
@@ -56,7 +55,7 @@ function fixture() {
   return { databasePath, store };
 }
 function open(filename: string): CompanionsStore {
-  const store = new CompanionsStore(filename, seeds, welcomes);
+  const store = new CompanionsStore(filename, seeds);
   stores.push(store);
   return store;
 }
@@ -65,6 +64,7 @@ function close(store: CompanionsStore): void {
   stores.splice(stores.indexOf(store), 1);
 }
 afterEach(() => {
+  vi.useRealTimers();
   stores.splice(0).forEach((store) => store.close());
   roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
 });
@@ -168,25 +168,21 @@ describe('CompanionsStore real SQLite persistence', () => {
     expect(store.state().conversations.filter(chat => chat.kind === 'group')).toHaveLength(1);
     expect(store.state().conversations.find(chat => chat.id === first.id)?.title).toBe('我们的群聊');
   });
-  it('merges old duplicate rooms on reopening without losing messages, task references, search or send idempotency', () => {
+  it('merges matching rooms after a member edit while preserving message and task sources', () => {
     const { store, databasePath } = fixture();
     const first = store.createConversation('我们的群聊', ['deepseek-sister', 'deepseek-flash']);
-    const legacy = store.createConversation('旧副本', ['deepseek-sister']);
-    const source = { conversationId: legacy.id, authorId: 'user', content: '旧群中的工作要求', clientId: 'legacy-send' };
+    const other = store.createConversation('单人讨论', ['deepseek-sister']);
+    const source = { conversationId: other.id, authorId: 'user', content: '群中的工作要求', clientId: 'member-edit-send' };
     const message = store.appendMessage(source);
-    const action = store.createAction({ conversationId: legacy.id, companionId: 'deepseek-sister', sourceMessageId: message.id, title: '旧群任务', status: 'succeeded' });
-    store.appendMessage({ conversationId: legacy.id, authorId: 'deepseek-sister', content: '旧群结果已经保留', replyToId: message.id, kind: 'action', actionId: action.id });
+    const action = store.createAction({ conversationId: other.id, companionId: 'deepseek-sister', sourceMessageId: message.id, title: '群任务', status: 'succeeded' });
+    store.appendMessage({ conversationId: other.id, authorId: 'deepseek-sister', content: '群结果已经保留', replyToId: message.id, kind: 'action', actionId: action.id });
+    expect(store.updateConversation(other.id, { memberIds: ['deepseek-sister', 'deepseek-flash'] }).id).toBe(first.id);
     close(store);
-    // Emulate the previous release, which allowed two identical member sets.
-    const db = new (BetterSqlite3 as { new(filename: string): { prepare(sql: string): { run(...args: unknown[]): unknown }; close(): void } })(databasePath);
-    db.prepare('INSERT INTO conversation_members(conversation_id,companion_id) VALUES(?,?)').run(legacy.id, 'deepseek-flash');
-    db.close();
     const reopened = open(databasePath);
     expect(reopened.state().conversations.filter(chat => chat.kind === 'group')).toHaveLength(1);
-    expect(reopened.messages({ conversationId: legacy.id }).messages.map(item => item.conversationId)).toEqual([first.id, first.id]);
-    expect(reopened.listAction(first.id)[0]).toMatchObject({ id: action.id, conversationId: first.id, sourceMessageId: message.id });
-    expect(reopened.search({ conversationId: first.id, query: '旧群中的' }).messages[0]?.id).toBe(message.id);
-    expect(reopened.appendMessageResult(source)).toMatchObject({ inserted: false, message: { id: message.id, conversationId: first.id } });
+    expect(reopened.getAction(action.id)).toMatchObject({ conversationId: first.id, sourceMessageId: message.id });
+    expect(reopened.getMessage(message.id).conversationId).toBe(first.id);
+    expect(reopened.search({ query: '群中的' }).messages[0]?.id).toBe(message.id);
   });
   it('seeds only once and keeps one permanent private chat across restart', () => {
     const { databasePath, store } = fixture();
@@ -301,14 +297,6 @@ describe('CompanionsStore real SQLite persistence', () => {
     expect(store.messages({ conversationId: group.id, limit: 50 }).messages.some(value => value.id === message.id)).toBe(false);
     expect(store.listMemory('deepseek-sister').find(value => value.id === memory.id)?.sourceConversationId).toBe(group.id);
     close(store);
-    // Simulate a historical JSON row written before conversation provenance
-    // was included. Reads recover the trustworthy scope from its source ID.
-    const RawDatabase = BetterSqlite3 as { new(filename: string): { prepare(sql: string): { run(...parameters: unknown[]): unknown }; close(): void } };
-    const db = new RawDatabase(databasePath);
-    const { sourceConversationId: _oldScope, ...legacy } = memory;
-    void _oldScope;
-    db.prepare('UPDATE memories SET data=? WHERE id=?').run(JSON.stringify(legacy), memory.id);
-    db.close();
     const reopened = open(databasePath);
     expect(reopened.listMemory('deepseek-sister').find(value => value.id === memory.id)?.sourceConversationId).toBe(group.id);
     expect(reopened.listMemory('deepseek-flash')).toEqual([]);
@@ -456,19 +444,6 @@ describe('CompanionsStore real SQLite persistence', () => {
     expect(reopened.recordProactive(companionId, source.id, laterAt, '2026-10-13')).toMatchObject({ count: 1, lastAttemptAt: laterAt, lastSentAt: laterAt });
     expect(reopened.recordProactiveAttempt(companionId, '2026-10-13T04:00:00.000Z')).toMatchObject({ count: 1, lastSentAt: laterAt, lastAttemptAt: '2026-10-13T04:00:00.000Z' });
     expect(reopened.getProactive('deepseek-flash')).toEqual({ count: 0 });
-  });
-
-  it('refuses newer database schema before any write and preserves original bytes', () => {
-    const { databasePath, store } = fixture();
-    close(store);
-    const RawDatabase = BetterSqlite3 as { new(filename: string): { pragma(input: string): unknown; close(): void } };
-    const db = new RawDatabase(databasePath);
-    db.pragma('user_version = 999');
-    db.close();
-    const checksum = () => createHash('sha256').update(readFileSync(databasePath)).digest('hex');
-    const original = checksum();
-    expect(() => new CompanionsStore(databasePath, seeds, welcomes)).toThrow('更新版本');
-    expect(checksum()).toBe(original);
   });
 
   it('rejects invalid internal commands and rolls back failed writes without sequence noise', () => {

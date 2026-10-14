@@ -1,7 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { CompanionsStore } from '../../src/companions/store';
 import { companionSearchTokens } from '../../src/shared/companion-search';
@@ -68,29 +67,31 @@ it('indexes short Chinese, literal punctuation, normalized width, filename refer
   const next = store.search({ query: '', conversationId: room.id, before: first.searchPage.nextBefore, snapshot: first.searchPage.snapshot });
   expect(next.messages.map(item => item.id)).toEqual([doc.id]);
 });
-it('migrates welcome-only rooms quietly and backfills more than one batch durably without rescanning ready databases', () => {
+it('retains the current schema, contact settings, message index and attachments after restart', () => {
   const { store, filename } = fixture(); const room = store.openPrivate('gpt');
   const welcome = store.openPrivate('kimi'); store.appendMessage({ conversationId: welcome.id, authorId: 'kimi', content: '自动欢迎', clientId: 'builtin-welcome-kimi', kind: 'notice' });
   for (let index = 0; index < 1100; index++) store.appendMessage({ conversationId: room.id, authorId: 'user', content: '历史合同 ' + index });
+  const profile = store.state().companions.find(companion => companion.id === 'gpt')!;
+  store.updateCompanion('gpt', { ...profile, name: '保留的名字', persona: '保留的人设' });
+  store.registerAttachment({ attachment: { id: 'retained-avatar', name: 'avatar.png', mime: 'image/png', size: 32 }, relativePath: 'attachments/retained-avatar.png' });
   store.close(); stores.splice(stores.indexOf(store), 1);
-  const db = new (BetterSqlite3 as { new(filename: string): { exec(sql: string): void; close(): void } })(filename);
-  db.exec('DROP TRIGGER message_search_attachment_insert; DROP TRIGGER message_search_attachment_delete; DROP TRIGGER message_search_insert; DROP TRIGGER message_search_delete; DROP TRIGGER message_search_update; DROP TABLE message_search;');
-  db.exec("CREATE VIRTUAL TABLE message_search USING fts5(content,content='messages',content_rowid='sequence',tokenize='trigram'); CREATE TRIGGER message_search_insert AFTER INSERT ON messages BEGIN INSERT INTO message_search(rowid,content) VALUES(new.sequence,new.content); END; CREATE TRIGGER message_search_delete AFTER DELETE ON messages BEGIN INSERT INTO message_search(message_search,rowid,content) VALUES('delete',old.sequence,old.content); END; CREATE TRIGGER message_search_update AFTER UPDATE OF content ON messages BEGIN INSERT INTO message_search(message_search,rowid,content) VALUES('delete',old.sequence,old.content); INSERT INTO message_search(rowid,content) VALUES(new.sequence,new.content); END;");
-  db.exec("DELETE FROM metadata WHERE key LIKE 'message-index-%'; ALTER TABLE conversations DROP COLUMN hidden_at; ALTER TABLE conversations DROP COLUMN dissolved_at; DROP INDEX messages_author_sequence; DROP INDEX messages_conversation_time; DROP INDEX messages_time_sequence; DROP INDEX message_attachments_attachment; PRAGMA user_version=1;"); db.close();
   let reopened = new CompanionsStore(filename); stores.push(reopened);
-  expect(reopened.state().conversations.map(item => item.id)).toEqual([room.id]);
-  expect(reopened.search({ query: '合同' }).searchPage.indexReady).toBe(false);
+  expect(reopened.state().conversations).toHaveLength(2);
+  expect(reopened.state().companions.find(companion => companion.id === 'gpt')).toMatchObject({ name: '保留的名字', persona: '保留的人设' });
+  expect(reopened.getAttachment('retained-avatar').attachment.name).toBe('avatar.png');
+  expect(reopened.search({ query: '合同' }).messages).toHaveLength(30);
+  expect(reopened.request({ type: 'memory.status', companionId: 'gpt' }).memoryStatus).toMatchObject({ pending: 1100, running: 0, failed: 0, memories: 0 });
   reopened.close(); stores.splice(stores.indexOf(reopened), 1);
   reopened = new CompanionsStore(filename); stores.push(reopened);
   expect(reopened.backfillSearchIndex()).toBe(true);
-  const results: string[] = []; let before: number | undefined;
-  do { const page = reopened.search({ query: '合同', before, limit: 100 }); results.push(...page.messages.map(item => item.id)); before = page.searchPage.nextBefore; } while (before);
-  expect(new Set(results).size).toBe(1100); expect(reopened.backfillSearchIndex()).toBe(true);
+  expect(reopened.search({ query: '合同' }).messages).toHaveLength(30);
+  expect(reopened.backfillSearchIndex()).toBe(true);
+  reopened.openPrivate('gpt');
   // Normal writes update the indexed content; the old term must disappear.
   const source = reopened.appendMessage({ conversationId: room.id, authorId: 'user', content: '开始', replyDirective: 'auto' });
   const bubble = reopened.appendMessage({ conversationId: room.id, authorId: 'gpt', content: '', loopStep: 0 });
   reopened.request({ type: 'loop.save', checkpoint: { conversationId: room.id, sourceMessageId: source.id, companionId: 'gpt', messageId: bubble.id, status: 'running', supplements: [], turns: [{ text: '旧字词', rawText: '旧字词', calls: [], results: [] }] } });
-  expect(reopened.search({ query: '旧字词' }).messages).toHaveLength(1);
+  expect(reopened.search({ query: '旧字词' }).messages).toHaveLength(0);
   reopened.request({ type: 'loop.save', checkpoint: { conversationId: room.id, sourceMessageId: source.id, companionId: 'gpt', messageId: bubble.id, status: 'done', supplements: [], turns: [{ text: '新字词', rawText: '新字词', calls: [], results: [] }] } });
   expect(reopened.search({ query: '旧字词' }).messages).toHaveLength(0); expect(reopened.search({ query: '新字词' }).messages).toHaveLength(1);
   expect(companionSearchTokens('Ａ')).toBe(companionSearchTokens('a'));

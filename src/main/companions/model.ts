@@ -5,9 +5,14 @@ import {
 } from '../../shared/ai-endpoints';
 import type { Companion } from '../../shared/companions';
 import { isDeepseekOfficialEndpoint } from '../../shared/llm';
-import { buildCompanionContext, type CompanionReplyInput } from './context';
-import { COMPANION_DSH_TOOL, companionDshArgumentsSchema } from '../../shared/companion-dsh-tool';
+import { buildCompanionContext, refreshCompanionContextClock, refreshCompanionRuntimeStateContext, type CompanionReplyInput } from './context';
+import { COMPANION_DSH_TOOL } from '../../shared/companion-dsh-tool';
+import { COMPANION_MEMORY_TOOLS, normalizeCompanionMemoryToolName, providerCompanionMemoryToolName } from '../../shared/companion-memory-tool';
+import { COMPANION_SCHEDULE_TOOL } from '../../shared/companion-schedule-tool';
+import { COMPANION_STATE_TOOL } from '../../shared/companion-state-tool';
+import { COMPANION_ROUTINE_TOOL } from '../../shared/companion-routine-tool';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
+import { CompanionProviderStreamError, readCompanionProviderStream } from './provider-stream';
 
 export type { CompanionReplyInput } from './context';
 export interface CompanionModelConfig {
@@ -16,8 +21,10 @@ export interface CompanionModelConfig {
   baseUrl?: string;
   apiKey: string;
 }
-export interface CompanionReply { text: string; memories?: string[]; topic?: string; turn?: CompanionLoopTurn; action?: { title: string; prompt: string }; actions?: Array<{ title: string; prompt: string; companionId?: string }> }
-export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; context?: ReturnType<typeof buildCompanionContext>; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[] }
+export interface CompanionReply { text: string; memories?: string[]; topic?: string; turn?: CompanionLoopTurn }
+export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; context?: ReturnType<typeof buildCompanionContext>; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[];
+  /** Current turn's cumulative visible text, emitted only from real SSE events. */
+  onTextDelta?: (text: string) => void }
 export type CompanionModelErrorCode = 'CONFIG' | 'AUTH' | 'RATE_LIMIT' | 'NETWORK' | 'TIMEOUT' | 'CANCELLED' | 'INVALID_RESPONSE' | 'REFUSED';
 export class CompanionModelError extends Error {
   constructor(readonly code: CompanionModelErrorCode, message: string) {
@@ -45,7 +52,8 @@ export async function generateCompanionReply(
   validateConfig(config);
   const model = resolveCompanionModel(input.companion, config);
   if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
-  const context = options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop });
+  const context = refreshCompanionContextClock(refreshCompanionRuntimeStateContext(
+    options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop }), input.runtimeState, input.companion.id, input.conversation));
   const controller = new AbortController();
   let rejectAbort: (error: CompanionModelError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
@@ -54,53 +62,104 @@ export async function generateCompanionReply(
     rejectAbort(new CompanionModelError('CANCELLED', '这次回复已取消。'));
   };
   signal?.addEventListener('abort', cancel, { once: true });
-  const timer = setTimeout(() => {
+  const expire = () => {
     controller.abort();
     rejectAbort(new CompanionModelError('TIMEOUT', '伙伴回复超时，请稍后重试。'));
-  }, Math.max(1, Math.min(options.timeoutMs ?? 45_000, 120_000)));
+  };
+  const idleMs = Math.max(1, Math.min(options.timeoutMs ?? 45_000, 120_000));
+  let timer = setTimeout(expire, idleMs), streamDeadline: ReturnType<typeof setTimeout> | undefined;
+  const streamActivity = () => { if (!controller.signal.aborted) { clearTimeout(timer); timer = setTimeout(expire, idleMs); } };
   const fetchFn = options.fetchFn ?? globalThis.fetch.bind(globalThis);
   try {
     if (signal?.aborted) cancel();
     const operation = async (): Promise<CompanionReply> => {
-      const request = providerRequest({ ...config, model }, context, controller.signal, options.loop || !input.proactive && !input.actionResult && !input.chatOnly);
+      const request = providerRequest({ ...config, model }, context, controller.signal, options.loop === true, options.loop === true, true);
       if (options.loop) appendLoopHistory(request, config.apiFormat, options.turns ?? [], options.supplements ?? []);
       const response = await fetchFn(...request);
       if (!response.ok) {
         void response.body?.cancel().catch(() => undefined);
         throw httpError(response.status);
       }
-      const body = await readBoundedJson(response);
-      const calls = extractDshCalls(config.apiFormat, body);
+      let body: unknown;
+      if (response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
+        streamActivity(); streamDeadline = setTimeout(expire, 10 * 60_000);
+        body = await readCompanionProviderStream(response, config.apiFormat, { signal: controller.signal,
+          onText: text => { if (!controller.signal.aborted) options.onTextDelta?.(text); }, onActivity: streamActivity });
+      } else body = await readBoundedJson(response);
       const loopCalls = options.loop ? extractLoopCalls(config.apiFormat, body) : [];
-      const raw = extractProviderText(config.apiFormat, body, options.loop ? loopCalls.length > 0 : calls.length > 0);
-      const result = options.loop ? parseLoopText(raw, loopCalls.length > 0) : raw.trim() ? parseCompanionReply(raw, input.proactive === true || input.conversation.kind === 'group') : { text: '我来处理，进度随时可以查看。', memories: [] } as CompanionReply;
+      const raw = extractProviderText(config.apiFormat, body, loopCalls.length > 0);
+      const result = options.loop ? parseLoopText(raw, loopCalls.length > 0) : parseCompanionReply(raw, input.proactive === true || input.conversation.kind === 'group');
       if (options.loop) {
         if (!raw.trim() && !loopCalls.length) throw new CompanionModelError('INVALID_RESPONSE', '模型没有返回正文或能力调用。');
-        result.turn = { text: result.text, rawText: raw, calls: loopCalls };
-        delete result.action; delete result.actions;
+        const cleaned = stripCompanionThoughts(raw);
+        let rawText = cleaned;
+        try {
+          const value = JSON.parse(cleaned.replace(/^```json\s*/u, '').replace(/\s*```$/u, ''));
+          if (value && typeof value.text === 'string') rawText = JSON.stringify({ ...value, text: result.text });
+        } catch { /* Native assistant Markdown stays as supplied, excluding thoughts. */ }
+        result.turn = { text: result.text, rawText, calls: loopCalls };
         return result;
       }
-      if (calls.length) result.actions = calls;
       if (!result.text.trim() || input.proactive || input.actionResult || !input.messages.some((message) => message.conversationId === input.conversation.id && message.authorId === 'user')) {
         result.memories = [];
-      }
-      const latestUser = input.messages.filter(message => message.conversationId === input.conversation.id && message.authorId === 'user' && message.status === 'sent')
-        .sort((a, b) => b.sequence - a.sequence)[0];
-      if (!result.text.trim() || input.proactive || input.actionResult || input.chatOnly || input.activeTasks?.length && !input.taskRequest || !latestUser || !(input.taskRequest || shouldDelegateUserMessage(latestUser.content))) {
-        delete result.action;
-        delete result.actions;
       }
       return result;
     };
     return await Promise.race([operation(), aborted]);
   } catch (error) {
     if (error instanceof CompanionModelError) throw error;
+    if (error instanceof CompanionProviderStreamError) throw new CompanionModelError(error.code, error.message);
     // Never propagate raw network errors: providers can include URLs, headers or credentials.
     throw new CompanionModelError('NETWORK', '无法连接聊天模型，请检查网络和模型设置。');
   } finally {
     clearTimeout(timer);
+    clearTimeout(streamDeadline);
     signal?.removeEventListener('abort', cancel);
   }
+}
+
+/** Memory understanding uses the selected chat model, without executable tools. */
+export async function generateCompanionStructured(
+  context: { system: string; user: string },
+  config: CompanionModelConfig,
+  signal?: AbortSignal,
+  options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {},
+): Promise<unknown> {
+  if (signal?.aborted) throw new CompanionModelError('CANCELLED', '记忆处理已取消。');
+  validateConfig(config);
+  const model = config.model.trim();
+  if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
+  const controller = new AbortController();
+  let rejectAbort: (error: CompanionModelError) => void = () => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  const cancel = () => { controller.abort(); rejectAbort(new CompanionModelError('CANCELLED', '记忆处理已取消。')); };
+  signal?.addEventListener('abort', cancel, { once: true });
+  const timer = setTimeout(() => { controller.abort(); rejectAbort(new CompanionModelError('TIMEOUT', '记忆处理超时，请稍后重试。')); }, Math.max(1, Math.min(options.timeoutMs ?? 45_000, 120_000)));
+  try {
+    if (signal?.aborted) cancel();
+    const operation = async () => {
+      const request = providerRequest({ ...config, model }, context, controller.signal, false, false);
+      const body = JSON.parse(String(request[1]!.body));
+      if (config.apiFormat === 'openai_chat' || config.apiFormat === 'anthropic') body.max_tokens = 8_192;
+      if (config.apiFormat === 'openai_responses') body.max_output_tokens = 8_192;
+      if (config.apiFormat === 'gemini_native') body.generationConfig.maxOutputTokens = 8_192;
+      if (config.apiFormat === 'dashscope_native') body.parameters.max_tokens = 8_192;
+      request[1]!.body = JSON.stringify(body);
+      const response = await (options.fetchFn ?? globalThis.fetch.bind(globalThis))(...request);
+      if (!response.ok) { void response.body?.cancel().catch(() => undefined); throw httpError(response.status); }
+      const envelope = await readBoundedJson(response);
+      if (extractLoopCalls(config.apiFormat, envelope).length) throw new CompanionModelError('INVALID_RESPONSE', '记忆模型不应调用工具。');
+      const raw = extractProviderText(config.apiFormat, envelope).trim();
+      // Visible JSON only; no conversational fallback can become a memory candidate.
+      const text = raw.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '').trim();
+      try { return JSON.parse(text); }
+      catch { throw new CompanionModelError('INVALID_RESPONSE', '记忆模型返回的结构无效，稍后会重新处理。'); }
+    };
+    return await Promise.race([operation(), aborted]);
+  } catch (error) {
+    if (error instanceof CompanionModelError) throw error;
+    throw new CompanionModelError('NETWORK', '无法连接聊天模型，请检查网络和模型设置。');
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
 }
 
 function validateConfig(config: CompanionModelConfig): void {
@@ -117,87 +176,65 @@ function validateConfig(config: CompanionModelConfig): void {
   }
 }
 
-function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true): Parameters<typeof fetch> {
+function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false): Parameters<typeof fetch> {
   const deepseek = isDeepseekOfficialEndpoint(config.baseUrl ?? '');
+  const tools = [...(enableDsh ? [COMPANION_DSH_TOOL] : []), ...(enableMemory ? [...COMPANION_MEMORY_TOOLS, COMPANION_SCHEDULE_TOOL, COMPANION_STATE_TOOL, COMPANION_ROUTINE_TOOL] : [])];
   const bearerHeaders = { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
-  const init = (headers: Record<string, string>, body: unknown): RequestInit => ({ method: 'POST', headers,
+  const init = (headers: Record<string, string>, body: unknown): RequestInit => ({ method: 'POST', headers: { ...headers, ...(stream ? { Accept: 'text/event-stream' } : {}) },
     signal, redirect: 'error', body: JSON.stringify(body) });
   switch (config.apiFormat) {
     case 'openai_chat':
       return [resolveOpenAiChatCompletionsUrl(config.baseUrl), init(bearerHeaders, {
-        model: config.model, max_tokens: 2_048, stream: false,
-        ...(enableDsh ? { tools: [{ type: 'function', function: COMPANION_DSH_TOOL }], parallel_tool_calls: true } : {}),
+        model: config.model, max_tokens: 8_192, stream,
+        ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' }, response_format: { type: 'json_object' } } : {}),
         messages: [{ role: 'system', content: context.system }, { role: 'user', content: context.user }],
       })];
     case 'openai_responses':
       return [resolveOpenAiResponsesUrl(config.baseUrl), init(bearerHeaders, {
-        model: config.model, max_output_tokens: 2_048, stream: false,
-        ...(enableDsh ? { tools: [{ type: 'function', ...COMPANION_DSH_TOOL }], parallel_tool_calls: true } : {}),
+        model: config.model, max_output_tokens: 8_192, stream,
+        ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', ...tool, strict: false })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { reasoning: { effort: 'none' }, text: { format: { type: 'json_object' } } } : {}),
         instructions: context.system, input: [{ role: 'user', content: context.user }],
       })];
     case 'anthropic':
       return [resolveAnthropicMessagesUrl(config.baseUrl), init({ 'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, {
-        model: config.model, max_tokens: 2_048, system: context.system,
-        ...(enableDsh ? { tools: [{ name: COMPANION_DSH_TOOL.name, description: COMPANION_DSH_TOOL.description, input_schema: COMPANION_DSH_TOOL.parameters }] } : {}),
+        model: config.model, max_tokens: 8_192, stream, system: context.system,
+        ...(tools.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' } } : {}),
         messages: [{ role: 'user', content: context.user }],
       })];
     case 'gemini_native':
-      return [resolveGeminiGenerateContentUrl(config.model, config.baseUrl), init({ 'x-goog-api-key': config.apiKey,
+      return [resolveGeminiGenerateContentUrl(config.model, config.baseUrl).replace(/:generateContent$/u, stream ? ':streamGenerateContent?alt=sse' : ':generateContent'), init({ 'x-goog-api-key': config.apiKey,
         'Content-Type': 'application/json' }, {
         system_instruction: { parts: [{ text: context.system }] },
-        ...(enableDsh ? { tools: [{ function_declarations: [COMPANION_DSH_TOOL] }] } : {}),
+        ...(tools.length ? { tools: [{ function_declarations: tools.map(tool => ({ name: tool.name,
+          description: tool.description, parametersJsonSchema: tool.parameters })) }] } : {}),
         contents: [{ role: 'user', parts: [{ text: context.user }] }],
-        generationConfig: { maxOutputTokens: 2_048, responseMimeType: 'application/json' },
+        generationConfig: { maxOutputTokens: 8_192, responseMimeType: 'application/json' },
       })];
     case 'dashscope_native':
-      return [resolveDashScopeMultimodalGenerationUrl(config.baseUrl), init(bearerHeaders, {
+      return [resolveDashScopeMultimodalGenerationUrl(config.baseUrl), init({ ...bearerHeaders, ...(stream ? { 'X-DashScope-SSE': 'enable' } : {}) }, {
         model: config.model, input: { messages: [{ role: 'system', content: [{ text: context.system }] },
           { role: 'user', content: [{ text: context.user }] }] },
-        parameters: { result_format: 'message', max_tokens: 2_048, enable_thinking: false, response_format: { type: 'json_object' },
-          ...(enableDsh ? { tools: [{ type: 'function', function: COMPANION_DSH_TOOL }] } : {}) },
+        parameters: { result_format: 'message', max_tokens: 8_192, enable_thinking: false, response_format: { type: 'json_object' },
+          ...(stream ? { incremental_output: true } : {}),
+          ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}) },
       })];
   }
-}
-
-/** Accept only the single published capability across all supported provider envelopes. */
-function extractDshCalls(format: AiApiFormat, body: unknown): NonNullable<CompanionReply['actions']> {
-  const root = asRecord(body);
-  const calls: Array<{ name: unknown; arguments: unknown }> = [];
-  if (format === 'openai_chat' || format === 'dashscope_native') {
-    const message = asRecord(asRecord(asArray((format === 'dashscope_native' ? asRecord(root.output) : root).choices)[0]).message);
-    for (const call of asArray(message.tool_calls)) { const fn = asRecord(asRecord(call).function); calls.push({ name: fn.name, arguments: fn.arguments }); }
-  } else if (format === 'openai_responses') {
-    for (const call of asArray(root.output).map(asRecord).filter(item => item.type === 'function_call')) calls.push({ name: call.name, arguments: call.arguments });
-  } else if (format === 'anthropic') {
-    for (const call of asArray(root.content).map(asRecord).filter(item => item.type === 'tool_use')) calls.push({ name: call.name, arguments: call.input });
-  } else if (format === 'gemini_native') {
-    for (const part of asArray(asRecord(asRecord(asArray(root.candidates)[0]).content).parts)) {
-      const call = asRecord(asRecord(part).functionCall); calls.push({ name: call.name, arguments: call.args });
-    }
-  }
-  const tasks: NonNullable<CompanionReply['actions']> = [];
-  for (const call of calls) {
-    if (call.name !== 'dsh') continue;
-    let args = call.arguments;
-    if (typeof args === 'string') { try { args = JSON.parse(args); } catch { continue; } }
-    const parsed = companionDshArgumentsSchema.safeParse(args);
-    if (parsed.success) tasks.push(...parsed.data.tasks);
-  }
-  return tasks.slice(0, 4);
 }
 
 function extractLoopCalls(format: AiApiFormat, body: unknown): CompanionLoopCall[] {
   const root = asRecord(body);
   const calls: CompanionLoopCall[] = [];
-  const add = (id: unknown, name: unknown, args: unknown) => {
+  const add = (id: unknown, name: unknown, args: unknown, thoughtSignature?: unknown) => {
     if (typeof name !== 'string' || name.length > 100 || calls.length >= 16) return;
     const argumentText = typeof args === 'string' ? args : JSON.stringify(args ?? {});
     if (argumentText.length > 65536) throw new CompanionModelError('INVALID_RESPONSE', '能力调用参数过长。');
-    calls.push({ id: typeof id === 'string' && id.length <= 200 ? id : `call_${calls.length}`, name, arguments: argumentText });
+    if (typeof thoughtSignature === 'string' && thoughtSignature.length > 65536) throw new CompanionModelError('INVALID_RESPONSE', '模型协议标识过长。');
+    calls.push({ id: typeof id === 'string' && id.length > 0 && id.length <= 200 ? id : `call_${calls.length}`, name: normalizeCompanionMemoryToolName(name), arguments: argumentText,
+      ...(typeof thoughtSignature === 'string' && thoughtSignature.length ? { thoughtSignature } : {}) });
   };
   if (format === 'openai_chat' || format === 'dashscope_native') {
     const message = asRecord(asRecord(asArray((format === 'dashscope_native' ? asRecord(root.output) : root).choices)[0]).message);
@@ -207,7 +244,10 @@ function extractLoopCalls(format: AiApiFormat, body: unknown): CompanionLoopCall
   } else if (format === 'anthropic') {
     for (const call of asArray(root.content).map(asRecord).filter(item => item.type === 'tool_use')) add(call.id, call.name, call.input);
   } else {
-    for (const part of asArray(asRecord(asRecord(asArray(root.candidates)[0]).content).parts)) { const call = asRecord(asRecord(part).functionCall); add(call.id, call.name, call.args); }
+    for (const value of asArray(asRecord(asRecord(asArray(root.candidates)[0]).content).parts)) {
+      const part = asRecord(value), call = asRecord(part.functionCall);
+      add(call.id, call.name, call.args, part.thoughtSignature);
+    }
   }
   if (new Set(calls.map(call => call.id)).size !== calls.length) throw new CompanionModelError('INVALID_RESPONSE', '模型返回了重复的能力调用标识。');
   return calls;
@@ -226,20 +266,21 @@ function appendLoopHistory(request: Parameters<typeof fetch>, format: AiApiForma
     if (format === 'openai_chat' || format === 'dashscope_native') {
       const messages = format === 'openai_chat' ? body.messages : body.input.messages;
       messages.push({ role: 'assistant', content: turn.rawText || null,
-        ...(turn.calls.length ? { tool_calls: turn.calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) } : {}) });
+        ...(turn.calls.length ? { tool_calls: turn.calls.map(call => ({ id: call.id, type: 'function', function: { name: providerCompanionMemoryToolName(call.name), arguments: call.arguments } })) } : {}) });
       for (const result of turn.results ?? []) messages.push({ role: 'tool', tool_call_id: result.callId, content: result.content });
     } else if (format === 'openai_responses') {
       if (turn.rawText) body.input.push({ role: 'assistant', content: turn.rawText });
-      for (const call of turn.calls) body.input.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments });
+      for (const call of turn.calls) body.input.push({ type: 'function_call', call_id: call.id, name: providerCompanionMemoryToolName(call.name), arguments: call.arguments });
       for (const result of turn.results ?? []) body.input.push({ type: 'function_call_output', call_id: result.callId, output: result.content });
     } else if (format === 'anthropic') {
-      const content = [...(turn.rawText ? [{ type: 'text', text: turn.rawText }] : []), ...turn.calls.map(call => ({ type: 'tool_use', id: call.id, name: call.name, input: args(call) }))];
+      const content = [...(turn.rawText ? [{ type: 'text', text: turn.rawText }] : []), ...turn.calls.map(call => ({ type: 'tool_use', id: call.id, name: providerCompanionMemoryToolName(call.name), input: args(call) }))];
       if (content.length) body.messages.push({ role: 'assistant', content });
       if (turn.results?.length) body.messages.push({ role: 'user', content: turn.results.map(result => ({ type: 'tool_result', tool_use_id: result.callId, content: result.content })) });
     } else {
-      const parts = [...(turn.rawText ? [{ text: turn.rawText }] : []), ...turn.calls.map(call => ({ functionCall: { name: call.name, args: args(call) } }))];
+      const parts = [...(turn.rawText ? [{ text: turn.rawText }] : []), ...turn.calls.map(call => ({ functionCall: { id: call.id, name: providerCompanionMemoryToolName(call.name), args: args(call) },
+        ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}) }))];
       if (parts.length) body.contents.push({ role: 'model', parts });
-      if (turn.results?.length) body.contents.push({ role: 'user', parts: turn.results.map(result => ({ functionResponse: { name: turn.calls.find(call => call.id === result.callId)!.name, response: { result: result.content } } })) });
+      if (turn.results?.length) body.contents.push({ role: 'user', parts: turn.results.map(result => ({ functionResponse: { id: result.callId, name: providerCompanionMemoryToolName(turn.calls.find(call => call.id === result.callId)!.name), response: { result: result.content } } })) });
     }
   }
   if (supplements.length) {
@@ -338,61 +379,27 @@ export function parseCompanionReply(raw: string, allowSilence = false): Companio
   }
   const reply = asRecord(parsed);
   if (typeof reply.text !== 'string') throw new CompanionModelError('INVALID_RESPONSE', '模型没有返回聊天文本，请重试。');
-  const replyText = reply.text.trim();
+  const replyText = stripCompanionThoughts(reply.text);
   const result = validateReplyText(/^\[PASS\]$/iu.test(replyText) ? '' : replyText, allowSilence);
   result.memories = result.text ? [...new Set(asArray(reply.memories).filter((value): value is string => typeof value === 'string')
     .map((value) => value.trim()).filter((value) => value.length > 0 && value.length <= 1_000))].slice(0, 3) : [];
   if (result.text && typeof reply.topic === 'string' && reply.topic.trim()) result.topic = reply.topic.trim().slice(0, 100);
-  if (result.text) {
-    const tasks = companionDshArgumentsSchema.safeParse(reply.dsh);
-    if (tasks.success) result.actions = tasks.data.tasks;
-    const action = asRecord(reply.action);
-    // Only an exact, bounded proposal is accepted. Unknown transport/tool fields never become executable input.
-    if (Object.keys(action).every(key => key === 'title' || key === 'prompt')
-      && typeof action.title === 'string' && typeof action.prompt === 'string') {
-      const title = action.title.trim();
-      const prompt = action.prompt.trim();
-      if (title.length > 0 && title.length <= 100 && prompt.length > 0 && prompt.length <= 16_000) result.action = { title, prompt };
-    }
-  }
   return result;
 }
 
 function parseLoopText(raw: string, hasCalls: boolean): CompanionReply {
-  const text = raw.trim().replace(/<(think|analysis|reasoning)>[\s\S]*?<\/\1>/giu, '').trim();
-  if (/<(?:think|analysis|reasoning)>/iu.test(text)) throw new CompanionModelError('INVALID_RESPONSE', '模型只返回了未完成的内部内容。');
+  const text = stripCompanionThoughts(raw);
   if (hasCalls && /^(?:\{|\[|```(?:json)?\s*)$/u.test(text)) return { text: '' };
-  try { const value = JSON.parse(text.replace(/^```json\s*/u, '').replace(/\s*```$/u, '')); if (value && typeof value.text === 'string') return parseCompanionReply(text, true); } catch { /* Ordinary Markdown is the normal loop output. */ }
+  let value: unknown;
+  try { value = JSON.parse(text.replace(/^```json\s*/u, '').replace(/\s*```$/u, '')); } catch { /* Ordinary Markdown is the normal loop output. */ }
+  if (value && typeof value === 'object' && typeof (value as { text?: unknown }).text === 'string') return parseCompanionReply(text, true);
   return validateReplyText(text === '[PASS]' ? '' : text, true);
 }
 
-/** A deliberately conservative intent gate, used with a bounded model proposal and the original user statement. */
-export function shouldDelegateUserMessage(content: string): boolean {
-  if (!content.trim() || content.length > 16_000) return false;
-  const normalized = content.normalize('NFKC').trim();
-  // Overall execution prohibitions and fictional examples take precedence over command markers.
-  if (/(?:不要|(?<![识区特告])别|不用|不必|无需|不需要|不想|不希望|不准|禁止|暂不|先不|先别)[^\n，,。；;！？!?]{0,10}(?:执行|运行|操作|调用|启动)|(?:只|仅)(?:是)?(?:聊|聊天|讨论|讲解|举例)|先讨论|假设|假如|假装|打个比方|比方说|举(?:个|一个)?例子|例如|如果你(?:是|能|会)|(?:这是|这只是|作为|一段).{0,10}(?:小说|台词|故事|剧本)|角色扮演|扮演|模拟对话/iu.test(normalized)
-    || /\b(?:do\s+not|don['’]t|never|no\s+need\s+to)\s+(?:\w+\s+){0,3}(?:execute|run|act|operate|call)\b|\b(?:just\s+chat|discussion\s+only|only\s+discuss|hypothetical|suppose|imagine|for\s+example|what\s+if|if\s+(?:i|you|we)|role[\s-]?play|fictional\s+dialogue|novel\s+dialogue|this\s+is\s+(?:a\s+)?(?:story|dialogue|quote))\b/iu.test(normalized)) return false;
-  // A local constraint is not authorization for its forbidden verb and does not erase a separate read-only request.
-  // This cleaned string is used only for the intent gate; the original user statement still reaches DSH intact.
-  const instruction = normalized
-    .replace(/(?:不要|(?<![识区特告])别|不用|不必|无需|不需要|不想|不希望|不准|禁止|暂不|先不|先别)[^\n，,。；;！？!?]*/gu, ' ')
-    .replace(/\b(?:do\s+not|don['’]t|never|no\s+need\s+to)\b[^\n,.!?;]*/giu, ' ')
-    // Quoted commands and code snippets are source material, not user authorization.
-    .replace(/```[\s\S]*?```/gu, ' ')
-    .replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'/gu, ' ').trim();
-  const explicit = /^(?:#执行(?:\s|[:：])|\/do\b)\s*[:：]?\s*(\S[\s\S]*)$/iu.exec(instruction);
-  if (explicit) return true;
-  if (/(?:怎么|如何|能否|是否).{0,16}(?:使用|调用|运行|执行).{0,10}(?:工具|DSH|命令)|\b(?:whether\s+you|how\s+(?:do|can|would)\s+(?:i|you)|your\s+capabilities)\b/iu.test(instruction)) return false;
-  if (/(?:请|帮我|帮忙|^)[^\n。？！!?]{0,64}(?:写|续写|撰写)[^\n。？！!?]{0,24}(?:小说|故事|章节|章|剧本|文章)/u.test(instruction)) return true;
-  if (/^(?:现在|当地|本地|电脑|系统)?(?:是)?(?:几点(?:钟)?|什么时间|几月几号)(?:了|啦|呀|啊|呢)?[？?。！!\s]*$/u.test(instruction)
-    || /^(?:看看|看一下|看一看|查一下|查查|查下|查询)[^\n。？！!?]{0,24}(?:几点|时间|日期)/u.test(instruction)
-    || /(?:请|帮我|帮忙|麻烦你|^)[^\n。？！!?]{0,16}搜(?:索|一下|下)?[^\n。？！!?]{1,}/u.test(instruction)
-    || /^(?:检查|读取|查看|打开|整理|运行|执行|搜索|检索|修复|修改|备份|下载|生成|创建)[^\n。？！!?]{1,}/u.test(instruction)) return true;
-  const chineseTask = '(?:查(?:找|询|阅)?(?:一下|下|一查)?|搜索|检索|调研|整理|归类|分类|重命名|备份|移动|复制|下载|转换|生成|编写|写(?:一(?:个|份|段|套)|个|份|段|套)?(?:代码|脚本|程序|测试|页面|网页|文档|报告|文件)|修改|修复|实现|调试|运行|执行|启动|检查|分析|统计|计算|制作|绘制|导出|导入|安装|卸载|删除|创建|读取|打开|发送|发邮件|回复邮件|发布|(?:查看|看一下|看一看|看看|识别|描述)[^\n。？！!?]{0,24}(?:文件|图片|图像|照片|目录|桌面|截图|这张图|那张图))';
-  const chineseRequest = '(?:请(?:你)?|帮我|帮忙|麻烦(?:你)?|劳驾|替我|为我|能不能|能否|可以(?:请)?你|可不可以(?:请)?你|你能(?:帮我)?|能帮我)';
-  if (new RegExp(`${chineseRequest}[^\n。？！!?]{0,48}${chineseTask}`, 'u').test(instruction)) return true;
-  return /\b(?:please|could\s+you|can\s+you|would\s+you|help\s+me|i\s+need\s+you\s+to|i\s+want\s+you\s+to)\b[^\n.!?]{0,60}\b(?:search|look\s+up|research|organize|sort|write\s+(?:(?:me|a|the|some)\s+){0,2}(?:[a-z][a-z0-9+#-]*\s+)?(?:code|script|program|file|report|document|test)|code|implement|fix|debug|refactor|run|execute|check|inspect|analy[sz]e|build|create|generate|convert|download|rename|move|copy|back\s?up|export|import|install|uninstall|delete|send|reply\s+to|publish|(?:view|read|identify|describe|look\s+at)\b[^\n.!?]{0,40}\b(?:files?|images?|pictures?|photos?|folders?|desktop|screenshots?))\b/iu.test(instruction);
+function stripCompanionThoughts(raw: string): string {
+  const text = raw.trim().replace(/<(think|analysis|reasoning)>[\s\S]*?<\/\1>/giu, '').trim();
+  if (/<(?:think|analysis|reasoning)>/iu.test(text)) throw new CompanionModelError('INVALID_RESPONSE', '模型只返回了未完成的内部内容。');
+  return text;
 }
 
 function validateReplyText(text: string, allowSilence: boolean): CompanionReply {

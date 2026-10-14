@@ -1,11 +1,22 @@
 import { z } from 'zod';
 import { dshExecutionAccessModeSchema } from './dsh-access';
-import { companionWorkSchema } from './companion-loop';
+import { companionWorkSchema, companionLoopDraftSchema } from './companion-loop';
 import { COMPANION_AVATAR_IDS, COMPANION_TEMPLATE_IDS } from './companion-template-ids';
+import { companionMemorySchema, companionMemoryPageSchema, companionMemoryStatusSchema, companionMemoryPublicCommands } from './companion-memory';
+import { companionSchedulePublicCommands, companionScheduleSchema, companionScheduleOccurrenceSchema } from './companion-schedule';
+import { companionStatePublicCommands, companionRuntimeStateSchema } from './companion-state';
+import { companionRoutinePublicCommands, companionRoutineSchema, companionRoutineRuntimeSchema } from './companion-routine';
 
 export const COMPANIONS_CHANNEL = 'worldlinebox:companions';
 export const COMPANIONS_CHANGED_CHANNEL = 'worldlinebox:companions-changed';
+export const COMPANION_REPLY_STREAM_CHANNEL = 'worldlinebox:companion-reply-stream';
 export const companionIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+export const companionReplyStreamEventSchema = z.strictObject({
+  conversationId: companionIdSchema, companionId: companionIdSchema, sourceMessageId: companionIdSchema,
+  messageId: companionIdSchema, step: z.number().int().min(0).max(63), attemptId: companionIdSchema,
+  text: z.string().max(65536), phase: z.enum(['streaming', 'committed', 'interrupted', 'discarded']),
+});
+export type CompanionReplyStreamEvent = z.infer<typeof companionReplyStreamEventSchema>;
 export const companionLlmSchema = z.object({
   apiFormat: z.enum(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native']),
   baseUrl: z.string().trim().max(4096), model: z.string().trim().min(1).max(160), hasKey: z.boolean().optional(),
@@ -35,6 +46,8 @@ export const messageSchema = z.object({
   createdAt: z.string(), replyToId: companionIdSchema.optional(),
   status: z.enum(['sent', 'failed']), actionId: companionIdSchema.optional(),
   attachments: z.array(attachmentSchema).max(10),
+  memoryEvidenceOnly: z.boolean().optional(),
+  isReplyDraft: z.boolean().optional(), replyDraft: companionLoopDraftSchema.optional(),
   segments: z.array(z.object({ text: z.string().max(65536), actionIds: z.array(companionIdSchema).max(16) })).max(64).optional(),
 });
 export type CompanionMessage = z.infer<typeof messageSchema>;
@@ -60,10 +73,7 @@ export const companionSearchPageSchema = z.object({
   snapshot: z.number().int().nonnegative(), indexReady: z.boolean(),
 });
 export type CompanionSearchPage = z.infer<typeof companionSearchPageSchema>;
-export const memorySchema = z.object({ id: companionIdSchema, companionId: companionIdSchema,
-  content: z.string().trim().min(1).max(4000), sourceMessageId: companionIdSchema.optional(),
-  sourceConversationId: companionIdSchema.optional(),
-  createdAt: z.string(), updatedAt: z.string(), origin: z.enum(['user', 'companion']) });
+export const memorySchema = companionMemorySchema;
 export type CompanionMemory = z.infer<typeof memorySchema>;
 export const companionActionEventSchema = z.object({ sequence: z.number().int().min(0), type: z.string().max(100),
   summary: z.string().max(1000), toolName: z.string().max(160).optional(), receivedAt: z.string(),
@@ -71,6 +81,7 @@ export const companionActionEventSchema = z.object({ sequence: z.number().int().
 export type CompanionActionEvent = z.infer<typeof companionActionEventSchema>;
 export const actionSchema = z.object({ id: companionIdSchema, conversationId: companionIdSchema,
   parentMessageId: companionIdSchema.optional(), toolCallId: z.string().max(240).optional(), loopStep: z.number().int().nonnegative().optional(),
+  scheduleOccurrenceId: companionIdSchema.optional(),
   companionId: companionIdSchema, sourceMessageId: companionIdSchema, title: z.string().max(120),
   status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']),
   taskId: companionIdSchema.optional(), sessionId: z.string().max(200).optional(),
@@ -100,7 +111,7 @@ export const companionActivitySchema = z.object({ companionId: companionIdSchema
   status: z.enum(['thinking', 'working']), startedAt: z.string().optional() });
 export type CompanionActivity = z.infer<typeof companionActivitySchema>;
 export const companionReplyRecoverySchema = z.object({ conversationId: companionIdSchema, sourceMessageId: companionIdSchema,
-  dispatcher: z.literal('queue-v1').optional(),
+  dispatcher: z.literal('queue').default('queue'),
   status: z.enum(['pending', 'interrupted', 'done', 'cancelled']), delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']),
   completedIds: z.array(companionIdSchema).max(20), updatedAt: z.string() });
 export type CompanionReplyRecovery = z.infer<typeof companionReplyRecoverySchema>;
@@ -134,7 +145,11 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('reply.cancel'), conversationId: companionIdSchema }),
   z.strictObject({ type: z.literal('reply.resume'), conversationId: companionIdSchema }),
   z.strictObject({ type: z.literal('memory.list'), companionId: companionIdSchema }),
-  z.strictObject({ type: z.literal('memory.save'), companionId: companionIdSchema, id: companionIdSchema.optional(), content: z.string().trim().min(1).max(4000), sourceMessageId: companionIdSchema.optional() }),
+  ...companionMemoryPublicCommands,
+  ...companionSchedulePublicCommands,
+  ...companionStatePublicCommands,
+  ...companionRoutinePublicCommands,
+  z.strictObject({ type: z.literal('memory.save'), companionId: companionIdSchema, conversationId: companionIdSchema.optional(), id: companionIdSchema.optional(), content: z.string().trim().min(1).max(4000), sourceMessageId: companionIdSchema.optional(), expectedVersion: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('memory.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema }),
   companionActionPageQuerySchema.extend({ type: z.literal('actions.page') }).strict(),
@@ -154,9 +169,19 @@ export const companionsResponseSchema = z.object({
   memories: z.array(memorySchema).optional(), actions: z.array(actionSchema).optional(), attachments: z.array(attachmentSchema).optional(),
   action: actionSchema.optional(), actionPage: companionActionPageSchema.optional(),
   message: messageSchema.optional(), companion: companionSchema.optional(),
+  memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(),
+  memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),
+  memorySources: z.array(messageSchema).optional(), forgottenCount: z.number().int().nonnegative().optional(),
+  sourceHasMore: z.boolean().optional(), sourceNextCursor: z.number().int().nonnegative().optional(),
+  schedule: companionScheduleSchema.optional(), schedules: z.array(companionScheduleSchema).optional(),
+  scheduleOccurrence: companionScheduleOccurrenceSchema.optional(), scheduleOccurrences: z.array(companionScheduleOccurrenceSchema).optional(),
+  runtimeState: companionRuntimeStateSchema.optional(),
+  routine: companionRoutineSchema.optional(),
+  routineRuntime: companionRoutineRuntimeSchema.optional(),
 });
 export type CompanionsResponse = z.infer<typeof companionsResponseSchema>;
 export interface WorldlineBoxCompanionsApi {
   request(input: CompanionsRequest): Promise<CompanionsResponse>;
   onChanged(listener: () => void): () => void;
+  onReplyStream(listener: (event: CompanionReplyStreamEvent) => void): () => void;
 }

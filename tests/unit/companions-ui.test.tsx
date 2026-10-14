@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Companions } from '../../src/renderer/companions/Companions';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
-import type { Companion, CompanionAction, CompanionConversation, CompanionMemory, CompanionMessage, CompanionState, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
+import type { Companion, CompanionAction, CompanionConversation, CompanionMemory, CompanionMessage, CompanionReplyStreamEvent, CompanionState, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
@@ -20,6 +20,7 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
   let memories: CompanionMemory[] = [];
   let actions: CompanionAction[] = initialActions;
   let listener: (() => void) | undefined;
+  let streamListener: ((event: CompanionReplyStreamEvent) => void) | undefined;
   const unsubscribe = vi.fn();
   const request = vi.fn(async (input: CompanionsRequest): Promise<CompanionsResponse> => {
     switch (input.type) {
@@ -67,6 +68,9 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
       }
       case 'attachment.pick': return { ok: true, attachments: [{ id: 'photo', name: '旅行照片.jpg', mime: 'image/jpeg', size: 2048 }] };
       case 'memory.list': return { ok: true, memories: memories.filter(item => item.companionId === input.companionId) };
+      case 'memory.browse': return { ok: true, memoryPage: { items: memories.filter(item => item.companionId === input.companionId).map(memory => ({ memory, reasons: [], path: [] })), hasMore: false } };
+      case 'schedule.list': return { ok: true, schedules: [], scheduleOccurrences: [] };
+      case 'state.get': return { ok: true, runtimeState: { companionId: input.companionId, energy: 82, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: -.1, dominance: .1 }, relationship: { affinity: 45, trust: 50, respect: 60 }, familiarity: { stage: 'acquainted', interactionCount: 4, sharedEventCount: 1 }, updatedAt: date, revision: 1 } };
       case 'memory.save': {
         const saved: CompanionMemory = { id: input.id ?? 'memory-a', companionId: input.companionId, content: input.content, sourceMessageId: input.sourceMessageId, origin: 'user', createdAt: date, updatedAt: date };
         memories = [...memories.filter(item => item.id !== saved.id), saved]; return { ok: true, memories };
@@ -85,8 +89,8 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
       default: return { ok: true };
     }
   });
-  const api: WorldlineBoxCompanionsApi = { request, onChanged: vi.fn(next => { listener = next; return unsubscribe; }) };
-  return { api, request, unsubscribe, state: () => state, async publish(next: Partial<CompanionState> = {}, nextMessages = messages) { state = { ...state, ...next }; messages = nextMessages; await act(() => listener?.()); }, async publishActions(next: CompanionAction[]) { actions = next; await act(() => listener?.()); }, memories: () => memories };
+  const api: WorldlineBoxCompanionsApi = { request, onChanged: vi.fn(next => { listener = next; return unsubscribe; }), onReplyStream: vi.fn(next => { streamListener = next; return () => { streamListener = undefined; }; }) };
+  return { api, request, unsubscribe, state: () => state, async stream(event: CompanionReplyStreamEvent) { await act(() => streamListener?.(event)); }, async publish(next: Partial<CompanionState> = {}, nextMessages = messages) { state = { ...state, ...next }; messages = nextMessages; await act(() => listener?.()); }, async publishActions(next: CompanionAction[]) { actions = next; await act(() => listener?.()); }, memories: () => memories };
 }
 async function mount(api: WorldlineBoxCompanionsApi, isActive = true, onOpenSettings = vi.fn()) {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
@@ -444,11 +448,54 @@ it('creates a group and manages its name and membership in the same conversation
 
 it('saves and corrects sourced memory without a second manual capability dispatch entry', async () => {
   const f = fixture(); await mount(f.api); await click('记住消息 1'); await fill('textarea[aria-label="共同记忆内容"]', '喜欢把照片按旅行地点整理'); await click('记住这件事');
-  expect(f.request).toHaveBeenCalledWith({ type: 'memory.save', companionId: 'deepseek-sister', content: '喜欢把照片按旅行地点整理', sourceMessageId: 'message-1' });
+  expect(f.request).toHaveBeenCalledWith({ type: 'memory.save', companionId: 'deepseek-sister', conversationId: 'private-sister', content: '喜欢把照片按旅行地点整理', sourceMessageId: 'message-1' });
   await click('编辑记忆 memory-a'); await fill('textarea[aria-label="共同记忆内容"]', '这次照片按地点整理'); await click('保存修正');
   expect(f.memories()[0]!.content).toBe('这次照片按地点整理');
+  await click('关闭共同记忆管理'); await click('我们之间'); await click('管理共同记忆');
+  expect(container!.querySelector<HTMLTextAreaElement>('textarea[aria-label="共同记忆内容"]')!.value).toBe('');
   expect(container!.querySelector('[title="交给伙伴处理"]')).toBeNull();
   expect(f.request.mock.calls.some(([input]) => input.type === 'action.run')).toBe(false);
+});
+
+it('does not render a second ability bubble for a durable memory-only action result', async () => {
+  const f = fixture({}, [message(1, '帮我整理文件'), message(2, '文件整理完成。'), message(3, '{"title":"整理文件","result":"内部证据正文"}', { kind: 'action', authorId: 'deepseek-sister', memoryEvidenceOnly: true, actionId: 'done-action' })]);
+  await mount(f.api);
+  expect(container!.textContent).toContain('文件整理完成。');
+  expect(container!.textContent).not.toContain('内部证据正文');
+  expect(container!.querySelector('[data-companion-message="message-3"]')).toBeNull();
+});
+
+it('updates a reply bubble directly from real stream frames without reloading the page data or duplicating committed turns', async () => {
+  const source = message(1, '流式聊天');
+  const reply = message(2, '前一步。', { replyToId: source.id, isReplyDraft: true, segments: [{ text: '前一步。', actionIds: [] }] });
+  const f = fixture({}, [source, reply]); await mount(f.api); f.request.mockClear();
+  const frame: CompanionReplyStreamEvent = { conversationId: reply.conversationId, companionId: reply.authorId, sourceMessageId: source.id, messageId: reply.id, step: 1, attemptId: 'attempt-a', text: '第一段真实增量', phase: 'streaming' };
+  await f.stream(frame);
+  const bubble = container!.querySelector('[data-companion-message="message-2"] .companions-message-bubble')!;
+  expect(bubble.textContent).toContain('第一段真实增量'); expect(bubble.getAttribute('aria-busy')).toBe('true');
+  expect(bubble.querySelector('[aria-label="伙伴正在输出"]')).not.toBeNull();
+  await f.stream({ ...frame, text: '第一段真实增量，第二段接着来。' });
+  expect(f.request).not.toHaveBeenCalled();
+  await f.stream({ ...frame, text: '第一段真实增量，第二段接着来。', phase: 'committed' });
+  expect(bubble.querySelector('[aria-label="伙伴正在输出"]')).toBeNull();
+  await f.publish({}, [source, { ...reply, content: '前一步。\n\n第一段真实增量，第二段接着来。', isReplyDraft: undefined, segments: [...reply.segments!, { text: '第一段真实增量，第二段接着来。', actionIds: [] }] }]);
+  expect(bubble.textContent!.match(/第一段真实增量/gu)).toHaveLength(1);
+  await f.stream({ ...frame, text: '旧尝试迟到内容' }); expect(bubble.textContent).not.toContain('旧尝试迟到');
+});
+
+it('keeps interrupted stream text, replaces it on retry and preserves a reader scroll position', async () => {
+  const source = message(1, '流式聊天');
+  const reply = message(2, '', { replyToId: source.id, isReplyDraft: true, segments: [] });
+  const f = fixture({}, [source, reply]); await mount(f.api);
+  const scroll = container!.querySelector<HTMLElement>('[data-companion-messages]')!;
+  Object.defineProperties(scroll, { scrollHeight: { value: 2000, configurable: true }, clientHeight: { value: 400, configurable: true } });
+  await act(() => { scroll.scrollTop = 300; scroll.dispatchEvent(new Event('scroll', { bubbles: true })); });
+  const frame: CompanionReplyStreamEvent = { conversationId: reply.conversationId, companionId: reply.authorId, sourceMessageId: source.id, messageId: reply.id, step: 0, attemptId: 'attempt-a', text: '暂时说到这里', phase: 'streaming' };
+  await f.stream(frame); expect(scroll.scrollTop).toBe(300);
+  await f.stream({ ...frame, phase: 'interrupted' }); expect(container!.textContent).toContain('回复已中断'); expect(container!.textContent).toContain('暂时说到这里');
+  await f.stream({ ...frame, phase: 'discarded' }); expect(container!.textContent).not.toContain('暂时说到这里');
+  await f.stream({ ...frame, attemptId: 'attempt-b', text: '重新回答' });
+  expect(container!.textContent).toContain('重新回答'); expect(container!.textContent).not.toContain('回复已中断'); expect(scroll.scrollTop).toBe(300);
 });
 
 it('resolves a reference outside the loaded page and jumps to its original history', async () => {
@@ -460,6 +507,15 @@ it('resolves a reference outside the loaded page and jumps to its original histo
   expect(f.request).toHaveBeenCalledWith({ type: 'messages', conversationId: 'private-sister', around: 'message-1', limit: 50 });
   expect(container!.querySelector('[data-companion-message="message-1"]')!.classList.contains('is-highlighted')).toBe(true);
   expect(container!.querySelector('.companions-history-chip')).not.toBeNull();
+});
+
+it('shows scheduled reminder content without quoting hidden form evidence into the conversation', async () => {
+  const hidden = message(1, '安排提醒：喝水。首次时间：内部记录。', { memoryEvidenceOnly: true });
+  const f = fixture({}, [hidden, message(2, '记得喝一杯温水。', { authorId: 'deepseek-sister', replyToId: hidden.id })]);
+  await mount(f.api);
+  expect(container!.textContent).toContain('记得喝一杯温水。');
+  expect(container!.textContent).not.toContain('内部记录');
+  expect(container!.querySelector('[aria-label="查看引用消息 message-1"]')).toBeNull();
 });
 
 it('shows actual action steps and elapsed time, hides private thinking, and keeps completion wording tied to returned results', async () => {

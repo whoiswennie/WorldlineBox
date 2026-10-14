@@ -6,6 +6,10 @@ import {
 } from './companions';
 import { dshTaskRecordSchema } from './dsh-tasks';
 import { companionLoopCheckpointSchema, companionWorkSchema } from './companion-loop';
+import { companionMemoryStorageCommands, companionMemoryJobSchema } from './companion-memory';
+import { companionScheduleStorageCommands, companionScheduleOccurrenceSchema, companionScheduleSchema } from './companion-schedule';
+import { companionStateStorageCommands, companionRuntimeStateSchema } from './companion-state';
+import { companionRoutineStorageCommands } from './companion-routine';
 
 export const appendCompanionMessageSchema = z.strictObject({
   conversationId: companionIdSchema, authorId: companionIdSchema,
@@ -37,7 +41,7 @@ export const companionTaskCheckpointSchema = z.strictObject({ prompt: z.string()
 export type CompanionTaskCheckpoint = z.infer<typeof companionTaskCheckpointSchema>;
 export const updateCompanionActionSchema = actionSchema.pick({ status: true, taskId: true, sessionId: true, result: true, error: true, stage: true, events: true, accessMode: true, startedAt: true, finishedAt: true, pid: true }).partial();
 export type UpdateCompanionAction = z.infer<typeof updateCompanionActionSchema>;
-export const saveCompanionMemorySchema = memorySchema.omit({ id: true, createdAt: true, updatedAt: true, sourceConversationId: true }).extend({ id: companionIdSchema.optional() });
+export const saveCompanionMemorySchema = memorySchema.omit({ id: true, createdAt: true, updatedAt: true, sourceConversationId: true }).extend({ id: companionIdSchema.optional(), conversationId: companionIdSchema.optional(), expectedVersion: z.number().int().positive().optional() });
 export type SaveCompanionMemory = z.infer<typeof saveCompanionMemorySchema>;
 export const companionProactiveStateSchema = z.strictObject({
   lastAttemptAt: z.string().optional(),
@@ -63,6 +67,10 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   companionSearchQuerySchema.extend({ type: z.literal('message.search') }).strict(),
   z.strictObject({ type: z.literal('message.append'), message: appendCompanionMessageSchema }),
   z.strictObject({ type: z.literal('memory.list'), companionId: companionIdSchema }),
+  ...companionMemoryStorageCommands,
+  ...companionScheduleStorageCommands,
+  ...companionStateStorageCommands,
+  ...companionRoutineStorageCommands,
   z.strictObject({ type: z.literal('memory.save'), memory: saveCompanionMemorySchema }),
   z.strictObject({ type: z.literal('memory.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema.optional() }),
@@ -104,6 +112,11 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   checkpoint: companionTaskCheckpointSchema.optional(), replyRecovery: companionReplyRecoverySchema.optional(),
   loop: companionLoopCheckpointSchema.optional(),
   work: companionWorkSchema.optional(), works: z.array(companionWorkSchema).optional(),
+  memoryJob: companionMemoryJobSchema.optional(), backfillComplete: z.boolean().optional(),
+  rebuiltCount: z.number().int().nonnegative().optional(),
+  schedule: companionScheduleSchema.optional(), schedules: z.array(companionScheduleSchema).optional(),
+  scheduleOccurrence: companionScheduleOccurrenceSchema.optional(), scheduleOccurrences: z.array(companionScheduleOccurrenceSchema).optional(),
+  runtimeState: companionRuntimeStateSchema.optional(),
 });
 export type CompanionStorageResponse = z.infer<typeof companionStorageResponseSchema>;
 
