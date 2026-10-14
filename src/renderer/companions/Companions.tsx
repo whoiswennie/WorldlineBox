@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { Companion, CompanionAction, CompanionAttachment, CompanionConversation, CompanionMemory, CompanionMessage, CompanionState, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../shared/companions';
 import { BUILTIN_COMPANIONS } from '../../shared/companion-personas';
+import { builtinCompanionProfile } from '../../shared/companion-catalogue';
 import { companionMessagePreview } from '../../shared/companion-titles';
 import { Icon } from '../Icons';
 import { CompanionDialogs, type CompanionDialog } from './CompanionDialogs';
-import { Avatar, ChatGlyph } from './CompanionVisuals';
+import { Avatar, ChatGlyph, companionPortrait } from './CompanionVisuals';
 import { CompanionActionCard, elapsedTime, useCompanionClock } from './CompanionProgress';
 import { CompanionImagePreview } from './CompanionImagePreview';
 import { MessageContent } from './MessageContent';
@@ -20,11 +21,7 @@ interface ChatDraft { content: string; attachments: CompanionAttachment[]; reply
 const EMPTY_DRAFT: ChatDraft = { content: '', attachments: [] };
 const PAGE_SIZE = 50;
 const emojis = ['🐳', '😊', '💙', '✨', '👀', '🥺', '🎉', '☕', '🌙', '👍', '🌸', '😴', '🤔', '😂', '🫶', '🌊'];
-const builtinIntroductions: Record<string, string> = {
-  'deepseek-sister': '温柔沉稳的鲸鱼姐姐，喜欢安静听歌、看海和白米饭，偶尔也会摸鱼。她擅长陪你慢慢梳理想法，有自己的判断，带一点可爱的小傲娇。答应你的事情，会认真放在心上。',
-  'deepseek-flash': '活泼好奇的鲸鱼妹妹，喜欢音乐、探索新鲜事物和分享小发现。她说话轻快，偶尔会和姐姐拌几句嘴，也有一点小傲娇。她愿意陪你聊日常，也尊重你自己的节奏。',
-};
-function contactIntroduction(companion: Companion) { return (companion.builtin ? builtinIntroductions[companion.id] : undefined) || companion.description || '她还没有写下简介。可以在编辑资料中介绍这位伙伴。'; }
+function contactIntroduction(companion: Companion) { return (companion.builtin ? builtinCompanionProfile(companion.id)?.introduction : undefined) || companion.description || '还没有写下简介。可以在编辑资料中介绍这位伙伴。'; }
 function mergeMessages(current: CompanionMessage[], next: CompanionMessage[]) {
   const byId = new Map(current.map(item => [item.id, item]));
   next.forEach(item => byId.set(item.id, item));
@@ -402,9 +399,9 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     <main className="companions-main">
       {error && <div className="companions-error" role="alert"><Icon name="alert-circle" /><span>{error}</span><button className="companion-icon-button" aria-label="关闭错误提示" onClick={() => setError('')}>×</button></div>}
       {!state ? <div className="companions-empty"><ChatGlyph name="chat" /><h2>{api ? '正在打开伙伴的消息…' : '伙伴服务暂不可用'}</h2>{error && <button className="companion-secondary-button" onClick={() => void refreshState()}>重新加载</button>}</div>
-        : page === 'contacts' ? selectedContact ? <div className="companions-contact-profile"><header className="companions-profile-label">联系人资料</header><div className="companions-profile-heading"><Avatar companion={selectedContact} large /><div><h2>{selectedContact.name}</h2><p>{selectedContact.description}</p>{selectedContact.builtin && <span className="companions-profile-tag">{selectedContact.id === 'deepseek-sister' ? '大肥鱼姐姐 · Pro' : selectedContact.id === 'deepseek-flash' ? '小肥鱼妹妹 · Flash' : '内置伙伴'}</span>}</div></div>
+        : page === 'contacts' ? selectedContact ? <div className="companions-contact-profile"><header className="companions-profile-label">联系人资料</header><div className="companions-profile-heading"><Avatar companion={selectedContact} large /><div><h2>{selectedContact.name}</h2><p>{selectedContact.description}</p>{selectedContact.builtin && <span className="companions-profile-tag">{builtinCompanionProfile(selectedContact.id)?.sourceSummary ?? '内置伙伴'}</span>}</div></div>
           <div className="companions-profile-body"><div><section><h3>关于她</h3><p className="companions-introduction">{contactIntroduction(selectedContact)}</p><details key={selectedContact.id} className="companions-persona-details"><summary>查看角色设定</summary><p className="companions-persona">{selectedContact.persona}</p></details></section><section><h3>联系习惯</h3><label className="companions-checkbox"><input type="checkbox" checked={selectedContact.proactive} onChange={event => void toggleProactive(selectedContact, event.target.checked)} />允许她主动联系我</label><p className="companions-subtle">应用运行时，她可以延续你们的话题。夜间会保持安静。</p></section><section><h3>模型与能力</h3><p>{selectedContact.llm ? '使用此伙伴的独立 LLM 服务' : '共用设置中的全局 LLM 服务'}</p><p className="companions-subtle">{selectedContact.llm ? `模型：${selectedContact.llm.model}` : '跟随全局模型'} · 可以使用自己的能力查看文件、查资料和处理任务</p></section><div className="companions-profile-actions"><button className="companion-primary-button" onClick={() => void openPrivate(selectedContact.id)}><ChatGlyph name="chat" />发消息</button><button className="companion-secondary-button" onClick={() => setDialog({ kind: 'companion', companion: selectedContact })}>编辑资料</button><button className="companion-text-danger" onClick={() => setDialog({ kind: 'delete', companion: selectedContact })}>移除联系人</button></div></div>
-          {(selectedContact.avatar === 'sister' || selectedContact.avatar === 'flash') && <figure className="companions-character-art"><img src={fullBodyImage} alt="蓝发鲸鱼女仆形象" /><figcaption>大肥鱼姐妹 · 角色形象参考</figcaption></figure>}</div>
+          {companionPortrait(selectedContact) && <figure className={`companions-character-art${selectedContact.avatar !== 'sister' && selectedContact.avatar !== 'flash' ? ' is-portrait' : ''}`}><img src={selectedContact.avatar === 'sister' || selectedContact.avatar === 'flash' ? fullBodyImage : companionPortrait(selectedContact)} alt={`${selectedContact.name}的角色形象`} /><figcaption>{selectedContact.avatar === 'sister' || selectedContact.avatar === 'flash' ? '大肥鱼姐妹 · 角色形象参考' : `${selectedContact.name} · 聊天头像`}</figcaption></figure>}</div>
         </div> : <div className="companions-empty"><ChatGlyph name="contacts" /><h2>认识你的第一位伙伴</h2><p>从内置角色开始，或者创造属于你的伙伴。</p><button className="companion-primary-button" onClick={() => setDialog({ kind: 'companion' })}>添加联系人</button></div>
         : !selected ? <div className="companions-empty"><ChatGlyph name="chat" /><h2>每天，都可以接着聊</h2><p>打开一个伙伴，开始你们的第一段共同经历。</p><button className="companion-primary-button" onClick={() => setPage('contacts')}>查看联系人</button></div>
         : <div className={`companions-chat-layout${showPanel ? ' has-panel' : ''}`}>

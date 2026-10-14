@@ -18,6 +18,67 @@ interface ProviderRequest {
   memories: unknown[]; reply: string;
 }
 interface ProviderFixture { baseUrl: string; requests: ProviderRequest[]; release(): void; close(): Promise<void> }
+
+test('loads all migrated portraits, restores an edited contact and chats privately and in a mixed-role group', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-catalogue-'));
+  const profile = path.join(root, 'profile'); const provider = await providerFixture();
+  let application: ElectronApplication | undefined;
+  try {
+    let started = await launch(profile); application = started.application; let page = started.page;
+    await setGlobal(page, { apiFormat: 'openai_chat', baseUrl: provider.baseUrl, model: 'one-shared-fixture-model', apiKey: 'fixture-catalogue-key' });
+    await page.locator('[data-application-module="companions"]').click();
+    const state = (await request(page, { type: 'state' })).state!;
+    expect(state.companions).toHaveLength(15);
+    const additions = state.companions.filter(item => !item.id.startsWith('deepseek-'));
+    expect(additions).toHaveLength(13);
+    await page.getByRole('button', { name: '联系人', exact: true }).click();
+    await expect(page.locator('[data-companion-contact]')).toHaveCount(15);
+    await page.getByRole('button', { name: '添加联系人', exact: true }).click();
+    const catalogue = page.getByRole('dialog', { name: '添加联系人', exact: true });
+    await expect(catalogue.locator('[data-builtin-template]')).toHaveCount(15);
+    const decoded = await catalogue.locator('.has-square-image').evaluateAll(async elements => Promise.all(elements.map(async element => {
+      const url = getComputedStyle(element).backgroundImage.slice(5, -2);
+      const image = new Image(); image.src = url; await image.decode();
+      return image.naturalWidth > 0 && image.naturalHeight === image.naturalWidth;
+    })));
+    expect(decoded).toHaveLength(13); expect(decoded.every(Boolean)).toBe(true);
+    await catalogue.getByRole('button', { name: '原创角色', exact: true }).click();
+    await expect(catalogue.locator('[data-builtin-template]')).toHaveCount(2);
+    mkdirSync(path.resolve('artifacts/companions'), { recursive: true });
+    await page.screenshot({ path: path.resolve('artifacts/companions/verified-catalogue-originals.png') });
+    await catalogue.getByRole('button', { name: '社区伙伴', exact: true }).click();
+    await expect(catalogue.locator('[data-builtin-template]')).toHaveCount(5);
+    await page.screenshot({ path: path.resolve('artifacts/companions/verified-catalogue-community.png') });
+    await catalogue.getByRole('button', { name: '全部', exact: true }).click();
+    await catalogue.getByRole('textbox', { name: '搜索内置角色', exact: true }).fill('白龙');
+    await expect(catalogue.locator('[data-builtin-template]')).toHaveCount(1);
+    await catalogue.locator('[data-builtin-template="gpt"]').getByRole('button').click();
+    await expect(page.locator('.companions-chat-header h2')).toHaveText('GPT');
+    for (const role of additions) {
+      const source = await sendBridge(page, 'private-' + role.id, '迁移私聊验收：请回应这条消息。', [role.id]);
+      const replies = (await messages(page, 'private-' + role.id)).filter(item => item.replyToId === source.id);
+      expect(replies).toHaveLength(1); expect(replies[0]!.authorId).toBe(role.id); expect(replies[0]!.segments).toHaveLength(1);
+    }
+    const group = (await request(page, { type: 'conversation.create-group', title: '', memberIds: ['huan-white', 'gpt', 'doro'] })).conversation!;
+    const groupSource = await sendBridge(page, group.id, '迁移群聊验收：每位伙伴各说一句。', group.memberIds);
+    expect((await messages(page, group.id)).filter(item => item.replyToId === groupSource.id)).toHaveLength(3);
+    expect(provider.requests.every(item => item.model === 'one-shared-fixture-model' && item.headers.authorization === 'Bearer fixture-catalogue-key')).toBe(true);
+    const gpt = state.companions.find(item => item.id === 'gpt')!;
+    await request(page, { type: 'companion.update', id: gpt.id, companion: { name: '小白龙', description: '我的白龙签名', persona: '用户编辑的白龙人设', avatar: gpt.avatar, model: '', proactive: false } });
+    await request(page, { type: 'companion.delete', id: gpt.id });
+    await application.close(); application = undefined;
+    started = await launch(profile); application = started.application; page = started.page;
+    expect((await request(page, { type: 'state' })).state!.companions.some(item => item.id === 'gpt')).toBe(false);
+    const restored = (await request(page, { type: 'companion.add-builtin', templateId: 'gpt' })).companion!;
+    expect(restored).toMatchObject({ id: 'gpt', name: '小白龙', description: '我的白龙签名', persona: '用户编辑的白龙人设' });
+    expect((await messages(page, 'private-gpt')).filter(item => item.kind === 'notice')).toHaveLength(1);
+    await page.locator('[data-application-module="companions"]').click();
+    await page.getByRole('button', { name: '联系人', exact: true }).click();
+    await page.locator('[data-companion-contact="gpt"]').click();
+    await expect(page.locator('.companions-character-art img')).toBeVisible();
+    await page.screenshot({ path: path.resolve('artifacts/companions/verified-catalogue-profile.png') });
+  } finally { if (application) await application.close(); await provider.close(); cleanup(root); }
+});
 test('shows a durable FIFO inbox after the fifth private reply and resumes unstarted messages automatically', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-queue-'));
   const profile = path.join(root, 'profile');
@@ -328,7 +389,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     await page.locator('[data-application-module="companions"]').click();
     await expect(page.locator('[data-companions]')).toBeVisible();
     await expect(page.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
-    await expect(page.locator('[data-companion-conversation]')).toHaveCount(2);
+    await expect(page.locator('[data-companion-conversation]')).toHaveCount(15);
     const state = (await request(page, { type: 'state' })).state!;
     expect(state.configured).toBe(true);
     expect(state.companions.every(companion => !companion.llm && companion.model === '')).toBe(true);
@@ -405,6 +466,8 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     await page.getByRole('button', { name: '创建群聊', exact: true }).click();
     const groupDialog = page.getByRole('dialog', { name: '创建群聊', exact: true });
     await groupDialog.getByLabel('群聊名称', { exact: true }).fill('蓝色海边');
+    await expect(groupDialog.locator('.companions-member-picker input:checked')).toHaveCount(0);
+    for (const name of ['大肥鱼', '小肥鱼', custom.name]) await groupDialog.getByLabel(name, { exact: true }).check();
     await expect(groupDialog.locator('.companions-member-picker input:checked')).toHaveCount(3);
     await groupDialog.getByRole('button', { name: '创建群聊', exact: true }).click();
     await expect(groupDialog).toHaveCount(0);
@@ -431,7 +494,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     await page.locator('[data-companion-contact="deepseek-sister"]').click();
     await expect(page.getByRole('heading', { name: '联系人', exact: true })).toBeVisible();
     await expect(page.locator('.companions-contact-profile h2')).toHaveText('大肥鱼');
-    await expect(page.locator('[data-companion-contact]')).toHaveCount(3);
+    await expect(page.locator('[data-companion-contact]')).toHaveCount(16);
     await page.screenshot({ path: path.join(artifacts, 'verified-contacts-light.png') });
 
     const requestCount = provider.requests.length;
@@ -481,7 +544,7 @@ test('global routing updates immediately while an independent encrypted role con
     const page = launched.page;
     await setGlobal(page, { apiFormat: 'openai_chat', baseUrl: `${provider.baseUrl}/global-a/v1`, model: 'global-one', apiKey: globalOne });
     await page.locator('[data-application-module="companions"]').click();
-    await expect(page.locator('[data-companion-conversation]')).toHaveCount(2);
+    await expect(page.locator('[data-companion-conversation]')).toHaveCount(15);
     await sendBridge(page, 'private-deepseek-sister', '第一组全局连接', ['deepseek-sister']);
     expect(provider.requests.at(-1)).toMatchObject({ path: '/global-a/v1/chat/completions', model: 'global-one', companionId: 'deepseek-sister' });
     expect(provider.requests.at(-1)?.headers.authorization).toBe(`Bearer ${globalOne}`);

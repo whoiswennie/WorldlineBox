@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { dshExecutionAccessModeSchema } from './dsh-access';
 import { companionWorkSchema } from './companion-loop';
+import { COMPANION_AVATAR_IDS, COMPANION_TEMPLATE_IDS } from './companion-template-ids';
 
 export const COMPANIONS_CHANNEL = 'worldlinebox:companions';
 export const COMPANIONS_CHANGED_CHANNEL = 'worldlinebox:companions-changed';
@@ -12,7 +13,7 @@ export const companionLlmSchema = z.object({
 export const companionSchema = z.object({
   id: companionIdSchema, name: z.string().trim().min(1).max(60),
   description: z.string().max(500), persona: z.string().min(1).max(12000),
-  model: z.string().max(160), avatar: z.enum(['sister', 'flash', 'custom']),
+  model: z.string().max(160), avatar: z.enum(COMPANION_AVATAR_IDS),
   builtin: z.boolean(), proactive: z.boolean(), createdAt: z.string(),
   llm: companionLlmSchema.optional(),
   avatarAttachmentId: companionIdSchema.optional(),
@@ -91,7 +92,7 @@ export type CompanionDraft = z.infer<typeof companionDraftSchema>;
 export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('message.guide'), id: companionIdSchema, targetSourceMessageId: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('state') }),
-  z.strictObject({ type: z.literal('companion.add-builtin'), templateId: z.enum(['sister', 'flash']) }),
+  z.strictObject({ type: z.literal('companion.add-builtin'), templateId: z.enum(COMPANION_TEMPLATE_IDS) }),
   z.strictObject({ type: z.literal('companion.create'), companion: companionDraftSchema, apiKey: z.string().max(8192).optional() }),
   z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, apiKey: z.string().max(8192).optional() }),
   z.strictObject({ type: z.literal('companion.delete'), id: companionIdSchema }),

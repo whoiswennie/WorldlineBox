@@ -100,6 +100,22 @@ async function fill(selector: string, value: string) {
 async function select(selector: string, value: string) { const element = container!.querySelector<HTMLSelectElement>(selector)!; await act(() => { element.value = value; element.dispatchEvent(new Event('change', { bubbles: true })); }); }
 async function submitDialog() { const form = container!.querySelector<HTMLFormElement>('[role="dialog"] form')!; await act(() => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); }
 
+it('searches and filters the full built-in catalogue and restores the selected role with its own template ID', async () => {
+  const f = fixture({ companions: sisters.filter(item => item.id !== 'phoebe') });
+  await mount(f.api); await click('联系人'); await click('添加新的伙伴');
+  const dialog = container!.querySelector('[role="dialog"]')!;
+  expect(dialog.querySelectorAll('[data-builtin-template]')).toHaveLength(15);
+  await click('原创角色', dialog);
+  expect([...dialog.querySelectorAll('[data-builtin-template]')].map(item => item.getAttribute('data-builtin-template'))).toEqual(['huan-white', 'huan-black']);
+  await click('全部', dialog);
+  await fill('input[aria-label="搜索内置角色"]', '菲比');
+  expect(dialog.querySelectorAll('[data-builtin-template]')).toHaveLength(1);
+  const card = dialog.querySelector('[data-builtin-template="phoebe"]')!;
+  expect(card.querySelector('.companion-avatar')!.classList.contains('has-square-image')).toBe(true);
+  await click('添加', card);
+  expect(f.request).toHaveBeenCalledWith({ type: 'companion.add-builtin', templateId: 'phoebe' });
+});
+
 it('keeps private and group conversations in the message list and opens the same private conversation from contacts', async () => {
   const f = fixture(); await mount(f.api);
   const navigation = container!.querySelector('nav[aria-label="伙伴导航"]')!;
@@ -317,7 +333,7 @@ it('configures an independent service without revealing a saved key and retains 
 it('creates a group and manages its name and membership in the same conversation', async () => {
   const f = fixture(); await mount(f.api); await click('创建群聊');
   await fill('[role="dialog"] input:not([type="checkbox"])', '摸鱼小组');
-  await act(() => container!.querySelectorAll<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')[1]!.click());
+  await act(() => container!.querySelectorAll<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')[0]!.click());
   await submitDialog();
   expect(f.request).toHaveBeenCalledWith({ type: 'conversation.create-group', title: '摸鱼小组', memberIds: ['deepseek-sister'] });
   await click('管理群聊'); await fill('[role="dialog"] input:not([type="checkbox"])', '一起看海'); await submitDialog();

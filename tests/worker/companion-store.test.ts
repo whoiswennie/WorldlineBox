@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import { companionStorageCommandSchema } from '../../src/shared/companion-storage';
+import { BUILTIN_COMPANIONS, BUILTIN_WELCOMES } from '../../src/shared/companion-personas';
 
 const seeds: CompanionSeed[] = [
   { id: 'deepseek-sister', name: '大肥鱼', description: '姐姐', persona: '温柔沉稳', model: '', avatar: 'sister', proactive: false },
@@ -64,6 +65,35 @@ afterEach(() => {
 });
 
 describe('CompanionsStore real SQLite persistence', () => {
+  it('adds missing catalogue contacts to an old database without resetting edits, tombstones, memory or history', () => {
+    const { store, databasePath } = fixture();
+    store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '自定义姐姐', description: '我的签名', persona: '用户编辑的人设' });
+    const original = store.appendMessage({ conversationId: 'private-deepseek-sister', authorId: 'user', content: '迁移前的消息' });
+    store.request({ type: 'memory.save', memory: { companionId: 'deepseek-sister', content: '迁移前的约定', origin: 'user' } });
+    store.deleteCompanion('deepseek-flash');
+    close(store);
+    const upgraded = new CompanionsStore(databasePath); stores.push(upgraded);
+    const state = upgraded.state();
+    expect(state.companions).toHaveLength(14);
+    expect(state.companions.find(item => item.id === 'deepseek-sister')).toMatchObject({ name: '自定义姐姐', description: '我的签名', persona: '用户编辑的人设' });
+    expect(state.companions.some(item => item.id === 'deepseek-flash')).toBe(false);
+    expect(upgraded.getMessage(original.id).content).toBe('迁移前的消息');
+    expect(upgraded.listMemory('deepseek-sister').map(item => item.content)).toContain('迁移前的约定');
+    for (const profile of BUILTIN_COMPANIONS.slice(2)) {
+      expect(state.companions.find(item => item.id === profile.id)).toMatchObject({ avatar: profile.avatar, builtin: true, model: '' });
+      expect(upgraded.messages({ conversationId: 'private-' + profile.id }).messages.filter(item => item.content === BUILTIN_WELCOMES[profile.id])).toHaveLength(1);
+    }
+    upgraded.updateCompanion('gpt', { ...BUILTIN_COMPANIONS.find(item => item.id === 'gpt')!, name: '小白龙', avatar: 'custom', avatarAttachmentId: undefined, persona: '我修改了白龙的设定' });
+    upgraded.deleteCompanion('doro');
+    close(upgraded);
+    const reopened = new CompanionsStore(databasePath); stores.push(reopened);
+    expect(reopened.state().companions).toHaveLength(13);
+    expect(reopened.restoreBuiltin('gpt')).toMatchObject({ name: '小白龙', avatar: 'custom', persona: '我修改了白龙的设定' });
+    const restored = reopened.restoreBuiltin('doro');
+    expect(restored.id).toBe('doro');
+    expect(reopened.restoreBuiltin('doro').id).toBe(restored.id);
+    expect(reopened.messages({ conversationId: 'private-doro' }).messages.filter(item => item.content === BUILTIN_WELCOMES.doro)).toHaveLength(1);
+  });
   it('recovers a partial group reply and the same task identity with atomic checkpoint inputs after reopening', () => {
     const { store, databasePath } = fixture();
     const group = store.createConversation('', ['deepseek-sister', 'deepseek-flash']);
@@ -398,7 +428,7 @@ describe('CompanionsStore real SQLite persistence', () => {
     roots.push(root);
     const store = new CompanionsStore(path.join(root, 'messages.sqlite'));
     stores.push(store);
-    expect(store.state().companions).toHaveLength(2);
+    expect(store.state().companions).toHaveLength(BUILTIN_COMPANIONS.length);
     for (const companion of store.state().companions) {
       expect(companion.model).toBe('');
       expect(companion.llm).toBeUndefined();

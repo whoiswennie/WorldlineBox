@@ -2,13 +2,35 @@ import type { CSSProperties } from 'react';
 import type { Companion } from '../../shared/companions';
 import sisterImage from '../../../assets/companions/deepseek-sister.jpg';
 import flashImage from '../../../assets/companions/deepseek-flash.jpg';
+import whiteImage from '../../../assets/companions/portraits/huan-white-v1.png';
+import blackImage from '../../../assets/companions/portraits/huan-black-v1.png';
+import geminiImage from '../../../assets/companions/portraits/gemini-v2.png';
+import gptImage from '../../../assets/companions/portraits/gpt-v2.png';
+import grokImage from '../../../assets/companions/portraits/grok-v1.png';
+import kimiImage from '../../../assets/companions/portraits/kimi-v1.png';
+import minimaxImage from '../../../assets/companions/portraits/minimax-v2.png';
+import qwenImage from '../../../assets/companions/portraits/qwen-v2.png';
+import gugugagaImage from '../../../assets/companions/portraits/gugugaga-v1.png';
+import gugaImage from '../../../assets/companions/portraits/guga-v1.png';
+import doroImage from '../../../assets/companions/portraits/doro-v1.png';
+import phoebeImage from '../../../assets/companions/portraits/phoebe-v1.png';
+import phrolovaImage from '../../../assets/companions/portraits/phrolova-v1.png';
 
-export const companionImages = { sister: sisterImage, flash: flashImage };
+export const companionImages: Record<Exclude<Companion['avatar'], 'custom'>, string> = {
+  sister: sisterImage, flash: flashImage, 'huan-white': whiteImage, 'huan-black': blackImage,
+  gemini: geminiImage, gpt: gptImage, grok: grokImage, kimi: kimiImage, minimax: minimaxImage, qwen: qwenImage,
+  gugugaga: gugugagaImage, guga: gugaImage, doro: doroImage, phoebe: phoebeImage, phrolova: phrolovaImage,
+};
+export function companionPortrait(companion: Pick<Companion, 'avatar' | 'avatarAttachmentId'>): string | undefined {
+  return companion.avatarAttachmentId ? `worldlinebox-companion://attachment/${encodeURIComponent(companion.avatarAttachmentId)}`
+    : companion.avatar !== 'custom' ? companionImages[companion.avatar] : undefined;
+}
 
 export function Avatar({ companion, large = false }: { companion?: Pick<Companion, 'name' | 'avatar' | 'avatarAttachmentId'>; large?: boolean }) {
   const localImage = companion?.avatarAttachmentId ? `worldlinebox-companion://attachment/${encodeURIComponent(companion.avatarAttachmentId)}` : undefined;
-  const image = localImage ?? (companion?.avatar === 'sister' || companion?.avatar === 'flash' ? companionImages[companion.avatar] : undefined);
-  return <span className={`companion-avatar${large ? ' is-large' : ''}${image ? ' has-image' : ''}${localImage ? ' has-local-image' : ''}`} aria-hidden="true" style={image ? { backgroundImage: `url("${image}")` } as CSSProperties : undefined}>{image ? '' : companion?.name.slice(0, 1) || '我'}</span>;
+  const image = companion ? companionPortrait(companion) : undefined;
+  const squareImage = localImage || (image && companion?.avatar !== 'sister' && companion?.avatar !== 'flash');
+  return <span className={`companion-avatar${large ? ' is-large' : ''}${image ? ' has-image' : ''}${squareImage ? ' has-square-image' : ''}${localImage ? ' has-local-image' : ''}`} aria-hidden="true" style={image ? { backgroundImage: `url("${image}")` } as CSSProperties : undefined}>{image ? '' : companion?.name.slice(0, 1) || '我'}</span>;
 }
 
 export function ChatGlyph({ name }: { name: 'chat' | 'contacts' | 'smile' | 'attach' | 'image' | 'reply' | 'send' | 'group' | 'pin' | 'bell' | 'more' }) {

@@ -104,3 +104,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## 旧项目伙伴形象与新绘聊天头像
+
+2026-10-14 从维护者指定的旧 WorldlineBox 工作区承接 13 位角色的作者设定，并使用内置 imagegen 依据旧身份参考重新绘制聊天头像。白幻、黑幻为旧项目原创角色；Gemini、GPT、Grok、Kimi、MiniMax、Qwen 为旧项目采用的社区 AI 拟人形象，系列来源可核对 ZipZipPipe 的《大AI和小AI们》。相关公司名称只用于虚构角色身份，不声明官方角色、合作或模型绑定。
+
+咕咕嘎嘎为高松灯企鹅分支（原角色关联 BanG Dream!），咕嘎为女管理员企鹅分支（原角色关联明日方舟：终末地）；Doro 为 NIKKE / SHIFT UP 相关社区 Q 版形象；菲比啾比与弗糯糯分别为鸣潮 / Kuro Games 角色的社区演绎。具体参考以维护者旧项目素材为准；不随本项目搬运社区视频、模型或远程原图。
+
+头像生成不移除底层人物设计的第三方来源，也不将这些设计自动纳入本项目 MIT 代码许可。原作者在鲸鱼娘系列说明中声明上善无形来源及 CC BY-NC-SA 4.0 非商业同协议使用；各其他参考图的具体授权没有由本次重绘重新确定。完整来源、核对范围和提示词见 `docs/developer/companion-catalogue.md` 与 `assets/companions/portraits/manifest.json`。

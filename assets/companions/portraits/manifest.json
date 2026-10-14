@@ -1,0 +1,159 @@
+{
+  "version": 1,
+  "portraits": [
+    {
+      "id": "huan-white",
+      "file": "assets/companions/portraits/huan-white-v1.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/standard-v1/huan-white/orthographic-v1.png",
+      "referenceSha256": "df18eb61efab744fc771927cd1225c836a2452713b52faee53c72bf01b7d8a67",
+      "sha256": "f0f2cf281805460db2c44fb2e041a258d62efc16cc364462afce6d8006e52570",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 内置联系人方形头像。参考图只用于该角色身份与服饰锚点；重新绘制一张新的头像，不要三视图，不要直接剪裁参考。\n角色：白幻。银白长发，浅虹彩蓝粉发尾，水蓝眼，细侧辫，白色蕾丝领与深蓝领结。温和好奇，轻柔微笑。绝不添加耳朵、角或帽子。\n统一美术：精致清爽的日系二次元插画，干净线条，柔和赛璐璐阴影，清晰眼睛，低噪声、少纹理；头肩近景、稍微四分之三朝向，但 Gemini 不翻转参考；头部占约65%，完整发饰置于中心85%圆形裁切安全区，肩与领口可见。1024x1024方形，浅淡有色纯背景，与发色有足够对比，不要白底抠图，不要圆形边框。专业聊天软件40px也易辨识。只有一个人物，无文本、无水印、无界面、无标牌，不新增与参考无关的道具。"
+    },
+    {
+      "id": "huan-black",
+      "file": "assets/companions/portraits/huan-black-v1.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/standard-v1/huan-black/orthographic-v1.png",
+      "referenceSha256": "612accd434e4ae14d984b7396f85357877328dc6283eb8861444f2cfaa12f23e",
+      "sha256": "e2a68f72a14addcd88c6bc18fffdd317b5eaae4f7a1150b5becd6e04cd9079e6",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 内置联系人方形头像。参考图只用于该角色身份与服饰锚点；重新绘制一张新的头像，不要三视图，不要直接剪裁参考。\n角色：黑幻。黑色长发，紫红色渐变发尾，赤红眼，侧辫，黑色高领与露肩袖，低调紫红细节。沉静但亲切的小微笑。没有礼帽、红心脸颊或白手套。\n统一美术：精致清爽的日系二次元插画，干净线条，柔和赛璐璐阴影，清晰眼睛，低噪声、少纹理；头肩近景、稍微四分之三朝向，但 Gemini 不翻转参考；头部占约65%，完整发饰置于中心85%圆形裁切安全区，肩与领口可见。1024x1024方形，浅淡有色纯背景，与发色有足够对比，不要白底抠图，不要圆形边框。专业聊天软件40px也易辨识。只有一个人物，无文本、无水印、无界面、无标牌，不新增与参考无关的道具。"
+    },
+    {
+      "id": "gemini",
+      "file": "assets/companions/portraits/gemini-v2.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/builtin-companions/gemini/identity-reference.jpg",
+      "referenceSha256": "48a00d4c7573521267f7b1afaaf6b8029a27843a0b410f214134dc0855b0dc77",
+      "sha256": "2d40b1edcf76a30a32a91086276409aab861d885aa234f69f401b1961f9d43de",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 内置联系人方形头像。参考图只用于该角色身份与服饰锚点；重新绘制一张新的头像，不要三视图，不要直接剪裁参考。\n角色：Gemini 星光猫系少女。蓝紫渐变长发，猫耳与同色猫尾，多彩四芒星发饰。保持参考图眼色位置：画面左边的眼睛粉红，画面右边的眼睛金色，不能镜像或互换。深紫白紫星饰上衣，俏皮好奇。猫耳必须完整。\n统一美术：精致清爽的日系二次元插画，干净线条，柔和赛璐璐阴影，清晰眼睛，低噪声、少纹理；头肩近景、稍微四分之三朝向，但 Gemini 不翻转参考；头部占约65%，完整发饰置于中心85%圆形裁切安全区，肩与领口可见。1024x1024方形，浅淡有色纯背景，与发色有足够对比，不要白底抠图，不要圆形边框。专业聊天软件40px也易辨识。只有一个人物，无文本、无水印、无界面、无标牌，不新增与参考无关的道具。",
+      "revisions": [
+        {
+          "prompt": "Use case: identity-preserve. 目标图是图1，本次只修正头像取景范围。保留图1人物长相、眼色、服装和画风，把人物缩小、后退，给完整头部和配件留出更多背景；不得改变人物身份、表情与眼色位置。方形1024x1024。完整两只猫耳和四芒星发饰必须全部可见、距画面顶边至少12%，关键脸部和头饰处在中心圆形头像安全区内。画幅顶部不能再切掉头饰或头顶。脸宽约画幅35%，干净的浅色简背景。图2仅作为原身份校验，不画回全身立绘，不绘制三视图。只有一人，无文字、水印或界面。",
+          "inputSha256": "8a0492e2c7d16032fa89c61c524cf4de01a5a097631e9b3b4817d32aefc1cc77"
+        }
+      ]
+    },
+    {
+      "id": "gpt",
+      "file": "assets/companions/portraits/gpt-v2.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/builtin-companions/gpt/identity-reference.jpg",
+      "referenceSha256": "d0d412e39362e66050810611fbb4b6558e07e23b9ccbb04763d53d99bcb74dd7",
+      "sha256": "ad6c289b4707bcfd1d5098db3fb1990f5060e8377d5a61889f1634a39b047d33",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 内置联系人方形头像。参考图只用于该角色身份与服饰锚点；重新绘制一张新的头像，不要三视图，不要直接剪裁参考。\n角色：GPT 白龙少女。银白长发、淡紫双眼、两只白鳞长角、尖耳、结纹发饰、白色高领衣裙。角完整留在圆形安全区，小白翼与白鳞龙尾的弧线可在肩后出现，不能变成普通白发少女。平静可靠，轻柔微笑。\n统一美术：精致清爽的日系二次元插画，干净线条，柔和赛璐璐阴影，清晰眼睛，低噪声、少纹理；头肩近景、稍微四分之三朝向，但 Gemini 不翻转参考；头部占约65%，完整发饰置于中心85%圆形裁切安全区，肩与领口可见。1024x1024方形，浅淡有色纯背景，与发色有足够对比，不要白底抠图，不要圆形边框。专业聊天软件40px也易辨识。只有一个人物，无文本、无水印、无界面、无标牌，不新增与参考无关的道具。",
+      "revisions": [
+        {
+          "prompt": "Use case: identity-preserve. 目标图是图1，本次只修正头像取景范围。保留图1人物长相、眼色、服装和画风，把人物缩小、后退，给完整头部和配件留出更多背景；不得改变人物身份、表情与眼色位置。方形1024x1024。完整两只白鳞龙角和呆毛必须全部可见、距画面顶边至少12%，关键脸部和头饰处在中心圆形头像安全区内。画幅顶部不能再切掉头饰或头顶。脸宽约画幅35%，干净的浅色简背景。图2仅作为原身份校验，不画回全身立绘，不绘制三视图。只有一人，无文字、水印或界面。",
+          "inputSha256": "8eefbe400b41f61c0b623d4d24c5734e6d07eaf282b61aa9a75b7b4086c66eb6"
+        }
+      ]
+    },
+    {
+      "id": "grok",
+      "file": "assets/companions/portraits/grok-v1.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/builtin-companions/grok/identity-reference.jpg",
+      "referenceSha256": "f9ef7ca0579ce8160a6e5f6af92a91db558fcc7baaed67de7794d8fad6fbc975",
+      "sha256": "d39e31aa4d4f644b8f8a55d9d1bd59e8f506a3689888145872a4c7ad356b376a",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人专用新头像。输入图为身份参考，请保留角色辨识特征，重新画一张，不直接裁切。\n角色：Grok 金发双马尾、蓝眼、尖耳、黑蝴蝶结、小金黑冠与黑蝙蝠翼饰。黑金红哥特领口，机灵有一点得意的笑。留在画面边缘的黑金X斧仅作为小造型细节，不遮脸。\n画风与已完成同系列头像一致：精致清爽日系二次元，干净线条、柔和赛璐璐阴影、浅淡有色背景、清楚眼睛。1024x1024方形。构图头肩胸像，完整头、帽子/发饰全部入镜，所有主要饰物距边缘至少10%；脸宽约画幅38%，不要极端大头贴边，圆形头像安全区内完整保留脸和关键发饰。稍微四分之三姿势，细节简洁，使40px聊天列表也容易识别。单个人物，无标题、无文本、水印、界面或圆形边框；服装配饰可以保留原参考的品牌纹样。"
+    },
+    {
+      "id": "kimi",
+      "file": "assets/companions/portraits/kimi-v1.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/builtin-companions/kimi/identity-reference.jpg",
+      "referenceSha256": "b355e794df9a28f80de7db78b8a5bbbfda7584ca5548e5895fa04aa62082c31c",
+      "sha256": "51e362eca052cc67f816a84e5092ead2e5d69970d7ad99bdcb206239cb59cd60",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人专用新头像。输入图为身份参考，请保留角色辨识特征，重新画一张，不直接裁切。\n角色：Kimi 银白波浪长发、紫眼、白蕾丝发箍、月形K饰与深蓝缎带、白蕾丝深蓝音乐女仆领口。安静细腻的微笑，与白幻的蓝瞳、GPT龙角有明显区别。\n画风与已完成同系列头像一致：精致清爽日系二次元，干净线条、柔和赛璐璐阴影、浅淡有色背景、清楚眼睛。1024x1024方形。构图头肩胸像，完整头、帽子/发饰全部入镜，所有主要饰物距边缘至少10%；脸宽约画幅38%，不要极端大头贴边，圆形头像安全区内完整保留脸和关键发饰。稍微四分之三姿势，细节简洁，使40px聊天列表也容易识别。单个人物，无标题、无文本、水印、界面或圆形边框；服装配饰可以保留原参考的品牌纹样。"
+    },
+    {
+      "id": "minimax",
+      "file": "assets/companions/portraits/minimax-v2.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/builtin-companions/minimax/identity-reference.jpg",
+      "referenceSha256": "a4ac6924fde9dd13653fa014f6aa1319578bce7b365cbdd4a9b92125c3e7fd8b",
+      "sha256": "3bb6e73122084ace4476b545013bfd2fb7baea89d5bc1bd41ddec873e22e0b0a",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人专用新头像。输入图为身份参考，请保留角色辨识特征，重新画一张，不直接裁切。\n角色：MiniMax 橘粉短发、粉红双眼、粉白记者贝雷帽、白粉记者外套与胸前小录音器。明快热情，开放自然的微笑。不改长发，不添加动物耳朵。\n画风与已完成同系列头像一致：精致清爽日系二次元，干净线条、柔和赛璐璐阴影、浅淡有色背景、清楚眼睛。1024x1024方形。构图头肩胸像，完整头、帽子/发饰全部入镜，所有主要饰物距边缘至少10%；脸宽约画幅38%，不要极端大头贴边，圆形头像安全区内完整保留脸和关键发饰。稍微四分之三姿势，细节简洁，使40px聊天列表也容易识别。单个人物，无标题、无文本、水印、界面或圆形边框；服装配饰可以保留原参考的品牌纹样。",
+      "revisions": [
+        {
+          "prompt": "Use case: identity-preserve. 目标图是图1，本次只修正头像取景范围。保留图1人物长相、眼色、服装和画风，把人物缩小、后退，给完整头部和配件留出更多背景；不得改变人物身份、表情与眼色位置。方形1024x1024。完整帽子必须全部可见、距画面顶边至少12%，关键脸部和头饰处在中心圆形头像安全区内。画幅顶部不能再切掉头饰或头顶。脸宽约画幅35%，干净的浅色简背景。图2仅作为原身份校验，不画回全身立绘，不绘制三视图。只有一人，无文字、水印或界面。",
+          "inputSha256": "e638d45e46f50d83aebdc1558643b0f374c28adab2d1a856500e1b5404b5b7b9"
+        }
+      ]
+    },
+    {
+      "id": "qwen",
+      "file": "assets/companions/portraits/qwen-v2.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/builtin-companions/qwen/identity-reference.jpg",
+      "referenceSha256": "bc3f439217b5568a4a7782009700f01d763ae8e79331ec7ebad644958786e375",
+      "sha256": "5b87109d23bdccd8e81aa9838e0db0ba03947ec4e22e1bbed834cc7ddf3785f3",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人专用新头像。输入图为身份参考，请保留角色辨识特征，重新画一张，不直接裁切。\n角色：Qwen 蓝紫长发、一条清晰侧辫、紫眼、深蓝小帽与三叶形饰件、白蓝中式领口盘扣、金边披帛。亲切有主见的小微笑，肩边一小部分蓝紫折扇可见。\n画风与已完成同系列头像一致：精致清爽日系二次元，干净线条、柔和赛璐璐阴影、浅淡有色背景、清楚眼睛。1024x1024方形。构图头肩胸像，完整头、帽子/发饰全部入镜，所有主要饰物距边缘至少10%；脸宽约画幅38%，不要极端大头贴边，圆形头像安全区内完整保留脸和关键发饰。稍微四分之三姿势，细节简洁，使40px聊天列表也容易识别。单个人物，无标题、无文本、水印、界面或圆形边框；服装配饰可以保留原参考的品牌纹样。",
+      "revisions": [
+        {
+          "prompt": "Use case: identity-preserve. 目标图是图1，本次只修正头像取景范围。保留图1人物长相、眼色、服装和画风，把人物缩小、后退，给完整头部和配件留出更多背景；不得改变人物身份、表情与眼色位置。方形1024x1024。完整帽子必须全部可见、距画面顶边至少12%，关键脸部和头饰处在中心圆形头像安全区内。画幅顶部不能再切掉头饰或头顶。脸宽约画幅35%，干净的浅色简背景。图2仅作为原身份校验，不画回全身立绘，不绘制三视图。只有一人，无文字、水印或界面。",
+          "inputSha256": "1eaa49f05aaf0c78666d20e2cebcf736d1ca91e95aca610495a2210626de9a46"
+        }
+      ]
+    },
+    {
+      "id": "gugugaga",
+      "file": "assets/companions/portraits/gugugaga-v1.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/standard-v1/gugugaga/orthographic-v1.png",
+      "referenceSha256": "9c4b032b208a0a74bfb10114beb5b0347b76d75ffff31904a15986ae66fa4053",
+      "sha256": "53ce08a05c427a540ea11c0779141479e082178a416e80a167eee6c3a7bd843d",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人方形新头像。图为角色身份参考，重新绘制一张与原参考明确一致的新头像，不要三视图，不直接裁切原图。\n角色：咕咕嘎嘎（凑企鹅）。高松灯风格短灰黑bob，人类动画脸、紫灰双眼、黑背翅膀、黄米色圆腹、棕橙企鹅脚。必须画胖企鹅真实轮廓，不是穿企鹅衣服的人类少女，绝对无企鹅兜帽或X发夹。呆萌但有一点好奇。\n单个角色，方形1024x1024。统一为清爽精致的2D插画，干净描边与柔和赛璐璐阴影，但保留该meme/Q版原有脸型和体型，不全部变为标准美少女。圆形裁切安全区内有完整脸与关键帽子/发饰，人物距边缘10%留白。企鹅和四足Doro可以画全身近景，头脸大而清楚，同时身体、脚和轮廓可辨；菲比和弗糯糯可头肩近景。浅淡柔和彩色简单背景，40px可辨认，不加圆形外框。只有一位角色，无文字、水印、其他人物、界面或图表。"
+    },
+    {
+      "id": "guga",
+      "file": "assets/companions/portraits/guga-v1.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/standard-v1/guga/orthographic-v1.png",
+      "referenceSha256": "fe4bbd00fc249fd2eb43d94211f90cd29814f7f72d3e3e0cbdba7ec19a30e40c",
+      "sha256": "5c412ac2c570fc76be32ff4d37861491710f34b8c98fe3f89350847df2817d4e",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人方形新头像。图为角色身份参考，重新绘制一张与原参考明确一致的新头像，不要三视图，不直接裁切原图。\n角色：咕嘎（香企鹅）。短黑bob、蓝灰双眼，黑色企鹅兜帽上有两只眼和黄色喙，青色X发夹，白色圆肚、黑色翅膀、黄色企鹅脚，脖子银色大链扣。胖圆企鹅形态，不是少女全身。柔软的小微笑。\n单个角色，方形1024x1024。统一为清爽精致的2D插画，干净描边与柔和赛璐璐阴影，但保留该meme/Q版原有脸型和体型，不全部变为标准美少女。圆形裁切安全区内有完整脸与关键帽子/发饰，人物距边缘10%留白。企鹅和四足Doro可以画全身近景，头脸大而清楚，同时身体、脚和轮廓可辨；菲比和弗糯糯可头肩近景。浅淡柔和彩色简单背景，40px可辨认，不加圆形外框。只有一位角色，无文字、水印、其他人物、界面或图表。"
+    },
+    {
+      "id": "doro",
+      "file": "assets/companions/portraits/doro-v1.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/standard-v1/doro/orthographic-v1.png",
+      "referenceSha256": "a1f0a0441c2e1bd415264635fd595cebb3fb66df7db4c67350dcc2e0138e2d79",
+      "sha256": "b7e3a28413c4d641d520d23fa423db1f7d21f6fdbb974d0a84ca13e7ec64704a",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人方形新头像。图为角色身份参考，重新绘制一张与原参考明确一致的新头像，不要三视图，不直接裁切原图。\n角色：Doro。大头粉色bob、巨大紫眼、粉玫瑰与紫蝴蝶结，白色毛团子身体、四个短足，低重心四足姿势！无裙装，不是直立少女。带一点猫嘴小坏笑。\n单个角色，方形1024x1024。统一为清爽精致的2D插画，干净描边与柔和赛璐璐阴影，但保留该meme/Q版原有脸型和体型，不全部变为标准美少女。圆形裁切安全区内有完整脸与关键帽子/发饰，人物距边缘10%留白。企鹅和四足Doro可以画全身近景，头脸大而清楚，同时身体、脚和轮廓可辨；菲比和弗糯糯可头肩近景。浅淡柔和彩色简单背景，40px可辨认，不加圆形外框。只有一位角色，无文字、水印、其他人物、界面或图表。"
+    },
+    {
+      "id": "phoebe",
+      "file": "assets/companions/portraits/phoebe-v1.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/standard-v1/phoebe/canonical-v2/source/phoebe-user-reference-v2.png",
+      "referenceSha256": "e63e28f0dc8752e83d0d5f3eb172612f8602368d7f291180004e925166d8c45e",
+      "sha256": "d28d58244f16459e2cc92840777d64b9c01c2867b4baac1b29fd6f7926a1d64d",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人方形新头像。图为角色身份参考，重新绘制一张与原参考明确一致的新头像，不要三视图，不直接裁切原图。\n角色：菲比啾比。完全保留清晰参考meme小人：齐刘海金色长帘发、巨大紫色椭圆眼与厚深色轮廓，白宽檐帽和蓝紫齿边帽带，蓝十字发夹，长蓝领巾、白黑小外套、金星扣、棕手套。禁止画常规anime少女眼睛；这是图中粗轮廓圆润meme风格，不能变成正常菲比原作立绘。开心小嘴。\n单个角色，方形1024x1024。统一为清爽精致的2D插画，干净描边与柔和赛璐璐阴影，但保留该meme/Q版原有脸型和体型，不全部变为标准美少女。圆形裁切安全区内有完整脸与关键帽子/发饰，人物距边缘10%留白。企鹅和四足Doro可以画全身近景，头脸大而清楚，同时身体、脚和轮廓可辨；菲比和弗糯糯可头肩近景。浅淡柔和彩色简单背景，40px可辨认，不加圆形外框。只有一位角色，无文字、水印、其他人物、界面或图表。"
+    },
+    {
+      "id": "phrolova",
+      "file": "assets/companions/portraits/phrolova-v1.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-14",
+      "legacyReference": "assets/characters/standard-v1/phrolova/orthographic-v1.png",
+      "referenceSha256": "49e35217739950b995b55d054db50a29714e22a1263cbd3d0d0111dfee0ebe5c",
+      "sha256": "acfdf287712546503c4e507f45165de279a8e03a08ac72bba2b8a604b9ca8fb3",
+      "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人方形新头像。图为角色身份参考，重新绘制一张与原参考明确一致的新头像，不要三视图，不直接裁切原图。\n角色：弗糯糯。灰青绿长波浪发、整齐刘海，半睁粉紫色双眼，红衣白领、大红蝴蝶结。Q版短腿meme小人，淡定慢半拍的小表情，不改成长腿写实少女。\n单个角色，方形1024x1024。统一为清爽精致的2D插画，干净描边与柔和赛璐璐阴影，但保留该meme/Q版原有脸型和体型，不全部变为标准美少女。圆形裁切安全区内有完整脸与关键帽子/发饰，人物距边缘10%留白。企鹅和四足Doro可以画全身近景，头脸大而清楚，同时身体、脚和轮廓可辨；菲比和弗糯糯可头肩近景。浅淡柔和彩色简单背景，40px可辨认，不加圆形外框。只有一位角色，无文字、水印、其他人物、界面或图表。"
+    }
+  ]
+}

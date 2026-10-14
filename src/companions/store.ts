@@ -149,14 +149,16 @@ export class CompanionsStore {
 
   #seed(): void {
     this.#db.transaction(() => {
-      if (this.#db.prepare("SELECT value FROM metadata WHERE key='builtin-seeded'").get()) return;
       for (const seed of this.#seeds) {
+        // Missing catalogue additions are installed once; tombstones and all
+        // saved profile edits keep precedence over bundled authoring defaults.
+        if (this.#db.prepare('SELECT 1 FROM companions WHERE id=?').get(seed.id)) continue;
         const companion: Companion = { ...companionDraftSchema.parse(seed), id: companionIdSchema.parse(seed.id), builtin: true, createdAt: stamp() };
         this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(companion.id, JSON.stringify(companion));
         const conversation = this.openPrivate(companion.id);
         this.#welcome(companion.id, conversation.id);
       }
-      this.#db.prepare("INSERT INTO metadata(key,value) VALUES('builtin-seeded','1')").run();
+      this.#db.prepare("INSERT OR IGNORE INTO metadata(key,value) VALUES('builtin-seeded','1')").run();
     }).immediate();
   }
 
