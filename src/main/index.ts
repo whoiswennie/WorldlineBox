@@ -484,7 +484,8 @@ protocol.registerSchemesAsPrivileged(worldlineboxProtocolSchemes());
 // 超时（CI mac 上 69 个 E2E 全挂）。禁用硬件加速换取稳定渲染。
 if (
   process.env.WORLDLINEBOX_E2E === "1" &&
-  process.env.WORLDLINEBOX_E2E_ENABLE_SWIFTSHADER !== "1"
+  process.env.WORLDLINEBOX_E2E_ENABLE_SWIFTSHADER !== "1" &&
+  process.env.WORLDLINEBOX_E2E_ENABLE_HARDWARE_GPU !== "1"
 ) {
   app.disableHardwareAcceleration();
 }

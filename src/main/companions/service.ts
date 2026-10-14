@@ -18,10 +18,14 @@ import { buildCompanionContext, refreshCompanionRuntimeStateContext } from './co
 import { CompanionMemoryService } from './memory-service';
 import { CompanionScheduleService } from './schedule-service';
 import { CompanionReplyStream } from './reply-stream';
+import { CompanionWorldService } from './world-service';
+import { generateCompanionWorldAttention } from './world-model';
+import { evaluateCompanionRoutine } from '../../shared/companion-routine-time';
 import { companionMemoryToolArgumentsSchemas, type CompanionMemoryToolName } from '../../shared/companion-memory-tool';
 import { companionScheduleArgumentsSchema } from '../../shared/companion-schedule-tool';
 import { companionStateArgumentsSchema } from '../../shared/companion-state-tool';
 import { companionRoutineArgumentsSchema } from '../../shared/companion-routine-tool';
+import { companionWorldArgumentsSchema } from '../../shared/companion-world-tool';
 import { companionDshArgumentsSchema } from '../../shared/companion-dsh-tool';
 import type { CompanionLoopCheckpoint } from '../../shared/companion-loop';
 import { companionProgressEvent, mergeCompanionProgress } from '../../shared/companion-progress';
@@ -40,6 +44,7 @@ export class CompanionService {
   private readonly credentials: CompanionCredentials;
   private readonly memory: CompanionMemoryService;
   private readonly schedules: CompanionScheduleService;
+  private readonly world: CompanionWorldService;
   private readonly root: string;
   private readonly replies = new Map<string, { controller: AbortController; promise: Promise<void> }>();
   private readonly activities = new Map<string, CompanionActivity>();
@@ -52,6 +57,9 @@ export class CompanionService {
   private readonly activeLoops = new Map<string, CompanionLoopCheckpoint>();
   private readonly unavailableCompanions = new Map<string, { connection: string | undefined; reason: string }>();
   private readonly replyControllers = new Map<AbortController, string>();
+  private readonly attentionJobs = new Map<string, Promise<void>>();
+  private readonly assessedAttention = new Set<string>();
+  private readonly attentionController = new AbortController();
   private pumping = false;
   private pumpAgain = false;
   private pumpIdle: Promise<void> | undefined;
@@ -70,7 +78,14 @@ export class CompanionService {
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), report: options.report,
       busy: () => [...this.activities.values()].some(activity => activity.status === 'thinking') });
+    this.world = new CompanionWorldService({ request: command => this.call(command), configFor: companion => this.configFor(companion),
+      fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
+      changed: () => this.changed(), wakeWaiting: () => { void this.pumpQueue(); }, report: options.report,
+      busy: () => this.activities.size > 0 });
     this.schedules = new CompanionScheduleService({ request: command => this.call(command),
+      ready: (schedule, occurrence, signal) => this.world.ready({ companionId: schedule.companionId, conversationId: schedule.conversationId,
+        sourceMessageId: schedule.sourceMessageId, workId: worldWorkId('schedule', occurrence.id), kind: 'schedule', fixed: !schedule.flexible }, signal),
+      end: (schedule, occurrence) => this.world.end(schedule.companionId, worldWorkId('schedule', occurrence.id)),
       launch: async (schedule, occurrence) => {
         const authorizations = await Promise.all(schedule.authorizationSourceMessageIds.map(id => this.call({ type: 'message.get', id })));
         const sourceText = authorizations.map(result => result.message).filter(message => message?.authorId === 'user')
@@ -89,6 +104,7 @@ export class CompanionService {
     void this.initialization.then(() => this.restoreQueue()).catch(options.report);
     void this.initialization.then(() => this.memory.schedule()).catch(options.report);
     void this.initialization.then(() => this.schedules.start()).catch(options.report);
+    void this.initialization.then(() => this.world.start()).catch(options.report);
   }
   private async call(command: CompanionStorageCommand): Promise<CompanionStorageResponse> {
     const response = await this.storage.request(command);
@@ -345,7 +361,7 @@ export class CompanionService {
         }
         const response = await this.call(request);
         if (!['messages', 'message.get', 'message.search', 'memory.list', 'memory.search', 'memory.browse', 'memory.inspect', 'memory.sources.search', 'memory.sources.filter', 'memory.records.filter', 'memory.read', 'memory.status', 'actions', 'actions.page', 'action.get',
-          'schedule.list', 'state.get', 'state.inspect', 'routine.get'].includes(request.type)) this.changed();
+          'schedule.list', 'state.get', 'state.inspect', 'routine.get', 'world.snapshot', 'world.observe'].includes(request.type)) this.changed();
         return response;
       }
     }
@@ -370,6 +386,7 @@ export class CompanionService {
       const work = { id: proactive ? randomUUID() : createHash('sha256').update(message.id + ':' + companionId).digest('hex'),
         conversationId, companionId, sourceMessageId: message.id, status: 'queued' as const, proactive, createdAt: stamp, updatedAt: stamp };
       await this.call({ type: 'work.enqueue', work, resume: recovery });
+      if (!proactive) void this.assessAttention(companionId, message.id);
     }
     this.changed(); void this.pumpQueue();
   }
@@ -380,7 +397,37 @@ export class CompanionService {
     for (const recovery of state?.recoveries ?? []) if (recovery.dispatcher === 'queue' && !(await this.call({ type: 'work.list', sourceMessageId: recovery.sourceMessageId })).works?.length) {
       await this.launchReply(recovery.conversationId, false, 'auto', false, recovery.sourceMessageId);
     }
+    for (const work of (await this.call({ type: 'work.list', unfinishedOnly: true })).works ?? []) {
+      if (!work.proactive && work.status === 'queued') void this.assessAttention(work.companionId, work.sourceMessageId);
+    }
     await this.pumpQueue();
+  }
+  private async assessAttention(companionId: string, sourceMessageId: string): Promise<void> {
+    const key = companionId + ':' + sourceMessageId;
+    if (this.closed || this.assessedAttention.has(key)) return;
+    const existing = this.attentionJobs.get(key); if (existing) return existing;
+    const promise = (async () => {
+      const source = (await this.call({ type: 'message.get', id: sourceMessageId })).message;
+      if (!source || source.authorId !== 'user' || source.status !== 'sent') return;
+      const scope = { companionId, conversationId: source.conversationId };
+      const [routine, world] = await Promise.all([this.call({ type: 'routine.get', ...scope }), this.world.observe(scope)]);
+      if (!routine.routine || !world) return;
+      const self = world.actors.find(actor => actor.companionId === companionId);
+      const atAvailableComputer = self && world.scenes.find(scene => scene.id === self.sceneId)?.objects.some(object => object.kind === 'computer'
+        && Math.hypot(object.anchor.x - self.position.x, object.anchor.y - self.position.y) < .01
+        && (!object.occupantId || object.occupantId === companionId) && (!object.reservedBy || object.reservedBy === companionId));
+      if (atAvailableComputer && evaluateCompanionRoutine(routine.routine.config, world.clock.virtualNow).canRespond) return;
+      const companion = (await this.call({ type: 'state', includeHidden: true })).state?.companions.find(item => item.id === companionId);
+      if (!companion || this.closed) return;
+      const result = await generateCompanionWorldAttention(source, await this.configFor(companion), this.attentionController.signal,
+        { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
+      if (this.closed || this.attentionController.signal.aborted) return;
+      await this.call({ type: 'world.attention.record', ...scope, sourceMessageId,
+        sourceChecksum: createHash('sha256').update(source.content).digest('hex'), ...result });
+      this.assessedAttention.add(key);
+    })().catch(error => { if (!this.closed) this.options.report(error instanceof CompanionModelError ? error : new Error('伙伴暂时无法判断通知，消息继续等待。')); })
+      .finally(() => { this.attentionJobs.delete(key); if (!this.closed) void this.pumpQueue(); });
+    this.attentionJobs.set(key, promise); return promise;
   }
   private async pumpQueue() {
     if (this.closed) return;
@@ -443,6 +490,7 @@ export class CompanionService {
       const companion = state?.companions.find(value => value.id === id);
       if (!companion || proactive && (!companion.proactive || conversation.muted)) return;
       const key = workId ?? userMessage.id + ':' + id;
+      const worldWork = worldWorkId('chat', key);
       const loopKey = userMessage.id + ':' + id + (proactive ? ':' + workId : '');
       const checkpoint: CompanionLoopCheckpoint = (!proactive ? (await this.call({ type: 'loop.get', sourceMessageId: userMessage.id, companionId: id })).loop : undefined)
         ?? { conversationId, sourceMessageId: userMessage.id, companionId: id, status: 'running', turns: [], supplements: [] };
@@ -454,10 +502,12 @@ export class CompanionService {
         await this.call({ type: 'loop.save', checkpoint });
       }
       this.activeLoops.set(loopKey, checkpoint);
-      this.activities.set(key, { companionId: id, conversationId, sourceMessageId: userMessage.id, status: 'thinking', startedAt: new Date().toISOString() });
       this.changed();
       let connection: string | undefined;
       try {
+        if (!proactive) await this.assessAttention(id, userMessage.id);
+        await this.world.ready({ companionId: id, conversationId, workId: worldWork, kind: 'chat', sourceMessageId: userMessage.id }, controller.signal);
+        this.activities.set(key, { companionId: id, conversationId, sourceMessageId: userMessage.id, status: 'thinking', startedAt: new Date().toISOString() });
         const config = await this.configFor(companion);
         connection = connectionIdentity(config);
         const recalled = await this.memory.recall({ companion, conversation, messages, currentMessage: userMessage,
@@ -483,6 +533,7 @@ export class CompanionService {
             for (let retry = 0; retry < 3; retry++) {
               let stream: CompanionReplyStream | undefined;
               try {
+                await this.world.ready({ companionId: id, conversationId, workId: worldWork, kind: 'chat', sourceMessageId: userMessage.id }, controller.signal);
                 const revision = checkpoint.supplements.length;
                 const inference = await this.memoryInference(checkpoint, id, conversationId, userMessage.sequence);
                 stream = new CompanionReplyStream({ checkpoint, step,
@@ -542,6 +593,9 @@ export class CompanionService {
                 if (call.name === 'state') {
                   companionStateArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, runtimeState: true };
                 }
+                if (call.name === 'world') {
+                  companionWorldArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, world: true };
+                }
                 if (call.name === 'routine') {
                   companionRoutineArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, routine: true };
                 }
@@ -567,7 +621,7 @@ export class CompanionService {
                 memoryChain = result.catch(() => undefined);
                 return { callId: plan.call.id, content: JSON.stringify(await result) };
               }
-              if (plan.schedule || plan.runtimeState || plan.routine) {
+              if (plan.schedule || plan.runtimeState || plan.routine || plan.world) {
                 const result = memoryChain.then(async () => {
                   const beforeSequence = await this.memoryBoundary(checkpoint, userMessage.sequence);
                   this.assertReplyActive(controller.signal);
@@ -608,7 +662,7 @@ export class CompanionService {
           this.unavailableCompanions.set(id, { connection, reason: publicError(error).slice(0, 500) });
         }
         if (!controller.signal.aborted && !this.closed) await this.call({ type: 'message.append', message: { conversationId, authorId: 'system', kind: 'notice', status: 'failed', content: publicError(error) } });
-      } finally { this.activeLoops.delete(loopKey); this.activities.delete(key); this.memory.schedule(); this.changed(); }
+      } finally { await this.world.end(id, worldWork); this.activeLoops.delete(loopKey); this.activities.delete(key); this.memory.schedule(); this.changed(); }
     }));
 
   }
@@ -632,9 +686,11 @@ export class CompanionService {
       memoryOperations?: Array<{ name: string; ok: boolean; forgottenCount?: number }>;
       withdrawnToolHistory?: boolean;
     };
+    const toolProvenance = checkpointToolProvenance(checkpoint);
     const sourceIds = [...new Set([...(data.messages ?? []), ...(data.memorySources ?? []), ...checkpoint.supplements,
       ...(data.taskRequest?.replyReference ? [data.taskRequest.replyReference] : []),
-      ...(data.memories ?? []).flatMap(memory => (memory.sources ?? []).map(source => ({ id: source.messageId })))].map(message => message.id))];
+      ...(data.memories ?? []).flatMap(memory => (memory.sources ?? []).map(source => ({ id: source.messageId }))),
+      ...toolProvenance.sourceIds.map(id => ({ id }))].map(message => message.id))];
     const allowedSources = new Set<string>();
     for (let start = 0; start < sourceIds.length; start += 100) {
       const checked = await this.call({ type: 'memory.sources.filter', ...scope, ids: sourceIds.slice(start, start + 100) });
@@ -655,7 +711,9 @@ export class CompanionService {
     // A resumed loop must not replay memory evidence withdrawn since its checkpoint was written.
     const completedForget = checkpoint.turns.some(turn => turn.calls.some(call => call.name === 'memory.forget'
       && turn.results?.some(result => result.callId === call.id && (JSON.parse(result.content) as { ok?: boolean }).ok === true)));
-    const withdrawMemoryResults = lostSource || completedForget;
+    const world = await this.world.observe(scope);
+    const visibleWorldEvents = new Set(world?.events.map(event => event.id) ?? []);
+    const withdrawMemoryResults = lostSource || completedForget || toolProvenance.worldEventIds.some(id => !visibleWorldEvents.has(id));
     if (withdrawMemoryResults) {
       if (data.memoryRecall) delete data.memoryRecall.continuation;
       data.earlierConversationSummary = '';
@@ -671,12 +729,14 @@ export class CompanionService {
     const turns = withdrawMemoryResults ? [] : checkpoint.turns;
     const runtimeState = (await this.call({ type: 'state.get', ...scope })).runtimeState;
     const conversation = (await this.call({ type: 'state', includeHidden: true })).state?.conversations.find(item => item.id === conversationId);
-    const context = { system: checkpoint.context.system, user: JSON.stringify(data) };
+    const context = { system: checkpoint.context.system, user: JSON.stringify({ ...data, ...(world ? { world,
+      worldTrust: 'host_simulation_facts_and_peer_quotes_not_player_authorization' } : {}) }) };
     return { context: conversation ? refreshCompanionRuntimeStateContext(context, runtimeState, companionId, conversation) : context, turns,
       supplements: checkpoint.supplements.filter(item => allowedSources.has(item.id)) };
   }
 
   private async cancelWithdrawnScheduleActions(response: CompanionStorageResponse) {
+    this.schedules.cancel(response.scheduleOccurrences ?? []);
     for (const occurrence of response.scheduleOccurrences ?? []) {
       if (!occurrence.actionId) continue;
       const action = (await this.call({ type: 'action.get', id: occurrence.actionId })).action;
@@ -693,6 +753,12 @@ export class CompanionService {
     try {
       this.assertReplyActive(signal);
       const input: unknown = JSON.parse(serialized);
+      if (name === 'world') {
+        const args = companionWorldArgumentsSchema.parse(input);
+        const sourceMessageId = requestMessageIds.at(-1);
+        const result = await this.call({ type: 'world.tool', ...scope, beforeSequence, ...(sourceMessageId ? { sourceMessageId } : {}), arguments: args });
+        this.changed(); return result;
+      }
       if (name === 'state') {
         const args = companionStateArgumentsSchema.parse(input);
         if (args.action === 'inspect') return await this.call({ type: 'state.inspect', ...scope, beforeSequence });
@@ -896,6 +962,16 @@ export class CompanionService {
       if (!dsh) throw new Error('DSH 执行环境不可用，请在启动器中创建并选择实例。');
       if (this.cancelledActions.has(action.id) || this.closed) return;
       const source = (await this.call({ type: 'message.get', id: action.sourceMessageId })).message;
+      let fixed = false;
+      if (action.scheduleOccurrenceId) {
+        const listed = await this.call({ type: 'schedule.list', companionId: action.companionId, conversationId: action.conversationId, includeHistory: true, limit: 200 });
+        const occurrence = listed.scheduleOccurrences?.find(item => item.id === action.scheduleOccurrenceId);
+        fixed = !!occurrence && listed.schedules?.find(item => item.id === occurrence.scheduleId)?.flexible === false;
+      }
+      if (!fixed) await this.assessAttention(action.companionId, action.sourceMessageId);
+      await this.world.ready({ companionId: action.companionId, conversationId: action.conversationId, workId: worldWorkId('action', action.id),
+        kind: 'action', sourceMessageId: action.sourceMessageId, fixed }, controller.signal);
+      if (controller.signal.aborted || this.closed || this.cancelledActions.has(action.id)) return;
       const files: string[] = [];
       for (const attachment of source?.attachments ?? []) {
         const stored = (await this.call({ type: 'attachment.get', id: attachment.id })).storedAttachment;
@@ -985,7 +1061,7 @@ export class CompanionService {
     } catch (error) {
       if (!this.closed && !settled) await this.call({ type: 'action.update', id: action.id,
         patch: { status: this.cancelledActions.has(action.id) ? 'cancelled' : 'failed', error: publicError(error) } });
-    } finally { this.activities.delete(`action:${action.id}`); this.actionControllers.delete(action.id); }
+    } finally { await this.world.end(action.companionId, worldWorkId('action', action.id)); this.activities.delete(`action:${action.id}`); this.actionControllers.delete(action.id); }
   }
   private async feedbackAction(action: CompanionAction, status: 'succeeded' | 'failed', content: string) {
     if (this.closed || this.cancelledActions.has(action.id)) return;
@@ -1003,6 +1079,7 @@ export class CompanionService {
       const recalled = source ? await this.memory.recall({ companion, conversation, messages, currentMessage: source,
         config: await this.configFor(companion), signal }) : undefined;
       const reply = await generateCompanionReply({ companion, conversation, messages, memories: recalled?.memories ?? [],
+        world: await this.world.observe({ companionId: companion.id, conversationId: conversation.id }),
         runtimeState: (await this.call({ type: 'state.get', companionId: companion.id, conversationId: conversation.id })).runtimeState,
         memorySources: recalled?.sources, memoryRecall: recalled,
         actionResult: { id: action.id, title: action.title, status, sourceMessageId: action.sourceMessageId, content: content.slice(0, 16000) } },
@@ -1087,8 +1164,10 @@ export class CompanionService {
   }
   async shutdown() {
     this.closed = true;
+    this.attentionController.abort();
     if (this.timer) clearInterval(this.timer);
     await this.schedules.close();
+    await this.world.close();
     await this.memory.close();
     for (const controller of this.replyControllers.keys()) controller.abort();
     await this.pumpIdle;
@@ -1099,6 +1178,7 @@ export class CompanionService {
     await Promise.allSettled([...this.replies.values()].map(value => value.promise));
     await Promise.allSettled([...this.actionJobs.values()]);
     await Promise.allSettled([...this.inputJobs]);
+    await Promise.allSettled([...this.attentionJobs.values()]);
     await this.schedules.drain();
     await this.call({ type: 'action.interrupt-pending' });
     await this.credentials.flush();
@@ -1115,6 +1195,27 @@ function decorateAttachments(response: CompanionsResponse): CompanionsResponse {
   return response;
 }
 
+function worldWorkId(kind: 'chat' | 'action' | 'schedule', id: string): string { return `${kind}_${createHash('sha256').update(id).digest('hex')}`; }
+function checkpointToolProvenance(checkpoint: CompanionLoopCheckpoint): { sourceIds: string[]; worldEventIds: string[] } {
+  const sourceIds = new Set<string>(), worldEventIds = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { value.forEach(visit); return; }
+    const row = value as Record<string, unknown>;
+    if (typeof row.id === 'string' && typeof row.authorId === 'string' && typeof row.sequence === 'number') sourceIds.add(row.id);
+    if (typeof row.sourceMessageId === 'string') sourceIds.add(row.sourceMessageId);
+    if (Array.isArray(row.sourceMessageIds)) for (const id of row.sourceMessageIds) if (typeof id === 'string') sourceIds.add(id);
+    if (row.world && typeof row.world === 'object') {
+      const events = (row.world as { events?: Array<{ id?: string }> }).events;
+      for (const event of events ?? []) if (typeof event.id === 'string') worldEventIds.add(event.id);
+    }
+    Object.values(row).forEach(visit);
+  };
+  for (const turn of checkpoint.turns) for (const result of turn.results ?? []) {
+    try { visit(JSON.parse(result.content)); } catch { /* Public textual errors have no host evidence metadata. */ }
+  }
+  return { sourceIds: [...sourceIds], worldEventIds: [...worldEventIds] };
+}
 function publicError(error: unknown): string {
   if (error instanceof CompanionModelError) return error.message;
   const message = error instanceof Error ? error.message : '伙伴服务暂时不可用，请稍后重试。';

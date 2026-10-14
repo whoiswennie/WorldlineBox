@@ -6,6 +6,7 @@ import { CompanionsStore, type CompanionSeed } from '../../src/companions/store'
 import type { CompanionScheduleEntry } from '../../src/shared/companion-schedule';
 import type { CompanionStateProposal } from '../../src/shared/companion-state';
 import type { CompanionMessage } from '../../src/shared/companions';
+import { recordUrgentAttention } from '../helpers/companion-world-fixture';
 
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '认真而尊重用户', description: '', model: '', avatar: 'sister', proactive: false }));
 const stores = new Set<CompanionsStore>(), folders: string[] = [];
@@ -15,6 +16,8 @@ function close(store: CompanionsStore) { store.close(); stores.delete(store); }
 function fixture() {
   const folder = mkdtempSync(path.join(tmpdir(), 'companion-schedule-')); folders.push(folder);
   const filename = path.join(folder, 'messages.sqlite'), store = open(filename);
+  const world = store.request({ type: 'world.snapshot' }).world!;
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
   return { filename, store, scope: { companionId: 'alice', conversationId: store.openPrivate('alice').id } };
 }
 function entry(patch: Partial<CompanionScheduleEntry> = {}): CompanionScheduleEntry {
@@ -227,7 +230,8 @@ describe('virtual routine scheduling and offline energy', () => {
     const reopened = open(filename);
     reopened.request({ type: 'action.interrupt-pending' }); reopened.request({ type: 'work.interrupt-running' });
     const state = reopened.request({ type: 'state.get', ...scope }).runtimeState!;
-    expect(state.energy).toBeCloseTo(76 - 7 * 60 * 0.08 + 60 * 0.3, 6);
+    const plannedRecovery = 76 - 7 * 60 * 0.08 + 60 * 0.3;
+    expect(state.energy).toBeLessThan(plannedRecovery); expect(state.energy).toBeGreaterThan(plannedRecovery - .1); // Walking to the bed earns no sleep recovery.
     expect(state.routine?.phase).toBe('sleeping');
   });
 
@@ -241,9 +245,10 @@ describe('virtual routine scheduling and offline energy', () => {
     enqueue('ordinary', ordinary);
     expect(store.request({ type: 'work.claim' }).work).toBeUndefined();
     const urgent = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '紧急，马上醒来帮我处理。' }); enqueue('urgent', urgent);
+    recordUrgentAttention(store, 'alice', urgent);
     expect(store.request({ type: 'work.claim' }).work?.id).toBe('urgent');
     enqueue('proactive', urgent, true);
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.routine).toMatchObject({ phase: 'awake', canRespond: true });
+    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.routine).toMatchObject({ phase: 'sleeping', canRespond: true });
     expect(store.request({ type: 'work.claim' }).work).toBeUndefined();
     const followup = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '补充这件急事的具体要求。' }); enqueue('followup', followup);
     expect(store.request({ type: 'work.claim' }).work?.id).toBe('followup');
@@ -269,6 +274,9 @@ describe('virtual routine scheduling and offline energy', () => {
     store.request({ type: 'schedule.create', ...scope, entries: [entry({ title: '固定提醒', runAt })] });
     const fixed = store.request({ type: 'schedule.due.claim' });
     expect(fixed.schedule?.title).toBe('固定提醒'); expect(fixed.scheduleOccurrence).toBeDefined();
+    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.routine).toMatchObject({ phase: 'sleeping', canRespond: true });
+    store.request({ type: 'world.work.begin', ...scope, workId: 'fixed_reminder', kind: 'schedule', sourceMessageId: fixed.schedule!.sourceMessageId, fixed: true });
+    vi.setSystemTime(Date.now() + 10000); store.request({ type: 'world.tick' });
     expect(store.request({ type: 'state.get', ...scope }).runtimeState?.routine?.phase).toBe('awake');
     expect(store.request({ type: 'work.claim' }).work).toBeUndefined();
   });
@@ -279,16 +287,21 @@ describe('virtual routine scheduling and offline energy', () => {
     store.request({ type: 'routine.configure', ...scope, expectedRevision: initial.revision, patch: { timeZone: 'Asia/Shanghai', meals: [],
       habits: [{ id: 'virtual-music', title: '听音乐', at: '16:45', durationMinutes: 15, kind: 'leisure' }] } });
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '先完成真实检查任务。' });
+    store.request({ type: 'world.work.begin', ...scope, workId: 'long_check', kind: 'action', sourceMessageId: source.id });
+    vi.setSystemTime(Date.now() + 10000); store.request({ type: 'world.tick' });
     const action = store.createAction({ ...scope, sourceMessageId: source.id, title: '长期检查', status: 'running' });
     vi.setSystemTime('2026-10-14T09:10:00Z');
     expect(store.request({ type: 'routine.get', ...scope }).routine).toMatchObject({ runtime: { phase: 'awake' }, habitProgress: [{ id: 'virtual-music', completedCount: 0 }] });
     store.updateAction(action.id, { status: 'succeeded', result: '实际检查完成' });
+    store.request({ type: 'world.work.end', companionId: 'alice', workId: 'long_check' });
+    store.request({ type: 'world.work.begin', ...scope, workId: 'crash_check', kind: 'action', sourceMessageId: source.id });
     store.createAction({ ...scope, sourceMessageId: source.id, title: '退出前的新检查', status: 'running' });
     vi.setSystemTime('2026-10-14T09:15:00Z');
     store.request({ type: 'state.get', ...scope });
     close(store);
     vi.setSystemTime('2026-10-15T09:10:00Z');
     const reopened = open(filename); reopened.request({ type: 'action.interrupt-pending' }); reopened.request({ type: 'work.interrupt-running' });
-    expect(reopened.request({ type: 'routine.get', ...scope }).routine?.habitProgress).toMatchObject([{ id: 'virtual-music', completedCount: 1, streak: 1 }]);
+    const progress = reopened.request({ type: 'routine.get', ...scope }).routine!.habitProgress[0]!;
+    expect(progress).toMatchObject({ id: 'virtual-music', completedCount: 0, streak: 1 }); expect(progress.practicedMinutes).toBeGreaterThan(14); expect(progress.practicedMinutes).toBeLessThan(15);
   });
 });

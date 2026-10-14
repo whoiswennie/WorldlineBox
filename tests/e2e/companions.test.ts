@@ -409,6 +409,8 @@ test('starts empty, bounds long history, searches with filters and context, and 
 });
 
 test('loads all migrated portraits, restores an edited contact and chats privately and in a mixed-role group', async () => {
+  // Each of thirteen distinct residents physically walks to its own computer.
+  test.setTimeout(300_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-catalogue-'));
   const profile = path.join(root, 'profile'); const provider = await providerFixture();
   let application: ElectronApplication | undefined;
@@ -442,7 +444,10 @@ test('loads all migrated portraits, restores an edited contact and chats private
     await catalogue.getByRole('textbox', { name: '搜索内置角色', exact: true }).fill('白龙');
     await expect(catalogue.locator('[data-builtin-template]')).toHaveCount(1);
     await catalogue.locator('[data-builtin-template="gpt"]').getByRole('button').click();
-    await expect(page.locator('.companions-chat-header h2')).toHaveText('GPT');
+    await expect(page.locator('.companions-chat-header .companions-chat-name')).toHaveText('GPT');
+    // Independent residents can walk to their own desks at the same time. The
+    // host still advances every route and gates each subsequent model request.
+    await Promise.all(additions.map(role => prepareReplyAuthors(page, [role.id])));
     for (const role of additions) {
       const source = await sendBridge(page, 'private-' + role.id, '迁移私聊验收：请回应这条消息。', [role.id]);
       const replies = (await messages(page, 'private-' + role.id)).filter(item => item.replyToId === source.id);
@@ -693,12 +698,37 @@ test('launcher persists the shared DSH access policy, defaulting every companion
 
 // This fixture replaces only the external provider. Every application call below
 // uses the actual preload, Main IPC, storage UtilityProcess and SQLite database.
+const preparedResidents = new WeakMap<Page, Set<string>>();
 async function ensureAwakeRoutine(page: Page, companionId: string, conversationId: string) {
+  const prepared = preparedResidents.get(page) ?? new Set<string>(); preparedResidents.set(page, prepared);
+  if (prepared.has(companionId)) return;
+  let world = (await request(page, { type: 'world.snapshot' })).world!;
+  if (world.settings.mode !== 'realtime') world = (await request(page, { type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } })).world!;
   const routine = (await request(page, { type: 'routine.get', companionId, conversationId })).routine!;
-  const clock = (offset: number) => { const date = new Date(Date.now() + offset * 3600_000); return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0'); };
-  const configured = await request(page, { type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision, patch: { timeZone: 'system', wakeAt: clock(-8), sleepAt: clock(8), meals: [], habits: [] } });
-  expect(configured.ok).toBe(true);
+  const clock = (offset: number) => String((Math.floor(world.clock.hour) + offset + 24) % 24).padStart(2, '0') + ':00';
+  if (routine.runtime.plannedPhase !== 'awake' || routine.config.meals.length || routine.config.habits.length) {
+    await request(page, { type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision,
+      patch: { timeZone: world.settings.timeZone, wakeAt: clock(-8), sleepAt: clock(8), meals: [], habits: [] } });
+  }
+  // These are chat/stream/queue fixtures, not sleep-interruption tests. Prepare
+  // the real resident at its own desk via actual pathfinding, without advancing
+  // time artificially or bypassing the subsequent seating/work-ready gate.
+  world = (await request(page, { type: 'world.snapshot' })).world!;
+  const home = world.scenes.find(scene => scene.ownerId === companionId)!, computer = home.objects.find(object => object.kind === 'computer')!;
+  const atComputer = () => request(page, { type: 'world.snapshot' }).then(response => {
+    const resident = response.world!.actors.find(actor => actor.companionId === companionId)!;
+    return resident.sceneId === home.id && Math.hypot(resident.position.x - computer.anchor.x, resident.position.y - computer.anchor.y) < .01 && !resident.route.length;
+  });
+  if (!await atComputer()) await request(page, { type: 'world.tool', companionId, conversationId, arguments: { action: 'move', destinationId: computer.id } });
+  await expect.poll(atComputer, { timeout: 30_000, intervals: [250] }).toBe(true);
   expect((await request(page, { type: 'routine.get', companionId, conversationId })).routine!.runtime.canRespond).toBe(true);
+  prepared.add(companionId);
+}
+async function prepareReplyAuthors(page: Page, authors: string[]) {
+  for (const companionId of authors) {
+    const conversation = (await request(page, { type: 'conversation.open', companionId })).conversation!;
+    await ensureAwakeRoutine(page, companionId, conversation.id);
+  }
 }
 
 async function providerFixture(hold?: { roleId: string; userText: string }): Promise<ProviderFixture> {
@@ -717,12 +747,15 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
         const userContext = payload.messages.filter(message => message.role === 'user').at(-1)?.content;
         if (!userContext) throw new Error('Missing actual companion context.');
         const context = JSON.parse(userContext) as {
-          purpose?: string; companion?: { id: string }; currentMessage?: { content: string };
+          purpose?: string; companion?: { id: string }; currentMessage?: { content: string }; source?: { content: string };
           runtimeState?: { revision: number };
           conversation: { replyingAs: string }; messages: Array<{ id?: string; authorId?: string; speaker?: string; content: string }>; memories: unknown[];
         };
         let text: string, stateCall: Record<string, unknown> | undefined;
-        if (['memory_extraction', 'memory_query', 'memory_maintenance'].includes(context.purpose ?? '')) {
+        if (context.purpose === 'world_decision') text = JSON.stringify({ action: null, reason: '没有需要打扰的世界事件。', appraisals: [] });
+        else if (context.purpose === 'world_attention') text = JSON.stringify({ urgency: 'ordinary', confidence: .95, evidence: [context.source?.content ?? ''], reason: '用户没有请求打断当前作息。' });
+        else if (context.purpose === 'memory_dream') text = JSON.stringify({ candidates: [], dream: null });
+        else if (['memory_extraction', 'memory_query', 'memory_maintenance'].includes(context.purpose ?? '')) {
           memoryRequests.push({ purpose: context.purpose!, companionId: context.companion?.id ?? '', sourceIds: context.messages.map(message => message.id).filter((id): id is string => !!id) });
           if (context.purpose === 'memory_query') text = JSON.stringify({ query: context.currentMessage?.content ?? '', terms: ['看海'], tags: ['看海'], includeHistory: false, limit: 20 });
           else {
@@ -800,9 +833,9 @@ async function launch(profilePath: string, openDefaultChats = true): Promise<{ a
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profilePath }) });
   const page = await application.firstWindow();
   const nativeWindow = await application.browserWindow(page);
-  await nativeWindow.evaluate(win => { win.unmaximize(); win.setSize(1440, 900); win.setFocusable(false); win.setOpacity(0); win.hide(); });
+  await nativeWindow.evaluate(win => { win.unmaximize(); win.setSize(1440, 900); win.setFocusable(false); win.setOpacity(0); win.webContents.setBackgroundThrottling(false); win.hide(); });
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
-  if (openDefaultChats) for (const companionId of ['deepseek-sister', 'deepseek-flash']) await request(page, { type: 'conversation.open', companionId });
+  if (openDefaultChats) await prepareReplyAuthors(page, ['deepseek-sister', 'deepseek-flash']);
   return { application, page };
 }
 
@@ -826,13 +859,15 @@ async function waitForReplies(page: Page, conversationId: string, authorIds: str
     const [response, state] = await Promise.all([
       request(page, { type: 'messages', conversationId, limit: 100 }), request(page, { type: 'state' }),
     ]);
-    const replies = response.messages?.filter(message => message.sequence > afterSequence && message.kind === 'text' && message.status === 'sent') ?? [];
+    const replies = response.messages?.filter(message => message.sequence > afterSequence && message.kind === 'text' && message.status === 'sent'
+      && !message.isReplyDraft && !message.replyDraft) ?? [];
     return authorIds.every(id => replies.some(message => message.authorId === id))
       && !state.state?.activities.some(activity => activity.conversationId === conversationId);
   }, { timeout: 20_000 }).toBe(true);
 }
 
 async function sendUi(page: Page, conversationId: string, content: string, authors: string[]) {
+  await prepareReplyAuthors(page, authors);
   await page.locator(`[data-companion-conversation="${conversationId}"]`).click();
   await expect(page.getByRole('textbox', { name: '输入消息', exact: true })).toBeVisible();
   const previousSequence = (await messages(page, conversationId)).at(-1)?.sequence ?? 0;
@@ -842,6 +877,7 @@ async function sendUi(page: Page, conversationId: string, content: string, autho
 }
 
 async function sendBridge(page: Page, conversationId: string, content: string, authors: string[]) {
+  await prepareReplyAuthors(page, authors);
   if (conversationId.startsWith('private-')) await request(page, { type: 'conversation.open', companionId: conversationId.slice(8) });
   const result = await request(page, { type: 'message.send', conversationId, content, clientId: randomUUID() });
   if (!result.message) throw new Error('Actual message send did not return a persisted message.');
@@ -906,9 +942,14 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     const sisterChat = 'private-deepseek-sister';
     await sendUi(page, sisterChat, '我喜欢看海，周末想慢慢逛。', ['deepseek-sister']);
     await expect(page.locator('[data-companion-messages]').getByText('好呀，我记住你喜欢看海了。周末可以留些时间慢慢逛。', { exact: true })).toBeVisible();
+    const preferenceSource = (await messages(page, sisterChat)).find(message => message.authorId === 'user' && message.content === '我喜欢看海，周末想慢慢逛。')!;
+    // Automatic extraction is durable background work, separate from completing
+    // the reply. Wait for the real job instead of expecting inline memory writes.
+    await expect.poll(async () => (await request(page, { type: 'memory.list', companionId: 'deepseek-sister' })).memories?.length, { timeout: 35_000 }).toBe(1);
+    await expect.poll(async () => (await request(page, { type: 'memory.status', companionId: 'deepseek-sister' })).memoryStatus?.pending, { timeout: 35_000 }).toBe(0);
     const learned = (await request(page, { type: 'memory.list', companionId: 'deepseek-sister' })).memories!;
     expect(learned).toHaveLength(1);
-    expect(learned[0]).toMatchObject({ content: '我喜欢看海，周末想慢慢逛。', origin: 'user' });
+    expect(learned[0]).toMatchObject({ content: '用户喜欢看海。', origin: 'user', captureMethod: 'automatic', sourceMessageId: preferenceSource.id });
     expect((await request(page, { type: 'memory.list', companionId: 'deepseek-flash' })).memories).toEqual([]);
 
     // Remove and re-add a built-in through the actual contact management flow.

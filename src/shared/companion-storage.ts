@@ -10,6 +10,7 @@ import { companionMemoryStorageCommands, companionMemoryJobSchema } from './comp
 import { companionScheduleStorageCommands, companionScheduleOccurrenceSchema, companionScheduleSchema } from './companion-schedule';
 import { companionStateStorageCommands, companionRuntimeStateSchema } from './companion-state';
 import { companionRoutineStorageCommands } from './companion-routine';
+import { companionWorldStorageCommands, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema } from './companion-world';
 
 export const appendCompanionMessageSchema = z.strictObject({
   conversationId: companionIdSchema, authorId: companionIdSchema,
@@ -71,6 +72,7 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   ...companionScheduleStorageCommands,
   ...companionStateStorageCommands,
   ...companionRoutineStorageCommands,
+  ...companionWorldStorageCommands,
   z.strictObject({ type: z.literal('memory.save'), memory: saveCompanionMemorySchema }),
   z.strictObject({ type: z.literal('memory.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema.optional() }),
@@ -117,6 +119,7 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   schedule: companionScheduleSchema.optional(), schedules: z.array(companionScheduleSchema).optional(),
   scheduleOccurrence: companionScheduleOccurrenceSchema.optional(), scheduleOccurrences: z.array(companionScheduleOccurrenceSchema).optional(),
   runtimeState: companionRuntimeStateSchema.optional(),
+  world: companionWorldSnapshotSchema.optional(), worldWork: companionWorldWorkSchema.optional(), worldJob: companionWorldJobSchema.optional(),
 });
 export type CompanionStorageResponse = z.infer<typeof companionStorageResponseSchema>;
 

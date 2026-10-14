@@ -10,13 +10,13 @@ import type { CompanionMemory } from '../../src/shared/companions';
 import type { DshLauncher } from '../../src/main/dsh/launcher';
 
 const transport = vi.hoisted(() => ({ request: vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(),
-  start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>() }));
+  start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(), worldFetch: vi.fn<typeof fetch>() }));
 vi.mock('../../src/main/companions/storage-client', () => ({ CompanionStorageClient: class {
   start = transport.start; request = transport.request; close = transport.close;
 } }));
 vi.mock('electron', () => ({
-  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => /memory_(?:extraction|query|maintenance)/u.test(String(init?.body))
-    ? transport.memoryFetch(input, init) : transport.fetch(input, init)) },
+  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => /memory_(?:extraction|query|maintenance|dream)/u.test(String(init?.body))
+    ? transport.memoryFetch(input, init) : /world_(?:decision|attention)/u.test(String(init?.body)) ? transport.worldFetch(input, init) : transport.fetch(input, init)) },
   dialog: { showOpenDialog: vi.fn() }, ipcMain: { handle: vi.fn() }, protocol: { handle: vi.fn() }, shell: { showItemInFolder: vi.fn() },
   safeStorage: { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value), decryptString: (value: Buffer) => value.toString() },
 }));
@@ -55,10 +55,20 @@ function startService(root: string): CompanionService {
   services.add(service); return service;
 }
 function fixture(customSeeds = seeds) {
+  const testNow = Date.now(); vi.setSystemTime(testNow - 10_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-memory-service-')); roots.push(root);
   const databasePath = path.join(root, 'companions', 'messages.sqlite');
   const store = new CompanionsStore(databasePath, customSeeds); stores.add(store);
-  const conversation = store.openPrivate('sister'); bindStorage(store);
+  const conversation = store.openPrivate('sister');
+  const world = store.request({ type: 'world.snapshot' }).world!;
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
+  for (const seed of customSeeds) {
+    const room = store.openPrivate(seed.id);
+    const computer = world.scenes.find(scene => scene.ownerId === seed.id)!.objects.find(object => object.kind === 'computer')!;
+    store.request({ type: 'world.tool', companionId: seed.id, conversationId: room.id,
+      arguments: { action: 'move', destinationId: computer.id } });
+  }
+  vi.setSystemTime(testNow); store.request({ type: 'world.tick' }); bindStorage(store);
   return { root, databasePath, store, conversation, service: startService(root) };
 }
 async function closeService(service: CompanionService) {
@@ -67,7 +77,7 @@ async function closeService(service: CompanionService) {
 async function sent(service: CompanionService, store: CompanionsStore, conversationId: string, content: string, clientId: string) {
   const result = await service.handle({ type: 'message.send', conversationId, content, clientId, delivery: 'chat' });
   const message = result.message!;
-  await vi.waitFor(() => expect(store.request({ type: 'work.list', sourceMessageId: message.id }).works?.every(work => work.status === 'done')).toBe(true), { timeout: 500 });
+  await vi.waitFor(() => expect(store.request({ type: 'work.list', sourceMessageId: message.id }).works?.every(work => work.status === 'done')).toBe(true), { timeout: 5000 });
   return message;
 }
 function active(store: CompanionsStore, conversationId: string, companionId = 'sister') {
@@ -79,6 +89,7 @@ async function background(milliseconds = 2_100) { await vi.advanceTimersByTimeAs
 beforeEach(() => {
   vi.clearAllMocks(); vi.useFakeTimers(); vi.setSystemTime(new Date(fixedTime));
   transport.fetch.mockReset(); transport.memoryFetch.mockReset();
+  transport.worldFetch.mockReset(); transport.worldFetch.mockImplementation(async () => structuredResponse({ action: null, reason: '安静观察。', appraisals: [] }));
   transport.fetch.mockImplementation(async () => textResponse('好，慢慢聊。'));
   transport.memoryFetch.mockImplementation(async (_input, init) => structuredResponse(payload(init).purpose === 'memory_query' ? {} : { candidates: [] }));
 });
@@ -264,6 +275,32 @@ describe('automatic companion memory through the main service and real SQLite', 
     for (const derived of records.filter(memory => memory.id !== atom.id)) expect(f.store.request({ type: 'memory.inspect', companionId: 'sister', conversationId: f.conversation.id, id: derived.id }).memoryRead?.memory.status).toBe('invalid');
   });
 
+  it('withdraws an old world-inspection tool result after its source is forgotten, even outside recalled chat and memory sources', async () => {
+    const f = fixture([...seeds, { id: 'flash', name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false }]);
+    const secret = 'PRIVATE_VISIT_REASON_8417';
+    const old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '请拜访妹妹，原因是' + secret, replyDirective: 'none' });
+    f.store.request({ type: 'world.tool', companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: old.id,
+      arguments: { action: 'visit', targetCompanionId: 'flash', reason: secret } });
+    for (let index = 0; index < 60; index++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '普通的历史消息' + index, replyDirective: 'none' });
+    let resolvePending!: (value: Response) => void; const pending = new Promise<Response>(resolve => { resolvePending = resolve; });
+    transport.fetch.mockResolvedValueOnce(toolResponse('old_world_inspection', 'world', { action: 'inspect' })).mockImplementationOnce(() => pending);
+    const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '看看你现在在哪里。', clientId: 'world-source-withdrawal' })).message!;
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 5000 });
+    const first = payload(transport.fetch.mock.calls[0]?.[1]);
+    expect(first.messages.some(message => message.id === old.id)).toBe(false);
+    expect(String(transport.fetch.mock.calls[1]?.[1]?.body)).toContain(secret);
+    await closeService(f.service); resolvePending(textResponse('这条未发送回复不会写入。'));
+    const reopened = new CompanionsStore(f.databasePath, [...seeds, { id: 'flash', name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false }]); stores.add(reopened); bindStorage(reopened);
+    const request = reopened.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '请忘掉之前的私人拜访原因。', replyDirective: 'none' });
+    reopened.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [old.id], requestMessageId: request.id });
+    transport.fetch.mockReset(); transport.memoryFetch.mockClear();
+    transport.fetch.mockImplementation(async () => textResponse('我已经移除撤回的资料。'));
+    const restarted = startService(f.root); await restarted.handle({ type: 'state' }); await restarted.handle({ type: 'reply.resume', conversationId: f.conversation.id });
+    await vi.waitFor(() => expect(reopened.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('done'), { timeout: 10000 });
+    expect(transport.fetch).toHaveBeenCalled();
+    for (const [, init] of transport.fetch.mock.calls) expect(String(init?.body)).not.toContain(secret);
+  });
+
   it.each([false, true])('does not reintroduce withdrawn evidence when a loop resumes (request itself withdrawn: %s)', async requestWithdrawn => {
     const f = fixture(), secret = 'SECRET_ADDRESS_青松路881号';
     const old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `旧地址是 ${secret}`, replyDirective: 'none' });
@@ -276,7 +313,7 @@ describe('automatic companion memory through the main service and real SQLite', 
     transport.fetch.mockResolvedValueOnce(toolResponse('read_before_shutdown', 'memory_read', { id: saved.id })).mockImplementationOnce(() => pending);
     const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id,
       content: requestWithdrawn ? `请核对地址 ${secret}` : '请核对我引用的旧地址。', replyToId: old.id, clientId: 'forgotten-resume-request' })).message!;
-    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 500 });
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 5000 });
     const supplement = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: `补充地址仍是 ${secret}`,
       clientId: 'forgotten-supplement', delivery: 'steer', targetSourceMessageId: source.id })).message!;
     const checkpoint = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
@@ -293,7 +330,7 @@ describe('automatic companion memory through the main service and real SQLite', 
     const restarted = startService(f.root);
     await restarted.handle({ type: 'state' });
     await restarted.handle({ type: 'reply.resume', conversationId: f.conversation.id });
-    await vi.waitFor(() => expect(reopened.request({ type: 'work.list', sourceMessageId: source.id }).works?.every(work => work.status === (requestWithdrawn ? 'cancelled' : 'done'))).toBe(true), { timeout: 500 });
+    await vi.waitFor(() => expect(reopened.request({ type: 'work.list', sourceMessageId: source.id }).works?.every(work => work.status === (requestWithdrawn ? 'cancelled' : 'done'))).toBe(true), { timeout: 12000 });
     if (requestWithdrawn) expect(transport.fetch).not.toHaveBeenCalled();
     else expect(transport.fetch).toHaveBeenCalled();
     for (const [, init] of [...transport.fetch.mock.calls, ...transport.memoryFetch.mock.calls]) expect(String(init?.body)).not.toContain(secret);

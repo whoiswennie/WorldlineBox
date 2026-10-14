@@ -27,6 +27,7 @@ import { CompanionMemoryStore } from './memory-store';
 import { CompanionScheduleStore } from './schedule-store';
 import { CompanionStateStore } from './state-store';
 import { CompanionRoutineStore } from './routine-store';
+import { CompanionWorldStore } from './world-store';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -56,6 +57,7 @@ export class CompanionsStore {
   readonly #schedule: CompanionScheduleStore;
   readonly #runtimeState: CompanionStateStore;
   readonly #routine: CompanionRoutineStore;
+  readonly #world: CompanionWorldStore;
   readonly #seeds: readonly CompanionSeed[];
 
   constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS) {
@@ -63,20 +65,24 @@ export class CompanionsStore {
     this.#db = new Database(databasePath);
     this.#memory = new CompanionMemoryStore(this.#db, id => this.getMessage(id),
       (scope, proposal) => { this.#runtimeState.update(scope, proposal); }, memory => this.#runtimeState.event(memory),
-      (id, sourceIds) => this.#runtimeState.invalidateEvidence(id, sourceIds));
+      (id, sourceIds) => { this.#runtimeState.invalidateEvidence(id, sourceIds); this.#world.invalidateEvidence(id, sourceIds); });
     const humanSource = (scope: { conversationId: string }, content: string, clientId?: string) => {
       const message = this.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content, clientId });
       this.#setMetadata('message-memory-evidence/' + message.id, true);
       return this.getMessage(message.id);
     };
     this.#routine = new CompanionRoutineStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids), humanSource,
-      id => { this.#runtimeState.energy(id); });
+      id => { this.#runtimeState.energy(id); this.#world.changed(); }, { virtualAt: at => this.#world.virtualAt(at), realAt: at => this.#world.realAt(at),
+        ensureThrough: at => this.#world.ensureThrough(at), actual: (id, at) => this.#world.actual(id, at), occupancy: (id, from, to) => this.#world.occupancy(id, from, to), urgent: (id, source, now) => this.#world.urgent(id, source, now) });
+    this.#world = new CompanionWorldStore(this.#db, id => this.#routine.configuration(id), (scope, ids) => this.#memory.sourcesFilter(scope, ids),
+      (conversationId, authorId, content, clientId) => this.appendMessage({ conversationId, authorId, content, clientId }),
+      id => this.#runtimeState.worldState(id), event => this.#runtimeState.worldEvent(event), (scope, candidate) => { this.#memory.record(scope, candidate); });
     this.#runtimeState = new CompanionStateStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids),
       (id, from, to, energy, busy) => {
         if (busy) this.#routine.observeWork(id, to);
-        return busy ? Math.max(0, energy - (to - from) / 60000 * 0.08) : this.#routine.advanceEnergy(id, from, to, energy);
+        return this.#routine.advanceEnergy(id, from, to, energy);
       },
-      (scope, now) => this.#routine.getRuntime(scope, now));
+      (scope, now) => this.#routine.getRuntime(scope, now), now => this.#world.ensureThrough(now));
     this.#schedule = new CompanionScheduleStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids),
       humanSource, (id, now) => this.#runtimeState.energy(id, now),
       (id, now, energy) => {
@@ -105,6 +111,7 @@ export class CompanionsStore {
       this.backfillSearchIndex();
       this.#memory.initialize();
       this.#routine.initialize();
+      this.#world.initialize();
       this.#runtimeState.initialize();
       this.#schedule.initialize();
       this.#memory.backfill();
@@ -257,7 +264,7 @@ export class CompanionsStore {
   #coalesceGroups(): void {
     this.#db.transaction(() => {
       const known = new Map<string, string>();
-      for (const group of rows(this.#db.prepare("SELECT * FROM conversations WHERE kind='group' AND dissolved_at IS NULL ORDER BY rowid").all())) {
+      for (const group of rows(this.#db.prepare("SELECT * FROM conversations c WHERE kind='group' AND dissolved_at IS NULL AND NOT EXISTS(SELECT 1 FROM metadata m WHERE m.key='world-room/'||c.id) ORDER BY rowid").all())) {
         const id = String(group.id), key = JSON.stringify(this.#memberIds(id).sort());
         const canonical = known.get(key);
         if (!canonical) { known.set(key, id); continue; }
@@ -338,6 +345,7 @@ export class CompanionsStore {
     this.#requireAvatar(parsed.avatarAttachmentId);
     const companion: Companion = { ...parsed, id: randomUUID(), builtin: false, createdAt: stamp() };
     this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(companion.id, JSON.stringify(companion));
+    this.#world.changed();
     return companion;
   }
 
@@ -368,6 +376,7 @@ export class CompanionsStore {
     // Tombstones preserve messages, memory and action provenance, and prevent
     // application restart from recreating a removed built-in contact.
     this.#db.prepare('UPDATE companions SET deleted_at=? WHERE id=?').run(stamp(), id);
+    this.#world.changed();
     this.#schedule.stopUnavailable();
   }
 
@@ -410,7 +419,7 @@ export class CompanionsStore {
       const members = [...new Set(input.memberIds)];
       members.forEach((id) => this.#requireCompanion(id));
       const key = JSON.stringify([...members].sort());
-      const existing = rows(this.#db.prepare("SELECT * FROM conversations WHERE kind='group' AND dissolved_at IS NULL ORDER BY rowid").all())
+      const existing = rows(this.#db.prepare("SELECT * FROM conversations c WHERE kind='group' AND dissolved_at IS NULL AND NOT EXISTS(SELECT 1 FROM metadata m WHERE m.key='world-room/'||c.id) ORDER BY rowid").all())
         .find(group => JSON.stringify(this.#memberIds(String(group.id)).sort()) === key);
       if (existing) {
         this.#db.prepare('UPDATE conversations SET hidden_at=NULL WHERE id=?').run(existing.id);
@@ -710,8 +719,10 @@ export class CompanionsStore {
       const stored = this.#message(row(this.#db.prepare('SELECT * FROM messages WHERE id=?').get(id)));
       if (message.loopStep !== undefined) this.#db.prepare('DELETE FROM message_search WHERE rowid=?').run(stored.sequence);
       this.#memory.enqueueMessage(id);
-      if (message.authorId === 'user') for (const companionId of this.#memberIds(message.conversationId)) this.#runtimeState.interaction(companionId, id);
-      else if (message.authorId !== 'system') this.#runtimeState.interaction(message.authorId, id);
+      if (!this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + message.conversationId)) {
+        if (message.authorId === 'user') for (const companionId of this.#memberIds(message.conversationId)) this.#runtimeState.interaction(companionId, id);
+        else if (message.authorId !== 'system') this.#runtimeState.interaction(message.authorId, id);
+      }
       if (message.authorId === 'user' && message.replyDirective) {
         this.saveReplyCheckpoint({ conversationId: message.conversationId, sourceMessageId: id,
           dispatcher: 'queue',
@@ -1002,6 +1013,8 @@ export class CompanionsStore {
       if (scheduleResponse.scheduleOccurrence && ['done', 'failed', 'cancelled'].includes(scheduleResponse.scheduleOccurrence.status)) this.#completeRoutineInterruptIfIdle(scheduleResponse.scheduleOccurrence.companionId);
       return scheduleResponse;
     }
+    const worldResponse = this.#world.execute(command);
+    if (worldResponse) return worldResponse;
     switch (command.type) {
       case 'state': return { ok: true, state: this.state(command.includeHidden) };
       case 'companion.create': return { ok: true, companion: this.createCompanion(command.companion) };

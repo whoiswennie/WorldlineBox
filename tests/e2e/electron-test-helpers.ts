@@ -209,10 +209,17 @@ export async function importFilesThroughBridge(
  */
 export function electronLaunchEnv(
   extra: NodeJS.ProcessEnv = {},
+  options: { gpu?: 'software' | 'hardware' } = {},
 ): Record<string, string> {
   const { ELECTRON_RUN_AS_NODE: _ignored, ...clean } = process.env;
   void _ignored;
   const merged: NodeJS.ProcessEnv = { ...clean, ...extra };
+  // Explicit GPU fixtures retain the same isolated E2E profile and process policy.
+  // Software is deterministic correctness coverage; hardware measures the normal renderer.
+  if (options.gpu) {
+    merged.WORLDLINEBOX_E2E_ENABLE_SWIFTSHADER = options.gpu === 'software' ? '1' : '0';
+    merged.WORLDLINEBOX_E2E_ENABLE_HARDWARE_GPU = options.gpu === 'hardware' ? '1' : '0';
+  }
   return Object.fromEntries(
     Object.entries(merged).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
   );

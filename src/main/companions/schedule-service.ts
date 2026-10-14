@@ -7,6 +7,8 @@ interface CompanionScheduleServiceOptions {
   launch(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence): Promise<CompanionAction>;
   resume(actionId: string): Promise<unknown>;
   wait(actionId: string): Promise<unknown> | undefined;
+  ready(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence, signal: AbortSignal): Promise<void>;
+  end(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence): Promise<void>;
   changed(): void;
   wakeWaiting(): void;
   report(error: unknown): void;
@@ -18,8 +20,10 @@ export class CompanionScheduleService {
   private timer?: ReturnType<typeof setInterval>;
   private running?: Promise<void>;
   private readonly jobs = new Map<string, Promise<void>>();
+  private readonly jobControllers = new Map<string, AbortController>();
   private lastStateTick = -Infinity;
   private closed = false;
+  private readonly controller = new AbortController();
 
   constructor(private readonly options: CompanionScheduleServiceOptions) {}
 
@@ -44,20 +48,28 @@ export class CompanionScheduleService {
       const { schedule, scheduleOccurrence: occurrence } = claimed;
       if (!schedule || !occurrence) break;
       if (this.jobs.has(occurrence.id)) continue;
-      const job = this.dispatch(schedule, occurrence).catch(this.options.report)
-        .finally(() => { this.jobs.delete(occurrence.id); this.options.changed(); });
+      const controller = new AbortController(); this.jobControllers.set(occurrence.id, controller);
+      const job = this.dispatch(schedule, occurrence, AbortSignal.any([controller.signal, this.controller.signal])).catch(this.options.report)
+        .finally(() => { this.jobs.delete(occurrence.id); this.jobControllers.delete(occurrence.id); this.options.changed(); });
       this.jobs.set(occurrence.id, job);
     }
     if (!this.closed) this.options.wakeWaiting();
   }
 
-  private async dispatch(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence): Promise<void> {
+  cancel(occurrences: readonly CompanionScheduleOccurrence[]): void {
+    for (const occurrence of occurrences) if (occurrence.status === 'cancelled') this.jobControllers.get(occurrence.id)?.abort();
+  }
+
+  private async dispatch(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence, signal: AbortSignal): Promise<void> {
     const update = (patch: Omit<Extract<CompanionStorageCommand, { type: 'schedule.occurrence.update' }>, 'type' | 'id' | 'leaseToken'>) =>
       this.options.request({ type: 'schedule.occurrence.update', id: occurrence.id, leaseToken: occurrence.leaseToken, ...patch });
     try {
       if (schedule.kind === 'reminder') {
+        await this.options.ready(schedule, occurrence, signal);
+        const current = await this.options.request({ type: 'schedule.list', companionId: schedule.companionId, conversationId: schedule.conversationId, includeHistory: true, limit: 200 });
+        if (!current.scheduleOccurrences?.some(item => item.id === occurrence.id && item.status === 'dispatching')) return;
         const state = (await this.options.request({ type: 'state.get', companionId: schedule.companionId, conversationId: schedule.conversationId })).runtimeState;
-        if (this.closed) return;
+        if (this.closed || signal.aborted) return;
         const introduction = state?.expression === 'playful' ? '叮，约好的时间到啦。'
           : state?.expression === 'direct' ? '到时间了。' : state?.expression === 'reserved' ? '约定的提醒。' : '到约好的时间了，提醒你一下。';
         const response = await this.options.request({ type: 'message.append', message: { conversationId: schedule.conversationId,
@@ -80,13 +92,16 @@ export class CompanionScheduleService {
       await update({ status: final.status === 'succeeded' ? 'done' : final.status === 'cancelled' ? 'cancelled' : 'failed',
         actionId: final.id, result: final.result?.slice(0, 4000), error: final.error?.slice(0, 1000) });
     } catch (error) {
-      if (this.closed) return;
+      if (this.closed || signal.aborted) return;
       await update({ status: 'failed', error: error instanceof Error ? error.message.slice(0, 1000) : '定时安排执行失败。' });
+    } finally {
+      if (schedule.kind === 'reminder') await this.options.end(schedule, occurrence);
     }
   }
 
   async close(): Promise<void> {
     this.closed = true;
+    this.controller.abort();
     if (this.timer) clearInterval(this.timer);
     await this.running;
     // External jobs are interrupted and awaited by the action owner. Waiting

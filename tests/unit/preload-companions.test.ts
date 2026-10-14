@@ -1,7 +1,7 @@
 import { ipcRenderer } from 'electron';
 import { afterEach, expect, it, vi } from 'vitest';
 import { companions } from '../../src/preload/bridge/companions';
-import { COMPANION_REPLY_STREAM_CHANNEL } from '../../src/shared/companions';
+import { COMPANIONS_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL } from '../../src/shared/companions';
 vi.mock('electron', () => ({ ipcRenderer: { invoke: vi.fn(), on: vi.fn(), removeListener: vi.fn() } }));
 afterEach(() => vi.clearAllMocks());
 it('validates reply stream frames and removes its exact IPC listener on unsubscribe', () => {
@@ -15,4 +15,12 @@ it('validates reply stream frames and removes its exact IPC listener on unsubscr
   expect(listener).toHaveBeenCalledExactlyOnceWith(frame);
   expect(ipcRenderer.on).toHaveBeenCalledWith(COMPANION_REPLY_STREAM_CHANNEL, handler);
   unsubscribe(); expect(ipcRenderer.removeListener).toHaveBeenCalledWith(COMPANION_REPLY_STREAM_CHANNEL, handler);
+});
+it('preserves a validated world snapshot through the public bridge and rejects direct client position mutations', async () => {
+  const world = { settings: { revision: 2, mode: 'compressed', dayDurationMinutes: 20, timeZone: 'Asia/Shanghai' }, clock: { realNow: '2026-10-14T08:00:00Z', virtualNow: '2026-10-14T08:00:00Z', speed: 72, day: 1, hour: 16, daylight: true }, environment: { weather: 'clear', light: 1, outdoorTemperature: 22, indoorTemperature: 21 }, scenes: [], residents: [], actors: [], visits: [], events: [], relationships: [], works: [], lastEventSequence: 0, backlog: false };
+  vi.mocked(ipcRenderer.invoke).mockResolvedValue({ ok: true, world });
+  expect(await companions.request({ type: 'world.snapshot' })).toEqual({ ok: true, world });
+  expect(ipcRenderer.invoke).toHaveBeenCalledWith(COMPANIONS_CHANNEL, { type: 'world.snapshot' });
+  const result = await companions.request({ type: 'world.snapshot', position: { x: 0, y: 0 } } as never);
+  expect(result.ok).toBe(false); expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
 });

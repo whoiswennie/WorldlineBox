@@ -1,12 +1,13 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { companionRoutineConfigSchema, companionRoutinePatchSchema, type CompanionRoutine, type CompanionRoutineConfig,
   type CompanionRoutinePatch, type CompanionRoutineRuntime } from '../shared/companion-routine';
-import { advanceCompanionRoutineEnergy, defaultCompanionRoutineConfig, deriveCompanionHabitProgress, evaluateCompanionRoutine,
-  type CompanionRoutineInterruption } from '../shared/companion-routine-time';
+import { defaultCompanionRoutineConfig, evaluateCompanionRoutine } from '../shared/companion-routine-time';
 import { resolveCompanionScheduleTimeZone } from '../shared/companion-schedule-time';
 import type { CompanionMessage } from '../shared/companions';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
+import type { CompanionWorldOccupancy } from '../shared/companion-world';
+import { advanceCompanionWorldEnergy, deriveCompanionWorldHabitProgress } from '../shared/companion-world-engine';
 
 type Scope = { companionId: string; conversationId: string; beforeSequence?: number };
 type Row = Record<string, string | number | null>;
@@ -22,7 +23,13 @@ export class CompanionRoutineStore {
   constructor(private readonly db: CompanionConnection,
     private readonly visibleSources: (scope: Scope, ids: string[]) => CompanionMessage[],
     private readonly humanSource: (scope: Scope, content: string) => CompanionMessage,
-    private readonly beforeConfigure?: (companionId: string) => void) {}
+    private readonly beforeConfigure: (companionId: string) => void,
+    private readonly worldClock: { virtualAt: (realAt: number) => number; realAt: (virtualAt: number) => number; ensureThrough: (at: number) => number;
+      actual: (id: string, at: number) => Pick<CompanionRoutineRuntime, 'phase' | 'activity' | 'activeHabitId'>; occupancy: (id: string, from: number, to: number) => CompanionWorldOccupancy[]; urgent: (id: string, source: string, now: number) => boolean }) {}
+
+  configuration(companionId: string): CompanionRoutineConfig { return structuredClone(this.load(companionId).config); }
+  private virtualTime(at: number | string | Date): number { return this.worldClock.virtualAt(new Date(at).getTime()); }
+  private realTime(at: number | string | Date): number { return this.worldClock.realAt(new Date(at).getTime()); }
 
   initialize(): void {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_routines(companion_id TEXT PRIMARY KEY REFERENCES companions(id),data TEXT NOT NULL);
@@ -70,34 +77,39 @@ export class CompanionRoutineStore {
     this.db.prepare('INSERT INTO companion_routines(companion_id,data) VALUES(?,?) ON CONFLICT(companion_id) DO UPDATE SET data=excluded.data').run(value.companionId, JSON.stringify(value));
   }
   get(scope: Scope): CompanionRoutine {
-    const conversation = this.requireScope(scope), stored = this.load(scope.companionId), now = iso();
-    this.observeWork(scope.companionId, Date.parse(now));
+    const conversation = this.requireScope(scope), stored = this.load(scope.companionId), observedAt = this.worldClock.ensureThrough(Date.now());
+    this.observeWork(scope.companionId);
     const config = structuredClone(stored.config), privateSource = this.mustHideConfiguration(scope, conversation, stored);
-    let runtime = this.phase(scope.companionId), habitProgress = config.habits.flatMap(habit =>
-      deriveCompanionHabitProgress(config, stored.habitSince[habit.id] ?? stored.createdAt, now,
-        this.interruptions(scope.companionId, stored.habitSince[habit.id] ?? stored.createdAt, now)).filter(progress => progress.id === habit.id));
+    let runtime = this.phase(scope.companionId, observedAt), habitProgress = this.habitProgress(stored, observedAt);
     if (privateSource) {
-      config.habits = []; config.meals = config.meals.map(meal => ({ ...meal, name: '用餐' })); habitProgress = [];
+      if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + scope.conversationId)) {
+        const safeId = (id: string) => 'habit_' + createHash('sha256').update(id).digest('hex').slice(0, 16);
+        config.habits = config.habits.map(habit => ({ ...habit, id: safeId(habit.id), title: habit.kind === 'study' ? '学习活动' : habit.kind === 'exercise' ? '运动活动' : habit.kind === 'leisure' ? '放松活动' : habit.kind === 'rest' ? '休息活动' : '个人日常活动' }));
+        habitProgress = habitProgress.map(progress => ({ ...progress, id: safeId(progress.id) }));
+      } else { config.habits = []; habitProgress = []; }
+      config.meals = config.meals.map(meal => ({ ...meal, name: '用餐' }));
       runtime = this.publicRuntime(runtime);
     }
     return { companionId: stored.companionId, config, revision: stored.revision, createdAt: stored.createdAt, updatedAt: stored.updatedAt,
       ...(!privateSource && stored.sourceMessageId ? { sourceMessageId: stored.sourceMessageId, sourceConversationId: stored.sourceConversationId } : {}), habitProgress,
-      runtime: this.projectActualWork(scope.companionId, runtime) };
+      runtime };
   }
   getRuntime(scope: Scope, at = Date.now()): CompanionRoutineRuntime {
     this.observeWork(scope.companionId, at);
     const conversation = this.requireScope(scope), stored = this.load(scope.companionId), runtime = this.phase(scope.companionId, at);
-    return this.projectActualWork(scope.companionId, this.mustHideConfiguration(scope, conversation, stored) ? this.publicRuntime(runtime) : runtime);
+    return this.mustHideConfiguration(scope, conversation, stored) ? this.publicRuntime(runtime) : runtime;
   }
   private mustHideConfiguration(scope: Scope, conversation: Row, stored: StoredRoutine): boolean {
     if (conversation.kind === 'group' && stored.sourceConversationId !== scope.conversationId) return true;
     return scope.beforeSequence !== undefined && stored.configurationSources.some(source =>
       !this.visibleSources(scope, [source.messageId]).length);
   }
-  private projectActualWork(companionId: string, runtime: CompanionRoutineRuntime): CompanionRoutineRuntime {
-    if (!this.db.prepare("SELECT 1 FROM actions WHERE companion_id=? AND status='running' UNION ALL SELECT 1 FROM companion_work_queue WHERE companion_id=? AND status='running' LIMIT 1").get(companionId, companionId)) return runtime;
-    const { activeHabitId: _activeHabitId, ...awake } = runtime; void _activeHabitId;
-    return { ...awake, phase: 'awake', canRespond: true, activity: '正在处理已答应的事，作息暂延' };
+  private habitProgress(stored: StoredRoutine, now: number): CompanionRoutine['habitProgress'] {
+    const actualNow = this.worldClock.ensureThrough(now);
+    return stored.config.habits.flatMap(habit => {
+      const from = Date.parse(stored.habitSince[habit.id] ?? stored.createdAt), windows = this.worldClock.occupancy(stored.companionId, from, actualNow);
+      return deriveCompanionWorldHabitProgress({ ...stored.config, habits: [habit] }, windows, actualNow, at => this.virtualTime(at), at => this.realTime(at));
+    });
   }
   rehomeConversation(oldId: string, newId: string): void {
     for (const found of this.db.prepare('SELECT data FROM companion_routines').all() as Row[]) {
@@ -152,7 +164,11 @@ export class CompanionRoutineStore {
     }).immediate();
   }
   phase(companionId: string, now = Date.now()): CompanionRoutineRuntime {
-    const value = this.load(companionId), result = evaluateCompanionRoutine(value.config, iso(now), value.interruptedUntil);
+    now = this.worldClock.ensureThrough(now);
+    const value = this.load(companionId), virtual = evaluateCompanionRoutine(value.config, iso(this.virtualTime(now)), value.interruptedUntil ? iso(this.virtualTime(value.interruptedUntil)) : undefined);
+    const actual = this.worldClock.actual(companionId, now);
+    const result: CompanionRoutineRuntime = { ...virtual, ...actual, plannedPhase: virtual.phase, nextTransitionAt: iso(this.realTime(virtual.nextTransitionAt)),
+      ...(value.interruptedUntil ? { interruptedUntil: value.interruptedUntil } : {}) };
     const previous = this.db.prepare('SELECT phase FROM companion_routine_audit WHERE companion_id=? ORDER BY id DESC LIMIT 1').get(companionId);
     if (!previous || row(previous).phase !== result.phase) {
       this.db.prepare('INSERT INTO companion_routine_audit(companion_id,at,phase) VALUES(?,?,?)').run(companionId, iso(now), result.phase);
@@ -162,43 +178,30 @@ export class CompanionRoutineStore {
   }
   nextEnergyCheckAt(companionId: string, now = Date.now()): string { return this.phase(companionId, now).nextTransitionAt; }
   advanceEnergy(companionId: string, from: number | string | Date, to: number | string | Date, energy: number): number {
-    const value = this.load(companionId), start = typeof from === 'number' ? iso(from) : from, end = typeof to === 'number' ? iso(to) : to;
-    let current = new Date(start).getTime(), result = energy;
-    for (const window of this.interruptions(companionId, new Date(start).toISOString(), new Date(end).toISOString())) {
-      const left = Math.max(current, Date.parse(window.start)), right = Math.min(new Date(end).getTime(), Date.parse(window.end));
-      if (left > current) result = advanceCompanionRoutineEnergy(value.config, iso(current), iso(left), result);
-      if (right > left) result = advanceCompanionRoutineEnergy(value.config, iso(left), iso(right), result, iso(right));
-      current = Math.max(current, right);
-    }
-    return advanceCompanionRoutineEnergy(value.config, iso(current), end, result);
-  }
-  private interruptions(companionId: string, from: string, to: string): CompanionRoutineInterruption[] {
-    return (this.db.prepare(`SELECT starts_at,ends_at FROM companion_routine_interruptions WHERE companion_id=? AND ends_at>? AND starts_at<?
-      UNION ALL SELECT starts_at,COALESCE(ends_at,last_observed_at) AS ends_at FROM companion_routine_work
-      WHERE companion_id=? AND COALESCE(ends_at,last_observed_at)>? AND starts_at<? ORDER BY starts_at`).all(companionId, from, to, companionId, from, to) as Row[])
-      .map(value => ({ start: String(value.starts_at), end: String(value.ends_at) }));
+    const start = new Date(from).getTime(), end = this.worldClock.ensureThrough(new Date(to).getTime());
+    return advanceCompanionWorldEnergy(this.worldClock.occupancy(companionId, start, end), start, end, energy, at => this.virtualTime(at));
   }
   allowWork(companionId: string, sourceMessageId: string, now = Date.now(), proactive = false): boolean {
     // A wake window belongs to a specific urgent interaction, not the owner's
     // entire backlog. Fixed commitments also must not release old queued chat.
-    if (evaluateCompanionRoutine(this.load(companionId).config, iso(now)).canRespond) return true;
+    if (evaluateCompanionRoutine(this.load(companionId).config, iso(this.virtualTime(now))).canRespond) return true;
     if (proactive) return false;
     const message = this.db.prepare('SELECT conversation_id FROM messages WHERE id=?').get(sourceMessageId);
     if (!message) return false;
     const scope = { companionId, conversationId: String(row(message).conversation_id) };
     const source = this.visibleSources(scope, [sourceMessageId])[0];
     if (!source || source.authorId !== 'user') return false;
-    if (urgentRoutineRequest(source.content)) return this.interrupt(scope, sourceMessageId, now).canRespond;
+    if (this.worldClock.urgent(companionId, sourceMessageId, now)) return this.interrupt(scope, sourceMessageId, now).canRespond;
     const active = this.db.prepare('SELECT source_message_id FROM companion_routine_interruptions WHERE companion_id=? AND starts_at<=? AND ends_at>? AND source_message_id IS NOT NULL').all(companionId, iso(now), iso(now)) as Row[];
     return active.some(window => {
       const original = this.visibleSources(scope, [String(window.source_message_id)])[0];
       return original?.authorId === 'user' && original.conversationId === source.conversationId
-        && source.sequence >= original.sequence && urgentRoutineRequest(original.content);
+        && source.sequence >= original.sequence && this.worldClock.urgent(companionId, original.id, now);
     });
   }
   interrupt(scope: Scope, sourceMessageId: string, now = Date.now()): CompanionRoutineRuntime {
     this.requireScope(scope); const source = this.visibleSources(scope, [sourceMessageId])[0];
-    if (!source || source.authorId !== 'user' || !urgentRoutineRequest(source.content)) throw new Error('临时唤醒需要真实的紧急用户要求。');
+    if (!source || source.authorId !== 'user' || !this.worldClock.urgent(scope.companionId, source.id, now)) throw new Error('临时唤醒需要已核验的真实紧急通知。');
     this.recordInterruption(scope.companionId, sourceMessageId, now); return this.phase(scope.companionId, now);
   }
   wakeForCommitment(companionId: string, _reason = 'fixed_commitment', now = Date.now()): CompanionRoutineRuntime {
@@ -231,9 +234,4 @@ export function routineConfigurationRequested(content: string): boolean {
   if (/(?:引用|台词|例子|他说|她说|原话|假如|假设|如果).*(?:作息|习惯|睡|起床|吃饭|休息)|(?:不要|不用|别|取消).{0,12}(?:修改|设置|作息|习惯)|\b(?:hypothetical|for example|someone said|do not|don't)\b/iu.test(content)) return false;
   if (!/作息|习惯|睡|起床|吃饭|休息|散步|读书|学习|运动|听歌|看海|routine|bedtime|wake|meal|habit/iu.test(content)) return false;
   return /(?:设置|调整|修改|改成|改为|改一下|安排|希望你|以后你|从今你|养成|培养|请你|麻烦你).*(?:作息|习惯|睡|起床|吃饭|休息|散步|读书|学习|运动|听歌|看海)|(?:作息|习惯).*(?:设置|调整|修改|改成|改为|培养)|(?:把|将).*(?:睡|起床|吃饭|休息|习惯|作息).*(?:改到|改成|改为|调到)|^(?:(?:以后|从今|请|麻烦你|你)[，,\s]*)?(?:每天|每周|每晚).*(?:睡|起床|吃饭|休息|散步|读书|学习|运动|听歌|看海)|\b(?:set|change|adjust|configure|please|from\s+now)\b/iu.test(content.trim());
-}
-export function urgentRoutineRequest(content: string): boolean {
-  if (/^[\s“”"'‘’「」『』]*[“"'‘「『][\s\S]*[”"'’」』][\s。.!！?？]*$/u.test(content.trim())) return false;
-  if (/(?:不是|没有|不算|并不|不太|不)\s*(?:紧急|急事|急用|急需)|(?:假如|假设|如果|故事|小说|台词|引用|例子|他说|她说).*(?:紧急|急事|醒醒|叫醒)|(?:不要|不用|别).{0,8}(?:醒|打断)|\b(?:hypothetical|for example|someone said|not urgent|no emergency)\b/iu.test(content)) return false;
-  return /紧急|急事|急用|急需|醒醒|叫醒|立刻.{0,12}(?:帮|处理|回复)|马上.{0,12}(?:帮|处理|回复)|\b(?:urgent|emergency|wake up|right now)\b/iu.test(content);
 }

@@ -25,10 +25,12 @@ export const companionRoutinePatchSchema = z.strictObject({ timeZone: timeZone.o
   .refine(patch => Object.keys(patch).length > 0, '请提供作息修改。');
 export type CompanionRoutinePatch = z.input<typeof companionRoutinePatchSchema>;
 export const companionRoutineRuntimeSchema = z.object({ phase: z.enum(['awake', 'sleeping', 'eating', 'resting', 'habit']),
+  plannedPhase: z.enum(['awake', 'sleeping', 'eating', 'resting', 'habit']).optional(),
   activity: z.string().max(120).optional(), activeHabitId: id.optional(), nextTransitionAt: z.iso.datetime(), canRespond: z.boolean(),
   interruptedUntil: z.iso.datetime().optional(), simulation: z.literal(true).default(true) });
 export type CompanionRoutineRuntime = z.output<typeof companionRoutineRuntimeSchema>;
 export const companionHabitProgressSchema = z.object({ id, strength: z.number().min(0).max(100), completedCount: z.number().int().nonnegative(),
+  practicedMinutes: z.number().nonnegative().optional(),
   streak: z.number().int().nonnegative(), lastCompletedAt: z.iso.datetime().optional() });
 export type CompanionHabitProgress = z.infer<typeof companionHabitProgressSchema>;
 export const companionRoutineSchema = z.object({ companionId: id, config: companionRoutineConfigSchema,

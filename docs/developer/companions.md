@@ -64,6 +64,16 @@ companion-runtime-source.ts 是已安装官方 SDK 的薄适配器。它在 crea
 
 源码依据：[群聊顺序与 PASS](https://github.com/Fei2411/DeepSeek-Bot/blob/7e1c5184d63e796def85469793117befbbe5003f/ds-bot/src/host/groups.js)、[来源记忆与审核游标](https://github.com/Fei2411/DeepSeek-Bot/blob/7e1c5184d63e796def85469793117befbbe5003f/ds-bot/src/host/memory.js)、[上下文整理预算](https://github.com/Fei2411/DeepSeek-Bot/blob/7e1c5184d63e796def85469793117befbbe5003f/ds-bot/src/host/steward.js)。该项目 SQLite 是 DSH 日志的可重建搜索索引；WorldlineBox 的 SQLite 是伙伴消息的权威存档，领域职责不同。
 
+## 世界观测界面
+
+`shared/companion-world.ts` 的快照是世界观测的唯一状态来源。`scene.objects` 同时提供寻路的实体占地、交互锚点和可视家具数据；Three.js 窗口不维护第二份人物移动或碰撞状态。观察相机的旋转、缩放、平移与住户切换不会发出人物指令。公开 IPC 通过同一 `companionsRequestSchema` / `companionsResponseSchema` 校验世界请求与快照；房主审批由对应伙伴完成，观测窗口只显示结果。
+
+`renderer/companions/world` 通过延迟加载打开独立窗口。窗口可见时每秒请求世界快照，React 只更新已接收的状态；24 fps 的命令式渲染负责沿已知路径插值和播放动作，不外推到尚未收到的位置。三帧动作由 `activityStartedAtReal` 与素材时长确定，动作种类、开始和结束仍由宿主决定。站立/行走使用素材固定基点，坐姿使用椅面接触点，睡姿使用床面接触点；无素材的自定义伙伴使用自己的头像标记。
+
+观察偏好单独保存在本机 `companion-world-observer` localStorage 项中，仅包含场景、跟随选择与各场景相机 position/target/zoom，不复制世界权威数据。`WorldViewportEngine.getView/restoreView` 提供视角接口；每秒、操作结束、隐藏、关闭和 beforeunload 保存。偏好通过有限数值、相机距离、缩放与数量边界校验，损坏或不可访问时回退。全局世界入口恢复上次观看位置，指定伙伴的小屋入口优先打开该家。真实 Electron 验收覆盖关闭重开后的相机与场景，以及应用重启后的跟随选择。
+
+静态房屋按材质合并几何体，仅保留所选场景的人物纹理；分辨率比限制为 1.5，后台停止绘制，关闭时释放控制器、监听器、几何体、材质和纹理。共享布局包含室外建筑实体占地，街区外观与室内观测分别按当前场景创建。天气、光照与温度取快照中的虚拟环境，不调用外部气象服务。
+
 ## 验证
 
 数据库测试使用 Electron ABI 的真实 better-sqlite3；模型协议与 UI 测试使用明确 fixture。桌面测试使用独立用户目录、真实 IPC/UtilityProcess/SQLite 与本地 HTTP 模型服务，验证全局连接继承、专属连接隔离、密钥加密和重启持久性。自动测试不调用真实付费模型账户；维护者另行授权的真实桌面任务使用应用已保存的连接，验证记录保存在 Git 忽略的 `artifacts/companions/live/`。

@@ -3,15 +3,24 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import { recordUrgentAttention } from '../helpers/companion-world-fixture';
+import type { CompanionMessage } from '../../src/shared/companions';
 
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '安静认真', description: '', model: '', avatar: 'sister', proactive: false }));
 const stores = new Set<CompanionsStore>(), folders: string[] = [];
 function fixture() {
   const folder = mkdtempSync(path.join(tmpdir(), 'companion-routine-')); folders.push(folder);
   const store = new CompanionsStore(path.join(folder, 'messages.sqlite'), seeds); stores.add(store);
+  const world = store.request({ type: 'world.snapshot' }).world!;
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
   return { store, filename: path.join(folder, 'messages.sqlite'), scope: { companionId: 'alice', conversationId: store.openPrivate('alice').id } };
 }
 const habit = { id: 'reading', title: '私人阅读计划_440', at: '10:00', durationMinutes: 30, kind: 'study' as const };
+function atComputer(store: CompanionsStore, scope: { companionId: string; conversationId: string }, source: CompanionMessage, workId: string) {
+  store.request({ type: 'world.work.begin', ...scope, workId, kind: 'action', sourceMessageId: source.id });
+  vi.setSystemTime(Date.now() + 10000); store.request({ type: 'world.tick' });
+  expect(store.request({ type: 'world.work.ready', companionId: scope.companionId, workId }).worldWork?.status).toBe('ready');
+}
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime('2026-10-14T09:00:00Z'); });
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); vi.useRealTimers(); });
 
@@ -23,9 +32,10 @@ describe('persistent virtual routine source and clock behavior', () => {
     expect(saved.habitProgress[0]).toMatchObject({ completedCount: 0, strength: 0 });
     vi.setSystemTime('2026-10-17T11:00:00Z');
     const offline = store.request({ type: 'routine.get', ...scope }).routine!;
-    expect(offline.habitProgress[0]).toMatchObject({ completedCount: 4, streak: 4 });
+    expect(offline.habitProgress[0]).toMatchObject({ completedCount: 3, streak: 4 });
+    expect(offline.habitProgress[0]!.practicedMinutes).toBeGreaterThan(119); expect(offline.habitProgress[0]!.practicedMinutes).toBeLessThan(120);
     const edited = store.request({ type: 'routine.configure', ...scope, expectedRevision: offline.revision, patch: { wakeAt: '06:30' } }).routine!;
-    expect(edited.habitProgress[0]?.completedCount).toBe(4);
+    expect(edited.habitProgress[0]?.completedCount).toBe(3);
     expect(() => store.request({ type: 'routine.configure', ...scope, expectedRevision: offline.revision, patch: { wakeAt: '06:00' } })).toThrow('已更新');
   });
   it('hides private routine facts and ownership in a group and rejects group configuration', () => {
@@ -75,52 +85,63 @@ describe('persistent virtual routine source and clock behavior', () => {
     vi.setSystemTime('2026-10-14T23:30:00Z');
     const group = store.createConversation('紧急联系', ['alice', 'bob']);
     const urgent = store.appendMessage({ conversationId: group.id, authorId: 'user', content: '别睡了，紧急帮我处理故障。' });
-    for (const companionId of ['alice', 'bob']) expect(store.request({ type: 'routine.interrupt', companionId, conversationId: group.id, sourceMessageId: urgent.id }).routine?.runtime).toMatchObject({ phase: 'awake', canRespond: true });
+    for (const companionId of ['alice', 'bob']) {
+      recordUrgentAttention(store, companionId, urgent);
+      expect(store.request({ type: 'routine.interrupt', companionId, conversationId: group.id, sourceMessageId: urgent.id }).routine?.runtime).toMatchObject({ phase: 'sleeping', canRespond: true });
+    }
   });
   it('reports actual running work past the initial wake window and resumes the raw clock when it finishes', () => {
     const { store, scope } = fixture(), initial = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: initial.revision, patch: { timeZone: 'UTC', meals: [] } });
     vi.setSystemTime('2026-10-14T23:30:00Z');
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '紧急帮我做一次只读检查。' });
+    recordUrgentAttention(store, 'alice', source); atComputer(store, scope, source, 'long_work');
     store.request({ type: 'routine.interrupt', ...scope, sourceMessageId: source.id });
     const action = store.createAction({ ...scope, sourceMessageId: source.id, title: '只读检查', status: 'running' });
     vi.setSystemTime('2026-10-15T00:10:00Z');
-    expect(store.request({ type: 'routine.get', ...scope }).routine?.runtime).toMatchObject({ phase: 'awake', canRespond: true, activity: '正在处理已答应的事，作息暂延' });
+    expect(store.request({ type: 'routine.get', ...scope }).routine?.runtime).toMatchObject({ phase: 'awake', canRespond: false, activity: '正在电脑前处理已答应的事' });
     store.updateAction(action.id, { status: 'succeeded', result: '实际完成检查' });
+    store.request({ type: 'world.work.end', companionId: 'alice', workId: 'long_work' }); vi.setSystemTime(Date.now() + 10000);
     expect(store.request({ type: 'routine.get', ...scope }).routine?.runtime.phase).toBe('sleeping');
   });
-  it('excludes a genuinely interrupted habit from completed count and resets its streak', () => {
+  it('counts only actual practice around an interruption and preserves meaningful daily practice', () => {
     const { store, scope } = fixture(), initial = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: initial.revision, patch: { timeZone: 'UTC', meals: [], habits: [habit] } });
     vi.setSystemTime('2026-10-15T10:10:00Z');
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '紧急帮我处理故障。' });
+    recordUrgentAttention(store, 'alice', source); atComputer(store, scope, source, 'interrupt_practice');
     store.request({ type: 'routine.interrupt', ...scope, sourceMessageId: source.id });
-    vi.setSystemTime('2026-10-15T10:20:00Z'); store.request({ type: 'routine.complete-interrupt', companionId: scope.companionId });
+    vi.setSystemTime('2026-10-15T10:20:00Z'); store.request({ type: 'world.work.end', companionId: 'alice', workId: 'interrupt_practice' }); store.request({ type: 'routine.complete-interrupt', companionId: scope.companionId });
     vi.setSystemTime('2026-10-15T11:00:00Z');
-    expect(store.request({ type: 'routine.get', ...scope }).routine?.habitProgress[0]).toMatchObject({ completedCount: 1, streak: 0 });
+    const progress = store.request({ type: 'routine.get', ...scope }).routine!.habitProgress[0]!;
+    expect(progress).toMatchObject({ completedCount: 1, streak: 2 }); expect(progress.practicedMinutes).toBeGreaterThan(49); expect(progress.practicedMinutes).toBeLessThan(50);
   });
   it('excludes a habit while real work continues beyond the thirty-minute wake window', () => {
     const { store, scope } = fixture(), initial = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: initial.revision, patch: { timeZone: 'UTC', meals: [], habits: [habit] } });
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '紧急帮我执行只读检查。' });
+    recordUrgentAttention(store, 'alice', source); atComputer(store, scope, source, 'continuous_work');
     store.request({ type: 'routine.interrupt', ...scope, sourceMessageId: source.id });
     const action = store.createAction({ ...scope, sourceMessageId: source.id, title: '只读检查', status: 'running' });
     vi.setSystemTime('2026-10-14T10:35:00Z');
     expect(store.request({ type: 'routine.get', ...scope }).routine?.habitProgress[0]?.completedCount).toBe(0);
     vi.setSystemTime('2026-10-14T11:00:00Z'); store.updateAction(action.id, { status: 'succeeded', result: '完成' });
+    store.request({ type: 'world.work.end', companionId: 'alice', workId: 'continuous_work' });
     expect(store.request({ type: 'routine.get', ...scope }).routine?.habitProgress[0]?.completedCount).toBe(0);
     vi.setSystemTime('2026-10-15T11:00:00Z');
-    expect(store.request({ type: 'routine.get', ...scope }).routine?.habitProgress[0]).toMatchObject({ completedCount: 1, streak: 1 });
+    const progress = store.request({ type: 'routine.get', ...scope }).routine!.habitProgress[0]!;
+    expect(progress).toMatchObject({ completedCount: 0, streak: 1 }); expect(progress.practicedMinutes).toBeGreaterThan(29); expect(progress.practicedMinutes).toBeLessThan(30);
   });
   it('ends crashed work at its last observation so offline habits can actually progress', () => {
     const { store, scope, filename } = fixture(), initial = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: initial.revision, patch: { timeZone: 'UTC', meals: [], habits: [habit] } });
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '做一次检查。' });
+    atComputer(store, scope, source, 'crashed_work');
     store.createAction({ ...scope, sourceMessageId: source.id, title: '检查', status: 'running' });
     vi.setSystemTime('2026-10-14T09:20:00Z'); store.request({ type: 'state.get', ...scope });
     store.close(); stores.delete(store);
     vi.setSystemTime('2026-10-16T11:00:00Z');
     const reopened = new CompanionsStore(filename, seeds); stores.add(reopened); reopened.interruptPendingActions();
-    expect(reopened.request({ type: 'routine.get', ...scope }).routine?.habitProgress[0]).toMatchObject({ completedCount: 3, streak: 3 });
+    expect(reopened.request({ type: 'routine.get', ...scope }).routine?.habitProgress[0]).toMatchObject({ completedCount: 2, streak: 3 });
   });
 });

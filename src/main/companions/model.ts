@@ -11,6 +11,7 @@ import { COMPANION_MEMORY_TOOLS, normalizeCompanionMemoryToolName, providerCompa
 import { COMPANION_SCHEDULE_TOOL } from '../../shared/companion-schedule-tool';
 import { COMPANION_STATE_TOOL } from '../../shared/companion-state-tool';
 import { COMPANION_ROUTINE_TOOL } from '../../shared/companion-routine-tool';
+import { COMPANION_WORLD_TOOL } from '../../shared/companion-world-tool';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
 import { CompanionProviderStreamError, readCompanionProviderStream } from './provider-stream';
 
@@ -178,7 +179,7 @@ function validateConfig(config: CompanionModelConfig): void {
 
 function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false): Parameters<typeof fetch> {
   const deepseek = isDeepseekOfficialEndpoint(config.baseUrl ?? '');
-  const tools = [...(enableDsh ? [COMPANION_DSH_TOOL] : []), ...(enableMemory ? [...COMPANION_MEMORY_TOOLS, COMPANION_SCHEDULE_TOOL, COMPANION_STATE_TOOL, COMPANION_ROUTINE_TOOL] : [])];
+  const tools = [...(enableDsh ? [COMPANION_DSH_TOOL] : []), ...(enableMemory ? [...COMPANION_MEMORY_TOOLS, COMPANION_SCHEDULE_TOOL, COMPANION_STATE_TOOL, COMPANION_ROUTINE_TOOL, COMPANION_WORLD_TOOL] : [])];
   const bearerHeaders = { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
   const init = (headers: Record<string, string>, body: unknown): RequestInit => ({ method: 'POST', headers: { ...headers, ...(stream ? { Accept: 'text/event-stream' } : {}) },
     signal, redirect: 'error', body: JSON.stringify(body) });

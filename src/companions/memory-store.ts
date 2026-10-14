@@ -375,6 +375,7 @@ export class CompanionMemoryStore {
   }
 
   private persist(memory: CompanionMemory, identity?: string): void {
+    this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('memory-atom-change/' + memory.companionId, randomUUID());
     this.db.prepare('INSERT INTO memories(id,companion_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(memory.id, memory.companionId, JSON.stringify(memory));
     this.db.prepare(`INSERT INTO memory_records(memory_id,companion_id,conversation_id,kind,status,subject,fact_key,qualifier,event_id,source_sequence,identity_key,version)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(memory_id) DO UPDATE SET kind=excluded.kind,status=excluded.status,subject=excluded.subject,fact_key=excluded.fact_key,qualifier=excluded.qualifier,event_id=excluded.event_id,source_sequence=excluded.source_sequence,version=excluded.version`)

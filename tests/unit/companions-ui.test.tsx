@@ -131,7 +131,7 @@ it('searches and filters the full built-in catalogue and restores the selected r
 it('keeps private and group conversations in the message list and opens the same private conversation from contacts', async () => {
   const f = fixture(); await mount(f.api);
   const navigation = container!.querySelector('nav[aria-label="伙伴导航"]')!;
-  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人']);
+  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '世界']);
   expect(container!.querySelector('[aria-label="伙伴设置"]')).toBeNull();
   expect(container!.querySelectorAll('[data-companion-conversation]')).toHaveLength(2);
   expect(container!.querySelector('[data-companion-conversation]')!.getAttribute('data-companion-conversation')).toBe('private-sister');

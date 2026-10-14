@@ -1,0 +1,266 @@
+{
+  "features": {
+    "2d_canvas": "enabled",
+    "direct_rendering_display_compositor": "disabled_off_ok",
+    "gpu_compositing": "enabled",
+    "multiple_raster_threads": "enabled_on",
+    "opengl": "enabled_on",
+    "rasterization": "enabled",
+    "raw_draw": "disabled_off_ok",
+    "skia_graphite": "disabled_off",
+    "trees_in_viz": "disabled_off",
+    "video_decode": "enabled",
+    "video_encode": "enabled",
+    "webgl": "enabled",
+    "webgpu": "enabled",
+    "webnn": "disabled_off"
+  },
+  "home": {
+    "worldFps": 24.9,
+    "worldDrawMsMedian": 0.5,
+    "worldDrawMs95": 39.8,
+    "worldDrawCalls": 20,
+    "worldTriangles": 80204,
+    "worldTextures": 6,
+    "worldGeometries": 20,
+    "worldFrames": 43
+  },
+  "orbit": {
+    "worldFps": 24,
+    "worldDrawMsMedian": 0.4,
+    "worldDrawMs95": 4.8,
+    "worldDrawCalls": 19,
+    "worldTriangles": 80202,
+    "worldTextures": 6,
+    "worldGeometries": 20,
+    "worldFrames": 93
+  },
+  "returned": {
+    "worldFps": 21.6,
+    "worldDrawMsMedian": 0.4,
+    "worldDrawMs95": 7.7,
+    "worldDrawCalls": 19,
+    "worldTriangles": 80202,
+    "worldTextures": 6,
+    "worldGeometries": 19,
+    "worldFrames": 139
+  },
+  "sameScene": [
+    {
+      "action": "cook",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 14,
+          "y": 11
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "south",
+        "frame": 1,
+        "activity": "habit",
+        "activityStartedAtReal": "2026-10-14T16:54:07.633Z",
+        "artAction": "cook",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.46674999999999,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8599999999999999
+        },
+        "route": [],
+        "furnitureId": "deepseek-sister_kitchen",
+        "routinePhase": "awake"
+      },
+      "metrics": {
+        "worldFps": 24,
+        "worldDrawMsMedian": 0.4,
+        "worldDrawMs95": 0.9,
+        "worldDrawCalls": 20,
+        "worldTriangles": 80204,
+        "worldTextures": 6,
+        "worldGeometries": 20,
+        "worldFrames": 312
+      }
+    },
+    {
+      "action": "read",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 15,
+          "y": 8
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "east",
+        "frame": 0,
+        "activity": "habit",
+        "activityStartedAtReal": "2026-10-14T16:54:11.825Z",
+        "artAction": "read",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.46218466666666,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8599999999999999
+        },
+        "route": [],
+        "furnitureId": "deepseek-sister_habit",
+        "routinePhase": "awake"
+      },
+      "metrics": {
+        "worldFps": 24,
+        "worldDrawMsMedian": 0.4,
+        "worldDrawMs95": 0.7,
+        "worldDrawCalls": 20,
+        "worldTriangles": 80204,
+        "worldTextures": 6,
+        "worldGeometries": 20,
+        "worldFrames": 411
+      }
+    },
+    {
+      "action": "rest",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 4,
+          "y": 8
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "west",
+        "frame": 2,
+        "activity": "resting",
+        "activityStartedAtReal": "2026-10-14T16:54:20.039Z",
+        "artAction": "rest",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.45586849999997,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8599999999999999
+        },
+        "route": [],
+        "furnitureId": "deepseek-sister_sofa",
+        "routinePhase": "awake"
+      },
+      "metrics": {
+        "worldFps": 24,
+        "worldDrawMsMedian": 0.3,
+        "worldDrawMs95": 0.9,
+        "worldDrawCalls": 20,
+        "worldTriangles": 80204,
+        "worldTextures": 6,
+        "worldGeometries": 20,
+        "worldFrames": 633
+      }
+    },
+    {
+      "action": "sleep",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 14,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "east",
+        "frame": 1,
+        "activity": "sleeping",
+        "activityStartedAtReal": "2026-10-14T16:54:31.882Z",
+        "artAction": "sleep",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.44871349999998,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8599999999999999
+        },
+        "route": [],
+        "furnitureId": "deepseek-sister_bed",
+        "routinePhase": "awake"
+      },
+      "metrics": {
+        "worldFps": 24,
+        "worldDrawMsMedian": 0.3,
+        "worldDrawMs95": 0.6,
+        "worldDrawCalls": 19,
+        "worldTriangles": 80202,
+        "worldTextures": 6,
+        "worldGeometries": 20,
+        "worldFrames": 905
+      }
+    },
+    {
+      "action": "cook",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 14,
+          "y": 11
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "south",
+        "frame": 2,
+        "activity": "habit",
+        "activityStartedAtReal": "2026-10-14T16:54:39.478Z",
+        "artAction": "cook",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.4392415,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8599999999999999
+        },
+        "route": [],
+        "furnitureId": "deepseek-sister_kitchen",
+        "routinePhase": "awake"
+      },
+      "metrics": {
+        "worldFps": 24,
+        "worldDrawMsMedian": 0.3,
+        "worldDrawMs95": 0.9,
+        "worldDrawCalls": 20,
+        "worldTriangles": 80204,
+        "worldTextures": 6,
+        "worldGeometries": 20,
+        "worldFrames": 1103
+      }
+    }
+  ],
+  "visibility": "visible"
+}

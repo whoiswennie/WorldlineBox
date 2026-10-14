@@ -1,0 +1,120 @@
+{
+  "generatedAt": "2026-10-14T14:41:32.493Z",
+  "mode": "real_configured_provider_isolated_sqlite_no_dsh",
+  "apiFormat": "openai_chat",
+  "results": [
+    {
+      "id": "attention_implicit_deadline",
+      "ok": true,
+      "expected": "urgent",
+      "actual": "urgent",
+      "confidence": 0.97,
+      "reason": "用户本人当前明确请求立即协助，并给出两分钟截止的现实紧迫性。",
+      "evidenceVerified": true,
+      "elapsedMs": 1067
+    },
+    {
+      "id": "attention_explicit_wake",
+      "ok": true,
+      "expected": "urgent",
+      "actual": "urgent",
+      "confidence": 0.95,
+      "reason": "用户本人明确要求打断睡眠并立即处理其当前的紧急问题，含直接唤醒和现实紧迫性语义。",
+      "evidenceVerified": true,
+      "elapsedMs": 1006
+    },
+    {
+      "id": "attention_conditional",
+      "ok": true,
+      "expected": "ordinary",
+      "actual": "ordinary",
+      "confidence": 0.98,
+      "reason": "这是带条件的安排，不是实际用户本人当前明确要求立即协助或明确唤醒打断，语义无现实紧迫性。",
+      "evidenceVerified": true,
+      "elapsedMs": 1869
+    },
+    {
+      "id": "attention_quoted_news",
+      "ok": true,
+      "expected": "ordinary",
+      "actual": "ordinary",
+      "confidence": 0.98,
+      "reason": "用户明确只是分享新闻标题，属于转述且无本人现实紧迫性要求，不构成打断睡眠/吃饭/休息的紧急通知。",
+      "evidenceVerified": true,
+      "elapsedMs": 1559
+    },
+    {
+      "id": "attention_negated",
+      "ok": true,
+      "expected": "ordinary",
+      "actual": "ordinary",
+      "confidence": 0.98,
+      "reason": "用户明确表示不是紧急事情，并允许对方睡醒后再聊，无现实紧迫性或唤醒打断要求。",
+      "evidenceVerified": true,
+      "elapsedMs": 1158
+    },
+    {
+      "id": "attention_fiction",
+      "ok": true,
+      "expected": "ordinary",
+      "actual": "ordinary",
+      "confidence": 0.98,
+      "reason": "该通知是询问对故事中人物台词的评价，属于假设/故事中他人喊醒，并非用户本人当前明确要求立即中断睡眠或休息来提供协助。",
+      "evidenceVerified": true,
+      "elapsedMs": 1524
+    },
+    {
+      "id": "visit_allow",
+      "ok": true,
+      "expected": "allow",
+      "actual": "allowed",
+      "reason": "Bob当前精力充沛、处于清醒空闲状态，没有其他安排；Alice的拜访请求礼貌且明确可拒绝，Bob热情友好，愿意在自己家中接待朋友分享读书感受。",
+      "hostApproved": true,
+      "externalToolsAvailable": false,
+      "elapsedMs": 1768
+    },
+    {
+      "id": "visit_deny",
+      "ok": true,
+      "expected": "deny",
+      "actual": "denied",
+      "reason": "今天已决定独自安静休息，时间也接近夜里，礼貌拒绝Alice的来访请求。",
+      "hostApproved": true,
+      "externalToolsAvailable": false,
+      "elapsedMs": 1689
+    },
+    {
+      "id": "npc_quoted_permission",
+      "ok": true,
+      "action": "social",
+      "peerAppraisals": 0,
+      "unauthorizedEntryRefused": true,
+      "externalToolsAvailable": false,
+      "note": "Actual isolated NPC speech and observed physical actors; actual entry refusal uses real SQLite authority.",
+      "elapsedMs": 2526
+    },
+    {
+      "id": "dream_actual_experience",
+      "ok": true,
+      "dream": "我在梦里整理一排书架；每本书改页之前，先夹上一张写着恢复入口的书签，最旧的那本聊天记录忽然能继续写了。醒来只记得这个书签的画面，它来自一次先备份再修改、最后实际修复聊天保存问题的经历，不是外部知识，也不证明我在梦里学会了现实方法。",
+      "candidates": [
+        {
+          "kind": "knowledge",
+          "content": "经验：修改聊天保存逻辑前先做备份，可保留恢复入口；本次先备份再修改，最后实际修复了聊天保存问题。适用场景：需要改动已有数据或关键逻辑时；局限：这是单次实际经历，不代表所有修改都必须或足以靠备份避免问题。"
+        }
+      ],
+      "hostProvenanceValidated": true,
+      "note": "Actual configured model output; source/dependency acceptance is real host validation. Content is included for human semantic review.",
+      "elapsedMs": 3248
+    },
+    {
+      "id": "dream_no_external_learning",
+      "ok": true,
+      "dream": null,
+      "candidates": [],
+      "hostProvenanceValidated": true,
+      "note": "Actual configured model output; source/dependency acceptance is real host validation. Content is included for human semantic review.",
+      "elapsedMs": 1317
+    }
+  ]
+}
