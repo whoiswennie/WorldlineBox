@@ -1,0 +1,22 @@
+.player-profile-settings { min-width: 0; }
+.player-profile-intro { margin: -2px 0 19px; font-size: 12px; line-height: 1.85; color: var(--ui-content-secondary); }
+.player-profile-settings > .app-settings-card { padding: 20px; margin-bottom: 16px; }
+.player-profile-identity { display: flex; align-items: center; gap: 18px; padding-bottom: 21px; margin-bottom: 20px; border-bottom: 1px solid var(--ui-border-subtle); }
+.player-profile-identity > div { min-width: 0; }
+.player-profile-identity strong { font-size: 13px; font-weight: 600; }
+.player-profile-identity p { margin: 6px 0 10px; color: var(--ui-content-secondary); font-size: 11px; line-height: 1.7; }
+.player-profile-identity > div > div { display: flex; gap: 13px; align-items: center; flex-wrap: wrap; }
+.player-profile-identity button { padding: 6px 11px; min-height: 31px; font-size: 11px; }
+.player-profile-identity .player-profile-remove { padding: 5px 0; border: 0; background: transparent; color: var(--ui-content-secondary); }
+.player-profile-fields { display: grid; gap: 16px; }
+.player-profile-fields label { display: grid; gap: 8px; color: var(--ui-content-primary); font-size: 12px; }
+.player-profile-fields input, .player-profile-fields textarea { width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid var(--ui-border-control); border-radius: 8px; background: var(--ui-surface-canvas); color: var(--ui-content-primary); font: inherit; font-size: 13px; }
+.player-profile-fields textarea { resize: vertical; line-height: 1.8; min-height: 105px; }
+.player-profile-fields > small { color: var(--ui-content-tertiary); font-size: 11px; line-height: 1.7; margin-top: -7px; }
+.player-profile-settings > footer { position: sticky; bottom: -1px; z-index: 1; display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 12px 0 2px; background: var(--ui-surface-pane); }
+.player-profile-settings > footer > span { color: var(--ui-content-secondary); font-size: 11px; }
+.player-profile-error { display: flex; align-items: baseline; flex-wrap: wrap; gap: 9px; color: var(--ui-status-danger); font-size: 12px; line-height: 1.8; }
+.player-profile-error > button { border: 0; padding: 3px; color: var(--ui-content-accent); background: transparent; cursor: pointer; }
+.player-profile-notice { color: var(--ui-content-secondary); font-size: 11px; line-height: 1.8; }
+.player-profile-settings button:disabled, .player-profile-settings input:disabled, .player-profile-settings textarea:disabled { opacity: .55; cursor: default; }
+.player-profile-settings :is(button, input, textarea):focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset: 3px; }

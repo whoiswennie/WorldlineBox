@@ -1,7 +1,9 @@
-import { useState, type ReactNode } from 'react';
-import type { Companion, CompanionConversation, CompanionDraft, CompanionMessage, CompanionsRequest, CompanionsResponse } from '../../shared/companions';
+import { useRef, useState, type ReactNode } from 'react';
+import type { Companion, CompanionAttachment, CompanionConversation, CompanionDraft, CompanionMessage, CompanionsRequest, CompanionsResponse } from '../../shared/companions';
 import { useDialogFocusTrap } from '../use-dialog-focus-trap';
-import { Avatar } from './CompanionVisuals';
+import { Avatar, companionAppearance } from './CompanionVisuals';
+import { PublicAppearanceSheet } from './PublicAppearanceSheet';
+import { AvatarCropDialog } from './AvatarCropDialog';
 import { companionGroupTitle } from '../../shared/companion-titles';
 import { builtinCompanionProfile, BUILTIN_COMPANION_PROFILES } from '../../shared/companion-catalogue';
 
@@ -32,12 +34,14 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [cropSource, setCropSource] = useState<CompanionAttachment>();
+  const avatarTrigger = useRef<HTMLButtonElement>(null);
   const [dissolving, setDissolving] = useState(false);
   const [tab, setTab] = useState<'builtin' | 'custom'>(dialog.kind === 'companion' && dialog.companion ? 'custom' : 'builtin');
   const [catalogueQuery, setCatalogueQuery] = useState('');
   const [catalogueCategory, setCatalogueCategory] = useState('全部');
   const initial = dialog.kind === 'companion' ? dialog.companion : undefined;
-  const [draft, setDraft] = useState<CompanionDraft>(() => ({ name: initial?.name ?? '', description: initial?.description ?? '', persona: initial?.persona ?? '', model: '', avatar: initial?.avatar ?? 'custom', proactive: initial?.proactive ?? false, ...(initial?.avatarAttachmentId ? { avatarAttachmentId: initial.avatarAttachmentId } : {}) }));
+  const [draft, setDraft] = useState<CompanionDraft>(() => ({ name: initial?.name ?? '', description: initial?.description ?? '', persona: initial?.persona ?? '', model: '', avatar: initial?.avatar ?? 'custom', proactive: initial?.proactive ?? false, ...(initial?.avatarAttachmentId ? { avatarAttachmentId: initial.avatarAttachmentId } : {}), ...(initial?.appearanceAttachmentId ? { appearanceAttachmentId: initial.appearanceAttachmentId } : {}) }));
   const [connectionMode, setConnectionMode] = useState<'global' | 'independent'>(initial?.llm ? 'independent' : 'global');
   const [connection, setConnection] = useState<NonNullable<CompanionDraft['llm']>>(() => ({ apiFormat: initial?.llm?.apiFormat ?? 'openai_chat', baseUrl: initial?.llm?.baseUrl ?? '', model: initial?.llm?.model ?? '' }));
   const [apiKey, setApiKey] = useState('');
@@ -57,13 +61,24 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
   }
   async function chooseAvatar() {
     setError(''); setBusy(true);
-    const response = await request({ type: 'attachment.pick', kind: 'image', purpose: 'avatar' });
-    setBusy(false);
-    if (!response) { setError('request'); return; }
-    const image = response.attachments?.[0];
-    if (!image) return;
-    if (!image.mime.startsWith('image/')) { setError('请选择图片文件作为头像。'); return; }
-    setDraft(current => ({ ...current, avatar: 'custom', avatarAttachmentId: image.id }));
+    try {
+      const response = await request({ type: 'attachment.pick', kind: 'image', purpose: 'avatar' });
+      if (!response?.ok) { setError(response?.error || '头像未能选取，请重试。'); return; }
+      const image = response.attachments?.[0]; if (!image) return;
+      if (!image.mime.startsWith('image/')) { setError('请选择图片文件作为头像。'); return; }
+      setCropSource(image);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '头像未能选取，请重试。'); }
+    finally { setBusy(false); }
+  }
+  async function chooseAppearance() {
+    setError(''); setBusy(true);
+    try { const response = await request({ type: 'attachment.pick', kind: 'image', purpose: 'appearance' });
+      if (!response) { setError('request'); return; }
+      const image = response.attachments?.[0]; if (!image) return;
+      if (!image.mime.startsWith('image/')) { setError('请选择图片文件作为三视图。'); return; }
+      setDraft(current => ({ ...current, appearanceAttachmentId: image.id }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '图片未能选取，请重试。'); }
+    finally { setBusy(false); }
   }
   const modalTitle = dialog.kind === 'chat' ? '发起聊天' : dialog.kind === 'companion' ? (initial ? '编辑伙伴资料' : '添加联系人') : dialog.kind === 'group' ? (group ? '管理群聊' : '创建群聊') : dialog.kind === 'action' ? '交给伙伴处理' : dialog.kind === 'delete-conversation' ? (dialog.mode === 'dissolve' ? '解散群聊' : '删除聊天') : '移除联系人';
   const visibleBuiltins = builtins.filter(item => {
@@ -96,10 +111,11 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
         event.preventDefault();
         const companion: CompanionDraft = { ...draft, model: '', ...(connectionMode === 'independent' ? { llm: connection } : {}) };
         const credential = apiKey.trim() && connectionMode === 'independent' ? { apiKey: apiKey.trim() } : {};
-        void submit(initial ? { type: 'companion.update', id: initial.id, companion, ...credential } : { type: 'companion.create', companion, ...credential });
+        void submit(initial ? { type: 'companion.update', id: initial.id, expectedRevision: initial.revision, companion, ...credential } : { type: 'companion.create', companion, ...credential });
       }}>
         <label>名字<input data-dialog-initial-focus="true" required maxLength={60} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} placeholder="她希望你如何称呼她？" /></label>
-        <div className="companions-avatar-editor"><Avatar companion={draft} large /><div><button type="button" className="companion-secondary-button" disabled={busy} onClick={() => void chooseAvatar()}>选择本地头像</button><button type="button" className="companions-avatar-reset" disabled={busy} onClick={() => setDraft({ ...draft, avatar: 'custom', avatarAttachmentId: undefined })}>恢复名字头像</button><p className="companions-subtle">选择一张图片，作为她在聊天中的头像。</p></div></div>
+        <div className="companions-avatar-editor"><Avatar companion={draft} large /><div><button ref={avatarTrigger} type="button" className="companion-secondary-button" disabled={busy} onClick={() => void chooseAvatar()}>选择本地头像</button><button type="button" className="companions-avatar-reset" disabled={busy} onClick={() => setDraft({ ...draft, avatar: 'custom', avatarAttachmentId: undefined })}>恢复名字头像</button><p className="companions-subtle">选择一张图片，作为她在聊天中的头像。</p></div></div>
+        <PublicAppearanceSheet attachmentId={draft.appearanceAttachmentId} fallbackSource={companionAppearance({ ...draft, id: initial?.id, builtin: initial?.builtin })} name={draft.name || '伙伴'} description="一张正面、侧面、背面的标准设定板，作为这位伙伴的公开形象资料。上传的图片优先于内置形象。" disabled={busy} onChoose={() => void chooseAppearance()} onRemove={() => setDraft(current => ({ ...current, appearanceAttachmentId: undefined }))} />
         <label>个性签名<input maxLength={500} value={draft.description} onChange={event => setDraft({ ...draft, description: event.target.value })} placeholder="显示在联系人资料中的一句话" /></label>
         <label>人设<textarea required rows={5} maxLength={12000} value={draft.persona} onChange={event => setDraft({ ...draft, persona: event.target.value })} placeholder="身份、性格、表达习惯、喜欢什么，以及你们如何相处……" /></label>
         <label>形象<select value={draft.avatar} onChange={event => setDraft({ ...draft, avatar: event.target.value as CompanionDraft['avatar'], avatarAttachmentId: undefined })}><option value="custom">{draft.avatarAttachmentId ? '本地头像' : '名字头像'}</option>{BUILTIN_COMPANION_PROFILES.map(profile => <option key={profile.id} value={profile.templateId}>{profile.name}</option>)}</select></label>
@@ -131,8 +147,9 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
       <p className="companions-subtle">她会使用自己的能力处理这件事。你们可以继续聊天，结果会回到这里。</p>
       <footer><button type="button" className="companion-secondary-button" onClick={onClose} disabled={busy}>取消</button><button className="companion-primary-button" disabled={busy || !actionOwner}>{busy ? '提交中…' : '开始处理'}</button></footer>
     </form>}
-    {dialog.kind === 'delete' && <div className="companions-form"><p>确定将“{dialog.companion.name}”从联系人移除吗？已有聊天记录保留。内置角色可以重新添加。</p><footer><button className="companion-secondary-button" disabled={busy} onClick={onClose}>保留联系人</button><button className="companion-danger-button" disabled={busy} onClick={() => void submit({ type: 'companion.delete', id: dialog.companion.id })}>移除联系人</button></footer></div>}
+    {dialog.kind === 'delete' && <div className="companions-form"><p>确定将“{dialog.companion.name}”从联系人移除吗？已有聊天记录保留。</p><footer><button className="companion-secondary-button" disabled={busy} onClick={onClose}>保留联系人</button><button className="companion-danger-button" disabled={busy || dialog.companion.builtin} onClick={() => void submit({ type: 'companion.delete', id: dialog.companion.id })}>移除联系人</button></footer></div>}
     {dialog.kind === 'delete-conversation' && <div className="companions-form"><p>{dialog.mode === 'dissolve' ? `确定解散“${dialog.conversation.title}”吗？该群正在运行和排队的回复会停止。` : `从消息列表删除“${dialog.conversation.title}”吗？聊天记录会保留，重新发起聊天时可以找回。`}</p><footer><button className="companion-secondary-button" disabled={busy} onClick={onClose}>取消</button><button className="companion-danger-button" disabled={busy} onClick={() => void submit({ type: 'conversation.delete', id: dialog.conversation.id, mode: dialog.mode })}>{dialog.mode === 'dissolve' ? '确认解散群聊' : '删除聊天'}</button></footer></div>}
+    {cropSource && <AvatarCropDialog attachment={cropSource} name={draft.name || '伙伴'} request={request} returnFocusRef={avatarTrigger} onCancel={() => setCropSource(undefined)} onConfirm={image => { setDraft(current => ({ ...current, avatar: 'custom', avatarAttachmentId: image.id })); setCropSource(undefined); }} />}
     {error && <p className="companions-modal-error" role="alert">{error === 'request' ? requestError || '操作未完成，请查看错误信息后重试。' : error}</p>}
   </Modal>;
 }

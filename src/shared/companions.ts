@@ -8,6 +8,9 @@ import { companionStatePublicCommands, companionRuntimeStateSchema } from './com
 import { companionRoutinePublicCommands, companionRoutineSchema, companionRoutineRuntimeSchema } from './companion-routine';
 import { companionWorldPublicCommands, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema } from './companion-world';
 import { companionSocialPublicCommands, companionSocialConversationPageSchema, companionSocialMessagePageSchema, companionSocialDaysSchema } from './companion-social';
+import { playerProfileCommands, playerProfileSchema } from './companion-profile';
+import { companionAvatarCropRequestSchema } from './companion-avatar-crop';
+import { companionResetCommands, companionResetSchema } from './companion-reset';
 
 export const COMPANIONS_CHANNEL = 'worldlinebox:companions';
 export const COMPANIONS_CHANGED_CHANNEL = 'worldlinebox:companions-changed';
@@ -30,6 +33,7 @@ export const companionSchema = z.object({
   builtin: z.boolean(), proactive: z.boolean(), createdAt: z.string(),
   llm: companionLlmSchema.optional(),
   avatarAttachmentId: companionIdSchema.optional(),
+  appearanceAttachmentId: companionIdSchema.optional(), revision: z.number().int().positive().optional(),
   availability: z.enum(['ready', 'working', 'waiting', 'offline']).optional(), availabilityReason: z.string().max(500).optional(), activeCount: z.number().int().nonnegative().optional(), queuedCount: z.number().int().nonnegative().optional(),
 });
 export type Companion = z.infer<typeof companionSchema>;
@@ -117,19 +121,22 @@ export const companionReplyRecoverySchema = z.object({ conversationId: companion
   status: z.enum(['pending', 'interrupted', 'done', 'cancelled']), delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']),
   completedIds: z.array(companionIdSchema).max(20), updatedAt: z.string() });
 export type CompanionReplyRecovery = z.infer<typeof companionReplyRecoverySchema>;
-export const companionStateSchema = z.object({ companions: z.array(companionSchema), conversations: z.array(conversationSchema),
-  activities: z.array(companionActivitySchema), configured: z.boolean(), recoveries: z.array(companionReplyRecoverySchema).optional(), queue: z.array(companionWorkSchema).optional() });
+export const companionStateSchema = z.object({ companions: z.array(companionSchema), conversations: z.array(conversationSchema), resetJobs: z.array(companionResetSchema).optional(),
+  activities: z.array(companionActivitySchema), configured: z.boolean(), recoveries: z.array(companionReplyRecoverySchema).optional(), queue: z.array(companionWorkSchema).optional(), playerProfile: playerProfileSchema.optional() });
 export type CompanionState = z.infer<typeof companionStateSchema>;
 
-export const companionDraftSchema = companionSchema.pick({ name: true, description: true, persona: true, model: true, avatar: true, proactive: true, avatarAttachmentId: true })
+export const companionDraftSchema = companionSchema.pick({ name: true, description: true, persona: true, model: true, avatar: true, proactive: true, avatarAttachmentId: true, appearanceAttachmentId: true })
   .extend({ llm: companionLlmSchema.omit({ hasKey: true }).optional() });
 export type CompanionDraft = z.infer<typeof companionDraftSchema>;
 export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('message.guide'), id: companionIdSchema, targetSourceMessageId: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('state') }),
+  ...playerProfileCommands,
+  ...companionResetCommands,
+  companionAvatarCropRequestSchema,
   z.strictObject({ type: z.literal('companion.add-builtin'), templateId: z.enum(COMPANION_TEMPLATE_IDS) }),
   z.strictObject({ type: z.literal('companion.create'), companion: companionDraftSchema, apiKey: z.string().max(8192).optional() }),
-  z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, apiKey: z.string().max(8192).optional() }),
+  z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, expectedRevision: z.number().int().positive().optional(), apiKey: z.string().max(8192).optional() }),
   z.strictObject({ type: z.literal('companion.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('conversation.open'), companionId: companionIdSchema }),
   z.strictObject({ type: z.literal('conversation.create-group'), title: z.string().trim().max(100).default(''), memberIds: z.array(companionIdSchema).min(1).max(20) }),
@@ -162,12 +169,14 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('action.cancel'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('action.resume'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('action.terminate'), id: companionIdSchema }),
-  z.strictObject({ type: z.literal('attachment.pick'), kind: z.literal('image').optional(), purpose: z.literal('avatar').optional() }),
+  z.strictObject({ type: z.literal('attachment.pick'), kind: z.literal('image').optional(), purpose: z.enum(['avatar', 'appearance']).optional() }),
   z.strictObject({ type: z.literal('attachment.open'), id: companionIdSchema }),
 ]);
 export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
 export const companionsResponseSchema = z.object({
   ok: z.boolean(), error: z.string().optional(), state: companionStateSchema.optional(),
+  playerProfile: playerProfileSchema.optional(),
+  reset: companionResetSchema.optional(),
   conversation: conversationSchema.optional(), messages: z.array(messageSchema).optional(), hasMore: z.boolean().optional(),
   hasNewer: z.boolean().optional(), searchPage: companionSearchPageSchema.optional(),
   memories: z.array(memorySchema).optional(), actions: z.array(actionSchema).optional(), attachments: z.array(attachmentSchema).optional(),

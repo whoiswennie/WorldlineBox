@@ -1,4 +1,4 @@
-.companions-app, .companion-world-window {
+.companions-app, .companion-world-window, .player-profile-settings {
   --companion-blue: var(--ui-content-accent);
   --companion-blue-soft: color-mix(in srgb, var(--ui-content-accent) 7%, transparent);
   --companion-pane: var(--ui-surface-pane);

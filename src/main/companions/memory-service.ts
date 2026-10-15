@@ -14,6 +14,7 @@ interface MemoryServiceOptions {
   changed(): void;
   report(error: unknown): void;
   busy(): boolean;
+  blocked?(companionId: string): boolean;
 }
 
 export interface CompanionMemoryRecall {
@@ -31,11 +32,21 @@ export class CompanionMemoryService {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private running: Promise<void> | undefined;
   private controller: AbortController | undefined;
+  private controllerCompanionId: string | undefined;
+  private controllerSettled: Promise<void> | undefined;
   private closed = false;
   private again = false;
   private deferredSince: number | undefined;
 
   constructor(private readonly options: MemoryServiceOptions) {}
+
+  cancelCompanion(companionId: string): void {
+    if (this.controllerCompanionId === companionId) this.controller?.abort();
+  }
+  async drainCompanion(companionId: string): Promise<void> {
+    this.cancelCompanion(companionId);
+    if (this.controllerCompanionId === companionId) await this.controllerSettled;
+  }
 
   schedule(delay = 2_000): void {
     if (this.closed) return;
@@ -121,16 +132,21 @@ export class CompanionMemoryService {
     let processed = 0;
     for (const companion of state.companions) {
       if (this.closed || processed >= 8 || processed > 0 && this.options.busy()) break;
+      if (this.options.blocked?.(companion.id)) continue;
       let config: CompanionModelConfig;
       try { config = await this.options.configFor(companion); }
       catch { continue; }
       if (!config.apiKey?.trim() || !config.model?.trim()) continue;
       const job = (await this.options.request({ type: 'memory.jobs.claim', companionId: companion.id, leaseMs: 600_000 })).memoryJob;
       if (!job) continue;
+      if (this.options.blocked?.(companion.id)) continue;
       processed++;
       this.deferredSince = undefined;
       const controller = new AbortController();
       this.controller = controller;
+      this.controllerCompanionId = companion.id;
+      let settled!: () => void;
+      this.controllerSettled = new Promise(resolve => { settled = resolve; });
       try {
         const conversation = state.conversations.find(item => item.id === job.conversationId);
         if (!conversation || !conversation.memberIds.includes(companion.id)) throw new Error('记忆来源聊天已不可访问。');
@@ -195,7 +211,7 @@ export class CompanionMemoryService {
           error: error instanceof Error ? error.message : '记忆整理失败。',
           retryAfterMs: this.closed ? 0 : Math.min(300_000, 5_000 * 2 ** Math.min(job.attempts - 1, 6)) });
         if (!this.closed) this.options.changed();
-      } finally { if (this.controller === controller) this.controller = undefined; }
+      } finally { settled(); if (this.controller === controller) { this.controller = undefined; this.controllerCompanionId = undefined; this.controllerSettled = undefined; } }
     }
   }
 

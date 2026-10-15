@@ -75,7 +75,9 @@ DSH 安装包提取使用 [7zip-bin 5.2.0](https://github.com/develar/7zip-bin) 
 
 ## 内置伙伴参考图
 
-`assets/companions/deepseek.jpg`、`deepseek-sister.jpg` 与 `deepseek-flash.jpg` 为维护者在设计请求中提供的第三方角色参考图，用于大肥鱼姐妹的联系人形象。图片不属于 WorldlineBox 的 MIT 源码许可。
+`assets/companions/deepseek.jpg` 为维护者在设计请求中提供的姐姐身份参考。`assets/companions/appearance/deepseek-flash-orthographic.png` 为用户最新提供的妹妹原始三视图（1260×703，SHA-256 `187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27`），保留原 PNG 字节。旧 `deepseek-sister.jpg` 与 `deepseek-flash.jpg` 已从运行资产移除。参考图不属于 WorldlineBox 的 MIT 源码许可。
+
+2026-10-15 使用内置 imagegen 依据各自确认的身份独立绘制姐妹头像、姐姐正交三视图和各 31 组动作。妹妹的正式三视图直接采用上述用户原图；其三头身、细线平涂、白袜和小鲸尾与成熟长裙姐姐有明确差异。两张头像位于 `assets/companions/portraits/`，两张三视图位于 `assets/companions/appearance/`，动作每组独立交付为 WebP；身份摘要、原图散列与生成方式见 `assets/companions/appearance/manifest.json`。重绘不改变底层人物设计的来源或授权范围。
 
 公开形象调研参考上善无形的[原型说明](https://www.bilibili.com/opus/1231977657712771073)与 [ZipZipPipe](https://space.bilibili.com/4168597) 的女仆形象。原型的许可说明不自动涵盖维护者提供的每张二创设定图；这些具体图片的作者及许可尚未独立确认。本项目的姐妹人格、提示与聊天实现为独立设计，不声明为 DeepSeek 官方人设。
 

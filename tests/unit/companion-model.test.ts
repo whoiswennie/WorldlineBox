@@ -9,6 +9,7 @@ import { COMPANION_SCHEDULE_TOOL } from '../../src/shared/companion-schedule-too
 import { COMPANION_STATE_TOOL } from '../../src/shared/companion-state-tool';
 import { COMPANION_ROUTINE_TOOL } from '../../src/shared/companion-routine-tool';
 import { COMPANION_WORLD_TOOL } from '../../src/shared/companion-world-tool';
+import { COMPANION_FILE_TOOLS } from '../../src/shared/companion-file-tool';
 
 const input: CompanionReplyInput = {
   companion: { id: 'sister', name: '大肥鱼', description: '姐姐', persona: '温柔、沉稳，喜欢海洋。', model: 'deepseek-v4-pro',
@@ -234,7 +235,7 @@ describe('native memory tools across provider formats', () => {
     const registered = format === 'dashscope_native' ? request.parameters.tools : request.tools;
     const definitions = format === 'gemini_native' ? registered[0].function_declarations
       : registered.map((tool: { function?: unknown }) => tool.function ?? tool);
-    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', ...COMPANION_MEMORY_TOOLS.map(tool => tool.name), COMPANION_SCHEDULE_TOOL.name, COMPANION_STATE_TOOL.name, COMPANION_ROUTINE_TOOL.name, COMPANION_WORLD_TOOL.name]);
+    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', ...COMPANION_MEMORY_TOOLS.map(tool => tool.name), COMPANION_SCHEDULE_TOOL.name, COMPANION_STATE_TOOL.name, COMPANION_ROUTINE_TOOL.name, COMPANION_WORLD_TOOL.name, ...COMPANION_FILE_TOOLS.map(tool => tool.name)]);
     for (const tool of definitions.filter((tool: { name: string }) => tool.name.startsWith('memory_'))) {
       expect(tool.parameters ?? tool.parametersJsonSchema ?? tool.input_schema).not.toHaveProperty('$schema');
     }

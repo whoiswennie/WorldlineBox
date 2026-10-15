@@ -90,9 +90,15 @@ export function calibrateCompanionWorldSheet(asset: WorldArtSheet, action: strin
     const match = matches[index]!, pose = companionWorldFramePose(frame), contact = pose === 'seat' ? frame.contacts.seat : pose === 'bed' ? frame.contacts.bed : frame.contacts.foot;
     // Grounded idle gestures share the measured floor; locomotion retains its
     // airborne frames. Seat/bed contacts preserve actual bending and rolling.
-    const y = dynamic ? asset.defaultOrigin?.y ?? Math.max(...asset.frames.map(value => value.contacts.foot?.y ?? anchor.y)) : transition || pose !== referencePose ? contact?.y ?? anchor.y : pose === 'ground' ? frame.bounds.y + frame.bounds.height - 1 : contact?.y ?? anchor.y;
-    return { anchor: { x: rounded(anchor.x + match.dx), y: rounded(y) }, method: 'body-core' as const,
-      bodyOffset: { x: match.dx, y: match.dy }, score: match.score };
+    const reviewed = !!contact && (transition || pose !== 'ground');
+    const y = dynamic ? asset.defaultOrigin?.y ?? Math.max(...asset.frames.map(value => value.contacts.foot?.y ?? anchor.y)) : reviewed ? contact.y : frame.bounds.y + frame.bounds.height - 1;
+    // A face moving from upright to horizontal (or a hand touching a sleeping
+    // cheek) is not a whole-body translation. Furniture and mechanical poses
+    // have visually reviewed anatomical contacts; matching their face colours
+    // must never drag a pelvis away from its seat or a back away from its bed.
+    const x = reviewed ? contact.x : anchor.x + match.dx;
+    return { anchor: { x: rounded(x), y: rounded(y) }, method: reviewed ? 'reviewed' as const : 'body-core' as const,
+      bodyOffset: { x: reviewed ? rounded(x - anchor.x) : match.dx, y: reviewed ? rounded(y - anchor.y) : match.dy }, score: reviewed ? 0 : match.score };
   }) as [NonNullable<WorldArtFrame['registration']>, NonNullable<WorldArtFrame['registration']>, NonNullable<WorldArtFrame['registration']>];
   return { registrations, matches };
 }

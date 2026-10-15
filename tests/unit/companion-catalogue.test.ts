@@ -25,8 +25,8 @@ it('registers all old identities once alongside the existing whale sisters and k
 
 it('ships each new portrait with a reference fingerprint and exact generation prompt', () => {
   const manifest = JSON.parse(readFileSync('assets/companions/portraits/manifest.json', 'utf8')) as { portraits: { id: string; file: string; sha256: string; referenceSha256: string; prompt: string }[] };
-  expect(manifest.portraits).toHaveLength(13);
-  expect(new Set(manifest.portraits.map(item => item.id)).size).toBe(13);
+  expect(manifest.portraits).toHaveLength(15);
+  expect(new Set(manifest.portraits.map(item => item.id)).size).toBe(15);
   for (const item of manifest.portraits) {
     expect(BUILTIN_COMPANIONS.some(profile => profile.id === item.id)).toBe(true);
     expect(existsSync(item.file)).toBe(true);

@@ -1,17 +1,15 @@
 import { memo, useCallback, useLayoutEffect, useSyncExternalStore } from 'react';
 import type { CompanionAction, CompanionAttachment, CompanionMessage } from '../../shared/companions';
-import { Icon } from '../Icons';
 import { ChatGlyph } from './CompanionVisuals';
 import { CompanionCapabilityLink } from './CompanionCapabilityLink';
 import { MessageContent } from './MessageContent';
 import { type CompanionReplyStreamStore, projectCompanionReply } from './reply-stream';
-
-function bytes(value: number) { return value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`; }
+import { CompanionAttachments } from './CompanionAttachments';
 
 export const CompanionMessageBubble = memo(function CompanionMessageBubble({ message, replied, quoteAuthor, actions, now, streamStore, interrupted, onOpenAction, onOpenUrl, onOpenAttachment, onLocateQuote, onStreamLayout }: {
   readonly message: CompanionMessage; readonly replied?: CompanionMessage; readonly quoteAuthor?: string; readonly actions: CompanionAction[]; readonly now: number;
   readonly streamStore: CompanionReplyStreamStore; readonly interrupted: boolean;
-  readonly onOpenAction: (id: string) => void; readonly onOpenUrl: (url: string) => void; readonly onOpenAttachment: (attachment: CompanionAttachment) => void;
+  readonly onOpenAction: (id: string) => void; readonly onOpenUrl: (url: string) => void; readonly onOpenAttachment: (attachment: CompanionAttachment, images?: readonly CompanionAttachment[]) => void;
   readonly onLocateQuote: (id: string) => void; readonly onStreamLayout: (conversationId: string) => void;
 }) {
   const subscribe = useCallback((listener: () => void) => streamStore.subscribe(message.id, listener), [streamStore, message.id]);
@@ -33,6 +31,6 @@ export const CompanionMessageBubble = memo(function CompanionMessageBubble({ mes
       </section>)}
     </div> : message.content && (message.authorId === 'user' ? <p>{message.content}</p> : <MessageContent content={message.content} onOpenUrl={onOpenUrl} />)}
     {partial && <small className="companions-reply-stream-status">回复已中断</small>}
-    {!!message.attachments.length && <div className="companions-message-attachments">{message.attachments.map(item => <button className={`companions-attachment${item.mime.startsWith('image/') ? ' is-image' : ''}`} key={item.id} onClick={() => onOpenAttachment(item)}>{item.mime.startsWith('image/') ? <img src={item.url || `worldlinebox-companion://attachment/${encodeURIComponent(item.id)}`} alt={item.name} /> : <Icon name="file" />}<span><strong>{item.name}</strong><small>{bytes(item.size)} · {item.mime.startsWith('image/') ? '点击预览' : '查看文件位置'}</small></span></button>)}</div>}
+    {!!message.attachments.length && <CompanionAttachments attachments={message.attachments} onOpen={onOpenAttachment} />}
   </div>;
 });

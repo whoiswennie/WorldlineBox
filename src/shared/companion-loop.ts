@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { companionToolImageReferenceSchema } from './companion-file-tool';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionLoopCallSchema = z.object({ id: z.string().min(1).max(200), name: z.string().max(100), arguments: z.string().max(65536),
   // Opaque provider protocol metadata, never thought text or a memory source.
   thoughtSignature: z.string().min(1).max(65536).optional() });
-export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), rawText: z.string().max(65536), calls: z.array(companionLoopCallSchema).max(16), messageId: id.optional(), results: z.array(z.object({ callId: z.string().max(200), content: z.string() })).max(16).optional() });
+export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), rawText: z.string().max(65536), calls: z.array(companionLoopCallSchema).max(16), messageId: id.optional(), results: z.array(z.object({ callId: z.string().max(200), content: z.string(), images: z.array(companionToolImageReferenceSchema).max(4).optional(), attachmentIds: z.array(id).max(10).optional() })).max(16).optional() });
 // Message-count windows and paginated retrieval limit work. Checkpoints preserve
 // the actual request instead of imposing a hidden global character quota.
 const companionLoopContextSchema = z.object({ system: z.string(), user: z.string() });

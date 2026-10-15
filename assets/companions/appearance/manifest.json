@@ -1,0 +1,1409 @@
+{
+  "generatedOn": "2026-10-15",
+  "method": "independently authored builtin-imagegen portraits/actions; board method declared per asset",
+  "imagesEditedOnlyWith": "builtin-imagegen",
+  "runtimeNormalization": "Whole independent PNG resized to1152x384/WebP; no pixel pose rearrangement or per-frame scaling.",
+  "characters": [
+    {
+      "id": "sister",
+      "name": "大肥鱼姐姐 · Pro",
+      "identity": "Mature normal-proportion blue whale maid woman, approximately6.5head anatomy; long blue/cyan hair, blueeyes, whale-fin ears, loopahoge, whiteheadband, anklelength navy goldtrim skirt, white whaleapron, whitestockings, navyshoes and large navywhaletail. NOT the younger/chibi sister.",
+      "references": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-sister-orthographic.png",
+          "sha256": "738e020c4d4b17a5e7a0237871ede34bf4293ec3a06cee19164028e83e511217"
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-sister.png",
+          "sha256": "67cc6e39ab256ba6a57bd63a751e1480d487e821b31e852d1367b07e0dcfeb5d"
+        },
+        {
+          "role": "user-identity-authority",
+          "path": "assets/companions/deepseek.jpg",
+          "sha256": "5eaf14841d3e3f34a85de921bd2ac2349d0f01cf918e9d0970a86d83fe09dcad"
+        }
+      ],
+      "actionCount": 31,
+      "actions": [
+        {
+          "action": "idle",
+          "sha256": "7bcf971ed84f86aac3f09fe4ef67be3a8f09bb63c879aace1db166aec697fc9b",
+          "input": ".tools/companion-art-correction/sister/idle.png"
+        },
+        {
+          "action": "walk",
+          "sha256": "b6385de1f2153b84b3390d83690d10925fcb535151712bcc069da2f8afe7de74",
+          "input": ".tools/companion-art-correction/sister/walk.png"
+        },
+        {
+          "action": "run",
+          "sha256": "f67cf28cd9c5775e0352dd2159a34ba92e0f0293b229862004f83b3c96653235",
+          "input": ".tools/companion-art-correction/sister/run.png"
+        },
+        {
+          "action": "standingRead",
+          "sha256": "3b56510cf901b253df4e897248f8dda8ab273e800cf95ecfaded20fc9df65181",
+          "input": ".tools/companion-art-correction/sister/standingRead.png"
+        },
+        {
+          "action": "communicate",
+          "sha256": "00b7407ec6b4f05f29323932bf1c29a0d563cf8802b3e2c0269bc75da7fde844",
+          "input": ".tools/companion-art-correction/sister/communicate.png"
+        },
+        {
+          "action": "turn",
+          "sha256": "c834f7c98072bc44ec4b518d156dd5994e7ef947cdbee92c1a8aaa922be26597",
+          "input": ".tools/companion-art-correction/sister/turn.png"
+        },
+        {
+          "action": "sit",
+          "sha256": "26813356f8e2edeee2377e6203583dd8fd3a437665bc447d2a63eedb7cea4cad",
+          "input": ".tools/companion-art-correction/sister/sit.png"
+        },
+        {
+          "action": "read",
+          "sha256": "bb221bf913c3f97d78bee75df76f6dfc381acc6b6e878c159605c91c85071b84",
+          "input": ".tools/companion-art-correction/sister/read.png"
+        },
+        {
+          "action": "work",
+          "sha256": "f5c517ee36d3be6f4cfb9286725bda3b7e84e393da90a312d26a7c6fe92770c7",
+          "input": ".tools/companion-art-correction/sister/work.png"
+        },
+        {
+          "action": "think",
+          "sha256": "3f0863bb0d5842fbe2d2eace3e327eb18290d5f0304bb675b36d4a6bb8af87db",
+          "input": ".tools/companion-art-correction/sister/think.png"
+        },
+        {
+          "action": "tired",
+          "sha256": "3d4141674f28768a343df707505aaa7bbeb3fa7de9fb53ab39cf67fd79692267",
+          "input": ".tools/companion-art-correction/sister/tired.png"
+        },
+        {
+          "action": "pleased",
+          "sha256": "39ddf2b48f8174fab68fc7cf0aabe8e242582b40d53e40bab68be96d5b9a3dde",
+          "input": ".tools/companion-art-correction/sister/pleased.png"
+        },
+        {
+          "action": "troubled",
+          "sha256": "b1e1a9fa0eabbf3e4f07dbedaa31fdb89a7e60536c3a4a9d46edde03f6796c2f",
+          "input": ".tools/companion-art-correction/sister/troubled.png"
+        },
+        {
+          "action": "sad",
+          "sha256": "2353dca132800c189cb3542edc51d0fe8f29ae401afe5c58cb459c26710934ff",
+          "input": ".tools/companion-art-correction/sister/sad.png"
+        },
+        {
+          "action": "angry",
+          "sha256": "864c5aed6cc893553b6543afed8e5b5260faa7db5b7e95a81ae0a627b3c8416c",
+          "input": ".tools/companion-art-correction/sister/angry.png"
+        },
+        {
+          "action": "surprised",
+          "sha256": "a310b50f9fa60ebee00d378faa8172172fa8dc395ca9786c7b63ed4aaf5a304f",
+          "input": ".tools/companion-art-correction/sister/surprised.png"
+        },
+        {
+          "action": "phoneTypingStanding",
+          "sha256": "0389ce9a62620c31d38172ebff226da4fa14aa6bc03b265e44eabfd4cda5307e",
+          "input": ".tools/companion-art-correction/sister/phoneTypingStanding.png"
+        },
+        {
+          "action": "phoneCallingStanding",
+          "sha256": "509600ac6655f9a0bed5595aff734bafa361671e9da2041e9922a47b37b3de8c",
+          "input": ".tools/companion-art-correction/sister/phoneCallingStanding.png"
+        },
+        {
+          "action": "rest",
+          "sha256": "5e134ad53037281dbd98cf3fde2e00a1e27abc686a9832dac80384ef26685d9b",
+          "input": ".tools/companion-art-correction/sister/rest.png"
+        },
+        {
+          "action": "eat",
+          "sha256": "9c61c11a70c7ef40f00c6d330f96ff065c92fad325405624e0c590287959a164",
+          "input": ".tools/companion-art-correction/sister/eat.png"
+        },
+        {
+          "action": "phoneTypingSeated",
+          "sha256": "6146a89e753ca760a6adaec8399816c87d5abda304144807d585db4a53f7c6d8",
+          "input": ".tools/companion-art-correction/sister/phoneTypingSeated.png"
+        },
+        {
+          "action": "cook",
+          "sha256": "d379ef9a30b63f99f753a9cb693495a2847c69036532bc3a45ddc88f4a86155f",
+          "input": ".tools/companion-art-correction/sister/cook.png"
+        },
+        {
+          "action": "phoneCallingSeated",
+          "sha256": "17499144bad64afa038d45234ddee1b0d830b1962e30c9f32137460b9899fafe",
+          "input": ".tools/companion-art-correction/sister/phoneCallingSeated.png"
+        },
+        {
+          "action": "handle",
+          "sha256": "96ac3464241af914707bfc9fe1b655e05e44c69533a44e11fd8e7163772b52bd",
+          "input": ".tools/companion-art-correction/sister/handle.png"
+        },
+        {
+          "action": "follow",
+          "sha256": "ee6385703dd2e96a7dac2cf9bada1d5d544cf5f55a8e38799795f9d8a07951c5",
+          "input": ".tools/companion-art-correction/sister/follow.png"
+        },
+        {
+          "action": "exercise",
+          "sha256": "3260820e6545d8c0d392db49373354b28b947f414ecc524cd2e6ed816f8d5789",
+          "input": ".tools/companion-art-correction/sister/exercise.png"
+        },
+        {
+          "action": "sitDown",
+          "sha256": "36063b3cd4c3008bc64016bcfdedd6229ce9b3a9787f216e1a92ee610637c6e5",
+          "input": ".tools/companion-art-correction/sister/sitDown.png"
+        },
+        {
+          "action": "standUp",
+          "sha256": "b6a7bf9bd4cfd13dd77c9b5235c687e72c26909eaf8e1d450fea00e8a98a940c",
+          "input": ".tools/companion-art-correction/sister/standUp.png"
+        },
+        {
+          "action": "sleep",
+          "sha256": "19bdfe7e0136075d386b0ff1f0998c1ac8e484f87fe4332ff96669a37f5d5e43",
+          "input": ".tools/companion-art-correction/sister/sleep.png"
+        },
+        {
+          "action": "lieDown",
+          "sha256": "49a985d2ea021dafeb5e338ecd547bc2e159587603190c9a950d10638ec5ddf1",
+          "input": ".tools/companion-art-correction/sister/lieDown.png"
+        },
+        {
+          "action": "wake",
+          "sha256": "d8f36048eb3bbeb2e384e4098a07417e5dc1f5ae9b919dca79b93085fb534b9a",
+          "input": ".tools/companion-art-correction/sister/wake.png"
+        }
+      ],
+      "assets": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-sister-orthographic.png",
+          "sha256": "738e020c4d4b17a5e7a0237871ede34bf4293ec3a06cee19164028e83e511217",
+          "method": "builtin-imagegen",
+          "width": 2172,
+          "height": 724,
+          "prompt": "Use case: identity-preserve. Asset type: ONE independent standard orthographic three-view character reference sheet, horizontal 3:1 canvas, FRONT / LEFT SIDE / BACK shown as three equally spaced full-body views, exactly the same height, same six-head adult body proportions, same head size and same foot baseline. Reference image 1 is the definitive identity of 大肥鱼 / Pro, the mature elder blue whale maid sister. Preserve identity rigorously. An elegant adult anime woman approximately SIX HEADS TALL, normal body proportions, not chibi, not child, not short younger sister. Long flowing deep slate-blue hair reaching calves, softly cyan hair tips, loop ahoge, whale-fin ears with white pale undersides and blue ribbon on one side, calm blue eyes, white ruffled maid headband. Navy long-sleeve maid dress with shoulder ruffles and open shoulder details as reference, white vertically gathered bib front, navy bow with oval blue jewel, fitted navy bodice with gold buttons, long ankle-length navy skirt with subtle vertical stripes and delicate gold embroidery at hem, large white ruffled apron with small dark whale illustration at lower front, white stockings and navy Mary Jane shoes. A real large navy whale tail extends behind her lower back and is clearly visible in side and back views, consistent attachment and size. Neutral relaxed standing stance, arms slightly away from torso so costume is readable. Front faces directly forward, side is exact 90-degree profile facing LEFT, back exact 180-degree back view. Whole body including complete ahoge, hair, both shoes and whole tail fits inside each third with 8% surrounding margins, no crossings between thirds. Crisp clean anime reference drawing matching original colors and mature face, full costume detail, even neutral lighting, plain white background. NO perspective, NO camera tilt, NO furniture, NO scene, NO shadow floor, NO text or labels, NO borders, NO extra figures, NO sprite actions. This is a single identity reference sheet only, not multiple actions."
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-sister.png",
+          "sha256": "67cc6e39ab256ba6a57bd63a751e1480d487e821b31e852d1367b07e0dcfeb5d",
+          "method": "builtin-imagegen",
+          "width": 1254,
+          "height": 1254,
+          "prompt": "Original imagegen intent:\nUse case: identity-preserve. Asset type: ONE independent square avatar portrait for the adult elder sister character 大肥鱼 / Pro. Reference image 1 is the definitive identity reference, not an edit target. Generate a polished high quality anime illustration, NOT chibi, NOT a child, NOT younger sister. Preserve the same mature elegant blue whale maid identity: adult woman with normal realistic anime body proportions approximately six heads tall in full body; long flowing deep blue hair with pale cyan tips, single curved loop ahoge, whale-fin ears with pale undersides, blue eyes, white ruffled maid headband, small blue hair bow, dark navy elegant maid dress, white frills and white apron, dark bow with blue jewel at collar. Friendly calm slightly warm smile, adult refined face, same eye shape and hairstyle as reference. Composition: square 1:1 canvas, head and upper torso only, straight-on slight natural three-quarter angle, face centered and occupying about half the canvas height, headband and ahoge completely inside frame with generous 10% top margin, shoulders visible, bottom around mid bodice, no hands crossing face. Soft clean warm off-white background, gentle illustration lighting, crisp detailed linework and blue/navy palette. Do not add text, labels, border, circular mask, watermark, props, extra people, short hair, small child body or chibi proportions. Keep reference clothing and distinctive whale maid features.\nFinal accepted correction:\nUse case: identity-preserve. EDIT TARGET is reference image 1, the exact already approved adult elder blue whale maid avatar. Preserve her SAME adult face, blue eyes, hair, ear shape, color, costume, lighting, illustration style and friendly expression. Change ONLY portrait framing: zoom camera OUT by approximately 20 percent and recenter; add airy clean warm off-white surrounding background. Square 1:1 avatar, head and upper chest. Most important: ENTIRE loop ahoge, white maid headband, BOTH whale-fin ears and hair bow must lie fully inside a central circular safe region of diameter85% of canvas. Minimum10% canvas blank space ABOVE the very top of the ahoge, at least10% space to right/left of both fin-ear tips. Keep face centered a little above middle so circle crop does not cut accessories. Do not let ahoge approach top border. Bottom crop at upper chest; do not enlarge bust. No circular border or mask baked into image, no new design details, no text or watermarks. Image2 is original identity reference only. This is a targeted framing fix to the same mature woman, NOT a redesign and NOT chibi."
+        }
+      ]
+    },
+    {
+      "id": "flash",
+      "name": "小肥鱼妹妹 · Flash",
+      "identity": "Exact USER ORIGINAL thin-outline flat-colour approximately3head maid, normal restrained blueeyes and smallmouth; indigohair/cyanends, loopahoge, whiteheadband, ONE sidebluebow/goldcenter, plain finlike ears, navy LONGSLEEVE shortmaid dress/goldhem, whitewhaleapron, WHITE SOCKS, navyMaryJanes and SMALL bluewhaletail. Not the rejected glossy/ornate baby redesign or old blacktights/no-tail design.",
+      "references": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-flash-orthographic.png",
+          "sha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27"
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-flash.png",
+          "sha256": "7cf75d26edefc8d13a3e6706051c42f327e7f58e97119e477e718b4c7b14314a"
+        },
+        {
+          "role": "user-identity-authority",
+          "path": "assets/companions/appearance/deepseek-flash-orthographic.png",
+          "sha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27"
+        }
+      ],
+      "actionCount": 31,
+      "actions": [
+        {
+          "action": "idle",
+          "sha256": "f9e08c9505954a11821609074ae9777277331446b5cfcb5e7dfbd5e7eaadd1a7",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/idle.png"
+        },
+        {
+          "action": "walk",
+          "sha256": "a1a11dfbe99ae280076051073b78536c18e5046ff760e79875b037225a96c21f",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/walk.png"
+        },
+        {
+          "action": "run",
+          "sha256": "1561c55dc5bfa740f821ddb6129366a61de47361283539703311558122de7bd8",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/run.png"
+        },
+        {
+          "action": "turn",
+          "sha256": "3c348c195ad3b6a03047204d4fb4f581c6d3363f4369066942b2ab498e4ca6a0",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/turn.png"
+        },
+        {
+          "action": "standingRead",
+          "sha256": "7ad544e294e500279dacce9feeeace394025121b3c2ba5386a24df291f4334d1",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/standingRead.png"
+        },
+        {
+          "action": "read",
+          "sha256": "14c05893ce7a43925404f4187e9025aab2518687f69fb3e7f19667f374bd5a68",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/read.png"
+        },
+        {
+          "action": "sit",
+          "sha256": "f2c764302f60472b2e117ea85419670ccc7ea220e423bd7854dbfe09a527b127",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/sit.png"
+        },
+        {
+          "action": "rest",
+          "sha256": "635e04a68b0028f1f8222b97ca28529052e41da9b2261dbd5c805434f852bffb",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/rest.png"
+        },
+        {
+          "action": "sitDown",
+          "sha256": "815634c7affa146b82ea8f4638e6d57b944feaf67b002d1c58e52029120a8ad8",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/sitDown.png"
+        },
+        {
+          "action": "standUp",
+          "sha256": "ae2b933ee32b1a0d0d422b68a63f63127d8d2ad0d0ac6c5514452661c48eaa1b",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/standUp.png"
+        },
+        {
+          "action": "lieDown",
+          "sha256": "e1dabd096ff261cf736f8f7e9dc9d373387f8981fd467f3bf029b73c87c31138",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/lieDown.png"
+        },
+        {
+          "action": "sleep",
+          "sha256": "dec6ceb4461ca7de1b16e276598b95bd9cb9c176ff9cfef830fa409ab82f1124",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/sleep.png"
+        },
+        {
+          "action": "wake",
+          "sha256": "24200638ed438ab84f2920610b338342da588a7a2c47b966b0f9bba59003997d",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/wake.png"
+        },
+        {
+          "action": "work",
+          "sha256": "5ec42134912786345effa38976b5624cedf9f2bcc023f879d5e16d77b07892da",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/work.png"
+        },
+        {
+          "action": "eat",
+          "sha256": "ef11176d0df4d114572963f5de1e72d514afe27327394aa452917932f9729b34",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/eat.png"
+        },
+        {
+          "action": "communicate",
+          "sha256": "7f50c326df61ded92f9503bd4ff2280fa7dceabb42bf3f4460c5f8726693b136",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/communicate.png"
+        },
+        {
+          "action": "think",
+          "sha256": "8ece98783cc6017b5546c7fa2c5b838b2e3a2fef46099c76edbcb0ce98d1d6ae",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/think.png"
+        },
+        {
+          "action": "follow",
+          "sha256": "19df006a171505621d73981ea901a1bc316827b2bd0de65fb8168447af593925",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/follow.png"
+        },
+        {
+          "action": "tired",
+          "sha256": "5a89f380d50369a445ec81750588ee92d6629e305ce735381eaba5dcdb089c6c",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/tired.png"
+        },
+        {
+          "action": "pleased",
+          "sha256": "ec28f4a092f78314103ea6e4379e80d48551622f33e0a8af85731e094b55a454",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/pleased.png"
+        },
+        {
+          "action": "troubled",
+          "sha256": "0930b235e92b3d7ade0e31630bd515f8c982f2edcc73ce41b3cd1b7a2a788add",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/troubled.png"
+        },
+        {
+          "action": "surprised",
+          "sha256": "39c3f2e1feab80d9b9401a1650d97f8b0400438ee9a4cd688fa0860da8035642",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/surprised.png"
+        },
+        {
+          "action": "sad",
+          "sha256": "f8a3e31ce86ab467d834d8600aa3ff7138aaace1b87f1025fdcf573e8f38cfc9",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/sad.png"
+        },
+        {
+          "action": "angry",
+          "sha256": "4a2fd79fdf774a2a8b42f14d3efbd35fb31f891a46654e9602f683a48dcdb91e",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/angry.png"
+        },
+        {
+          "action": "phoneTypingStanding",
+          "sha256": "334502c5dcaccd268340ebb2917611538527cfac21f79b5657ccec5e0a0ae4e2",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/phoneTypingStanding.png"
+        },
+        {
+          "action": "phoneCallingStanding",
+          "sha256": "a7394fa5d639e4c597a98414500956d1483b29a1ed035b29a766f0784b6817e8",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/phoneCallingStanding.png"
+        },
+        {
+          "action": "phoneTypingSeated",
+          "sha256": "a874955b3ea09df75edb8467d942d66741c00901f525ac266a1aa103351250aa",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/phoneTypingSeated.png"
+        },
+        {
+          "action": "phoneCallingSeated",
+          "sha256": "cfc77695c43edaa8e1ce21259f667d5a8b7a483da7a2f7f8ef4ae2a086e3f2fc",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/phoneCallingSeated.png"
+        },
+        {
+          "action": "handle",
+          "sha256": "bc6504bfcec0e4f742d9d5039ee28cb6051a4de1e6d596a0e207cc5362ddc7b8",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/handle.png"
+        },
+        {
+          "action": "exercise",
+          "sha256": "b214d2f774c96fc5143b1193b66adac6cfe429a2d9b50314f04a734df2b6e96b",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/exercise.png"
+        },
+        {
+          "action": "cook",
+          "sha256": "3db5a2bd0a52fe0d20f70ecc2e94a8f4a0f9f1f2222eaa4c78ca247b17b44089",
+          "input": "C:/Users/hp/Desktop/project/new/WorldlineBox/.tools/companion-art-correction/flash/cook.png"
+        }
+      ],
+      "assets": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-flash-orthographic.png",
+          "sha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27",
+          "method": "user-provided-exact",
+          "width": 1260,
+          "height": 703,
+          "sourceSha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27",
+          "retainedByteForByte": true,
+          "notes": "The1260x703 PNG is the user original authority. No generated orthographic substitute."
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-flash.png",
+          "sha256": "7cf75d26edefc8d13a3e6706051c42f327e7f58e97119e477e718b4c7b14314a",
+          "method": "builtin-imagegen",
+          "width": 1254,
+          "height": 1254,
+          "prompt": "Use case: identity-preserve. Create ONE independent square chat avatar by adapting ONLY the character in the supplied ORIGINAL orthographic reference. This reference is the sole authority. EXACT clean 2D flat-colour anime chibi style with thin dark outlines and simple restrained cel shading, not glossy rendered baby art. Preserve her actual moderately proportioned chibi face: calm ordinary BLUE eyes with small simple highlights, small closed mouth, quiet composed expression, not enormous sparkling eyes or round infant cheeks. Preserve deep indigo long hair fading to light-blue ends, one looping ahoge, white lace maid headband, ONE small blue bow on the side shown in the reference, subtle plain fin-like hair/ear silhouette edged in white, navy neckline bow with small blue oval center. Navy long-sleeve maid outfit with restrained gold trim and buttons, white apron with the reference's simple blue whale motif. Do NOT add star fields, glowing fin skin, whale brooches, twin hair bows, extra jewellery, giant baby head, ornate layered curls, mature body or different clothing. Portrait framing: head and upper torso, headband/ahoge/side fins and complete face inside a central circular-safe area occupying at most72% of squarewidth and at most78% of height; generous transparent padding above and at sides, no part of the head touching canvas edge. Desired1024x1024 actual alpha transparency. No background, UI, text, border, furniture, props or second character. The result must look like a cropped illustration from the original model sheet rather than a redesign."
+        }
+      ]
+    }
+  ],
+  "scaleReviews": [
+    {
+      "avatar": "sister",
+      "action": "idle",
+      "neutralHeightPixels": 307.624,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 289,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "walk",
+      "neutralHeightPixels": 307.624,
+      "method": "reviewed-matching-head-and-trunk",
+      "reference": {
+        "action": "idle",
+        "frame": 0
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Same head/torso size as idle; lowered running silhouette does not enlarge the runner."
+    },
+    {
+      "avatar": "sister",
+      "action": "run",
+      "neutralHeightPixels": 307.624,
+      "method": "reviewed-matching-head-and-trunk",
+      "reference": {
+        "action": "idle",
+        "frame": 0
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Same head/torso size as idle; lowered running silhouette does not enlarge the runner."
+    },
+    {
+      "avatar": "sister",
+      "action": "read",
+      "neutralHeightPixels": 279.81,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 130
+          },
+          {
+            "x": 184,
+            "y": 181
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 51.0098029794274,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "sitDown",
+      "neutralHeightPixels": 345.944,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 188,
+          "y": 40
+        },
+        "foot": {
+          "x": 181,
+          "y": 365
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 325,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "sit",
+      "neutralHeightPixels": 296.264,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 186,
+            "y": 128
+          },
+          {
+            "x": 185,
+            "y": 182
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 54.009258465563114,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "standUp",
+      "neutralHeightPixels": 347.009,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 180,
+          "y": 41
+        },
+        "foot": {
+          "x": 178,
+          "y": 367
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 326,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "lieDown",
+      "neutralHeightPixels": 251.209,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 187,
+          "y": 93
+        },
+        "foot": {
+          "x": 181,
+          "y": 329
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 236,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "sleep",
+      "neutralHeightPixels": 345.756,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 70,
+            "y": 154
+          },
+          {
+            "x": 117,
+            "y": 196
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 63.03173803727769,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "wake",
+      "neutralHeightPixels": 292.722,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 177,
+          "y": 65
+        },
+        "foot": {
+          "x": 180,
+          "y": 340
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 275,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "rest",
+      "neutralHeightPixels": 285.453,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 184,
+            "y": 129
+          },
+          {
+            "x": 182,
+            "y": 181
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 52.038447325030745,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "work",
+      "neutralHeightPixels": 318.344,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 184,
+            "y": 135
+          },
+          {
+            "x": 182,
+            "y": 193
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 58.034472514187634,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "eat",
+      "neutralHeightPixels": 356.595,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 187,
+            "y": 90
+          },
+          {
+            "x": 186,
+            "y": 155
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 65.00769185258002,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "phoneTypingSeated",
+      "neutralHeightPixels": 296.264,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 188,
+            "y": 107
+          },
+          {
+            "x": 187,
+            "y": 161
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 54.009258465563114,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "phoneCallingSeated",
+      "neutralHeightPixels": 307.184,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 180,
+            "y": 118
+          },
+          {
+            "x": 180,
+            "y": 174
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 56,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "idle",
+      "neutralHeightPixels": 360,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 295,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "read",
+      "neutralHeightPixels": 327.947,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 205,
+            "y": 83
+          },
+          {
+            "x": 204,
+            "y": 216
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 133.00375934536586,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "sitDown",
+      "neutralHeightPixels": 369.763,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 191,
+          "y": 70
+        },
+        "foot": {
+          "x": 175,
+          "y": 373
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 303,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "sit",
+      "neutralHeightPixels": 325.556,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 197,
+            "y": 87
+          },
+          {
+            "x": 194,
+            "y": 219
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 132.03408650799233,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "standUp",
+      "neutralHeightPixels": 374.644,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 160,
+          "y": 60
+        },
+        "foot": {
+          "x": 145,
+          "y": 367
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 307,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "lieDown",
+      "neutralHeightPixels": 333.153,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 181,
+          "y": 82
+        },
+        "foot": {
+          "x": 182,
+          "y": 355
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 273,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "sleep",
+      "neutralHeightPixels": 309.541,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 119,
+            "y": 126
+          },
+          {
+            "x": 183,
+            "y": 234
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 125.53883861180172,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "wake",
+      "neutralHeightPixels": 316.068,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 169,
+          "y": 86
+        },
+        "foot": {
+          "x": 171,
+          "y": 345
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 259,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "rest",
+      "neutralHeightPixels": 300.825,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 175,
+            "y": 103
+          },
+          {
+            "x": 176,
+            "y": 225
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 122.00409829181967,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "work",
+      "neutralHeightPixels": 369.863,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 190,
+            "y": 56
+          },
+          {
+            "x": 191,
+            "y": 206
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 150.00333329629711,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "eat",
+      "neutralHeightPixels": 384.656,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 170,
+            "y": 51
+          },
+          {
+            "x": 169,
+            "y": 207
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 156.00320509528,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "phoneTypingSeated",
+      "neutralHeightPixels": 352.629,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 170,
+            "y": 71
+          },
+          {
+            "x": 172,
+            "y": 214
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 143.0139853301068,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "phoneCallingSeated",
+      "neutralHeightPixels": 364.998,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 170,
+            "y": 53
+          },
+          {
+            "x": 167,
+            "y": 201
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 148.03040228277433,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    }
+  ],
+  "distribution": {
+    "runtime": "Each action is delivered as its own public/companion-world/characters/{id}/actions/{action}.webp, with source SHA and full prompt in src/shared/companion-world-art-data.json.",
+    "workingPngs": "Raw generated PNGs under .tools and Codex generated_images are local authoring evidence, ignored by Git and not required at runtime.",
+    "canonicalIdentity": "The two PNG portraits and two PNG orthographic boards are delivered in assets/companions. Flash board is the exact user-supplied original, not a generated redesign."
+  }
+}

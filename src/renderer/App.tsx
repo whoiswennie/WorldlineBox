@@ -1809,11 +1809,11 @@ function AssetManager({
   // REQ-PREF-001: browse-area general settings panel (theme/language/canvas).
   const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   const [appSettingsCategory, setAppSettingsCategory] =
-    useState<AppSettingsCategoryId>("general");
+    useState<AppSettingsCategoryId>("profile");
 
   useImperativeHandle(settingsRef, () => ({
     openSettings: () => {
-      setAppSettingsCategory("general");
+      setAppSettingsCategory("profile");
       setAppSettingsOpen(true);
     },
   }), []);
@@ -12629,7 +12629,7 @@ function AssetManager({
       invertSelection: () => void invertBrowseScope(),
       clearSelection: clearAssetSelection,
       openSettings: () => {
-        setAppSettingsCategory("general");
+        setAppSettingsCategory("profile");
         setAppSettingsOpen(true);
       },
       openBackgroundJobs: () => openMediaJobs(),
@@ -13622,7 +13622,7 @@ function AssetManager({
                     setAppSettingsOpen(true);
                   },
                   openAppSettings: () => {
-                    setAppSettingsCategory("general");
+                    setAppSettingsCategory("profile");
                     setAppSettingsOpen(true);
                   },
                 }}
@@ -15104,7 +15104,7 @@ function AssetManager({
         onActiveCategoryChange={setAppSettingsCategory}
         onClose={() => {
           setAppSettingsOpen(false);
-          setAppSettingsCategory("general");
+          setAppSettingsCategory("profile");
         }}
         onSetViewMode={(mode) => {
           setCanvasPrefs((p) => ({ ...p, viewMode: mode }));

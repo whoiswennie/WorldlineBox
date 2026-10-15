@@ -67,7 +67,7 @@ export class CompanionSocialStore {
       }).immediate();
     }
   }
-  private active(id: string): boolean { return !!this.db.prepare('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(id); }
+  private active(id: string): boolean { return !!this.db.prepare("SELECT 1 FROM companions c WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=c.id AND r.status!='completed')").get(id); }
   private members(id: string): string[] { return (this.db.prepare('SELECT companion_id FROM conversation_members WHERE conversation_id=? ORDER BY companion_id').all(id) as Row[]).map(value => String(value.companion_id)); }
   private requireRoom(id: string, owner?: string): string[] {
     const exists = this.db.prepare('SELECT 1 FROM companion_social_conversations s JOIN conversations c ON c.id=s.id WHERE s.id=? AND c.dissolved_at IS NULL').get(id);

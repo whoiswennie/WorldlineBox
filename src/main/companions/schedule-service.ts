@@ -12,6 +12,7 @@ interface CompanionScheduleServiceOptions {
   changed(): void;
   wakeWaiting(): void;
   report(error: unknown): void;
+  blocked?(companionId: string): boolean;
 }
 
 /** Dispatches durable occurrences even when no chat page is open. SQLite owns
@@ -21,6 +22,7 @@ export class CompanionScheduleService {
   private running?: Promise<void>;
   private readonly jobs = new Map<string, Promise<void>>();
   private readonly jobControllers = new Map<string, AbortController>();
+  private readonly jobOwners = new Map<string, string>();
   private lastStateTick = -Infinity;
   private closed = false;
   private readonly controller = new AbortController();
@@ -47,10 +49,11 @@ export class CompanionScheduleService {
       const claimed = await this.options.request({ type: 'schedule.due.claim', now: now.toISOString(), leaseMs: 30_000 });
       const { schedule, scheduleOccurrence: occurrence } = claimed;
       if (!schedule || !occurrence) break;
+      if (this.options.blocked?.(schedule.companionId)) continue;
       if (this.jobs.has(occurrence.id)) continue;
-      const controller = new AbortController(); this.jobControllers.set(occurrence.id, controller);
+      const controller = new AbortController(); this.jobControllers.set(occurrence.id, controller); this.jobOwners.set(occurrence.id, schedule.companionId);
       const job = this.dispatch(schedule, occurrence, AbortSignal.any([controller.signal, this.controller.signal])).catch(this.options.report)
-        .finally(() => { this.jobs.delete(occurrence.id); this.jobControllers.delete(occurrence.id); this.options.changed(); });
+        .finally(() => { this.jobs.delete(occurrence.id); this.jobControllers.delete(occurrence.id); this.jobOwners.delete(occurrence.id); this.options.changed(); });
       this.jobs.set(occurrence.id, job);
     }
     if (!this.closed) this.options.wakeWaiting();
@@ -58,6 +61,15 @@ export class CompanionScheduleService {
 
   cancel(occurrences: readonly CompanionScheduleOccurrence[]): void {
     for (const occurrence of occurrences) if (occurrence.status === 'cancelled') this.jobControllers.get(occurrence.id)?.abort();
+  }
+
+  cancelCompanion(companionId: string): void {
+    for (const [id, owner] of this.jobOwners) if (owner === companionId) this.jobControllers.get(id)?.abort();
+  }
+  async drainCompanion(companionId: string): Promise<void> {
+    await this.running;
+    this.cancelCompanion(companionId);
+    await Promise.allSettled([...this.jobs.entries()].filter(([id]) => this.jobOwners.get(id) === companionId).map(([, promise]) => promise));
   }
 
   private async dispatch(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence, signal: AbortSignal): Promise<void> {
@@ -81,12 +93,13 @@ export class CompanionScheduleService {
       // A crash after effect creation reuses the occurrence's action. Never start
       // a second external task merely because its acknowledgement was lost.
       let action = occurrence.actionId ? (await this.options.request({ type: 'action.get', id: occurrence.actionId })).action : undefined;
-      if (this.closed) return;
+      if (this.closed || signal.aborted) return;
       if (!action) action = await this.options.launch(schedule, occurrence);
+      if (this.closed || signal.aborted) return;
       await update({ status: 'running', actionId: action.id });
       if (action.status === 'interrupted') await this.options.resume(action.id);
       await this.options.wait(action.id);
-      if (this.closed) return;
+      if (this.closed || signal.aborted) return;
       const final = (await this.options.request({ type: 'action.get', id: action.id })).action;
       if (!final || ['queued', 'running', 'interrupted'].includes(final.status)) return;
       await update({ status: final.status === 'succeeded' ? 'done' : final.status === 'cancelled' ? 'cancelled' : 'failed',

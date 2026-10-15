@@ -6,6 +6,7 @@ import type { DshInstance } from '../../shared/dsh-launcher';
 import { redact } from './files';
 import { attachProcessJob, type WindowsProcessJob } from './windows-job';
 const processJobs = new WeakMap<ChildProcessWithoutNullStreams, WindowsProcessJob>();
+const processTerminations = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
 const execute = promisify(execFile);
 export interface RuntimeLaunchPlan { executable: string; cli: string; env: NodeJS.ProcessEnv }
@@ -146,7 +147,15 @@ export async function launchCli(plan: RuntimeLaunchPlan, args: string[], env: No
   }) as ChildProcessWithoutNullStreams;
   // Keep spawn errors observed across the async handoff; the supervisor also attaches its own diagnostic listener.
   child.once('error', () => undefined);
-  try { const job = attachProcessJob(child); if (job) processJobs.set(child, job); }
+  try {
+    const job = attachProcessJob(child, { closeOnExit: false });
+    if (job) {
+      processJobs.set(child, job);
+      // Keep Job accounting after the root exits: descendants may still be
+      // terminating. Explicit cleanup joins this same verified operation.
+      child.once('exit', () => { void terminateOwnedProcess(child).catch(() => undefined); });
+    }
+  }
   catch (error) { await terminateOwnedProcess(child); throw error; }
   return child;
 }
@@ -197,17 +206,25 @@ export async function inspectManagedProcess(child: ChildProcessWithoutNullStream
   }
 }
 
-export async function terminateOwnedProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
-  const job = processJobs.get(child);
-  job?.terminate();
-  if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
-  const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
-  if (process.platform === 'win32' && !job) {
-    await stopOwnedWindowsTree(await inspectOwnedWindowsTree(child.pid));
-  } else if (process.platform !== 'win32') child.kill('SIGTERM');
-  let timeout: NodeJS.Timeout | undefined;
-  try { if (child.exitCode === null && child.signalCode === null) await Promise.race([exited, new Promise<void>((_, reject) => { timeout = setTimeout(() => reject(new Error('Owned Harness process did not stop.')), 15_000); timeout.unref(); })]); }
-  finally { if (timeout) clearTimeout(timeout); }
+export function terminateOwnedProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const existing = processTerminations.get(child); if (existing) return existing;
+  const pending = Promise.resolve().then(async () => {
+    const job = processJobs.get(child);
+    job?.terminate();
+    if (child.exitCode === null && child.signalCode === null && child.pid) {
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+      if (process.platform === 'win32' && !job) await stopOwnedWindowsTree(await inspectOwnedWindowsTree(child.pid));
+      else if (process.platform !== 'win32') child.kill('SIGTERM');
+      let timeout: NodeJS.Timeout | undefined;
+      try { if (child.exitCode === null && child.signalCode === null) await Promise.race([exited, new Promise<void>((_, reject) => { timeout = setTimeout(() => reject(new Error('Owned Harness process did not stop.')), 15_000); timeout.unref(); })]); }
+      finally { if (timeout) clearTimeout(timeout); }
+    }
+    // Root exit alone does not prove that its tools released their files.
+    if (job) { await job.waitForEmpty(); job.close(); processJobs.delete(child); }
+  });
+  processTerminations.set(child, pending);
+  void pending.catch(() => { if (processTerminations.get(child) === pending) processTerminations.delete(child); });
+  return pending;
 }
 
 export async function recoverOwnedProcess(identity: ProcessIdentity): Promise<boolean> {

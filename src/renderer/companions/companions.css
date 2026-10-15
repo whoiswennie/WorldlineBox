@@ -149,13 +149,6 @@ button.companions-message-link:hover { text-decoration-color: currentColor; }
 .companions-reply-quote-heading svg { width: 11px; height: 11px; }
 .companions-reply-quote strong { font-size: 10px; font-weight: 500; }
 .companions-reply-quote-excerpt { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.6; }
-.companions-message-attachments { display: flex; flex-direction: column; gap: 9px; margin-top: 6px; }
-.companions-attachment { display: flex; align-items: center; gap: 12px; max-width: 100%; text-align: left; border: 1px solid color-mix(in srgb, var(--ui-border-subtle) 65%, transparent); padding: 10px; border-radius: 12px; background: var(--companion-composer); color: var(--ui-content-primary); }
-.companions-attachment > svg { width: 28px; height: 28px; color: var(--companion-blue); flex-shrink: 0; }
-.companions-attachment > img { display: block; width: 70px; height: 80px; object-fit: cover; border-radius: 5px; }
-.companions-attachment > span { display: flex; flex-direction: column; min-width: 0; line-height: 1.5; }
-.companions-attachment strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
-.companions-attachment small { font-size: 10px; color: var(--ui-content-secondary); margin-top: 5px; }
 .companions-action-message-label { display: flex; align-items: center; gap: 7px; color: var(--companion-blue); font-size: 11px; padding-bottom: 8px; border-bottom: 1px solid var(--ui-border-subtle); margin-bottom: 8px; }
 .companions-action-message-label svg { width: 16px; height: 16px; }
 .companions-action-cancel { padding: 5px 0 0; border: 0; background: transparent; color: var(--ui-content-secondary); font-size: 11px; }

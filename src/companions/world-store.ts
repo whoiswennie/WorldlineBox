@@ -119,6 +119,19 @@ export class CompanionWorldStore {
   }
   private rememberClock(state: StoredWorld): void { this.clockAnchors = state.anchors; this.through = state.cursor; this.actorProjection = state.actors; }
   changed(): void { this.dirty = true; }
+  resetCompanion(id: string): void {
+    const state = this.load();
+    state.actors = state.actors.filter(actor => actor.companionId !== id);
+    state.works = state.works.filter(work => work.companionId !== id);
+    state.visits = state.visits.filter(visit => visit.guestId !== id && visit.hostId !== id);
+    state.relationships = state.relationships.filter(relation => relation.companionId !== id && relation.targetCompanionId !== id);
+    for (const actor of state.actors) if (actor.sceneId === 'home_' + id || actor.route.some(point => point.sceneId === 'home_' + id)) {
+      const home = this.scenes(state).find(scene => scene.id === actor.homeSceneId);
+      if (home) this.move(state, actor, home, { x: 10, y: 13 }, actor.homeSceneId, 'idle');
+      for (const work of state.works) if (work.companionId === actor.companionId) { work.status = 'waiting'; delete work.computerId; }
+    }
+    this.syncOccupancy(state); this.save(state); this.dirty = true;
+  }
   private save(state: StoredWorld): void {
     this.atomic(() => {
       const upsert = this.db.prepare('INSERT INTO companion_world_work_records(work_id,companion_id,status,data) VALUES(?,?,?,?) ON CONFLICT(work_id) DO UPDATE SET status=excluded.status,data=excluded.data WHERE data!=excluded.data');
@@ -228,7 +241,7 @@ export class CompanionWorldStore {
     return scenes;
   }
   private sync(state: StoredWorld): void {
-    const ids = (this.db.prepare('SELECT id FROM companions WHERE deleted_at IS NULL ORDER BY rowid').all() as Row[]).map(value => String(value.id));
+    const ids = (this.db.prepare("SELECT id FROM companions c WHERE deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=c.id AND r.status!='completed') ORDER BY rowid").all() as Row[]).map(value => String(value.id));
     for (const id of ids) {
       if (!state.slots.includes(id)) state.slots.push(id);
       if (!state.actors.some(actor => actor.companionId === id)) state.actors.push({ companionId: id, sceneId: 'home_' + id, homeSceneId: 'home_' + id,

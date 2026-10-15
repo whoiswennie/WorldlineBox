@@ -104,7 +104,7 @@ if (command === 'import') {
       const posture = record.postures?.[index] ?? 'standing', measured = record.contacts?.[index];
       if (!['standing', 'sitting', 'lying', 'transition'].includes(posture) || posture !== 'standing' && !measured) throw new Error(`Supply visually reviewed posture contacts: ${identity}/${index}`);
       const contacts = { posture, origin: { x: 192, y: 377 }, foot: null, seat: null, pelvis: null, bed: null, back: null, ...measured };
-      if (posture === 'standing') contacts.foot = { x: 192, y: maxY };
+      if (posture === 'standing' && !measured?.foot) contacts.foot = { x: 192, y: maxY };
       if (posture === 'sitting' && !contacts.seat || posture === 'lying' && !contacts.bed) throw new Error(`Missing furniture contact: ${identity}/${index}`);
       for (const point of Object.values(contacts)) if (point && typeof point === 'object' && (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0 || point.x > 384 || point.y > 384)) throw new Error(`Invalid contact coordinates: ${identity}/${index}`);
       frames.push({ bounds: { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }, contacts });
@@ -112,10 +112,13 @@ if (command === 'import') {
     const standing = frames.filter(frame => frame.contacts.posture === 'standing');
     const durationMs = record.durationMs ?? (record.action === 'run' ? 540 : 2200), playback = record.playback ?? 'loop';
     if (!Number.isFinite(durationMs) || durationMs < 100 || !['loop', 'transition'].includes(playback)) throw new Error(`Invalid playback: ${identity}`);
+    if (record.neutralHeightPixels !== undefined && (!Number.isFinite(record.neutralHeightPixels) || record.neutralHeightPixels < 32 || record.neutralHeightPixels > 768)) throw new Error(`Invalid reviewed anatomical scale: ${identity}`);
     const asset = { url: `companion-world/characters/${record.avatar}/actions/${record.action}.webp`, frameCount: 3, frameWidth: 384, frameHeight: 384, durationMs, playback,
       ...(standing.length ? { defaultOrigin: { x: 192, y: Math.max(...standing.map(frame => frame.contacts.foot.y)) } } : {}),
-      ...(neutralActions.has(record.action) && frames[0].contacts.posture === 'standing' ? { neutralHeightPixels: frames[0].bounds.height } : {}),
-      sha256: digest(buffer), source: { kind: 'builtin-imagegen', action: record.action, sha256: sourceHash, prompt: record.prompt }, frames };
+      ...(record.neutralHeightPixels !== undefined ? { neutralHeightPixels: record.neutralHeightPixels }
+        : neutralActions.has(record.action) && frames[0].contacts.posture === 'standing' ? { neutralHeightPixels: frames[0].bounds.height } : {}),
+      sha256: digest(buffer), source: { kind: 'builtin-imagegen', action: record.action, sha256: sourceHash, prompt: record.prompt,
+        ...(record.references ? { references: record.references } : {}), ...(record.scaleReview ? { scaleReview: record.scaleReview } : {}) }, frames };
     calibrateAsset(asset,record.action,pixels,info);
     data[record.avatar].actions[record.action] = asset;
     if (record.action === 'idle') data[record.avatar].neutralHeightPixels = frames[0].bounds.height;
@@ -127,8 +130,11 @@ if (command === 'import') {
   console.log(`Registered ${prepared.length} independent action sheets.`);
 } else if (command === 'calibrate') {
   const data=JSON.parse(await fs.readFile(manifestFile,'utf8')), report=[], output=path.resolve(process.argv[3]||'.tools/world-art-calibration');
+  const selected = process.argv[4] ? new Set(process.argv[4].split(',')) : undefined;
+  if (selected && [...selected].some(id => !data[id])) throw new Error('Unknown character in the requested calibration selection.');
   await fs.mkdir(output,{recursive:true});
   for(const [avatar,character]of Object.entries(data)){
+    if (selected && !selected.has(avatar)) continue;
     const panels=[];
     for(const[action,asset]of Object.entries(character.actions)){
       const image=await fs.readFile(path.join(root,'public',asset.url));
@@ -138,17 +144,20 @@ if (command === 'import') {
       const oldAnchor=frame=>companionWorldFramePose(frame)==='ground'?asset.defaultOrigin??character.defaultOrigin:companionWorldFramePose(frame)==='seat'?frame.contacts.seat:frame.contacts.bed;
       const xs=result.matches.map((match,index)=>match.dx-(oldAnchor(asset.frames[index]).x-oldAnchor(asset.frames[0]).x));
       const ys=result.matches.map((match,index)=>match.dy-(oldAnchor(asset.frames[index]).y-oldAnchor(asset.frames[0]).y));
-      const entry={avatar,action,bodyCoreRangeBefore:{x:Math.max(...xs)-Math.min(...xs),y:Math.max(...ys)-Math.min(...ys)},registrations:result.registrations,matches:result.matches};
+      const displayScale=character.neutralHeightPixels/(asset.neutralHeightPixels??character.neutralHeightPixels);
+      const entry={avatar,action,neutralHeightPixels:asset.neutralHeightPixels??character.neutralHeightPixels,displayScale,
+        bodyCoreRangeBefore:{x:Math.max(...xs)-Math.min(...xs),y:Math.max(...ys)-Math.min(...ys)},registrations:result.registrations,matches:result.matches};
       report.push(entry);
       const images=await Promise.all(result.extracted.map(frame=>sharp(frame.rgba,{raw:{width:frame.width,height:frame.height,channels:4}}).resize(96,96).png().toBuffer()));
-      let panel=`<text x="5" y="14" font-size="12" fill="#e6edf3">${action}</text>`;
+      let panel=`<text x="5" y="14" font-size="12" fill="#e6edf3">${action} · scale ${displayScale.toFixed(2)}</text>`;
       for(let row=0;row<2;row++)for(let index=0;index<3;index++){
-        const anchor=row?asset.frames[index].registration.anchor:oldAnchor(asset.frames[index]), x=index*112+56-anchor.x/4,y=20+row*100+90-anchor.y/4;
-        panel+=`<clipPath id="c${panels.length}_${row}_${index}"><rect x="${index*112}" y="${20+row*100}" width="112" height="100"/></clipPath><g clip-path="url(#c${panels.length}_${row}_${index})"><path d="M${index*112+56} ${20+row*100}v100M${index*112} ${20+row*100+90}h112" stroke="${row?'#63d49b':'#e17d75'}" opacity=".45"/><image href="data:image/png;base64,${images[index].toString('base64')}" x="${x}" y="${y}" width="96" height="96"/></g>`;
+        const pose=companionWorldFramePose(asset.frames[index]),line=pose==='ground'?110:pose==='seat'?70:80;
+        const anchor=row?asset.frames[index].registration.anchor:oldAnchor(asset.frames[index]), x=index*112+56-anchor.x*displayScale/4,y=20+row*124+line-anchor.y*displayScale/4;
+        panel+=`<clipPath id="c${panels.length}_${row}_${index}"><rect x="${index*112}" y="${20+row*124}" width="112" height="124"/></clipPath><g clip-path="url(#c${panels.length}_${row}_${index})"><path d="M${index*112+56} ${20+row*124}v124M${index*112} ${20+row*124+line}h112" stroke="${row?'#63d49b':'#e17d75'}" opacity=".45"/><image href="data:image/png;base64,${images[index].toString('base64')}" x="${x}" y="${y}" width="${96*displayScale}" height="${96*displayScale}"/></g>`;
       }
       panels.push(panel);
     }
-    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1344" height="${Math.ceil(panels.length/4)*224}"><rect width="100%" height="100%" fill="#17212b"/>${panels.map((panel,index)=>`<g transform="translate(${index%4*336} ${Math.floor(index/4)*224})">${panel}</g>`).join('')}</svg>`;
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1344" height="${Math.ceil(panels.length/4)*272}"><rect width="100%" height="100%" fill="#17212b"/>${panels.map((panel,index)=>`<g transform="translate(${index%4*336} ${Math.floor(index/4)*272})">${panel}</g>`).join('')}</svg>`;
     await sharp(Buffer.from(svg)).png().toFile(path.join(output,avatar+'.png'));
   }
   await writeManifest(data);
@@ -192,5 +201,5 @@ if (command === 'import') {
   console.log(JSON.stringify({ characters: Object.keys(data).length, sheets: count, frames: count * 3, bytes, allIndependent: true, alpha: true, missing }, null, 2));
   if (command === 'verify' && missing.length) throw new Error(`${missing.length} required character/action sheets remain incomplete.`);
 } else {
-  throw new Error('Usage: node scripts/companion-world-art.mjs import <approved-source-project> | register <actions.json> | calibrate [report-directory] | verify | inspect');
+  throw new Error('Usage: node scripts/companion-world-art.mjs import <approved-source-project> | register <actions.json> | calibrate [report-directory] [comma-separated-characters] | verify | inspect');
 }

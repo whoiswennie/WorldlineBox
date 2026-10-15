@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,11 +9,13 @@ import { DshTaskBroker, normalizeDshTaskProgress } from '../../src/main/dsh/task
 import { removeManaged } from '../../src/main/dsh/files';
 import type { OperationContext } from '../../src/main/dsh/operations';
 import { DSH_TASK_API_KEY_REF, type DshTaskExecutionConnection } from '../../src/main/dsh/task-connection';
+import * as processTools from '../../src/main/dsh/instance-process';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await removeManaged(os.tmpdir(), root); });
 async function fixture() {
   const rootPath = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-task-broker-')); roots.push(rootPath); await mkdir(path.join(rootPath, 'cli'));
+  const descendantProgram = "const {spawn}=require('node:child_process');const leaf=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{windowsHide:true,stdio:'ignore'});console.log(leaf.pid);setInterval(()=>{},1000);";
   const shim = `const fs=require('node:fs');const path=require('node:path');const {spawn}=require('node:child_process');
 const context=JSON.parse(fs.readFileSync(process.env.WORLDLINEBOX_DSH_CLI_CONTEXT,'utf8'));let prompt='';
 process.stdin.setEncoding('utf8');process.stdin.on('data',text=>prompt+=text);process.stdin.on('end',()=>{
@@ -37,7 +39,7 @@ process.stdin.setEncoding('utf8');process.stdin.on('data',text=>prompt+=text);pr
   if(prompt==='connection-error'){line({type:'error',code:key,message:key});process.exitCode=1;return;}
   line({type:'final',text:'connection completed '+(key||'native configuration')});return;
  }
- if(prompt==='sleep'){const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{windowsHide:true,stdio:'ignore'});fs.writeFileSync(context.capture,JSON.stringify({pid:child.pid}));line({type:'job_started'});setInterval(()=>{},1000);return;}
+ if(prompt==='sleep'||prompt==='orphan'){const child=spawn(process.execPath,['-e',${JSON.stringify(descendantProgram)}],{windowsHide:true,stdio:['ignore','pipe','ignore']});child.stdout.once('data',chunk=>{fs.writeFileSync(context.capture,JSON.stringify({pid:child.pid,grandchildPid:Number(String(chunk).trim())}));line({type:'job_started'});if(prompt==='orphan')process.stdout.write(JSON.stringify({type:'final',text:'fixture done'})+'\\n',()=>process.exit(0));});setInterval(()=>{},1000);return;}
  if(prompt==='large'){line({type:'final',text:'x'.repeat(1200000)});return;}
  if(prompt==='error'){line({type:'error',code:'fixture/error',message:prompt+' secret: sk-fixture-never-retain'});process.exitCode=1;return;}
  setTimeout(()=>{const text=JSON.stringify({type:'final',text:'来自 '+context.instanceId+'：完成'})+'\\n';const b=Buffer.from(text);process.stdout.write(b.subarray(0,20));setTimeout(()=>process.stdout.write(b.subarray(20)),10);},prompt==='delay'?150:10);
@@ -47,14 +49,15 @@ process.stdin.setEncoding('utf8');process.stdin.on('data',text=>prompt+=text);pr
     homePath: path.join(rootPath, id, 'home'), agentsPath: path.join(rootPath, id, 'agents'), workspacePath: rootPath, browserPartition: `persist:${id}`, isDefault: false },
     plan: { executable: process.execPath, cli: 'selected-native-cli.js', env: {} }, env: { ...process.env }, workspacePath: rootPath, routingPatch: 'private.patch', runtimeVersion: id === 'instance-a' ? '0.2.0-rc.2' : '0.2.1-alpha.2' });
   let selected = 'instance-a'; const pins: string[] = []; const removed: string[] = []; const captured: DshCliSelection[] = []; let eventHook: ((type: string, id: string) => void) | undefined;
+  let disposeHook: (() => Promise<void>) | undefined;
   const broker = new DshTaskBroker({ rootPath, getSelection: async id => selection(id ?? selected), pin: async context => {
     captured.push(context); const id = randomUUID(); const contextFile = path.join(rootPath, `${id}.json`); pins.push(contextFile);
     await writeFile(contextFile, JSON.stringify({ id, instanceId: context.instance.id, capture: path.join(rootPath, 'child.json') }));
-    return { contextFile, dispose: async () => { removed.push(contextFile); await removeManaged(rootPath, contextFile); } };
+    return { contextFile, dispose: async () => { await disposeHook?.(); removed.push(contextFile); await removeManaged(rootPath, contextFile); } };
   }, onEvent: event => eventHook?.(event.type, event.taskId) });
   const logs: string[] = []; const operation = (id = randomUUID(), controller = new AbortController()): OperationContext => ({ id, signal: controller.signal,
     update: async () => undefined, log: async message => { logs.push(message); } });
-  return { rootPath, broker, pins, removed, captured, logs, operation, select: (id: string) => { selected = id; }, events: (hook: typeof eventHook) => { eventHook = hook; } };
+  return { rootPath, broker, pins, removed, captured, logs, operation, select: (id: string) => { selected = id; }, events: (hook: typeof eventHook) => { eventHook = hook; }, dispose: (hook: typeof disposeHook) => { disposeHook = hook; } };
 }
 describe('Pinned DSH task broker', () => {
   it('pins and records the effective access policy without applying a changed preference mid-task', async () => {
@@ -258,15 +261,63 @@ describe('Pinned DSH task broker', () => {
     let ready!: () => void; const started = new Promise<void>(resolve => { ready = resolve; });
     test.events(type => { if (type === 'job_started') ready(); });
     const foreign = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' });
+    let disposing!: () => void, release!: () => void;
+    const disposingStarted = new Promise<void>(resolve => { disposing = resolve; });
+    const disposalAllowed = new Promise<void>(resolve => { release = resolve; });
+    test.dispose(async () => { disposing(); await disposalAllowed; });
     try {
       const task = test.broker.execute({ prompt: 'sleep' }, operation); void task.catch(() => undefined); await started;
-      const child = JSON.parse(await readFile(path.join(test.rootPath, 'child.json'), 'utf8')) as { pid: number };
-      await test.broker.terminate(operation.id);
+      const child = JSON.parse(await readFile(path.join(test.rootPath, 'child.json'), 'utf8')) as { pid: number; grandchildPid: number };
+      let terminated = false;
+      const termination = test.broker.terminate(operation.id).then(() => { terminated = true; });
+      await disposingStarted;
+      expect(terminated).toBe(false); expect(test.removed).toEqual([]);
+      expect(() => process.kill(child.pid, 0)).toThrow(); expect(() => process.kill(child.grandchildPid, 0)).toThrow();
+      release(); await termination;
+      // Do not await execute before checking terminate's actual promise contract.
+      expect(test.removed).toHaveLength(1);
       await expect(task).rejects.toThrow('cancelled');
       expect(test.broker.state()[0]).toMatchObject({ status: 'cancelled', sessionId: expect.stringMatching(/^native-/), workspacePath: test.rootPath });
       expect(() => process.kill(child.pid, 0)).toThrow();
       expect(() => process.kill(foreign.pid!, 0)).not.toThrow();
-    } finally { foreign.kill(); await test.broker.shutdown(); }
+      await expect(test.broker.terminate(operation.id)).resolves.toBeUndefined();
+      await expect(test.broker.terminate('unretained-old-operation')).resolves.toBeUndefined();
+    } finally { release(); foreign.kill(); await test.broker.shutdown(); }
+  });
+  it('verifies descendants are gone after a natural CLI exit before reporting success', async () => {
+    if (process.platform !== 'win32') return;
+    const test = await fixture();
+    try {
+      await test.broker.execute({ prompt: 'orphan' }, test.operation());
+      const child = JSON.parse(await readFile(path.join(test.rootPath, 'child.json'), 'utf8')) as { pid: number; grandchildPid: number };
+      expect(() => process.kill(child.pid, 0)).toThrow(); expect(() => process.kill(child.grandchildPid, 0)).toThrow();
+      expect(test.removed).toHaveLength(1);
+    } finally { await test.broker.shutdown(); }
+  });
+  it('waits for a cancelled preparation to finish before resolving termination', async () => {
+    const test = await fixture(); let entered!: () => void, release!: () => void;
+    const preparing = new Promise<void>(resolve => { entered = resolve; }), allowed = new Promise<void>(resolve => { release = resolve; });
+    const broker = new DshTaskBroker({ rootPath: test.rootPath, getSelection: async () => { entered(); await allowed; throw new Error('Fixture preparation finished'); },
+      pin: async () => { throw new Error('Cancelled preparation must not pin'); } });
+    const operation = test.operation(), task = broker.execute({ prompt: 'fixture' }, operation); void task.catch(() => undefined);
+    try {
+      await preparing; let finished = false;
+      const stopped = broker.terminate(operation.id).then(() => { finished = true; });
+      await new Promise(resolve => setTimeout(resolve, 25)); expect(finished).toBe(false);
+      release(); await stopped; await expect(task).rejects.toThrow('cancelled before'); expect(broker.state()).toEqual([]);
+    } finally { release(); await broker.shutdown(); await test.broker.shutdown(); }
+  });
+  it('retains an unconfirmed owned cleanup and its pin until termination is retried successfully', async () => {
+    const test = await fixture(), operation = test.operation();
+    const termination = vi.spyOn(processTools, 'terminateOwnedProcess').mockRejectedValue(new Error('Fixture process accounting unavailable'));
+    try {
+      await expect(test.broker.execute({ prompt: 'delay' }, operation)).rejects.toThrow('could not be confirmed stopped');
+      expect(test.broker.state()[0]?.status).toBe('failed'); expect(test.removed).toEqual([]);
+      termination.mockRestore();
+      await test.broker.terminate(operation.id);
+      expect(test.removed).toHaveLength(1);
+      await expect(test.broker.terminate(operation.id)).resolves.toBeUndefined();
+    } finally { termination.mockRestore(); await test.broker.shutdown(); }
   });
   it('contains oversized NDJSON lines and error bodies without storing prompts or leaving a pin alive', async () => {
     const test = await fixture(); await expect(test.broker.execute({ prompt: 'large' }, test.operation())).rejects.toThrow('one MiB');

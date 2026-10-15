@@ -71,8 +71,8 @@ test('received movement converges continuously at the real destination', async (
 });
 
 // eslint-disable-next-line no-empty-pattern
-test('registered frames stay grounded during real sofa rest and a real pending computer reply', async ({}, testInfo) => {
-  test.setTimeout(120000);
+test('both corrected sisters stay grounded during real rest, sleep and pending computer replies', async ({}, testInfo) => {
+  test.setTimeout(200000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-world-calibration-'));
   let application: ElectronApplication | undefined, reply: ServerResponse | undefined;
   const errors: string[] = [], samples: unknown[] = [];
@@ -99,9 +99,10 @@ test('registered frames stay grounded during real sofa rest and a real pending c
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('No fixture port.');
     await main.evaluate(baseUrl => (window as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', baseUrl, model: 'calibration-fixture', apiKey: 'fixture-calibration-key' }), 'http://127.0.0.1:' + address.port);
     const world = (await request(main, { type: 'world.snapshot' })).world!;
+    const companions = (await request(main, { type: 'state' })).state!.companions;
     await request(main, { type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
     const scopes: Array<{ companionId: string; conversationId: string }> = [];
-    for (const companionId of ['minimax', 'kimi']) {
+    for (const companionId of ['deepseek-sister', 'deepseek-flash']) {
       const conversation = (await request(main, { type: 'conversation.open', companionId })).conversation!, scope = { companionId, conversationId: conversation.id };
       const routine = (await request(main, { type: 'routine.get', ...scope })).routine!;
       await request(main, { type: 'routine.configure', ...scope, expectedRevision: routine.revision,
@@ -115,12 +116,14 @@ test('registered frames stay grounded during real sofa rest and a real pending c
       await request(main, { type: 'world.tool', ...scope, arguments: { action: 'move', destinationId: furnitureId } });
       await expect.poll(async () => { const value = await actor(scope.companionId); return value.route.length === 0 && value.activity === 'idle'; }, { timeout: 25000 }).toBe(true);
     }
-    async function capture(value: CompanionWorldActor, action: 'rest' | 'work') {
+    async function capture(value: CompanionWorldActor, action: 'rest' | 'sleep' | 'work') {
       const resident = world.residents.find(item => item.companionId === value.companionId)!;
       await observer.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(value.sceneId);
       await expect.poll(async () => Number(await canvas.getAttribute('data-world-loaded-actors'))).toBe(1);
+      await expect(observer.locator(`[data-world-actor="${value.companionId}"]`)).toHaveAttribute('data-world-activity', value.activity);
+      await expect(canvas).toHaveAttribute('data-world-pending-textures', '0');
       await observer.getByRole('button', { name: '在场景中找到' + resident.name, exact: true }).click();
-      const asset = worldCharacterArt(value.companionId)!.actions[action]!;
+      const asset = worldCharacterArt(companions.find(companion => companion.id === value.companionId)!.avatar)!.actions[action]!;
       for (const frame of [0, 1, 2] as const) {
         await expect.poll(() => worldAnimationFrame(value.artStartedAtReal ?? value.activityStartedAtReal, asset.durationMs, asset.playback, Date.now()), { intervals: [25], timeout: 5000 }).toBe(frame);
         await observer.waitForTimeout(70);
@@ -130,17 +133,23 @@ test('registered frames stay grounded during real sofa rest and a real pending c
         samples.push({ companionId: value.companionId, action, frame, current, camera: await canvas.getAttribute('data-world-camera') });
       }
     }
-    const minimax = scopes[0]!, sofa = world.scenes.find(scene => scene.ownerId === 'minimax')!.objects.find(object => object.kind === 'sofa')!;
-    await move(minimax, sofa.id);
-    await request(main, { type: 'world.tool', ...minimax, arguments: { action: 'interact', furnitureId: sofa.id, interaction: 'rest' } });
-    await expect.poll(async () => (await actor('minimax')).artAction).toBe('rest');
-    await capture(await actor('minimax'), 'rest');
-    const kimi = scopes[1]!; await move(kimi, 'kimi_computer');
-    await request(main, { type: 'message.send', conversationId: kimi.conversationId, content: '请等一下再回答，我想看看你在电脑前回复时的样子。', clientId: 'calibration-reply' });
-    await expect.poll(() => Boolean(reply), { timeout: 25000 }).toBe(true);
-    const working = await actor('kimi'); expect(working.activity).toBe('working'); expect(working.artAction).toBe('work');
-    await capture(working, 'work');
-    reply!.writeHead(200, { 'Content-Type': 'application/json' }); reply!.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ text: '我已经坐在电脑前啦。', memories: [] }) }, finish_reason: 'stop' }] }));
+    for (const scope of scopes) {
+      const scene = world.scenes.find(value => value.ownerId === scope.companionId)!;
+      for (const [kind, action] of [['sofa', 'rest'], ['bed', 'sleep']] as const) {
+        const object = scene.objects.find(value => value.kind === kind)!;
+        await move(scope, object.id);
+        await request(main, { type: 'world.tool', ...scope, arguments: { action: 'interact', furnitureId: object.id, interaction: action } });
+        await expect.poll(async () => (await actor(scope.companionId)).artAction).toBe(action);
+        await capture(await actor(scope.companionId), action);
+      }
+      await move(scope, scope.companionId + '_computer'); reply = undefined;
+      await request(main, { type: 'message.send', conversationId: scope.conversationId, content: '请等一下再回答，我想看看你在电脑前回复时的样子。', clientId: 'calibration-reply-' + scope.companionId });
+      await expect.poll(() => Boolean(reply), { timeout: 25000 }).toBe(true);
+      const working = await actor(scope.companionId); expect(working.activity).toBe('working'); expect(working.artAction).toBe('work');
+      await capture(working, 'work');
+      reply!.writeHead(200, { 'Content-Type': 'application/json' }); reply!.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ text: '我已经坐在电脑前啦。', memories: [] }) }, finish_reason: 'stop' }] }));
+      await expect.poll(async () => (await actor(scope.companionId)).activity).not.toBe('working');
+    }
     expect(errors).toEqual([]);
     writeFileSync(path.join(artifacts, 'live-frame-validation.json'), JSON.stringify({ samples, errors }, null, 2));
     await testInfo.attach('authoritative-pose-samples', { body: JSON.stringify(samples), contentType: 'application/json' });

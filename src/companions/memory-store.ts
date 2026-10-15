@@ -190,6 +190,9 @@ export class CompanionMemoryStore {
     const publication = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + row.id);
     const throughSequence = publication ? Math.max(Number(row.sequence), Number(asRow(publication).value) + 1) : Number(row.sequence);
     for (const member of members) {
+      if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(member.companion_id)) continue;
+      const reset = this.db.prepare('SELECT through_sequence FROM companion_reset_boundaries WHERE companion_id=?').get(member.companion_id);
+      if (reset && Number(row.sequence) <= Number(asRow(reset).through_sequence)) continue;
       this.db.prepare('INSERT OR IGNORE INTO memory_observers(message_id,companion_id) VALUES(?,?)').run(messageId, member.companion_id);
       this.db.prepare('INSERT OR IGNORE INTO memory_jobs(id,companion_id,conversation_id,message_id,source_sequence,through_sequence,source_checksum,source_revision) VALUES(?,?,?,?,?,?,?,?)')
         .run(randomUUID(), member.companion_id, row.conversation_id, messageId, row.sequence, throughSequence, checksum(String(row.content)), row.revision);
@@ -215,6 +218,7 @@ export class CompanionMemoryStore {
       this.db.prepare("UPDATE memory_jobs SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(now);
       const found = this.db.prepare(`SELECT j.* FROM memory_jobs j JOIN companions c ON c.id=j.companion_id
         WHERE j.status IN ('pending','failed') AND j.next_attempt<=? AND j.attempts<8 AND c.deleted_at IS NULL
+        AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=j.companion_id AND r.status!='completed')
         ${companionId ? 'AND j.companion_id=?' : ''} ORDER BY j.ordinal LIMIT 1`).get(...(companionId ? [now, companionId] : [now]));
       if (!found) return;
       const row = asRow(found), token = randomUUID(), attempts = Number(row.attempts) + 1;
@@ -295,6 +299,12 @@ export class CompanionMemoryStore {
 
   private sourceVisible(scope: Scope, source: Row): boolean {
     const conversation = this.requireScope(scope);
+    if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(source.author_id)
+      || this.db.prepare("SELECT 1 FROM companion_reset_rooms s JOIN companion_reset_jobs j ON j.id=s.job_id WHERE s.conversation_id=? AND j.status!='completed' LIMIT 1").get(source.conversation_id)
+      || this.db.prepare('SELECT 1 FROM companion_reset_messages WHERE message_id=? LIMIT 1').get(source.id)) return false;
+    const reset = this.db.prepare('SELECT through_sequence FROM companion_reset_boundaries WHERE companion_id=?').get(scope.companionId);
+    if (reset && Number(source.sequence) <= Number(asRow(reset).through_sequence)) return false;
+    if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(scope.companionId)) return false;
     if (scope.beforeSequence !== undefined && Number(source.sequence) > scope.beforeSequence) return false;
     const publication = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + source.id);
     if (scope.beforeSequence !== undefined && publication && scope.beforeSequence <= Number(asRow(publication).value)) return false;

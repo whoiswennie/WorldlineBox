@@ -1,0 +1,24 @@
+{
+  "fixtureKind": "synthetic_media_files",
+  "imageCount": 2,
+  "audioActuallyPlayed": true,
+  "videoActuallyPlayed": true,
+  "videoSize": {
+    "width": 160,
+    "height": 90,
+    "bytes": 2637
+  },
+  "range": {
+    "status": 206,
+    "bytes": 16,
+    "range": "bytes 0-15/2637",
+    "accepts": "bytes"
+  },
+  "head": {
+    "status": 200,
+    "bytes": 0,
+    "length": 2637
+  },
+  "documentLocationExplicit": true,
+  "storedAttachments": 6
+}

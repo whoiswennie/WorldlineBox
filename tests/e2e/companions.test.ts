@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 
@@ -408,7 +409,7 @@ test('starts empty, bounds long history, searches with filters and context, and 
   } finally { if (application) await application.close(); cleanup(root); }
 });
 
-test('loads all migrated portraits, restores an edited contact and chats privately and in a mixed-role group', async () => {
+test('loads every portrait, preserves edited built-ins and chats privately and in a mixed-role group', async () => {
   // Each of thirteen distinct residents physically walks to its own computer.
   test.setTimeout(300_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-catalogue-'));
@@ -432,7 +433,7 @@ test('loads all migrated portraits, restores an edited contact and chats private
       const image = new Image(); image.src = url; await image.decode();
       return image.naturalWidth > 0 && image.naturalHeight === image.naturalWidth;
     })));
-    expect(decoded).toHaveLength(13); expect(decoded.every(Boolean)).toBe(true);
+    expect(decoded).toHaveLength(15); expect(decoded.every(Boolean)).toBe(true);
     await catalogue.getByRole('button', { name: '原创角色', exact: true }).click();
     await expect(catalogue.locator('[data-builtin-template]')).toHaveCount(2);
     mkdirSync(path.resolve('artifacts/companions'), { recursive: true });
@@ -459,10 +460,11 @@ test('loads all migrated portraits, restores an edited contact and chats private
     expect(provider.requests.every(item => item.model === 'one-shared-fixture-model' && item.headers.authorization === 'Bearer fixture-catalogue-key')).toBe(true);
     const gpt = state.companions.find(item => item.id === 'gpt')!;
     await request(page, { type: 'companion.update', id: gpt.id, companion: { name: '小白龙', description: '我的白龙签名', persona: '用户编辑的白龙人设', avatar: gpt.avatar, model: '', proactive: false } });
-    await request(page, { type: 'companion.delete', id: gpt.id });
+    const rejectedDelete = await page.evaluate(id => (window as unknown as CompanionBridgeWindow).worldlinebox.companions.request({ type: 'companion.delete', id }), gpt.id);
+    expect(rejectedDelete.ok).toBe(false); expect(rejectedDelete.error).toContain('内置伙伴不能删除');
     await application.close(); application = undefined;
     started = await launch(profile); application = started.application; page = started.page;
-    expect((await request(page, { type: 'state' })).state!.companions.some(item => item.id === 'gpt')).toBe(false);
+    expect((await request(page, { type: 'state' })).state!.companions.some(item => item.id === 'gpt')).toBe(true);
     const restored = (await request(page, { type: 'companion.add-builtin', templateId: 'gpt' })).companion!;
     expect(restored).toMatchObject({ id: 'gpt', name: '小白龙', description: '我的白龙签名', persona: '用户编辑的白龙人设' });
     expect((await messages(page, 'private-gpt')).filter(item => item.kind === 'notice')).toHaveLength(0);
@@ -954,21 +956,17 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     expect(learned[0]).toMatchObject({ content: '用户喜欢看海。', origin: 'user', captureMethod: 'automatic', sourceMessageId: preferenceSource.id });
     expect((await request(page, { type: 'memory.list', companionId: 'deepseek-flash' })).memories).toEqual([]);
 
-    // Remove and re-add a built-in through the actual contact management flow.
+    // Built-ins retain their stable identity and cannot be removed. A reset is
+    // a separate explicit flow, while the catalogue still opens existing roles.
     const flashBefore = (await messages(page, 'private-deepseek-flash')).map(message => message.id);
     await page.getByRole('button', { name: '联系人', exact: true }).click();
     await page.locator('[data-companion-contact="deepseek-flash"]').click();
-    await page.getByRole('button', { name: '移除联系人', exact: true }).click();
-    const remove = page.getByRole('dialog', { name: '移除联系人', exact: true });
-    await remove.getByRole('button', { name: '移除联系人', exact: true }).click();
-    await expect(remove).toHaveCount(0);
-    await expect(page.locator('[data-companion-contact="deepseek-flash"]')).toHaveCount(0);
-    await page.getByRole('button', { name: '添加联系人', exact: true }).click();
-    const add = page.getByRole('dialog', { name: '添加联系人', exact: true });
-    await add.locator('.companions-builtin-card').filter({ has: page.getByRole('heading', { name: '小肥鱼', exact: true }) }).getByRole('button', { name: '添加', exact: true }).click();
-    await expect(add).toHaveCount(0);
-    await expect(page.locator('[data-companion-contact="deepseek-flash"]')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: '移除联系人', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '重置伙伴', exact: true })).toBeVisible();
+    const cannotRemove = await page.evaluate(() => (window as unknown as CompanionBridgeWindow).worldlinebox.companions.request({ type: 'companion.delete', id: 'deepseek-flash' }));
+    expect(cannotRemove.ok).toBe(false);
     expect((await messages(page, 'private-deepseek-flash')).map(message => message.id)).toEqual(flashBefore);
+    const add = page.getByRole('dialog', { name: '添加联系人', exact: true });
 
     await page.getByRole('button', { name: '添加联系人', exact: true }).click();
     await add.getByRole('tab', { name: '自定义角色', exact: true }).click();
@@ -983,6 +981,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
     }, selectedImagePath);
     await add.getByRole('button', { name: '选择本地头像', exact: true }).click();
+    await page.getByRole('dialog', { name: '调整头像', exact: true }).getByRole('button', { name: '使用此头像', exact: true }).click(); await expect(page.getByRole('dialog', { name: '调整头像', exact: true })).toHaveCount(0);
     await expect(add.locator('.companions-avatar-editor .has-local-image')).toHaveCount(1);
     await expect(add.getByRole('combobox', { name: '伙伴 LLM 服务' })).toHaveValue('global');
     await add.getByRole('button', { name: '添加伙伴', exact: true }).click();
@@ -994,7 +993,12 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     expect(custom.avatarAttachmentId).toBeTruthy();
     const avatarId = custom.avatarAttachmentId!;
     await decodeLocalImage(page, avatarId);
-    expect(readFileSync(path.join(profile, 'companions', 'attachments', `${avatarId}.jpg`))).toEqual(readFileSync(selectedImagePath));
+    const savedAvatar = readFileSync(path.join(profile, 'companions', 'attachments', `${avatarId}.png`));
+    expect(await sharp(savedAvatar).metadata()).toMatchObject({ format: 'png', width: 512, height: 512 });
+    const oriented = await sharp(selectedImagePath).autoOrient().png().toBuffer({ resolveWithObject: true });
+    const side = Math.min(oriented.info.width, oriented.info.height);
+    const expectedAvatar = await sharp(oriented.data).extract({ left: Math.round((oriented.info.width - side) / 2), top: Math.round((oriented.info.height - side) / 2), width: side, height: side }).resize(512, 512).ensureAlpha().raw().toBuffer();
+    expect((await sharp(savedAvatar).ensureAlpha().raw().toBuffer()).equals(expectedAvatar)).toBe(true);
     await page.locator(`[data-companion-contact="${custom.id}"]`).click();
     await expect(page.locator('.companions-contact-profile .has-local-image')).toHaveCount(1);
     await page.getByRole('button', { name: '发消息', exact: true }).click();

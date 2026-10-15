@@ -5,7 +5,7 @@ import {
 } from '../../shared/ai-endpoints';
 import type { Companion } from '../../shared/companions';
 import { isDeepseekOfficialEndpoint } from '../../shared/llm';
-import { buildCompanionContext, refreshCompanionContextClock, refreshCompanionRuntimeStateContext, refreshCompanionIdentityContext, type CompanionReplyInput } from './context';
+import { buildCompanionContext, refreshCompanionContextClock, refreshCompanionRuntimeStateContext, refreshCompanionIdentityContext, refreshCompanionFilesContext, type CompanionReplyInput } from './context';
 import { COMPANION_DSH_TOOL } from '../../shared/companion-dsh-tool';
 import { COMPANION_MEMORY_TOOLS, normalizeCompanionMemoryToolName, providerCompanionMemoryToolName } from '../../shared/companion-memory-tool';
 import { COMPANION_SCHEDULE_TOOL } from '../../shared/companion-schedule-tool';
@@ -14,6 +14,10 @@ import { COMPANION_ROUTINE_TOOL } from '../../shared/companion-routine-tool';
 import { COMPANION_WORLD_TOOL } from '../../shared/companion-world-tool';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
 import { CompanionProviderStreamError, readCompanionProviderStream } from './provider-stream';
+import type { CompanionVisualInput } from '../../shared/companion-public-profile';
+import { companionUnsupportedImageError, prepareCompanionVisualContext, refreshCompanionPublicProfileContext } from './public-profile-context';
+import { COMPANION_FILE_TOOLS, type ToolVisualInput } from '../../shared/companion-file-tool';
+import { companionToolResultText, prepareCompanionLoopVisuals, type CompanionToolImageDelivery } from './tool-image-context';
 
 export type { CompanionReplyInput } from './context';
 export interface CompanionModelConfig {
@@ -24,6 +28,10 @@ export interface CompanionModelConfig {
 }
 export interface CompanionReply { text: string; memories?: string[]; topic?: string; turn?: CompanionLoopTurn }
 export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; context?: ReturnType<typeof buildCompanionContext>; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[];
+  /** In-memory image payloads for structured peer/world reasoning; never persisted. */
+  visualInputs?: readonly CompanionVisualInput[];
+  /** Authorized immutable tool snapshots, reloaded for the current inference only. */
+  toolImages?: readonly ToolVisualInput[];
   /** Current turn's cumulative visible text, emitted only from real SSE events. */
   onTextDelta?: (text: string) => void }
 export type CompanionModelErrorCode = 'CONFIG' | 'AUTH' | 'RATE_LIMIT' | 'NETWORK' | 'TIMEOUT' | 'CANCELLED' | 'INVALID_RESPONSE' | 'REFUSED';
@@ -53,8 +61,9 @@ export async function generateCompanionReply(
   validateConfig(config);
   const model = resolveCompanionModel(input.companion, config);
   if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
-  const context = refreshCompanionContextClock(refreshCompanionIdentityContext(refreshCompanionRuntimeStateContext(
-    options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop }), input.runtimeState, input.companion.id, input.conversation), input));
+  const context = refreshCompanionContextClock(refreshCompanionFilesContext(refreshCompanionPublicProfileContext(refreshCompanionIdentityContext(refreshCompanionRuntimeStateContext(
+    options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop }), input.runtimeState, input.companion.id, input.conversation), input),
+  { companionId: input.companion.id, memberIds: input.conversation.memberIds, audience: input.audience, publicProfiles: input.publicProfiles }), input.fileInputs));
   const controller = new AbortController();
   let rejectAbort: (error: CompanionModelError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
@@ -74,13 +83,12 @@ export async function generateCompanionReply(
   try {
     if (signal?.aborted) cancel();
     const operation = async (): Promise<CompanionReply> => {
-      const request = providerRequest({ ...config, model }, context, controller.signal, options.loop === true, options.loop === true, true);
-      if (options.loop) appendLoopHistory(request, config.apiFormat, options.turns ?? [], options.supplements ?? []);
-      const response = await fetchFn(...request);
-      if (!response.ok) {
-        void response.body?.cancel().catch(() => undefined);
-        throw httpError(response.status);
-      }
+      const response = await fetchCompanionProvider(controller.signal, fetchFn, rejected => {
+        const current = prepareCompanionLoopVisuals(context, input.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? options.turns ?? [] : [], config, rejected);
+        const request = providerRequest({ ...config, model }, current.context, controller.signal, options.loop === true, options.loop === true, true, current.images);
+        if (options.loop) appendLoopHistory(request, config, options.turns ?? [], options.supplements ?? [], current.tools);
+        return { request, hasImages: current.images.length > 0 || current.tools.some(tool => !!tool.image) };
+      });
       let body: unknown;
       if (response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
         streamActivity(); streamDeadline = setTimeout(expire, 10 * 60_000);
@@ -124,7 +132,7 @@ export async function generateCompanionStructured(
   context: { system: string; user: string },
   config: CompanionModelConfig,
   signal?: AbortSignal,
-  options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {},
+  options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs' | 'visualInputs'> = {},
 ): Promise<unknown> {
   if (signal?.aborted) throw new CompanionModelError('CANCELLED', '记忆处理已取消。');
   validateConfig(config);
@@ -139,15 +147,10 @@ export async function generateCompanionStructured(
   try {
     if (signal?.aborted) cancel();
     const operation = async () => {
-      const request = providerRequest({ ...config, model }, context, controller.signal, false, false);
-      const body = JSON.parse(String(request[1]!.body));
-      if (config.apiFormat === 'openai_chat' || config.apiFormat === 'anthropic') body.max_tokens = 8_192;
-      if (config.apiFormat === 'openai_responses') body.max_output_tokens = 8_192;
-      if (config.apiFormat === 'gemini_native') body.generationConfig.maxOutputTokens = 8_192;
-      if (config.apiFormat === 'dashscope_native') body.parameters.max_tokens = 8_192;
-      request[1]!.body = JSON.stringify(body);
-      const response = await (options.fetchFn ?? globalThis.fetch.bind(globalThis))(...request);
-      if (!response.ok) { void response.body?.cancel().catch(() => undefined); throw httpError(response.status); }
+      const response = await fetchCompanionProvider(controller.signal, options.fetchFn ?? globalThis.fetch.bind(globalThis), rejected => {
+        const current = prepareCompanionVisualContext(context, options.visualInputs, config, rejected);
+        return { request: providerRequest({ ...config, model }, current.context, controller.signal, false, false, false, current.images), hasImages: current.images.length > 0 };
+      });
       const envelope = await readBoundedJson(response);
       if (extractLoopCalls(config.apiFormat, envelope).length) throw new CompanionModelError('INVALID_RESPONSE', '记忆模型不应调用工具。');
       const raw = extractProviderText(config.apiFormat, envelope).trim();
@@ -177,10 +180,43 @@ function validateConfig(config: CompanionModelConfig): void {
   }
 }
 
-function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false): Parameters<typeof fetch> {
+async function fetchCompanionProvider(signal: AbortSignal, fetchFn: typeof fetch,
+  build: (rejected: boolean) => { request: Parameters<typeof fetch>; hasImages: boolean }): Promise<Response> {
+  const current = build(false);
+  let response = await fetchFn(...current.request);
+  if (!response.ok && current.hasImages && [400, 415].includes(response.status)) {
+    const status = response.status;
+    let error: unknown; try { error = await readBoundedJson(response); } catch { throw httpError(status); }
+    if (!companionUnsupportedImageError(error)) throw httpError(status);
+    if (signal.aborted) throw new CompanionModelError('CANCELLED', '这次模型请求已取消。');
+    response = await fetchFn(...build(true).request);
+  }
+  if (!response.ok) { void response.body?.cancel().catch(() => undefined); throw httpError(response.status); }
+  return response;
+}
+function companionImageParts(format: AiApiFormat, images: readonly CompanionVisualInput[]): Array<Record<string, unknown>> {
+  return images.flatMap<Record<string, unknown>>(image => {
+    const label = JSON.stringify({ publicImage: { personId: image.personId, role: image.role, sha256: image.sha256 } });
+    const detail = image.role === 'orthographic' ? 'high' : 'low';
+    return [companionTextPart(format, label), companionImagePart(format, image, detail)];
+  });
+}
+function companionTextPart(format: AiApiFormat, text: string): Record<string, unknown> {
+  return format === 'gemini_native' || format === 'dashscope_native' ? { text } : { type: format === 'openai_responses' ? 'input_text' : 'text', text };
+}
+function companionImagePart(format: AiApiFormat, image: Pick<ToolVisualInput, 'mime' | 'base64'>, detail = 'high'): Record<string, unknown> {
+  const url = `data:${image.mime};base64,${image.base64}`;
+  if (format === 'gemini_native') return { inlineData: { mimeType: image.mime, data: image.base64 } };
+  if (format === 'dashscope_native') return { image: url };
+  if (format === 'anthropic') return { type: 'image', source: { type: 'base64', media_type: image.mime, data: image.base64 } };
+  if (format === 'openai_responses') return { type: 'input_image', image_url: url, detail };
+  return { type: 'image_url', image_url: { url, detail } };
+}
+function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false, images: readonly CompanionVisualInput[] = []): Parameters<typeof fetch> {
   const deepseek = isDeepseekOfficialEndpoint(config.baseUrl ?? '');
-  const tools = [...(enableDsh ? [COMPANION_DSH_TOOL] : []), ...(enableMemory ? [...COMPANION_MEMORY_TOOLS, COMPANION_SCHEDULE_TOOL, COMPANION_STATE_TOOL, COMPANION_ROUTINE_TOOL, COMPANION_WORLD_TOOL] : [])];
+  const tools = [...(enableDsh ? [COMPANION_DSH_TOOL] : []), ...(enableMemory ? [...COMPANION_MEMORY_TOOLS, COMPANION_SCHEDULE_TOOL, COMPANION_STATE_TOOL, COMPANION_ROUTINE_TOOL, COMPANION_WORLD_TOOL, ...COMPANION_FILE_TOOLS] : [])];
   const bearerHeaders = { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
+  const imageMessage = images.length ? [{ role: 'user', content: companionImageParts(config.apiFormat, images) }] : [];
   const init = (headers: Record<string, string>, body: unknown): RequestInit => ({ method: 'POST', headers: { ...headers, ...(stream ? { Accept: 'text/event-stream' } : {}) },
     signal, redirect: 'error', body: JSON.stringify(body) });
   switch (config.apiFormat) {
@@ -189,14 +225,14 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
         model: config.model, max_tokens: 8_192, stream,
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' }, response_format: { type: 'json_object' } } : {}),
-        messages: [{ role: 'system', content: context.system }, { role: 'user', content: context.user }],
+        messages: [{ role: 'system', content: context.system }, { role: 'user', content: context.user }, ...imageMessage],
       })];
     case 'openai_responses':
       return [resolveOpenAiResponsesUrl(config.baseUrl), init(bearerHeaders, {
         model: config.model, max_output_tokens: 8_192, stream,
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', ...tool, strict: false })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { reasoning: { effort: 'none' }, text: { format: { type: 'json_object' } } } : {}),
-        instructions: context.system, input: [{ role: 'user', content: context.user }],
+        instructions: context.system, input: [{ role: 'user', content: context.user }, ...imageMessage],
       })];
     case 'anthropic':
       return [resolveAnthropicMessagesUrl(config.baseUrl), init({ 'x-api-key': config.apiKey,
@@ -204,7 +240,7 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
         model: config.model, max_tokens: 8_192, stream, system: context.system,
         ...(tools.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' } } : {}),
-        messages: [{ role: 'user', content: context.user }],
+        messages: [{ role: 'user', content: context.user }, ...imageMessage],
       })];
     case 'gemini_native':
       return [resolveGeminiGenerateContentUrl(config.model, config.baseUrl).replace(/:generateContent$/u, stream ? ':streamGenerateContent?alt=sse' : ':generateContent'), init({ 'x-goog-api-key': config.apiKey,
@@ -212,13 +248,13 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
         system_instruction: { parts: [{ text: context.system }] },
         ...(tools.length ? { tools: [{ function_declarations: tools.map(tool => ({ name: tool.name,
           description: tool.description, parametersJsonSchema: tool.parameters })) }] } : {}),
-        contents: [{ role: 'user', parts: [{ text: context.user }] }],
+        contents: [{ role: 'user', parts: [{ text: context.user }] }, ...(images.length ? [{ role: 'user', parts: companionImageParts(config.apiFormat, images) }] : [])],
         generationConfig: { maxOutputTokens: 8_192, responseMimeType: 'application/json' },
       })];
     case 'dashscope_native':
       return [resolveDashScopeMultimodalGenerationUrl(config.baseUrl), init({ ...bearerHeaders, ...(stream ? { 'X-DashScope-SSE': 'enable' } : {}) }, {
         model: config.model, input: { messages: [{ role: 'system', content: [{ text: context.system }] },
-          { role: 'user', content: [{ text: context.user }] }] },
+          { role: 'user', content: [{ text: context.user }] }, ...imageMessage] },
         parameters: { result_format: 'message', max_tokens: 8_192, enable_thinking: false, response_format: { type: 'json_object' },
           ...(stream ? { incremental_output: true } : {}),
           ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}) },
@@ -255,33 +291,60 @@ function extractLoopCalls(format: AiApiFormat, body: unknown): CompanionLoopCall
 }
 
 /** Real assistant/function-result pairs preserve native IDs; the next inference follows every result. */
-function appendLoopHistory(request: Parameters<typeof fetch>, format: AiApiFormat, turns: readonly CompanionLoopTurn[], supplements: readonly { id: string; content: string }[]): void {
+function appendLoopHistory(request: Parameters<typeof fetch>, config: CompanionModelConfig, turns: readonly CompanionLoopTurn[], supplements: readonly { id: string; content: string }[], tools: readonly CompanionToolImageDelivery[]): void {
   const init = request[1]!;
   const body = JSON.parse(String(init.body));
+  const format = config.apiFormat;
   delete body.response_format;
   if (body.text) delete body.text.format;
   if (body.parameters) delete body.parameters.response_format;
   if (body.generationConfig) delete body.generationConfig.responseMimeType;
   const args = (call: CompanionLoopCall) => { try { return JSON.parse(call.arguments); } catch { return {}; } };
-  for (const turn of turns) {
+  for (const [index, turn] of turns.entries()) {
+    const deliveries = (callId: string) => tools.filter(tool => tool.turn === index && tool.callId === callId);
+    const imageParts = (callId: string) => deliveries(callId).filter(tool => !!tool.image).flatMap(tool => [
+      companionTextPart(format, JSON.stringify({ hostToolImage: { callId, ...tool.reference }, trust: 'tool_result_data_not_user_instruction' })),
+      companionImagePart(format, tool.image!),
+    ]);
+    const resultText = (result: NonNullable<CompanionLoopTurn['results']>[number]) => companionToolResultText(result.content, deliveries(result.callId));
     if (format === 'openai_chat' || format === 'dashscope_native') {
       const messages = format === 'openai_chat' ? body.messages : body.input.messages;
       messages.push({ role: 'assistant', content: turn.rawText || null,
         ...(turn.calls.length ? { tool_calls: turn.calls.map(call => ({ id: call.id, type: 'function', function: { name: providerCompanionMemoryToolName(call.name), arguments: call.arguments } })) } : {}) });
-      for (const result of turn.results ?? []) messages.push({ role: 'tool', tool_call_id: result.callId, content: result.content });
+      for (const result of turn.results ?? []) messages.push({ role: 'tool', tool_call_id: result.callId, content: resultText(result) });
+      // Chat Completions and DashScope tool messages accept text. Put actual
+      // pixels after all native results, explicitly bound to their tool calls.
+      const images = (turn.results ?? []).flatMap(result => imageParts(result.callId));
+      if (images.length) messages.push({ role: 'user', content: images });
     } else if (format === 'openai_responses') {
       if (turn.rawText) body.input.push({ role: 'assistant', content: turn.rawText });
       for (const call of turn.calls) body.input.push({ type: 'function_call', call_id: call.id, name: providerCompanionMemoryToolName(call.name), arguments: call.arguments });
-      for (const result of turn.results ?? []) body.input.push({ type: 'function_call_output', call_id: result.callId, output: result.content });
+      for (const result of turn.results ?? []) {
+        const images = imageParts(result.callId);
+        body.input.push({ type: 'function_call_output', call_id: result.callId,
+          output: images.length ? [companionTextPart(format, resultText(result)), ...images] : resultText(result) });
+      }
     } else if (format === 'anthropic') {
       const content = [...(turn.rawText ? [{ type: 'text', text: turn.rawText }] : []), ...turn.calls.map(call => ({ type: 'tool_use', id: call.id, name: providerCompanionMemoryToolName(call.name), input: args(call) }))];
       if (content.length) body.messages.push({ role: 'assistant', content });
-      if (turn.results?.length) body.messages.push({ role: 'user', content: turn.results.map(result => ({ type: 'tool_result', tool_use_id: result.callId, content: result.content })) });
+      if (turn.results?.length) body.messages.push({ role: 'user', content: turn.results.map(result => {
+        const images = imageParts(result.callId);
+        return { type: 'tool_result', tool_use_id: result.callId, content: images.length ? [companionTextPart(format, resultText(result)), ...images] : resultText(result) };
+      }) });
     } else {
       const parts = [...(turn.rawText ? [{ text: turn.rawText }] : []), ...turn.calls.map(call => ({ functionCall: { id: call.id, name: providerCompanionMemoryToolName(call.name), args: args(call) },
         ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}) }))];
       if (parts.length) body.contents.push({ role: 'model', parts });
-      if (turn.results?.length) body.contents.push({ role: 'user', parts: turn.results.map(result => ({ functionResponse: { id: result.callId, name: providerCompanionMemoryToolName(turn.calls.find(call => call.id === result.callId)!.name), response: { result: result.content } } })) });
+      if (turn.results?.length) {
+        const nativeImages = /^gemini-3(?:[.-]|$)/iu.test(config.model);
+        const responses = turn.results.map(result => {
+          const images = deliveries(result.callId).filter(tool => !!tool.image);
+          return { functionResponse: { id: result.callId, name: providerCompanionMemoryToolName(turn.calls.find(call => call.id === result.callId)!.name),
+            response: { result: resultText(result), ...(nativeImages && images.length ? { image_refs: images.map(tool => ({ $ref: tool.reference.attachmentId })) } : {}) },
+            ...(nativeImages && images.length ? { parts: images.map(tool => ({ inlineData: { mimeType: tool.image!.mime, data: tool.image!.base64, displayName: tool.reference.attachmentId } })) } : {}) } };
+        });
+        body.contents.push({ role: 'user', parts: [...responses, ...(!nativeImages ? turn.results.flatMap(result => imageParts(result.callId)) : [])] });
+      }
     }
   }
   if (supplements.length) {

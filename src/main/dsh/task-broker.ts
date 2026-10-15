@@ -96,6 +96,7 @@ export class DshTaskBroker {
   private readonly results = new Map<string, DshTaskResult>();
   private readonly histories = new Map<string, DshTaskEvent[]>();
   private readonly active = new Map<string, { abort: AbortController; finished: Promise<void>; input?: DshTaskInbox; terminate?: () => Promise<void> }>();
+  private readonly unconfirmedStops = new Map<string, () => Promise<void>>();
   private readonly resumedSessions = new Set<string>();
   private reservations = 0;
   private loaded = false;
@@ -150,6 +151,14 @@ export class DshTaskBroker {
     let pin: DshTaskPin | undefined; let record: DshTaskRecord | undefined; let child: Awaited<ReturnType<typeof launchCli>> | undefined;
     let connectionPatch: string | undefined;
     let runtimePlugin: string | undefined;
+    let stopUnconfirmed = false;
+    const releaseContext = async () => {
+      try {
+        if (connectionPatch) await rm(connectionPatch, { force: true });
+        if (runtimePlugin) await rm(runtimePlugin, { force: true });
+        if (pin) await pin.dispose();
+      } catch { await operation.log('The completed task context could not be removed; cleanup was deferred.').catch(() => undefined); }
+    };
     const signal = AbortSignal.any([operation.signal, abort.signal, AbortSignal.timeout(input.timeoutMs ?? 30 * 60_000)]);
     let result: DshTaskResult | undefined; let taskFailed = false; let outputError: Error | undefined; let saveError = false;
     let sequence = 0; let retained = 0;
@@ -292,21 +301,23 @@ export class DshTaskBroker {
       if (saveError) throw new Error('Task metadata could not be saved.');
       record.status = 'succeeded'; record.finishedAt = new Date().toISOString(); this.results.set(record.id, { ...result }); await this.save(); this.changed(); return { ...result };
     } catch (error) {
-      if (child) await terminateOwnedProcess(child).catch(() => undefined);
+      if (child) try { await terminateOwnedProcess(child); }
+      catch {
+        stopUnconfirmed = true;
+        const owned = child;
+        // Retain this exact child/Job and its pin for a later explicit retry;
+        // terminal journal status is never an OS-process lifetime proof.
+        this.unconfirmedStops.set(operation.id, async () => { await terminateOwnedProcess(owned); await releaseContext(); });
+      }
       if (record && result) {
-        record.status = signal.aborted ? 'cancelled' : 'failed'; record.finishedAt = new Date().toISOString();
-        record.error = signal.aborted ? 'The DSH task was cancelled or reached its time limit.' : outputError?.message ?? (error instanceof Error && /^(The pinned DSH task failed|The selected DSH runtime returned|The DSH task ended without|Task metadata could not)/.test(error.message) ? error.message : 'The DSH task could not complete in its selected environment.');
+        record.status = stopUnconfirmed ? 'failed' : signal.aborted ? 'cancelled' : 'failed'; record.finishedAt = new Date().toISOString();
+        record.error = stopUnconfirmed ? 'The owned DSH task processes could not be confirmed stopped. Retry termination before releasing task data.'
+          : signal.aborted ? 'The DSH task was cancelled or reached its time limit.' : outputError?.message ?? (error instanceof Error && /^(The pinned DSH task failed|The selected DSH runtime returned|The DSH task ended without|Task metadata could not)/.test(error.message) ? error.message : 'The DSH task could not complete in its selected environment.');
         this.results.set(record.id, { ...result }); await this.save().catch(() => undefined); this.changed(); throw new DshTaskError(record.error, { ...result });
       }
       throw new Error(signal.aborted ? 'The DSH task was cancelled before its environment was ready.' : 'The DSH task could not prepare its selected environment.', { cause: error });
     } finally {
-      try {
-        // pinContext removes context.json then rmdir, so remove our own patch first.
-        if (connectionPatch) await rm(connectionPatch, { force: true });
-        if (runtimePlugin) await rm(runtimePlugin, { force: true });
-        if (pin) await pin.dispose();
-      }
-      catch { await operation.log('The completed task context could not be removed; cleanup was deferred.').catch(() => undefined); }
+      try { if (!stopUnconfirmed) await releaseContext(); }
       finally { taskInput?.close(); this.active.delete(operation.id); this.reservations--; if (resume?.sessionId) this.resumedSessions.delete(resume.sessionId); resolveFinished(); }
     }
   }
@@ -319,14 +330,27 @@ export class DshTaskBroker {
   cancel(taskId: string): void { const task = this.active.get(taskId); if (!task) throw new Error('This DSH task is no longer running.'); task.abort.abort(new Error('Task cancelled.')); }
   async terminate(taskId: string): Promise<void> {
     const task = this.active.get(taskId);
-    if (!task) throw new Error('This DSH task has no owned running process.');
-    task.abort.abort(new Error('User terminated the CLI process.'));
-    await task.terminate?.();
+    const retry = this.unconfirmedStops.get(taskId);
+    // The journal is a bounded display history. Its absence or terminal label
+    // cannot hide an owned cleanup callback, and an absent owner needs no kill.
+    if (!task && !retry) return;
+    task?.abort.abort(new Error('User terminated the CLI process.'));
+    await task?.terminate?.();
+    // Preparation may not have created a process yet. Wait until its abort
+    // checks, final journal and pin disposal have all completed as well.
+    await task?.finished;
+    const remaining = this.unconfirmedStops.get(taskId);
+    if (remaining) { await remaining(); this.unconfirmedStops.delete(taskId); }
   }
   async sendInput(taskId: string, content: string, mode: 'steer' | 'queue', messageId?: string): Promise<void> {
     const input = this.active.get(taskId)?.input;
     if (!input) throw new Error('This task has no active input inbox.');
     await input.send(content, mode, messageId);
   }
-  async shutdown(): Promise<void> { this.closed = true; for (const task of this.active.values()) task.abort.abort(new Error('Application closing.')); await Promise.all([...this.active.values()].map(task => task.finished)); await this.writes; }
+  async shutdown(): Promise<void> {
+    this.closed = true; for (const task of this.active.values()) task.abort.abort(new Error('Application closing.'));
+    await Promise.all([...this.active.values()].map(task => task.finished));
+    for (const [id, stop] of this.unconfirmedStops) { await stop(); this.unconfirmedStops.delete(id); }
+    await this.writes;
+  }
 }

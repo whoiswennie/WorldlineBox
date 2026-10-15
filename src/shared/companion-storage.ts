@@ -12,6 +12,8 @@ import { companionStateStorageCommands, companionRuntimeStateSchema } from './co
 import { companionRoutineStorageCommands } from './companion-routine';
 import { companionWorldStorageCommands, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema } from './companion-world';
 import { companionSocialStorageCommands, companionSocialConversationSchema, companionSocialMessageSchema, companionSocialJobSchema } from './companion-social';
+import { playerProfileCommands } from './companion-profile';
+import { companionResetCommands } from './companion-reset';
 
 export const appendCompanionMessageSchema = z.strictObject({
   conversationId: companionIdSchema, authorId: companionIdSchema,
@@ -35,6 +37,26 @@ export const storedCompanionAttachmentSchema = z.strictObject({
 });
 export type StoredCompanionAttachment = z.infer<typeof storedCompanionAttachmentSchema>;
 
+const fileToolResultKeySchema = z.string().regex(/^[a-f0-9]{64}$/u);
+// Durable results contain metadata and managed IDs, never an image payload.
+const fileToolResultSchema = z.string().max(1024 * 1024).refine(value => {
+  if (new TextEncoder().encode(value).byteLength > 1024 * 1024) return false;
+  try {
+    const result: unknown = JSON.parse(value);
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+    const pending: unknown[] = [result];
+    while (pending.length) {
+      const item = pending.pop();
+      if (!item || typeof item !== 'object') continue;
+      if (Object.hasOwn(item, 'base64')) return false;
+      pending.push(...Object.values(item));
+    }
+    return true;
+  } catch { return false; }
+}, '文件工具结果必须是最多 1 MiB、不含图像像素的 JSON 元数据。');
+const fileToolAttachmentSchema = storedCompanionAttachmentSchema.refine(value => !value.sourcePath && !value.attachment.path
+  && value.attachment.size <= 100 * 1024 * 1024, '文件工具只能登记最多 100 MiB 的受管快照。');
+
 export const createCompanionActionSchema = actionSchema.omit({ id: true, createdAt: true, updatedAt: true });
 export type CreateCompanionAction = z.infer<typeof createCompanionActionSchema>;
 export const companionTaskCheckpointSchema = z.strictObject({ prompt: z.string().min(1).max(65536),
@@ -53,9 +75,15 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
+  ...playerProfileCommands,
+  ...companionResetCommands,
+  z.strictObject({ type: z.literal('companion.reset.cleanup'), id: companionIdSchema, jobId: companionIdSchema }),
+  z.strictObject({ type: z.literal('companion.reset.cleanup-failed'), id: companionIdSchema, jobId: companionIdSchema, error: z.string().max(1000) }),
+  z.strictObject({ type: z.literal('companion.task-ids'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('companion.task.track'), id: companionIdSchema, companionId: companionIdSchema, taskId: companionIdSchema }),
   z.strictObject({ type: z.literal('state'), includeHidden: z.boolean().optional() }),
   z.strictObject({ type: z.literal('companion.create'), companion: companionDraftSchema }),
-  z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema }),
+  z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, expectedRevision: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('companion.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('companion.restore-builtin'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('conversation.open'), companionId: companionIdSchema }),
@@ -102,6 +130,8 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('reply.checkpoint.reset'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema, delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']) }),
   z.strictObject({ type: z.literal('attachment.register'), stored: storedCompanionAttachmentSchema }),
   z.strictObject({ type: z.literal('attachment.get'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('file.result.get'), key: fileToolResultKeySchema }),
+  z.strictObject({ type: z.literal('file.result.commit'), key: fileToolResultKeySchema, result: fileToolResultSchema, attachments: z.array(fileToolAttachmentSchema).max(10) }),
   z.strictObject({ type: z.literal('proactive.get'), companionId: companionIdSchema }),
   z.strictObject({ type: z.literal('proactive.attempt'), companionId: companionIdSchema, at: z.iso.datetime() }),
   z.strictObject({ type: z.literal('proactive.record'), companionId: companionIdSchema, lastUserMessageId: companionIdSchema,
@@ -111,6 +141,9 @@ export type CompanionStorageCommand = z.input<typeof companionStorageCommandSche
 export const companionStorageResponseSchema = companionsResponseSchema.extend({
   inserted: z.boolean().optional(),
   storedAttachment: storedCompanionAttachmentSchema.optional(),
+  fileToolResult: fileToolResultSchema.optional(),
+  resetTaskIds: z.array(z.string().max(200)).optional(),
+  companionTaskIds: z.array(z.string().max(200)).optional(),
   action: actionSchema.optional(),
   proactive: companionProactiveStateSchema.optional(),
   checkpoint: companionTaskCheckpointSchema.optional(), replyRecovery: companionReplyRecoverySchema.optional(),

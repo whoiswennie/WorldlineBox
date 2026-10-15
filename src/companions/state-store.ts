@@ -254,7 +254,7 @@ export class CompanionStateStore {
   }
   tick(at = new Date().toISOString()): void {
     const now = new Date(at).getTime();
-    for (const companion of rows(this.db.prepare('SELECT id FROM companions WHERE deleted_at IS NULL').all())) this.energy(String(companion.id), now);
+    for (const companion of rows(this.db.prepare("SELECT id FROM companions c WHERE deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=c.id AND r.status!='completed')").all())) this.energy(String(companion.id), now);
   }
   rehomeConversation(oldId: string, newId: string): void {
     this.db.prepare('UPDATE companion_state_interactions SET conversation_id=? WHERE conversation_id=?').run(newId, oldId);

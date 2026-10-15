@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
@@ -29,6 +29,8 @@ import { CompanionStateStore } from './state-store';
 import { CompanionRoutineStore } from './routine-store';
 import { CompanionWorldStore } from './world-store';
 import { CompanionSocialStore } from './social-store';
+import { playerProfileDraftSchema, playerProfileSchema, type PlayerProfile, type PlayerProfileDraft } from '../shared/companion-profile';
+import { CompanionResetStore } from './reset-store';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -61,6 +63,7 @@ export class CompanionsStore {
   readonly #world: CompanionWorldStore;
   readonly #social: CompanionSocialStore;
   readonly #seeds: readonly CompanionSeed[];
+  readonly #reset: CompanionResetStore;
 
   constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS) {
     mkdirSync(path.dirname(databasePath), { recursive: true });
@@ -95,6 +98,23 @@ export class CompanionsStore {
         return !phase.canRespond || energy < 20 ? phase.nextTransitionAt : undefined;
       }, (id, now) => { this.#routine.wakeForCommitment(id, 'fixed_commitment', now); });
     this.#seeds = seeds;
+    this.#reset = new CompanionResetStore(this.#db, path.dirname(databasePath), id => {
+      const seed = this.#seeds.find(item => item.id === id);
+      const current = this.#requireCompanion(id);
+      if (!seed || !current.builtin) throw new Error('只有内置伙伴具有可恢复的出厂设定。');
+      return { ...companionDraftSchema.parse(seed), id, builtin: true, createdAt: current.createdAt };
+    }, id => { this.#world.resetCompanion(id); }, ids => {
+      const affected = new Set<string>();
+      const placeholders = ids.map(() => '?').join(',');
+      for (const table of ['companion_appraisal_sources', 'companion_world_peer_appraisals']) for (const item of rows(this.#db.prepare(`SELECT DISTINCT companion_id FROM ${table} WHERE ${table === 'companion_appraisal_sources' ? 'message_id' : 'source_message_id'} IN(${placeholders})`).all(...ids))) affected.add(String(item.companion_id));
+      for (const item of rows(this.#db.prepare('SELECT companion_id,data FROM companion_runtime_states').all())) {
+        if ((decode<{ sourceMessageIds?: string[] }>(item.data).sourceMessageIds ?? []).some(id => ids.includes(id))) affected.add(String(item.companion_id));
+      }
+      for (const id of affected) {
+        if (this.#reset.blocked(id)) continue;
+        this.#runtimeState.invalidateEvidence(id, ids); this.#world.invalidateEvidence(id, ids);
+      }
+    });
     try {
       this.#db.pragma('foreign_keys = ON');
       this.#db.pragma('busy_timeout = 5000');
@@ -102,7 +122,10 @@ export class CompanionsStore {
       this.#db.pragma('synchronous = FULL');
       this.#db.function('companion_search_tokens', { deterministic: true }, companionSearchTokens);
       this.#db.function('companion_search_facet', { deterministic: true }, companionSearchFacet);
+      this.#reset.initialize();
       if (!this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'").get()) this.#createSchema();
+      this.#db.exec("CREATE TABLE IF NOT EXISTS player_profile(id TEXT PRIMARY KEY CHECK(id='user'),revision INTEGER NOT NULL CHECK(revision>0),data TEXT NOT NULL)");
+      this.getPlayerProfile();
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_chronology ON actions(conversation_id,json_extract(data,'$.createdAt') DESC,id DESC)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_live_status ON actions(status,conversation_id)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_parent_message ON actions(json_extract(data,'$.parentMessageId'))");
@@ -120,6 +143,7 @@ export class CompanionsStore {
       this.#social.initialize();
       this.#runtimeState.initialize();
       this.#schedule.initialize();
+      this.#reset.prepareIndexes();
       this.#memory.backfill();
     } catch (error) {
       this.#db.close();
@@ -232,10 +256,11 @@ export class CompanionsStore {
   #seed(): void {
     this.#db.transaction(() => {
       for (const seed of this.#seeds) {
-        // Missing catalogue additions are installed once; tombstones and all
-        // saved profile edits keep precedence over bundled authoring defaults.
-        if (this.#db.prepare('SELECT 1 FROM companions WHERE id=?').get(seed.id)) continue;
-        const companion: Companion = { ...companionDraftSchema.parse(seed), id: companionIdSchema.parse(seed.id), builtin: true, createdAt: stamp() };
+        // Built-in contacts always remain available; saved profile edits survive startup.
+        if (this.#db.prepare('SELECT 1 FROM companions WHERE id=?').get(seed.id)) {
+          this.#db.prepare('UPDATE companions SET deleted_at=NULL WHERE id=?').run(seed.id); continue;
+        }
+        const companion: Companion = { ...companionDraftSchema.parse(seed), id: companionIdSchema.parse(seed.id), builtin: true, createdAt: stamp(), revision: 1 };
         this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(companion.id, JSON.stringify(companion));
       }
       this.#db.prepare("INSERT OR IGNORE INTO metadata(key,value) VALUES('builtin-seeded','1')").run();
@@ -243,12 +268,14 @@ export class CompanionsStore {
   }
 
   close(): void { this.#db.close(); }
+  async advanceReset(): Promise<boolean> { return !!await this.#reset.advance(); }
 
   #requireCompanion(id: string): Companion {
     companionIdSchema.parse(id);
+    if (this.#reset?.blocked(id)) throw new Error('伙伴正在重置，暂时不能操作。');
     const found = this.#db.prepare('SELECT data FROM companions WHERE id=? AND deleted_at IS NULL').get(id);
     if (!found) throw new Error('伙伴不存在或已移除。');
-    return decode<Companion>(row(found).data);
+    return { revision: 1, ...decode<Companion>(row(found).data) };
   }
 
   #requireConversation(id: string): Row {
@@ -336,7 +363,7 @@ export class CompanionsStore {
   }
 
   state(includeHidden = false): CompanionState {
-    return { companions: rows(this.#db.prepare('SELECT data FROM companions WHERE deleted_at IS NULL ORDER BY rowid').all()).map((item) => decode<Companion>(item.data)),
+    return { companions: rows(this.#db.prepare('SELECT data FROM companions WHERE deleted_at IS NULL ORDER BY rowid').all()).map((item) => ({ revision: 1, ...decode<Companion>(item.data) })), playerProfile: this.getPlayerProfile(), resetJobs: this.#reset.list(),
       conversations: rows(this.#db.prepare(`SELECT * FROM conversations WHERE dissolved_at IS NULL ${includeHidden ? '' : 'AND hidden_at IS NULL'} ORDER BY pinned DESC,updated_at DESC,rowid DESC`).all()).map((item) => this.#conversation(item)),
       activities: [], configured: false, recoveries: this.replyRecoveries() };
   }
@@ -349,20 +376,23 @@ export class CompanionsStore {
   createCompanion(draft: CompanionDraft): Companion {
     const parsed = companionDraftSchema.parse(draft);
     this.#requireAvatar(parsed.avatarAttachmentId);
-    const companion: Companion = { ...parsed, id: randomUUID(), builtin: false, createdAt: stamp() };
+    this.#requireImage(parsed.appearanceAttachmentId, '公开三视图');
+    const companion: Companion = { ...parsed, id: randomUUID(), builtin: false, createdAt: stamp(), revision: 1 };
     this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(companion.id, JSON.stringify(companion));
     this.#world.changed();
     return companion;
   }
 
-  updateCompanion(id: string, draft: CompanionDraft): Companion {
+  updateCompanion(id: string, draft: CompanionDraft, expectedRevision?: number): Companion {
     return this.#db.transaction(() => {
       const existing = this.#requireCompanion(id);
       const parsed = companionDraftSchema.parse(draft);
+      if (expectedRevision !== undefined && expectedRevision !== existing.revision) throw new Error('伙伴资料已经更新，请重新读取后保存。');
       this.#requireAvatar(parsed.avatarAttachmentId);
+      this.#requireImage(parsed.appearanceAttachmentId, '公开三视图');
       // An omitted connection override selects the global connection again.
       // Explicitly assign undefined so the old JSON field is not retained.
-      const companion: Companion = { ...existing, ...parsed, llm: parsed.llm, avatarAttachmentId: parsed.avatarAttachmentId };
+      const companion: Companion = { ...existing, ...parsed, llm: parsed.llm, avatarAttachmentId: parsed.avatarAttachmentId, appearanceAttachmentId: parsed.appearanceAttachmentId, revision: existing.revision! + 1 };
       this.#db.prepare('UPDATE companions SET data=? WHERE id=?').run(JSON.stringify(companion), id);
       this.#db.prepare("UPDATE conversations SET title=? WHERE private_companion_id=?").run(companion.name, id);
       return companion;
@@ -370,20 +400,56 @@ export class CompanionsStore {
   }
 
   #requireAvatar(attachmentId: string | undefined): void {
+    this.#requireImage(attachmentId, '伙伴头像');
+  }
+
+  #requireImage(attachmentId: string | undefined, label: string): void {
     if (!attachmentId) return;
     const stored = this.getAttachment(attachmentId);
     if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(stored.attachment.mime)) {
-      throw new Error('伙伴头像必须是已登记的 PNG、JPEG、WebP 或 GIF 图片。');
+      throw new Error(label + '必须是已登记的 PNG、JPEG、WebP 或 GIF 图片。');
     }
+    if (stored.sourcePath || stored.attachment.path) throw new Error(label + '需要应用内图片副本，请通过头像或公开三视图选择器重新导入。');
+  }
+
+  #playerProfileHash(profile: PlayerProfileDraft): string {
+    const image = (id?: string) => { if (!id) return undefined; const asset = this.getAttachment(id); return { id, mime: asset.attachment.mime, size: asset.attachment.size, relativePath: asset.relativePath }; };
+    return createHash('sha256').update(JSON.stringify({ id: 'user', name: profile.name, description: profile.description,
+      avatar: image(profile.avatarAttachmentId), appearance: image(profile.appearanceAttachmentId) })).digest('hex');
+  }
+
+  getPlayerProfile(): PlayerProfile {
+    const existing = this.#db.prepare("SELECT data FROM player_profile WHERE id='user'").get();
+    if (existing) return playerProfileSchema.parse(decode(row(existing).data));
+    const draft = { name: '我', description: '' }, profile: PlayerProfile = { ...draft, id: 'user', revision: 1, updatedAt: stamp(), contentHash: this.#playerProfileHash(draft) };
+    this.#db.prepare("INSERT INTO player_profile(id,revision,data) VALUES('user',?,?)").run(profile.revision, JSON.stringify(profile));
+    return profile;
+  }
+
+  updatePlayerProfile(input: PlayerProfileDraft, expectedRevision: number): PlayerProfile {
+    return this.#db.transaction(() => {
+      const draft = playerProfileDraftSchema.parse(input), previous = this.getPlayerProfile();
+      if (expectedRevision !== previous.revision) throw new Error('用户资料已经更新，请重新读取后保存。');
+      this.#requireImage(draft.avatarAttachmentId, '用户头像'); this.#requireImage(draft.appearanceAttachmentId, '公开三视图');
+      const contentHash = this.#playerProfileHash(draft);
+      if (contentHash === previous.contentHash) return previous;
+      const profile: PlayerProfile = { ...draft, id: 'user', revision: previous.revision + 1, updatedAt: stamp(), contentHash };
+      this.#db.prepare("UPDATE player_profile SET revision=?,data=? WHERE id='user'").run(profile.revision, JSON.stringify(profile));
+      return profile;
+    }).immediate();
   }
 
   deleteCompanion(id: string): void {
-    this.#requireCompanion(id);
-    // Tombstones preserve messages, memory and action provenance, and prevent
-    // application restart from recreating a removed built-in contact.
-    this.#db.prepare('UPDATE companions SET deleted_at=? WHERE id=?').run(stamp(), id);
-    this.#world.changed();
-    this.#schedule.stopUnavailable();
+    this.#db.transaction(() => {
+      const companion = this.#requireCompanion(id);
+      if (companion.builtin || this.#seeds.some(seed => seed.id === id)) throw new Error('内置伙伴不能删除，可以在资料中重置伙伴。');
+      const at = stamp();
+      this.#db.prepare('UPDATE companions SET deleted_at=? WHERE id=?').run(at, id);
+      this.#db.prepare("UPDATE companion_work_queue SET status='cancelled',data=json_set(data,'$.status','cancelled','$.updatedAt',?) WHERE companion_id=? AND status IN ('queued','running')").run(at, id);
+      this.#db.prepare("UPDATE actions SET status='cancelled',data=json_set(data,'$.status','cancelled','$.updatedAt',?,'$.finishedAt',?) WHERE companion_id=? AND status IN ('queued','running')").run(at, at, id);
+      this.#world.changed();
+      this.#schedule.stopUnavailable();
+    }).immediate();
   }
 
   restoreBuiltin(id: string): Companion {
@@ -393,10 +459,10 @@ export class CompanionsStore {
       const found = this.#db.prepare('SELECT data FROM companions WHERE id=?').get(id);
       let companion: Companion;
       if (found) {
-        companion = decode<Companion>(row(found).data);
+        companion = { revision: 1, ...decode<Companion>(row(found).data) };
         this.#db.prepare('UPDATE companions SET deleted_at=NULL WHERE id=?').run(id);
       } else {
-        companion = { ...companionDraftSchema.parse(seed), id, builtin: true, createdAt: stamp() };
+        companion = { ...companionDraftSchema.parse(seed), id, builtin: true, createdAt: stamp(), revision: 1 };
         this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(id, JSON.stringify(companion));
       }
       return companion;
@@ -565,6 +631,7 @@ export class CompanionsStore {
     return this.#db.transaction(() => {
       if (Number(row(this.#db.prepare("SELECT count(*) AS total FROM companion_work_queue WHERE status='running'").get()).total) >= 20) return;
       const candidates = rows(this.#db.prepare(`SELECT data,ordinal FROM companion_work_queue queued WHERE status='queued' AND
+        NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=queued.companion_id AND r.status!='completed') AND
         (SELECT count(*) FROM companion_work_queue running WHERE running.companion_id=queued.companion_id AND running.status='running')<5 ORDER BY ordinal`).all());
       for (const found of candidates) {
         const next = { ...companionWorkSchema.parse(decode(found.data)), ordinal: Number(found.ordinal) };
@@ -593,6 +660,13 @@ export class CompanionsStore {
       if (checkpoint.messageId) {
         const message = this.getMessage(checkpoint.messageId);
         if (message.authorId !== checkpoint.companionId || message.conversationId !== checkpoint.conversationId) throw new Error('循环消息不属于当前伙伴。');
+        const fileIds = [...new Set(checkpoint.turns.flatMap(turn => (turn.results ?? []).flatMap(result => result.attachmentIds ?? [])))];
+        if (fileIds.length > 10) throw new Error('当前回复最多展示十个附件，不能静默丢弃附件。');
+        if (fileIds.join('\0') !== message.attachments.map(attachment => attachment.id).join('\0')) {
+          for (const attachmentId of fileIds) this.getAttachment(attachmentId);
+          this.#db.prepare('DELETE FROM message_attachments WHERE message_id=?').run(checkpoint.messageId);
+          fileIds.forEach((attachmentId, ordinal) => this.#db.prepare('INSERT INTO message_attachments(message_id,attachment_id,ordinal) VALUES(?,?,?)').run(checkpoint.messageId, attachmentId, ordinal));
+        }
         this.#setMetadata('message-loop/' + checkpoint.messageId, checkpoint);
         const content = [...checkpoint.turns.map(turn => turn.text), ...(checkpoint.draft ? [checkpoint.draft.text] : [])].filter(Boolean).join('\n\n').slice(0, 65536);
         if (checkpoint.status === 'done' && (previous?.status !== 'done' || message.content !== content)) {
@@ -690,6 +764,7 @@ export class CompanionsStore {
 
   appendMessageResult(input: AppendCompanionMessage): { message: CompanionMessage; inserted: boolean } {
     const message = appendCompanionMessageSchema.parse(input);
+    if (message.replyToId && this.#db.prepare('SELECT 1 FROM companion_reset_messages WHERE message_id=? LIMIT 1').get(message.replyToId)) throw new Error('引用的消息正在重置，请重新选择。');
     message.conversationId = this.#conversationId(message.conversationId);
     // Keep an exact normalized fingerprint so accidental reuse cannot attach
     // an old message to a different chat or execute a changed instruction.
@@ -971,6 +1046,21 @@ export class CompanionsStore {
     return { attachment, relativePath: String(row(found).relative_path), ...(attachment.path ? { sourcePath: attachment.path } : {}) };
   }
 
+  private fileToolResult(key: string): string | undefined {
+    const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('file-result/' + key);
+    return found ? String(row(found).value) : undefined;
+  }
+
+  private commitFileToolResult(key: string, result: string, attachments: StoredCompanionAttachment[]): string {
+    return this.#db.transaction(() => {
+      const previous = this.fileToolResult(key);
+      if (previous !== undefined) return previous;
+      for (const attachment of attachments) this.registerAttachment(attachment);
+      this.#db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run('file-result/' + key, result);
+      return result;
+    }).immediate();
+  }
+
   getProactive(companionId: string): CompanionProactiveState {
     this.#requireCompanion(companionId);
     const found = this.#db.prepare('SELECT data FROM proactive_state WHERE companion_id=?').get(companionId);
@@ -1006,6 +1096,7 @@ export class CompanionsStore {
 
   request(input: CompanionStorageCommand): CompanionStorageResponse {
     const command = companionStorageCommandSchema.parse(input);
+    this.#reset.assertCommand(command);
     if ('conversationId' in command && command.conversationId) command.conversationId = this.#conversationId(command.conversationId);
     if (command.type === 'message.append') command.message.conversationId = this.#conversationId(command.message.conversationId);
     if (command.type === 'action.create') command.action.conversationId = this.#conversationId(command.action.conversationId);
@@ -1026,9 +1117,17 @@ export class CompanionsStore {
     const worldResponse = this.#world.execute(command);
     if (worldResponse) return worldResponse;
     switch (command.type) {
+      case 'companion.reset': return { ok: true, ...this.#reset.begin(command.id, command.expectedRevision) };
+      case 'companion.reset.status': return { ok: true, ...this.#reset.status(command.id) };
+      case 'companion.reset.cleanup': return { ok: true, reset: this.#reset.cleanup(command.id, command.jobId) };
+      case 'companion.reset.cleanup-failed': return { ok: true, reset: this.#reset.cleanup(command.id, command.jobId, command.error) };
+      case 'companion.task-ids': return { ok: true, companionTaskIds: this.#db.prepare("SELECT DISTINCT json_extract(data,'$.taskId') AS task_id FROM actions WHERE companion_id=? AND json_extract(data,'$.taskId') IS NOT NULL").all(command.id).map(value => String(row(value).task_id)) };
+      case 'companion.task.track': this.#reset.trackAction(command.id, command.companionId, command.taskId); return { ok: true };
+      case 'player.profile.get': return { ok: true, playerProfile: this.getPlayerProfile() };
+      case 'player.profile.update': return { ok: true, playerProfile: this.updatePlayerProfile(command.profile, command.expectedRevision) };
       case 'state': return { ok: true, state: this.state(command.includeHidden) };
       case 'companion.create': return { ok: true, companion: this.createCompanion(command.companion) };
-      case 'companion.update': return { ok: true, companion: this.updateCompanion(command.id, command.companion) };
+      case 'companion.update': return { ok: true, companion: this.updateCompanion(command.id, command.companion, command.expectedRevision) };
       case 'companion.delete': this.deleteCompanion(command.id); return { ok: true };
       case 'companion.restore-builtin': return { ok: true, companion: this.restoreBuiltin(command.id) };
       case 'conversation.open': return { ok: true, conversation: this.openPrivate(command.companionId) };
@@ -1094,6 +1193,8 @@ export class CompanionsStore {
       case 'action.interrupt-pending': this.interruptPendingActions(); return { ok: true };
       case 'attachment.register': return { ok: true, storedAttachment: this.registerAttachment(command.stored), attachments: [command.stored.attachment] };
       case 'attachment.get': return { ok: true, storedAttachment: this.getAttachment(command.id) };
+      case 'file.result.get': return { ok: true, fileToolResult: this.fileToolResult(command.key) };
+      case 'file.result.commit': return { ok: true, fileToolResult: this.commitFileToolResult(command.key, command.result, command.attachments) };
       case 'proactive.get': return { ok: true, proactive: this.getProactive(command.companionId) };
       case 'proactive.attempt': return { ok: true, proactive: this.recordProactiveAttempt(command.companionId, command.at) };
       case 'proactive.record': return { ok: true, proactive: this.recordProactive(command.companionId, command.lastUserMessageId, command.sentAt, command.date) };

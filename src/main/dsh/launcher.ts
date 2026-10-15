@@ -218,7 +218,10 @@ export class DshLauncher {
         }) };
       }
       case 'task.cancel': this.tasks.cancel(request.taskId); this.operations.cancel(request.taskId); return { ok: true };
-      case 'task.terminate': await this.tasks.terminate(request.taskId); this.operations.cancel(request.taskId); return { ok: true };
+      case 'task.terminate': {
+        if (this.operations.list().some(operation => operation.id === request.taskId && ['queued', 'running', 'paused'].includes(operation.status))) this.operations.cancel(request.taskId);
+        await this.tasks.terminate(request.taskId); return { ok: true };
+      }
       case 'task.result': return { ok: true, taskResult: this.tasks.result(request.taskId) };
       case 'task.events': return { ok: true, taskEvents: this.tasks.events(request.taskId, request.after) };
       case 'task.message': await this.tasks.sendInput(request.taskId, request.content, request.mode, request.messageId); return { ok: true };

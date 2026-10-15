@@ -1,6 +1,8 @@
 import type { Companion, CompanionConversation, CompanionMessage } from '../../shared/companions';
+import type { CompanionPublicProfile } from '../../shared/companion-public-profile';
+import { visibleCompanionPublicProfiles } from './public-profile-context';
 
-type Person = { id: string; name: string; kind: 'human_player' | 'companion' | 'unknown' };
+type Person = { id: string; name: string; kind: 'human_player' | 'companion' | 'unknown'; description?: string };
 /** Character relationships are author settings, never inferred from an assistant's earlier wording. */
 const authoredRelations = [
   { subjectId: 'deepseek-flash', relation: 'elder_sister', label: '姐姐', targetId: 'deepseek-sister', targetName: '大肥鱼' },
@@ -11,9 +13,13 @@ export function companionIdentity(input: {
   source?: Pick<CompanionMessage, 'id' | 'authorId' | 'conversationId'>;
   members?: readonly { id: string; name: string }[]; directory?: readonly { id: string; name: string }[];
   audience?: 'player' | 'peers'; addressedCompanionIds?: readonly string[]; actionResult?: boolean; proactive?: boolean;
+  publicProfiles?: readonly CompanionPublicProfile[];
 }) {
-  const names = new Map([...input.directory ?? [], ...input.members ?? [], input.companion].map(person => [person.id, person.name]));
+  const profiles = visibleCompanionPublicProfiles({ companionId: input.companion.id, memberIds: input.conversation.memberIds, audience: input.audience }, input.publicProfiles);
+  const publicById = new Map(profiles.map(profile => [profile.id, profile]));
+  const names = new Map([...input.directory ?? [], ...input.members ?? [], input.companion, ...profiles].map(person => [person.id, person.name]));
   const person = (id: string): Person => ({ id, name: id === 'user' ? '玩家' : names.get(id) ?? id,
+    ...(publicById.get(id) ? { name: publicById.get(id)!.name, description: publicById.get(id)!.description } : {}),
     kind: id === 'user' ? 'human_player' : input.conversation.memberIds.includes(id) || names.has(id) ? 'companion' : 'unknown' });
   const source = input.source?.conversationId === input.conversation.id ? input.source : undefined;
   // A peer speaking inside a player group does not remove the human from it.

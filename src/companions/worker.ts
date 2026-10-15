@@ -9,6 +9,18 @@ const port = process.parentPort;
 if (!port) throw new Error('Companion storage requires an Electron UtilityProcess.');
 let store: CompanionsStore | undefined;
 let indexing: ReturnType<typeof setTimeout> | undefined;
+let resetting: ReturnType<typeof setImmediate> | undefined;
+let resetRunning = false, resetNotifiedAt = 0;
+function resetNextBatch() {
+  if (!store || resetRunning) return;
+  const current = store; resetRunning = true;
+  void current.advanceReset().then(pending => {
+    if (store !== current) return;
+    if (!pending || Date.now() - resetNotifiedAt >= 250) { resetNotifiedAt = Date.now(); port!.postMessage({ type: 'storage.reset-changed' }); }
+    if (pending) resetting = setImmediate(resetNextBatch);
+  }).catch(error => port!.postMessage({ type: 'storage.reset-changed', error: error instanceof Error ? error.message : '伙伴重置失败。' }))
+    .finally(() => { resetRunning = false; });
+}
 function indexNextBatch() {
   if (!store) return;
   try {
@@ -32,6 +44,7 @@ port.on('message', (event: { data: unknown }) => {
       store = new CompanionsStore(databasePath);
       port.postMessage({ type: 'storage.ready' });
       indexing = setTimeout(indexNextBatch, 50);
+      resetting = setImmediate(resetNextBatch);
     } catch (error) {
       port.postMessage({ type: 'storage.failed', error: error instanceof Error ? error.message : '伙伴存储无法启动。' });
     }
@@ -39,6 +52,7 @@ port.on('message', (event: { data: unknown }) => {
   }
   if ('type' in input && input.type === 'storage.close') {
     if (indexing) clearTimeout(indexing);
+    if (resetting) clearImmediate(resetting);
     store?.close();
     store = undefined;
     port.postMessage({ type: 'storage.closed' });
@@ -50,6 +64,7 @@ port.on('message', (event: { data: unknown }) => {
   try {
     if (!store) throw new Error('伙伴存储尚未启动。');
     port.postMessage({ requestId, response: store.request(command) });
+    if (command.type.startsWith('companion.reset')) { if (resetting) clearImmediate(resetting); resetting = setImmediate(resetNextBatch); }
   } catch (error) {
     port.postMessage({ requestId, response: { ok: false, error: error instanceof Error ? error.message : '伙伴记录操作失败。' } });
   }

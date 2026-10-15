@@ -67,6 +67,7 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
         messages = [...messages, sent]; return { ok: true, message: sent };
       }
       case 'attachment.pick': return { ok: true, attachments: [{ id: 'photo', name: '旅行照片.jpg', mime: 'image/jpeg', size: 2048 }] };
+      case 'avatar.crop': return { ok: true, attachments: [{ id: 'cropped-photo', name: '头像.png', mime: 'image/png', size: 4096 }] };
       case 'memory.list': return { ok: true, memories: memories.filter(item => item.companionId === input.companionId) };
       case 'memory.browse': return { ok: true, memoryPage: { items: memories.filter(item => item.companionId === input.companionId).map(memory => ({ memory, reasons: [], path: [] })), hasMore: false } };
       case 'schedule.list': return { ok: true, schedules: [], scheduleOccurrences: [] };
@@ -388,13 +389,14 @@ it('selects a local image avatar, preserves it when contact settings change, and
   const f = fixture(); await mount(f.api); await click('联系人'); await click('添加联系人'); await click('自定义角色');
   await fill('[role="dialog"] input', '海盐'); await fill('[role="dialog"] textarea', '喜欢记录生活中的小事。');
   await click('选择本地头像');
-  expect(container!.querySelector<HTMLElement>('.companions-avatar-editor .companion-avatar')!.style.backgroundImage).toContain('worldlinebox-companion://attachment/photo');
+  const source = document.querySelector<HTMLImageElement>('[alt="待调整的头像原图"]')!; Object.defineProperties(source, { naturalWidth: { value: 1200 }, naturalHeight: { value: 800 } }); await act(() => source.dispatchEvent(new Event('load'))); await act(() => document.querySelector<HTMLButtonElement>('.avatar-crop-dialog .companion-primary-button')!.click());
+  expect(container!.querySelector<HTMLElement>('.companions-avatar-editor .companion-avatar')!.style.backgroundImage).toContain('worldlinebox-companion://attachment/cropped-photo');
   await submitDialog();
-  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.create', companion: expect.objectContaining({ avatar: 'custom', avatarAttachmentId: 'photo' }) }));
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.create', companion: expect.objectContaining({ avatar: 'custom', avatarAttachmentId: 'cropped-photo' }) }));
   await click('联系人'); await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-contact="new-companion"]')!.click());
-  expect(container!.querySelector<HTMLElement>('.companions-profile-heading .companion-avatar')!.style.backgroundImage).toContain('worldlinebox-companion://attachment/photo');
+  expect(container!.querySelector<HTMLElement>('.companions-profile-heading .companion-avatar')!.style.backgroundImage).toContain('worldlinebox-companion://attachment/cropped-photo');
   await act(() => container!.querySelector<HTMLInputElement>('.companions-contact-profile input[type="checkbox"]')!.click());
-  expect(f.request.mock.calls.filter(([input]) => input.type === 'companion.update').at(-1)![0]).toEqual(expect.objectContaining({ companion: expect.objectContaining({ proactive: true, avatarAttachmentId: 'photo' }) }));
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'companion.update').at(-1)![0]).toEqual(expect.objectContaining({ companion: expect.objectContaining({ proactive: true, avatarAttachmentId: 'cropped-photo' }) }));
   await click('编辑资料'); await click('恢复名字头像');
   const restored = container!.querySelector<HTMLElement>('.companions-avatar-editor .companion-avatar')!;
   expect(restored.style.backgroundImage).toBe(''); expect(restored.textContent).toBe('海');
@@ -409,6 +411,32 @@ it('rejects a non-image avatar without clearing the previously selected image', 
   await mount(f.api); await click('联系人'); await click('编辑资料'); await click('选择本地头像');
   expect(container!.querySelector('[role="dialog"] [role="alert"]')!.textContent).toBe('请选择图片文件作为头像。');
   expect(container!.querySelector<HTMLElement>('.companions-avatar-editor .companion-avatar')!.style.backgroundImage).toContain('worldlinebox-companion://attachment/saved-avatar');
+});
+it('keeps public appearance references and the loaded revision across contact shortcuts, cancelled edits and explicit removal', async () => {
+  const contact = { ...sisters[0]!, appearanceAttachmentId: 'saved-board', revision: 3 };
+  const f = fixture({ companions: [contact, sisters[1]!] }); await mount(f.api); await click('联系人');
+  expect(container!.querySelector<HTMLImageElement>('.public-appearance-thumbnail img')!.src).toContain('/saved-board');
+  await act(() => container!.querySelector<HTMLInputElement>('.companions-contact-profile input[type="checkbox"]')!.click());
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.update', expectedRevision: 3, companion: expect.objectContaining({ appearanceAttachmentId: 'saved-board' }) }));
+  await click('编辑资料'); await click('更换三视图', container!.querySelector('[role="dialog"]')!);
+  expect(f.request).toHaveBeenCalledWith({ type: 'attachment.pick', kind: 'image', purpose: 'appearance' });
+  await click('取消', container!.querySelector('[role="dialog"]')!);
+  expect(f.state().companions[0]!.appearanceAttachmentId).toBe('saved-board');
+  await click('编辑资料'); await click('恢复内置三视图', container!.querySelector('[role="dialog"]')!); await submitDialog();
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'companion.update').at(-1)![0]).toMatchObject({ expectedRevision: 3, companion: { appearanceAttachmentId: undefined } });
+  expect(f.state().companions[0]!.appearanceAttachmentId).toBeUndefined();
+});
+it('shows the public player nickname and avatar while keeping the user message submission identity unchanged', async () => {
+  const playerProfile = { id: 'user' as const, name: '林澈', description: '喜欢画画', avatarAttachmentId: 'player-avatar', revision: 1, contentHash: 'a'.repeat(64), updatedAt: date };
+  const f = fixture({ playerProfile }); await mount(f.api);
+  const own = container!.querySelector('.companions-message.is-own')!;
+  expect(own.querySelector('.companions-message-author')!.textContent).toContain('林澈');
+  expect(own.querySelector<HTMLElement>('.companion-avatar')!.style.backgroundImage).toContain('/player-avatar');
+  await fill('[aria-label="输入消息"]', '今天一起看海吧。'); await click('发送');
+  const sent = f.request.mock.calls.find(([input]) => input.type === 'message.send')![0];
+  expect(sent).toMatchObject({ type: 'message.send', conversationId: 'private-sister', content: '今天一起看海吧。' }); expect(sent).not.toHaveProperty('authorId');
+  await f.publish({ playerProfile: { ...playerProfile, name: '小林', revision: 2 } });
+  expect(container!.querySelector('.companions-message.is-own .companions-message-author')!.textContent).toContain('小林');
 });
 
 it('offers built-in and custom contacts and opens an existing built-in instead of duplicating it', async () => {

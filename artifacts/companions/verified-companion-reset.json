@@ -1,0 +1,14 @@
+{
+  "fixtureKind": "real_electron_factory_reset",
+  "restoredDefaultProfile": true,
+  "stoppedInFlightStream": true,
+  "oldResultNotReplayed": true,
+  "preservedOtherPrivateChat": true,
+  "preservedOtherGroupAuthors": true,
+  "leftOldGroup": true,
+  "preservedSharedPlayerAvatar": true,
+  "sourceOriginalKept": true,
+  "encryptedCompanionKeyRemoved": true,
+  "freshContextAfterReset": true,
+  "persistedAcrossRestart": true
+}

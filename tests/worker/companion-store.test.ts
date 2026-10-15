@@ -70,18 +70,18 @@ afterEach(() => {
 });
 
 describe('CompanionsStore real SQLite persistence', () => {
-  it('adds missing catalogue contacts to an old database without resetting edits, tombstones, memory or history', () => {
+  it('adds missing catalogue contacts while preserving edits, memory and history and keeping built-ins available', () => {
     const { store, databasePath } = fixture();
     store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '自定义姐姐', description: '我的签名', persona: '用户编辑的人设' });
     const original = store.appendMessage({ conversationId: 'private-deepseek-sister', authorId: 'user', content: '迁移前的消息' });
     store.request({ type: 'memory.save', memory: { companionId: 'deepseek-sister', content: '迁移前的约定', origin: 'user' } });
-    store.deleteCompanion('deepseek-flash');
+    expect(() => store.deleteCompanion('deepseek-flash')).toThrow('不能删除');
     close(store);
     const upgraded = new CompanionsStore(databasePath); stores.push(upgraded);
     const state = upgraded.state();
-    expect(state.companions).toHaveLength(14);
+    expect(state.companions).toHaveLength(15);
     expect(state.companions.find(item => item.id === 'deepseek-sister')).toMatchObject({ name: '自定义姐姐', description: '我的签名', persona: '用户编辑的人设' });
-    expect(state.companions.some(item => item.id === 'deepseek-flash')).toBe(false);
+    expect(state.companions.some(item => item.id === 'deepseek-flash')).toBe(true);
     expect(upgraded.getMessage(original.id).content).toBe('迁移前的消息');
     expect(upgraded.listMemory('deepseek-sister').map(item => item.content)).toContain('迁移前的约定');
     for (const profile of BUILTIN_COMPANIONS.slice(2)) {
@@ -89,10 +89,10 @@ describe('CompanionsStore real SQLite persistence', () => {
       expect(upgraded.messages({ conversationId: upgraded.openPrivate(profile.id).id }).messages).toHaveLength(0);
     }
     upgraded.updateCompanion('gpt', { ...BUILTIN_COMPANIONS.find(item => item.id === 'gpt')!, name: '小白龙', avatar: 'custom', avatarAttachmentId: undefined, persona: '我修改了白龙的设定' });
-    upgraded.deleteCompanion('doro');
+    expect(() => upgraded.deleteCompanion('doro')).toThrow('不能删除');
     close(upgraded);
     const reopened = new CompanionsStore(databasePath); stores.push(reopened);
-    expect(reopened.state().companions).toHaveLength(13);
+    expect(reopened.state().companions).toHaveLength(15);
     expect(reopened.restoreBuiltin('gpt')).toMatchObject({ name: '小白龙', avatar: 'custom', persona: '我修改了白龙的设定' });
     const restored = reopened.restoreBuiltin('doro');
     expect(restored.id).toBe('doro');
@@ -302,14 +302,14 @@ describe('CompanionsStore real SQLite persistence', () => {
     expect(reopened.listMemory('deepseek-flash')).toEqual([]);
   });
 
-  it('does not respawn removed contacts, and restores built-ins with their edits and history', () => {
+  it('retains built-in contacts with their edits and history while allowing removal of custom contacts', () => {
     const { databasePath, store } = fixture();
     const modified = store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '海边的大肥鱼', persona: '修改后的角色设定' });
-    store.deleteCompanion('deepseek-sister');
-    expect(() => store.openPrivate('deepseek-sister')).toThrow('已移除');
+    expect(() => store.deleteCompanion('deepseek-sister')).toThrow('不能删除');
+    expect(store.openPrivate('deepseek-sister').memberIds).toEqual(['deepseek-sister']);
     close(store);
     const reopened = open(databasePath);
-    expect(reopened.state().companions.map((item) => item.id)).toEqual(['deepseek-flash']);
+    expect(reopened.state().companions.map((item) => item.id)).toEqual(['deepseek-sister', 'deepseek-flash']);
     expect(reopened.messages({ conversationId: 'private-deepseek-sister' }).messages).toHaveLength(1);
     expect(reopened.restoreBuiltin('deepseek-sister')).toEqual(modified);
     expect(reopened.restoreBuiltin('deepseek-sister')).toEqual(modified);
@@ -317,6 +317,7 @@ describe('CompanionsStore real SQLite persistence', () => {
     const custom = reopened.createCompanion({ ...seeds[0]!, name: '新伙伴', model: '', avatar: 'custom' });
     expect(custom.builtin).toBe(false);
     expect(reopened.openPrivate(custom.id).memberIds).toEqual([custom.id]);
+    reopened.deleteCompanion(custom.id); expect(reopened.state().companions.some(item => item.id === custom.id)).toBe(false);
   });
 
   it('owns attachment paths by ID and attaches only registered files', () => {

@@ -1,37 +1,26 @@
 import type { CSSProperties } from 'react';
 import type { Companion } from '../../shared/companions';
 import { COMPANION_PRESENCE_LABELS } from '../../shared/companion-presence';
-import sisterImage from '../../../assets/companions/deepseek-sister.jpg';
-import flashImage from '../../../assets/companions/deepseek-flash.jpg';
-import whiteImage from '../../../assets/companions/portraits/huan-white-v1.png';
-import blackImage from '../../../assets/companions/portraits/huan-black-v1.png';
-import geminiImage from '../../../assets/companions/portraits/gemini-v2.png';
-import gptImage from '../../../assets/companions/portraits/gpt-v2.png';
-import grokImage from '../../../assets/companions/portraits/grok-v1.png';
-import kimiImage from '../../../assets/companions/portraits/kimi-v1.png';
-import minimaxImage from '../../../assets/companions/portraits/minimax-v2.png';
-import qwenImage from '../../../assets/companions/portraits/qwen-v2.png';
-import gugugagaImage from '../../../assets/companions/portraits/gugugaga-v1.png';
-import gugaImage from '../../../assets/companions/portraits/guga-v1.png';
-import doroImage from '../../../assets/companions/portraits/doro-v1.png';
-import phoebeImage from '../../../assets/companions/portraits/phoebe-v1.png';
-import phrolovaImage from '../../../assets/companions/portraits/phrolova-v1.png';
+import { COMPANION_APPEARANCE_FILES, COMPANION_PORTRAIT_FILES } from '../../shared/companion-portrait-files';
 import './companion-visuals.css';
 
-export const companionImages: Record<Exclude<Companion['avatar'], 'custom'>, string> = {
-  sister: sisterImage, flash: flashImage, 'huan-white': whiteImage, 'huan-black': blackImage,
-  gemini: geminiImage, gpt: gptImage, grok: grokImage, kimi: kimiImage, minimax: minimaxImage, qwen: qwenImage,
-  gugugaga: gugugagaImage, guga: gugaImage, doro: doroImage, phoebe: phoebeImage, phrolova: phrolovaImage,
-};
+const portraitUrls = import.meta.glob<string>(['../../../assets/companions/*.{jpg,png}', '../../../assets/companions/portraits/*.{jpg,png}'], { eager: true, query: '?url', import: 'default' });
+const appearanceUrls = import.meta.glob<string>('../../../assets/companions/appearance/*.{jpg,png}', { eager: true, query: '?url', import: 'default' });
+export const companionImages = Object.fromEntries(Object.entries(COMPANION_PORTRAIT_FILES).map(([avatar, file]) => [avatar, portraitUrls['../../../' + file]])) as Record<Exclude<Companion['avatar'], 'custom'>, string>;
+export const companionAppearanceImages = Object.fromEntries(Object.entries(COMPANION_APPEARANCE_FILES).map(([id, file]) => [id, appearanceUrls['../../../' + file]])) as Record<string, string | undefined>;
 export function companionPortrait(companion: Pick<Companion, 'avatar' | 'avatarAttachmentId'>): string | undefined {
   return companion.avatarAttachmentId ? `worldlinebox-companion://attachment/${encodeURIComponent(companion.avatarAttachmentId)}`
     : companion.avatar !== 'custom' ? companionImages[companion.avatar] : undefined;
+}
+export function companionAppearance(companion: Pick<Companion, 'avatar' | 'appearanceAttachmentId'> & Partial<Pick<Companion, 'id' | 'builtin'>>): string | undefined {
+  return companion.appearanceAttachmentId ? `worldlinebox-companion://attachment/${encodeURIComponent(companion.appearanceAttachmentId)}`
+    : companion.builtin && companion.id ? companionAppearanceImages[companion.id] : undefined;
 }
 
 export function Avatar({ companion, large = false, showPresence = true }: { companion?: Pick<Companion, 'name' | 'avatar' | 'avatarAttachmentId'> & Partial<Pick<Companion, 'availability' | 'availabilityReason'>>; large?: boolean; showPresence?: boolean }) {
   const localImage = companion?.avatarAttachmentId ? `worldlinebox-companion://attachment/${encodeURIComponent(companion.avatarAttachmentId)}` : undefined;
   const image = companion ? companionPortrait(companion) : undefined;
-  const squareImage = localImage || (image && companion?.avatar !== 'sister' && companion?.avatar !== 'flash');
+  const squareImage = !!image;
   const presence = showPresence ? companion?.availability : undefined;
   return <span className={`companion-avatar${large ? ' is-large' : ''}${image ? ' has-image' : ''}${squareImage ? ' has-square-image' : ''}${localImage ? ' has-local-image' : ''}`} aria-hidden="true" title={presence ? COMPANION_PRESENCE_LABELS[presence] + (companion?.availabilityReason ? ' · ' + companion.availabilityReason : '') : undefined} style={image ? { backgroundImage: `url("${image}")` } as CSSProperties : undefined}>{image ? '' : companion?.name.slice(0, 1) || '我'}{presence && <i className="companion-avatar-presence" data-status={presence} />}</span>;
 }

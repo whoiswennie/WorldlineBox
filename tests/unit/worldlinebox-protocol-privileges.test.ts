@@ -23,5 +23,6 @@ describe("worldlinebox protocol privileges", () => {
     expect(schemes[1]?.privileges.stream).toBe(true);
     expect(schemes[2]?.scheme).toBe('worldlinebox-companion');
     expect(schemes[2]?.privileges.secure).toBe(true);
+    expect(schemes[2]?.privileges.stream).toBe(true);
   });
 });

@@ -66,7 +66,7 @@ test('native observer windows share one world, preserve independent cameras and 
     expect(await a.locator('[data-world-actor="deepseek-sister"] .companion-avatar').evaluate(element => {
       const style = getComputedStyle(element); return { size: style.backgroundSize, position: style.backgroundPosition, repeat: style.backgroundRepeat };
     })).toEqual(mainPortrait);
-    expect(mainPortrait).toEqual({ size: '630%', position: '10% 14%', repeat: 'no-repeat' });
+    expect(mainPortrait).toEqual({ size: 'cover', position: '50% 50%', repeat: 'no-repeat' });
     await a.getByRole('button', { name: '世界设置', exact: true }).click();
     expect(await a.getByRole('button', { name: '关闭世界设置', exact: true }).evaluate(element => {
       const style = getComputedStyle(element); return { border: style.borderTopWidth, radius: style.borderRadius, width: style.width };

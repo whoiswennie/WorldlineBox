@@ -30,6 +30,7 @@ describe("app-settings-sections (WorldlineBox-97l / WorldlineBox-9es / Worldline
 
   it("uses stable, user-facing settings categories", () => {
     expect(APP_SETTINGS_CATEGORIES.map((category) => category.id)).toEqual([
+      "profile",
       "general",
       "assets",
       "appearance",

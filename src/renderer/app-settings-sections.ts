@@ -34,6 +34,7 @@ export type AppSettingsCanvasFieldOption = {
 };
 
 export type AppSettingsCategoryId =
+  | "profile"
   | "general"
   | "assets"
   | "appearance"
@@ -54,6 +55,7 @@ export type AppSettingsCategory = {
   readonly id: AppSettingsCategoryId;
   readonly icon: IconName;
   readonly labelKey:
+    | "settings.categoryProfile"
     | "settings.categoryGeneral"
     | "settings.categoryAssets"
     | "settings.categoryAppearance"
@@ -66,6 +68,7 @@ export type AppSettingsCategory = {
 };
 
 export const APP_SETTINGS_CATEGORIES: readonly AppSettingsCategory[] = [
+  { id: "profile", icon: "users", labelKey: "settings.categoryProfile" },
   {
     id: "general",
     icon: "settings",

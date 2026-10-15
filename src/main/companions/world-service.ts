@@ -8,6 +8,7 @@ import { generateCompanionWorldDecision } from './world-model';
 import { generateCompanionMemoryDream } from './memory-model';
 import type { CompanionSocialJob } from '../../shared/companion-social';
 import { generateCompanionSocialReply } from './social-model';
+import type { CompanionProfileInput } from '../../shared/companion-public-profile';
 
 interface WorldServiceOptions {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
@@ -17,15 +18,26 @@ interface WorldServiceOptions {
   wakeWaiting(): void;
   report(error: unknown): void;
   busy(): boolean;
+  blocked?(companionId: string): boolean;
+  profiles?(input: { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>;
+    sourceAuthorId?: string; audience?: 'player' | 'peers'; directory?: boolean }): Promise<CompanionProfileInput>;
 }
 
 /** Physics and reservations keep ticking while semantic decisions run separately. */
 export class CompanionWorldService {
   private timer?: ReturnType<typeof setInterval>;
   private ticking?: Promise<void>;
-  private readonly jobs = new Map<string, { promise: Promise<void>; controller: AbortController }>();
+  private readonly jobs = new Map<string, { promise: Promise<void>; controller: AbortController; companionId: string }>();
   private closed = false;
   constructor(private readonly options: WorldServiceOptions) {}
+  cancelCompanion(companionId: string): void {
+    for (const job of this.jobs.values()) if (job.companionId === companionId) job.controller.abort();
+  }
+  async drainCompanion(companionId: string): Promise<void> {
+    await this.ticking;
+    this.cancelCompanion(companionId);
+    await Promise.allSettled([...this.jobs.values()].filter(job => job.companionId === companionId).map(job => job.promise));
+  }
   start(): void {
     if (this.timer || this.closed) return;
     this.timer = setInterval(() => { void this.tick(); }, 500); this.timer.unref(); void this.tick();
@@ -39,20 +51,20 @@ export class CompanionWorldService {
       const delivery = await this.options.request({ type: 'social.job.claim' });
       if (delivery.socialMessage) this.options.changed();
       const social = delivery.socialJob;
-      if (social?.leaseToken && !this.closed) {
+      if (social?.leaseToken && !this.closed && !this.options.blocked?.(social.companionId)) {
         const controller = new AbortController();
         const promise = this.processSocial(social, controller.signal).catch(this.options.report)
           .finally(() => { this.jobs.delete(social.id); this.options.changed(); });
-        this.jobs.set(social.id, { promise, controller });
+        this.jobs.set(social.id, { promise, controller, companionId: social.companionId });
       }
       for (const kind of ['decision', 'dream'] as const) {
         if (this.closed || this.jobs.size >= 2) break;
         const job = (await this.options.request({ type: 'world.job.claim', kind })).worldJob;
-        if (!job?.leaseToken) continue;
+        if (!job?.leaseToken || this.options.blocked?.(job.companionId)) continue;
         const controller = new AbortController();
         const promise = this.process(job, controller.signal)
           .catch(this.options.report).finally(() => { this.jobs.delete(job.id); this.options.changed(); });
-        this.jobs.set(job.id, { promise, controller });
+        this.jobs.set(job.id, { promise, controller, companionId: job.companionId });
       }
     })().catch(this.options.report).finally(() => { this.ticking = undefined; });
     await this.ticking;
@@ -96,7 +108,8 @@ export class CompanionWorldService {
       if (!world) throw new Error('伙伴当前世界不可访问。');
       const routine = (await this.options.request({ type: 'routine.get', ...scope })).routine;
       const runtime = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
-      const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world, routine,
+      const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, sourceAuthorId: source.authorId, audience: 'peers' });
+      const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world, routine, ...profiles,
         ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression, affect: runtime.affect } } : {}),
         members: state!.companions.filter(member => conversation.memberIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) },
       await this.options.configFor(companion), signal, { fetchFn: this.options.fetchFn });
@@ -124,8 +137,10 @@ export class CompanionWorldService {
       if (kind === 'decision') {
         const routine = (await this.options.request({ type: 'routine.get', ...scope })).routine;
         const runtime = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
+        const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, audience: 'peers', directory: true,
+          sourceAuthorId: world.events.findLast(event => event.targetId === companion.id && event.actorId !== companion.id)?.actorId });
         const decision = await generateCompanionWorldDecision({ companion, world, job,
-          routine, ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression,
+          ...profiles, routine, ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression,
             affect: runtime.affect, focus: runtime.focus, busy: world.works.some(work => work.companionId === companion.id && work.status !== 'ended') } } : {}),
           members: state!.companions.map(member => ({ id: member.id, name: member.name, description: member.description })) }, config, signal, { fetchFn: this.options.fetchFn });
         if (signal.aborted || this.closed) throw cancelled();

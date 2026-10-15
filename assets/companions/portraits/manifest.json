@@ -154,6 +154,62 @@
       "referenceSha256": "49e35217739950b995b55d054db50a29714e22a1263cbd3d0d0111dfee0ebe5c",
       "sha256": "acfdf287712546503c4e507f45165de279a8e03a08ac72bba2b8a604b9ca8fb3",
       "prompt": "Use case: identity-preserve. Asset type: WorldlineBox 联系人方形新头像。图为角色身份参考，重新绘制一张与原参考明确一致的新头像，不要三视图，不直接裁切原图。\n角色：弗糯糯。灰青绿长波浪发、整齐刘海，半睁粉紫色双眼，红衣白领、大红蝴蝶结。Q版短腿meme小人，淡定慢半拍的小表情，不改成长腿写实少女。\n单个角色，方形1024x1024。统一为清爽精致的2D插画，干净描边与柔和赛璐璐阴影，但保留该meme/Q版原有脸型和体型，不全部变为标准美少女。圆形裁切安全区内有完整脸与关键帽子/发饰，人物距边缘10%留白。企鹅和四足Doro可以画全身近景，头脸大而清楚，同时身体、脚和轮廓可辨；菲比和弗糯糯可头肩近景。浅淡柔和彩色简单背景，40px可辨认，不加圆形外框。只有一位角色，无文字、水印、其他人物、界面或图表。"
+    },
+    {
+      "id": "deepseek-sister",
+      "avatar": "sister",
+      "file": "assets/companions/portraits/deepseek-sister.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-15",
+      "referenceSha256": "5eaf14841d3e3f34a85de921bd2ac2349d0f01cf918e9d0970a86d83fe09dcad",
+      "references": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-sister-orthographic.png",
+          "sha256": "738e020c4d4b17a5e7a0237871ede34bf4293ec3a06cee19164028e83e511217"
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-sister.png",
+          "sha256": "67cc6e39ab256ba6a57bd63a751e1480d487e821b31e852d1367b07e0dcfeb5d"
+        },
+        {
+          "role": "user-identity-authority",
+          "path": "assets/companions/deepseek.jpg",
+          "sha256": "5eaf14841d3e3f34a85de921bd2ac2349d0f01cf918e9d0970a86d83fe09dcad"
+        }
+      ],
+      "sha256": "67cc6e39ab256ba6a57bd63a751e1480d487e821b31e852d1367b07e0dcfeb5d",
+      "prompt": "Original imagegen intent:\nUse case: identity-preserve. Asset type: ONE independent square avatar portrait for the adult elder sister character 大肥鱼 / Pro. Reference image 1 is the definitive identity reference, not an edit target. Generate a polished high quality anime illustration, NOT chibi, NOT a child, NOT younger sister. Preserve the same mature elegant blue whale maid identity: adult woman with normal realistic anime body proportions approximately six heads tall in full body; long flowing deep blue hair with pale cyan tips, single curved loop ahoge, whale-fin ears with pale undersides, blue eyes, white ruffled maid headband, small blue hair bow, dark navy elegant maid dress, white frills and white apron, dark bow with blue jewel at collar. Friendly calm slightly warm smile, adult refined face, same eye shape and hairstyle as reference. Composition: square 1:1 canvas, head and upper torso only, straight-on slight natural three-quarter angle, face centered and occupying about half the canvas height, headband and ahoge completely inside frame with generous 10% top margin, shoulders visible, bottom around mid bodice, no hands crossing face. Soft clean warm off-white background, gentle illustration lighting, crisp detailed linework and blue/navy palette. Do not add text, labels, border, circular mask, watermark, props, extra people, short hair, small child body or chibi proportions. Keep reference clothing and distinctive whale maid features.\nFinal accepted correction:\nUse case: identity-preserve. EDIT TARGET is reference image 1, the exact already approved adult elder blue whale maid avatar. Preserve her SAME adult face, blue eyes, hair, ear shape, color, costume, lighting, illustration style and friendly expression. Change ONLY portrait framing: zoom camera OUT by approximately 20 percent and recenter; add airy clean warm off-white surrounding background. Square 1:1 avatar, head and upper chest. Most important: ENTIRE loop ahoge, white maid headband, BOTH whale-fin ears and hair bow must lie fully inside a central circular safe region of diameter85% of canvas. Minimum10% canvas blank space ABOVE the very top of the ahoge, at least10% space to right/left of both fin-ear tips. Keep face centered a little above middle so circle crop does not cut accessories. Do not let ahoge approach top border. Bottom crop at upper chest; do not enlarge bust. No circular border or mask baked into image, no new design details, no text or watermarks. Image2 is original identity reference only. This is a targeted framing fix to the same mature woman, NOT a redesign and NOT chibi.",
+      "identity": "Mature normal-proportion blue whale maid woman, approximately6.5head anatomy; long blue/cyan hair, blueeyes, whale-fin ears, loopahoge, whiteheadband, anklelength navy goldtrim skirt, white whaleapron, whitestockings, navyshoes and large navywhaletail. NOT the younger/chibi sister."
+    },
+    {
+      "id": "deepseek-flash",
+      "avatar": "flash",
+      "file": "assets/companions/portraits/deepseek-flash.png",
+      "method": "builtin-imagegen",
+      "generatedOn": "2026-10-15",
+      "referenceSha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27",
+      "references": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-flash-orthographic.png",
+          "sha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27"
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-flash.png",
+          "sha256": "7cf75d26edefc8d13a3e6706051c42f327e7f58e97119e477e718b4c7b14314a"
+        },
+        {
+          "role": "user-identity-authority",
+          "path": "assets/companions/appearance/deepseek-flash-orthographic.png",
+          "sha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27"
+        }
+      ],
+      "sha256": "7cf75d26edefc8d13a3e6706051c42f327e7f58e97119e477e718b4c7b14314a",
+      "prompt": "Use case: identity-preserve. Create ONE independent square chat avatar by adapting ONLY the character in the supplied ORIGINAL orthographic reference. This reference is the sole authority. EXACT clean 2D flat-colour anime chibi style with thin dark outlines and simple restrained cel shading, not glossy rendered baby art. Preserve her actual moderately proportioned chibi face: calm ordinary BLUE eyes with small simple highlights, small closed mouth, quiet composed expression, not enormous sparkling eyes or round infant cheeks. Preserve deep indigo long hair fading to light-blue ends, one looping ahoge, white lace maid headband, ONE small blue bow on the side shown in the reference, subtle plain fin-like hair/ear silhouette edged in white, navy neckline bow with small blue oval center. Navy long-sleeve maid outfit with restrained gold trim and buttons, white apron with the reference's simple blue whale motif. Do NOT add star fields, glowing fin skin, whale brooches, twin hair bows, extra jewellery, giant baby head, ornate layered curls, mature body or different clothing. Portrait framing: head and upper torso, headband/ahoge/side fins and complete face inside a central circular-safe area occupying at most72% of squarewidth and at most78% of height; generous transparent padding above and at sides, no part of the head touching canvas edge. Desired1024x1024 actual alpha transparency. No background, UI, text, border, furniture, props or second character. The result must look like a cropped illustration from the original model sheet rather than a redesign.",
+      "identity": "Exact USER ORIGINAL thin-outline flat-colour approximately3head maid, normal restrained blueeyes and smallmouth; indigohair/cyanends, loopahoge, whiteheadband, ONE sidebluebow/goldcenter, plain finlike ears, navy LONGSLEEVE shortmaid dress/goldhem, whitewhaleapron, WHITE SOCKS, navyMaryJanes and SMALL bluewhaletail. Not the rejected glossy/ornate baby redesign or old blacktights/no-tail design."
     }
   ]
 }

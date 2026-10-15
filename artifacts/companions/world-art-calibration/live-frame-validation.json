@@ -1,62 +1,26 @@
 {
   "samples": [
     {
-      "companionId": "minimax",
+      "companionId": "deepseek-sister",
       "action": "rest",
       "frame": 0,
       "current": {
-        "companionId": "minimax",
-        "sceneId": "home_minimax",
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
         "position": {
           "x": 4,
           "y": 8
         },
-        "homeSceneId": "home_minimax",
-        "facing": "west",
-        "frame": 0,
-        "activity": "resting",
-        "activityStartedAtReal": "2026-10-15T00:59:24.423Z",
-        "artAction": "rest",
-        "locomotion": "walk",
-        "movementSpeed": 2.4,
-        "state": {
-          "energy": 99.62560049999999,
-          "mood": "calm",
-          "expression": "gentle",
-          "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
-          },
-          "thermalComfort": 0.8733333333333334
-        },
-        "route": [],
-        "furnitureId": "minimax_sofa",
-        "routinePhase": "awake"
-      },
-      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
-    },
-    {
-      "companionId": "minimax",
-      "action": "rest",
-      "frame": 1,
-      "current": {
-        "companionId": "minimax",
-        "sceneId": "home_minimax",
-        "position": {
-          "x": 4,
-          "y": 8
-        },
-        "homeSceneId": "home_minimax",
+        "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 2,
         "activity": "resting",
-        "activityStartedAtReal": "2026-10-15T00:59:24.423Z",
+        "activityStartedAtReal": "2026-10-15T04:56:15.591Z",
         "artAction": "rest",
         "locomotion": "walk",
         "movementSpeed": 2.4,
         "state": {
-          "energy": 99.62899049999999,
+          "energy": 99.67340199999997,
           "mood": "calm",
           "expression": "gentle",
           "affect": {
@@ -64,35 +28,35 @@
             "arousal": 0,
             "dominance": 0
           },
-          "thermalComfort": 0.8733333333333334
+          "thermalComfort": 0.9133333333333333
         },
         "route": [],
-        "furnitureId": "minimax_sofa",
+        "furnitureId": "deepseek-sister_sofa",
         "routinePhase": "awake"
       },
       "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
     },
     {
-      "companionId": "minimax",
+      "companionId": "deepseek-sister",
       "action": "rest",
-      "frame": 2,
+      "frame": 1,
       "current": {
-        "companionId": "minimax",
-        "sceneId": "home_minimax",
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
         "position": {
           "x": 4,
           "y": 8
         },
-        "homeSceneId": "home_minimax",
+        "homeSceneId": "home_deepseek-sister",
         "facing": "west",
-        "frame": 0,
+        "frame": 2,
         "activity": "resting",
-        "activityStartedAtReal": "2026-10-15T00:59:24.423Z",
+        "activityStartedAtReal": "2026-10-15T04:56:15.591Z",
         "artAction": "rest",
         "locomotion": "walk",
         "movementSpeed": 2.4,
         "state": {
-          "energy": 99.63228299999999,
+          "energy": 99.67412699999997,
           "mood": "calm",
           "expression": "gentle",
           "affect": {
@@ -100,35 +64,179 @@
             "arousal": 0,
             "dominance": 0
           },
-          "thermalComfort": 0.8733333333333334
+          "thermalComfort": 0.9133333333333333
         },
         "route": [],
-        "furnitureId": "minimax_sofa",
+        "furnitureId": "deepseek-sister_sofa",
         "routinePhase": "awake"
       },
       "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
     },
     {
-      "companionId": "kimi",
+      "companionId": "deepseek-sister",
+      "action": "rest",
+      "frame": 2,
+      "current": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 4,
+          "y": 8
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "west",
+        "frame": 1,
+        "activity": "resting",
+        "activityStartedAtReal": "2026-10-15T04:56:15.591Z",
+        "artAction": "rest",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.67678949999997,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-sister_sofa",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-sister",
+      "action": "sleep",
+      "frame": 0,
+      "current": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 14,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "east",
+        "frame": 1,
+        "activity": "sleeping",
+        "activityStartedAtReal": "2026-10-15T04:56:28.863Z",
+        "artAction": "sleep",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.66860416666667,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-sister_bed",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":30.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":14.000000000000002,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-sister",
+      "action": "sleep",
+      "frame": 1,
+      "current": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 14,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "east",
+        "frame": 2,
+        "activity": "sleeping",
+        "activityStartedAtReal": "2026-10-15T04:56:28.863Z",
+        "artAction": "sleep",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.67125416666667,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-sister_bed",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":30.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":14.000000000000002,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-sister",
+      "action": "sleep",
+      "frame": 2,
+      "current": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 14,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "east",
+        "frame": 1,
+        "activity": "sleeping",
+        "activityStartedAtReal": "2026-10-15T04:56:28.863Z",
+        "artAction": "sleep",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.67793416666667,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-sister_bed",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":30.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":14.000000000000002,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-sister",
       "action": "work",
       "frame": 0,
       "current": {
-        "companionId": "kimi",
-        "sceneId": "home_kimi",
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
         "position": {
           "x": 4,
           "y": 4
         },
-        "homeSceneId": "home_kimi",
+        "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 0,
         "activity": "working",
-        "activityStartedAtReal": "2026-10-15T00:59:40.397Z",
+        "activityStartedAtReal": "2026-10-15T04:56:40.775Z",
         "artAction": "work",
         "locomotion": "walk",
         "movementSpeed": 2.4,
         "state": {
-          "energy": 99.590616,
+          "energy": 99.66316283333333,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
@@ -136,36 +244,36 @@
             "arousal": 0,
             "dominance": 0
           },
-          "thermalComfort": 0.8733333333333334
+          "thermalComfort": 0.9133333333333333
         },
         "route": [],
-        "destinationId": "kimi_computer",
-        "furnitureId": "kimi_computer",
+        "destinationId": "deepseek-sister_computer",
+        "furnitureId": "deepseek-sister_computer",
         "routinePhase": "awake"
       },
       "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":4,\"y\":0,\"z\":4},\"zoom\":2.1}"
     },
     {
-      "companionId": "kimi",
+      "companionId": "deepseek-sister",
       "action": "work",
       "frame": 1,
       "current": {
-        "companionId": "kimi",
-        "sceneId": "home_kimi",
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
         "position": {
           "x": 4,
           "y": 4
         },
-        "homeSceneId": "home_kimi",
+        "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 1,
         "activity": "working",
-        "activityStartedAtReal": "2026-10-15T00:59:40.397Z",
+        "activityStartedAtReal": "2026-10-15T04:56:40.775Z",
         "artAction": "work",
         "locomotion": "walk",
         "movementSpeed": 2.4,
         "state": {
-          "energy": 99.589676,
+          "energy": 99.66224683333333,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
@@ -173,36 +281,36 @@
             "arousal": 0,
             "dominance": 0
           },
-          "thermalComfort": 0.8733333333333334
+          "thermalComfort": 0.9133333333333333
         },
         "route": [],
-        "destinationId": "kimi_computer",
-        "furnitureId": "kimi_computer",
+        "destinationId": "deepseek-sister_computer",
+        "furnitureId": "deepseek-sister_computer",
         "routinePhase": "awake"
       },
       "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":4,\"y\":0,\"z\":4},\"zoom\":2.1}"
     },
     {
-      "companionId": "kimi",
+      "companionId": "deepseek-sister",
       "action": "work",
       "frame": 2,
       "current": {
-        "companionId": "kimi",
-        "sceneId": "home_kimi",
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
         "position": {
           "x": 4,
           "y": 4
         },
-        "homeSceneId": "home_kimi",
+        "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 2,
         "activity": "working",
-        "activityStartedAtReal": "2026-10-15T00:59:40.397Z",
+        "activityStartedAtReal": "2026-10-15T04:56:40.775Z",
         "artAction": "work",
         "locomotion": "walk",
         "movementSpeed": 2.4,
         "state": {
-          "energy": 99.58874933333333,
+          "energy": 99.66141083333332,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
@@ -210,11 +318,338 @@
             "arousal": 0,
             "dominance": 0
           },
-          "thermalComfort": 0.8733333333333334
+          "thermalComfort": 0.9133333333333333
         },
         "route": [],
-        "destinationId": "kimi_computer",
-        "furnitureId": "kimi_computer",
+        "destinationId": "deepseek-sister_computer",
+        "furnitureId": "deepseek-sister_computer",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":4,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-flash",
+      "action": "rest",
+      "frame": 0,
+      "current": {
+        "companionId": "deepseek-flash",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 4,
+          "y": 8
+        },
+        "homeSceneId": "home_deepseek-flash",
+        "facing": "west",
+        "frame": 0,
+        "activity": "resting",
+        "activityStartedAtReal": "2026-10-15T04:56:52.593Z",
+        "artAction": "rest",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.62634116666672,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-flash_sofa",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-flash",
+      "action": "rest",
+      "frame": 1,
+      "current": {
+        "companionId": "deepseek-flash",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 4,
+          "y": 8
+        },
+        "homeSceneId": "home_deepseek-flash",
+        "facing": "west",
+        "frame": 1,
+        "activity": "resting",
+        "activityStartedAtReal": "2026-10-15T04:56:52.593Z",
+        "artAction": "rest",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.62817616666672,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-flash_sofa",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-flash",
+      "action": "rest",
+      "frame": 2,
+      "current": {
+        "companionId": "deepseek-flash",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 4,
+          "y": 8
+        },
+        "homeSceneId": "home_deepseek-flash",
+        "facing": "west",
+        "frame": 2,
+        "activity": "resting",
+        "activityStartedAtReal": "2026-10-15T04:56:52.593Z",
+        "artAction": "rest",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.63011616666672,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-flash_sofa",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-flash",
+      "action": "sleep",
+      "frame": 0,
+      "current": {
+        "companionId": "deepseek-flash",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 14,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-flash",
+        "facing": "east",
+        "frame": 1,
+        "activity": "sleeping",
+        "activityStartedAtReal": "2026-10-15T04:57:07.013Z",
+        "artAction": "sleep",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.62092233333337,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-flash_bed",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":30.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":14.000000000000002,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-flash",
+      "action": "sleep",
+      "frame": 1,
+      "current": {
+        "companionId": "deepseek-flash",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 14,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-flash",
+        "facing": "east",
+        "frame": 2,
+        "activity": "sleeping",
+        "activityStartedAtReal": "2026-10-15T04:57:07.013Z",
+        "artAction": "sleep",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.62444233333336,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-flash_bed",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":30.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":14.000000000000002,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-flash",
+      "action": "sleep",
+      "frame": 2,
+      "current": {
+        "companionId": "deepseek-flash",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 14,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-flash",
+        "facing": "east",
+        "frame": 1,
+        "activity": "sleeping",
+        "activityStartedAtReal": "2026-10-15T04:57:07.013Z",
+        "artAction": "sleep",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.63125233333335,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "furnitureId": "deepseek-flash_bed",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":30.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":14.000000000000002,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-flash",
+      "action": "work",
+      "frame": 0,
+      "current": {
+        "companionId": "deepseek-flash",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 4,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-flash",
+        "facing": "west",
+        "frame": 0,
+        "activity": "working",
+        "activityStartedAtReal": "2026-10-15T04:57:18.998Z",
+        "artAction": "work",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.61622833333337,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "destinationId": "deepseek-flash_computer",
+        "furnitureId": "deepseek-flash_computer",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":4,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-flash",
+      "action": "work",
+      "frame": 1,
+      "current": {
+        "companionId": "deepseek-flash",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 4,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-flash",
+        "facing": "west",
+        "frame": 1,
+        "activity": "working",
+        "activityStartedAtReal": "2026-10-15T04:57:18.998Z",
+        "artAction": "work",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.61526700000003,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "destinationId": "deepseek-flash_computer",
+        "furnitureId": "deepseek-flash_computer",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":4,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "deepseek-flash",
+      "action": "work",
+      "frame": 2,
+      "current": {
+        "companionId": "deepseek-flash",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 4,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-flash",
+        "facing": "west",
+        "frame": 2,
+        "activity": "working",
+        "activityStartedAtReal": "2026-10-15T04:57:18.998Z",
+        "artAction": "work",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.61425900000003,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.9133333333333333
+        },
+        "route": [],
+        "destinationId": "deepseek-flash_computer",
+        "furnitureId": "deepseek-flash_computer",
         "routinePhase": "awake"
       },
       "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":4,\"y\":0,\"z\":4},\"zoom\":2.1}"

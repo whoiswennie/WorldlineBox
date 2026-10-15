@@ -4,11 +4,29 @@
 
 ## 状态与存储边界
 
+玩家公开资料由 `shared/companion-profile.ts` 定义，通过 `player.profile.get/update` 与 `state.playerProfile` 提供。固定 ID 为 `user`，姓名、自述与头像/三视图附件引用使用修订号控制并发；删除图片引用不会修改聊天作者 ID。伙伴也有公开三视图及资料修订号。Main 的 `CompanionPublicProfiles` 每次推理重新解析当前参与者，只接收管理副本；内置头像从源码或打包的 renderer hashed assets 物化到 `userData/companions/portraits`，不能把外部工具无法读取的 `app.asar` 虚拟路径冒充真实文件路径。
+
+头像选择共用 `AvatarCropDialog`，通过管理器主窗口的 `avatar.crop` 请求生成正式 PNG。裁剪参数使用 EXIF 校正、用户旋转后的图像坐标：正方形边长为 `round(min(width,height)/zoom)`，中心与提取区域限制在图像边界内。Main 验证管理附件、20 MiB 与 64M 像素限制，Sharp 完整解码后旋转、提取并输出 512×512 PNG，保留透明度；原图与已保存资料不修改。圆形取景是 UI 显示规则，正式方形文件供聊天圆形遮罩与真实视觉读取共用。
+
+裁剪界面使用语义主题变量、统一控制区与三种显示场景预览；窄窗口将预览移至画布下方，仅中间内容滚动，保留头部与确认区。取景圆直径始终为画布的 75%，与拖拽换算和导出几何一致；真实 Electron 验证覆盖明暗主题、窄窗口无横向溢出、焦点恢复、滚轮隔离、用户/伙伴表单保存及原始像素对比。美术验收截图使用现有角色头像，像素校验另用确定性的合成源图。
+
+`public-profile-context.ts` 将公开资料、身份和当前图像交付状态投影到本次推理，旧 checkpoint 中的资料不能覆盖现状。完整图片经 Sharp 校验与有界转换，三视图最长边 1536、头像 512，单图最多 1 MiB。图像在内存中转换为各 provider 的原生内容块，不写入 checkpoint 或聊天正文；本轮最多四图、总计 4 MiB，最近实际工具图片优先于公开形象。`visionManifest` 与 `toolVisionManifest` 区分 `image_provided`、`path_only` 和不可用原因。模型能力未知时保留路径；明确不支持图像的 400/415 仅同模型重试一次纯文本，其他请求错误照常处理。
+
+主脑只读能力由 `shared/companion-file-tool.ts` 定义：`read_file` 使用 0 基行 offset（默认 0）与 limit（默认 200、最多 2000）返回有行号的真实文本窗口和 nextOffset；`read_image` 返回管理快照引用；`send_file` 只把已有文件复制为当前回复附件。执行和文件修改仍由 DSH CLI 承担。`file-reader.ts` 限制普通绝对路径文件、输入字节和图片像素，验证读取过程与持久快照校验和；结果只保存文本和附件引用。每次推理按仍有效的来源重新加载工具图片；撤回的来源不会借旧工具结果恢复。自主闲聊和伙伴社交不能借此读取任意本机文件。
+
+文件调用用来源、伙伴、步骤和 call ID 的稳定哈希标识。`file.result.commit` 在同一 SQLite 事务中登记管理快照与完整工具结果；恢复同一调用直接读取已保存结果，不重新读取已经变化或删除的原文件。该内部协议不向 Renderer 开放。成功遗忘会推进 Main 的来源修订标记，加载图片后及模型结果提交前检查变化，丢弃并重新生成受影响的推理；文件读取完成后也重新核查来源。
+
+循环结果中明确的 `attachmentIds` 同步到同一个回复气泡，`images` 保留真正视觉所需的快照引用。每条回复最多展示十个附件；超过后只读仍可继续但工具结果明确说明未新增卡片，`send_file` 则明确返回限制，存储层拒绝静默截断。`worldlinebox-companion` 只服务已登记附件，支持 GET、HEAD 与单段 Range；媒体使用文件流、正确 MIME 和 206/416，不把视频整体读进内存。Renderer 的附件组件复用图片预览、原生音视频播放与类型文件卡；切换会话释放媒体资源，HTML/SVG 等未知文件不作为可执行文档展示。
+
+设计参考本机 `C:/Users/hp/Desktop/project/deepseek-harness` 的 `packages/fs/tool-fs/src/read.ts`、`read-image.ts` 与 `packages/llm/llm-deepseek/src/images.ts`：分页读真实文本、完整解码图片、持久附件引用、provider 真正像素传递。本项目没有复制其执行 Agent 或再造一层任务框架。原 DSH standard 已挂载 tool-fs；新增能力解决的是主脑直接查看与前端展示，DSH 原生工具仍可正常使用。
+
 伙伴身份、玩家与 NPC 的回复对象、唯一伙伴私聊/群聊、主动手机通信和按天只读观察的契约见[伙伴身份与社交](companion-social.md)。主脑每次推理都由宿主投影真实 self、发言者、参与成员与回复源；provider 的 `role=user` 仅是传输信封。
 
 `CompanionService` 调度角色回复、主动联系和 DSH 行动。`CompanionStorageClient` 只负责 UtilityProcess 消息传输；`src/companions/worker.ts` 是独立 SQLite owner，主进程和 Renderer 不打开数据库。消息库位于 `userData/companions/messages.sqlite`，不修改资产数据库迁移。Forge 与隔离 E2E 构建均输出 `companion_worker.js`。
 
 SQLite 使用 WAL、外键、事务迁移和 FTS5。私聊身份由角色 ID 确定；群聊身份由去重排序后的成员 ID 集合确定，与群名无关。群名的 auto/custom 标记保存在 metadata，自动标题读取成员当前姓名。发送使用客户端 ID 去重，跨聊天引用与非成员发言被拒绝。消息分页按稳定序号读取；任务历史通过 `actions.page` 按创建 UTC 时间与 ID 倒序游标分页、按角色过滤，列表省略大段输出，详情通过 `action.get` 单独读取，突破原有最近 100 条列表的范围。时间源保存毫秒 ISO 值；启动时刻来自真实 TaskRecord，终态时间在事务中记录。
+
+内置联系人只能完整重置，存储层拒绝删除。重置先持久化停止屏障与永久来源水位，确认外部任务取消后再分批清理；中断和错误均可从同一任务继续。玩家混群保留其他作者并退群，三人及以上的纯伙伴群保留稳定成员集合、仅删除重置作者的发言，同时隔离该伙伴的全部旧来源。接口、附件边界和 20 万条合成记录的实测见 [内置伙伴完整重置](companion-reset.md)。
 
 本次已按维护者要求直接清空本机旧聊天、消息、共同记忆和关联任务，保留联系人资料及模型连接配置。代码仅维护当前数据结构，没有按旧编号切换实现或迁移旧聊天的分支。新记录的崩溃恢复、来源核对和未整理消息补登记继续工作，不能将这类恢复描述成对已清空旧数据的历史回填。内容修订号用于事实纠正、来源核验和并发审计，不表示存在多套代码逻辑。
 

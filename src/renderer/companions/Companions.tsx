@@ -6,7 +6,9 @@ import { builtinCompanionProfile } from '../../shared/companion-catalogue';
 import { companionMessagePreview } from '../../shared/companion-titles';
 import { Icon } from '../Icons';
 import { CompanionDialogs, type CompanionDialog } from './CompanionDialogs';
-import { Avatar, ChatGlyph, companionPortrait } from './CompanionVisuals';
+import { CompanionResetDialog } from './CompanionResetDialog';
+import { PublicAppearanceSheet } from './PublicAppearanceSheet';
+import { Avatar, ChatGlyph, companionPortrait, companionAppearance } from './CompanionVisuals';
 import { elapsedTime, useCompanionClock } from './CompanionProgress';
 import { CompanionImagePreview } from './CompanionImagePreview';
 import { CompanionTaskMonitor } from './CompanionTaskMonitor';
@@ -27,7 +29,6 @@ import type { WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 import type { CompanionActionEvent } from '../../shared/companions';
 import { companionProgressEvent, mergeCompanionProgress } from '../../shared/companion-progress';
 import type { WorldlineBoxShellApi } from '../../shared/external-url';
-import fullBodyImage from '../../../assets/companions/deepseek.jpg';
 import './companions.css';
 import './companion-planner.css';
 import './world/companion-world.css';
@@ -102,8 +103,10 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [composerMore, setComposerMore] = useState(false);
   const [dialog, setDialog] = useState<CompanionDialog | null>(null);
+  const [resetCompanionId, setResetCompanionId] = useState<string>();
   const [newMessages, setNewMessages] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState<CompanionAttachment | null>(null);
+  const [previewImages, setPreviewImages] = useState<readonly CompanionAttachment[]>([]);
   const [referencedMessages, setReferencedMessages] = useState<Record<string, CompanionMessage>>({});
   const [activityStarts, setActivityStarts] = useState<Record<string, string>>({});
   const [replyStreams] = useState(() => new CompanionReplyStreamStore());
@@ -127,6 +130,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const actionsEpoch = useRef(0);
   const streamedEvents = useRef(new Map<string, CompanionActionEvent[]>());
   const stateEpoch = useRef(0);
+  const stateRef = useRef<CompanionState | null>(null);
+  const observedResets = useRef(new Set<string>());
   const readInFlight = useRef<string | null>(null);
   const sendInFlight = useRef(false);
   const latestSequence = useRef(0);
@@ -145,11 +150,28 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     }
   }, [api]);
 
+  const clearResetCaches = useCallback((companionId: string) => {
+    const affected = new Set(stateRef.current?.conversations.filter(room => room.memberIds.includes(companionId)).map(room => room.id));
+    setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !affected.has(id))));
+    setActions(current => current.filter(action => action.companionId !== companionId));
+    if (affected.has(selectedRef.current ?? '') || messagesRef.current.some(message => message.authorId === companionId)) {
+      ++loadEpoch.current; ++latestLoadEpoch.current; ++actionsEpoch.current;
+      messagesRef.current = []; setMessages([]); latestSequence.current = 0; loadedConversation.current = null;
+      historyRef.current = false; stickyRef.current = true; setHistoryMode(false); setHasMore(false); setHasNewer(false); setHighlightedId(null); setNewMessages(false);
+      setReferencedMessages({}); setPreviewAttachment(null); setPreviewImages([]); setMemoryDraft(undefined);
+      setShowMemoryManager(false); setShowScheduleManager(false); setShowTaskMonitor(false);
+    }
+  }, []);
+
   const refreshState = useCallback(async () => {
     const epoch = ++stateEpoch.current;
     const response = await request({ type: 'state' });
     if (!response?.state || epoch !== stateEpoch.current) return;
     const next = response.state;
+    for (const job of next.resetJobs ?? []) if (!observedResets.current.has(job.id)) {
+      observedResets.current.add(job.id); clearResetCaches(job.companionId);
+    }
+    stateRef.current = next;
     const observedAt = new Date().toISOString();
     setActivityStarts(current => Object.fromEntries(next.activities.map(item => {
       const key = `${item.conversationId}/${item.companionId}/${item.status}`;
@@ -164,7 +186,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       selectedRef.current = first?.id ?? null;
       setSelectedId(first?.id ?? null);
     }
-  }, [request]);
+  }, [request, clearResetCaches]);
 
   const loadMessages = useCallback(async (id: string, refresh = false) => {
     const epoch = refresh ? loadEpoch.current : ++loadEpoch.current;
@@ -258,6 +280,9 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const offlineMembers = members.filter(item => item.availability === 'offline');
   const roomPresence = members.some(role => role.availability === 'working') ? 'working' : members.some(role => role.availability === 'waiting') ? 'waiting' : members.length && offlineMembers.length === members.length ? 'offline' : 'ready';
   const selectedContact = companions.find(item => item.id === contactId) ?? companions[0];
+  const contactReset = state?.resetJobs?.find(job => job.companionId === selectedContact?.id && job.status !== 'completed');
+  const selectedReset = selected?.kind === 'private' ? state?.resetJobs?.find(job => job.status !== 'completed' && selected.memberIds.includes(job.companionId)) : undefined;
+  const resetCompanion = companions.find(item => item.id === resetCompanionId);
   const memoryOwner = members.find(item => item.id === memoryOwnerId) ?? primary;
   const timelineMessages = messages.filter(message => !message.memoryEvidenceOnly);
   const draft = selectedId ? drafts[selectedId] ?? EMPTY_DRAFT : EMPTY_DRAFT;
@@ -321,7 +346,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   }
   async function send(guide = false, targetSourceMessageId?: string) {
     if (guide && !targetSourceMessageId && runningSources.length > 1) { setGuideMessageId('composer'); return; }
-    if (!selectedId || sendInFlight.current || (!draft.content.trim() && !draft.attachments.length)) return;
+    if (!selectedId || selectedReset || sendInFlight.current || (!draft.content.trim() && !draft.attachments.length)) return;
     const id = selectedId;
     const sentDraft = draft;
     sendInFlight.current = true; setSending(true); setError(''); stickyRef.current = true; setHighlightedId(null);
@@ -344,7 +369,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   }
   async function pickAttachments(kind?: 'image') {
     const id = selectedId;
-    if (!id) return;
+    if (!id || selectedReset) return;
     const response = await request({ type: 'attachment.pick', ...(kind ? { kind } : {}) });
     if (kind && response?.attachments?.some(item => !item.mime.startsWith('image/'))) setError('已忽略非图片文件，请选择图片。');
     const attachments = response?.attachments?.filter(item => !kind || item.mime.startsWith('image/'));
@@ -423,8 +448,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const response = await request({ type, id });
     if (response && selectedRef.current) { void loadActions(selectedRef.current); void refreshState(); }
   }
-  function openAttachment(attachment: CompanionAttachment) {
-    if (attachment.mime.startsWith('image/')) setPreviewAttachment(attachment);
+  function openAttachment(attachment: CompanionAttachment, images: readonly CompanionAttachment[] = []) {
+    if (attachment.mime.startsWith('image/')) { setPreviewImages(images); setPreviewAttachment(attachment); }
     else void request({ type: 'attachment.open', id: attachment.id });
   }
   function returnToLatest() {
@@ -437,15 +462,16 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     setShowMemoryManager(true); setMemoryDraft({ content: message.content, sourceMessageId: message.id, nonce: Date.now() });
   }
   async function toggleProactive(item: Companion, value: boolean) {
-    const { name, description, persona, avatar, avatarAttachmentId } = item;
+    const { name, description, persona, avatar, avatarAttachmentId, appearanceAttachmentId } = item;
     const llm = item.llm ? { apiFormat: item.llm.apiFormat, baseUrl: item.llm.baseUrl, model: item.llm.model } : undefined;
-    const response = await request({ type: 'companion.update', id: item.id, companion: { name, description, persona, model: '', avatar, proactive: value, ...(llm ? { llm } : {}), ...(avatarAttachmentId ? { avatarAttachmentId } : {}) } });
+    const response = await request({ type: 'companion.update', id: item.id, expectedRevision: item.revision, companion: { name, description, persona, model: '', avatar, proactive: value, ...(llm ? { llm } : {}), ...(avatarAttachmentId ? { avatarAttachmentId } : {}), ...(appearanceAttachmentId ? { appearanceAttachmentId } : {}) } });
     if (response) void refreshState();
   }
   const visibleConversations = [...(state?.conversations ?? [])].filter(item => `${item.title} ${item.lastMessage}`.toLocaleLowerCase().includes(filter.toLocaleLowerCase())).sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
   const visibleContacts = companions.filter(item => `${item.name} ${item.description}`.toLocaleLowerCase().includes(filter.toLocaleLowerCase()));
   const visibleGroups = (state?.conversations ?? []).filter(item => item.kind === 'group' && item.title.toLocaleLowerCase().includes(filter.toLocaleLowerCase()));
-  const authorName = (id: string) => id === 'user' ? '我' : companions.find(item => item.id === id)?.name ?? (id === 'system' ? '系统' : '伙伴');
+  const playerAvatar = { name: state?.playerProfile?.name || '我', avatar: 'custom' as const, avatarAttachmentId: state?.playerProfile?.avatarAttachmentId };
+  const authorName = (id: string) => id === 'user' ? playerAvatar.name : companions.find(item => item.id === id)?.name ?? (id === 'system' ? '系统' : '伙伴');
   function conversationAvatar(item: CompanionConversation) {
     const owners = companions.filter(companion => item.memberIds.includes(companion.id));
     return item.kind === 'private' ? <Avatar companion={owners[0]} /> : <span className="companion-group-avatar" aria-hidden="true">{owners.slice(0, 2).map(owner => <Avatar key={owner.id} companion={owner} />)}{!owners.length && <ChatGlyph name="group" />}</span>;
@@ -474,8 +500,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       {error && !showMemoryManager && !showScheduleManager && <div className="companions-error" role="alert"><Icon name="alert-circle" /><span>{error}</span><button className="companion-icon-button" aria-label="关闭错误提示" onClick={() => setError('')}>×</button></div>}
       {!state ? <div className="companions-empty"><ChatGlyph name="chat" /><h2>{api ? '正在打开伙伴的消息…' : '伙伴服务暂不可用'}</h2>{error && <button className="companion-secondary-button" onClick={() => void refreshState()}>重新加载</button>}</div>
         : page === 'contacts' ? selectedContact ? <div className="companions-contact-profile"><header className="companions-profile-label">联系人资料</header><div className="companions-profile-heading"><Avatar companion={selectedContact} large /><div><h2>{selectedContact.name}</h2><p>{selectedContact.description}</p>{selectedContact.builtin && <span className="companions-profile-tag">{builtinCompanionProfile(selectedContact.id)?.sourceSummary ?? '内置伙伴'}</span>}</div></div>
-          <div className="companions-profile-body"><div><section><h3>关于她</h3><p className="companions-introduction">{contactIntroduction(selectedContact)}</p><details key={selectedContact.id} className="companions-persona-details"><summary>查看角色设定</summary><p className="companions-persona">{selectedContact.persona}</p></details></section><section><h3>联系习惯</h3><label className="companions-checkbox"><input type="checkbox" checked={selectedContact.proactive} onChange={event => void toggleProactive(selectedContact, event.target.checked)} />允许她主动联系我</label><p className="companions-subtle">应用运行时，她可以延续你们的话题。夜间会保持安静。</p></section><section><h3>模型与能力</h3><p>{selectedContact.llm ? '使用此伙伴的独立 LLM 服务' : '共用设置中的全局 LLM 服务'}</p><p className="companions-subtle">{selectedContact.llm ? `模型：${selectedContact.llm.model}` : '跟随全局模型'} · 可以使用自己的能力查看文件、查资料和处理任务</p></section><div className="companions-profile-actions"><button className="companion-primary-button" onClick={() => void openPrivate(selectedContact.id)}><ChatGlyph name="chat" />发消息</button><button className="companion-secondary-button" onClick={() => void openWorld(selectedContact.id)}><Icon name="globe" />看看她的小屋</button><button className="companion-secondary-button" onClick={() => setDialog({ kind: 'companion', companion: selectedContact })}>编辑资料</button><button className="companion-text-danger" onClick={() => setDialog({ kind: 'delete', companion: selectedContact })}>移除联系人</button></div></div>
-          {companionPortrait(selectedContact) && <figure className={`companions-character-art${selectedContact.avatar !== 'sister' && selectedContact.avatar !== 'flash' ? ' is-portrait' : ''}`}><img src={selectedContact.avatar === 'sister' || selectedContact.avatar === 'flash' ? fullBodyImage : companionPortrait(selectedContact)} alt={`${selectedContact.name}的角色形象`} /><figcaption>{selectedContact.avatar === 'sister' || selectedContact.avatar === 'flash' ? '大肥鱼姐妹 · 角色形象参考' : `${selectedContact.name} · 聊天头像`}</figcaption></figure>}</div>
+          <div className="companions-profile-body"><div>{contactReset && <div className="companions-reset-note"><Icon name="refresh" /><span>{contactReset.status === 'failed' ? '伙伴重置已暂停' : '伙伴正在重置'}</span><button onClick={() => setResetCompanionId(selectedContact.id)}>查看进度</button></div>}<section><h3>关于她</h3><p className="companions-introduction">{contactIntroduction(selectedContact)}</p><details key={selectedContact.id} className="companions-persona-details"><summary>查看角色设定</summary><p className="companions-persona">{selectedContact.persona}</p></details></section><PublicAppearanceSheet attachmentId={selectedContact.appearanceAttachmentId} fallbackSource={companionAppearance(selectedContact)} name={selectedContact.name} description="这位伙伴的公开正面、侧面与背面设定板。可在编辑资料中上传或移除。" /><section><h3>联系习惯</h3><label className="companions-checkbox"><input type="checkbox" disabled={!!contactReset} checked={selectedContact.proactive} onChange={event => void toggleProactive(selectedContact, event.target.checked)} />允许她主动联系我</label><p className="companions-subtle">应用运行时，她可以延续你们的话题。夜间会保持安静。</p></section><section><h3>模型与能力</h3><p>{selectedContact.llm ? '使用此伙伴的独立 LLM 服务' : '共用设置中的全局 LLM 服务'}</p><p className="companions-subtle">{selectedContact.llm ? `模型：${selectedContact.llm.model}` : '跟随全局模型'} · 可以使用自己的能力查看文件、查资料和处理任务</p></section><div className="companions-profile-actions"><button className="companion-primary-button" onClick={() => void openPrivate(selectedContact.id)}><ChatGlyph name="chat" />发消息</button><button className="companion-secondary-button" onClick={() => void openWorld(selectedContact.id)}><Icon name="globe" />看看她的小屋</button><button className="companion-secondary-button" disabled={!!contactReset} onClick={() => setDialog({ kind: 'companion', companion: selectedContact })}>编辑资料</button>{selectedContact.builtin ? <button className="companion-text-danger" onClick={() => setResetCompanionId(selectedContact.id)}>{contactReset ? '查看重置进度' : '重置伙伴'}</button> : <button className="companion-text-danger" onClick={() => setDialog({ kind: 'delete', companion: selectedContact })}>移除联系人</button>}</div></div>
+          {companionPortrait(selectedContact) && <figure className="companions-character-art is-portrait"><img src={companionPortrait(selectedContact)} alt={`${selectedContact.name}的角色形象`} /><figcaption>{selectedContact.name} · 聊天头像</figcaption></figure>}</div>
         </div> : <div className="companions-empty"><ChatGlyph name="contacts" /><h2>认识你的第一位伙伴</h2><p>从内置角色开始，或者创造属于你的伙伴。</p><button className="companion-primary-button" onClick={() => setDialog({ kind: 'companion' })}>添加联系人</button></div>
         : !selected ? <div className="companions-empty"><ChatGlyph name="chat" /><h2>每天，都可以接着聊</h2><p>打开一个伙伴，开始你们的第一段共同经历。</p><button className="companion-primary-button" onClick={() => setPage('contacts')}>查看联系人</button></div>
         : <div className={`companions-chat-layout${showPanel ? ' has-panel' : ''}`}>
@@ -499,7 +525,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
                 const newDay = index === 0 || dayLabel(timelineMessages[index - 1]!.createdAt) !== dayLabel(message.createdAt);
                 return <div key={message.id}>{newDay && <div className="companions-date-separator">{dayLabel(message.createdAt)}</div>}
                   {message.kind === 'notice' ? <div className={`companions-notice${message.status === 'failed' ? ' is-failed' : ''}`} data-companion-message={message.id}>{message.authorId !== 'system' && <small>内置欢迎 · {authorName(message.authorId)}</small>}<span>{message.content}</span>{message.status === 'failed' && <button onClick={() => void request({ type: 'reply.retry', conversationId: selected.id })}>重试回复</button>}</div> : <article className={`companions-message${own ? ' is-own' : ''}${highlightedId === message.id ? ' is-highlighted' : ''}`} data-companion-message={message.id}>
-                    <Avatar companion={author} showPresence={false} /><div className="companions-message-body"><div className="companions-message-author">{authorName(message.authorId)}<time title={companionTimestamp(message.createdAt) + ' · ' + companionTimezone(message.createdAt)}>{clockTime(message.createdAt)}</time></div><CompanionMessageBubble message={message} replied={replied} quoteAuthor={replied ? authorName(replied.authorId) : undefined} actions={actions} now={clock} streamStore={replyStreams} interrupted={state?.recoveries?.some(item => item.conversationId === message.conversationId && item.sourceMessageId === message.replyToId && !item.completedIds.includes(message.authorId) && (item.status === 'interrupted' || item.status === 'cancelled')) ?? false} onOpenAction={openTaskProgress} onOpenUrl={url => void openMessageLink(url)} onOpenAttachment={openAttachment} onLocateQuote={id => void jumpToReference(id)} onStreamLayout={scrollStreamingReply} /><div className="companions-message-tools"><button aria-label={`引用消息 ${message.sequence}`} title="引用回复" onClick={() => { updateDraft({ reply: message }); composerRef.current?.focus(); }}><ChatGlyph name="reply" /></button>{message.content && !message.isReplyDraft && <button aria-label={`记住消息 ${message.sequence}`} title="记住这件事" onClick={() => rememberMessage(message)}><Icon name="heart" /></button>}{message.status === 'failed' && <button onClick={() => void request({ type: 'reply.retry', conversationId: selected.id })}>重试回复</button>}</div></div>
+                    <Avatar companion={own ? playerAvatar : author} showPresence={false} /><div className="companions-message-body"><div className="companions-message-author">{authorName(message.authorId)}<time title={companionTimestamp(message.createdAt) + ' · ' + companionTimezone(message.createdAt)}>{clockTime(message.createdAt)}</time></div><CompanionMessageBubble message={message} replied={replied} quoteAuthor={replied ? authorName(replied.authorId) : undefined} actions={actions} now={clock} streamStore={replyStreams} interrupted={state?.recoveries?.some(item => item.conversationId === message.conversationId && item.sourceMessageId === message.replyToId && !item.completedIds.includes(message.authorId) && (item.status === 'interrupted' || item.status === 'cancelled')) ?? false} onOpenAction={openTaskProgress} onOpenUrl={url => void openMessageLink(url)} onOpenAttachment={openAttachment} onLocateQuote={id => void jumpToReference(id)} onStreamLayout={scrollStreamingReply} /><div className="companions-message-tools"><button aria-label={`引用消息 ${message.sequence}`} title="引用回复" onClick={() => { updateDraft({ reply: message }); composerRef.current?.focus(); }}><ChatGlyph name="reply" /></button>{message.content && !message.isReplyDraft && <button aria-label={`记住消息 ${message.sequence}`} title="记住这件事" onClick={() => rememberMessage(message)}><Icon name="heart" /></button>}{message.status === 'failed' && <button onClick={() => void request({ type: 'reply.retry', conversationId: selected.id })}>重试回复</button>}</div></div>
                   </article>}
                 </div>;
               })}
@@ -520,8 +546,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
               {composerMore && <div className="companions-composer-menu"><button onClick={() => { setComposerMore(false); setShowMemoryManager(true); }}><Icon name="heart" />查看共同记忆</button></div>}
               {draft.reply && <div className="companions-draft-reply"><ChatGlyph name="reply" /><span>回复 {authorName(draft.reply.authorId)}：{draft.reply.content || '附件'}</span><button className="companion-icon-button" aria-label="取消引用" onClick={() => updateDraft({ reply: undefined })}>×</button></div>}
               {!!draft.attachments.length && <div className="companions-draft-attachments">{draft.attachments.map(item => <span key={item.id}>{item.mime.startsWith('image/') ? <ChatGlyph name="image" /> : <Icon name="file" />}<span>{item.name}</span><small>{bytes(item.size)}</small><button aria-label={`移除附件 ${item.name}`} onClick={() => updateDraft({ attachments: draft.attachments.filter(attachment => attachment.id !== item.id) })}>×</button></span>)}</div>}
-              <textarea ref={composerRef} rows={2} aria-label="输入消息" placeholder={selected.kind === 'group' ? '和大家聊聊，@名字可以指定伙伴…' : `发消息给${selected.title}…`} value={draft.content} maxLength={16000} onChange={event => updateDraft({ content: event.target.value })} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !composingRef.current && event.keyCode !== 229) { event.preventDefault(); void send((event.ctrlKey || event.metaKey) && activities.length > 0); } }} />
-              <div className="companions-composer-toolbar"><div className="companions-composer-tools"><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={sending || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
+              <textarea ref={composerRef} rows={2} aria-label="输入消息" disabled={!!selectedReset} placeholder={selectedReset ? '伙伴正在重置，完成后可以重新聊天' : selected.kind === 'group' ? '和大家聊聊，@名字可以指定伙伴…' : `发消息给${selected.title}…`} value={draft.content} maxLength={16000} onChange={event => updateDraft({ content: event.target.value })} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !composingRef.current && event.keyCode !== 229) { event.preventDefault(); void send((event.ctrlKey || event.metaKey) && activities.length > 0); } }} />
+              <div className="companions-composer-toolbar"><div className="companions-composer-tools"><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{selectedReset ? '伙伴正在重置' : sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={!!selectedReset || sending || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
             </section>
           </section>
           {showPanel && memoryOwner && <CompanionPlanner key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} members={members} conversationId={selected.id} conversationKind={selected.kind} actions={actions} request={request} api={api} onOwnerChange={id => { setMemoryOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setShowPanel(false)} onProfile={() => { setContactId(memoryOwner.id); setPage('contacts'); }} onMemory={() => setShowMemoryManager(true)} onTasks={(view = 'active', ownerId) => { setSelectedTaskActionId(undefined); setTaskView(view); setTaskOwnerId(ownerId); setShowTaskMonitor(true); }} onSchedules={() => setShowScheduleManager(true)} onWorld={() => void openWorld(memoryOwner.id)} onOpenAction={openTaskProgress} />}
@@ -546,15 +572,16 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
         <Icon name="activity" /><span>{messages.find(message => message.id === id)?.content || '正在处理的附件消息'}</span><Icon name="chevron" />
       </button>)}
     </section></div>}
-    {showSearch && state && <CompanionHistorySearch request={request} conversations={state.conversations} companions={companions} conversationId={searchScope} onClose={() => setShowSearch(false)} onLocate={async hit => {
+    {showSearch && state && <CompanionHistorySearch request={request} conversations={state.conversations} companions={companions} playerProfile={state.playerProfile} conversationId={searchScope} onClose={() => setShowSearch(false)} onLocate={async hit => {
       const conversation = state.conversations.find(room => room.id === hit.conversationId) ?? (await request({ type: 'conversation.reopen', id: hit.conversationId }))?.conversation;
       if (!conversation) { setError('请先重新打开这个聊天，再查看记录。'); return; }
       setShowSearch(false);
       if (hit.conversationId !== selectedRef.current) { pendingJump.current = hit; selectConversation(conversation); }
       else void jumpToMessage(hit);
     }} />}
+    {resetCompanion && <CompanionResetDialog key={resetCompanion.id} companion={resetCompanion} initialJob={state?.resetJobs?.find(job => job.companionId === resetCompanion.id)} request={request} requestError={error} onClose={() => { setResetCompanionId(undefined); setError(''); void refreshState(); }} onStarted={id => { clearResetCaches(id); void refreshState(); }} />}
     {dialog && <CompanionDialogs key={dialog.kind === 'companion' ? 'companion-' + (dialog.companion?.id ?? 'new') : dialog.kind === 'group' ? 'group-' + (dialog.conversation?.id ?? 'new') : dialog.kind === 'action' ? 'action-' + dialog.message.id : dialog.kind === 'delete' ? 'delete-' + dialog.companion.id : dialog.kind === 'delete-conversation' ? 'delete-conversation-' + dialog.conversation.id : 'chat'} dialog={dialog} companions={companions} request={request} requestError={error} onClose={() => { setDialog(null); void refreshState(); }} onOpen={id => void openPrivate(id)} onCreated={selectConversation} builtins={BUILTIN_COMPANIONS} />}
-    {previewAttachment && <CompanionImagePreview key={previewAttachment.id} attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} onReveal={() => void request({ type: 'attachment.open', id: previewAttachment.id })} />}
+    {previewAttachment && <CompanionImagePreview key={previewAttachment.id} attachment={previewAttachment} images={previewImages} onClose={() => setPreviewAttachment(null)} onReveal={item => void request({ type: 'attachment.open', id: item.id })} />}
     {showSocialMonitor && <CompanionSocialMonitor companions={companions} request={request} api={api} onClose={() => setShowSocialMonitor(false)} onOpenUrl={url => void openMessageLink(url)} />}
     {showTaskMonitor && <CompanionTaskMonitor initialView={taskView} initialCompanionId={taskOwnerId} initialActionId={selectedTaskActionId} conversationId={selectedId!} request={request} dshApi={dshApi} actions={actions} companions={companions} now={clock} onClose={() => { setShowTaskMonitor(false); setSelectedTaskActionId(undefined); }} onStop={id => void stopAction(id)} onResume={id => manageAction('action.resume', id)} onTerminate={id => manageAction('action.terminate', id)} onGuide={() => { setShowTaskMonitor(false); setSelectedTaskActionId(undefined); setTimeout(() => composerRef.current?.focus(), 0); }} onOpenUrl={url => void openMessageLink(url)} />}
   </div>;

@@ -72,7 +72,7 @@ export class CompanionStorageClient {
             fail(new Error('error' in message && typeof message.error === 'string' ? message.error : '伙伴存储无法启动。'));
           } else if (message.type === 'storage.closed') {
             this.#closedAck?.();
-          } else if (message.type === 'storage.index-changed') {
+          } else if (message.type === 'storage.index-changed' || message.type === 'storage.reset-changed') {
             this.onIndexChanged();
           } else if (message.type === 'storage.index-failed') {
             this.onIndexError(new Error('error' in message ? String(message.error) : '消息搜索索引更新失败。'));

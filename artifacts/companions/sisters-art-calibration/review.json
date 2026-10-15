@@ -1,0 +1,1175 @@
+{
+  "date": "2026-10-15",
+  "status": "validated-in-real-scenes",
+  "method": "builtin-imagegen only; independent calls per action; source PNGs copied unmodified, whole-sheet normalization to WebP on registration",
+  "registeredSheets": 62,
+  "registeredFrames": 186,
+  "totalCharacters": 15,
+  "totalSheets": 465,
+  "totalFrames": 1395,
+  "totalRuntimeBytes": 44281984,
+  "allSourcesIndependent": true,
+  "allFramesHaveAlpha": true,
+  "allFrameEdgesUnclipped": true,
+  "other13CharactersUnchanged": true,
+  "identityAuthority": [
+    {
+      "id": "sister",
+      "references": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-sister-orthographic.png",
+          "sha256": "738e020c4d4b17a5e7a0237871ede34bf4293ec3a06cee19164028e83e511217"
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-sister.png",
+          "sha256": "67cc6e39ab256ba6a57bd63a751e1480d487e821b31e852d1367b07e0dcfeb5d"
+        },
+        {
+          "role": "user-identity-authority",
+          "path": "assets/companions/deepseek.jpg",
+          "sha256": "5eaf14841d3e3f34a85de921bd2ac2349d0f01cf918e9d0970a86d83fe09dcad"
+        }
+      ],
+      "assets": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-sister-orthographic.png",
+          "method": "builtin-imagegen",
+          "sha256": "738e020c4d4b17a5e7a0237871ede34bf4293ec3a06cee19164028e83e511217",
+          "width": 2172,
+          "height": 724
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-sister.png",
+          "method": "builtin-imagegen",
+          "sha256": "67cc6e39ab256ba6a57bd63a751e1480d487e821b31e852d1367b07e0dcfeb5d",
+          "width": 1254,
+          "height": 1254
+        }
+      ]
+    },
+    {
+      "id": "flash",
+      "references": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-flash-orthographic.png",
+          "sha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27"
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-flash.png",
+          "sha256": "7cf75d26edefc8d13a3e6706051c42f327e7f58e97119e477e718b4c7b14314a"
+        },
+        {
+          "role": "user-identity-authority",
+          "path": "assets/companions/appearance/deepseek-flash-orthographic.png",
+          "sha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27"
+        }
+      ],
+      "assets": [
+        {
+          "role": "canonical-orthographic",
+          "path": "assets/companions/appearance/deepseek-flash-orthographic.png",
+          "method": "user-provided-exact",
+          "sha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27",
+          "width": 1260,
+          "height": 703
+        },
+        {
+          "role": "canonical-portrait",
+          "path": "assets/companions/portraits/deepseek-flash.png",
+          "method": "builtin-imagegen",
+          "sha256": "7cf75d26edefc8d13a3e6706051c42f327e7f58e97119e477e718b4c7b14314a",
+          "width": 1254,
+          "height": 1254
+        }
+      ]
+    }
+  ],
+  "scaleReviews": [
+    {
+      "avatar": "sister",
+      "action": "idle",
+      "neutralHeightPixels": 307.624,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 289,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "walk",
+      "neutralHeightPixels": 307.624,
+      "method": "reviewed-matching-head-and-trunk",
+      "reference": {
+        "action": "idle",
+        "frame": 0
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Same head/torso size as idle; lowered running silhouette does not enlarge the runner."
+    },
+    {
+      "avatar": "sister",
+      "action": "run",
+      "neutralHeightPixels": 307.624,
+      "method": "reviewed-matching-head-and-trunk",
+      "reference": {
+        "action": "idle",
+        "frame": 0
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Same head/torso size as idle; lowered running silhouette does not enlarge the runner."
+    },
+    {
+      "avatar": "sister",
+      "action": "read",
+      "neutralHeightPixels": 279.81,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 130
+          },
+          {
+            "x": 184,
+            "y": 181
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 51.0098029794274,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "sitDown",
+      "neutralHeightPixels": 345.944,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 188,
+          "y": 40
+        },
+        "foot": {
+          "x": 181,
+          "y": 365
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 325,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "sit",
+      "neutralHeightPixels": 296.264,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 186,
+            "y": 128
+          },
+          {
+            "x": 185,
+            "y": 182
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 54.009258465563114,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "standUp",
+      "neutralHeightPixels": 347.009,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 180,
+          "y": 41
+        },
+        "foot": {
+          "x": 178,
+          "y": 367
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 326,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "lieDown",
+      "neutralHeightPixels": 251.209,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 187,
+          "y": 93
+        },
+        "foot": {
+          "x": 181,
+          "y": 329
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 236,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "sleep",
+      "neutralHeightPixels": 345.756,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 70,
+            "y": 154
+          },
+          {
+            "x": 117,
+            "y": 196
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 63.03173803727769,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "wake",
+      "neutralHeightPixels": 292.722,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 177,
+          "y": 65
+        },
+        "foot": {
+          "x": 180,
+          "y": 340
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 185,
+          "y": 61
+        },
+        "foot": {
+          "x": 185,
+          "y": 350
+        }
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 289,
+      "span": 275,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "sister",
+      "action": "rest",
+      "neutralHeightPixels": 285.453,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 184,
+            "y": 129
+          },
+          {
+            "x": 182,
+            "y": 181
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 52.038447325030745,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "work",
+      "neutralHeightPixels": 318.344,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 184,
+            "y": 135
+          },
+          {
+            "x": 182,
+            "y": 193
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 58.034472514187634,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "eat",
+      "neutralHeightPixels": 356.595,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 187,
+            "y": 90
+          },
+          {
+            "x": 186,
+            "y": 155
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 65.00769185258002,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "phoneTypingSeated",
+      "neutralHeightPixels": 296.264,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 188,
+            "y": 107
+          },
+          {
+            "x": 187,
+            "y": 161
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 54.009258465563114,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "phoneCallingSeated",
+      "neutralHeightPixels": 307.184,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 180,
+            "y": 118
+          },
+          {
+            "x": 180,
+            "y": 174
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 185,
+            "y": 53
+          },
+          {
+            "x": 182,
+            "y": 109
+          }
+        ]
+      },
+      "referenceNeutralHeight": 307.62430939226516,
+      "referenceSpan": 56.080299571239806,
+      "span": 56,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "idle",
+      "neutralHeightPixels": 360,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 295,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "read",
+      "neutralHeightPixels": 327.947,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 205,
+            "y": 83
+          },
+          {
+            "x": 204,
+            "y": 216
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 133.00375934536586,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "sitDown",
+      "neutralHeightPixels": 369.763,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 191,
+          "y": 70
+        },
+        "foot": {
+          "x": 175,
+          "y": 373
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 303,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "sit",
+      "neutralHeightPixels": 325.556,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 197,
+            "y": 87
+          },
+          {
+            "x": 194,
+            "y": 219
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 132.03408650799233,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "standUp",
+      "neutralHeightPixels": 374.644,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 160,
+          "y": 60
+        },
+        "foot": {
+          "x": 145,
+          "y": 367
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 307,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "lieDown",
+      "neutralHeightPixels": 333.153,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 181,
+          "y": 82
+        },
+        "foot": {
+          "x": 182,
+          "y": 355
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 273,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "sleep",
+      "neutralHeightPixels": 309.541,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 119,
+            "y": 126
+          },
+          {
+            "x": 183,
+            "y": 234
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 125.53883861180172,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "wake",
+      "neutralHeightPixels": 316.068,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 169,
+          "y": 86
+        },
+        "foot": {
+          "x": 171,
+          "y": 345
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 171,
+          "y": 76
+        },
+        "foot": {
+          "x": 175,
+          "y": 371
+        }
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 295,
+      "span": 259,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true
+    },
+    {
+      "avatar": "flash",
+      "action": "rest",
+      "neutralHeightPixels": 300.825,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 175,
+            "y": 103
+          },
+          {
+            "x": 176,
+            "y": 225
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 122.00409829181967,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "work",
+      "neutralHeightPixels": 369.863,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 190,
+            "y": 56
+          },
+          {
+            "x": 191,
+            "y": 206
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 150.00333329629711,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "eat",
+      "neutralHeightPixels": 384.656,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 170,
+            "y": 51
+          },
+          {
+            "x": 169,
+            "y": 207
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 156.00320509528,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "phoneTypingSeated",
+      "neutralHeightPixels": 352.629,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 170,
+            "y": 71
+          },
+          {
+            "x": 172,
+            "y": 214
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 143.0139853301068,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "flash",
+      "action": "phoneCallingSeated",
+      "neutralHeightPixels": 364.998,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 170,
+            "y": 53
+          },
+          {
+            "x": 167,
+            "y": 201
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "head": [
+          {
+            "x": 165,
+            "y": 61
+          },
+          {
+            "x": 164,
+            "y": 207
+          }
+        ]
+      },
+      "referenceNeutralHeight": 360,
+      "referenceSpan": 146.00342461736983,
+      "span": 148.03040228277433,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    }
+  ],
+  "galleryReview": {
+    "files": [
+      "artifacts/companions/sisters-art-calibration/sister.png",
+      "artifacts/companions/sisters-art-calibration/flash.png"
+    ],
+    "all62ActionsViewed": true,
+    "allFourCanonicalIdentityImagesViewed": true,
+    "checks": [
+      "elder adult identity and younger original flat-colour identity remain distinct",
+      "three chronological frames per independent action",
+      "no furniture, floor, baked shadow or cropped contour",
+      "actual seated hips/knees and genuinely horizontal lying",
+      "standing endpoints retained for sit/stand/lie/wake",
+      "same whole-sheet scale across three frames; natural seated/lying height, not external-bounds stretching"
+    ],
+    "additionalImagegenRequired": false
+  },
+  "correctedRegistrationEvidence": [
+    {
+      "avatar": "sister",
+      "action": "sleep",
+      "frame": 1,
+      "oldFaceDerivedAnchorX": 286,
+      "reviewedBedX": 205,
+      "final": {
+        "anchor": {
+          "x": 205,
+          "y": 268
+        },
+        "method": "reviewed",
+        "bodyOffset": {
+          "x": -1,
+          "y": 1
+        },
+        "score": 0
+      }
+    },
+    {
+      "avatar": "sister",
+      "action": "lieDown",
+      "frame": 2,
+      "oldFaceDerivedAnchorX": 119,
+      "reviewedBedX": 210,
+      "final": {
+        "anchor": {
+          "x": 210,
+          "y": 301
+        },
+        "method": "reviewed",
+        "bodyOffset": {
+          "x": 29,
+          "y": -30
+        },
+        "score": 0
+      }
+    }
+  ],
+  "diagnostics": {
+    "maximumRawBodyCoreHorizontalRange": 116,
+    "rawMatcherAbove8px": 49,
+    "explanation": "Raw matching offsets include intended posture changes; reviewed bed/seat/mechanical contacts override those matches. Diagnostics are not hidden or treated as proof of incorrect pixels."
+  },
+  "validation": {
+    "unitFiles": 3,
+    "unitTests": 15,
+    "unitPassed": true,
+    "targetedEslintPassed": true,
+    "diffCheckPassed": true,
+    "fullTypecheck": "Owned files clean; concurrent Root live-test has TS2339 residents.avatar at companion-world-calibration.test.ts123, reported to Root."
+  },
+  "limits": "Manual anatomical points are art measurements rather than a claim of pixel-perfect anatomy. Root will validate actual furniture projection and action switching in the rebuilt app.",
+  "liveValidation": {
+    "evidence": "artifacts/companions/world-art-calibration/live-frame-validation.json",
+    "companions": [
+      "deepseek-sister",
+      "deepseek-flash"
+    ],
+    "actions": [
+      "rest",
+      "sleep",
+      "work"
+    ],
+    "capturedFrames": 18,
+    "observerStateAndPendingTexturesChecked": true,
+    "worldPositionsAndRoutesChecked": true,
+    "multiwindowPerformance": "artifacts/companions/verified-world-multiwindow-performance.json",
+    "nativeObserverWindowTestPassed": true
+  }
+}

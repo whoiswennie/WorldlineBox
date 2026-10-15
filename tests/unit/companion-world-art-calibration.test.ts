@@ -57,6 +57,23 @@ describe('sprite frame body registration', () => {
     expect(getCompanionWorldFramePlacement(character, asset, 0)).toMatchObject({ pose: 'seat', anchor: { x: 30, y: 44 } });
     expect(getCompanionWorldFramePlacement(character, asset, 1)).toMatchObject({ pose: 'bed', anchor: { x: 35, y: 48 } });
   });
+  it('keeps a sleeping back on its reviewed bed point when face colours move or a hand obscures the cheek', () => {
+    const asset = sheet([frame(), frame(13, 4), frame(-9)]);
+    for (const [index, value] of asset.frames.entries()) {
+      value.contacts.posture = 'lying'; value.contacts.bed = { x: 35 + index, y: 48 };
+    }
+    const result = calibrateCompanionWorldSheet(asset, 'sleep', [pixels(), pixels(13, 4, true), pixels(-9)]);
+    expect(result.matches[1]!.dx).toBe(13);
+    expect(result.registrations.map(value => value.anchor)).toEqual([{ x: 35, y: 48 }, { x: 36, y: 48 }, { x: 37, y: 48 }]);
+    expect(result.registrations.every(value => value.method === 'reviewed')).toBe(true);
+  });
+  it('attaches each mechanical transition to its actual foot, pelvis or bed rather than translating by the moving face', () => {
+    const asset = sheet([frame(), frame(13, 4), frame(-9)]); asset.playback = 'transition';
+    asset.frames[1].contacts.posture = 'transition'; asset.frames[1].contacts.bed = { x: 45, y: 48 };
+    asset.frames[2].contacts.posture = 'lying'; asset.frames[2].contacts.bed = { x: 32, y: 50 };
+    const result = calibrateCompanionWorldSheet(asset, 'lieDown', [pixels(), pixels(13, 4), pixels(-9)]);
+    expect(result.registrations.map(value => value.anchor)).toEqual([{ x: 34, y: 64 }, { x: 45, y: 48 }, { x: 32, y: 50 }]);
+  });
   it('declares finite per-frame registration for every independently authored built-in action', () => {
     expect(WORLD_ART_CHARACTER_IDS).toHaveLength(15);
     let count = 0;

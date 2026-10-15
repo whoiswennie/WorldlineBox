@@ -3704,7 +3704,7 @@ async function startApplication(): Promise<void> {
   try {
     const { CompanionService } = await import('./companions/service');
     companionService = new CompanionService({
-      userData: app.getPath('userData'), workerPath: path.join(__dirname, 'companion_worker.js'),
+      userData: app.getPath('userData'), workerPath: path.join(__dirname, 'companion_worker.js'), appPath: app.getAppPath(),
       window: () => mainWindow, hasConfig: () => loadAiConfig().hasKey,
       getConfig: () => {
         const config = loadAiConfig();
