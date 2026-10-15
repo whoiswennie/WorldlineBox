@@ -1,0 +1,166 @@
+{
+  "generatedOn": "2026-10-16",
+  "views": [
+    "front",
+    "left-side",
+    "back"
+  ],
+  "assets": [
+    {
+      "id": "huan-white",
+      "name": "白幻",
+      "target": "assets/companions/appearance/huan-white-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: WorldlineBox public ORTHOGRAPHIC character turnaround board for 白幻. Input1 is current portrait, input2 is existing full body design. Preserve exact identity, outfit, palette and proportions: white long hair with delicate pale cyan/pink iridescent tips, fine side braid, blue eyes; white high-neck lace cold-shoulder dress, navy ribbon bow, detached puff sleeves, white knee socks and white shoes; no hat, no horns. Draw THREE full body views only in one horizontal row: exact FRONT (0 degrees), strict LEFT SIDE PROFILE (90 degrees, only one eye visible, shoulders/feet in profile, no 3/4), exact BACK (180 degrees). Identical character scale and neutral relaxed pose, head top and ground baseline aligned. Clean polished anime production model sheet, crisp lines and soft flat cel shading. Plain white background, full silhouettes and accessories/feet inside canvas with generous margins. Landscape 3:2. No text, grids, borders, scenery, shadows, watermark or extra closeups. Not animation.",
+      "references": [
+        "assets/companions/portraits/huan-white-v1.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/huan-white/orthographic-v1.png"
+      ],
+      "sha256": "0b6fec957a2471cc9f4f60d5b55b3e79939c9688791b872edd3f7769b417972e",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "huan-black",
+      "name": "黑幻",
+      "target": "assets/companions/appearance/huan-black-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: WorldlineBox public ORTHOGRAPHIC character turnaround board for 黑幻. Input1 is current portrait, input2 is existing full body design reference. Preserve this exact character identity, outfit, palette and proportions. black waist-length hair with dark purple/burgundy tips and fine side braid, red eyes, black high-neck cold-shoulder dress with subtle burgundy details and detached puff sleeves, bare feet; no hat, no gloves, no cheek hearts. Draw a beautiful clean anime production model sheet: THREE full body views only in one horizontal row: exact FRONT (0 degrees), strict LEFT SIDE PROFILE (90 degrees, only one eye visible, shoulders/feet in profile, no 3/4), exact BACK (180 degrees). Identical fixed character scale and neutral relaxed standing pose, same head top and ground baseline across views. Crisp confident line art and soft flat cel shading, detailed but readable. Plain white background, full silhouettes and all accessories/feet inside canvas with generous margins; no text, grids, frame borders, scenery, shadows, watermark or extra closeups. Landscape 3:2. Not an action sheet.",
+      "references": [
+        "assets/companions/portraits/huan-black-v1.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/huan-black/orthographic-v1.png"
+      ],
+      "sha256": "50d1f9a01c797712e382a3c812be2421e92f2039c81876677aca96608b55953d",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini",
+      "target": "assets/companions/appearance/gemini-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: WorldlineBox public ORTHOGRAPHIC character turnaround board for Gemini. Input1 is current portrait, input2 is existing full body design. Preserve exact identity, outfit, palette and proportions: blue-violet long wavy hair, cat ears, fluffy cat tail, star hair jewel, heterochromia: front view viewer-left eye pink, viewer-right eye gold; violet star-themed crop top, layered white/violet sleeves, asymmetric short purple skirt and white boots. Draw THREE full body views only in one horizontal row: exact FRONT (0 degrees), strict LEFT SIDE PROFILE (90 degrees, only one eye visible, shoulders/feet in profile, no 3/4), exact BACK (180 degrees). Identical character scale and neutral relaxed pose, head top and ground baseline aligned. Clean polished anime production model sheet, crisp lines and soft flat cel shading. Plain white background, full silhouettes and accessories/feet inside canvas with generous margins. Landscape 3:2. No text, grids, borders, scenery, shadows, watermark or extra closeups. Not animation.",
+      "references": [
+        "assets/companions/portraits/gemini-v2.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/gemini/orthographic-v1-candidate.png"
+      ],
+      "sha256": "5e4ce9bf27ae08b599d6eed0fee8739476f7bd060ffb2d9a68e7f2c259ef8d98",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "gpt",
+      "name": "GPT",
+      "target": "assets/companions/appearance/gpt-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: WorldlineBox public ORTHOGRAPHIC character turnaround board for GPT. Input1 is current portrait, input2 is existing full body design. Preserve exact identity, outfit, palette and proportions: silver white long hair, pale violet eyes, two white scaled dragon horns, pointed ears, small white dragon wings and scaled white tail, long white high-neck dress with silver knot ornaments and white shoes. Draw THREE full body views only in one horizontal row: exact FRONT (0 degrees), strict LEFT SIDE PROFILE (90 degrees, only one eye visible, shoulders/feet in profile, no 3/4), exact BACK (180 degrees). Identical character scale and neutral relaxed pose, head top and ground baseline aligned. Clean polished anime production model sheet, crisp lines and soft flat cel shading. Plain white background, full silhouettes and accessories/feet inside canvas with generous margins. Landscape 3:2. No text, grids, borders, scenery, shadows, watermark or extra closeups. Not animation.",
+      "references": [
+        "assets/companions/portraits/gpt-v2.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/gpt/orthographic-v2.png"
+      ],
+      "sha256": "85de394358c5fb8e89b3e5f322504c210d822c642d2fd5350bec528a6ca9715e",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "grok",
+      "name": "Grok",
+      "target": "assets/companions/appearance/grok-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: WorldlineBox public ORTHOGRAPHIC character turnaround board for Grok. Input1 current portrait, input2 full body design. Preserve exact identity, outfit, palette and stylized body proportions: long blonde twin tails, blue eyes, pointed ears, black bat wing hair ornaments, small gold black crown, black gold red gothic long dress, black shoes; no hand-held weapon needed for neutral body reference. THREE full body views only in one horizontal row: exact FRONT (0 degrees), strict LEFT SIDE PROFILE (90 degrees, one eye only, shoulders and feet exactly profile, NO 3/4), exact BACK (180 degrees). Identical fixed character scale and neutral standing pose, head top and ground baseline aligned. Clean polished anime production sheet with crisp lines and soft cel shading. Plain white background, full silhouettes all head ornaments, hands and feet with ample margins, no cutoffs. Landscape 3:2. No text, grids, borders, scenery, ground shadows, watermark or extra closeups.",
+      "references": [
+        "assets/companions/portraits/grok-v1.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/grok/orthographic-v1-candidate.png"
+      ],
+      "sha256": "b42f77207ddbc5cfacd969bfc89ec545c1aec8de5c8ed18ceb46ef78fe24094a",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "kimi",
+      "name": "Kimi",
+      "target": "assets/companions/appearance/kimi-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: WorldlineBox public ORTHOGRAPHIC character turnaround board for Kimi. Input1 current portrait, input2 full body design. Preserve exact identity, outfit, palette and stylized body proportions: long wavy silver white hair, purple eyes, lace headdress, crescent and K ornament, navy white layered musical maid dress with piano key hem, navy shoes. THREE full body views only in one horizontal row: exact FRONT (0 degrees), strict LEFT SIDE PROFILE (90 degrees, one eye only, shoulders and feet exactly profile, NO 3/4), exact BACK (180 degrees). Identical fixed character scale and neutral standing pose, head top and ground baseline aligned. Clean polished anime production sheet with crisp lines and soft cel shading. Plain white background, full silhouettes all head ornaments, hands and feet with ample margins, no cutoffs. Landscape 3:2. No text, grids, borders, scenery, ground shadows, watermark or extra closeups.",
+      "references": [
+        "assets/companions/portraits/kimi-v1.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/kimi/orthographic-v1-candidate.png"
+      ],
+      "sha256": "e183c22f5d7021dd641bd6e7126b760ea53968c446e67f3c6621de23ee23ab9d",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "minimax",
+      "name": "MiniMax",
+      "target": "assets/companions/appearance/minimax-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: WorldlineBox public ORTHOGRAPHIC character turnaround board for MiniMax. Input1 current portrait, input2 full body design. Preserve exact identity, outfit, palette and stylized body proportions: orange pink short wavy hair, pink eyes, white pink reporter cap, white pink coat, plaid skirt, white pink sneakers, lanyard and small reporter satchel. THREE full body views only in one horizontal row: exact FRONT (0 degrees), strict LEFT SIDE PROFILE (90 degrees, one eye only, shoulders and feet exactly profile, NO 3/4), exact BACK (180 degrees). Identical fixed character scale and neutral standing pose, head top and ground baseline aligned. Clean polished anime production sheet with crisp lines and soft cel shading. Plain white background, full silhouettes all head ornaments, hands and feet with ample margins, no cutoffs. Landscape 3:2. No text, grids, borders, scenery, ground shadows, watermark or extra closeups.",
+      "references": [
+        "assets/companions/portraits/minimax-v2.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/minimax/orthographic-v1-candidate.png"
+      ],
+      "sha256": "5bc8a21fbbaba957c2de7020b5789f9e0496bb86c53585edf8762bbcae556240",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "qwen",
+      "name": "Qwen",
+      "target": "assets/companions/appearance/qwen-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: WorldlineBox public ORTHOGRAPHIC character turnaround board for Qwen. Input1 current portrait, input2 full body design. Preserve exact identity, outfit, palette and stylized body proportions: blue violet long hair with side braid, violet eyes, small navy hat, white blue Chinese layered long dress, gold edged dark blue shawl, triple petal emblem, blue shoes. THREE full body views only in one horizontal row: exact FRONT (0 degrees), strict LEFT SIDE PROFILE (90 degrees, one eye only, shoulders and feet exactly profile, NO 3/4), exact BACK (180 degrees). Identical fixed character scale and neutral standing pose, head top and ground baseline aligned. Clean polished anime production sheet with crisp lines and soft cel shading. Plain white background, full silhouettes all head ornaments, hands and feet with ample margins, no cutoffs. Landscape 3:2. No text, grids, borders, scenery, ground shadows, watermark or extra closeups.",
+      "references": [
+        "assets/companions/portraits/qwen-v2.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/qwen/orthographic-v2-candidate.png"
+      ],
+      "sha256": "cfe7ce5e69a8e835b947dd4d8df2058635952f9a26a8a2fac4ea137e480e1750",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "gugugaga",
+      "name": "咕咕嘎嘎",
+      "target": "assets/companions/appearance/gugugaga-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: public ORTHOGRAPHIC character reference for 咕咕嘎嘎 in WorldlineBox. Image1 current portrait is identity and art style; Image2 existing full body proportions and costume. Preserve exact current identity, silhouette, palette, tiny meme/chibi proportions: short grey black bob HUMAN anime face with grey violet eyes on a round fat PENGUIN body, black back and flippers, creamy yellow belly, short orange brown webbed feet; no hood, no chain, not a human in a suit. Draw ONLY three whole-character orthographic views in one horizontal row: exact FRONT, exact LEFT SIDE (90 degrees, only one eye visible, no 3/4, no looking at camera), exact BACK. Same scale, aligned headtops and footbaseline, neutral relaxed pose. Clean adorable professional anime/game line art, clear cel shading. Plain white background and generous blank margins. All feet, hair, ornaments fully visible. Landscape3:2. No text, watermark, grids, borders, scenery, shadows or additional faces. Do not turn into a normal human girl, do not change proportions.",
+      "references": [
+        "assets/companions/portraits/gugugaga-v1.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/gugugaga/orthographic-v1.png"
+      ],
+      "sha256": "6ed69cd7993ee9cfb5cd7d756a954d7e90250013a6de746fd05989931f2a31c3",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "guga",
+      "name": "咕嘎",
+      "target": "assets/companions/appearance/guga-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: public ORTHOGRAPHIC character reference for 咕嘎 in WorldlineBox. Image1 current portrait is identity and art style; Image2 existing full body proportions and costume. Preserve exact current identity, silhouette, palette, tiny meme/chibi proportions: short black bob human anime face with blue grey eyes, cyan X hairclip, black penguin hood with yellow beak and white cartoon eyes, silver chain neck clasp, black round penguin costume white circular belly and yellow webbed feet. Draw ONLY three whole-character orthographic views in one horizontal row: exact FRONT, exact LEFT SIDE (90 degrees, only one eye visible, no 3/4, no looking at camera), exact BACK. Same scale, aligned headtops and footbaseline, neutral relaxed pose. Clean adorable professional anime/game line art, clear cel shading. Plain white background and generous blank margins. All feet, hair, ornaments fully visible. Landscape3:2. No text, watermark, grids, borders, scenery, shadows or additional faces. Do not turn into a normal human girl, do not change proportions.",
+      "references": [
+        "assets/companions/portraits/guga-v1.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/guga/orthographic-v1.png"
+      ],
+      "sha256": "c31e83e82ea8ea259091a6c5caa5c776cf315dff71e976469173067338e9c2dd",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "doro",
+      "name": "Doro",
+      "target": "assets/companions/appearance/doro-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: public ORTHOGRAPHIC character reference for Doro in WorldlineBox. Image1 current portrait is identity and art style; Image2 existing full body proportions and costume. Preserve exact current identity, silhouette, palette, tiny meme/chibi proportions: huge pink bob anime head with purple eyes, pink rose and purple bow ornament; WHITE FLUFFY LOW QUADRUPED dumpling body, four short paws on ground, animal low center of gravity. Do not give humanoid upright body or human legs. Draw ONLY three whole-character orthographic views in one horizontal row: exact FRONT, exact LEFT SIDE (90 degrees, only one eye visible, no 3/4, no looking at camera), exact BACK. Same scale, aligned headtops and footbaseline, neutral relaxed pose. Clean adorable professional anime/game line art, clear cel shading. Plain white background and generous blank margins. All feet, hair, ornaments fully visible. Landscape3:2. No text, watermark, grids, borders, scenery, shadows or additional faces. Do not turn into a normal human girl, do not change proportions.",
+      "references": [
+        "assets/companions/portraits/doro-v1.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/doro/orthographic-v1.png"
+      ],
+      "sha256": "3f8a8ccb0ea4f68da58a07bc9ed87581ce6df8e0739c5d46dc396348bb00e820",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "phoebe",
+      "name": "菲比啾比",
+      "target": "assets/companions/appearance/phoebe-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: public ORTHOGRAPHIC character reference for 菲比啾比 in WorldlineBox. Image1 current portrait is identity and art style; Image2 existing full body proportions and costume. Preserve exact current identity, silhouette, palette, tiny meme/chibi proportions: tiny meme chibi with HUGE oval purple eyes and thick dark outlines, straight blonde bangs and long curtain hair, white wide brim hat with blue purple scalloped band, blue cross clip, long blue scarf, white black jacket with gold star clasp, brown gloves, striped black white socks, black shoes. Preserve meme proportions, not normal anime face. Draw ONLY three whole-character orthographic views in one horizontal row: exact FRONT, exact LEFT SIDE (90 degrees, only one eye visible, no 3/4, no looking at camera), exact BACK. Same scale, aligned headtops and footbaseline, neutral relaxed pose. Clean adorable professional anime/game line art, clear cel shading. Plain white background and generous blank margins. All feet, hair, ornaments fully visible. Landscape3:2. No text, watermark, grids, borders, scenery, shadows or additional faces. Do not turn into a normal human girl, do not change proportions.",
+      "references": [
+        "assets/companions/portraits/phoebe-v1.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/phoebe/orthographic-v1.png"
+      ],
+      "sha256": "91a71c8e5149d181e4c98f69cdd14597ca321f135f0c7f1df9c45eae90e24042",
+      "method": "builtin-imagegen"
+    },
+    {
+      "id": "phrolova",
+      "name": "弗糯糯",
+      "target": "assets/companions/appearance/phrolova-orthographic.png",
+      "prompt": "Use case: identity-preserve. Asset: public ORTHOGRAPHIC character reference for 弗糯糯 in WorldlineBox. Image1 current portrait is identity and art style; Image2 existing full body proportions and costume. Preserve exact current identity, silhouette, palette, tiny meme/chibi proportions: tiny chibi with long grey teal wavy hair, straight bangs, half-open pink violet eyes, white collar, large red bow and red dress, short legs black shoes. Draw ONLY three whole-character orthographic views in one horizontal row: exact FRONT, exact LEFT SIDE (90 degrees, only one eye visible, no 3/4, no looking at camera), exact BACK. Same scale, aligned headtops and footbaseline, neutral relaxed pose. Clean adorable professional anime/game line art, clear cel shading. Plain white background and generous blank margins. All feet, hair, ornaments fully visible. Landscape3:2. No text, watermark, grids, borders, scenery, shadows or additional faces. Do not turn into a normal human girl, do not change proportions.",
+      "references": [
+        "assets/companions/portraits/phrolova-v1.png",
+        "C:/Users/hp/Desktop/project/new_agi/WorldlineBox/assets/characters/standard-v1/phrolova/orthographic-v1.png"
+      ],
+      "sha256": "aa733c3be2988a366d9a4448f18161b69c088cbf679e102a71cd7e315d8b0693",
+      "method": "builtin-imagegen"
+    }
+  ]
+}

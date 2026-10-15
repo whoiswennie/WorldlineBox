@@ -8,6 +8,7 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { CompanionPublicProfile } from '../../src/shared/companion-public-profile';
+import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
@@ -16,12 +17,30 @@ type Capture = { context: { publicProfiles: CompanionPublicProfile[]; identity: 
 async function request(page: Page, input: CompanionsRequest) { const result = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), input); expect(result.ok, result.error).toBe(true); return result; }
 function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-profile-e2e-')) throw new Error('Unexpected profile fixture cleanup path.'); rmSync(resolved, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 }); }
 async function launch(profile: string) {
-  const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
+  const packaged = process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE;
+  const application = await electron.launch({ executablePath: packaged ?? resolveElectronExecutablePath(), args: packaged ? [] : [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
   const page = await application.firstWindow(), native = await application.browserWindow(page);
   await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 1000); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page'); return { application, page };
 }
 async function choose(application: ElectronApplication, filename?: string) { await application.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: !file, filePaths: file ? [file] : [] }); }, filename); }
+
+test('all built-in contacts show their complete default orthographic reference', async () => {
+  test.setTimeout(90000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-profile-e2e-')); const { application, page } = await launch(path.join(root, 'profile'));
+  try {
+    await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '联系人', exact: true }).click();
+    for (const companion of BUILTIN_COMPANIONS) {
+      await page.locator(`[data-companion-contact="${companion.id}"]`).click();
+      const image = page.locator('.companions-contact-profile .public-appearance-thumbnail img');
+      await expect(image).toBeVisible();
+      await expect.poll(() => image.evaluate((node: HTMLImageElement) => node.complete && node.naturalWidth > node.naturalHeight)).toBe(true);
+      await expect(page.locator('.companions-contact-profile')).not.toContainText('还没有添加三视图');
+    }
+    await page.locator('[data-companion-contact="huan-black"]').click();
+    await page.screenshot({ path: path.resolve('.tools/test-output/verified-builtin-orthographic-contact.png') });
+  } finally { await application.close(); cleanup(root); }
+});
 async function openSettings(page: Page) { await page.getByRole('button', { name: '设置', exact: true }).click(); const dialog = page.getByRole('dialog', { name: '通用设置', exact: true }); await expect(dialog.getByRole('tab', { name: '用户信息', exact: true })).toHaveAttribute('aria-selected', 'true'); return dialog; }
 async function awake(page: Page, companionId: string, conversationId: string) {
   const world = (await request(page, { type: 'world.snapshot' })).world!; await request(page, { type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });

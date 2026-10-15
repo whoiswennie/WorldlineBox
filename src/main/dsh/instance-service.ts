@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { prepareWorkbenchUiAdapter } from './workbench-ui-adapter';
 import { rebaseInstancePnpmMetadata } from './pack-pnpm-metadata';
 import { rebaseCopiedSessionData } from './instance-data-rebase';
 import { appendFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
@@ -359,7 +360,8 @@ export class InstanceService {
     let managed: ManagedProcess | undefined;
     try {
       op.signal.throwIfAborted();
-      const hostArgs = ['web', ...(sharedLaunch?.args ?? []), '--no-open', '--host', '127.0.0.1', '--port', '0'];
+      const uiPatch = await prepareWorkbenchUiAdapter(root, this.options.runtimes.directory(instance.runtimeId));
+      const hostArgs = ['web', ...(sharedLaunch?.args ?? []), ...(uiPatch ? ['--patch', uiPatch] : []), '--no-open', '--host', '127.0.0.1', '--port', '0'];
       const bootstrap = this.options.runtimes.get(instance.runtimeId).adapter === 'node-cli-web-v1'
         ? await prepareManagedHostBootstrap(root, plan.cli) : undefined;
       const child = await launchCli(bootstrap ? { ...plan, cli: bootstrap.bootstrapPath } : plan,

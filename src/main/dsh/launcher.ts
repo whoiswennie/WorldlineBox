@@ -108,6 +108,7 @@ export class DshLauncher {
       exportArchive: (id, file, signal) => this.packs.exportArchive(id, file, signal),
       importArchive: (file, op) => this.packs.importArchive(file, op), request: (url, input) => this.network.request(url, input) });
     this.cliTerminal = new DshCliTerminal({ rootPath: this.rootPath, onChanged, toolchain: () => this.toolchain(),
+      verifyRuntime: async (id, digest) => { if (this.runtimes.get(id).contentSha256 !== digest) throw new Error('CLI runtime identity changed.'); await this.runtimes.verify(id); },
       onOutput: output => { const main = getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_TERMINAL_OUTPUT_CHANNEL, output); }, resolveSelection: async () => {
       const records = this.instances.list();
       const current = records.find(value => value.id === this.cliTerminal.state().selectedInstanceId) ?? records.find(value => value.isDefault);
@@ -284,7 +285,7 @@ export class DshLauncher {
         const source = await this.pick(request.sourceKind); if (!source) return { ok: true, cancelled: true };
         return { ok: true, operationId: await this.operations.run(request.type, '导入 DSH 运行版本', undefined, async op => { await this.runtimes.import(source, request.sourceKind, 'local-import', op); }) };
       }
-      case 'runtime.verify': return { ok: true, operationId: await this.operations.run(request.type, '校验 DSH 运行版本', undefined, async op => { await op.update('verifying'); await this.runtimes.verify(request.runtimeId, op.signal); }) };
+      case 'runtime.verify': return { ok: true, operationId: await this.operations.run(request.type, '校验 DSH 运行版本', undefined, async op => { await op.update('verifying'); await this.runtimes.verify(request.runtimeId, op.signal, true); }) };
       case 'runtime.compatibility': return { ok: true, operationId: await this.operations.run(request.type, '隔离检测共享存档兼容性', undefined, async op => {
         const report = await this.runtimes.checkCompatibility(request.runtimeId, op);
         if (report.status !== 'passed') throw new Error(`兼容性检测未通过：${report.checks.find(check => check.status === 'failed')?.detail ?? '检测被中断，请重试。'}`);
@@ -383,9 +384,10 @@ export class DshLauncher {
     this.closed = true;
     await this.initialization.catch(() => undefined);
     await this.tasks.shutdown();
-    await this.cliTerminal.close();
+    await this.cliTerminal.shutdown();
     await this.operations.shutdown();
     await this.instances.shutdown();
+    this.runtimes.close();
     for (const window of this.windows.values()) if (!window.isDestroyed()) window.destroy();
     this.windows.clear();
   }

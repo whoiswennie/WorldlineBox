@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { DSH_OFFICIAL_WINDOWS_URL, dshRuntimeSchema, type DshRuntime } from '../../shared/dsh-launcher';
-import { assertOwnedDirectory, contained, copyTree, hashFile, inventoryTree, readJson, removeManaged, safeRelative, type TreeInventory } from './files';
+import { assertOwnedDirectory, contained, copyTree, hashFile, inventoryTree, readJson, removeManaged, safeRelative, type TreeInventory, type TreeHashCacheEntry, atomicJson } from './files';
 import type { OperationContext } from './operations';
 import { fetchHttpsDownload, type HttpsDownloadFetch } from './https-download';
 import { atomicRuntimeJson, publishSealedArtifact, retryFileOperation } from './runtime-commit';
@@ -16,6 +16,7 @@ import { nodeRuntimePayloadShaFromInventory } from './node-runtime-payload';
 import { prepareOfficialNodeRuntime, validateNodeRuntimeInventory, validateOfficialNodeProgram, validateOfficialNodeRelease, type NodeInstallNetwork, type NodeInstallTools, type NodeRuntimeReceipt, type NodeRuntimeInstallPreparation, type OfficialNodeRelease } from './node-runtime-service';
 import { RuntimeCompatibility, assertRuntimeCompatibility } from './runtime-compatibility';
 import type { DshCompatibilityReport } from '../../shared/dsh-runtime-compatibility';
+import { RuntimeIntegrity } from './runtime-integrity';
 
 export interface RuntimeServiceLike {
   list(): DshRuntime[];
@@ -82,6 +83,7 @@ export function validate7zListing(listing: string): void {
 }
 
 export class RuntimeService implements RuntimeServiceLike {
+  private readonly integrity = new RuntimeIntegrity();
   private records: DshRuntime[] = [];
   private importing = false;
   private readonly installingVersions = new Set<string>();
@@ -146,22 +148,39 @@ export class RuntimeService implements RuntimeServiceLike {
     if(receipt.version!==record.version||receipt.nodeVersion!==record.nodeVersion||receipt.sourceSha256!==record.sourceSha256)throw new Error('Node runtime record does not match its sealed source identity.');
     return receipt;
   }
-  async verify(id: string, signal?: AbortSignal): Promise<void> {
+  async verify(id: string, signal?: AbortSignal, force = false): Promise<void> {
     const record = this.get(id);
     try {
-      const sealed = await readJson<TreeInventory>(contained(path.join(this.options.rootPath, 'runtimes'), `${id}/seal.json`));
-      const current = await inventoryTree(this.directory(id), signal);
-      if (!sealed || current.contentSha256 !== sealed.contentSha256 || current.contentSha256 !== record.contentSha256) throw new Error('Runtime seal mismatch.');
+      await this.integrity.verify(path.dirname(this.directory(id)), async () => {
+        const sealed = await readJson<TreeInventory>(contained(path.join(this.options.rootPath, 'runtimes'), `${id}/seal.json`));
+        const cache = new Map<string, TreeHashCacheEntry>();
+        const indexPath = path.join(this.options.rootPath, 'integrity', `${id}.json`);
+        const indexDirectory = path.dirname(indexPath); await mkdir(indexDirectory, { recursive: true }); await assertOwnedDirectory(this.options.rootPath, indexDirectory);
+        const stored = await lstat(indexPath).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+        if (!force && stored?.isFile() && !stored.isSymbolicLink() && stored.size < 48 * 1024 * 1024) {
+          const index = await readJson<{ digest: string; entries: Array<[string, TreeHashCacheEntry]> }>(indexPath).catch(() => undefined);
+          if (index?.digest === record.contentSha256 && Array.isArray(index.entries) && index.entries.length <= 150000) {
+            const expected = new Map(sealed?.files.map(file => [file.path, file.sha256]));
+            for (const entry of index.entries) if (Array.isArray(entry) && entry.length === 2 && expected.get(entry[0]) === entry[1]?.sha256 && typeof entry[1]?.fingerprint === 'string' && entry[1].fingerprint.length < 300) cache.set(entry[0], entry[1]);
+          }
+        }
+        const current = await inventoryTree(this.directory(id), AbortSignal.timeout(300000), undefined, cache);
+        if (!sealed || current.contentSha256 !== sealed.contentSha256 || current.contentSha256 !== record.contentSha256) throw new Error('Runtime seal mismatch.');
+        await atomicJson(indexPath, { digest: record.contentSha256, entries: current.files.map(file => [file.path, cache.get(file.path)]) });
+      }, signal, force);
     } catch (error) {
       if (signal?.aborted) throw error;
+      if (error instanceof Error && error.name === 'TimeoutError') throw new Error('运行文件完整性检查超时，请稍后重试；存档未修改。', { cause: error });
       const message = 'DSH runtime files changed or are missing. Import a clean installer; existing instance data is preserved.';
       await this.compatibility.invalidate(record, message); throw new Error(message, { cause: error });
     }
   }
+  close(): void { this.integrity.close(); }
   async delete(id: string, referenced: boolean): Promise<void> {
     if (referenced) throw new Error('此运行版本仍被实例、快照、整合包或任务引用，请先处理页面列出的引用。');
     if (this.importing || this.installingVersions.size || this.maintaining) throw new Error('请等待版本安装或清理操作结束。');
     const record = this.get(id); this.maintaining = true;
+    this.integrity.forget(path.dirname(this.directory(id)));
     const source = contained(path.join(this.options.rootPath, 'runtimes'), id);
     const trash = path.join(this.options.rootPath, 'runtime-trash', `${id}-${randomUUID()}`);
     try {
@@ -179,6 +198,7 @@ export class RuntimeService implements RuntimeServiceLike {
       try { await removeManaged(this.options.rootPath, trash); }
       catch (error) { throw new Error('版本已从安装列表移除，但部分文件仍被系统占用。请稍后使用「清理下载缓存」继续清理。', { cause: error }); }
       await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'compatibility', `${id}.json`));
+      await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'integrity', `${id}.json`));
       if (!this.records.some(item => item.sourceSha256 === record.sourceSha256)) {
         await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'cache', `${record.sourceSha256}.exe`));
       }

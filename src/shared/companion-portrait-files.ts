@@ -23,4 +23,17 @@ export const COMPANION_PORTRAIT_FILES: Record<Exclude<Companion['avatar'], 'cust
 export const COMPANION_APPEARANCE_FILES: Readonly<Record<string, string>> = {
   'deepseek-sister': 'assets/companions/appearance/deepseek-sister-orthographic.png',
   'deepseek-flash': 'assets/companions/appearance/deepseek-flash-orthographic.png',
+  'huan-white': 'assets/companions/appearance/huan-white-orthographic.png',
+  'huan-black': 'assets/companions/appearance/huan-black-orthographic.png',
+  gemini: 'assets/companions/appearance/gemini-orthographic.png',
+  gpt: 'assets/companions/appearance/gpt-orthographic.png',
+  grok: 'assets/companions/appearance/grok-orthographic.png',
+  kimi: 'assets/companions/appearance/kimi-orthographic.png',
+  minimax: 'assets/companions/appearance/minimax-orthographic.png',
+  qwen: 'assets/companions/appearance/qwen-orthographic.png',
+  gugugaga: 'assets/companions/appearance/gugugaga-orthographic.png',
+  guga: 'assets/companions/appearance/guga-orthographic.png',
+  doro: 'assets/companions/appearance/doro-orthographic.png',
+  phoebe: 'assets/companions/appearance/phoebe-orthographic.png',
+  phrolova: 'assets/companions/appearance/phrolova-orthographic.png',
 };

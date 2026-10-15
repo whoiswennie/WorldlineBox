@@ -38,6 +38,9 @@ test('isolated compatibility evidence, failure reasons, reference protection and
     await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 1000); });
     await expect(page.locator('[data-dsh-launcher]')).toBeVisible(); await settled(page);
     await page.locator('.launcher-navigation').getByRole('button', { name: '运行版本', exact: true }).click();
+    await expect(page.getByRole('tab', { name: '已安装版本 · 1', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('button', { name: '清理下载缓存', exact: true })).toHaveCount(0);
+    await expect(page.locator('[data-dsh-official-versions]')).toHaveCount(0);
     const card = page.locator(`[data-dsh-runtime="${runtime.id}"]`); const panel = card.locator('[data-dsh-compatibility]');
     await expect(panel).toHaveAttribute('data-dsh-compatibility', 'failed');
     await expect(panel).toContainText('运行文件完整性'); await expect(panel).toContainText('原生接口与隔离启动'); await expect(panel).toContainText('失败');
@@ -59,10 +62,19 @@ test('isolated compatibility evidence, failure reasons, reference protection and
     const created = await request(page, { type: 'instance.create', name: '引用保护实例', runtimeId: runtime.id, dataScope: 'isolated' }); expect(created.ok).toBe(true); await settled(page);
     await expect(card).toContainText('引用保护实例'); await expect(card.getByRole('button', { name: '删除运行版本', exact: true })).toBeDisabled();
     expect((await request(page, { type: 'runtime.delete', runtimeId: runtime.id })).ok).toBe(false);
+    const selectionBefore = (await state(page)).cli?.selectedInstanceId;
+    const other = await request(page, { type: 'instance.create', name: '另一实例', runtimeId: runtime.id, dataScope: 'isolated' }); expect(other.ok).toBe(true); await settled(page);
+    for (const item of (await state(page)).instances) {
+      await page.locator(`[data-dsh-instance="${item.id}"]`).click();
+      expect((await state(page)).cli?.selectedInstanceId).toBe(selectionBefore);
+      await expect(page.getByText('正在准备 CLI 环境…', { exact: true })).toHaveCount(0);
+    }
+    const extra = (await state(page)).instances.find(item => item.name === '另一实例')!;
+    expect((await request(page, { type: 'instance.delete', instanceId: extra.id })).ok).toBe(true); await settled(page);
+    await page.locator('.launcher-navigation').getByRole('button', { name: '运行版本', exact: true }).click();
     const instance = (await state(page)).instances[0]!; expect((await request(page, { type: 'instance.delete', instanceId: instance.id })).ok).toBe(true); await settled(page);
-    await page.getByRole('button', { name: '清理下载缓存', exact: true }).click(); await page.getByRole('dialog').getByRole('button', { name: '确认', exact: true }).click(); await settled(page);
-    await expect.poll(async () => readFile(cache).then(() => true, () => false)).toBe(false);
     await card.getByRole('button', { name: '删除运行版本', exact: true }).click(); await page.getByRole('dialog').getByRole('button', { name: '确认', exact: true }).click(); await settled(page);
+    await expect.poll(async () => readFile(cache).then(() => true, () => false)).toBe(false);
     await expect(card).toHaveCount(0); expect((await state(page)).runtimes).toEqual([]);
     expect(await readFile(path.join(launcher, 'shared', 'user-save'), 'utf8')).toBe('untouched');
   } finally { await application.close(); if (path.dirname(root) === path.resolve(tmpdir()) && path.basename(root).startsWith('worldlinebox-runtime-management-')) await rm(root, { recursive: true, force: true }); }

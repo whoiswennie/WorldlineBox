@@ -8,10 +8,27 @@ import { CompanionsStore, type CompanionSeed } from '../../src/companions/store'
 import { CompanionPublicProfiles } from '../../src/main/companions/public-profiles';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionPublicProfile } from '../../src/shared/companion-public-profile';
+import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
+import { COMPANION_APPEARANCE_FILES } from '../../src/shared/companion-portrait-files';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>();
 const seeds: CompanionSeed[] = ['alice', 'bob', 'carol'].map(id => ({ id, name: id, description: '公开的伙伴介绍 ' + id, persona: '独立且尊重边界。', model: '', avatar: id === 'alice' ? 'sister' : 'custom', proactive: false }));
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+
+it('every built-in companion has a packaged default reference and receives its own real readable orthographic path', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'companion-public-profiles-')); roots.push(root);
+  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), BUILTIN_COMPANIONS); stores.add(store);
+  const loader = new CompanionPublicProfiles({ root, appPath: process.cwd(), request: async command => store.request(command) });
+  expect(Object.keys(COMPANION_APPEARANCE_FILES).sort()).toEqual(BUILTIN_COMPANIONS.map(item => item.id).sort());
+  for (const companion of BUILTIN_COMPANIONS) {
+    const original = await readFile(path.resolve(COMPANION_APPEARANCE_FILES[companion.id]!));
+    const prepared = await loader.prepare({ companionId: companion.id, conversation: store.openPrivate(companion.id), sourceAuthorId: 'user' });
+    const image = person(prepared.publicProfiles, companion.id).orthographic!;
+    expect(image.available).toBe(true); expect(path.isAbsolute(image.absolutePath)).toBe(true);
+    expect(image.sha256).toBe(sha(original)); expect(await readFile(image.absolutePath)).toEqual(original);
+    const metadata = await sharp(original).metadata(); expect(metadata.width).toBeGreaterThan(metadata.height!);
+  }
+});
 afterEach(async () => {
   for (const store of stores) store.close(); stores.clear();
   for (const root of roots.splice(0)) { if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith('companion-public-profiles-')) throw new Error('Unexpected public profile fixture root.'); await rm(root, { recursive: true, force: true }); }

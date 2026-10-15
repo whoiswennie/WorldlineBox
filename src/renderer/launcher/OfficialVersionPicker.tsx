@@ -8,8 +8,8 @@ import { ReleaseNotes } from './ReleaseNotes';
 
 const PAGE_SIZE = 12;
 
-export function OfficialVersionPicker({ state, run, disabled = false }: {
-  readonly state: DshLauncherState; readonly run: LauncherRunRequest; readonly disabled?: boolean;
+export function OfficialVersionPicker({ state, run, disabled = false, onManage }: {
+  readonly state: DshLauncherState; readonly run: LauncherRunRequest; readonly disabled?: boolean; readonly onManage?: () => void;
 }) {
   const t = useT(); const catalog = state.versions;
   const [query, setQuery] = useState(''); const [channel, setChannel] = useState('all'); const [page, setPage] = useState(0);
@@ -31,7 +31,7 @@ export function OfficialVersionPicker({ state, run, disabled = false }: {
       const installing = installingVersions.has(entry.version);
       return <article className={`launcher-version-row${entry.recommended ? ' is-recommended' : ''}`} data-dsh-version={entry.version} key={entry.version}>
         <div className="launcher-version-info"><div className="launcher-version-title"><strong>DSH {entry.version}</strong>{entry.recommended ? <span className="launcher-badge">{t('launcher.recommendedVersion')}</span> : null}<span className="launcher-version-channel">{t(`launcher.versionChannels.${entry.channel}`)}</span></div><div className="launcher-version-description">{entry.publishedAt ? <time dateTime={entry.publishedAt}>{new Date(entry.publishedAt).toLocaleDateString()}</time> : null}<span>{entry.nodeRange ? `Node ${entry.nodeRange}` : t('launcher.runtimePreparedAutomatically')}</span><span>{t('launcher.nativeWebRuntime')}</span></div></div>
-        <div className="launcher-actions"><Button disabled={!entry.releaseUrl} onClick={() => openRelease(entry.releaseUrl)} size="sm" variant="quiet">{t('launcher.releasePage')}</Button><Button disabled={disabled || installing || installed} iconName={installed ? 'check' : 'download'} onClick={() => void run({ type: 'runtime.install', version: entry.version })} size="sm" variant={entry.recommended && !installed ? 'primary' : 'secondary'}>{t(installed ? 'launcher.versionInstalled' : 'launcher.installVersion')}</Button></div>
+        <div className="launcher-actions"><Button disabled={!entry.releaseUrl} onClick={() => openRelease(entry.releaseUrl)} size="sm" variant="quiet">{t('launcher.releasePage')}</Button>{installed && onManage ? <Button iconName="check" onClick={onManage} size="sm">{t('launcher.manageInstalledRuntime')}</Button> : <Button disabled={disabled || installing || installed} iconName={installed ? 'check' : 'download'} onClick={() => void run({ type: 'runtime.install', version: entry.version })} size="sm" variant={entry.recommended && !installed ? 'primary' : 'secondary'}>{t(installed ? 'launcher.versionInstalled' : 'launcher.installVersion')}</Button>}</div>
         {entry.notes ? <ReleaseNotes notes={entry.notes} onOpenUrl={openRelease} releaseUrl={entry.releaseUrl} /> : null}
       </article>;
     })}</div> : <div className="launcher-catalog-empty"><strong>{t(catalog?.entries.length ? 'launcher.noMatchingVersions' : 'launcher.noOfficialVersions')}</strong><p>{catalog?.error ? t('launcher.versionFeedUnavailable') : t('launcher.versionFeedRefreshNote')}</p>{!catalog?.entries.length ? <Button disabled={disabled} iconName="refresh" onClick={() => void run({ type: 'versions.refresh' })}>{t('launcher.refreshVersions')}</Button> : null}</div>}

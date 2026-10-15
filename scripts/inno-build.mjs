@@ -13,8 +13,8 @@
  *
  * 用法：node scripts/inno-build.mjs [--out <dir>]
  */
-import { spawnSync } from 'node:child_process';
-import { existsSync, statSync, mkdirSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, statSync, mkdirSync, readFileSync, mkdtempSync, renameSync, rmdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,7 +46,7 @@ function fail(message) {
   process.exit(1);
 }
 
-function main() {
+async function main() {
   const outDir = process.argv.includes('--out')
     ? path.resolve(process.argv[process.argv.indexOf('--out') + 1])
     : defaultOut;
@@ -61,27 +61,37 @@ function main() {
 
   mkdirSync(outDir, { recursive: true });
   const version = packageVersion();
-  const result = spawnSync(
-    defaultIscc,
-    [
-      `/DAppVersion=${version}`,
-      path.join(repoRoot, 'assets', 'inno', 'worldlineboxsetup.iss'),
-    ],
-    {
-      cwd: repoRoot,
-      stdio: 'inherit',
-      shell: false,
-    },
-  );
-  if (result.error || result.status !== 0) {
-    fail(`ISCC exited with ${String(result.status)} (${result.error?.message ?? 'see output above'})`);
+  // Compile to a fresh owned directory. A scanner holding the published EXE
+  // must not make ISCC delete the last good installer before compilation.
+  let staging;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    staging = mkdtempSync(path.join(outDir, '.build-'));
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(defaultIscc, [`/DAppVersion=${version}`, `/O${staging}`, path.join(repoRoot, 'assets', 'inno', 'worldlineboxsetup.iss')], {
+        cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], shell: false, windowsHide: true,
+      });
+      let tail = '';
+      const append = (stream, bytes) => { stream.write(bytes); tail = (tail + bytes.toString()).slice(-16000); };
+      child.stdout.on('data', bytes => append(process.stdout, bytes)); child.stderr.on('data', bytes => append(process.stderr, bytes));
+      child.once('error', reject); child.once('close', status => resolve({ status, tail }));
+    });
+    if (result.status === 0) break;
+    if (attempt === 2 || !/EndUpdateResource failed[\s\S]*\(110\)/i.test(result.tail)) fail(`ISCC exited with ${String(result.status)} (see output above; failed stage retained at ${staging})`);
+    console.warn('[inno-build] Resource update was temporarily blocked; retrying in a fresh build directory.');
+    await new Promise(resolve => setTimeout(resolve, 1500));
   }
-
+  const stagedExe = path.join(staging, 'WorldlineBoxSetup.exe');
+  if (!existsSync(stagedExe) || statSync(stagedExe).size < 100 * 1024 * 1024) fail(`Installer not produced or suspiciously small: ${stagedExe}`);
   const setupExe = path.join(outDir, 'WorldlineBoxSetup.exe');
-  if (!existsSync(setupExe) || statSync(setupExe).size < 100 * 1024 * 1024) {
-    fail(`Installer not produced or suspiciously small: ${setupExe}`);
+  for (let attempt = 0; ; attempt++) {
+    try { renameSync(stagedExe, setupExe); break; }
+    catch (error) {
+      if (attempt === 9 || !['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) fail(`Installer was built successfully but could not be published: ${stagedExe} (${error.message})`);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
   }
+  rmdirSync(staging); // Empty directory only; failed build evidence is preserved.
   console.log(`[inno-build] Windows installer written to ${setupExe} (${(statSync(setupExe).size / 1024 / 1024).toFixed(1)} MB)`);
 }
 
-main();
+main().catch(error => fail(error.message));

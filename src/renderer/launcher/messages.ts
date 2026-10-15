@@ -1,4 +1,6 @@
 export const launcherZh = {
+  installedRuntimeSummary: '已安装 {count} 个版本 · 共占用 {size}', addRuntime: '安装新版本', manageInstalledRuntime: '已安装 · 管理',
+  runtimeViews: { installed: '已安装版本', catalog: '下载版本', import: '本地导入' }, runtimeArtifactDetails: '运行文件、来源与完整性摘要',
   runtimeCleanup: '清理下载缓存', runtimeCleanupDescription: '清理已下载的安装包、未完成安装的临时文件、隔离残留和待删除运行文件。保留已安装运行版本、实例、共享存档、快照和整合包。当前下载、检测和任务结束后才可清理。',
   runtimeReferences: '删除前需先处理以下引用', referenceKinds: { instance: '实例', snapshot: '快照', pack: '整合包', task: '正在运行的任务' },
   compatibilityTitle: '共享存档兼容性', compatibilityIsolation: '真实原生接口 · 独立临时存档 · 假凭据 · 不调用模型',
@@ -66,6 +68,8 @@ export const launcherZh = {
 } as const;
 
 export const launcherEn = {
+  installedRuntimeSummary: '{count} versions installed · {size} total', addRuntime: 'Install a version', manageInstalledRuntime: 'Installed · Manage',
+  runtimeViews: { installed: 'Installed versions', catalog: 'Download versions', import: 'Import locally' }, runtimeArtifactDetails: 'Runtime files, source and integrity digests',
   runtimeCleanup: 'Clean download cache', runtimeCleanupDescription: 'Remove downloaded installers, incomplete installation staging, quarantined copies and pending runtime deletions. Installed runtimes, instances, shared saves, snapshots and packs are preserved. Wait for active downloads, checks and tasks to finish.',
   runtimeReferences: 'Resolve these references before deleting', referenceKinds: { instance: 'Instance', snapshot: 'Snapshot', pack: 'Pack', task: 'Running task' },
   compatibilityTitle: 'Shared save compatibility', compatibilityIsolation: 'Real native APIs · Temporary saves · Dummy credentials · No model requests',

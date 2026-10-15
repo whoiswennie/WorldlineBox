@@ -27,15 +27,15 @@ async function rpc(page: Page, method: string, args: Record<string, unknown>): P
   }, { method, args });
 }
 
-test('official alpha.3 onboarding saves a synthetic key and the managed Host uses it for an actual request after restart', async () => {
+test('official alpha.3 saves keys in initial and explicitly reopened dialogs, then uses the replacement key after restart', async () => {
   test.setTimeout(600000); test.skip(process.platform !== 'win32');
   const manager = path.resolve('.tools/dsh-native-node/manager'); test.skip(!existsSync(path.join(manager, 'runtimes.json')));
   const source = (JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8')) as DshRuntime[]).find(runtime => runtime.version === '0.2.1-alpha.3');
   test.skip(!source, 'Install the official alpha.3 fixture before native authentication acceptance.');
   const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-native-auth-'));
-  const key = 'worldlinebox-synthetic-api-key'; let requests = 0; let credentialMatched = false;
+  const key = 'worldlinebox-synthetic-api-key'; const replacement = 'worldlinebox-replaced-synthetic-api-key'; let requests = 0; let credentialMatched = false;
   const server = createServer((incoming, response) => {
-    requests++; credentialMatched ||= incoming.headers['x-api-key'] === key;
+    requests++; credentialMatched ||= incoming.headers['x-api-key'] === replacement;
     incoming.resume(); response.writeHead(401, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'WorldlineBox synthetic local endpoint; no real account or inference.' } }));
   });
@@ -55,6 +55,14 @@ test('official alpha.3 onboarding saves a synthetic key and the managed Host use
     await workbench.getByPlaceholder('输入 API 密钥', { exact: true }).fill(key); await expect(save).toBeEnabled(); await save.click(); await expect(save).toHaveCount(0);
     await expect(workbench.getByRole('button', { name: /DeepSeek-V4.1-Flash/ })).toBeVisible();
     const common = (await state(page)).sharedData!; expect(await readFile(common.credentialsPath, 'utf8')).toContain(key);
+    // Only fail the account-login attempt; credential saves use the actual Host.
+    await workbench.route('**/api/account/startSignIn', async route => {
+      const input = route.request().postDataJSON(); await route.fulfill({ json: { type: 'server-response', rpcId: input.rpcId, result: { ok: false, error: { code: 'synthetic-login-failure', message: 'Synthetic offline account flow.' } } } });
+    });
+    await workbench.getByRole('button', { name: '账号菜单', exact: true }).click(); await workbench.getByRole('menuitem', { name: '登录', exact: true }).click();
+    await workbench.getByRole('button', { name: '添加 API Key', exact: true }).click();
+    await workbench.getByPlaceholder('输入 API 密钥', { exact: true }).fill(replacement); await save.click(); await expect(save).toHaveCount(0);
+    await expect.poll(async () => (await readFile(common.credentialsPath, 'utf8')).includes(replacement), { timeout: 10000 }).toBe(true);
     const settings = await rpc(workbench, 'settings/describe', {}) as { namespaces: Array<{ ns: string; revision: number }> };
     const namespace = settings.namespaces.find(value => value.ns === 'llm-deepseek')!;
     await rpc(workbench, 'settings/mutate', { ns: namespace.ns, expectedRevision: namespace.revision, ops: [{ op: 'set', path: ['baseURL'], value: `http://127.0.0.1:${port}/v1` }] });

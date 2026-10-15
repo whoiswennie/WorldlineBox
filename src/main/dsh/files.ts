@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { Stats } from 'node:fs';
 import { readChunks, copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from './disk';
 import path from 'node:path';
 
@@ -39,9 +40,12 @@ export async function hashFile(file: string, signal?: AbortSignal, size?: number
 
 export interface TreeFile { path: string; sha256: string; size: number }
 export interface TreeInventory { files: TreeFile[]; contentSha256: string; fileCount: number; byteLength: number }
-export async function inventoryTree(root: string, signal?: AbortSignal, progress?: (count: number, file: string) => Promise<void>): Promise<TreeInventory> {
+export interface TreeHashCacheEntry { fingerprint: string; sha256: string }
+export async function inventoryTree(root: string, signal?: AbortSignal, progress?: (count: number, file: string) => Promise<void>, cache?: Map<string, TreeHashCacheEntry>): Promise<TreeInventory> {
   let active = 0; let count = 0;
   const queue: Array<() => void> = [];
+  const fingerprints = new Map<string, string>();
+  const fingerprint = (stat: Stats) => JSON.stringify([stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino, stat.dev]);
   const limit = async <T>(work: () => Promise<T>): Promise<T> => {
     if (active >= 32) await new Promise<void>(resolve => queue.push(resolve));
     else active++;
@@ -58,6 +62,7 @@ export async function inventoryTree(root: string, signal?: AbortSignal, progress
       if (stat.isSymbolicLink()) throw new Error(`Linked file is not allowed in a sealed tree: ${relative}`);
       if (stat.isDirectory()) return walk(path.join(directory, entry.name), relative);
       if (!stat.isFile()) throw new Error(`Unsupported file: ${relative}`);
+      if (cache) fingerprints.set(relative, fingerprint(stat));
       return [{ path: relative, sha256: '', size: stat.size }];
     }));
     const failure = groups.find(result => result.status === 'rejected');
@@ -71,7 +76,14 @@ export async function inventoryTree(root: string, signal?: AbortSignal, progress
     while (next < files.length) {
       const index = next++; const file = files[index]!;
       await progress?.(index, file.path);
+      const stamp = fingerprints.get(file.path); const previous = cache?.get(file.path);
+      if (previous && previous.fingerprint === stamp) { file.sha256 = previous.sha256; continue; }
       file.sha256 = await hashFile(contained(root, file.path), signal, file.size);
+      if (cache) {
+        const after = await lstat(contained(root, file.path));
+        if (!after.isFile() || after.isSymbolicLink() || fingerprint(after) !== stamp) throw new Error('File changed during integrity verification.');
+        cache.set(file.path, { fingerprint: stamp!, sha256: file.sha256 });
+      }
     }
   }));
   const failure = hashed.find(result => result.status === 'rejected');
