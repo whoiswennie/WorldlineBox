@@ -10,6 +10,8 @@ import { removeManaged } from '../../src/main/dsh/files';
 import type { OperationContext } from '../../src/main/dsh/operations';
 import { DSH_TASK_API_KEY_REF, type DshTaskExecutionConnection } from '../../src/main/dsh/task-connection';
 import * as processTools from '../../src/main/dsh/instance-process';
+import type { DshRuntime } from '../../src/shared/dsh-launcher';
+import { dshCompatibilityCheckIds } from '../../src/shared/dsh-runtime-compatibility';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await removeManaged(os.tmpdir(), root); });
@@ -47,7 +49,12 @@ process.stdin.setEncoding('utf8');process.stdin.on('data',text=>prompt+=text);pr
   await writeFile(path.join(rootPath, 'cli', 'shim.cjs'), shim);
   const selection = (id: string): DshCliSelection => ({ instance: { id, name: id, runtimeId: `runtime-${id}`, profile: 'web', status: 'stopped', createdAt: '', updatedAt: '',
     homePath: path.join(rootPath, id, 'home'), agentsPath: path.join(rootPath, id, 'agents'), workspacePath: rootPath, browserPartition: `persist:${id}`, isDefault: false },
-    plan: { executable: process.execPath, cli: 'selected-native-cli.js', env: {} }, env: { ...process.env }, workspacePath: rootPath, routingPatch: 'private.patch', runtimeVersion: id === 'instance-a' ? '0.2.0-rc.2' : '0.2.1-alpha.2' });
+    plan: { executable: process.execPath, cli: 'selected-native-cli.js', env: {} }, env: { ...process.env }, workspacePath: rootPath, routingPatch: 'private.patch', runtimeVersion: id === 'instance-a' ? '0.2.0-rc.2' : '0.2.1-alpha.2',
+    runtime: { id: `runtime-${id}`, version: 'synthetic', nodeVersion: process.versions.node, platform: 'win32-x64', adapter: 'node-cli-web-v1',
+      source: 'synthetic transport fixture', sourceSha256: 'a'.repeat(64), installedAt: '', fileCount: 0, byteLength: 0, contentSha256: 'a'.repeat(64), compatibility: {
+      runtimeId: `runtime-${id}`, contentSha256: 'a'.repeat(64), contract: 'synthetic transport fixture', status: 'passed', startedAt: '', peers: [],
+      checks: dshCompatibilityCheckIds.map(id => ({ id, status: 'passed', detail: 'synthetic transport fixture' })),
+    } } as DshRuntime });
   let selected = 'instance-a'; const pins: string[] = []; const removed: string[] = []; const captured: DshCliSelection[] = []; let eventHook: ((type: string, id: string) => void) | undefined;
   let disposeHook: (() => Promise<void>) | undefined;
   const broker = new DshTaskBroker({ rootPath, getSelection: async id => selection(id ?? selected), pin: async context => {
@@ -176,7 +183,7 @@ describe('Pinned DSH task broker', () => {
     await test.broker.execute({ prompt: 'fixture' }, test.operation());
     let pinned = false;
     const broker = new DshTaskBroker({ rootPath: test.rootPath,
-      getSelection: async () => ({ ...test.captured[0]!, runtimeVersion: '0.1.0-unknown' }),
+      getSelection: async () => ({ ...test.captured[0]!, runtimeVersion: '0.1.0-unknown', runtime: undefined }),
       pin: async () => { pinned = true; throw new Error('No private key may enter an uninspected runtime.'); } });
     const connection: DshTaskExecutionConnection = { provider: 'deepseek-official', model: 'deepseek-flash', baseURL: 'https://api.deepseek.com/anthropic', apiKey: 'unknown-runtime-key-fixture' };
     await expect(broker.execute({ prompt: 'fixture' }, test.operation(), connection)).rejects.toThrow('could not prepare');

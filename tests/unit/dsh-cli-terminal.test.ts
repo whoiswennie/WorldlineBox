@@ -9,6 +9,8 @@ import { Script } from 'node:vm';
 import { DshCliTerminal, activeDshCliUses, externalShimSource, maskDshTerminalOutput, withDshCliExclusive, type DshCliSelection } from '../../src/main/dsh/cli-terminal';
 import { inventoryTree } from '../../src/main/dsh/files';
 import { instanceEnvironment } from '../../src/main/dsh/instance-process';
+import { compatibilityContract } from '../../src/main/dsh/runtime-compatibility';
+import { dshCompatibilityCheckIds } from '../../src/shared/dsh-runtime-compatibility';
 import type { DshInstance } from '../../src/shared/dsh-launcher';
 import { resolvePortableTools } from '../../src/main/portable-tools';
 
@@ -59,6 +61,12 @@ else{let task='';process.stdin.on('data',chunk=>task+=chunk);process.stdin.on('e
     selections.push({ instance, plan, env, workspacePath, routingPatch, nativeCli: plan.cli, nativeArgs: ['web', '--patch', routingPatch], runtimeVersion });
   }
   await writeFile(path.join(root, 'runtimes.json'), JSON.stringify(records));
+  // Synthetic transport-only receipts. Actual compatibility is exercised separately with real SDKs.
+  await mkdir(path.join(root, 'compatibility'), { recursive: true });
+  for (const record of records) await writeFile(path.join(root, 'compatibility', `${record.id}.json`), JSON.stringify({
+    runtimeId: record.id, contentSha256: record.contentSha256, contract: compatibilityContract(), status: 'passed',
+    startedAt: new Date().toISOString(), peers: [], checks: dshCompatibilityCheckIds.map(id => ({ id, status: 'passed', detail: 'synthetic transport fixture' })),
+  }));
   await writeFile(path.join(root, 'instances.json'), JSON.stringify(selections.map(selection => selection.instance)));
   await writeFile(path.join(root,'network.json'),JSON.stringify({proxyMode:'direct',npmRegistry:'https://registry.npmjs.org',pythonIndex:'https://pypi.org/simple'}));
   const outputs: string[] = []; const terminal = new DshCliTerminal({ rootPath: root, onChanged: () => undefined, onOutput: event => {

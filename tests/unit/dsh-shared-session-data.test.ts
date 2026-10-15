@@ -115,10 +115,10 @@ describe('shared Session and default Workspace routing', () => {
     }
   });
 
-  it('rejects a future shared generation and an unverified runtime adapter without changing existing logs', async () => {
+  it('rejects unknown data generations without gating the format inspector on release names', async () => {
     const { sharedRoot } = await setup(); const paths = await prepareSharedSessionData(sharedRoot);
     const current = await session(paths.sessionsPath, paths.workspacePath, 'known-id');
-    await expect(assertSharedSessionCompatibility(sharedRoot, 'future-runtime')).rejects.toThrow('no verified'); expect(await readFile(current.file)).toEqual(current.bytes);
+    await expect(assertSharedSessionCompatibility(sharedRoot, 'future-runtime')).resolves.toBeUndefined(); expect(await readFile(current.file)).toEqual(current.bytes);
     const future = await session(paths.sessionsPath, paths.workspacePath, 'future-id', 'future history', true, 99);
     await expect(prepareSharedSessionData(sharedRoot)).rejects.toThrow('Unsupported'); expect(await readFile(future.file)).toEqual(future.bytes);
   });

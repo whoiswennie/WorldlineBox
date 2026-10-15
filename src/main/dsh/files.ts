@@ -119,6 +119,16 @@ export async function removeManaged(root: string, target: string): Promise<void>
   await rm(actual, { recursive: true, force: true });
 }
 
+/** Verify every resolved ancestor before a directory is moved or used for scratch data. */
+export async function assertOwnedDirectory(root: string, directory: string): Promise<void> {
+  const relative = path.relative(path.resolve(root), path.resolve(directory));
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Directory is outside managed storage.');
+  const stat = await lstat(directory); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Managed directory cannot be a link.');
+  const expected = path.join(await realpath(root), relative); const actual = await realpath(directory);
+  const key = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+  if (key(expected) !== key(actual)) throw new Error('Managed directory resolves through an unexpected link.');
+}
+
 export function redact(text: string): string {
   return text.replace(/(https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+[^?\s"']*\?)[^\s"']+/gi, '$1[redacted]')
     .replace(/([?&](?:token|key|api_key|auth|access_token)=)[^\s&#"']+/gi, '$1[redacted]')

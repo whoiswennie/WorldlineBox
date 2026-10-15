@@ -57,7 +57,7 @@ DeepSeek Harness.exe --expose-internals resources/app.asar/dsh/node_modules/@dee
 标题等投影使用只读 observation 的准确切面，保留为有界内存摘要；不把可能含恢复事件的
 冷读切面写回 checkpoint。派生列表摘要服务于首次读取与重连，关闭插件时恢复原处理器。
 程序制品保持密封，插件清单、私有工作区排序与 UI 偏好保持独立；用户删除的工作区注册不会
-被后台重新创建。已实测适配 `0.2.0-rc.2` 与 `0.2.1-alpha.2`；Alpha 的冷会话摘要参数为 `{header, formatStatus}`，按版本保留格式状态。精确 allowlist 由 `shared/dsh-validated-runtime.ts` 供前后端共同使用。其它版本默认独立存档，不把兼容性未知的存档写入共同目录。
+被后台重新创建。冷摘要通过实际输入与返回值协商，不按发行版本号选择调用方式。共享资格来自安装后自动执行的隔离原生检测，绑定完整制品 SHA-256 和检测代码摘要；前后端均读取检测证据，不再维护发行版本白名单。流程、检查项和失败边界见 [运行版本兼容性检测](dsh-runtime-compatibility.md)。
 
 模型设置只共享当前官方适配器的四个 namespace：`llm-deepseek`、`llm-pi-ai`、
 `llm-deepseek-account` 和 `agent-default-model`。`shared-settings.ts` 按已知字段读取和改写，
@@ -96,7 +96,7 @@ driver 发送任务并保留会话 id；`/new` 清除当前会话选择，`/exit
 `cli-profile-mode.ts` 沿用实例私有 web profile 与已安装插件树，附加官方 `dsh-headless`
 bundle，再关闭 `web-startup`、`webserver`、`web-runtime`、`connection`、`modules` 等
 Web carrier 条目。外置 patch 不改 sealed runtime、manifest 或插件安装；共享存储技术路由
-随后附加。两个已验证版本使用共同存档；较旧版本只有在实际随包 manifest 与 Web / headless transport 能力通过静态检查时才采用原生 CLI 模式，并保持私人存档。
+随后附加。任何发行版本都可以接受同一套实际能力检查；共享存档必须具有当前制品的通过证据。原生 CLI 组合始终检查随包 manifest 与 Web / headless transport 行，未知能力不会因为版本名称较新而获得放行。
 
 `terminal.open/input/resize/select/clear/export/remove/close` 管理多会话真实 ConPTY。
 `node-pty` 在独立 RunAsNode worker 内加载，主进程先把 worker 放入 Windows Job，再允许其创建 PTY。

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { DSH_OFFICIAL_WINDOWS_URL, dshRuntimeSchema, type DshRuntime } from '../../shared/dsh-launcher';
-import { contained, copyTree, hashFile, inventoryTree, readJson, removeManaged, safeRelative, type TreeInventory } from './files';
+import { assertOwnedDirectory, contained, copyTree, hashFile, inventoryTree, readJson, removeManaged, safeRelative, type TreeInventory } from './files';
 import type { OperationContext } from './operations';
 import { fetchHttpsDownload, type HttpsDownloadFetch } from './https-download';
 import { atomicRuntimeJson, publishSealedArtifact, retryFileOperation } from './runtime-commit';
@@ -14,6 +14,8 @@ import type { DshNodePackRuntimeLock } from '../../shared/dsh-pack-runtime';
 import { prepareNodeRuntimeLockInstall,validatePortableNodeRuntimeLock } from './node-runtime-lock';
 import { nodeRuntimePayloadShaFromInventory } from './node-runtime-payload';
 import { prepareOfficialNodeRuntime, validateNodeRuntimeInventory, validateOfficialNodeProgram, validateOfficialNodeRelease, type NodeInstallNetwork, type NodeInstallTools, type NodeRuntimeReceipt, type NodeRuntimeInstallPreparation, type OfficialNodeRelease } from './node-runtime-service';
+import { RuntimeCompatibility, assertRuntimeCompatibility } from './runtime-compatibility';
+import type { DshCompatibilityReport } from '../../shared/dsh-runtime-compatibility';
 
 export interface RuntimeServiceLike {
   list(): DshRuntime[];
@@ -84,16 +86,35 @@ export class RuntimeService implements RuntimeServiceLike {
   private importing = false;
   private readonly installingVersions = new Set<string>();
   private writes = Promise.resolve();
+  private readonly compatibility: RuntimeCompatibility;
+  private maintaining = false;
   constructor(private readonly options: {
     rootPath: string; sevenZipPath: string; onChanged: () => void;
     fetch?: HttpsDownloadFetch;
     nodeTools?: (signal: AbortSignal) => Promise<NodeInstallTools>;
     nodeInstallNetwork?: (signal: AbortSignal) => Promise<NodeInstallNetwork>;
-  }) {}
+  }) { this.compatibility = new RuntimeCompatibility({ rootPath: options.rootPath, runtimes: this, onChanged: options.onChanged }); }
   async init(): Promise<void> {
     await mkdir(path.join(this.options.rootPath, 'runtimes'), { recursive: true });
     const raw = await readJson<unknown[]>(path.join(this.options.rootPath, 'runtimes.json')) ?? [];
     this.records = raw.map(record => dshRuntimeSchema.parse(record));
+    for (const record of this.records) {
+      const destination = contained(path.join(this.options.rootPath, 'runtimes'), record.id);
+      if (await lstat(destination).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; })) continue;
+      // Crash before the index commit: restore the still-registered artifact. After the
+      // index commit the ID is absent, so a pending physical deletion cannot resurrect.
+      const trashRoot = path.join(this.options.rootPath, 'runtime-trash');
+      if (await lstat(trashRoot).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; })) await assertOwnedDirectory(this.options.rootPath, trashRoot);
+      const entries = await readdir(trashRoot, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.isSymbolicLink() || !entry.name.startsWith(`${record.id}-`)) continue;
+        const source = contained(trashRoot, entry.name);
+        if ((await this.readCompleteArtifact(source, record.id))?.contentSha256 === record.contentSha256) {
+          await assertOwnedDirectory(this.options.rootPath, source); await assertOwnedDirectory(this.options.rootPath, path.dirname(destination));
+          await retryFileOperation(() => rename(source, destination)); break;
+        }
+      }
+    }
     for(const record of this.records)if(record.adapter==='node-cli-web-v1'&&(!record.npmIntegrity||!record.dependencyLockSha256)){
       const receipt=await this.nodeSourceIdentity(record.id);
       record.npmIntegrity=receipt.npmIntegrity;record.dependencyLockSha256=receipt.dependencyLockSha256;
@@ -106,9 +127,13 @@ export class RuntimeService implements RuntimeServiceLike {
       if (record) this.records.push(record);
     }
     await this.save();
+    await this.compatibility.init();
   }
-  list(): DshRuntime[] { return this.records.map(record => ({ ...record })); }
-  get(id: string): DshRuntime { const record = this.records.find(record => record.id === id); if (!record) throw new Error('This DSH runtime is not installed.'); return { ...record }; }
+  list(): DshRuntime[] { return this.records.map(record => ({ ...record, compatibility: this.compatibility.report(record) })); }
+  get(id: string): DshRuntime { const record = this.records.find(record => record.id === id); if (!record) throw new Error('This DSH runtime is not installed.'); return { ...record, compatibility: this.compatibility.report(record) }; }
+  checkCompatibility(id: string, operation?: OperationContext): Promise<DshCompatibilityReport> { return this.compatibility.check(this.get(id), operation); }
+  async assertSharedCompatible(id: string): Promise<void> { await assertRuntimeCompatibility(this.options.rootPath, this.get(id)); }
+  unchecked(): DshRuntime[] { return this.list().filter(record => this.compatibility.needsCheck(record)); }
   directory(id: string): string { this.get(id); return contained(path.join(this.options.rootPath, 'runtimes'), `${id}/program`); }
   plan(id: string) {
     const runtime = this.get(id);
@@ -123,17 +148,62 @@ export class RuntimeService implements RuntimeServiceLike {
   }
   async verify(id: string, signal?: AbortSignal): Promise<void> {
     const record = this.get(id);
-    const sealed = await readJson<TreeInventory>(contained(path.join(this.options.rootPath, 'runtimes'), `${id}/seal.json`));
-    const current = await inventoryTree(this.directory(id), signal);
-    if (!sealed || current.contentSha256 !== sealed.contentSha256 || current.contentSha256 !== record.contentSha256) throw new Error('DSH runtime files changed or are missing. Import a clean installer; existing instance data is preserved.');
+    try {
+      const sealed = await readJson<TreeInventory>(contained(path.join(this.options.rootPath, 'runtimes'), `${id}/seal.json`));
+      const current = await inventoryTree(this.directory(id), signal);
+      if (!sealed || current.contentSha256 !== sealed.contentSha256 || current.contentSha256 !== record.contentSha256) throw new Error('Runtime seal mismatch.');
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const message = 'DSH runtime files changed or are missing. Import a clean installer; existing instance data is preserved.';
+      await this.compatibility.invalidate(record, message); throw new Error(message, { cause: error });
+    }
   }
   async delete(id: string, referenced: boolean): Promise<void> {
-    if (referenced || this.importing) throw new Error('This runtime is still used by an instance, snapshot or pack.');
-    this.get(id);
-    this.records = this.records.filter(record => record.id !== id);
-    await this.save();
-    await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'runtimes', id));
-    this.options.onChanged();
+    if (referenced) throw new Error('此运行版本仍被实例、快照、整合包或任务引用，请先处理页面列出的引用。');
+    if (this.importing || this.installingVersions.size || this.maintaining) throw new Error('请等待版本安装或清理操作结束。');
+    const record = this.get(id); this.maintaining = true;
+    const source = contained(path.join(this.options.rootPath, 'runtimes'), id);
+    const trash = path.join(this.options.rootPath, 'runtime-trash', `${id}-${randomUUID()}`);
+    try {
+      const info = await lstat(source);
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('运行版本目录不是受管的普通目录，已停止删除。');
+      await assertOwnedDirectory(this.options.rootPath, source);
+      await mkdir(path.dirname(trash), { recursive: true });
+      await assertOwnedDirectory(this.options.rootPath, path.dirname(trash));
+      await retryFileOperation(() => rename(source, trash));
+      const previous = this.records; this.records = this.records.filter(item => item.id !== id);
+      try { await this.save(); }
+      catch (error) { this.records = previous; await retryFileOperation(() => rename(trash, source)); throw error; }
+      this.options.onChanged();
+      // A failed physical removal stays in runtime-trash, which startup never re-registers.
+      try { await removeManaged(this.options.rootPath, trash); }
+      catch (error) { throw new Error('版本已从安装列表移除，但部分文件仍被系统占用。请稍后使用「清理下载缓存」继续清理。', { cause: error }); }
+      await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'compatibility', `${id}.json`));
+      if (!this.records.some(item => item.sourceSha256 === record.sourceSha256)) {
+        await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'cache', `${record.sourceSha256}.exe`));
+      }
+    } finally { this.maintaining = false; this.options.onChanged(); }
+  }
+  async cleanup(operation: OperationContext): Promise<void> {
+    if (this.importing || this.installingVersions.size || this.maintaining) throw new Error('请等待版本安装或清理操作结束。');
+    this.maintaining = true;
+    try {
+      for (const name of ['cache', 'staging', 'quarantine', 'runtime-trash', 'compatibility-scratch']) {
+        const directory = path.join(this.options.rootPath, name);
+        const present = await lstat(directory).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+        if (!present) continue;
+        await assertOwnedDirectory(this.options.rootPath, directory);
+        const entries = await readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; });
+        for (const entry of entries) {
+          operation.signal.throwIfAborted();
+          if (name === 'cache' && !/^(?:[a-f0-9]{64}\.exe|[a-z0-9-]+\.download)$/.test(entry.name)) continue;
+          const target = contained(directory, entry.name); const info = await lstat(target);
+          if (info.isSymbolicLink()) throw new Error(`拒绝清理链接目录：${name}/${entry.name}`);
+          await operation.update(`正在清理 ${name}/${entry.name}`);
+          await removeManaged(this.options.rootPath, target); await operation.log(`已清理 ${name}/${entry.name}`);
+        }
+      }
+    } finally { this.maintaining = false; this.options.onChanged(); }
   }
   private save(): Promise<void> {
     const records = structuredClone(this.records);
@@ -212,7 +282,9 @@ export class RuntimeService implements RuntimeServiceLike {
     });
     await this.writes;
     await operation.log(`Imported DSH ${record.version}; source SHA-256 ${record.sourceSha256}; sealed ${record.fileCount} files.`);
-    return { ...record };
+    await operation.update('正在隔离检测共享存档兼容性');
+    await this.checkCompatibility(record.id, operation);
+    return this.get(record.id);
   }
   async download(operation: OperationContext, expectedSha256?: string): Promise<DshRuntime> {
     if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Official DSH installer management currently requires Windows x64.');
@@ -256,7 +328,7 @@ export class RuntimeService implements RuntimeServiceLike {
   async installNode(release: OfficialNodeRelease, operation: OperationContext,prepareInstall?:NodeRuntimeInstallPreparation,expectedLock?:DshNodePackRuntimeLock): Promise<DshRuntime> {
     release = validateOfficialNodeRelease(release);
     if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Managed DSH Node runtimes currently require Windows x64.');
-    if (this.importing || this.installingVersions.has(release.version)) throw new Error('This runtime version is already being installed.');
+    if (this.importing || this.maintaining || this.installingVersions.has(release.version)) throw new Error('This runtime version is already being installed or cleaned.');
     if (!this.options.nodeTools || !this.options.nodeInstallNetwork) throw new Error('Managed Node tools and installation network settings are unavailable.');
     this.installingVersions.add(release.version);
     const staging = path.join(this.options.rootPath, 'staging', randomUUID());
@@ -276,7 +348,7 @@ export class RuntimeService implements RuntimeServiceLike {
       if(expectedLock&&nodeRuntimePayloadShaFromInventory(seal)!==expectedLock.payloadSha256)throw new Error('Replayed runtime SDK and binary payload does not match the portable source identity.');
       await validateNodeRuntimeInventory(program, release.version, seal, operation.signal);
       const existing = this.records.find(record => record.contentSha256 === seal.contentSha256);
-      if (existing) { await this.verify(existing.id, operation.signal); return { ...existing }; }
+      if (existing) { await this.verify(existing.id, operation.signal); if (!existing.compatibility) await this.checkCompatibility(existing.id, operation); return this.get(existing.id); }
       const record = dshRuntimeSchema.parse({
         id: `runtime-${seal.contentSha256.slice(0, 24)}`, version: release.version,
         nodeVersion: receipt.nodeVersion, npmVersion: receipt.npmVersion,
@@ -310,7 +382,7 @@ export class RuntimeService implements RuntimeServiceLike {
     return result;
   }
   async import(source: string, kind: 'installer' | 'directory', provenance: string, operation: OperationContext, knownDigest?: string): Promise<DshRuntime> {
-    if (this.importing) throw new Error('Another runtime import is running.');
+    if (this.importing || this.maintaining) throw new Error('Another runtime import or cleanup is running.');
     this.importing = true;
     let staging = path.join(this.options.rootPath, 'staging', randomUUID());
     let retained = false;

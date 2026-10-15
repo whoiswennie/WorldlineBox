@@ -6,10 +6,8 @@ import { launchCli, terminateOwnedProcess, type RuntimeLaunchPlan } from './inst
 import { retryFileOperation } from './runtime-commit';
 import { writeSharedWorkspaceAdapter } from './shared-workspace-adapter';
 import { runtimeProgramDirectory } from './runtime-sdk';
-import { supportsSharedDataRuntime } from './validated-runtime';
 import { buildPrivateSkillRouting } from './private-skills-routing';
 
-export const SHARED_DATA_RUNTIME_VERSION = '0.2.0-rc.2';
 export interface TechnicalRoutingPatch { id: string; config: Record<string, unknown> }
 export interface SharedCredentialsMigration {
   format: 'worldlinebox-dsh-credentials-migration-v1';
@@ -44,7 +42,6 @@ export async function writeTechnicalRoutingPatch(options: {
   instanceRoot: string; sharedRoot: string; runtimeVersion: string;
   patches?: readonly TechnicalRoutingPatch[]; signal?: AbortSignal; workspacePath?: string; programDirectory?: string;
 }): Promise<string> {
-  if (!supportsSharedDataRuntime(options.runtimeVersion)) throw new Error('No verified shared-data adapter exists for this DSH runtime version.');
   const allowed = new Set(['credentials', 'session-persistence-jsonl', 'attachment-local', 'workspace-controller']);
   const patches = [...credentialRoutingPatches(options.sharedRoot), ...(options.patches ?? [])];
   const ids = new Set<string>();
@@ -74,7 +71,6 @@ export async function migrateSharedCredentials(options: {
   instanceRoot: string; sourceInstanceId: string; sharedRoot: string; runtimeVersion: string;
   sourceRelativePath?: string; dryRun?: boolean; plan: RuntimeLaunchPlan; env: NodeJS.ProcessEnv; signal?: AbortSignal;
 }): Promise<SharedCredentialsMigration> {
-  if (!supportsSharedDataRuntime(options.runtimeVersion)) throw new Error('No verified credential migration adapter exists for this DSH runtime version.');
   safeRelative(options.sourceInstanceId);
   const root = await realpath(options.instanceRoot);
   const sourceRelative = safeRelative(options.sourceRelativePath ?? 'home/.credentials.yaml');

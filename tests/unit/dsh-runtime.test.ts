@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createPackage } from '@electron/asar';
@@ -27,6 +27,28 @@ async function fixture(root: string, version: string) {
 }
 
 describe('fixed DSH runtime inventory', () => {
+  it('deletes installed bytes without resurrection, cleans only runtime scratch, and recovers an interrupted removal before the index commit', async () => {
+    const root = await temporary(); const manager = path.join(root, 'manager');
+    const service = new RuntimeService({ rootPath: manager, sevenZipPath: 'unused', onChanged() {} });
+    const operations = new OperationStore(path.join(manager, 'operations'), () => undefined);
+    await service.init(); await operations.init();
+    await operations.run('import', 'fixture', undefined, async op => { await service.import(await fixture(root, '0.9.0-delete'), 'directory', 'fixture', op); });
+    await operations.settle(); const runtime = service.list()[0]!;
+    await mkdir(path.join(manager, 'shared'), { recursive: true }); await writeFile(path.join(manager, 'shared', 'precious-save'), 'preserve');
+    await mkdir(path.join(manager, 'runtime-trash'), { recursive: true });
+    await rename(path.dirname(service.directory(runtime.id)), path.join(manager, 'runtime-trash', `${runtime.id}-crash`));
+    const recovered = new RuntimeService({ rootPath: manager, sevenZipPath: 'unused', onChanged() {} }); await recovered.init();
+    expect(recovered.list()).toHaveLength(1); await recovered.verify(runtime.id);
+    await recovered.delete(runtime.id, false); expect(recovered.list()).toHaveLength(0);
+    const restarted = new RuntimeService({ rootPath: manager, sevenZipPath: 'unused', onChanged() {} }); await restarted.init(); expect(restarted.list()).toHaveLength(0);
+    for (const name of ['staging', 'quarantine', 'runtime-trash', 'compatibility-scratch']) { await mkdir(path.join(manager, name, 'unused'), { recursive: true }); await writeFile(path.join(manager, name, 'unused', 'scratch'), 'discard'); }
+    await mkdir(path.join(manager, 'cache'), { recursive: true }); await writeFile(path.join(manager, 'cache', `${'a'.repeat(64)}.exe`), 'installer'); await writeFile(path.join(manager, 'cache', 'unknown-user-file'), 'preserve');
+    await operations.run('runtime.cleanup', 'fixture', undefined, op => restarted.cleanup(op)); await operations.settle();
+    expect(operations.list()[0]?.status).toBe('succeeded');
+    expect(await readdir(path.join(manager, 'cache'))).toEqual(['unknown-user-file']);
+    expect(await readFile(path.join(manager, 'shared', 'precious-save'), 'utf8')).toBe('preserve');
+    for (const name of ['staging', 'quarantine', 'runtime-trash', 'compatibility-scratch']) expect(await readdir(path.join(manager, name))).toEqual([]);
+  });
   it('keeps two exact releases independently, deduplicates content, detects drift and preserves source installs', async () => {
     const root = await temporary();
     const service = new RuntimeService({ rootPath: path.join(root, 'manager'), sevenZipPath: 'unused', onChanged: () => undefined });
@@ -45,7 +67,7 @@ describe('fixed DSH runtime inventory', () => {
     await writeFile(path.join(service.directory(runtime.id), 'DeepSeek Harness.exe'), 'modified');
     await expect(service.verify(runtime.id)).rejects.toThrow('changed');
     expect((await inventoryTree(a)).contentSha256).toBe(sourceSeal.contentSha256);
-    await expect(service.delete(runtime.id, true)).rejects.toThrow('used');
+    await expect(service.delete(runtime.id, true)).rejects.toThrow('引用');
     const relaunched = new RuntimeService({ rootPath: path.join(root, 'manager'), sevenZipPath: 'unused', onChanged: () => undefined });
     await relaunched.init(); expect(relaunched.list()).toEqual(service.list());
   });

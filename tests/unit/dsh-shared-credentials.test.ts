@@ -23,7 +23,7 @@ describe('explicit shared storage routing', () => {
     expect(parse(await readFile(patch, 'utf8'))).toEqual([...credentialRoutingPatches(shared), { id: 'session-persistence-jsonl', config: { root: path.join(shared, 'sessions'), compression: 'zstd' } }]);
     expect(await readFile(path.join(privateRoot, 'home/profiles/web/cordis.patch.yml'), 'utf8')).toBe(original);
     await expect(writeTechnicalRoutingPatch({ instanceRoot: privateRoot, sharedRoot: shared, runtimeVersion: '0.2.0-rc.2', patches: [{ id: 'ui-settings-general', config: {} }] })).rejects.toThrow('Unsupported');
-    await expect(writeTechnicalRoutingPatch({ instanceRoot: privateRoot, sharedRoot: shared, runtimeVersion: 'unverified' })).rejects.toThrow('No verified');
+    await expect(writeTechnicalRoutingPatch({ instanceRoot: privateRoot, sharedRoot: shared, runtimeVersion: 'unlisted-release' })).resolves.toBe(patch);
   });
   it('refuses a linked metadata directory before writing into its external target', async () => {
     const root = await setup(); const privateRoot = path.join(root, 'private'); const external = path.join(root, 'external');

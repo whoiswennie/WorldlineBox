@@ -18,6 +18,23 @@
   isolation: isolate;
 }
 
+.launcher-compatibility { margin-top: 20px; padding: 18px 20px; border: 1px solid var(--ui-border-subtle); border-radius: 14px; background: var(--ui-surface-canvas); }
+.launcher-compatibility-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.launcher-compatibility-heading p, .launcher-compatibility li p { margin: 5px 0 0; font-size: 12px; color: var(--ui-content-secondary); line-height: 1.65; overflow-wrap: anywhere; }
+.launcher-compatibility summary { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 16px; cursor: pointer; color: var(--ui-content-secondary); font-size: 12px; }
+.launcher-compatibility-status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 7px; background: var(--ui-surface-pane); }
+.launcher-compatibility-status.is-passed, .launcher-compatibility li.is-passed .launcher-compatibility-check-icon { color: #27846b; }
+.launcher-compatibility-status.is-failed, .launcher-compatibility li.is-failed .launcher-compatibility-check-icon { color: #cc655c; }
+.launcher-compatibility ol { list-style: none; padding: 0; margin: 16px 0 8px; }
+.launcher-compatibility li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; padding: 13px 0; border-top: 1px solid var(--ui-border-subtle); }
+.launcher-compatibility li strong { font-size: 13px; font-weight: 550; }
+.launcher-compatibility-check-icon { color: var(--ui-content-secondary); padding-top: 2px; }
+.launcher-compatibility-check-status { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; font-size: 12px; color: var(--ui-content-secondary); }
+.launcher-compatibility-check-status small { font-variant-numeric: tabular-nums; opacity: .7; }
+.launcher-runtime-references { margin-top: 14px; padding: 12px 16px; border-radius: 10px; background: var(--ui-surface-canvas); color: var(--ui-content-secondary); font-size: 12px; }
+.launcher-runtime-references ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.8; }
+@media (max-width: 1000px) { .launcher-compatibility-heading { align-items: flex-start; flex-direction: column; } }
+
 .launcher-titlebar {
   display: flex;
   align-items: center;

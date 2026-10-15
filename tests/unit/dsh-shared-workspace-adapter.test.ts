@@ -30,7 +30,7 @@ describe('owned shared Workspace adapter', () => {
     expect(entry).toMatchObject({ id: 'worldline-shared-workspace', insert: true, config: { workspacePath: await import('node:fs/promises').then(fs => fs.realpath(paths.workspacePath)) } });
     expect((await readFile(entry.name, 'utf8')).startsWith('// WorldlineBox shared workspace adapter v1')).toBe(true);
     await writeSharedWorkspaceAdapter(options); expect((await stat(entry.name)).mtimeMs).toBe(before.mtimeMs);
-    await expect(writeSharedWorkspaceAdapter({ ...options, runtimeVersion: 'future' })).rejects.toThrow('No verified');
+    await expect(writeSharedWorkspaceAdapter({ ...options, runtimeVersion: 'future' })).resolves.toMatchObject({ id: 'worldline-shared-workspace' });
     await writeFile(entry.name, '// user-owned source'); await expect(writeSharedWorkspaceAdapter(options)).rejects.toThrow('unmanaged file');
     const linked = path.join(root, 'linked-instance'); await symlink(instanceRoot, linked, process.platform === 'win32' ? 'junction' : 'dir');
     await expect(writeSharedWorkspaceAdapter({ ...options, instanceRoot: linked })).rejects.toThrow('ordinary private');

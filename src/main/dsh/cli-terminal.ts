@@ -11,7 +11,8 @@ import type { DshInstance, DshRuntime } from '../../shared/dsh-launcher';
 import type * as Koffi from 'koffi';
 import { PTY_WORKER_MARKER, terminalPtyWorkerSource } from './terminal-pty-worker';
 import { CLI_MODEL_OVERLAY_MARKER,cliModelOverlaySource } from './cli-model-overlay';
-import { VERIFIED_SHARED_DATA_RUNTIME_VERSIONS } from './validated-runtime';
+import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
+import { compatibilityContract, readRuntimeCompatibility } from './runtime-compatibility';
 
 const execute = promisify(execFile);
 const OUTPUT_LIMIT = 64 * 1024;
@@ -28,6 +29,7 @@ const ENV_KEYS = new Set(['DSH_HOME', 'DSH_AGENTS_HOME', 'DSH_DESKTOP_NODE_EXECU
 export interface DshCliSelection {
   instance: DshInstance; plan: RuntimeLaunchPlan; env: NodeJS.ProcessEnv; workspacePath: string;
   routingPatch: string; runtimeVersion?: string; nativeCli?: string; nativeArgs?: string[];
+  runtime?: DshRuntime;
 }
 export interface DshTerminalSummary {
   id: string; instanceId: string; runtimeVersion: string; status: 'running' | 'stopped'; cwd: string;
@@ -254,7 +256,7 @@ export class DshCliTerminal {
     const runtime = Array.isArray(records) ? records.find((record: DshRuntime) => record.id === instance.runtimeId) as DshRuntime | undefined : undefined;
     if (!runtime || !/^[a-f0-9]{64}$/.test(runtime.contentSha256)) throw new Error('Selected CLI runtime is not registered.');
     if(selection.runtimeVersion!==undefined&&selection.runtimeVersion!==runtime.version)throw new Error('Selected CLI runtime version does not match its registered identity.');
-    if(dataScope==='shared'&&!VERIFIED_SHARED_DATA_RUNTIME_VERSIONS.includes(runtime.version as typeof VERIFIED_SHARED_DATA_RUNTIME_VERSIONS[number]))throw new Error('This DSH version has no verified shared-data adapter.');
+    if(dataScope==='shared'&&!supportsSharedDataRuntime({...runtime,compatibility:await readRuntimeCompatibility(this.root,runtime)}))throw new Error('共享存档兼容性检测尚未通过，请先在运行版本页执行检测。');
     const executable = runtime.adapter === 'node-cli-web-v1' ? path.join(program, 'bin', 'node.exe')
       : runtime.adapter === 'desktop-cli-web-v1' ? path.join(program, 'DeepSeek Harness.exe') : undefined;
     if (!samePath(instance.homePath, path.join(instanceRoot, 'home')) || !samePath(instance.agentsPath, path.join(instanceRoot, 'agents'))
@@ -424,7 +426,7 @@ const path=require('node:path'),crypto=require('node:crypto'),{spawn,execFileSyn
 const ROOT=${JSON.stringify(rootPath)},CONTEXT=${JSON.stringify(contextFile)},KOFFI=${JSON.stringify(koffiModule)};
 const POWERSHELL=${JSON.stringify(powershellPath())};
 const TOOLCHAIN=${JSON.stringify(toolchain ?? {pathDirectories:[]})};
-const SHARED_VERSIONS=${JSON.stringify(VERIFIED_SHARED_DATA_RUNTIME_VERSIONS)};
+function sharedCompatible(record){const file=path.join(ROOT,'compatibility',record.id+'.json');if(!fs.existsSync(file))return false;const r=json(file);return r.contract===${JSON.stringify(compatibilityContract())}&&r.runtimeId===record.id&&r.contentSha256===record.contentSha256&&r.status==='passed'&&${JSON.stringify(['integrity','native-api','session-roundtrip','writer-lock','workspace','attachments','credentials','model-settings','native-cli','cross-runtime','cleanup'])}.every(id=>r.checks?.some(c=>c.id===id&&c.status==='passed'));}
 const ENV_KEYS=new Set(${JSON.stringify([...ENV_KEYS])});
 const inside=(root,file)=>{const r=path.relative(path.resolve(root),path.resolve(file));return r!=='..'&&!r.startsWith('..'+path.sep)&&!path.isAbsolute(r)};
 const same=(a,b)=>path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase();
@@ -443,7 +445,7 @@ function context(){
  if(!executable||!same(c.executable,executable)||!inside(program,c.nativeCli)||!inside(instance,c.routingPatch)||!(scope==='isolated'?same(c.workspacePath,path.join(instance,'user','Documents','deepseek-harness','default-workspace')):inside(path.join(ROOT,'shared'),c.workspacePath))||!same(c.env.DSH_HOME,path.join(instance,'home'))||!same(c.env.DSH_AGENTS_HOME,path.join(instance,'agents')))throw Error('CLI context paths are not managed');
  ordinary(c.routingPatch);if(!ordinary(c.workspacePath).isDirectory())throw Error('Shared workspace is missing');
  if(!record||record.version!==c.runtimeVersion||record.contentSha256!==c.runtimeContentSha256||seal.contentSha256!==c.runtimeContentSha256||c.runtimeId!=='runtime-'+c.runtimeContentSha256.slice(0,24)||!Array.isArray(seal.files)||seal.files.length>150000)throw Error('CLI runtime seal does not match its selected version');
- if(scope==='shared'&&!SHARED_VERSIONS.includes(record.version))throw Error('This DSH version has no verified shared-data adapter');
+ if(scope==='shared'&&!sharedCompatible(record))throw Error('This DSH version has no verified shared-data adapter');
  if(crypto.createHash('sha256').update(JSON.stringify(seal.files)).digest('hex')!==seal.contentSha256)throw Error('CLI runtime inventory identity changed');
  const expected=new Set();let bytes=0;
  for(const entry of seal.files){if(typeof entry.path!=='string'||entry.path.split(/[\/]/).some(x=>!x||x==='.'||x==='..'||/[:<>"|?*]/.test(x))||!Number.isSafeInteger(entry.size)||entry.size<0||!/^[a-f0-9]{64}$/.test(entry.sha256))throw Error('Invalid sealed runtime entry');const file=path.join(program,entry.path);if(!inside(program,file))throw Error('Runtime path escapes its version');const stats=ordinary(file);if(!stats.isFile()||stats.size!==entry.size||hash(file)!==entry.sha256)throw Error('Selected DSH runtime changed; import a clean version before running CLI');expected.add(path.relative(program,file).toLowerCase());bytes+=entry.size;if(bytes>6*1024**3)throw Error('CLI runtime inventory is too large')}
@@ -472,7 +474,7 @@ function createdAt(pid){const code="[Console]::OutputEncoding=[Text.UTF8Encoding
 function registration(c){const barrier=path.join(ROOT,'shared','.cli-exclusive.lock'),directory=path.join(ROOT,'shared','.cli-users'),file=path.join(directory,process.pid+'.json');if(fs.existsSync(barrier))throw Error('Shared saves are being backed up or migrated; retry after the operation finishes');fs.mkdirSync(directory,{recursive:true});ordinary(directory);const stamp=createdAt(process.pid);if(fs.existsSync(file)){const old=json(file);if(old.pid!==process.pid||old.createdAt!==stamp)fs.unlinkSync(file);else throw Error('This CLI process already owns a running task')}const temporary=file+'.'+crypto.randomUUID()+'.tmp';const record={format:'worldlinebox-dsh-cli-use-v1',instanceId:c.instanceId,pid:process.pid,executable:process.execPath,createdAt:stamp};const publish=()=>{fs.writeFileSync(temporary,JSON.stringify(record),{flag:'wx',mode:0o600});fs.renameSync(temporary,file)};publish();if(fs.existsSync(barrier)){fs.unlinkSync(file);throw Error('Shared saves are being backed up or migrated; retry after the operation finishes')}return{child(child){record.childPid=child.pid;record.childExecutable=c.executable;record.childCreatedAt=createdAt(child.pid);publish()},close(){if(fs.existsSync(file))fs.unlinkSync(file)}}}
 function modelPlan(c,input){
  const canonical=path.join(ROOT,'shared','model-settings.json');
- if((c.dataScope??'shared')!=='shared'||!SHARED_VERSIONS.includes(c.runtimeVersion)||!fs.existsSync(canonical)||['plugin','--version','-V'].includes(input[0]))return;
+ if((c.dataScope??'shared')!=='shared'||!sharedCompatible({id:c.runtimeId,contentSha256:c.runtimeContentSha256})||!fs.existsSync(canonical)||['plugin','--version','-V'].includes(input[0]))return;
  const file=ordinary(canonical);if(!file.isFile()||file.size>8*1024*1024)throw Error('Shared CLI model settings are not readable');
  const explicit=input[0]==='web'||input[0]==='--profile',profile=explicit?(input[0]==='web'?'web':input[1]):'web';
  if(typeof profile!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(profile))throw Error('Invalid CLI profile name');

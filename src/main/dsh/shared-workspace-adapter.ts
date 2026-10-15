@@ -2,7 +2,6 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from './disk';
 import { retryFileOperation } from './runtime-commit';
-import { supportsSharedDataRuntime } from './validated-runtime';
 
 const MARKER = '// WorldlineBox shared workspace adapter v1';
 export interface SharedWorkspaceAdapterEntry {
@@ -13,7 +12,6 @@ export interface SharedWorkspaceAdapterEntry {
 export async function writeSharedWorkspaceAdapter(options: {
   instanceRoot: string; workspacePath: string; runtimeVersion: string; signal?: AbortSignal;
 }): Promise<SharedWorkspaceAdapterEntry> {
-  if (!supportsSharedDataRuntime(options.runtimeVersion)) throw new Error('No verified shared Workspace adapter exists for this runtime.');
   if (!path.isAbsolute(options.instanceRoot) || !path.isAbsolute(options.workspacePath)) throw new Error('Shared Workspace adapter paths must be absolute.');
   options.signal?.throwIfAborted();
   const rootStat = await lstat(options.instanceRoot);
@@ -127,7 +125,12 @@ export default function sharedWorkspaceAdapter(ctx, config) {
         if (ctx.workspaceRegistry.get(workspace.id) !== workspace) continue;
         if (!workspace.sessionIds.includes(header.id)) await workspace.attachSession(header.id);
         if (disposed || ctx.workspaceRegistry.get(workspace.id) !== workspace || ctx.sessions.get(header.id) !== undefined) continue;
-        const summary = original.call(listState, config.runtimeVersion==='0.2.1-alpha.2'?{header:observation.header,formatStatus:snapshot.formatStatus}:observation.header);
+        // Negotiate the actual cold-summary API; release names are not capabilities.
+        let summary;
+        for (const input of [{header:observation.header,formatStatus:snapshot.formatStatus}, observation.header]) {
+          try { const value = original.call(listState, input); if (value?.sessionId === header.id) { summary = value; break; } } catch { /* Try the other native input shape. */ }
+        }
+        if (!summary) throw new Error('Unsupported native cold-summary contract');
         const fresh = observation.projections;
         if (fresh && typeof fresh.asOfSeq === 'number' && fresh.values && typeof fresh.values === 'object') {
           summary.projections = { kind: 'cached', asOfSeq: fresh.asOfSeq, values: fresh.values };

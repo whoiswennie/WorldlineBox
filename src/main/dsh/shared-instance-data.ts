@@ -17,6 +17,7 @@ export class SharedInstanceData {
   private preparations: Promise<void> = Promise.resolve();
   constructor(private readonly options: {
     rootPath: string; plan: (runtimeId: string) => RuntimeLaunchPlan;
+    assertCompatible?: (runtimeId: string) => Promise<void>;
     onIssue?: (instanceId: string, message: string) => void;
   }) {
     this.paths = sharedDataPaths(path.join(options.rootPath, 'shared'));
@@ -56,6 +57,7 @@ export class SharedInstanceData {
   }
   async prepare(instance: DshInstance, runtimeVersion: string, operation?: OperationContext, allowLegacyMigration = true): Promise<{ args: string[]; workspacePath: string }> {
     return this.serial(async () => {
+      await this.options.assertCompatible?.(instance.runtimeId);
       await this.init(); operation?.signal.throwIfAborted();
       const prepared = await this.isPrepared(instance);
       const legacySaves = !prepared && (await hasPrivateSaveData(instance.homePath, instance.workspacePath)
@@ -86,6 +88,7 @@ export class SharedInstanceData {
   }
   async attach(instance: DshInstance, readyUrl: string): Promise<void> { await this.settings.attach(instance.id, readyUrl, instance.homePath); }
   async routingForRunning(instance: DshInstance, runtimeVersion: string): Promise<string> {
+    await this.options.assertCompatible?.(instance.runtimeId);
     if (!await this.isPrepared(instance)) throw new Error('Restart this DSH instance after migrating its data before using the shared CLI environment.');
     await assertSharedSessionCompatibility(this.paths.rootPath, runtimeVersion);
     await this.settings.syncNow();
@@ -108,6 +111,7 @@ export class SharedInstanceData {
   }
   async restoreFrom(source: string, original: DshSharedData, instance: DshInstance, runtimeVersion: string, operation?: OperationContext): Promise<void> {
     await this.serial(async () => {
+      await this.options.assertCompatible?.(instance.runtimeId);
       await this.init();
       const plan = this.options.plan(instance.runtimeId);
       const env = await instanceEnvironment(path.dirname(instance.homePath), instance, plan);

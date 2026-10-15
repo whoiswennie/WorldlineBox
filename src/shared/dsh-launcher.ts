@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { dshCompatibilityReportSchema } from './dsh-runtime-compatibility';
 import { dshExecutionAccessModeSchema, dshExecutionAccessSettingsSchema } from './dsh-access';
 import { dshMarketplaceStateSchema, dshMarketPageSchema, dshSkillInspectionSchema, dshSkillTargetSchema, dshInstalledSkillSchema, dshRepositorySchema, dshSkillNameSchema } from './dsh-marketplace';
 import { dshPackDistributionSchema, dshPackPublicationSchema } from './dsh-pack-distribution';
@@ -21,6 +22,7 @@ export const dshRuntimeSchema = z.object({
   source: z.string().max(4096), sourceSha256: sha256, contentSha256: sha256,
   npmIntegrity:z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/).optional(),dependencyLockSha256:sha256.optional(),
   installedAt: z.string(), fileCount: z.number(), byteLength: z.number(),
+  compatibility: dshCompatibilityReportSchema.optional(),
 });
 export type DshRuntime = z.infer<typeof dshRuntimeSchema>;
 export const dshInstanceStatusSchema = z.enum(['stopped', 'starting', 'running', 'stopping', 'failed']);
@@ -126,6 +128,8 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('network.test') }),
   z.strictObject({ type: z.literal('runtime.import'), sourceKind: z.enum(['directory', 'installer']) }),
   z.strictObject({ type: z.literal('runtime.verify'), runtimeId: id }),
+  z.strictObject({ type: z.literal('runtime.compatibility'), runtimeId: id }),
+  z.strictObject({ type: z.literal('runtime.cleanup') }),
   z.strictObject({ type: z.literal('runtime.delete'), runtimeId: id }),
   z.strictObject({ type: z.literal('operation.cancel'), operationId: id }),
   z.strictObject({ type: z.literal('operation.clear-finished') }),

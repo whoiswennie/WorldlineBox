@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import type { DshInstance, DshLauncherRequest, DshPack, DshRuntime, DshSnapshot } from '../../shared/dsh-launcher';
-import { supportsSharedDataRuntime } from '../../shared/dsh-validated-runtime';
+import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
 import { useT } from '../i18n';
 import { Button, DialogShell, Select, TextField } from '../ui';
 import { useDialogFocusTrap } from '../use-dialog-focus-trap';
 import type { LauncherRunRequest } from './DshLauncher';
 
 export type LauncherDialogState =
+  | { kind: 'cleanup-runtimes' }
   | { kind: 'create'; name: string; runtimeId: string }
   | { kind: 'rename'; instance: DshInstance }
   | { kind: 'clone' | 'upgrade'; instance: DshInstance; name: string; runtimeId: string }
@@ -32,16 +33,17 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
   const t = useT();
   const [name, setName] = useState('name' in dialog ? dialog.name : dialog.kind === 'rename' ? dialog.instance.name : '');
   const [runtimeId, setRuntimeId] = useState('runtimeId' in dialog ? dialog.runtimeId : runtimes[0]?.id ?? '');
-  const [dataScope, setDataScope] = useState<'shared' | 'isolated'>(() => supportsSharedDataRuntime(runtimes.find(runtime => runtime.id === ('runtimeId' in dialog ? dialog.runtimeId : runtimes[0]?.id))?.version ?? '') ? 'shared' : 'isolated');
+  const [dataScope, setDataScope] = useState<'shared' | 'isolated'>(() => supportsSharedDataRuntime(runtimes.find(runtime => runtime.id === ('runtimeId' in dialog ? dialog.runtimeId : runtimes[0]?.id))) ? 'shared' : 'isolated');
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState('1.0.0');
   useDialogFocusTrap(true);
   const naming = ['create', 'rename', 'clone', 'upgrade', 'snapshot', 'restore', 'import', 'pack-create', 'pack-install'].includes(dialog.kind);
   const runtimeSelection = dialog.kind === 'create' || dialog.kind === 'upgrade';
-  const sharedAvailable = supportsSharedDataRuntime(runtimes.find(runtime => runtime.id === runtimeId)?.version ?? '');
-  const destructive = dialog.kind.startsWith('delete-');
+  const sharedAvailable = supportsSharedDataRuntime(runtimes.find(runtime => runtime.id === runtimeId));
+  const destructive = dialog.kind.startsWith('delete-') || dialog.kind === 'cleanup-runtimes';
   const title = (() => {
     switch (dialog.kind) {
+      case 'cleanup-runtimes': return t('launcher.runtimeCleanup');
       case 'create': return t('launcher.create');
       case 'rename': return t('launcher.rename');
       case 'clone': return t('launcher.clone');
@@ -60,6 +62,7 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
   })();
   const description = (() => {
     switch (dialog.kind) {
+      case 'cleanup-runtimes': return t('launcher.runtimeCleanupDescription');
       case 'create': return t('launcher.createDescription');
       case 'clone': return t('launcher.cloneDescription');
       case 'upgrade': return t('launcher.upgradeDescription');
@@ -80,6 +83,7 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
     let request: DshLauncherRequest;
     const cleanName = name.trim();
     switch (dialog.kind) {
+      case 'cleanup-runtimes': request = { type: 'runtime.cleanup' }; break;
       case 'create': request = { type: 'instance.create', name: cleanName, runtimeId, dataScope: sharedAvailable ? dataScope : 'isolated' }; break;
       case 'rename': request = { type: 'instance.rename', instanceId: dialog.instance.id, name: cleanName }; break;
       case 'clone': request = { type: 'instance.clone', instanceId: dialog.instance.id, name: cleanName }; break;
@@ -103,7 +107,7 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
     <DialogShell className="launcher-dialog" description={description} dialogId="dsh-launcher-dialog" footer={<><Button disabled={busy} onClick={onClose}>{t('launcher.cancel')}</Button><Button data-dialog-default-action="true" disabled={busy || (naming && !name.trim()) || (runtimeSelection && !runtimeId) || (dialog.kind === 'pack-create' && !version.trim())} loading={busy} onClick={() => void submit()} variant={destructive ? 'danger' : 'primary'}>{t(dialog.kind === 'export' ? 'launcher.exportConfirm' : destructive ? 'launcher.confirm' : 'launcher.save')}</Button></>} onRequestClose={() => { if (!busy) onClose(); }} title={title}>
       {naming ? <TextField autoFocus data-dialog-initial-focus="true" label={t(dialog.kind === 'snapshot' ? 'launcher.snapshotName' : dialog.kind === 'pack-create' ? 'launcher.packName' : 'launcher.name')} maxLength={100} onChange={(event) => setName(event.target.value)} placeholder={t('launcher.namePlaceholder')} required value={name} /> : null}
       {dialog.kind === 'pack-create' ? <TextField label={t('launcher.packVersion')} maxLength={100} onChange={(event) => setVersion(event.target.value)} required value={version} /> : null}
-      {runtimeSelection ? <Select label={t('launcher.chooseRuntime')} onValueChange={value => { setRuntimeId(value); if (!supportsSharedDataRuntime(runtimes.find(runtime => runtime.id === value)?.version ?? '')) setDataScope('isolated'); }} options={runtimes.map((runtime) => ({ value: runtime.id, label: `DSH ${runtime.version} · Node ${runtime.nodeVersion} · ${runtime.contentSha256.slice(0, 12)}` }))} required value={runtimeId} /> : null}
+      {runtimeSelection ? <Select label={t('launcher.chooseRuntime')} onValueChange={value => { setRuntimeId(value); setDataScope(supportsSharedDataRuntime(runtimes.find(runtime => runtime.id === value)) ? 'shared' : 'isolated'); }} options={runtimes.map((runtime) => ({ value: runtime.id, label: `DSH ${runtime.version} · Node ${runtime.nodeVersion} · ${runtime.contentSha256.slice(0, 12)}` }))} required value={runtimeId} /> : null}
       {dialog.kind === 'create' ? <Select description={t(sharedAvailable ? 'launcher.sharedDataScopeNote' : 'launcher.isolatedDataScopeNote')} label={t('launcher.dataScope')} onValueChange={value => setDataScope(value === 'shared' && sharedAvailable ? 'shared' : 'isolated')} options={[{ value: 'shared', label: t('launcher.sharedDataScope'), disabled: !sharedAvailable }, { value: 'isolated', label: t('launcher.isolatedDataScope') }]} value={sharedAvailable ? dataScope : 'isolated'} /> : null}
       {error ? <p className="launcher-dialog-error" role="alert">{error}</p> : null}
     </DialogShell>

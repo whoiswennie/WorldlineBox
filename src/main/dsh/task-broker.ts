@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
 import { StringDecoder } from 'node:string_decoder';
 import { dshTaskInputSchema, dshTaskRecordSchema, dshTaskSessionIdSchema, type DshTaskInput, type DshTaskRecord,
   type DshTaskResult, type DshTaskEvent } from '../../shared/dsh-tasks';
@@ -11,7 +12,6 @@ import { clearDshTaskConnectionEnvironment, containsDshTaskSecret, dshTaskConnec
   dshTaskExecutionPatch, redactDshTaskConnection, snapshotDshTaskExecution,
   type DshTaskExecutionConnection, type DshTaskExecutionOptions } from './task-connection';
 import { randomUUID } from 'node:crypto';
-import { supportsSharedDataRuntime } from './validated-runtime';
 import { companionRuntimeSource } from './companion-runtime-source';
 import { runtimeSdkRoot } from './runtime-sdk';
 import { DshTaskInput as DshTaskInbox } from './task-input';
@@ -185,7 +185,8 @@ export class DshTaskBroker {
         if (captured.instance.runtimeId !== resume.runtimeId || version !== resume.runtimeVersion) throw new Error('The original task runtime is unavailable; the existing session was preserved.');
         if (resume.workspacePath) captured.workspacePath = await realpathResumeWorkspace(resume.workspacePath);
       }
-      if ((connection || execution.toolkit || execution.access || execution.interactive) && !supportsSharedDataRuntime(version)) throw new Error('This DSH runtime has no inspected companion execution adapter.');
+      if ((connection || execution.toolkit || execution.access || execution.interactive)
+        && (captured.runtime?.id !== captured.instance.runtimeId || !supportsSharedDataRuntime(captured.runtime))) throw new Error('此 DSH 制品尚未通过原生兼容性检测，暂不注入伙伴专用凭据和能力。请在运行版本页查看检测结果。');
       pin = await this.options.pin(captured); signal.throwIfAborted();
       if (connection || execution.toolkit || execution.access || execution.interactive) {
         const directory = path.dirname(pin.contextFile);

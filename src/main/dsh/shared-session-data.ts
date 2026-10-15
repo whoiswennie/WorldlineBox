@@ -6,9 +6,8 @@ import { constants, createZstdCompress, zstdCompressSync, zstdDecompressSync } f
 import { copyFile, createReadStream, createWriteStream, lstat, mkdir, open, readFile, readdir, realpath, rename, writeFile } from './disk';
 import { atomicJson, contained, hashFile, inventoryTree, removeManaged, safeRelative } from './files';
 import { dshProjectKey, firstSessionFrameEnd } from './instance-data-rebase';
-import { supportsSharedDataRuntime } from './validated-runtime';
 
-const VERIFIED_RUNTIME = '0.2.0-rc.2';
+const VERIFIED_RUNTIME = 'native-contract';
 const HEADER_LIMIT = 4 * 1024 ** 2;
 const MAX_FILES = 150_000;
 const MAX_BYTES = 6 * 1024 ** 3;
@@ -157,8 +156,8 @@ async function sessionGroups(root: string, signal?: AbortSignal): Promise<Sessio
 
 /** Reader/writer ABI gate; the upstream backend enforces its per-session kernel lease. */
 export async function assertSharedSessionCompatibility(sharedRoot: string, runtimeVersion = VERIFIED_RUNTIME, signal?: AbortSignal): Promise<void> {
+  if (!runtimeVersion.trim()) throw new Error('Missing runtime identity for shared Session inspection.');
   const paths = sharedDataPaths(sharedRoot); const groups = await sessionGroups(paths.sessionsPath, signal);
-  if (groups.length && !supportsSharedDataRuntime(runtimeVersion)) throw new Error('This runtime has no verified shared Session reader/writer adapter. Existing data will not be written.');
   if (groups.some(group => group.logs.some(log => !log.compressed))) throw new Error('Shared Session storage must use the verified Zstandard encoding.');
   const attachmentRoot = path.join(paths.rootPath, 'attachments');
   if (await statIfPresent(attachmentRoot)) for (const entry of await readdir(attachmentRoot)) if (entry !== 'v1') throw new Error('Unsupported shared attachment schema.');
@@ -240,7 +239,6 @@ export async function migrateInstanceData(options: {
   const mappedRoots = [...new Set([...(options.oldWorkspacePath ? [path.resolve(options.oldWorkspacePath)] : []), ...workspaceRoots])].sort((a, b) => b.length - a.length);
   const groups = await sessionGroups(path.join(sourceHome, 'sessions'), signal);
   const existingGroups = await sessionGroups(paths.sessionsPath, signal);
-  if ((groups.length || existingGroups.length) && !supportsSharedDataRuntime(options.runtimeVersion ?? VERIFIED_RUNTIME)) throw new Error('This runtime has no verified shared Session migration adapter.');
   await assertSharedSessionCompatibility(paths.rootPath, options.runtimeVersion ?? VERIFIED_RUNTIME, signal);
   const workspaces = await Promise.all(workspaceRoots.map(async root => ({ root, files: await filesUnder(root, signal) })));
   const attachmentsRoot = path.join(sourceHome, 'attachments');

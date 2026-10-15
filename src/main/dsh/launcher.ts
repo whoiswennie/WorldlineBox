@@ -24,6 +24,8 @@ import { PluginControls } from './plugin-controls';
 import { DshTaskBroker } from './task-broker';
 import { DshTaskAccessStore } from './task-access';
 import { redactDshTaskConnection, snapshotDshTaskExecution, type DshTaskExecutionConnection, type DshTaskExecutionOptions } from './task-connection';
+import { runtimeReferences } from '../../shared/dsh-runtime-references';
+import { configureWorkbenchBrowser } from './workbench-browser';
 
 export class DshLauncher {
   private ready = false;
@@ -85,6 +87,7 @@ export class DshLauncher {
     this.runtimes = new RuntimeService({ rootPath: this.rootPath, sevenZipPath: path7za.replace(/app\.asar([/\\])/, 'app.asar.unpacked$1'), onChanged, fetch: this.network.fetch,
       nodeTools: () => this.toolchain(), nodeInstallNetwork: signal => this.network.nodeInstallNetwork(signal) });
     this.sharedData = new SharedInstanceData({ rootPath: this.rootPath, plan: id => this.runtimes.plan(id),
+      assertCompatible: id => this.runtimes.assertSharedCompatible(id),
       onIssue: (id, message) => { if (/^[a-z0-9-]{1,80}$/.test(id)) void appendFile(path.join(this.rootPath, 'instances', id, 'logs', 'host.log'), `${message}\n`).catch(() => undefined); },
     });
     this.instances = new InstanceService({ rootPath: this.rootPath, runtimes: this.runtimes, operations: this.operations, onChanged,
@@ -130,6 +133,11 @@ export class DshLauncher {
     const publications = await readJson<unknown[]>(path.join(this.rootPath, 'pack-publications.json')) ?? [];
     this.publications = publications.slice(0, 100).map(value => dshPackPublicationRecordSchema.parse(value));
     this.ready = true;
+    // Existing installations acquire real evidence too; no release-name exemption.
+    for (const runtime of this.runtimes.unchecked()) {
+      await this.operations.run('runtime.compatibility', `隔离检测 DSH ${runtime.version} 共享存档`, undefined,
+        async op => { await this.runtimes.checkCompatibility(runtime.id, op); });
+    }
   }
   state(): DshLauncherState {
     return { supported: process.platform === 'win32' && process.arch === 'x64', rootPath: this.rootPath,
@@ -148,17 +156,9 @@ export class DshLauncher {
       autoHideMenuBar: true, webPreferences: { partition: instance.browserPartition, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, ...(silentTesting ? { backgroundThrottling: false } : {}) } });
     window.setMenu(null);
     window.on('page-title-updated', event => event.preventDefault());
-    window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-    window.webContents.setWindowOpenHandler(({ url: target }) => {
-      try { const external = new URL(target); if (external.protocol === 'https:' && !external.username && !external.password) void shell.openExternal(external.href); } catch { /* Reject malformed links. */ }
-      return { action: 'deny' };
-    });
-    const allowNavigation = (event: Electron.Event, target: string) => {
-      try { if (new URL(target).origin === url.origin) return; } catch { /* Reject invalid destinations. */ }
-      event.preventDefault();
-    };
-    window.webContents.on('will-navigate', allowNavigation);
-    window.webContents.on('will-redirect', allowNavigation);
+    configureWorkbenchBrowser(window, url.href, { icon, onIssue: message => {
+      void appendFile(path.join(this.rootPath, 'instances', instance.id, 'logs', 'host.log'), `${message}\n`).catch(() => undefined);
+    } });
     window.once('ready-to-show', () => { if (!window.isDestroyed() && !silentTesting) window.show(); });
     window.on('closed', () => this.windows.delete(instance.id));
     this.windows.set(instance.id, window);
@@ -204,6 +204,7 @@ export class DshLauncher {
   }
   private async handle(request: DshLauncherRequest, execution?: DshTaskExecutionOptions): Promise<DshLauncherResponse> {
     if (request.type === 'state') return { ok: true, state: this.state() };
+    if (this.operations.list().some(operation => operation.status === 'running' && ['runtime.delete', 'runtime.cleanup'].includes(operation.kind)) && !['operation.cancel', 'task.events', 'task.result', 'task.cancel', 'task.terminate'].includes(request.type)) throw new Error('正在清理运行版本，请等待操作完成。');
     if (!this.state().supported) throw new Error('DSH runtime management currently supports Windows x64.');
     switch (request.type) {
       case 'task.access.save': await this.taskAccess.save(request.mode); return { ok: true, state: this.state() };
@@ -284,10 +285,19 @@ export class DshLauncher {
         return { ok: true, operationId: await this.operations.run(request.type, '导入 DSH 运行版本', undefined, async op => { await this.runtimes.import(source, request.sourceKind, 'local-import', op); }) };
       }
       case 'runtime.verify': return { ok: true, operationId: await this.operations.run(request.type, '校验 DSH 运行版本', undefined, async op => { await op.update('verifying'); await this.runtimes.verify(request.runtimeId, op.signal); }) };
+      case 'runtime.compatibility': return { ok: true, operationId: await this.operations.run(request.type, '隔离检测共享存档兼容性', undefined, async op => {
+        const report = await this.runtimes.checkCompatibility(request.runtimeId, op);
+        if (report.status !== 'passed') throw new Error(`兼容性检测未通过：${report.checks.find(check => check.status === 'failed')?.detail ?? '检测被中断，请重试。'}`);
+      }) };
+      case 'runtime.cleanup': {
+        if (this.operations.list().some(operation => operation.status === 'running')) throw new Error('请等待当前下载、检测和任务结束后再清理缓存。');
+        return { ok: true, operationId: await this.operations.run(request.type, '清理 DSH 下载缓存和残留文件', undefined, op => this.runtimes.cleanup(op)) };
+      }
       case 'runtime.delete': {
         if (this.operations.list().some(operation => operation.status === 'running')) throw new Error('Wait for running launcher operations before deleting a runtime.');
-        const used = [...this.instances.list(), ...this.instances.snapshots(), ...this.packs.list()].some(record => record.runtimeId === request.runtimeId);
-        await this.runtimes.delete(request.runtimeId, used); return { ok: true, state: this.state() };
+        const used = runtimeReferences(this.state(), request.runtimeId).length > 0;
+        if (used) throw new Error('此运行版本仍被实例、快照或整合包引用，请先处理页面列出的引用。');
+        return { ok: true, operationId: await this.operations.run(request.type, '删除 DSH 运行版本并清理文件', undefined, () => this.runtimes.delete(request.runtimeId, false)) };
       }
       case 'instance.folder': {
         const root = this.instances.getRoot(request.instanceId);

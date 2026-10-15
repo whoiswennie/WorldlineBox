@@ -22,7 +22,7 @@ import type { DshCliSelection } from './cli-terminal';
 import { prepareNativeCliMode } from './cli-profile-mode';
 import { writeSharedModels } from './shared-settings';
 import { isolatedWorkspacePath, writeIsolatedRoutingPatch } from './isolated-routing';
-import { supportsSharedDataRuntime } from './validated-runtime';
+import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
 import { prepareManagedHostBootstrap, stopManagedHost, HOST_LIFECYCLE_TOKEN_ENV } from './host-lifecycle';
 
 export interface RuntimeServiceLike {
@@ -180,7 +180,7 @@ export class InstanceService {
       const nativeArgs = await prepareNativeCliMode(this.getRoot(instanceId), this.options.runtimes.directory(instance.runtimeId), runtime.version, signal);
       if (routingPatch) nativeArgs.push('--patch', routingPatch);
       return { instance: { ...instance }, plan, env: await this.environment(this.getRoot(instanceId), instance, plan),
-        workspacePath, routingPatch, nativeCli: plan.cli, nativeArgs, runtimeVersion: runtime.version };
+        workspacePath, routingPatch, nativeCli: plan.cli, nativeArgs, runtimeVersion: runtime.version, runtime };
     } finally { this.busy.delete(instanceId); }
   }
   private async environment(root: string, instance: DshInstance, plan: RuntimeLaunchPlan): Promise<NodeJS.ProcessEnv> {
@@ -299,11 +299,12 @@ export class InstanceService {
   async create(name: string, runtimeId: string, op?: OperationContext, requestedScope?: 'shared' | 'isolated'): Promise<DshInstance> {
     if (this.closing) throw new Error('Harness launcher is closing.');
     const runtime = this.options.runtimes.get(runtimeId);
+    if (requestedScope === 'shared' && this.options.sharedData && !supportsSharedDataRuntime(runtime)) throw new Error('此制品尚未通过共享存档兼容性检测，请使用独立存档或在运行版本页重新检测。');
     const id = randomUUID(); const now = new Date().toISOString();
     const instance: DshInstance = dshInstanceSchema.parse({
       id, name, runtimeId, createdAt: now, updatedAt: now, profile: 'web', status: 'stopped',
       ...this.paths(id), browserPartition: `persist:dsh-instance-${id}`, isDefault: this.instances.length === 0,
-      dataScope: requestedScope ?? (this.options.sharedData && !supportsSharedDataRuntime(runtime.version) ? 'isolated' : 'shared'),
+      dataScope: requestedScope ?? (this.options.sharedData && !supportsSharedDataRuntime(runtime) ? 'isolated' : 'shared'),
     });
     op?.signal.throwIfAborted();
     try {
