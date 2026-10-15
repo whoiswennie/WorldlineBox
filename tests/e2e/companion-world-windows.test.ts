@@ -2,6 +2,8 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
+import type * as Koffi from 'koffi';
+import type * as Crypto from 'node:crypto';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { CompanionWorldWindowApi } from '../../src/shared/companion-world-window';
 import type { WorldlineBoxCompanionsApi } from '../../src/shared/companions';
@@ -21,10 +23,53 @@ async function observer(application: ElectronApplication, main: Page, sceneId?: 
   expect((await opening).ok).toBe(true); await expect(page.getByRole('region', { name: '伙伴世界', exact: true })).toBeVisible();
   await expect(page.locator('canvas')).toHaveAttribute('data-world-ready', 'true'); return page;
 }
+async function observerTheme(page: Page, theme: string, sceneId?: string) {
+  await page.evaluate(value => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: value })), theme);
+  await page.reload(); await expect(page.locator('.companion-world-header time')).toBeVisible();
+  if (sceneId) await page.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(sceneId);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+}
+
+async function nativeWindowIcons(application: ElectronApplication, ids: number[]) {
+  return application.evaluate(async ({ BrowserWindow }, input) => {
+    if (process.platform !== 'win32') return [];
+    const { createRequire } = process.getBuiltinModule('node:module');
+    const repoRequire = createRequire(input.packageJson), koffi = repoRequire('koffi') as typeof Koffi;
+    const { createHash } = repoRequire('node:crypto') as typeof Crypto;
+    const user = koffi.load('user32.dll'), gdi = koffi.load('gdi32.dll');
+    const message = user.func('intptr_t SendMessageW(uintptr_t hwnd, uint32_t msg, uintptr_t wp, intptr_t lp)');
+    const menu = user.func('uintptr_t GetMenu(uintptr_t hwnd)'), iconInfo = user.func('int GetIconInfo(uintptr_t icon, _Out_ uint8_t *info)');
+    const dc = user.func('uintptr_t GetDC(uintptr_t hwnd)'), release = user.func('int ReleaseDC(uintptr_t hwnd, uintptr_t dc)');
+    const object = gdi.func('int GetObjectW(uintptr_t object, int size, _Out_ uint8_t *info)');
+    const bits = gdi.func('int GetDIBits(uintptr_t dc, uintptr_t bitmap, uint32_t start, uint32_t lines, _Out_ uint8_t *bits, _Inout_ uint8_t *info, uint32_t usage)');
+    const dispose = gdi.func('int DeleteObject(uintptr_t object)');
+    const pointer = (buffer: Buffer, offset: number) => process.arch === 'x64' || process.arch === 'arm64' ? buffer.readBigUInt64LE(offset) : BigInt(buffer.readUInt32LE(offset));
+    const wide = process.arch === 'x64' || process.arch === 'arm64';
+    return input.ids.map(id => {
+      const window = BrowserWindow.fromId(id); if (!window) throw new Error('Missing native observer window.');
+      const hwnd = pointer(window.getNativeWindowHandle(), 0);
+      // WM_GETICON reads the icon assigned to the actual OS window caption.
+      const icon = message(hwnd, 0x007f, 0, 0) || message(hwnd, 0x007f, 2, 0) || message(hwnd, 0x007f, 1, 0);
+      if (!icon) throw new Error('Native window has no explicit project icon.');
+      const info = Buffer.alloc(wide ? 32 : 20); if (!iconInfo(icon, info)) throw new Error('Native icon information unavailable.');
+      const mask = pointer(info, wide ? 16 : 12), color = pointer(info, wide ? 24 : 16), context = dc(0);
+      try {
+        const bitmap = Buffer.alloc(wide ? 32 : 24); if (!object(color, bitmap.length, bitmap)) throw new Error('Native icon bitmap unavailable.');
+        const width = bitmap.readInt32LE(4), height = bitmap.readInt32LE(8);
+        if (width < 1 || width > 2048 || height < 1 || height > 2048) throw new Error('Unexpected native icon dimensions: ' + JSON.stringify({ width, height, bitmap: bitmap.toString('hex'), info: info.toString('hex') }));
+        const header = Buffer.alloc(40), pixels = Buffer.alloc(width * height * 4);
+        header.writeUInt32LE(40, 0); header.writeInt32LE(width, 4); header.writeInt32LE(-height, 8); header.writeUInt16LE(1, 12); header.writeUInt16LE(32, 14);
+        if (bits(context, color, 0, height, pixels, header, 0) !== height) throw new Error('Native icon pixels unavailable.');
+        return { id, title: window.getTitle(), width, height, sha256: createHash('sha256').update(pixels).digest('hex'), hasMenu: !!menu(hwnd), menuVisible: window.isMenuBarVisible(), nativeCaption: window.getBounds().height - window.getContentBounds().height > 20 };
+      } finally { release(0, context); if (mask) dispose(mask); if (color) dispose(color); }
+    });
+  }, { ids, packageJson: path.resolve('package.json') });
+}
 // eslint-disable-next-line no-empty-pattern
 test('native observer windows share one world, preserve independent cameras and leave chat usable when another observer closes', async ({}, testInfo) => {
   test.setTimeout(120000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-world-windows-'));
+  const visualOutput = path.resolve('.tools/test-output/world-window-qa'); mkdirSync(visualOutput, { recursive: true });
   let primaryRequests = 0, application: ElectronApplication | undefined;
   const server = createServer((request, response) => {
     let body = ''; request.setEncoding('utf8'); request.on('data', chunk => { body += chunk; }); request.on('end', () => {
@@ -59,6 +104,59 @@ test('native observer windows share one world, preserve independent cameras and 
     }, 'http://127.0.0.1:' + address.port);
     await main.locator('[data-application-module="companions"]').click(); await main.locator('[data-companion-conversation="private-deepseek-sister"]').click();
     const a = await observer(application, main, 'home_deepseek-sister'), b = await observer(application, main, 'home_deepseek-flash');
+    const nativeA = await application.browserWindow(a), nativeBIcon = await application.browserWindow(b);
+    const nativeIds = await Promise.all([nativeMain, nativeA, nativeBIcon].map(window => window.evaluate(value => value.id)));
+    const icons = await nativeWindowIcons(application, nativeIds);
+    if (process.platform === 'win32') {
+      expect(icons).toHaveLength(3);
+      for (const icon of icons.slice(1)) { expect(icon.sha256).toBe(icons[0]!.sha256); expect(icon.hasMenu).toBe(false); expect(icon.menuVisible).toBe(false); expect(icon.nativeCaption).toBe(true); }
+      await testInfo.attach('native-project-icons-and-menu', { body: JSON.stringify(icons), contentType: 'application/json' });
+    }
+    expect(await a.getByText('A LITTLE WORLD, TOGETHER', { exact: true }).count()).toBe(0);
+    expect(await a.getByText('日子，在这里发生', { exact: true }).count()).toBe(0);
+    await nativeA.evaluate(window => window.setSize(720, 760));
+    for (const theme of ['light', 'dark']) {
+      await observerTheme(a, theme);
+      const header = a.locator('.companion-world-header');
+      expect(await header.evaluate(element => element.scrollWidth <= element.clientWidth && element.getBoundingClientRect().height <= 84)).toBe(true);
+      await expect(header.locator('time')).toBeVisible(); await expect(header).toContainText('室外');
+      await a.screenshot({ path: path.join(visualOutput, 'world-header-' + theme + '.png') });
+    }
+    await nativeA.evaluate(window => window.setSize(1440, 900));
+    await a.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('commons');
+    await expect(a.getByRole('img', { name: '伙伴街区地图，家庭与真实出行路线', exact: true })).toBeVisible();
+    await expect(a.locator('[data-world-map-garden]')).toContainText('公共花园');
+    expect(await a.locator('.world-map-tree circle').count()).toBeGreaterThanOrEqual(9);
+    expect(await a.locator('.world-map-bench').count()).toBe(2);
+    expect(await a.locator('[data-world-map-home]').count()).toBeGreaterThanOrEqual(15);
+    expect(await a.locator('.companion-world-view').evaluate(element => getComputedStyle(element).visibility)).toBe('hidden');
+    const moved = await main.evaluate(async () => {
+      const api = (window as unknown as Bridge).worldlinebox.companions!;
+      const current = (await api.request({ type: 'world.snapshot' })).world!;
+      const entrance = current.scenes.find(scene => scene.id === 'commons')!.objects.find(object => object.id === 'deepseek-flash_entrance')!;
+      return api.request({ type: 'world.tool', companionId: 'deepseek-sister', conversationId: 'private-deepseek-sister', arguments: { action: 'move', destinationId: entrance.id } });
+    });
+    expect(moved.ok, moved.error).toBe(true);
+    const mapActor = a.locator('[data-world-map-actor="deepseek-sister"]');
+    await expect(mapActor).toBeVisible({ timeout: 20000 });
+    await expect(a.locator('[data-world-map-route="deepseek-sister"]')).toHaveAttribute('points', /\S+ \S+/, { timeout: 10000 });
+    await a.screenshot({ path: path.join(visualOutput, 'world-neighborhood-travel.png') });
+    await expect.poll(async () => {
+      const world = (await main.evaluate(() => (window as unknown as Bridge).worldlinebox.companions!.request({ type: 'world.snapshot' }))).world!;
+      const actual = world.actors.find(actor => actor.companionId === 'deepseek-sister')!;
+      if (actual.sceneId !== 'commons' || actual.route.length) return false;
+      return await mapActor.getAttribute('data-world-position') === `${actual.position.x},${actual.position.y}`;
+    }, { timeout: 50000, intervals: [500] }).toBe(true);
+    for (const theme of ['light', 'dark']) {
+      await observerTheme(a, theme, 'commons');
+      await a.screenshot({ path: path.join(visualOutput, 'world-neighborhood-' + theme + '.png') });
+    }
+    const homeward = await main.evaluate(() => (window as unknown as Bridge).worldlinebox.companions!.request({ type: 'world.tool', companionId: 'deepseek-sister', conversationId: 'private-deepseek-sister', arguments: { action: 'move', destinationId: 'home_deepseek-sister' } }));
+    expect(homeward.ok, homeward.error).toBe(true);
+    await expect.poll(async () => (await main.evaluate(() => (window as unknown as Bridge).worldlinebox.companions!.request({ type: 'world.snapshot' }))).world!.actors.find(actor => actor.companionId === 'deepseek-sister')!.sceneId, { timeout: 20000 }).toBe('home_deepseek-sister');
+    await a.getByRole('button', { name: '观察大肥鱼的小屋', exact: true }).click();
+    await expect(a.getByRole('combobox', { name: '观测地点', exact: true })).toHaveValue('home_deepseek-sister');
+    await expect(a.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
     const mainPortrait = await main.locator('[data-companion-conversation="private-deepseek-sister"] .companion-avatar').evaluate(element => {
       const style = getComputedStyle(element); return { size: style.backgroundSize, position: style.backgroundPosition, repeat: style.backgroundRepeat };
     });
@@ -104,7 +202,7 @@ test('native observer windows share one world, preserve independent cameras and 
     expect((await restored.evaluate(() => (window as unknown as Bridge).worldlinebox.companionWorld.context())).context!.observerKey).toBe(ca.context!.observerKey);
     await expect(restored.getByRole('combobox', { name: '观测地点', exact: true })).toHaveValue('home_deepseek-sister');
     await expect(b.getByRole('combobox', { name: '观测地点', exact: true })).toHaveValue('home_deepseek-flash');
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true }); await restored.screenshot({ path: path.join(artifacts, 'verified-world-native-window.png') });
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); await restored.screenshot({ path: path.join(artifacts, 'verified-world-native-window.png') });
     await testInfo.attach('observer-identity', { body: JSON.stringify({ a: ca.context, b: cb.context, primaryRequests }), contentType: 'application/json' });
   } finally {
     await application?.close().catch(() => undefined); await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });

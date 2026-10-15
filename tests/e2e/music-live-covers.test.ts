@@ -33,7 +33,7 @@ test('official default playlist returns and renders real playlist and album cove
     await expect.poll(()=>page.locator('[data-global-music-audio]').evaluate((node:HTMLAudioElement)=>!node.paused&&node.currentTime>0.25),{timeout:30000}).toBe(true);
     await page.getByRole('button',{name:'暂停',exact:true}).click();
     await page.locator('[data-global-music-audio]').evaluate((node:HTMLAudioElement)=>{node.muted=false;});
-    const screenshot=path.resolve('artifacts/dsh-launcher/music-settings-live-covers.png');await mkdir(path.dirname(screenshot),{recursive:true});
+    const screenshot=path.resolve('.tools/test-output/dsh-launcher/music-settings-live-covers.png');await mkdir(path.dirname(screenshot),{recursive:true});
     await writeFile(path.resolve('.tools/dsh-research/music-live-receipt.json'),JSON.stringify({fixture:false,playlistId:catalog.id,name:catalog.name,trackCount:catalog.tracks.length,playlistCover:catalog.coverUrl,albumCover:albumSource,publicStream,realPublicPlayback:true,playlistNaturalWidth:await playlist.evaluate((node:HTMLImageElement)=>node.naturalWidth),albumNaturalWidth:await album.evaluate((node:HTMLImageElement)=>node.naturalWidth),paused:true,screenshot},null,2));
     await native.evaluate(win=>win.showInactive());
     try { await page.screenshot({path:screenshot}); } finally { await native.evaluate(win=>win.hide()); }

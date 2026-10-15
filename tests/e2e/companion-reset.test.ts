@@ -102,7 +102,7 @@ test('factory reset restores the built-in, stops an old stream, preserves other 
     expect(state.playerProfile).toMatchObject({ name: '测试玩家', avatarAttachmentId: image.id });
     expect(await page.evaluate(id => fetch('worldlinebox-companion://attachment/' + id).then(value => value.status), image.id)).toBe(200);
     expect(existsSync(originalFile)).toBe(true); expect(JSON.parse(readFileSync(path.join(profile, 'companions/llm-keys.enc.json'), 'utf8'))[sister.id]).toBeUndefined();
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true }); await page.screenshot({ path: path.join(artifacts, 'verified-companion-reset.png'), animations: 'disabled' });
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); await page.screenshot({ path: path.join(artifacts, 'verified-companion-reset.png'), animations: 'disabled' });
     await dialog.getByRole('button', { name: '完成', exact: true }).click();
     const routine = (await request(page, { type: 'routine.get', companionId: sister.id, conversationId: ownRoom })).routine!;
     await request(page, { type: 'routine.configure', companionId: sister.id, conversationId: ownRoom, expectedRevision: routine.revision, patch: { timeZone: world.settings.timeZone, wakeAt: clock(-8), sleepAt: clock(8), meals: [], habits: [] } });

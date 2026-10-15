@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { applyCompanionAppraisal, decayCompanionAffect, deriveCompanionMood, COMPANION_RELATIONSHIP_DAILY_POSITIVE_LIMIT, COMPANION_APPRAISAL_CONFIDENCE_THRESHOLD } from '../shared/companion-affect';
 import type { CompanionRoutineRuntime } from '../shared/companion-routine';
 import type { CompanionWorldEvent } from '../shared/companion-world';
+import { companionTimeInZone } from '../shared/companion-schedule-time';
 
 type Row = Record<string, string | number | null>;
 const row = (value: unknown) => value as Row;
@@ -25,7 +26,13 @@ export class CompanionStateStore {
     private readonly visibleSources: (scope: Scope, ids: string[]) => CompanionMessage[],
     private readonly advanceEnergy: (id: string, from: number, to: number, energy: number, busy: boolean) => number,
     private readonly routine: (scope: Scope, now: number) => CompanionRoutineRuntime,
-    private readonly currentTime: (at: number) => number) {}
+    private readonly currentTime: (at: number) => number,
+    private readonly clock: { virtualAt(realAt: number): number; elapsedVirtual(from: number, to: number): number; timeZone(): string }) {}
+
+  private worldDay(at: number): string {
+    const local = companionTimeInZone(at, this.clock.timeZone());
+    return `${local.year}-${String(local.month).padStart(2, '0')}-${String(local.day).padStart(2, '0')}`;
+  }
 
   initialize(): void {
     this.db.exec(`
@@ -69,7 +76,7 @@ export class CompanionStateStore {
     now = this.currentTime(now);
     return this.db.transaction(() => {
       const state = this.load(id), found = row(this.db.prepare('SELECT energy_clock FROM companion_runtime_states WHERE companion_id=?').get(id));
-      const elapsedAffect = Math.max(0, now - new Date(state.updatedAt).getTime());
+      const elapsedAffect = this.clock.elapsedVirtual(Date.parse(state.updatedAt), now);
       const previous = Number(found.energy_clock);
       if (now > previous) {
         if (elapsedAffect) state.affect = decayCompanionAffect(state.affect, elapsedAffect);
@@ -106,13 +113,13 @@ export class CompanionStateStore {
     if (!sourceIds.length) return;
     this.db.transaction(() => {
       this.energy(companionId);
-      const state = this.load(companionId), seen = new Set<string>(), now = Date.now();
+      const state = this.load(companionId), seen = new Set<string>(), now = this.currentTime(Date.now());
       for (let index = 0; index < sourceIds.length; index += 200) {
         const batch = sourceIds.slice(index, index + 200);
         for (const found of rows(this.db.prepare(`SELECT a.id,a.data FROM companion_state_appraisals a JOIN companion_appraisal_sources s ON s.appraisal_id=a.id WHERE a.companion_id=? AND a.active=1 AND s.message_id IN (${batch.map(() => '?').join(',')})`).all(companionId, ...batch))) {
           if (seen.has(String(found.id))) continue; seen.add(String(found.id));
           const data = decode<{ appliedAt: string; affectDelta: CompanionRuntimeState['affect']; relationshipDelta: CompanionRuntimeState['relationship'] }>(found.data);
-          const remaining = decayCompanionAffect({ pleasure: data.affectDelta.pleasure / 2, arousal: data.affectDelta.arousal / 2, dominance: data.affectDelta.dominance / 2 }, Math.max(0, now - new Date(data.appliedAt).getTime()));
+          const remaining = decayCompanionAffect({ pleasure: data.affectDelta.pleasure / 2, arousal: data.affectDelta.arousal / 2, dominance: data.affectDelta.dominance / 2 }, this.clock.elapsedVirtual(Date.parse(data.appliedAt), now));
           for (const dimension of ['pleasure', 'arousal', 'dominance'] as const) state.affect[dimension] = Math.max(-1, Math.min(1, state.affect[dimension] - 2 * remaining[dimension]));
           for (const dimension of ['affinity', 'trust', 'respect'] as const) state.relationship[dimension] = Math.max(0, Math.min(100, state.relationship[dimension] - data.relationshipDelta[dimension]));
           this.db.prepare('UPDATE companion_state_appraisals SET active=0 WHERE id=?').run(found.id);
@@ -132,6 +139,8 @@ export class CompanionStateStore {
         if (!sources.find(source => source.id === evidence.sourceMessageId)?.content.includes(evidence.quote)) throw new Error('状态证据不是来源中的实际原文。');
       }
       this.energy(scope.companionId);
+      const observedAt = this.currentTime(Date.now());
+      if (sources.some(source => Date.parse(source.createdAt) > observedAt)) throw new Error('世界存档仍在补算，状态来源尚未到达已推进时刻，请稍后重试。');
       const state = this.load(scope.companionId);
       if (expectedRevision !== undefined && expectedRevision !== state.revision) throw new Error('伙伴状态已更新，请重新读取。');
       this.applyAppraisals(state, proposal, sources);
@@ -163,8 +172,9 @@ export class CompanionStateStore {
     });
     // An uncertain or mechanically unsupported classification must not reserve its source.
     if (!appraisals.length) return;
-    const occurredAt = sources.reduce((latest, source) => source.createdAt > latest ? source.createdAt : latest, sources[0]!.createdAt);
-    const sourceDate = occurredAt.slice(0, 10), now = Date.now(), elapsed = Math.max(0, now - new Date(occurredAt).getTime());
+    const latest = sources.reduce((latest, source) => source.createdAt > latest.createdAt ? source : latest, sources[0]!);
+    const occurredAt = latest.createdAt, occurredWorldAt = latest.worldCreatedAt ?? isoDate(this.clock.virtualAt(Date.parse(occurredAt)));
+    const sourceDate = this.worldDay(Date.parse(occurredWorldAt)), now = this.currentTime(Date.now()), elapsed = this.clock.elapsedVirtual(Date.parse(occurredAt), now);
     const used = Number(row(this.db.prepare('SELECT COALESCE(sum(positive_change),0) AS n FROM companion_state_appraisals WHERE companion_id=? AND source_date=?').get(state.companionId, sourceDate)).n);
     let positiveChange = 0;
     const before = { affect: { ...state.affect }, relationship: { ...state.relationship } };
@@ -173,7 +183,7 @@ export class CompanionStateStore {
       state.affect = result.affect; state.relationship = result.relationship; positiveChange += result.positiveChange;
     }
     const id = createHash('sha256').update(state.companionId + '/' + [...sources.map(source => source.id)].sort().join('/')).digest('hex');
-    const data = { sourceMessageIds: sources.map(source => source.id), sourceConversationId: sources[0]!.conversationId, occurredAt, appliedAt: isoDate(now),
+    const data = { sourceMessageIds: sources.map(source => source.id), sourceConversationId: sources[0]!.conversationId, occurredAt, occurredWorldAt, appliedAt: isoDate(now),
       affectDelta: Object.fromEntries(Object.keys(state.affect).map(key => [key, state.affect[key as keyof typeof state.affect] - before.affect[key as keyof typeof before.affect]])),
       relationshipDelta: Object.fromEntries(Object.keys(state.relationship).map(key => [key, state.relationship[key as keyof typeof state.relationship] - before.relationship[key as keyof typeof before.relationship]])) };
     this.db.prepare('INSERT INTO companion_state_appraisals(id,companion_id,source_date,positive_change,data) VALUES(?,?,?,?,?)').run(id, state.companionId, sourceDate, positiveChange, JSON.stringify(data));
@@ -242,11 +252,11 @@ export class CompanionStateStore {
       if (!this.db.prepare('INSERT OR IGNORE INTO companion_state_events(companion_id,event_key,conversation_id) VALUES(?,?,?)').run(companionId, key, event.conversationId ?? 'world').changes) return;
       const sources = event.sourceMessageId && event.conversationId ? this.visibleSources({ companionId, conversationId: event.conversationId }, [event.sourceMessageId]) : [];
       if (event.sourceMessageId && !sources.length || sources.some(source => this.db.prepare('SELECT 1 FROM companion_appraisal_sources WHERE companion_id=? AND message_id=?').get(companionId, source.id))) return;
-      this.energy(companionId); const state = this.load(companionId), before = { ...state.affect }, now = Date.now();
-      const result = applyCompanionAppraisal(state, { type: event.effect!.type === 'stress' ? 'disappointment' : event.effect!.type === 'shared_success' ? 'shared_success' : 'support', target: 'other', intensity: Math.min(.4, event.effect!.intensity), confidence: 1 }, Math.max(0, now - Date.parse(event.realAt)), 0);
+      this.energy(companionId); const state = this.load(companionId), before = { ...state.affect }, now = this.currentTime(Date.now());
+      const result = applyCompanionAppraisal(state, { type: event.effect!.type === 'stress' ? 'disappointment' : event.effect!.type === 'shared_success' ? 'shared_success' : 'support', target: 'other', intensity: Math.min(.4, event.effect!.intensity), confidence: 1 }, this.clock.elapsedVirtual(Date.parse(event.realAt), now), 0);
       state.affect = result.affect; state.mood = deriveCompanionMood(state.affect, state.energy, this.busy(companionId));
       const appraisalId = 'world-' + event.id;
-      this.db.prepare('INSERT INTO companion_state_appraisals(id,companion_id,source_date,positive_change,data) VALUES(?,?,?,?,?)').run(appraisalId, companionId, event.realAt.slice(0, 10), 0,
+      this.db.prepare('INSERT INTO companion_state_appraisals(id,companion_id,source_date,positive_change,data) VALUES(?,?,?,?,?)').run(appraisalId, companionId, this.worldDay(Date.parse(event.at)), 0,
         JSON.stringify({ appliedAt: isoDate(now), affectDelta: { pleasure: state.affect.pleasure - before.pleasure, arousal: state.affect.arousal - before.arousal, dominance: state.affect.dominance - before.dominance }, relationshipDelta: { affinity: 0, trust: 0, respect: 0 } }));
       for (const source of sources) this.db.prepare('INSERT INTO companion_appraisal_sources(companion_id,message_id,appraisal_id) VALUES(?,?,?)').run(companionId, source.id, appraisalId);
       this.save(state);

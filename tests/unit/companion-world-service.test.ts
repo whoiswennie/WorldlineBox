@@ -6,7 +6,7 @@ import { CompanionsStore, type CompanionSeed } from '../../src/companions/store'
 import { CompanionWorldService } from '../../src/main/companions/world-service';
 import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory';
 
-const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: id === 'alice' ? '安静友好，喜欢阅读。' : '坦率，尊重彼此边界。', description: '', model: '', avatar: 'sister', proactive: false }));
+const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: id === 'alice' ? '安静友好，喜欢阅读。' : '坦率，尊重彼此边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), services = new Set<CompanionWorldService>(), roots: string[] = [];
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime('2026-10-14T02:00:00Z'); });
@@ -21,7 +21,7 @@ function fixture(fetchFn: typeof fetch, asleep = true) {
   const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds); stores.add(store);
   const alice = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, bob = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
   const world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const scope of [alice, bob]) {
     const routine = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: asleep ? '01:00' : '23:00', wakeAt: asleep ? '03:00' : '01:00', meals: [], habits: [] } });
@@ -47,6 +47,36 @@ function dreamResult(data: { messages: Array<{ id: string; content: string }>; r
 }
 
 describe('semantic world background service with actual SQLite sources', () => {
+  it('automatically returns a committed delegated peer answer to its real human requester with proactive disabled', async () => {
+    const purposes: string[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content); purposes.push(data.purpose);
+      if (data.purpose === 'world_social') {
+        expect(data.origin).toMatchObject({ initiatorId: 'user', initiatorKind: 'human_player', ownerId: 'alice' });
+        expect(JSON.stringify(data)).not.toContain('PRIVATE_REQUEST_DETAIL'); expect(data.identity.currentReply.author.id).toBe(data.identity.self.id);
+        return response({ text: data.identity.self.id === 'bob' ? '可以，等你一起看书。' : null, reason: '依据原玩家委托和实际来信。' });
+      }
+      if (data.purpose === 'world_social_notification') {
+        expect(data.identity.currentReply.speaker.id).toBe('user'); expect(data.identity.currentReply.author.id).toBe('alice');
+        expect(data.origin.initiatorId).toBe('user'); expect(data.confirmedEvent.evidence).toMatchObject({ authorId: 'bob', text: '可以，等你一起看书。' });
+        expect(request.tools).toBeUndefined(); expect(JSON.stringify(data)).not.toContain('PRIVATE_REQUEST_DETAIL');
+        return response({ text: 'Bob 回复说可以一起看书，我还没到他那里。', eventId: data.confirmedEvent.eventId, initiatorId: 'user' });
+      }
+      return response({ action: null, reason: '没有新的世界事项。', appraisals: [] });
+    });
+    const f = fixture(fetchFn, false); advance(f.store, 30000);
+    f.store.updateCompanion('alice', { ...seeds[0]!, proactive: false });
+    const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content: '去问Bob要不要一起看书。PRIVATE_REQUEST_DETAIL', replyDirective: 'none' });
+    const peer = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+    f.store.request({ type: 'social.send', companionId: 'alice', conversationId: peer.id, authorizationMessageId: source.id, content: 'Bob，一起看书吗？', channel: 'phone', clientId: 'event_driven_delegation' });
+    advance(f.store, 1300); await f.service.tick(); await vi.advanceTimersByTimeAsync(1300);
+    await vi.waitFor(() => expect(f.store.request({ type: 'social.messages', conversationId: peer.id }).socialMessagePage!.items.some(item => item.message.authorId === 'bob'), JSON.stringify({ purposes, lastRequests: f.request.mock.calls.slice(-5).map(([command]) => command.type) })).toBe(true));
+    await f.service.tick();
+    await vi.waitFor(() => expect(f.store.messages({ conversationId: f.alice.conversationId }).messages.some(message => message.content === 'Bob 回复说可以一起看书，我还没到他那里。')).toBe(true));
+    const result = f.store.messages({ conversationId: f.alice.conversationId }).messages.find(message => message.content === 'Bob 回复说可以一起看书，我还没到他那里。')!;
+    expect(result).toMatchObject({ authorId: 'alice', replyToId: source.id }); expect(purposes).toContain('world_social_notification');
+    expect(f.store.request({ type: 'actions' }).actions).toEqual([]);
+  });
   it('lets a resident make a real semantic visit response without granting player tools or leaking private chat', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
       const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);

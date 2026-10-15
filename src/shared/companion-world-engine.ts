@@ -10,8 +10,8 @@ export type WorldPoint = { x: number; y: number };
 export type WorldWaypoint = WorldPoint & { sceneId: string };
 export type CompanionWorldClockAnchor = { realAt: number; virtualAt: number };
 export const companionWorldSpeed = (settings: Pick<CompanionWorldSettings, 'mode' | 'dayDurationMinutes'>): number => settings.mode === 'realtime' ? 1 : 1440 / settings.dayDurationMinutes;
-export const companionWorldVirtualAt = (anchor: CompanionWorldClockAnchor, settings: CompanionWorldSettings, realAt: number): number => anchor.virtualAt + (realAt - anchor.realAt) * companionWorldSpeed(settings);
-export const companionWorldRealAt = (anchor: CompanionWorldClockAnchor, settings: CompanionWorldSettings, virtualAt: number): number => anchor.realAt + (virtualAt - anchor.virtualAt) / companionWorldSpeed(settings);
+export const companionWorldVirtualAt = (anchor: CompanionWorldClockAnchor, settings: CompanionWorldSettings, realAt: number): number => settings.mode === 'realtime' ? realAt : anchor.virtualAt + (realAt - anchor.realAt) * companionWorldSpeed(settings);
+export const companionWorldRealAt = (anchor: CompanionWorldClockAnchor, settings: CompanionWorldSettings, virtualAt: number): number => settings.mode === 'realtime' ? virtualAt : anchor.realAt + (virtualAt - anchor.virtualAt) / companionWorldSpeed(settings);
 
 /** The same anchors and solid footprints drive rendering, pathfinding and interactions. */
 export function createCompanionWorldHome(ownerId: string, slot: number): CompanionWorldScene {
@@ -128,9 +128,12 @@ export function companionWorldEnvironment(virtualAt: number, timeZone: string): 
 }
 
 /** Only authoritative furniture participation earns recovery. Walking and gaps consume awake energy. */
-export function advanceCompanionWorldEnergy(windows: CompanionWorldOccupancy[], from: number, to: number, energy: number, virtualAt: (realAt: number) => number): number {
+export function advanceCompanionWorldEnergy(windows: CompanionWorldOccupancy[], from: number, to: number, energy: number,
+  virtualAt: (realAt: number, referenceRealAt?: number) => number, clockBoundaries: readonly number[] = []): number {
   let current = from, result = energy;
-  const apply = (left: number, right: number, rate: number) => { result = Math.max(0, Math.min(100, result + Math.max(0, virtualAt(right) - virtualAt(left)) / 60000 * rate)); };
+  const apply = (left: number, right: number, rate: number) => {
+    for (const [start, end] of clockIntervals(left, right, clockBoundaries)) result = Math.max(0, Math.min(100, result + Math.max(0, virtualAt(end, start) - virtualAt(start, start)) / 60000 * rate));
+  };
   for (const window of windows) {
     const start = Math.max(current, window.start), end = Math.min(to, window.end); if (end <= start) continue;
     if (start > current) apply(current, start, -.08);
@@ -142,14 +145,15 @@ export function advanceCompanionWorldEnergy(windows: CompanionWorldOccupancy[], 
 
 /** Completion means accumulated real participation equal to one configured session; daily streaks require actual practice. */
 export function deriveCompanionWorldHabitProgress(config: CompanionRoutineConfig, windows: CompanionWorldOccupancy[], now: number,
-  virtualAt: (realAt: number) => number, realAt: (virtualAt: number) => number): CompanionHabitProgress[] {
+  virtualAt: (realAt: number, referenceRealAt?: number) => number, realAt: (virtualAt: number, referenceRealAt?: number) => number,
+  clockBoundaries: readonly number[] = []): CompanionHabitProgress[] {
   const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: config.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
   return config.habits.map(habit => {
     let total = 0, lastCompletedAt: string | undefined; const daily = new Map<string, number>();
-    for (const window of windows.filter(window => window.habitId === habit.id && ['habit', 'resting'].includes(window.phase))) {
-      const start = virtualAt(window.start), end = virtualAt(Math.min(now, window.end)), minutes = Math.max(0, end - start) / 60000, before = Math.floor(total / habit.durationMinutes);
+    for (const window of windows.filter(window => window.habitId === habit.id && ['habit', 'resting'].includes(window.phase))) for (const [realStart, realEnd] of clockIntervals(window.start, Math.min(now, window.end), clockBoundaries)) {
+      const start = virtualAt(realStart, realStart), end = virtualAt(realEnd, realStart), minutes = Math.max(0, end - start) / 60000, before = Math.floor(total / habit.durationMinutes);
       total += minutes; const completed = Math.floor((total + .000001) / habit.durationMinutes);
-      if (completed > before) lastCompletedAt = new Date(realAt(end - (total - completed * habit.durationMinutes) * 60000)).toISOString();
+      if (completed > before) lastCompletedAt = new Date(realAt(end - (total - completed * habit.durationMinutes) * 60000, realStart)).toISOString();
       let cursor = start;
       while (cursor < end) {
         const civil = companionTimeInZone(cursor, config.timeZone), following = new Date(Date.UTC(civil.year, civil.month - 1, civil.day + 1));
@@ -164,4 +168,13 @@ export function deriveCompanionWorldHabitProgress(config: CompanionRoutineConfig
     return { id: habit.id, completedCount: Math.floor((total + .000001) / habit.durationMinutes), practicedMinutes: total, streak,
       strength: Math.min(100, Math.round((1 - Math.exp(-total / Math.max(60, habit.durationMinutes * 14))) * 10000) / 100), ...(lastCompletedAt ? { lastCompletedAt } : {}) };
   });
+}
+
+/** Real-time ordering remains unambiguous even when a clock reset repeats a virtual date. */
+function* clockIntervals(from: number, to: number, boundaries: readonly number[]): Generator<[number, number]> {
+  let low = 0, high = boundaries.length;
+  while (low < high) { const middle = (low + high) >>> 1; if (boundaries[middle]! <= from) low = middle + 1; else high = middle; }
+  let cursor = from;
+  for (let index = low; index < boundaries.length && boundaries[index]! < to; index++) { const end = boundaries[index]!; yield [cursor, end]; cursor = end; }
+  if (cursor < to) yield [cursor, to];
 }

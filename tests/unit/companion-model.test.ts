@@ -9,6 +9,8 @@ import { COMPANION_SCHEDULE_TOOL } from '../../src/shared/companion-schedule-too
 import { COMPANION_STATE_TOOL } from '../../src/shared/companion-state-tool';
 import { COMPANION_ROUTINE_TOOL } from '../../src/shared/companion-routine-tool';
 import { COMPANION_WORLD_TOOL } from '../../src/shared/companion-world-tool';
+import { COMPANION_WORK_TOOL } from '../../src/shared/companion-work-tool';
+import { COMPANION_LIFE_TOOL } from '../../src/shared/companion-life-tool';
 import { COMPANION_FILE_TOOLS } from '../../src/shared/companion-file-tool';
 
 const input: CompanionReplyInput = {
@@ -235,7 +237,11 @@ describe('native memory tools across provider formats', () => {
     const registered = format === 'dashscope_native' ? request.parameters.tools : request.tools;
     const definitions = format === 'gemini_native' ? registered[0].function_declarations
       : registered.map((tool: { function?: unknown }) => tool.function ?? tool);
-    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', ...COMPANION_MEMORY_TOOLS.map(tool => tool.name), COMPANION_SCHEDULE_TOOL.name, COMPANION_STATE_TOOL.name, COMPANION_ROUTINE_TOOL.name, COMPANION_WORLD_TOOL.name, ...COMPANION_FILE_TOOLS.map(tool => tool.name)]);
+    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', ...COMPANION_MEMORY_TOOLS.map(tool => tool.name), COMPANION_SCHEDULE_TOOL.name, COMPANION_STATE_TOOL.name, COMPANION_ROUTINE_TOOL.name, COMPANION_WORLD_TOOL.name, COMPANION_WORK_TOOL.name, COMPANION_LIFE_TOOL.name, ...COMPANION_FILE_TOOLS.map(tool => tool.name)]);
+    const workTool = definitions.find((tool: { name: string }) => tool.name === 'work');
+    expect(workTool.description).toContain('accepted/running仅表示已经登记且尚未完成');
+    expect(workTool.description).toContain('建单后不得再调用dsh重复执行');
+    expect(JSON.stringify(request)).toContain('相同目标只选择工作单或直接dsh一个通道');
     for (const tool of definitions.filter((tool: { name: string }) => tool.name.startsWith('memory_'))) {
       expect(tool.parameters ?? tool.parametersJsonSchema ?? tool.input_schema).not.toHaveProperty('$schema');
     }

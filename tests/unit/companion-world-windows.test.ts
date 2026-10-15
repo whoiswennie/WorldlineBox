@@ -7,6 +7,7 @@ class FakeWindow implements WorldObserverWindow {
   destroyed = false; visible = false; minimized = false; maximized = false;
   listeners = new Map<string, Set<() => void>>();
   webContents = { mainFrame: {}, send: vi.fn(), setWindowOpenHandler: vi.fn(), on: vi.fn() };
+  setMenu = vi.fn<(menu: null) => void>();
   isDestroyed() { return this.destroyed; } isVisible() { return this.visible; } isMinimized() { return this.minimized; } isMaximized() { return this.maximized; }
   on(name: string, callback: () => void) { const callbacks = this.listeners.get(name) ?? new Set(); callbacks.add(callback); this.listeners.set(name, callbacks); }
   emit(name: string) { for (const listener of this.listeners.get(name) ?? []) listener(); }
@@ -36,7 +37,8 @@ it('opens independent native windows, scopes contacts and reuses the smallest re
   expect((await f.invoke(f.main, { type: 'open', sceneId: 'commons' })).ok).toBe(true);
   await f.invoke(f.main, { type: 'open', companionId: 'alice' });
   const a = f.created[0]!, b = f.created[1]!;
-  expect(a.options).toMatchObject({ frame: true, show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: [COMPANION_WORLD_WINDOW_ARGUMENT] } });
+  expect(a.options).toMatchObject({ frame: true, show: false, autoHideMenuBar: true, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: [COMPANION_WORLD_WINDOW_ARGUMENT] } });
+  expect(a.window.setMenu).toHaveBeenCalledExactlyOnceWith(null); expect(b.window.setMenu).toHaveBeenCalledExactlyOnceWith(null);
   const ca = (await f.invoke(a.window, { type: 'context' })).context!, cb = (await f.invoke(b.window, { type: 'context' })).context!;
   expect(ca.observerKey).toBe('companion-world-observer'); expect(cb.observerKey).toBe('companion-world-observer-1');
   expect(ca.companions).toEqual([{ id: 'alice', name: 'Alice', avatar: 'sister' }]); expect(JSON.stringify(ca)).not.toContain('PRIVATE_PERSONA');

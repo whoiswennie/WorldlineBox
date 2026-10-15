@@ -2,12 +2,12 @@
   "generatedOn": "2026-10-15",
   "method": "independently authored builtin-imagegen portraits/actions; board method declared per asset",
   "imagesEditedOnlyWith": "builtin-imagegen",
-  "runtimeNormalization": "Whole independent PNG resized to1152x384/WebP; no pixel pose rearrangement or per-frame scaling.",
+  "runtimeNormalization": "One independently authored action per source image. Whole three-cell rows, or explicitly reviewed nonoverlapping sourceRects with no discarded visible pixels, normalized into1152x384/WebP using one shared scale for all3frames. No per-frame silhouette stretching.",
   "characters": [
     {
       "id": "sister",
       "name": "大肥鱼姐姐 · Pro",
-      "identity": "Mature normal-proportion blue whale maid woman, approximately6.5head anatomy; long blue/cyan hair, blueeyes, whale-fin ears, loopahoge, whiteheadband, anklelength navy goldtrim skirt, white whaleapron, whitestockings, navyshoes and large navywhaletail. NOT the younger/chibi sister.",
+      "identity": "Public portrait and orthographic: mature normal-proportion blue whale maid. World action sprites: user-approved approximately2.7-head chibi elder sister, calm mature eyes, long navy embroidered dress, white whale apron and large whale tail; distinct from the younger sister. These are deliberate game-scale adaptations, not changed public identity artwork.",
       "references": [
         {
           "role": "canonical-orthographic",
@@ -29,158 +29,158 @@
       "actions": [
         {
           "action": "idle",
-          "sha256": "7bcf971ed84f86aac3f09fe4ef67be3a8f09bb63c879aace1db166aec697fc9b",
-          "input": ".tools/companion-art-correction/sister/idle.png"
+          "sha256": "8227f99abdbd24674a9e77c17dbcf8e49b78ec9386ba7efb22d286f214b35ee8",
+          "input": ".tools/companion-art-correction/sister-chibi/idle.png"
         },
         {
           "action": "walk",
-          "sha256": "b6385de1f2153b84b3390d83690d10925fcb535151712bcc069da2f8afe7de74",
-          "input": ".tools/companion-art-correction/sister/walk.png"
-        },
-        {
-          "action": "run",
-          "sha256": "f67cf28cd9c5775e0352dd2159a34ba92e0f0293b229862004f83b3c96653235",
-          "input": ".tools/companion-art-correction/sister/run.png"
-        },
-        {
-          "action": "standingRead",
-          "sha256": "3b56510cf901b253df4e897248f8dda8ab273e800cf95ecfaded20fc9df65181",
-          "input": ".tools/companion-art-correction/sister/standingRead.png"
-        },
-        {
-          "action": "communicate",
-          "sha256": "00b7407ec6b4f05f29323932bf1c29a0d563cf8802b3e2c0269bc75da7fde844",
-          "input": ".tools/companion-art-correction/sister/communicate.png"
+          "sha256": "8d899e21d8e0416847fe64313c83b77b5dc63e0fdb1ad043b12e9fce5da8c158",
+          "input": ".tools/companion-art-correction/sister-chibi/walk.png"
         },
         {
           "action": "turn",
-          "sha256": "c834f7c98072bc44ec4b518d156dd5994e7ef947cdbee92c1a8aaa922be26597",
-          "input": ".tools/companion-art-correction/sister/turn.png"
+          "sha256": "5ec3173ed3ad54f8e343e0d3f810b03d07e08578b0fdffb1188c5ca5ce889160",
+          "input": ".tools/companion-art-correction/sister-chibi/turn.png"
         },
         {
-          "action": "sit",
-          "sha256": "26813356f8e2edeee2377e6203583dd8fd3a437665bc447d2a63eedb7cea4cad",
-          "input": ".tools/companion-art-correction/sister/sit.png"
+          "action": "standingRead",
+          "sha256": "14df96194d67e0be6c18487b01f9248515f0c6c89659592af4c354363a56ccae",
+          "input": ".tools/companion-art-correction/sister-chibi/standingRead.png"
+        },
+        {
+          "action": "run",
+          "sha256": "9ca8622a8cc8d5c07d14af07bbb119c956bfd6dbf8f315e9ddca3834fb5a5e04",
+          "input": ".tools/companion-art-correction/sister-chibi/run.png"
         },
         {
           "action": "read",
-          "sha256": "bb221bf913c3f97d78bee75df76f6dfc381acc6b6e878c159605c91c85071b84",
-          "input": ".tools/companion-art-correction/sister/read.png"
-        },
-        {
-          "action": "work",
-          "sha256": "f5c517ee36d3be6f4cfb9286725bda3b7e84e393da90a312d26a7c6fe92770c7",
-          "input": ".tools/companion-art-correction/sister/work.png"
-        },
-        {
-          "action": "think",
-          "sha256": "3f0863bb0d5842fbe2d2eace3e327eb18290d5f0304bb675b36d4a6bb8af87db",
-          "input": ".tools/companion-art-correction/sister/think.png"
-        },
-        {
-          "action": "tired",
-          "sha256": "3d4141674f28768a343df707505aaa7bbeb3fa7de9fb53ab39cf67fd79692267",
-          "input": ".tools/companion-art-correction/sister/tired.png"
-        },
-        {
-          "action": "pleased",
-          "sha256": "39ddf2b48f8174fab68fc7cf0aabe8e242582b40d53e40bab68be96d5b9a3dde",
-          "input": ".tools/companion-art-correction/sister/pleased.png"
-        },
-        {
-          "action": "troubled",
-          "sha256": "b1e1a9fa0eabbf3e4f07dbedaa31fdb89a7e60536c3a4a9d46edde03f6796c2f",
-          "input": ".tools/companion-art-correction/sister/troubled.png"
-        },
-        {
-          "action": "sad",
-          "sha256": "2353dca132800c189cb3542edc51d0fe8f29ae401afe5c58cb459c26710934ff",
-          "input": ".tools/companion-art-correction/sister/sad.png"
-        },
-        {
-          "action": "angry",
-          "sha256": "864c5aed6cc893553b6543afed8e5b5260faa7db5b7e95a81ae0a627b3c8416c",
-          "input": ".tools/companion-art-correction/sister/angry.png"
-        },
-        {
-          "action": "surprised",
-          "sha256": "a310b50f9fa60ebee00d378faa8172172fa8dc395ca9786c7b63ed4aaf5a304f",
-          "input": ".tools/companion-art-correction/sister/surprised.png"
-        },
-        {
-          "action": "phoneTypingStanding",
-          "sha256": "0389ce9a62620c31d38172ebff226da4fa14aa6bc03b265e44eabfd4cda5307e",
-          "input": ".tools/companion-art-correction/sister/phoneTypingStanding.png"
-        },
-        {
-          "action": "phoneCallingStanding",
-          "sha256": "509600ac6655f9a0bed5595aff734bafa361671e9da2041e9922a47b37b3de8c",
-          "input": ".tools/companion-art-correction/sister/phoneCallingStanding.png"
-        },
-        {
-          "action": "rest",
-          "sha256": "5e134ad53037281dbd98cf3fde2e00a1e27abc686a9832dac80384ef26685d9b",
-          "input": ".tools/companion-art-correction/sister/rest.png"
-        },
-        {
-          "action": "eat",
-          "sha256": "9c61c11a70c7ef40f00c6d330f96ff065c92fad325405624e0c590287959a164",
-          "input": ".tools/companion-art-correction/sister/eat.png"
-        },
-        {
-          "action": "phoneTypingSeated",
-          "sha256": "6146a89e753ca760a6adaec8399816c87d5abda304144807d585db4a53f7c6d8",
-          "input": ".tools/companion-art-correction/sister/phoneTypingSeated.png"
-        },
-        {
-          "action": "cook",
-          "sha256": "d379ef9a30b63f99f753a9cb693495a2847c69036532bc3a45ddc88f4a86155f",
-          "input": ".tools/companion-art-correction/sister/cook.png"
-        },
-        {
-          "action": "phoneCallingSeated",
-          "sha256": "17499144bad64afa038d45234ddee1b0d830b1962e30c9f32137460b9899fafe",
-          "input": ".tools/companion-art-correction/sister/phoneCallingSeated.png"
-        },
-        {
-          "action": "handle",
-          "sha256": "96ac3464241af914707bfc9fe1b655e05e44c69533a44e11fd8e7163772b52bd",
-          "input": ".tools/companion-art-correction/sister/handle.png"
-        },
-        {
-          "action": "follow",
-          "sha256": "ee6385703dd2e96a7dac2cf9bada1d5d544cf5f55a8e38799795f9d8a07951c5",
-          "input": ".tools/companion-art-correction/sister/follow.png"
-        },
-        {
-          "action": "exercise",
-          "sha256": "3260820e6545d8c0d392db49373354b28b947f414ecc524cd2e6ed816f8d5789",
-          "input": ".tools/companion-art-correction/sister/exercise.png"
+          "sha256": "e90ac95e3c48970a4063f57c463edca8da86ab25f34231df606bcd06d94da3f0",
+          "input": ".tools/companion-art-correction/sister-chibi/read.png"
         },
         {
           "action": "sitDown",
-          "sha256": "36063b3cd4c3008bc64016bcfdedd6229ce9b3a9787f216e1a92ee610637c6e5",
-          "input": ".tools/companion-art-correction/sister/sitDown.png"
+          "sha256": "3b2011f3e9b435a038a068b71015d5f8d2ecf1c4c3250971be772146360c2e80",
+          "input": ".tools/companion-art-correction/sister-chibi/sitDown.png"
+        },
+        {
+          "action": "sit",
+          "sha256": "4a581789fb0d5afd43131b71b85fbe1ffc055d7c4872868da086b41ff68b7724",
+          "input": ".tools/companion-art-correction/sister-chibi/sit.png"
         },
         {
           "action": "standUp",
-          "sha256": "b6a7bf9bd4cfd13dd77c9b5235c687e72c26909eaf8e1d450fea00e8a98a940c",
-          "input": ".tools/companion-art-correction/sister/standUp.png"
+          "sha256": "55ca1391b9be28ad8a41ddc647ada121a60c1d2bbd51f6e81fcdb0783bebd97d",
+          "input": ".tools/companion-art-correction/sister-chibi/standUp.png"
         },
         {
           "action": "sleep",
-          "sha256": "19bdfe7e0136075d386b0ff1f0998c1ac8e484f87fe4332ff96669a37f5d5e43",
-          "input": ".tools/companion-art-correction/sister/sleep.png"
-        },
-        {
-          "action": "lieDown",
-          "sha256": "49a985d2ea021dafeb5e338ecd547bc2e159587603190c9a950d10638ec5ddf1",
-          "input": ".tools/companion-art-correction/sister/lieDown.png"
+          "sha256": "5c47036d10c6e462c41c72465976e23051b91e0928f89ab0bde309c15d4deae7",
+          "input": ".tools/companion-art-correction/sister-chibi/sleep.png"
         },
         {
           "action": "wake",
-          "sha256": "d8f36048eb3bbeb2e384e4098a07417e5dc1f5ae9b919dca79b93085fb534b9a",
-          "input": ".tools/companion-art-correction/sister/wake.png"
+          "sha256": "81952db3e94a487fb300b1411c91fd033a3097976bd4ae94051b569f64b59805",
+          "input": ".tools/companion-art-correction/sister-chibi/wake.png"
+        },
+        {
+          "action": "lieDown",
+          "sha256": "e73423c74ff7022a8a8bbdc76b9ca2a536907eed05f6b9435d1ee27b44505b75",
+          "input": ".tools/companion-art-correction/sister-chibi/lieDown.png"
+        },
+        {
+          "action": "rest",
+          "sha256": "28838ed5219d59962b00b6ddeaaa0b10bca0918a2a62c3d1a306007cff473af8",
+          "input": ".tools/companion-art-correction/sister-chibi/rest.png"
+        },
+        {
+          "action": "communicate",
+          "sha256": "2698487b4fd884d0608c185e685f4b7a43e6a7002b0ca7bcd238b9a436fef346",
+          "input": ".tools/companion-art-correction/sister-chibi/communicate.png"
+        },
+        {
+          "action": "follow",
+          "sha256": "fd4acf3be480810616eaf6a1d3edb2367295f1e4b3360e1fdb17b7ca8aef2fe8",
+          "input": ".tools/companion-art-correction/sister-chibi/follow.png"
+        },
+        {
+          "action": "eat",
+          "sha256": "c6835e4511c1972659f9ea48c830c21001acef043beb2efdf2b6bc6d15fcd848",
+          "input": ".tools/companion-art-correction/sister-chibi/eat.png"
+        },
+        {
+          "action": "think",
+          "sha256": "3d5a03793d1e91646ade74e3bed555ada8104fe4d64e182b8ed5debd2d8eba0e",
+          "input": ".tools/companion-art-correction/sister-chibi/think.png"
+        },
+        {
+          "action": "tired",
+          "sha256": "a21bd3ec5a8b3c15dba1297df9ebee90b894cb66781a94ae3bc3a005a48f868d",
+          "input": ".tools/companion-art-correction/sister-chibi/tired.png"
+        },
+        {
+          "action": "work",
+          "sha256": "a0908216371ffc5b21a28f7b283e8774476393cf113bede8ee2a9f049c68e662",
+          "input": ".tools/companion-art-correction/sister-chibi/work.png"
+        },
+        {
+          "action": "pleased",
+          "sha256": "760870c346941abbf85e0fc6d8e4542fefca80438c4980b594117c97c195f8f8",
+          "input": ".tools/companion-art-correction/sister-chibi/pleased.png"
+        },
+        {
+          "action": "troubled",
+          "sha256": "ab60cb70ec63107cd26a1edca014292b39cbde21ac5a4eff146a46114e816679",
+          "input": ".tools/companion-art-correction/sister-chibi/troubled.png"
+        },
+        {
+          "action": "phoneTypingStanding",
+          "sha256": "0be11b7c0cd71994d77b995e0d7abb92b2dad3d5199106df062850cdbec7a656",
+          "input": ".tools/companion-art-correction/sister-chibi/phoneTypingStanding.png"
+        },
+        {
+          "action": "handle",
+          "sha256": "05e3ced812e491f5e028d361cccc6e2189c837cc8374dd12fea867e20b849971",
+          "input": ".tools/companion-art-correction/sister-chibi/handle.png"
+        },
+        {
+          "action": "phoneTypingSeated",
+          "sha256": "736a659bc91989458ce8643fffda1715ef2204822adf3238276be660982aed93",
+          "input": ".tools/companion-art-correction/sister-chibi/phoneTypingSeated.png"
+        },
+        {
+          "action": "phoneCallingStanding",
+          "sha256": "dac6c16790590333c25aa1aea0a26baa96578d52f5d10b0a91fb9a232cb1650b",
+          "input": ".tools/companion-art-correction/sister-chibi/phoneCallingStanding.png"
+        },
+        {
+          "action": "phoneCallingSeated",
+          "sha256": "d052dd6e9bc5024e84fb592f46c357474df32994ebd6bacf64ac95b71f4f3aca",
+          "input": ".tools/companion-art-correction/sister-chibi/phoneCallingSeated.png"
+        },
+        {
+          "action": "sad",
+          "sha256": "acf8534228daf720e9bdcd05cad679e0d6307a7411e8c6bf0964c890ec1b7f59",
+          "input": ".tools/companion-art-correction/sister-chibi/sad.png"
+        },
+        {
+          "action": "surprised",
+          "sha256": "e68c7b5ac59114adcf2f0022fd1a8f100d312a1f19a944dcb1fe92f1811e4875",
+          "input": ".tools/companion-art-correction/sister-chibi/surprised.png"
+        },
+        {
+          "action": "angry",
+          "sha256": "0842a45783566f2126aed9a44871e20a50c5050056667684c5b0495b4d58b536",
+          "input": ".tools/companion-art-correction/sister-chibi/angry.png"
+        },
+        {
+          "action": "cook",
+          "sha256": "872f93ec8693bd377b9b9ed9a2e86c0b06ed0af3e7d1811b04655dcc17d99940",
+          "input": ".tools/companion-art-correction/sister-chibi/cook.png"
+        },
+        {
+          "action": "exercise",
+          "sha256": "2a48c890bf0df31091953b58dd562329d4709c21d36835607992f8f033918463",
+          "input": ".tools/companion-art-correction/sister-chibi/exercise.png"
         }
       ],
       "assets": [
@@ -202,7 +202,17 @@
           "height": 1254,
           "prompt": "Original imagegen intent:\nUse case: identity-preserve. Asset type: ONE independent square avatar portrait for the adult elder sister character 大肥鱼 / Pro. Reference image 1 is the definitive identity reference, not an edit target. Generate a polished high quality anime illustration, NOT chibi, NOT a child, NOT younger sister. Preserve the same mature elegant blue whale maid identity: adult woman with normal realistic anime body proportions approximately six heads tall in full body; long flowing deep blue hair with pale cyan tips, single curved loop ahoge, whale-fin ears with pale undersides, blue eyes, white ruffled maid headband, small blue hair bow, dark navy elegant maid dress, white frills and white apron, dark bow with blue jewel at collar. Friendly calm slightly warm smile, adult refined face, same eye shape and hairstyle as reference. Composition: square 1:1 canvas, head and upper torso only, straight-on slight natural three-quarter angle, face centered and occupying about half the canvas height, headband and ahoge completely inside frame with generous 10% top margin, shoulders visible, bottom around mid bodice, no hands crossing face. Soft clean warm off-white background, gentle illustration lighting, crisp detailed linework and blue/navy palette. Do not add text, labels, border, circular mask, watermark, props, extra people, short hair, small child body or chibi proportions. Keep reference clothing and distinctive whale maid features.\nFinal accepted correction:\nUse case: identity-preserve. EDIT TARGET is reference image 1, the exact already approved adult elder blue whale maid avatar. Preserve her SAME adult face, blue eyes, hair, ear shape, color, costume, lighting, illustration style and friendly expression. Change ONLY portrait framing: zoom camera OUT by approximately 20 percent and recenter; add airy clean warm off-white surrounding background. Square 1:1 avatar, head and upper chest. Most important: ENTIRE loop ahoge, white maid headband, BOTH whale-fin ears and hair bow must lie fully inside a central circular safe region of diameter85% of canvas. Minimum10% canvas blank space ABOVE the very top of the ahoge, at least10% space to right/left of both fin-ear tips. Keep face centered a little above middle so circle crop does not cut accessories. Do not let ahoge approach top border. Bottom crop at upper chest; do not enlarge bust. No circular border or mask baked into image, no new design details, no text or watermarks. Image2 is original identity reference only. This is a targeted framing fix to the same mature woman, NOT a redesign and NOT chibi."
         }
-      ]
+      ],
+      "worldAdaptation": {
+        "method": "builtin-imagegen",
+        "proportions": "approximately2.7-head chibi elder sister",
+        "actionCount": 31,
+        "sourcePngsDistributed": false,
+        "delivered": "31 independent WebP action sheets at stable production paths",
+        "unequalSourceColumns": [
+          "wake"
+        ]
+      }
     },
     {
       "id": "flash",
@@ -408,516 +418,6 @@
     }
   ],
   "scaleReviews": [
-    {
-      "avatar": "sister",
-      "action": "idle",
-      "neutralHeightPixels": 307.624,
-      "method": "reviewed-standing-anatomical-height",
-      "frame": 0,
-      "points": {
-        "crown": {
-          "x": 185,
-          "y": 61
-        },
-        "foot": {
-          "x": 185,
-          "y": 350
-        }
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "crown": {
-          "x": 185,
-          "y": 61
-        },
-        "foot": {
-          "x": 185,
-          "y": 350
-        }
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 289,
-      "span": 289,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true
-    },
-    {
-      "avatar": "sister",
-      "action": "walk",
-      "neutralHeightPixels": 307.624,
-      "method": "reviewed-matching-head-and-trunk",
-      "reference": {
-        "action": "idle",
-        "frame": 0
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Same head/torso size as idle; lowered running silhouette does not enlarge the runner."
-    },
-    {
-      "avatar": "sister",
-      "action": "run",
-      "neutralHeightPixels": 307.624,
-      "method": "reviewed-matching-head-and-trunk",
-      "reference": {
-        "action": "idle",
-        "frame": 0
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Same head/torso size as idle; lowered running silhouette does not enlarge the runner."
-    },
-    {
-      "avatar": "sister",
-      "action": "read",
-      "neutralHeightPixels": 279.81,
-      "method": "reviewed-head-and-torso-scale",
-      "frame": 0,
-      "points": {
-        "head": [
-          {
-            "x": 183,
-            "y": 130
-          },
-          {
-            "x": 184,
-            "y": 181
-          }
-        ]
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "head": [
-          {
-            "x": 185,
-            "y": 53
-          },
-          {
-            "x": 182,
-            "y": 109
-          }
-        ]
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 56.080299571239806,
-      "span": 51.0098029794274,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
-    },
-    {
-      "avatar": "sister",
-      "action": "sitDown",
-      "neutralHeightPixels": 345.944,
-      "method": "reviewed-standing-anatomical-height",
-      "frame": 0,
-      "points": {
-        "crown": {
-          "x": 188,
-          "y": 40
-        },
-        "foot": {
-          "x": 181,
-          "y": 365
-        }
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "crown": {
-          "x": 185,
-          "y": 61
-        },
-        "foot": {
-          "x": 185,
-          "y": 350
-        }
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 289,
-      "span": 325,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true
-    },
-    {
-      "avatar": "sister",
-      "action": "sit",
-      "neutralHeightPixels": 296.264,
-      "method": "reviewed-head-and-torso-scale",
-      "frame": 0,
-      "points": {
-        "head": [
-          {
-            "x": 186,
-            "y": 128
-          },
-          {
-            "x": 185,
-            "y": 182
-          }
-        ]
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "head": [
-          {
-            "x": 185,
-            "y": 53
-          },
-          {
-            "x": 182,
-            "y": 109
-          }
-        ]
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 56.080299571239806,
-      "span": 54.009258465563114,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
-    },
-    {
-      "avatar": "sister",
-      "action": "standUp",
-      "neutralHeightPixels": 347.009,
-      "method": "reviewed-standing-anatomical-height",
-      "frame": 2,
-      "points": {
-        "crown": {
-          "x": 180,
-          "y": 41
-        },
-        "foot": {
-          "x": 178,
-          "y": 367
-        }
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "crown": {
-          "x": 185,
-          "y": 61
-        },
-        "foot": {
-          "x": 185,
-          "y": 350
-        }
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 289,
-      "span": 326,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true
-    },
-    {
-      "avatar": "sister",
-      "action": "lieDown",
-      "neutralHeightPixels": 251.209,
-      "method": "reviewed-standing-anatomical-height",
-      "frame": 0,
-      "points": {
-        "crown": {
-          "x": 187,
-          "y": 93
-        },
-        "foot": {
-          "x": 181,
-          "y": 329
-        }
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "crown": {
-          "x": 185,
-          "y": 61
-        },
-        "foot": {
-          "x": 185,
-          "y": 350
-        }
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 289,
-      "span": 236,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true
-    },
-    {
-      "avatar": "sister",
-      "action": "sleep",
-      "neutralHeightPixels": 345.756,
-      "method": "reviewed-head-and-torso-scale",
-      "frame": 0,
-      "points": {
-        "head": [
-          {
-            "x": 70,
-            "y": 154
-          },
-          {
-            "x": 117,
-            "y": 196
-          }
-        ]
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "head": [
-          {
-            "x": 185,
-            "y": 53
-          },
-          {
-            "x": 182,
-            "y": 109
-          }
-        ]
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 56.080299571239806,
-      "span": 63.03173803727769,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
-    },
-    {
-      "avatar": "sister",
-      "action": "wake",
-      "neutralHeightPixels": 292.722,
-      "method": "reviewed-standing-anatomical-height",
-      "frame": 2,
-      "points": {
-        "crown": {
-          "x": 177,
-          "y": 65
-        },
-        "foot": {
-          "x": 180,
-          "y": 340
-        }
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "crown": {
-          "x": 185,
-          "y": 61
-        },
-        "foot": {
-          "x": 185,
-          "y": 350
-        }
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 289,
-      "span": 275,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true
-    },
-    {
-      "avatar": "sister",
-      "action": "rest",
-      "neutralHeightPixels": 285.453,
-      "method": "reviewed-head-and-torso-scale",
-      "frame": 0,
-      "points": {
-        "head": [
-          {
-            "x": 184,
-            "y": 129
-          },
-          {
-            "x": 182,
-            "y": 181
-          }
-        ]
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "head": [
-          {
-            "x": 185,
-            "y": 53
-          },
-          {
-            "x": 182,
-            "y": 109
-          }
-        ]
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 56.080299571239806,
-      "span": 52.038447325030745,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
-    },
-    {
-      "avatar": "sister",
-      "action": "work",
-      "neutralHeightPixels": 318.344,
-      "method": "reviewed-head-and-torso-scale",
-      "frame": 0,
-      "points": {
-        "head": [
-          {
-            "x": 184,
-            "y": 135
-          },
-          {
-            "x": 182,
-            "y": 193
-          }
-        ]
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "head": [
-          {
-            "x": 185,
-            "y": 53
-          },
-          {
-            "x": 182,
-            "y": 109
-          }
-        ]
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 56.080299571239806,
-      "span": 58.034472514187634,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
-    },
-    {
-      "avatar": "sister",
-      "action": "eat",
-      "neutralHeightPixels": 356.595,
-      "method": "reviewed-head-and-torso-scale",
-      "frame": 0,
-      "points": {
-        "head": [
-          {
-            "x": 187,
-            "y": 90
-          },
-          {
-            "x": 186,
-            "y": 155
-          }
-        ]
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "head": [
-          {
-            "x": 185,
-            "y": 53
-          },
-          {
-            "x": 182,
-            "y": 109
-          }
-        ]
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 56.080299571239806,
-      "span": 65.00769185258002,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
-    },
-    {
-      "avatar": "sister",
-      "action": "phoneTypingSeated",
-      "neutralHeightPixels": 296.264,
-      "method": "reviewed-head-and-torso-scale",
-      "frame": 0,
-      "points": {
-        "head": [
-          {
-            "x": 188,
-            "y": 107
-          },
-          {
-            "x": 187,
-            "y": 161
-          }
-        ]
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "head": [
-          {
-            "x": 185,
-            "y": 53
-          },
-          {
-            "x": 182,
-            "y": 109
-          }
-        ]
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 56.080299571239806,
-      "span": 54.009258465563114,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
-    },
-    {
-      "avatar": "sister",
-      "action": "phoneCallingSeated",
-      "neutralHeightPixels": 307.184,
-      "method": "reviewed-head-and-torso-scale",
-      "frame": 0,
-      "points": {
-        "head": [
-          {
-            "x": 180,
-            "y": 118
-          },
-          {
-            "x": 180,
-            "y": 174
-          }
-        ]
-      },
-      "reference": {
-        "action": "idle",
-        "frame": 0,
-        "head": [
-          {
-            "x": 185,
-            "y": 53
-          },
-          {
-            "x": 182,
-            "y": 109
-          }
-        ]
-      },
-      "referenceNeutralHeight": 307.62430939226516,
-      "referenceSpan": 56.080299571239806,
-      "span": 56,
-      "unit": "source-cell384",
-      "uniformAcrossFrames": true,
-      "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
-    },
     {
       "avatar": "flash",
       "action": "idle",
@@ -1399,6 +899,1453 @@
       "unit": "source-cell384",
       "uniformAcrossFrames": true,
       "notes": "Cap-to-chin reference, visually compared with trunk/shoulders; pose silhouette height is not used."
+    },
+    {
+      "avatar": "sister",
+      "action": "idle",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 328,
+      "span": 328,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "walk",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "turn",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "standingRead",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "run",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "read",
+      "neutralHeightPixels": 371.611,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 162
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 116,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "sitDown",
+      "neutralHeightPixels": 347.652,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 185,
+          "y": 48
+        },
+        "foot": {
+          "x": 183,
+          "y": 363
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 328,
+      "span": 315,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "sit",
+      "neutralHeightPixels": 365.204,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 160
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 114,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "standUp",
+      "neutralHeightPixels": 376.348,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 178,
+          "y": 36
+        },
+        "foot": {
+          "x": 178,
+          "y": 377
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 328,
+      "span": 341,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "sleep",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "wake",
+      "neutralHeightPixels": 281.433,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 2,
+      "points": {
+        "crown": {
+          "x": 183,
+          "y": 74
+        },
+        "foot": {
+          "x": 187,
+          "y": 329
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 328,
+      "span": 255,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "lieDown",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-standing-anatomical-height",
+      "frame": 0,
+      "points": {
+        "crown": {
+          "x": 180,
+          "y": 41
+        },
+        "foot": {
+          "x": 176,
+          "y": 369
+        }
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 328,
+      "span": 328,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "rest",
+      "neutralHeightPixels": 371.611,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 162
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 116,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "communicate",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "follow",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "eat",
+      "neutralHeightPixels": 368.407,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 161
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 115,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "think",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "tired",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "work",
+      "neutralHeightPixels": 374.814,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 163
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 117,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "pleased",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "troubled",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "phoneTypingStanding",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "handle",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "phoneTypingSeated",
+      "neutralHeightPixels": 374.814,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 163
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 117,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "phoneCallingStanding",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "phoneCallingSeated",
+      "neutralHeightPixels": 371.611,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 162
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 116,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "sad",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "surprised",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "angry",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "cook",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
+    },
+    {
+      "avatar": "sister",
+      "action": "exercise",
+      "neutralHeightPixels": 362,
+      "method": "reviewed-head-and-torso-scale",
+      "frame": 0,
+      "points": {
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "reference": {
+        "action": "idle",
+        "frame": 0,
+        "crown": {
+          "x": 183,
+          "y": 46
+        },
+        "foot": {
+          "x": 184,
+          "y": 374
+        },
+        "head": [
+          {
+            "x": 183,
+            "y": 46
+          },
+          {
+            "x": 181,
+            "y": 159
+          }
+        ]
+      },
+      "referenceNeutralHeight": 362,
+      "referenceSpan": 113,
+      "span": 113,
+      "unit": "source-cell384",
+      "uniformAcrossFrames": true,
+      "notes": "Chibi world adaptation only; head/trunk compared with idle. Entire sheet uses one scale, not its seated/lying silhouette height."
     }
   ],
   "distribution": {

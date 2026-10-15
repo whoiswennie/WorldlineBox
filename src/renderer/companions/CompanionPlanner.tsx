@@ -5,20 +5,21 @@ import { Avatar } from './CompanionVisuals';
 import { Icon } from '../Icons';
 import { localDateKey, scheduleStatus, scheduleTime, useCompanionSchedules, type ScheduleRequest } from './companion-schedules';
 import { routineAgenda, routineClock, useCompanionRoutine } from './companion-routines';
-import { COMPANION_WORK_PHASE_LABELS, companionWorkOverview } from './companion-work-overview';
+import { useCompanionWorkOrders, WORK_ORDER_STATUS } from './companion-work-orders';
 
 const MOODS: Record<CompanionRuntimeState['mood'], string> = { calm: '平静', bright: '心情明亮', focused: '专注', tired: '有点疲惫', low: '情绪低落' };
 const EXPRESSIONS: Record<CompanionRuntimeState['expression'], string> = { gentle: '温柔', direct: '直率', playful: '轻快', reserved: '安静' };
 const RELATIONSHIPS: Record<CompanionRuntimeState['familiarity']['stage'], string> = { new: '初次相识', acquainted: '渐渐熟悉', close: '彼此亲近' };
 
-export function CompanionPlanner({ companion, members, conversationId, conversationKind = 'private', actions, request, api, onOwnerChange, onClose, onProfile, onMemory, onTasks, onSchedules, onOpenAction, onWorld }: {
+export function CompanionPlanner({ companion, members, conversationId, conversationKind = 'private', actions, request, api, onOwnerChange, onClose, onProfile, onMemory, onTasks, onSchedules, onWork, onWorld }: {
   readonly companion: Companion; readonly members: Companion[]; readonly conversationId: string; readonly conversationKind?: 'private' | 'group'; readonly actions: CompanionAction[];
   readonly request: ScheduleRequest; readonly api?: WorldlineBoxCompanionsApi; readonly onOwnerChange: (id: string) => void;
-  readonly onClose: () => void; readonly onProfile: () => void; readonly onMemory: () => void; readonly onTasks: (view?: 'active' | 'history', companionId?: string) => void; readonly onSchedules: () => void; readonly onOpenAction: (id: string) => void;
+  readonly onClose: () => void; readonly onProfile: () => void; readonly onMemory: () => void; readonly onTasks: (view?: 'active' | 'history', companionId?: string) => void; readonly onSchedules: () => void; readonly onWork: (id?: string) => void;
   readonly onWorld?: () => void;
 }) {
   const { schedules, occurrences, loading, error, refresh } = useCompanionSchedules(companion.id, conversationId, request, api);
   const { routine } = useCompanionRoutine(companion.id, conversationId, request, api);
+  const { orders, hasMore: moreWork, error: workError, loading: workLoading, refresh: refreshWork } = useCompanionWorkOrders(companion.id, conversationId, request, api, false, 100);
   const [runtime, setRuntime] = useState<CompanionRuntimeState>();
   const [stateDetails, setStateDetails] = useState(false);
   const [now, setNow] = useState(Date.now);
@@ -33,7 +34,8 @@ export function CompanionPlanner({ companion, members, conversationId, conversat
   const upcoming = schedules.filter(schedule => schedule.status === 'active' && scheduleStatus(schedule) !== '已完成').sort((a, b) => (a.deferredUntil ?? a.nextRunAt ?? a.runAt).localeCompare(b.deferredUntil ?? b.nextRunAt ?? b.runAt));
   const visible = selectedDay ? upcoming.filter(schedule => localDateKey(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt) === selectedDay) : upcoming;
   const currentActions = actions.filter(action => action.companionId === companion.id && ['queued', 'running'].includes(action.status));
-  const work = companionWorkOverview(actions, companion.id);
+  const workCounts = { running: orders.filter(order => order.status === 'running').length, waiting: orders.filter(order => order.status === 'accepted' || order.status === 'offered').length, paused: orders.filter(order => order.status === 'paused').length };
+  const workPreview = [...orders].sort((a, b) => (a.status === 'running' ? 0 : a.status === 'accepted' ? 1 : 2) - (b.status === 'running' ? 0 : b.status === 'accepted' ? 1 : 2)).slice(0, 2);
   const completed = occurrences.filter(occurrence => occurrence.status === 'done').slice(0, 2);
   const focus = currentActions.length > 1 ? `正在照看 ${currentActions.length} 件事` : currentActions[0]?.title || runtime?.focus;
   const rhythm = routine && conversationKind === 'private' ? routineAgenda(routine, selectedDay ? new Date(selectedDay + 'T12:00:00') : today).filter(item => selectedDay && selectedDay !== localDateKey(now) || item.at >= routineClock(today, routine.config.timeZone).clock).slice(0, 2) : [];
@@ -49,10 +51,10 @@ export function CompanionPlanner({ companion, members, conversationId, conversat
     </div>
     {onWorld && <button className="companions-world-entry" aria-label="看看伙伴的小屋" onClick={onWorld}><Icon name="globe" /><span><strong>去她的小屋看看</strong><small>窗外的天气，和她此刻的生活</small></span><Icon name="chevron" /></button>}
     <section className="companions-planner-work" aria-label="伙伴工作概览">
-      <header><h4><Icon name="activity" />手头的事</h4><button aria-label="查看全部伙伴工作" onClick={() => onTasks('active', companion.id)}>查看全部<Icon name="chevron" /></button></header>
-      <div className="companions-planner-work-counts" aria-label="任务数量">{(['running', 'queued', 'confirmation'] as const).map(phase => <span key={phase} data-work-phase={phase}><strong>{work.counts[phase]}</strong>{COMPANION_WORK_PHASE_LABELS[phase]}</span>)}</div>
-      {work.preview.length ? <div className="companions-planner-work-preview">{work.preview.map(({ action, phase }) => <button key={action.id} data-work-preview={action.id} onClick={() => onOpenAction(action.id)} title={action.title}><i data-work-phase={phase} /><span>{action.title}</span><small>{COMPANION_WORK_PHASE_LABELS[phase]}</small></button>)}</div> : <p className="companions-planner-work-empty">暂时没有待处理的工作</p>}
-      {work.total > 2 && <button className="companions-planner-work-more" onClick={() => onTasks('active', companion.id)}>另有 {work.total - 2} 件，展开工作台</button>}
+      <header><h4><Icon name="activity" />工作台</h4><button aria-label="查看全部伙伴工作" onClick={() => onWork()}>管理工作<Icon name="chevron" /></button></header>
+      <div className="companions-planner-work-counts" aria-label="工作数量">{([['running', '进行中'], ['waiting', '待处理'], ['paused', '已暂停']] as const).map(([phase, label]) => <span key={phase} data-work-phase={phase}><strong>{workCounts[phase]}</strong>{label}</span>)}</div>
+      {workError ? <p className="companions-planner-work-empty">工作暂时无法读取 <button onClick={() => void refreshWork()}>刷新</button></p> : workLoading ? <p className="companions-planner-work-empty">正在读取工作…</p> : workPreview.length ? <div className="companions-planner-work-preview">{workPreview.map(order => <button key={order.id} data-work-preview={order.id} onClick={() => onWork(order.id)} title={order.title}><i data-work-phase={order.status} /><span>{order.title}</span><small>{WORK_ORDER_STATUS[order.status]}</small></button>)}</div> : <p className="companions-planner-work-empty">还没有工作，<button onClick={() => onWork()}>发布一份委托</button></p>}
+      {orders.length > 2 && <button className="companions-planner-work-more" onClick={() => onWork()}>另有 {orders.length - 2}{moreWork ? '+' : ''} 件，展开工作台</button>}
     </section>
     <section className="companions-planner-calendar" aria-label="伙伴周历"><div className="companions-planner-date"><span><strong>{today.getDate()}</strong><small>{today.toLocaleDateString('zh-CN', { month: 'long' })}<br />{today.toLocaleDateString('zh-CN', { weekday: 'long' })}</small></span><div><button aria-label="上一周" onClick={() => setWeekOffset(value => value - 1)}><Icon name="chevron-left" /></button><button aria-label="下一周" onClick={() => setWeekOffset(value => value + 1)}><Icon name="chevron-right" /></button></div></div><div className="companions-planner-week">{days.map(day => { const key = localDateKey(day.getTime()), hasPlan = upcoming.some(schedule => localDateKey(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt) === key); return <button key={key} aria-label={'查看 ' + day.toLocaleDateString('zh-CN') + ' 的安排'} aria-pressed={selectedDay === key} className={(key === localDateKey(now) ? 'is-today ' : '') + (selectedDay === key ? 'is-selected' : '')} onClick={() => setSelectedDay(current => current === key ? undefined : key)}><small>{day.toLocaleDateString('zh-CN', { weekday: 'narrow' })}</small><strong>{day.getDate()}</strong><i className={hasPlan ? 'has-plan' : ''} /></button>; })}</div></section>
     <section className="companions-planner-agenda"><div className="companions-planner-section-title"><h4>{selectedDay ? '这一天的便签' : '接下来的便签'}</h4><button aria-label="管理伙伴日程" onClick={onSchedules}><Icon name="plus" /></button></div>

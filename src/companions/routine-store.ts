@@ -24,12 +24,13 @@ export class CompanionRoutineStore {
     private readonly visibleSources: (scope: Scope, ids: string[]) => CompanionMessage[],
     private readonly humanSource: (scope: Scope, content: string) => CompanionMessage,
     private readonly beforeConfigure: (companionId: string) => void,
-    private readonly worldClock: { virtualAt: (realAt: number) => number; realAt: (virtualAt: number) => number; ensureThrough: (at: number) => number;
+    private readonly worldClock: { virtualAt: (realAt: number, referenceRealAt?: number) => number; realAt: (virtualAt: number, referenceRealAt?: number) => number; ensureThrough: (at: number) => number;
+      clockBoundaries: (from: number, to: number) => number[]; timeZone: () => string;
       actual: (id: string, at: number) => Pick<CompanionRoutineRuntime, 'phase' | 'activity' | 'activeHabitId'>; occupancy: (id: string, from: number, to: number) => CompanionWorldOccupancy[]; urgent: (id: string, source: string, now: number) => boolean }) {}
 
-  configuration(companionId: string): CompanionRoutineConfig { return structuredClone(this.load(companionId).config); }
-  private virtualTime(at: number | string | Date): number { return this.worldClock.virtualAt(new Date(at).getTime()); }
-  private realTime(at: number | string | Date): number { return this.worldClock.realAt(new Date(at).getTime()); }
+  configuration(companionId: string): CompanionRoutineConfig { return { ...structuredClone(this.load(companionId).config), timeZone: this.worldClock.timeZone() }; }
+  private virtualTime(at: number | string | Date, referenceRealAt?: number): number { return this.worldClock.virtualAt(new Date(at).getTime(), referenceRealAt); }
+  private realTime(at: number | string | Date, referenceRealAt?: number): number { return this.worldClock.realAt(new Date(at).getTime(), referenceRealAt); }
 
   initialize(): void {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_routines(companion_id TEXT PRIMARY KEY REFERENCES companions(id),data TEXT NOT NULL);
@@ -79,7 +80,7 @@ export class CompanionRoutineStore {
   get(scope: Scope): CompanionRoutine {
     const conversation = this.requireScope(scope), stored = this.load(scope.companionId), observedAt = this.worldClock.ensureThrough(Date.now());
     this.observeWork(scope.companionId);
-    const config = structuredClone(stored.config), privateSource = this.mustHideConfiguration(scope, conversation, stored);
+    const config = this.configuration(scope.companionId), privateSource = this.mustHideConfiguration(scope, conversation, stored);
     let runtime = this.phase(scope.companionId, observedAt), habitProgress = this.habitProgress(stored, observedAt);
     if (privateSource) {
       if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + scope.conversationId)) {
@@ -108,7 +109,8 @@ export class CompanionRoutineStore {
     const actualNow = this.worldClock.ensureThrough(now);
     return stored.config.habits.flatMap(habit => {
       const from = Date.parse(stored.habitSince[habit.id] ?? stored.createdAt), windows = this.worldClock.occupancy(stored.companionId, from, actualNow);
-      return deriveCompanionWorldHabitProgress({ ...stored.config, habits: [habit] }, windows, actualNow, at => this.virtualTime(at), at => this.realTime(at));
+      return deriveCompanionWorldHabitProgress({ ...this.configuration(stored.companionId), habits: [habit] }, windows, actualNow,
+        (at, reference) => this.virtualTime(at, reference), (at, reference) => this.realTime(at, reference), this.worldClock.clockBoundaries(from, actualNow));
     });
   }
   rehomeConversation(oldId: string, newId: string): void {
@@ -147,7 +149,8 @@ export class CompanionRoutineStore {
       const value = this.load(scope.companionId);
       if (value.revision !== expectedRevision) throw new Error('作息已更新，请重新读取后修改。');
       const changes = companionRoutinePatchSchema.parse(patch), config = companionRoutineConfigSchema.parse({ ...value.config, ...changes });
-      config.timeZone = resolveCompanionScheduleTimeZone(config.timeZone);
+      if (changes.timeZone && resolveCompanionScheduleTimeZone(changes.timeZone) !== this.worldClock.timeZone()) throw new Error('伙伴作息时区由世界设置统一管理，请先修改世界时区。');
+      config.timeZone = this.worldClock.timeZone();
       let source: CompanionMessage;
       if (sourceMessageId) {
         const candidate = this.visibleSources(scope, [sourceMessageId])[0];
@@ -165,9 +168,9 @@ export class CompanionRoutineStore {
   }
   phase(companionId: string, now = Date.now()): CompanionRoutineRuntime {
     now = this.worldClock.ensureThrough(now);
-    const value = this.load(companionId), virtual = evaluateCompanionRoutine(value.config, iso(this.virtualTime(now)), value.interruptedUntil ? iso(this.virtualTime(value.interruptedUntil)) : undefined);
+    const value = this.load(companionId), virtual = evaluateCompanionRoutine(this.configuration(companionId), iso(this.virtualTime(now)), value.interruptedUntil ? iso(this.virtualTime(value.interruptedUntil, now)) : undefined);
     const actual = this.worldClock.actual(companionId, now);
-    const result: CompanionRoutineRuntime = { ...virtual, ...actual, plannedPhase: virtual.phase, nextTransitionAt: iso(this.realTime(virtual.nextTransitionAt)),
+    const result: CompanionRoutineRuntime = { ...virtual, ...actual, plannedPhase: virtual.phase, nextTransitionAt: iso(this.realTime(virtual.nextTransitionAt, now)),
       ...(value.interruptedUntil ? { interruptedUntil: value.interruptedUntil } : {}) };
     const previous = this.db.prepare('SELECT phase FROM companion_routine_audit WHERE companion_id=? ORDER BY id DESC LIMIT 1').get(companionId);
     if (!previous || row(previous).phase !== result.phase) {
@@ -179,12 +182,13 @@ export class CompanionRoutineStore {
   nextEnergyCheckAt(companionId: string, now = Date.now()): string { return this.phase(companionId, now).nextTransitionAt; }
   advanceEnergy(companionId: string, from: number | string | Date, to: number | string | Date, energy: number): number {
     const start = new Date(from).getTime(), end = this.worldClock.ensureThrough(new Date(to).getTime());
-    return advanceCompanionWorldEnergy(this.worldClock.occupancy(companionId, start, end), start, end, energy, at => this.virtualTime(at));
+    return advanceCompanionWorldEnergy(this.worldClock.occupancy(companionId, start, end), start, end, energy,
+      (at, reference) => this.virtualTime(at, reference), this.worldClock.clockBoundaries(start, end));
   }
   allowWork(companionId: string, sourceMessageId: string, now = Date.now(), proactive = false): boolean {
     // A wake window belongs to a specific urgent interaction, not the owner's
     // entire backlog. Fixed commitments also must not release old queued chat.
-    if (evaluateCompanionRoutine(this.load(companionId).config, iso(this.virtualTime(now))).canRespond) return true;
+    if (!['sleeping', 'eating'].includes(evaluateCompanionRoutine(this.configuration(companionId), iso(this.virtualTime(now))).phase)) return true;
     if (proactive) return false;
     const message = this.db.prepare('SELECT conversation_id FROM messages WHERE id=?').get(sourceMessageId);
     if (!message) return false;

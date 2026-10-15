@@ -3,6 +3,9 @@ import type { WorldArtAction } from '../../../shared/companion-world-art';
 
 export const WORLD_ACTIVITY_LABELS: Record<CompanionWorldActor['activity'], string> = { idle: '自在地待着', walking: '正在走动', seating: '正在坐下', standingUp: '正在起身', lyingDown: '正在躺下', waking: '正在醒来', turning: '正在转身', sitting: '坐着休息', working: '在电脑前工作', sleeping: '正在睡觉', eating: '正在用餐', resting: '正在休息', habit: '自己的小日常' };
 export const WORLD_WORK_LABELS: Record<CompanionWorldWork['status'], string> = { waiting: '等待合适的时间', moving: '正在前往电脑', seating: '正在电脑前坐稳', ready: '已就座，可以处理', ended: '这次工作已结束' };
+export function worldWorkLabel(work: CompanionWorldWork) {
+  return work.kind === 'chat' ? { waiting: '等方便时回复聊天', moving: '正在准备看消息', seating: '正在准备回复', ready: '正在回复聊天', ended: '这次聊天已结束' }[work.status] : WORLD_WORK_LABELS[work.status];
+}
 export const WORLD_VISIT_LABELS: Record<CompanionWorldVisit['status'], string> = { requested: '等待对方回应', allowed: '已获准拜访', denied: '对方暂不方便', left: '拜访已结束', expired: '邀请已过期' };
 export const WORLD_WEATHER_LABELS = { clear: '晴朗', cloudy: '多云', rain: '下雨', snow: '下雪' } as const;
 export interface WorldActorStatus {
@@ -12,7 +15,7 @@ export interface WorldActorStatus {
 }
 /** Describe received physical facts first; queued work never pretends that a sleeping actor is executing it. */
 export function worldActorStatus(actor: CompanionWorldActor, snapshot: CompanionWorldSnapshot, companions: readonly { id: string; name: string }[]): WorldActorStatus {
-  const works = snapshot.works.filter(item => item.companionId === actor.companionId && item.status !== 'ended');
+  const works = snapshot.works.filter(item => item.companionId === actor.companionId && item.status !== 'ended' && item.kind !== 'chat');
   const work = works.find(item => item.status === 'ready') ?? works.find(item => item.status === 'seating') ?? works.find(item => item.status === 'moving') ?? works[0];
   const destination = snapshot.scenes.flatMap(scene => scene.objects.map(object => ({ object, scene }))).find(item => item.object.id === (work?.status === 'moving' ? work.computerId : actor.destinationId));
   const name = (id: string | undefined) => companions.find(item => item.id === id)?.name ?? snapshot.residents.find(item => item.companionId === id)?.name ?? '伙伴';
@@ -20,7 +23,7 @@ export function worldActorStatus(actor: CompanionWorldActor, snapshot: Companion
   const communication = actor.communication;
   const phone = communication && Date.parse(communication.untilReal) > Date.parse(snapshot.clock.realNow) ? {
     kind: 'social' as const,
-    label: communication.phase === 'typing'
+    label: communication.phase === 'responding' ? '正在回复聊天' : communication.phase === 'typing'
       ? communication.recipientIds.length > 1 ? '正在群聊里发消息' : '正在给' + name(communication.recipientIds[0]) + '发消息'
       : '收到' + name(communication.recipientIds[0]) + '的消息',
   } : undefined;
@@ -48,6 +51,7 @@ export function worldActorStatus(actor: CompanionWorldActor, snapshot: Companion
     }
     case 'sitting': return work?.status === 'ready' ? { kind: 'work', label: '已就座，准备处理', detail } : phone ?? { kind: 'rest', label: '坐着休息', detail };
     case 'habit': {
+      if (phone) return phone;
       const labels: Partial<Record<WorldArtAction, string>> = { read: '正在读书', standingRead: '正在读书', exercise: '正在锻炼', cook: '正在做饭', communicate: '正在交谈', think: '正在思考', handle: '正在整理物品', phoneCallingStanding: '正在打电话', phoneCallingSeated: '坐着打电话', phoneTypingStanding: '正在看手机', phoneTypingSeated: '坐着看手机', follow: '正在跟随' };
       return { kind: actor.artAction === 'communicate' ? 'social' : actor.artAction === 'cook' ? 'meal' : 'habit', label: labels[actor.artAction] ?? (actor.activityLabel && actor.activityLabel !== '个人日常活动' ? actor.activityLabel : '自己的小日常') };
     }

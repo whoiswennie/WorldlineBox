@@ -22,7 +22,7 @@
 
 `music-live-covers.test.ts` 不替换音乐 IPC、元数据、图片或音频请求：读取官方默认歌单 275 首歌曲，确认歌单和当前专辑封面实际解码（naturalWidth > 0），解析官方公开 CDN 播放地址，并静音播放后暂停。Electron fetch 的手动重定向取消问题改用 ClientRequest 的 redirect 事件处理，只取重定向头，随后仍校验 CDN 域名。
 
-真实音乐记录为 `.tools/dsh-research/music-live-receipt.json`，截图为 `artifacts/dsh-launcher/music-settings-live-covers.png`。远端公开歌单可能变化；记录不是固定目录或可播放版权保证。不可用歌曲由播放器跳过。
+这段文字记录当时的真实音乐验收，历史回执和截图不随源码分发。运行 `node scripts/run-e2e.mjs tests/e2e/music-live-covers.test.ts` 可重新验收，截图写入本地忽略目录 `.tools/test-output/dsh-launcher/music-settings-live-covers.png`。远端公开歌单可能变化；记录不是固定目录或可播放版权保证。不可用歌曲由播放器跳过。
 
 ## 模型和提示
 

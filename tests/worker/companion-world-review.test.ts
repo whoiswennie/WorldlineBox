@@ -11,10 +11,10 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('202
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-review-')); roots.push(root);
-  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), ['alice', 'bob'].map(id => ({ id, name: id, persona: '尊重彼此边界。', description: '', model: '', avatar: 'sister' as const, proactive: false }))); stores.add(store);
+  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), ['alice', 'bob'].map(id => ({ id, name: id, persona: '尊重彼此边界。', description: '', model: '', avatar: 'sister' as const, proactive: true }))); stores.add(store);
   const alice = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, bob = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
   const world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const scope of [alice, bob]) { const routine = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } }); }
   return { store, alice, bob };
@@ -51,16 +51,16 @@ describe('independent world cross-layer regression review', () => {
     expect(world.actors.find(actor => actor.companionId === 'alice')!.sceneId).not.toBe('home_bob');
     expect(world.visits[0]!.status).toBe('expired');
   });
-  it('keeps virtual time continuous across mode edits while scheduled promises remain on the real clock', () => {
+  it('preserves the compressed start and realigns the world to computer time on returning to realtime', () => {
     const f = fixture(), initial = f.store.request({ type: 'world.snapshot' }).world!;
     const schedule = f.store.request({ type: 'schedule.create', ...f.alice, entries: [{ title: '固定提醒', prompt: '提醒喝水', kind: 'reminder', runAt: '2026-10-14T11:00:00Z' }] }).schedules![0]!;
     advance(f.store, 30000);
     const realBefore = f.store.request({ type: 'world.snapshot' }).world!;
     const fast = f.store.request({ type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode: 'compressed', dayDurationMinutes: 20 } }).world!;
     expect(fast.clock.virtualNow).toBe(realBefore.clock.virtualNow);
-    const later = advance(f.store, 60000);
+    advance(f.store, 60000);
     const sync = f.store.request({ type: 'world.configure', expectedRevision: fast.settings.revision, patch: { mode: 'realtime' } }).world!;
-    expect(sync.clock.virtualNow).toBe(later.clock.virtualNow);
+    expect(sync.clock.virtualNow).toBe(new Date().toISOString());
     expect(f.store.request({ type: 'schedule.list', ...f.alice }).schedules![0]).toMatchObject({ id: schedule.id, nextRunAt: '2026-10-14T11:00:00.000Z' });
     expect(f.store.request({ type: 'schedule.due.claim' }).scheduleOccurrence).toBeUndefined();
   });

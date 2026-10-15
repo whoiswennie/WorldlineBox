@@ -8,7 +8,7 @@ import { CompanionWorldStore } from '../../src/companions/world-store';
 import type { CompanionWorldSettings } from '../../src/shared/companion-world';
 
 const Sqlite = BetterSqlite3 as { new(filename: string, options?: { readonly: boolean }): CompanionConnection };
-const seeds: CompanionSeed[] = ['alice', 'bob', 'carol'].map(id => ({ id, name: id, persona: '尊重彼此边界。', description: '', model: '', avatar: 'sister', proactive: false }));
+const seeds: CompanionSeed[] = ['alice', 'bob', 'carol'].map(id => ({ id, name: id, persona: '尊重彼此边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const roots: string[] = [], connections = new Set<{ close(): void }>();
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T10:00:00Z'); });
 afterEach(() => {
@@ -20,7 +20,7 @@ function fixture() {
   const filename = path.join(root, 'messages.sqlite'), store = new CompanionsStore(filename, seeds); connections.add(store);
   const scopes = Object.fromEntries(seeds.map(seed => [seed.id, { companionId: seed.id, conversationId: store.openPrivate(seed.id).id }]));
   const settings = store.request({ type: 'world.snapshot' }).world!.settings;
-  store.request({ type: 'world.configure', expectedRevision: settings.revision, patch: { mode: 'realtime' } });
+  store.request({ type: 'world.configure', expectedRevision: settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const scope of Object.values(scopes)) {
     const routine = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', wakeAt: '07:00', sleepAt: '23:00', meals: [], habits: [] } });
@@ -78,13 +78,14 @@ it('retains the full visit audit but only active permission and recent settled v
 
 it('keeps one hot clock anchor through hundreds of edits while historical real/virtual accounting survives reopening', () => {
   const f = fixture(); let world = f.store.request({ type: 'world.snapshot' }).world!, expected = Date.parse(world.clock.virtualNow), speed = 1;
-  const checkpoints: Array<{ real: number; virtual: number }> = [];
+  const checkpoints: Array<{ real: number; virtual: number; speed: number }> = [];
   for (let index = 0; index < 300; index++) {
     vi.setSystemTime(Date.now() + 1000); expected += 1000 * speed;
     const patch: Partial<CompanionWorldSettings> = index % 2 ? { mode: 'realtime' } : { mode: 'compressed', dayDurationMinutes: 30 };
+    if (patch.mode === 'realtime') expected = Date.now();
     world = f.store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch }).world!;
     expect(Date.parse(world.clock.virtualNow)).toBe(expected);
-    checkpoints.push({ real: Date.now(), virtual: expected }); speed = patch.mode === 'compressed' ? 48 : 1;
+    speed = patch.mode === 'compressed' ? 48 : 1; checkpoints.push({ real: Date.now(), virtual: expected, speed });
   }
   close(f.store); const db = audit(f.filename);
   const hot = JSON.parse(String(record(db.prepare('SELECT data FROM companion_world WHERE id=1').get()).data));
@@ -93,12 +94,12 @@ it('keeps one hot clock anchor through hundreds of edits while historical real/v
   const clock = new CompanionWorldStore(db, unused, unused, unused, unused, unused);
   for (const checkpoint of checkpoints) {
     expect(clock.virtualAt(checkpoint.real)).toBe(checkpoint.virtual);
-    expect(clock.realAt(checkpoint.virtual)).toBe(checkpoint.real);
+    expect(clock.realAt(checkpoint.virtual, checkpoint.real)).toBe(checkpoint.real);
   }
   // Verify points inside segments too, not only the exact edit boundaries.
   for (let index = 0; index < checkpoints.length - 1; index++) {
-    const a = checkpoints[index]!, b = checkpoints[index + 1]!, mid = (a.real + b.real) / 2, virtual = (a.virtual + b.virtual) / 2;
-    expect(clock.virtualAt(mid)).toBe(virtual); expect(clock.realAt(virtual)).toBe(mid);
+    const a = checkpoints[index]!, b = checkpoints[index + 1]!, mid = (a.real + b.real) / 2, virtual = a.virtual + (mid - a.real) * a.speed;
+    expect(clock.virtualAt(mid)).toBe(virtual); expect(clock.realAt(virtual, mid)).toBe(mid);
   }
   close(db); const reopened = new CompanionsStore(f.filename, seeds); connections.add(reopened);
   expect(reopened.request({ type: 'world.snapshot' }).world!.clock.virtualNow).toBe(world.clock.virtualNow);

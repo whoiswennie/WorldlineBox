@@ -1,0 +1,58 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+
+const stores = new Set<CompanionsStore>(), roots: string[] = [];
+beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-15T14:00:00Z'); });
+afterEach(() => { for (const store of stores) store.close(); stores.clear(); roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); vi.useRealTimers(); });
+function fixture() {
+  const root = mkdtempSync(path.join(tmpdir(), 'life-events-')); roots.push(root);
+  const file = path.join(root, 'messages.sqlite');
+  const seeds: CompanionSeed[] = [{ id: 'alice', name: 'Alice', description: '', persona: '温柔友善', model: '', avatar: 'sister', proactive: true }];
+  const store = new CompanionsStore(file, seeds); stores.add(store);
+  const world = store.request({ type: 'world.snapshot' }).world!;
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
+  for (const rule of store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!) {
+    store.request({ type: 'life-rule.update', companionId: 'alice', id: rule.id, expectedRevision: rule.revision, rule: { ...draft(rule), enabled: false } });
+  }
+  const rule = store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '问候玩家', action: 'message', targetId: 'user', startMinute: 14 * 60, endMinute: 14 * 60 + 1, probability: 1 } }).lifeRule!;
+  store.request({ type: 'life-event.claim' });
+  return { store, file, seeds, rule };
+}
+function draft(rule: { title: string; startMinute: number; endMinute: number; probability: number; action: 'message' | 'visit' | 'rest' | 'study' | 'leisure'; targetId?: string }) {
+  return { title: rule.title, startMinute: rule.startMinute, endMinute: rule.endMinute, probability: rule.probability, action: rule.action, targetId: rule.targetId };
+}
+it('persists hazard, sends one formal spontaneous player message, and never rerolls on reopening', () => {
+  const f = fixture(); vi.setSystemTime(Date.now() + 800);
+  const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
+  expect(claimed).toMatchObject({ ruleId: f.rule.id, status: 'running', targetId: 'user' });
+  expect(claimed.hazard).toBeGreaterThan(claimed.threshold);
+  const completed = f.store.request({ type: 'life-event.complete', id: claimed.id, leaseToken: claimed.leaseToken!, text: '这会儿有点空，来和你打声招呼。' }).lifeOccurrence!;
+  expect(completed.status).toBe('done');
+  f.store.request({ type: 'life-event.complete', id: claimed.id, leaseToken: claimed.leaseToken!, text: '不应重复发出' });
+  const room = f.store.openPrivate('alice'), messages = f.store.request({ type: 'messages', conversationId: room.id }).messages!;
+  expect(messages.filter(message => message.authorId === 'alice')).toHaveLength(1);
+  f.store.close(); stores.delete(f.store); const reopened = new CompanionsStore(f.file, f.seeds); stores.add(reopened);
+  expect(reopened.request({ type: 'life-event.claim' }).lifeOccurrence).toBeUndefined();
+  expect(reopened.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(occ => occ.id === claimed.id)?.status).toBe('done');
+});
+it('removes a rule from management while retaining its occurrence and rejects a cancelled late result', () => {
+  const f = fixture(); vi.setSystemTime(Date.now() + 800);
+  const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
+  f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: f.rule.id, expectedRevision: f.rule.revision });
+  const page = f.store.request({ type: 'life-rule.list', companionId: 'alice' });
+  expect(page.lifeRules!.some(rule => rule.id === f.rule.id)).toBe(false);
+  expect(page.lifeOccurrences!.find(occ => occ.id === claimed.id)?.status).toBe('cancelled');
+  expect(() => f.store.request({ type: 'life-event.complete', id: claimed.id, leaseToken: claimed.leaseToken!, text: '不能迟到写回' })).toThrow('失效');
+});
+it('respects an existing opt-out and never sends a backlog of greetings after a long offline gap', () => {
+  const f = fixture(); const role = f.store.state().companions[0]!; f.store.updateCompanion(role.id, { ...role, proactive: false });
+  vi.setSystemTime(Date.now() + 800); expect(f.store.request({ type: 'life-event.claim' }).lifeOccurrence).toBeUndefined();
+  f.store.updateCompanion(role.id, { ...role, proactive: true });
+  vi.setSystemTime(Date.now() + 10 * 86400000);
+  // World catch-up is a separate bounded simulation and never invokes the LLM.
+  for (let index = 0; index < 100; index++) { if (!f.store.request({ type: 'world.clock' }).worldClock!.backlog) break; f.store.request({ type: 'world.tick' }); }
+  expect(f.store.request({ type: 'life-event.claim' }).lifeOccurrence).toBeUndefined();
+});

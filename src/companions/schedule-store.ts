@@ -19,7 +19,8 @@ export class CompanionScheduleStore {
     private readonly humanSource: (scope: Scope, content: string, clientId?: string) => CompanionMessage,
     private readonly energy: (companionId: string, now: number) => number,
     private readonly deferredUntil: (companionId: string, now: number, energy: number) => string | undefined,
-    private readonly wakeForCommitment: (companionId: string, now: number) => void) {}
+    private readonly wakeForCommitment: (companionId: string, now: number) => void,
+    private readonly clock: { virtualAt(real: number): number; timeZone(): string } = { virtualAt: real => real, timeZone: () => resolveCompanionScheduleTimeZone('system') }) {}
 
   initialize(): void {
     this.db.exec(`
@@ -86,7 +87,7 @@ export class CompanionScheduleStore {
       this.requireScope(scope);
       if (sourceMessageId) this.source(scope, sourceMessageId);
       return entries.map((input, index) => {
-        const entry = companionScheduleEntrySchema.parse(input), timeZone = resolveCompanionScheduleTimeZone(entry.timeZone);
+        const entry = companionScheduleEntrySchema.parse(input), timeZone = entry.timeZone === 'system' ? this.clock.timeZone() : resolveCompanionScheduleTimeZone(entry.timeZone);
         const runAt = new Date(entry.runAt).toISOString();
         // Validate the full recurrence even when its first due time is in the past.
         nextCompanionScheduleRun({ ...entry, timeZone, runAt }, runAt);
@@ -115,10 +116,10 @@ export class CompanionScheduleStore {
       const source = sourceMessageId ? this.source(schedule, sourceMessageId, true) : this.humanSource(schedule,
         `修改待办安排：${entry.title}\n完整${entry.kind === 'reminder' ? '提醒内容' : '任务目标'}：${entry.prompt}\n首次时间：${entry.runAt}\n时区：${entry.timeZone}\n重复：${entry.recurrence}${entry.intervalMinutes ? `（每 ${entry.intervalMinutes} 分钟）` : ''}${entry.weekDays ? `（星期 ${entry.weekDays.join('、')}）` : ''}\n精力不足时${entry.flexible ? '可以延后' : '仍按固定时间执行'}。`);
       schedule.sourceMessageId = source.id; schedule.authorizationSourceMessageIds = [...new Set([...schedule.authorizationSourceMessageIds, source.id])];
-      Object.assign(schedule, entry, { runAt: new Date(entry.runAt).toISOString(), timeZone: resolveCompanionScheduleTimeZone(entry.timeZone) });
+      Object.assign(schedule, entry, { runAt: new Date(entry.runAt).toISOString(), timeZone: entry.timeZone === 'system' ? this.clock.timeZone() : resolveCompanionScheduleTimeZone(entry.timeZone) });
       nextCompanionScheduleRun(schedule, schedule.runAt);
       if (timingChanged) {
-        const now = Date.now();
+        const now = this.clock.virtualAt(Date.now());
         schedule.nextRunAt = new Date(schedule.runAt).getTime() > now ? schedule.runAt : schedule.recurrence === 'once' ? iso(now) : nextCompanionScheduleRun(schedule, iso(now));
         for (const item of rows(this.db.prepare("SELECT data FROM companion_schedule_occurrences WHERE schedule_id=? AND status IN ('pending','dispatching') AND action_id IS NULL AND message_id IS NULL").all(id))) { const occurrence = decode<CompanionScheduleOccurrence>(item.data); occurrence.status = 'cancelled'; occurrence.finishedAt = iso(); occurrence.leaseToken = undefined; occurrence.leaseUntil = undefined; this.saveOccurrence(occurrence); }
       }
@@ -154,7 +155,7 @@ export class CompanionScheduleStore {
     return this.db.transaction(() => {
       const schedule = this.owned(scope, id, expectedRevision); this.requireScope(schedule);
       if (schedule.status !== 'active') throw new Error('请先恢复待办，再立即执行。');
-      let scheduledAt = Date.now();
+      let scheduledAt = this.clock.virtualAt(Date.now());
       while (this.db.prepare('SELECT 1 FROM companion_schedule_occurrences WHERE schedule_id=? AND scheduled_at=?').get(id, iso(scheduledAt))) scheduledAt++;
       const scheduleOccurrence = this.newOccurrence(schedule, iso(scheduledAt), true);
       schedule.blockedReason = undefined; schedule.deferredUntil = undefined; this.touch(schedule);
@@ -192,15 +193,15 @@ export class CompanionScheduleStore {
   claim(now = iso(), leaseMs = 30000): { schedule: CompanionSchedule; scheduleOccurrence: CompanionScheduleOccurrence } | undefined {
     return this.db.transaction(() => {
       this.stopUnavailable();
-      const time = new Date(now).getTime();
+      const time = new Date(now).getTime(), worldNow = iso(this.clock.virtualAt(time));
       for (const item of rows(this.db.prepare(`SELECT o.id,o.action_id,a.status FROM companion_schedule_occurrences o JOIN actions a ON a.id=o.action_id WHERE o.status IN ('dispatching','running') AND a.status IN ('succeeded','failed','cancelled')`).all())) {
         this.updateOccurrence({ type: 'schedule.occurrence.update', id: String(item.id), actionId: String(item.action_id), status: item.status === 'succeeded' ? 'done' : item.status === 'failed' ? 'failed' : 'cancelled' });
       }
       // Reuse interrupted executions and expired dispatches; a live action never gets a competing lease.
       const resumable = rows(this.db.prepare(`SELECT o.data FROM companion_schedule_occurrences o JOIN companion_schedules s ON s.id=o.schedule_id
-        LEFT JOIN actions a ON a.id=o.action_id WHERE s.status='active' AND o.scheduled_at<=? AND
+        LEFT JOIN actions a ON a.id=o.action_id WHERE s.status='active' AND (o.scheduled_at<=? OR json_extract(o.data,'$.forced')=1 OR o.action_id IS NOT NULL) AND
         NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=s.companion_id AND r.status!='completed') AND
-        (o.status='pending' OR (o.status='dispatching' AND o.lease_until<=?) OR (o.status='running' AND a.status='interrupted')) ORDER BY o.scheduled_at,o.id LIMIT 20`).all(now, now));
+        (o.status='pending' OR (o.status='dispatching' AND o.lease_until<=?) OR (o.status='running' AND a.status='interrupted')) ORDER BY o.scheduled_at,o.id LIMIT 20`).all(worldNow, now));
       let occurrence: CompanionScheduleOccurrence | undefined, schedule: CompanionSchedule | undefined;
       for (const item of resumable) {
         const candidate = decode<CompanionScheduleOccurrence>(item.data), owner = this.load(candidate.scheduleId);
@@ -210,7 +211,7 @@ export class CompanionScheduleStore {
       if (!occurrence) {
         const due = rows(this.db.prepare(`SELECT s.data FROM companion_schedules s WHERE s.status='active' AND s.next_run_at<=? AND (s.deferred_until IS NULL OR s.deferred_until<=?)
           AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=s.companion_id AND r.status!='completed')
-          AND NOT EXISTS(SELECT 1 FROM companion_schedule_occurrences o WHERE o.schedule_id=s.id AND o.status IN ('pending','dispatching','running')) ORDER BY s.next_run_at,s.id LIMIT 20`).all(now, now));
+          AND NOT EXISTS(SELECT 1 FROM companion_schedule_occurrences o WHERE o.schedule_id=s.id AND o.status IN ('pending','dispatching','running')) ORDER BY s.next_run_at,s.id LIMIT 20`).all(worldNow, now));
         for (const item of due) {
           const candidate = decode<CompanionSchedule>(item.data);
           if (!this.valid(candidate)) { candidate.status = 'cancelled'; candidate.nextRunAt = undefined; candidate.lastError = '授权来源或执行范围已经不可用。'; this.touch(candidate); continue; }
@@ -219,8 +220,13 @@ export class CompanionScheduleStore {
           if (deferred) {
             candidate.blockedReason = 'resting'; candidate.deferredUntil = deferred; this.touch(candidate); continue;
           }
-          schedule = candidate; occurrence = this.newOccurrence(candidate, candidate.nextRunAt!);
-          candidate.nextRunAt = nextCompanionScheduleRun(candidate, now); candidate.blockedReason = undefined; candidate.deferredUntil = undefined; this.touch(candidate); break;
+          const scheduledAt = candidate.nextRunAt!;
+          // A clock rollback can cross an already completed civil occurrence.
+          // Keep its identity consumed, rather than leasing the old action again.
+          const consumed = this.db.prepare('SELECT 1 FROM companion_schedule_occurrences WHERE schedule_id=? AND scheduled_at=?').get(candidate.id, scheduledAt);
+          candidate.nextRunAt = nextCompanionScheduleRun(candidate, worldNow); candidate.blockedReason = undefined; candidate.deferredUntil = undefined; this.touch(candidate);
+          if (consumed) continue;
+          schedule = candidate; occurrence = this.newOccurrence(candidate, scheduledAt); break;
         }
       }
       if (!occurrence || !schedule) return;
@@ -276,7 +282,7 @@ export class CompanionScheduleStore {
       if (input.error) occurrence.error = input.error;
       if (['done', 'failed', 'cancelled'].includes(input.status)) {
         occurrence.finishedAt = iso(); occurrence.leaseToken = undefined; occurrence.leaseUntil = undefined;
-        schedule.lastRunAt = occurrence.startedAt ?? occurrence.finishedAt; schedule.lastResult = occurrence.result; schedule.lastError = occurrence.error; schedule.lastOccurrenceStatus = input.status; this.touch(schedule);
+        schedule.lastRunAt = occurrence.scheduledAt; schedule.lastResult = occurrence.result; schedule.lastError = occurrence.error; schedule.lastOccurrenceStatus = input.status; this.touch(schedule);
       }
       this.saveOccurrence(occurrence); return occurrence;
     }).immediate();

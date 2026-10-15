@@ -43,7 +43,7 @@ Search pages use sequence keysets and a stable initial high-water mark. New inse
 - Service test: dissolution cancels an actual mocked native-task lifecycle and prevents replay after restart, using the real SQLite store.
 - Renderer stress: 5,000 source records, 80 older-page requests; message objects and DOM message nodes stay at or below 200, then returning to latest keeps exactly 50. This demonstrates bounded history retention, not a claim that every Electron subsystem is free of all possible memory leaks.
 - Desktop E2E: 1,800 offline fixture records in the real DB/IPC/UI; 18 consecutive automatic upward pages, keyword search pages, sender/date filtering, highlighted context navigation, direct return to bottom, hide/reopen, dissolve/recreate and restart. The complete 9-scenario companion desktop suite also passes.
-- Windows caption buttons no longer overlap chat actions. UI screenshots: `artifacts/companions/verified-history-search.png` and `verified-history-context.png`.
+- Windows caption buttons no longer overlap chat actions. Run `node scripts/run-e2e.mjs tests/e2e/companions.test.ts` to regenerate `verified-history-search.png` and `verified-history-context.png` under the ignored local directory `.tools/test-output/companions/`. Historical screenshots and raw test reports are not distributed with the source.
 
 ### Million-record benchmark
 

@@ -31,6 +31,8 @@ import { CompanionWorldStore } from './world-store';
 import { CompanionSocialStore } from './social-store';
 import { playerProfileDraftSchema, playerProfileSchema, type PlayerProfile, type PlayerProfileDraft } from '../shared/companion-profile';
 import { CompanionResetStore } from './reset-store';
+import { CompanionWorkOrderStore } from './work-order-store';
+import { CompanionLifeEventStore } from './life-event-store';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -64,6 +66,8 @@ export class CompanionsStore {
   readonly #social: CompanionSocialStore;
   readonly #seeds: readonly CompanionSeed[];
   readonly #reset: CompanionResetStore;
+  readonly #workOrders: CompanionWorkOrderStore;
+  readonly #life: CompanionLifeEventStore;
 
   constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS) {
     mkdirSync(path.dirname(databasePath), { recursive: true });
@@ -77,26 +81,56 @@ export class CompanionsStore {
       return this.getMessage(message.id);
     };
     this.#routine = new CompanionRoutineStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids), humanSource,
-      id => { this.#runtimeState.energy(id); this.#world.changed(); }, { virtualAt: at => this.#world.virtualAt(at), realAt: at => this.#world.realAt(at),
+      id => { this.#runtimeState.energy(id); this.#world.changed(); }, { virtualAt: (at, reference) => this.#world.virtualAt(at, reference), realAt: (at, reference) => this.#world.realAt(at, reference),
+        clockBoundaries: (from, to) => this.#world.clockBoundaries(from, to), timeZone: () => this.#world.timeZone(),
         ensureThrough: at => this.#world.ensureThrough(at), actual: (id, at) => this.#world.actual(id, at), occupancy: (id, from, to) => this.#world.occupancy(id, from, to), urgent: (id, source, now) => this.#world.urgent(id, source, now) });
     this.#world = new CompanionWorldStore(this.#db, id => this.#routine.configuration(id), (scope, ids) => this.#memory.sourcesFilter(scope, ids),
       id => this.#runtimeState.worldState(id), event => this.#runtimeState.worldEvent(event), (scope, candidate) => { this.#memory.record(scope, candidate); });
     this.#social = new CompanionSocialStore(this.#db, input => this.appendMessage(input), id => this.getMessage(id),
       (scope, ids) => this.#memory.sourcesFilter(scope, ids), () => this.#world.socialContext(),
-      (id, channel, recipients) => this.#world.socialAvailable(id, channel, recipients), (message, channel) => this.#world.recordSocialSpeech(message, channel));
+      (id, channel, recipients) => this.#world.socialAvailable(id, channel, recipients), (message, channel) => this.#world.recordSocialSpeech(message, channel),
+      { elapsedVirtual: (from, to) => this.#world.elapsedVirtual(from, to) }, { createPeerWork: input => {
+        const source = this.getMessage(input.sourceMessageId);
+        if (source.conversationId !== input.conversationId || ['user', 'system', input.companionId].includes(source.authorId)) throw new Error('伙伴工作必须来自这段交流中实际其它伙伴的正式发布。');
+        const order = this.#workOrders.create(input, input.title, input.instruction, input.sourceMessageId, input.clientId);
+        if (order.execution !== 'internal') throw new Error('伙伴交流不能创建现实执行授权。');
+        if (input.accept && order.status === 'offered') this.#workOrders.execute({ type: 'work-order.accept', companionId: input.companionId, conversationId: input.conversationId, id: order.id, expectedRevision: order.revision });
+      } });
     this.#world.connectSocial(this.#social);
     this.#runtimeState = new CompanionStateStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids),
       (id, from, to, energy, busy) => {
         if (busy) this.#routine.observeWork(id, to);
         return this.#routine.advanceEnergy(id, from, to, energy);
       },
-      (scope, now) => this.#routine.getRuntime(scope, now), now => this.#world.ensureThrough(now));
+      (scope, now) => this.#routine.getRuntime(scope, now), now => this.#world.ensureThrough(now),
+      { virtualAt: at => this.#world.virtualAt(at), elapsedVirtual: (from, to) => this.#world.elapsedVirtual(from, to), timeZone: () => this.#world.timeZone() });
     this.#schedule = new CompanionScheduleStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids),
       humanSource, (id, now) => this.#runtimeState.energy(id, now),
       (id, now, energy) => {
         const phase = this.#routine.phase(id, now);
         return !phase.canRespond || energy < 20 ? phase.nextTransitionAt : undefined;
-      }, (id, now) => { this.#routine.wakeForCommitment(id, 'fixed_commitment', now); });
+      }, (id, now) => { this.#routine.wakeForCommitment(id, 'fixed_commitment', now); },
+      { virtualAt: at => this.#world.virtualAt(at), timeZone: () => this.#world.timeZone() });
+    this.#workOrders = new CompanionWorkOrderStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids), humanSource,
+      (scope, content, clientId, replyToId) => this.appendMessage({ conversationId: scope.conversationId, authorId: scope.companionId, content, clientId, replyToId, replyDirective: 'none' }), () => this.#world.changed());
+    this.#world.connectWorkOrders(this.#workOrders);
+    this.#life = new CompanionLifeEventStore(this.#db, { world: () => this.#world.snapshot(), elapsed: (from, to) => this.#world.elapsedVirtual(from, to), perform: (occurrence, text) => {
+      const owner = occurrence.companionId, target = occurrence.targetId;
+      if (occurrence.rule.action === 'message') {
+        if (!text?.trim()) throw new Error('生活消息需要实际发言内容。');
+        if (target === 'user') return this.appendMessage({ conversationId: this.openPrivate(owner).id, authorId: owner, content: text, clientId: 'life_' + occurrence.id, replyDirective: 'none' }).id;
+        if (!target) throw new Error('生活交流尚未选定收件人。');
+        const conversation = this.#social.ensure(owner, [owner, target]);
+        this.#social.send({ companionId: owner, conversationId: conversation.id, content: text, channel: 'phone', clientId: 'life_' + occurrence.id });
+        return '手机发件已持久排队，等待真实发送。';
+      }
+      const scope = { companionId: owner, conversationId: 'world_' + owner };
+      if (occurrence.rule.action === 'visit') {
+        if (!target || target === 'user' || !text?.trim()) throw new Error('拜访需要实际伙伴和申请内容。');
+        this.#world.tool(scope, { action: 'visit', targetCompanionId: target, reason: text }); return '已发出拜访申请，尚未获得入门许可。';
+      }
+      this.#world.startLifeActivity(scope, occurrence.rule.action); return '已开始前往日常活动家具，抵达并完成姿态后才参与活动。';
+    } });
     this.#seeds = seeds;
     this.#reset = new CompanionResetStore(this.#db, path.dirname(databasePath), id => {
       const seed = this.#seeds.find(item => item.id === id);
@@ -124,6 +158,7 @@ export class CompanionsStore {
       this.#db.function('companion_search_facet', { deterministic: true }, companionSearchFacet);
       this.#reset.initialize();
       if (!this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'").get()) this.#createSchema();
+      this.#db.exec('CREATE TABLE IF NOT EXISTS companion_message_times(message_id TEXT PRIMARY KEY REFERENCES messages(id),world_at TEXT NOT NULL,time_zone TEXT NOT NULL); CREATE INDEX IF NOT EXISTS companion_message_world_time ON companion_message_times(world_at,message_id)');
       this.#db.exec("CREATE TABLE IF NOT EXISTS player_profile(id TEXT PRIMARY KEY CHECK(id='user'),revision INTEGER NOT NULL CHECK(revision>0),data TEXT NOT NULL)");
       this.getPlayerProfile();
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_chronology ON actions(conversation_id,json_extract(data,'$.createdAt') DESC,id DESC)");
@@ -139,10 +174,12 @@ export class CompanionsStore {
       this.backfillSearchIndex();
       this.#memory.initialize();
       this.#routine.initialize();
+      this.#workOrders.initialize();
       this.#world.initialize();
       this.#social.initialize();
       this.#runtimeState.initialize();
       this.#schedule.initialize();
+      this.#life.initialize();
       this.#reset.prepareIndexes();
       this.#memory.backfill();
     } catch (error) {
@@ -313,6 +350,7 @@ export class CompanionsStore {
         this.#runtimeState.rehomeConversation(id, canonical);
         this.#schedule.rehomeConversation(id, canonical);
         this.#routine.rehomeConversation(id, canonical);
+        this.#workOrders.rehomeConversation(id, canonical);
         for (const item of rows(this.#db.prepare('SELECT id,data FROM actions WHERE conversation_id=?').all(id))) {
           const action = decode<CompanionAction>(item.data);
           this.#db.prepare('UPDATE actions SET conversation_id=?,data=? WHERE id=?').run(canonical, JSON.stringify({ ...action, conversationId: canonical }), item.id);
@@ -447,6 +485,7 @@ export class CompanionsStore {
       this.#db.prepare('UPDATE companions SET deleted_at=? WHERE id=?').run(at, id);
       this.#db.prepare("UPDATE companion_work_queue SET status='cancelled',data=json_set(data,'$.status','cancelled','$.updatedAt',?) WHERE companion_id=? AND status IN ('queued','running')").run(at, id);
       this.#db.prepare("UPDATE actions SET status='cancelled',data=json_set(data,'$.status','cancelled','$.updatedAt',?,'$.finishedAt',?) WHERE companion_id=? AND status IN ('queued','running')").run(at, at, id);
+      this.#db.prepare("UPDATE companion_work_orders SET status='cancelled',lease_until=NULL,lease_token=NULL,data=json_set(data,'$.status','cancelled','$.updatedAt',?) WHERE companion_id=? AND status IN('offered','accepted','running','paused')").run(at, id);
       this.#world.changed();
       this.#schedule.stopUnavailable();
     }).immediate();
@@ -560,9 +599,10 @@ export class CompanionsStore {
     const attachments = rows(this.#db.prepare('SELECT a.data FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=? ORDER BY ma.ordinal').all(found.id)).map((item) => decode<StoredCompanionAttachment['attachment']>(item.data));
     const loop = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + found.id);
     const draft = loop ? decode<CompanionLoopCheckpoint>(row(loop).value).draft : undefined;
+    const worldTime = this.#db.prepare('SELECT world_at FROM companion_message_times WHERE message_id=?').get(found.id);
     return { id: String(found.id), sequence: Number(found.sequence), conversationId: String(found.conversation_id),
       authorId: String(found.author_id), kind: found.kind as CompanionMessage['kind'], content: String(found.content),
-      createdAt: String(found.created_at), status: found.status as CompanionMessage['status'], attachments,
+      createdAt: String(found.created_at), ...(worldTime ? { worldCreatedAt: String(row(worldTime).world_at) } : {}), status: found.status as CompanionMessage['status'], attachments,
       ...(this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('message-memory-evidence/' + found.id) ? { memoryEvidenceOnly: true } : {}),
       ...(this.#isReplyDraft(found) ? { isReplyDraft: true } : {}),
       ...(draft ? { replyDraft: draft } : {}),
@@ -797,6 +837,7 @@ export class CompanionsStore {
       this.#db.prepare('INSERT INTO messages(id,conversation_id,author_id,kind,content,created_at,reply_to_id,status,action_id,client_id,request_fingerprint) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(
         id, message.conversationId, message.authorId, message.kind, message.content, createdAt, message.replyToId ?? null,
         message.status, message.actionId ?? null, message.clientId ?? null, fingerprint);
+      this.#db.prepare('INSERT INTO companion_message_times(message_id,world_at,time_zone) VALUES(?,?,?)').run(id, new Date(this.#world.virtualAt(Date.parse(createdAt))).toISOString(), this.#world.timeZone());
       attachmentIds.forEach((attachmentId, ordinal) => this.#db.prepare('INSERT INTO message_attachments(message_id,attachment_id,ordinal) VALUES(?,?,?)').run(id, attachmentId, ordinal));
       this.#db.prepare('UPDATE conversations SET updated_at=?,hidden_at=NULL WHERE id=?').run(createdAt, message.conversationId);
       const stored = this.#message(row(this.#db.prepare('SELECT * FROM messages WHERE id=?').get(id)));
@@ -920,10 +961,12 @@ export class CompanionsStore {
       const action = this.getAction(id);
       this.#requireMember(action.conversationId, action.companionId);
       if (!['interrupted', 'cancelled', 'failed'].includes(action.status) || !this.checkpoint(id)) throw new Error('这条任务没有可用的恢复记录。');
+      this.#workOrders.assertActionResume(action);
       this.#setMetadata('task-attempt/' + id + '/' + (action.attempt ?? 1), action);
       const resumed: CompanionAction = { ...action, attempt: (action.attempt ?? 1) + 1, attemptCreatedAt: stamp(), status: 'queued', events: [], stage: '正在恢复原任务', updatedAt: stamp() };
       delete resumed.finishedAt; delete resumed.startedAt; delete resumed.result; delete resumed.error; delete resumed.taskId; delete resumed.pid;
       this.#db.prepare("UPDATE actions SET status='queued',data=? WHERE id=?").run(JSON.stringify(resumed), id);
+      this.#workOrders.actionChanged(resumed);
       return resumed;
     }).immediate();
   }
@@ -977,10 +1020,13 @@ export class CompanionsStore {
       const value: CompanionAction = { ...action, id: randomUUID(), createdAt: stamp(), updatedAt: stamp() };
       const scheduled = this.#schedule.bindAction(value);
       if (scheduled) return scheduled;
+      const existingOrderAction = this.#workOrders.bindAction(value, checkpoint?.prompt);
+      if (existingOrderAction) return existingOrderAction;
       this.#runtimeState.energy(value.companionId);
       this.#db.prepare('INSERT INTO actions(id,conversation_id,companion_id,status,data) VALUES(?,?,?,?,?)').run(value.id, value.conversationId, value.companionId, value.status, JSON.stringify(value));
       if (checkpoint) this.saveCheckpoint(value.id, checkpoint);
       this.#schedule.actionCreated(value);
+      this.#workOrders.actionChanged(value);
       if (value.status === 'running') this.#routine.beginWork(value.companionId, 'action:' + value.id);
       this.#runtimeState.action(value.id);
       if (['succeeded', 'failed', 'cancelled'].includes(value.status)) this.#completeRoutineInterruptIfIdle(value.companionId);
@@ -1009,6 +1055,7 @@ export class CompanionsStore {
         this.#setMetadata('message-memory-evidence/' + evidence.id, true);
       }
       this.#runtimeState.action(value.id);
+      this.#workOrders.actionChanged(value);
       if (['succeeded', 'failed', 'cancelled'].includes(value.status)) this.#completeRoutineInterruptIfIdle(value.companionId);
       return value;
     }).immediate();
@@ -1022,6 +1069,7 @@ export class CompanionsStore {
         const value: CompanionAction = { ...decode<CompanionAction>(found.data), status: 'interrupted', error: '应用上次退出时行动尚未完成，请重新发起。', updatedAt, finishedAt: updatedAt };
         this.#routine.recoverWork(value.companionId, 'action:' + value.id);
         this.#db.prepare("UPDATE actions SET data=?,status='interrupted' WHERE id=?").run(JSON.stringify(value), found.id);
+        this.#workOrders.actionChanged(value);
       }
       for (const found of rows(this.#db.prepare("SELECT key,value FROM metadata WHERE key GLOB 'reply-source/*'").all())) {
         const checkpoint = companionReplyRecoverySchema.parse(decode(found.value));
@@ -1112,6 +1160,10 @@ export class CompanionsStore {
       if (scheduleResponse.scheduleOccurrence && ['done', 'failed', 'cancelled'].includes(scheduleResponse.scheduleOccurrence.status)) this.#completeRoutineInterruptIfIdle(scheduleResponse.scheduleOccurrence.companionId);
       return scheduleResponse;
     }
+    const orderResponse = this.#workOrders.execute(command);
+    if (orderResponse) return orderResponse;
+    const lifeResponse = this.#life.execute(command);
+    if (lifeResponse) return lifeResponse;
     const socialResponse = this.#social.execute(command);
     if (socialResponse) return socialResponse;
     const worldResponse = this.#world.execute(command);

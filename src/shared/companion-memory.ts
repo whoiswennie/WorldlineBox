@@ -10,7 +10,7 @@ export const companionMemoryTagSchema = z.object({
 });
 export const companionMemorySourceSchema = z.object({
   messageId: id, conversationId: id, sequence: z.number().int().positive(), authorId: id,
-  revision: z.number().int().positive(), checksum: z.string().max(128), createdAt: z.string(),
+  revision: z.number().int().positive(), checksum: z.string().max(128), createdAt: z.string(), worldCreatedAt: z.string().optional(),
   publishedAfterSequence: z.number().int().nonnegative().optional(),
 });
 export const companionMemoryCandidateSchema = z.strictObject({

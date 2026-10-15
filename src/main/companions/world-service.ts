@@ -6,8 +6,9 @@ import type { CompanionModelConfig } from './model';
 import { CompanionModelError } from './model';
 import { generateCompanionWorldDecision } from './world-model';
 import { generateCompanionMemoryDream } from './memory-model';
-import type { CompanionSocialJob } from '../../shared/companion-social';
+import type { CompanionSocialJob, CompanionSocialNotification } from '../../shared/companion-social';
 import { generateCompanionSocialReply } from './social-model';
+import { generateCompanionSocialNotification } from './social-notification-model';
 import type { CompanionProfileInput } from '../../shared/companion-public-profile';
 
 interface WorldServiceOptions {
@@ -19,6 +20,7 @@ interface WorldServiceOptions {
   report(error: unknown): void;
   busy(): boolean;
   blocked?(companionId: string): boolean;
+  tickLife?(): void | Promise<void>;
   profiles?(input: { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>;
     sourceAuthorId?: string; audience?: 'player' | 'peers'; directory?: boolean }): Promise<CompanionProfileInput>;
 }
@@ -46,8 +48,17 @@ export class CompanionWorldService {
     if (this.closed || this.ticking) return;
     this.ticking = (async () => {
       await this.options.request({ type: 'world.tick' });
+      await this.options.tickLife?.();
       this.options.wakeWaiting();
-      if (this.closed || this.options.busy() || this.jobs.size >= 2) return;
+      if (this.closed || this.jobs.size >= 2) return;
+      const continuation = (await this.options.request({ type: 'social.notification.claim' })).socialNotification;
+      if (continuation?.leaseToken && !this.closed && !this.options.blocked?.(continuation.companionId)) {
+        const controller = new AbortController();
+        const promise = this.processNotification(continuation, controller.signal).catch(this.options.report)
+          .finally(() => { this.jobs.delete(continuation.id); this.options.changed(); });
+        this.jobs.set(continuation.id, { promise, controller, companionId: continuation.companionId });
+      }
+      if (this.options.busy() || this.jobs.size >= 2) return;
       const delivery = await this.options.request({ type: 'social.job.claim' });
       if (delivery.socialMessage) this.options.changed();
       const social = delivery.socialJob;
@@ -117,10 +128,32 @@ export class CompanionWorldService {
       if (wait > 0) await delay(wait, signal);
       if (signal.aborted || this.closed) throw cancelled();
       await this.options.request({ type: 'social.job.complete', id: job.id, leaseToken, text: result.text,
-        ...(result.nextRecipientId ? { nextRecipientId: result.nextRecipientId } : {}) });
+        ...(result.nextRecipientId ? { nextRecipientId: result.nextRecipientId } : {}), ...(result.workOffer ? { workOffer: result.workOffer } : {}) });
     } catch (error) {
       await this.options.request({ type: 'social.job.fail', id: job.id, leaseToken,
         error: error instanceof CompanionModelError ? error.message : '伙伴通信稍后继续。' });
+    }
+  }
+  private async processNotification(notification: CompanionSocialNotification, signal: AbortSignal): Promise<void> {
+    if (!notification.leaseToken) return; const leaseToken = notification.leaseToken;
+    try {
+      const state = (await this.options.request({ type: 'state', includeHidden: true })).state;
+      const companion = state?.companions.find(member => member.id === notification.companionId);
+      const conversation = state?.conversations.find(room => room.id === notification.conversationId && room.memberIds.includes(notification.companionId));
+      if (!companion || !conversation) throw cancelled();
+      const scope = { companionId: companion.id, conversationId: conversation.id };
+      const source = (await this.options.request({ type: 'memory.sources.filter', ...scope, ids: [notification.sourceMessageId] })).memorySources?.[0];
+      const world = await this.observe(scope);
+      if (!source || source.authorId !== 'user' || !world) throw cancelled();
+      const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, audience: 'player', sourceAuthorId: 'user' });
+      const text = await generateCompanionSocialNotification({ companion, conversation, source, notification, world, ...profiles,
+        members: state!.companions.map(member => ({ id: member.id, name: member.name })) }, await this.options.configFor(companion), signal,
+      { fetchFn: this.options.fetchFn });
+      if (signal.aborted || this.closed) throw cancelled();
+      await this.options.request({ type: 'social.notification.complete', id: notification.id, leaseToken, text });
+    } catch (error) {
+      await this.options.request({ type: 'social.notification.fail', id: notification.id, leaseToken,
+        error: error instanceof CompanionModelError ? error.message : '这次后续回报尚未完成，稍后继续。' });
     }
   }
   private async process(job: CompanionWorldJob, signal: AbortSignal): Promise<void> {

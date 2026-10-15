@@ -7,7 +7,7 @@ import { CompanionsStore, type CompanionSeed, type CompanionConnection } from '.
 import { companionStorageResponseSchema } from '../../src/shared/companion-storage';
 import type { CompanionSocialJob } from '../../src/shared/companion-social';
 
-const seeds: CompanionSeed[] = ['alice', 'bob', 'carol', 'dave'].map(id => ({ id, name: id, persona: '独立且尊重边界。', description: '', model: '', avatar: 'sister', proactive: false }));
+const seeds: CompanionSeed[] = ['alice', 'bob', 'carol', 'dave'].map(id => ({ id, name: id, persona: '独立且尊重边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const Database = BetterSqlite3 as { new(filename: string): CompanionConnection };
 const roots: string[] = [], stores = new Set<CompanionsStore>();
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-15T10:00:00Z'); });
@@ -122,8 +122,11 @@ it('shares one owner phone lease across pending outboxes and replies, without a 
   store.request(second); expect(store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === job.companionId)!.communication).toEqual(current);
 });
 it('appraises a real remote phone event without seeing the sender private room, using the world day and exact observed source', () => {
+  // Kiritimati is at 10:00 the following day; the shared world clock also owns wakefulness.
+  vi.setSystemTime('2026-10-15T20:00:00Z');
   const { store, filename } = fixture(), pair = room(store), world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { timeZone: 'Pacific/Kiritimati' } });
+  advance(store, 30000);
   const before = store.request({ type: 'state.get', companionId: 'bob', conversationId: store.openPrivate('bob').id }).runtimeState!;
   initial(store, pair.id); const scope = { companionId: 'bob', conversationId: 'world_bob' }, observed = store.request({ type: 'world.observe', ...scope }).world!;
   expect(observed.actors.some(actor => actor.companionId === 'alice')).toBe(false);

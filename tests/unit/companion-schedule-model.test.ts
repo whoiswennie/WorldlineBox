@@ -72,8 +72,8 @@ describe('native companion calendar capability', () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', {}, true));
     await generateCompanionReply(input, config, undefined, { fetchFn, loop: true, context });
     const data = JSON.parse(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)).messages[1].content);
-    expect(data.hostClock.now).toBe('2026-10-14T12:34:00.000Z');
-    expect(data.hostClock.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(data.worldClock.now).toBe('2026-10-14T12:34:00.000Z');
+    expect(data.worldClock.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
     expect(data.taskRequest.prompt).toBe(input.messages[0]!.content);
     expect(context.system).toContain('不能把提醒误当外部操作授权');
     expect(context.system).toContain('固定reminder/task仍按约定执行');

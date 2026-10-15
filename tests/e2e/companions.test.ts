@@ -84,7 +84,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
     expect(modalGeometry.width).toBeGreaterThan(1000); expect(modalGeometry.scroll).toBeLessThanOrEqual(modalGeometry.client + 1);
     const columns = await panel.locator('.companions-memory-workspace').evaluate(element => [...element.children].map(child => ({ left: child.getBoundingClientRect().left, width: child.getBoundingClientRect().width })));
     expect(columns[1]!.left).toBeGreaterThan(columns[0]!.left + columns[0]!.width); expect(columns.every(column => column.width > 350)).toBe(true);
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true });
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
     await manager.getByRole('button', { name: '关闭共同记忆管理', exact: true }).click();
     await theme(page, '亮色');
     await journal.getByRole('button', { name: '管理共同记忆', exact: true }).click();
@@ -210,7 +210,7 @@ test('journal uses live state and calendar plans, reminder runs once, and spacio
     expect(routine.config.habits.some(habit => habit.title === '晚间读二十分钟书' && habit.kind === 'study')).toBe(true);
     await manager.getByRole('button', { name: '关闭伙伴日程', exact: true }).click();
     await expect(journal.locator('[data-schedule-note]')).toContainText('周末一起整理旅行照片');
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true });
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
     for (const [label, name] of [['亮色', 'light'], ['暗色', 'dark']] as const) {
       await theme(page, label);
       const geometry = await journal.evaluate(element => ({ width: element.getBoundingClientRect().width, client: element.clientWidth, scroll: element.scrollWidth }));
@@ -277,7 +277,7 @@ test('renders real SSE text before completion, continues after a tool, stops on 
       await expect(page!.locator(`[data-companion-message="${id}"] [aria-label="伙伴正在输出"]`)).toHaveCount(0);
     }
     const plainText = '流式验收：普通聊天', plain = await begin(plainText);
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true });
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
     await page.screenshot({ path: path.join(artifacts, 'verified-companion-streaming.png') });
     provider.releaseStream(plainText); await completed(plain.reply.id, plain.first.first + plain.first.second);
     const toolText = '流式验收：工具后接着说', tool = await begin(toolText);
@@ -374,7 +374,7 @@ test('starts empty, bounds long history, searches with filters and context, and 
     await expect(search.locator('[data-search-message]')).toHaveCount(10);
     await expect(search.locator('mark').first()).toHaveText('合同');
     await expect(search.locator('time').first()).toHaveText(/2026-01-03 08:00:00\.000/);
-    mkdirSync(path.resolve('artifacts/companions'), { recursive: true }); await page.screenshot({ path: path.resolve('artifacts/companions/verified-history-search.png') });
+    mkdirSync(path.resolve('.tools/test-output/companions'), { recursive: true }); await page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-history-search.png') });
     const hit = await search.locator('[data-search-message]').first().getAttribute('data-search-message');
     await search.locator('[data-search-message]').first().click(); await expect(search).toHaveCount(0);
     await expect(pane.locator('[data-companion-message="' + hit + '"]')).toBeVisible();
@@ -389,7 +389,7 @@ test('starts empty, bounds long history, searches with filters and context, and 
     });
     expect(bubbleGeometry.rowBackground).toBe('rgba(0, 0, 0, 0)'); expect(bubbleGeometry.bubbleBackground).not.toBe('rgba(0, 0, 0, 0)');
     expect(bubbleGeometry.bubbleWidth).toBeLessThan(bubbleGeometry.rowWidth * .8);
-    await page.screenshot({ path: path.resolve('artifacts/companions/verified-history-context.png') });
+    await page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-history-context.png') });
     await page.getByRole('button', { name: '回到最新消息', exact: true }).click(); await expect(pane.locator('[data-companion-message="history_1800"]')).toBeVisible();
     await page.getByRole('button', { name: '删除聊天', exact: true }).click(); await page.getByRole('dialog', { name: '删除聊天' }).getByRole('button', { name: '删除聊天', exact: true }).click();
     await expect(page.locator('[data-companion-conversation]')).toHaveCount(0);
@@ -436,11 +436,11 @@ test('loads every portrait, preserves edited built-ins and chats privately and i
     expect(decoded).toHaveLength(15); expect(decoded.every(Boolean)).toBe(true);
     await catalogue.getByRole('button', { name: '原创角色', exact: true }).click();
     await expect(catalogue.locator('[data-builtin-template]')).toHaveCount(2);
-    mkdirSync(path.resolve('artifacts/companions'), { recursive: true });
-    await page.screenshot({ path: path.resolve('artifacts/companions/verified-catalogue-originals.png') });
+    mkdirSync(path.resolve('.tools/test-output/companions'), { recursive: true });
+    await page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-catalogue-originals.png') });
     await catalogue.getByRole('button', { name: '社区伙伴', exact: true }).click();
     await expect(catalogue.locator('[data-builtin-template]')).toHaveCount(5);
-    await page.screenshot({ path: path.resolve('artifacts/companions/verified-catalogue-community.png') });
+    await page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-catalogue-community.png') });
     await catalogue.getByRole('button', { name: '全部', exact: true }).click();
     await catalogue.getByRole('textbox', { name: '搜索内置角色', exact: true }).fill('白龙');
     await expect(catalogue.locator('[data-builtin-template]')).toHaveCount(1);
@@ -472,7 +472,7 @@ test('loads every portrait, preserves edited built-ins and chats privately and i
     await page.getByRole('button', { name: '联系人', exact: true }).click();
     await page.locator('[data-companion-contact="gpt"]').click();
     await expect(page.locator('.companions-character-art img')).toBeVisible();
-    await page.screenshot({ path: path.resolve('artifacts/companions/verified-catalogue-profile.png') });
+    await page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-catalogue-profile.png') });
   } finally { if (application) await application.close(); await provider.close(); cleanup(root); }
 });
 test('shows a durable FIFO inbox after the fifth private reply and resumes unstarted messages automatically', async () => {
@@ -531,7 +531,7 @@ test('renders rich messages and diagrams, has no composer delivery-mode menu, an
     const again = await request(page, { type: 'conversation.create-group', title: '另一个名字', memberIds: ['deepseek-flash', 'deepseek-sister'] });
     expect(again.conversation?.id).toBe(first.conversation?.id);
     expect((await request(page, { type: 'state' })).state?.conversations.filter(conversation => conversation.kind === 'group')).toHaveLength(1);
-    await page.screenshot({ path: path.resolve('artifacts/companions/verified-rich-messages.png') });
+    await page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-rich-messages.png') });
   } finally { if (application) await application.close(); await provider.close(); cleanup(root); }
 });
 
@@ -607,7 +607,7 @@ test('task monitor pages durable role history and shows complete local timestamp
     await expect(modal.getByRole('button', { name: '下一页', exact: true })).toBeDisabled();
     await modal.getByLabel('按伙伴查看').selectOption('');
     await expect(history.getByRole('button')).toHaveCount(20);
-    await page.screenshot({ path: path.resolve('artifacts/companions/verified-task-monitor.png') });
+    await page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-task-monitor.png') });
   } finally { if (application) await application.close(); cleanup(root); }
 });
 
@@ -658,12 +658,12 @@ test('keeps capability entries and quoted messages compact and opens the linked 
     expect(entrySize.text <= entrySize.available + 1, JSON.stringify(entrySize)).toBe(true);
     await expect(timeline.locator('.companions-reply-quote')).toHaveCount(1);
     await expect(timeline.locator('.companions-reply-quote-excerpt')).toHaveText('周末去海边散步，记得带相机。');
-    await page.screenshot({ path: path.resolve('artifacts/companions/verified-capability-entries.png') });
+    await page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-capability-entries.png') });
     await page.getByRole('button', { name: '查看任务进度 读取系统时间', exact: true }).click();
     const modal = page.getByRole('dialog', { name: '伙伴实时任务' });
     await expect(modal.locator('main')).toContainText('时间的原始工具输出');
     await expect(modal.locator('main')).not.toContainText('天气的原始工具输出');
-    await page.screenshot({ path: path.resolve('artifacts/companions/verified-linked-task.png') });
+    await page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-linked-task.png') });
     await modal.getByRole('button', { name: '关闭任务监视', exact: true }).click();
     await page.getByRole('button', { name: '查看引用消息 quoted-source', exact: true }).click();
     await expect(timeline.locator('[data-companion-message="quoted-source"]')).toHaveClass(/is-highlighted/);
@@ -694,7 +694,7 @@ test('launcher persists the shared DSH access policy, defaulting every companion
     await started.page.getByRole('radio', { name: /^完全访问/ }).click();
     await expect.poll(() => access(started.page)).toBe('danger-full-access');
     await expect(started.page.getByRole('radio', { name: /^完全访问/ })).toBeChecked();
-    await started.page.screenshot({ path: path.resolve('artifacts/companions/verified-execution-access.png') });
+    await started.page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-execution-access.png') });
   } finally { if (application) await application.close(); cleanup(root); }
 });
 
@@ -1034,7 +1034,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     await expect(page.locator('.companions-chat-header h2')).toContainText('蓝色海边');
     await expect(page.locator('[data-companion-messages] .companions-message')).toHaveCount(4);
 
-    const artifacts = path.resolve('artifacts', 'companions');
+    const artifacts = path.resolve('.tools', 'test-output', 'companions');
     mkdirSync(artifacts, { recursive: true });
     await theme(page, '亮色');
     await expect(page.locator('[data-application-module="companions"]')).toHaveAttribute('aria-current', 'page');

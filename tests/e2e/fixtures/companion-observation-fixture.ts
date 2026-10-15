@@ -23,11 +23,22 @@ function seedActions() {
   const actions = specs.map(spec => store.createAction({ ...spec, companionId: 'deepseek-sister', conversationId: group.id, sourceMessageId: source.id },
     spec.status === 'interrupted' ? { prompt: '这是用于工作概览的合成恢复记录。', waitForActionIds: [], supplements: [] } : undefined));
   const other = store.createAction({ title: '妹妹自己的探索清单', status: 'running', companionId: 'deepseek-flash', conversationId: group.id, sourceMessageId: source.id });
-  return { fixtureKind: 'synthetic_action_fixture', conversationId: group.id, actions, other };
+  let orders = store.request({ type: 'work-order.list', companionId: 'deepseek-sister', conversationId: group.id, includeHistory: true }).workOrderPage!.items;
+  // A synthetic interrupted task is inspected, never resumed by the real runner.
+  for (const order of orders.filter(order => order.status === 'accepted')) store.request({ type: 'work-order.pause', companionId: order.companionId, conversationId: group.id, id: order.id, expectedRevision: order.revision, paused: true });
+  orders = store.request({ type: 'work-order.list', companionId: 'deepseek-sister', conversationId: group.id, includeHistory: true }).workOrderPage!.items;
+  return { fixtureKind: 'synthetic_action_fixture', conversationId: group.id, actions, orders, other };
+}
+function seedWorkLife() {
+  for (const companion of store.request({ type: 'state' }).state!.companions) store.request({ type: 'companion.update', id: companion.id, companion: { name: companion.name, description: companion.description, persona: companion.persona, avatar: companion.avatar, model: companion.model, proactive: false } });
+  const companionId = 'deepseek-sister', room = store.openPrivate(companionId);
+  const order = store.request({ type: 'work-order.create', companionId, conversationId: room.id, title: '整理海边旅行手记', instruction: '按日期整理已有手记，保留原文引用与照片说明。\n这是只验证工作台界面的合成工作单，不代表任务已经执行。', clientId: 'work-life-player-order' }).workOrder!;
+  const paused = store.request({ type: 'work-order.pause', companionId, conversationId: room.id, id: order.id, expectedRevision: order.revision, paused: true }).workOrder!;
+  return { fixtureKind: 'synthetic_paused_work_order', companionId, conversationId: room.id, order: paused };
 }
 function seedSocial() {
   const world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', dayDurationMinutes: 1440, timeZone: 'UTC' } });
   store.close();
   // Seed only a stopped isolated clock anchor. Thereafter all calendar results use the real host clock.
   const db = new Database(databasePath), row = db.prepare('SELECT data FROM companion_world WHERE id=1').get() as { data: string };
@@ -57,5 +68,5 @@ function seedSocial() {
   store.appendMessage({ conversationId: player.id, authorId: 'user', content: privateFact, replyDirective: 'none' });
   return { fixtureKind: 'synthetic_peer_records', virtualDay: '2032-04-12', previousDay: '2032-04-11', privateId: privateRoom.id, groupId: group.id, firstId: first.message.id, latestId: latest.message.id, privateFact };
 }
-try { writeFileSync(output, JSON.stringify(mode === 'actions' ? seedActions() : seedSocial())); }
+try { writeFileSync(output, JSON.stringify(mode === 'actions' ? seedActions() : mode === 'work-life' ? seedWorkLife() : seedSocial())); }
 finally { store.close(); }

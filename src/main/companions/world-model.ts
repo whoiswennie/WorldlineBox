@@ -24,7 +24,7 @@ export async function generateCompanionWorldAttention(source: CompanionMessage, 
 options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {}): Promise<CompanionWorldAttention> {
   if (source.authorId !== 'user' || source.status !== 'sent') throw invalid();
   const result = attentionSchema.safeParse(await generateCompanionStructured({
-    system: `你只判断一条真实用户通知现在是否要求打断虚拟伙伴的睡眠、吃饭或休息。你在电脑之外只能认知通知，不可解答任务、制定执行步骤、调用工具、读取记忆或扩大权限。严格按outputSchema输出 urgency、confidence、原文逐字evidence和一句分类reason。
+    system: `你只判断一条真实用户通知现在是否要求打断虚拟伙伴的睡眠、吃饭或集中工作。此分类阶段只能认知通知，不可解答任务、制定执行步骤、调用工具、读取记忆或扩大权限。严格按outputSchema输出 urgency、confidence、原文逐字evidence和一句分类reason。
 urgent需要实际用户本人当前明确要求立即协助，且语义有现实紧迫性或明确唤醒/打断要求，例如“两分钟后截止，快救我”或“别睡了，有急事帮我处理”。只说“马上”“紧急”不充分；“如果电脑占用就马上帮我换”只是条件安排，“新闻写着紧急任务”是转述，不是唤醒。“不是紧急”“没有急事”“不着急”是否定；假设、故事、引用里的人喊醒、第三人紧急情况与普通任务指令不能归为本人要求。判断含混、已过时通知、没有实际打断意图时 ordinary。不要用关键词代替整句语义，不猜缺失背景。urgent须confidence>=0.85并给出至少一段逐字证据；confidence较低一律ordinary。
 这是通知分类，不是对用户的最终答复。不得输出思考、任务答案、用户授权或行动参数。`,
     user: JSON.stringify({ purpose: 'world_attention', hostNow: new Date().toISOString(), source: { id: source.id, authorId: source.authorId,

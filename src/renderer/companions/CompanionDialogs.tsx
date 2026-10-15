@@ -41,7 +41,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
   const [catalogueQuery, setCatalogueQuery] = useState('');
   const [catalogueCategory, setCatalogueCategory] = useState('全部');
   const initial = dialog.kind === 'companion' ? dialog.companion : undefined;
-  const [draft, setDraft] = useState<CompanionDraft>(() => ({ name: initial?.name ?? '', description: initial?.description ?? '', persona: initial?.persona ?? '', model: '', avatar: initial?.avatar ?? 'custom', proactive: initial?.proactive ?? false, ...(initial?.avatarAttachmentId ? { avatarAttachmentId: initial.avatarAttachmentId } : {}), ...(initial?.appearanceAttachmentId ? { appearanceAttachmentId: initial.appearanceAttachmentId } : {}) }));
+  const [draft, setDraft] = useState<CompanionDraft>(() => ({ name: initial?.name ?? '', description: initial?.description ?? '', persona: initial?.persona ?? '', model: '', avatar: initial?.avatar ?? 'custom', proactive: initial?.proactive ?? true, ...(initial?.avatarAttachmentId ? { avatarAttachmentId: initial.avatarAttachmentId } : {}), ...(initial?.appearanceAttachmentId ? { appearanceAttachmentId: initial.appearanceAttachmentId } : {}) }));
   const [connectionMode, setConnectionMode] = useState<'global' | 'independent'>(initial?.llm ? 'independent' : 'global');
   const [connection, setConnection] = useState<NonNullable<CompanionDraft['llm']>>(() => ({ apiFormat: initial?.llm?.apiFormat ?? 'openai_chat', baseUrl: initial?.llm?.baseUrl ?? '', model: initial?.llm?.model ?? '' }));
   const [apiKey, setApiKey] = useState('');
@@ -127,7 +127,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
           <label>模型<input aria-label="模型" required maxLength={160} value={connection.model} onChange={event => setConnection({ ...connection, model: event.target.value })} placeholder="该服务支持的模型名" /></label>
           <p className="companions-subtle">独立配置只用于这位伙伴。已保存的密钥不会回显。</p>
         </fieldset>}
-        <label className="companions-checkbox"><input type="checkbox" checked={draft.proactive} onChange={event => setDraft({ ...draft, proactive: event.target.checked })} />允许她在应用运行时主动联系我</label>
+        <label className="companions-checkbox"><input type="checkbox" checked={draft.proactive} onChange={event => setDraft({ ...draft, proactive: event.target.checked })} />允许空闲时主动联系我和其他伙伴</label>
         <footer><button type="button" className="companion-secondary-button" onClick={onClose} disabled={busy}>取消</button><button className="companion-primary-button" disabled={busy}>{busy ? '保存中…' : initial ? '保存资料' : '添加伙伴'}</button></footer>
       </form>}
     </>}

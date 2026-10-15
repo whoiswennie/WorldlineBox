@@ -9,6 +9,7 @@ export interface WorldObserverWindow {
     on(event: 'will-navigate', listener: (event: { preventDefault(): void }, url: string) => void): unknown };
   isDestroyed(): boolean; isVisible(): boolean; isMinimized(): boolean; isMaximized(): boolean;
   show(): void; minimize(): void; maximize(): void; unmaximize(): void; close(): void; destroy(): void;
+  setMenu(menu: null): void;
   on(event: 'closed' | 'show' | 'hide' | 'minimize' | 'restore', listener: () => void): unknown;
 }
 export interface WorldObserverIpcEvent { sender: unknown; senderFrame: unknown }
@@ -17,7 +18,7 @@ export interface WorldObserverIpc {
   removeHandler(channel: string): void;
 }
 export interface WorldObserverWindowOptions {
-  width: number; height: number; minWidth: number; minHeight: number; show: boolean; title: string; backgroundColor: string; frame: boolean;
+  width: number; height: number; minWidth: number; minHeight: number; show: boolean; title: string; backgroundColor: string; frame: boolean; autoHideMenuBar: boolean;
   webPreferences: { preload: string; sandbox: boolean; contextIsolation: boolean; nodeIntegration: boolean; additionalArguments: string[] };
 }
 interface Entry { window: WorldObserverWindow; slot: number; input: CompanionWorldWindowOpen }
@@ -87,9 +88,10 @@ export class CompanionWorldWindowManager {
     if (this.disposed || !this.mayOpen(event)) return { ok: false, error: '世界窗口的打开请求已经结束。' };
     let slot = 0; while ([...this.entries].some(entry => entry.slot === slot)) slot++;
     const window = this.options.createWindow({ width: 1280, height: 850, minWidth: 720, minHeight: 520, show: false,
-      frame: true, title: '伙伴世界 · WorldlineBox', backgroundColor: '#111417',
+      frame: true, title: '伙伴世界 · WorldlineBox', backgroundColor: '#111417', autoHideMenuBar: true,
       webPreferences: { preload: this.options.preload, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: [COMPANION_WORLD_WINDOW_ARGUMENT] } });
     const entry = { window, slot, input }; this.entries.add(entry);
+    window.setMenu(null);
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', navigation => navigation.preventDefault());
     window.on('closed', () => { this.entries.delete(entry); this.visibility(); });

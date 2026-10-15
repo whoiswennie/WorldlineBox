@@ -64,7 +64,7 @@ test('received movement converges continuously at the real destination', async (
     const moving = frames.flatMap((frame, index) => { const previous = frames[index - 1]; if (!previous) return []; const distance = Math.hypot(frame.x - previous.x, frame.y - previous.y); return distance > .5 ? [{ ...frame, elapsed: frame.at - previous.at, distance }] : []; });
     const maxJump = Math.max(...moving.map(frame => frame.distance));
     const report = { maxJump, movingFrames: moving.length, largestSteps: [...moving].sort((a, b) => b.distance - a.distance).slice(0, 5), arrival: moving.slice(-8) };
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true }); writeFileSync(path.join(artifacts, 'verified-world-arrival-continuity.json'), JSON.stringify(report, null, 2));
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); writeFileSync(path.join(artifacts, 'verified-world-arrival-continuity.json'), JSON.stringify(report, null, 2));
     await testInfo.attach('actual-arrival-projection', { body: JSON.stringify(report), contentType: 'application/json' });
     expect(moving.length).toBeGreaterThan(10); expect(maxJump).toBeLessThan(24);
   } finally { await application?.close().catch(() => undefined); cleanup(root); }
@@ -110,7 +110,7 @@ test('both corrected sisters stay grounded during real rest, sleep and pending c
       scopes.push(scope);
     }
     const observer = await openCompanionWorldWindow(application, main); observer.on('pageerror', error => errors.push(error.message));
-    const canvas = observer.locator('canvas'), artifacts = path.resolve('artifacts/companions/world-art-calibration'); mkdirSync(artifacts, { recursive: true });
+    const canvas = observer.locator('canvas'), artifacts = path.resolve('.tools/test-output/companions/world-art-calibration'); mkdirSync(artifacts, { recursive: true });
     const actor = async (id: string) => (await request(main, { type: 'world.snapshot' })).world!.actors.find(value => value.companionId === id)!;
     async function move(scope: typeof scopes[number], furnitureId: string) {
       await request(main, { type: 'world.tool', ...scope, arguments: { action: 'move', destinationId: furnitureId } });

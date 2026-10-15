@@ -5,7 +5,8 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
-  preserveOutput: 'always',
+  outputDir: '.tools/test-output/playwright',
+  preserveOutput: 'failures-only',
   use: {
     trace: 'retain-on-failure',
   },

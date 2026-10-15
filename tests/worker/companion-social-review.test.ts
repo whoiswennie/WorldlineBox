@@ -6,7 +6,7 @@ import { CompanionsStore, type CompanionSeed } from '../../src/companions/store'
 import type { CompanionSocialJob } from '../../src/shared/companion-social';
 import { companionStorageResponseSchema } from '../../src/shared/companion-storage';
 const ids = ['alice', 'bob', 'carol'];
-const seeds: CompanionSeed[] = ids.map(id => ({ id, name: id, persona: '友好且尊重他人的边界。', description: '', model: '', avatar: 'sister', proactive: false }));
+const seeds: CompanionSeed[] = ids.map(id => ({ id, name: id, persona: '友好且尊重他人的边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), roots: string[] = [];
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-15T10:00:00Z'); });
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) { if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('companion-social-review-')) throw new Error('Unexpected social review cleanup.'); rmSync(root, { recursive: true, force: true }); } vi.useRealTimers(); });

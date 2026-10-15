@@ -6,11 +6,12 @@ import { spawnSync } from 'node:child_process';
 import { build } from 'vite';
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test';
 import type { CompanionAction, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
+import type { CompanionWorkOrder } from '../../src/shared/companion-work-order';
 import { THEME_PREF_KEY } from '../../src/renderer/theme/theme-preferences';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 interface SocialFixture { fixtureKind: string; virtualDay: string; previousDay: string; privateId: string; groupId: string; firstId: string; latestId: string; privateFact: string }
-interface WorkFixture { fixtureKind: string; conversationId: string; actions: CompanionAction[]; other: CompanionAction }
+interface WorkFixture { fixtureKind: string; conversationId: string; actions: CompanionAction[]; orders: CompanionWorkOrder[]; other: CompanionAction }
 function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-social-observer-')) throw new Error('Unexpected social observation fixture cleanup.'); rmSync(resolved, { recursive: true, force: true }); }
 async function fixture(root: string) {
   const nativeSqlite = createRequire(path.resolve('package.json')).resolve('better-sqlite3').replaceAll('\\', '/');
@@ -56,7 +57,7 @@ test('observes durable peer conversations by virtual date and keeps concurrent o
     const portraitStyle = () => messages.locator('[data-social-author="deepseek-sister"] .companion-avatar').first().evaluate(element => {
       const style = getComputedStyle(element); return { size: style.backgroundSize, position: style.backgroundPosition, repeat: style.backgroundRepeat };
     });
-    const ownPortrait = await portraitStyle(); expect(ownPortrait).toEqual({ size: '630%', position: '10% 14%', repeat: 'no-repeat' });
+    const ownPortrait = await portraitStyle(); expect(ownPortrait).toEqual({ size: 'cover', position: '50% 50%', repeat: 'no-repeat' });
     await dialog.getByRole('combobox', { name: '社交聊天观察视角' }).selectOption('deepseek-flash');
     await expect(messages.locator('[data-social-author="deepseek-flash"]').first()).toHaveClass(/is-own/);
     await expect(messages.locator('[data-social-author="deepseek-sister"]').first()).not.toHaveClass(/is-own/);
@@ -103,7 +104,7 @@ test('observes durable peer conversations by virtual date and keeps concurrent o
     })).toEqual({ size: 'cover', position: '50% 50%' });
     const dimensions = await dialog.evaluate(element => ({ width: element.clientWidth, scroll: element.scrollWidth, height: element.clientHeight, scrollHeight: element.scrollHeight }));
     expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width + 1); expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.height + 1);
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true });
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
     const lightBackground = await dialog.evaluate(element => getComputedStyle(element).backgroundColor);
     await page.screenshot({ path: path.join(artifacts, 'verified-companion-social-light.png') });
     await page.evaluate(key => localStorage.setItem(key, JSON.stringify({ version: 1, theme: 'dark' })), THEME_PREF_KEY);
@@ -124,14 +125,18 @@ test('observes durable peer conversations by virtual date and keeps concurrent o
     await planner.getByRole('combobox', { name: '待办所属伙伴' }).selectOption('deepseek-sister');
     const overview = planner.getByRole('region', { name: '伙伴工作概览', exact: true });
     await expect(overview.locator('[data-work-preview]')).toHaveCount(2);
-    await expect(overview.locator('[data-work-phase="running"] strong')).toHaveText('2');
-    await expect(overview.locator('[data-work-phase="queued"] strong')).toHaveText('2');
-    await expect(overview.locator('[data-work-phase="confirmation"] strong')).toHaveText('1');
+    await expect(overview.locator('[data-work-phase="running"] strong')).toHaveText('5');
+    await expect(overview.locator('[data-work-phase="waiting"] strong')).toHaveText('0');
+    await expect(overview.locator('[data-work-phase="paused"] strong')).toHaveText('1');
     await expect(overview).toContainText('另有 4 件');
     await expect(overview).not.toContainText(work.other.title); await expect(overview).not.toContainText('已经完成的小安排');
     expect((await overview.boundingBox())!.height).toBeLessThan(240);
     await page.screenshot({ path: path.join(artifacts, 'verified-companion-work-overview.png') });
-    await overview.locator('[data-work-preview="' + work.actions[4]!.id + '"]').click();
+    const selectedOrder = work.orders.find(order => order.actionId === work.actions[4]!.id)!;
+    await overview.locator('[data-work-preview="' + selectedOrder.id + '"]').click();
+    const workbench = page.getByRole('dialog', { name: '伙伴工作台', exact: true });
+    await expect(workbench).toContainText('确认导出的位置');
+    await workbench.getByRole('button', { name: '查看执行过程', exact: true }).click();
     const monitor = page.getByRole('dialog', { name: '伙伴实时任务', exact: true });
     await expect(monitor.getByRole('combobox', { name: '按伙伴查看', exact: true })).toHaveValue('deepseek-sister');
     await expect(monitor.getByRole('navigation', { name: '选择伙伴任务' }).getByRole('button')).toHaveCount(6);

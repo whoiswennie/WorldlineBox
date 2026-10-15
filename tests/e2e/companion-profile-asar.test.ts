@@ -95,7 +95,7 @@ try { require(${JSON.stringify(path.join(buildPath, 'fixture-main.cjs'))}); } ca
     const evidence = { realElectron: true, electronVersion: report.electronVersion, runAsNode: false, windows: report.windows, actualAsar: true,
       archiveAsset: '.vite/renderer/main_window/assets/deepseek-flash-testhash.png', archiveUnchanged: true, exposedPathAbsolute: true, exposedPathOutsideArchive: true,
       normalNodeRead: true, personId: report.personId, sourceSha256: sha(original), copiedSha256: sha(externalBytes), visualInputs: report.visualInputs };
-    const evidencePath = path.join(project, 'artifacts', 'companions', 'verified-companion-profile-asar.json');
+    const evidencePath = path.join(project, '.tools', 'test-output', 'companions', 'verified-companion-profile-asar.json');
     await mkdir(path.dirname(evidencePath), { recursive: true }); await writeFile(evidencePath, JSON.stringify(evidence, null, 2) + '\n');
     await testInfo.attach('actual-asar-public-profile-evidence', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
   } finally {

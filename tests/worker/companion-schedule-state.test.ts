@@ -17,7 +17,7 @@ function fixture() {
   const folder = mkdtempSync(path.join(tmpdir(), 'companion-schedule-')); folders.push(folder);
   const filename = path.join(folder, 'messages.sqlite'), store = open(filename);
   const world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'Asia/Shanghai' } });
   return { filename, store, scope: { companionId: 'alice', conversationId: store.openPrivate('alice').id } };
 }
 function entry(patch: Partial<CompanionScheduleEntry> = {}): CompanionScheduleEntry {
@@ -281,7 +281,7 @@ describe('virtual routine scheduling and offline energy', () => {
     expect(store.request({ type: 'work.claim' }).work).toBeUndefined();
   });
 
-  it('excludes observed long work from habit completion but does not invent work throughout a crash gap', () => {
+  it('keeps unfinished accepted work focused after a crash without inventing completion or habit participation', () => {
     const { store, scope, filename } = fixture();
     const initial = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: initial.revision, patch: { timeZone: 'Asia/Shanghai', meals: [],
@@ -302,6 +302,7 @@ describe('virtual routine scheduling and offline energy', () => {
     vi.setSystemTime('2026-10-15T09:10:00Z');
     const reopened = open(filename); reopened.request({ type: 'action.interrupt-pending' }); reopened.request({ type: 'work.interrupt-running' });
     const progress = reopened.request({ type: 'routine.get', ...scope }).routine!.habitProgress[0]!;
-    expect(progress).toMatchObject({ id: 'virtual-music', completedCount: 0, streak: 1 }); expect(progress.practicedMinutes).toBeGreaterThan(14); expect(progress.practicedMinutes).toBeLessThan(15);
+    expect(progress).toMatchObject({ id: 'virtual-music', completedCount: 0, streak: 0, practicedMinutes: 0 });
+    expect(reopened.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.some(order => order.status === 'accepted')).toBe(true);
   });
 });

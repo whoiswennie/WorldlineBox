@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
 import type { CompanionMessage } from '../../src/shared/companions';
 
@@ -12,7 +12,7 @@ function fixture() {
   const folder = mkdtempSync(path.join(tmpdir(), 'companion-routine-')); folders.push(folder);
   const store = new CompanionsStore(path.join(folder, 'messages.sqlite'), seeds); stores.add(store);
   const world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   return { store, filename: path.join(folder, 'messages.sqlite'), scope: { companionId: 'alice', conversationId: store.openPrivate('alice').id } };
 }
 const habit = { id: 'reading', title: '私人阅读计划_440', at: '10:00', durationMinutes: 30, kind: 'study' as const };
@@ -132,16 +132,37 @@ describe('persistent virtual routine source and clock behavior', () => {
     const progress = store.request({ type: 'routine.get', ...scope }).routine!.habitProgress[0]!;
     expect(progress).toMatchObject({ completedCount: 0, streak: 1 }); expect(progress.practicedMinutes).toBeGreaterThan(29); expect(progress.practicedMinutes).toBeLessThan(30);
   });
-  it('ends crashed work at its last observation so offline habits can actually progress', () => {
+  it('ends crashed execution at its last observation but keeps unfinished work focused until paused, then resumes real habits', async () => {
     const { store, scope, filename } = fixture(), initial = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: initial.revision, patch: { timeZone: 'UTC', meals: [], habits: [habit] } });
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '做一次检查。' });
     atComputer(store, scope, source, 'crashed_work');
-    store.createAction({ ...scope, sourceMessageId: source.id, title: '检查', status: 'running' });
-    vi.setSystemTime('2026-10-14T09:20:00Z'); store.request({ type: 'state.get', ...scope });
+    const action = store.createAction({ ...scope, sourceMessageId: source.id, title: '检查', status: 'running' });
+    const lastObservedAt = '2026-10-14T09:20:00.000Z';
+    vi.setSystemTime(lastObservedAt); store.request({ type: 'state.get', ...scope });
     store.close(); stores.delete(store);
     vi.setSystemTime('2026-10-16T11:00:00Z');
     const reopened = new CompanionsStore(filename, seeds); stores.add(reopened); reopened.interruptPendingActions();
-    expect(reopened.request({ type: 'routine.get', ...scope }).routine?.habitProgress[0]).toMatchObject({ completedCount: 2, streak: 3 });
+    expect(reopened.getAction(action.id).status).toBe('interrupted'); expect(reopened.getAction(action.id).result).toBeUndefined();
+    const pending = reopened.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(order => order.actionId === action.id)!;
+    expect(pending.status).toBe('accepted'); expect(pending.result).toBeUndefined();
+    expect(reopened.request({ type: 'routine.get', ...scope }).routine?.habitProgress[0]).toMatchObject({ completedCount: 0, streak: 0, practicedMinutes: 0 });
+    reopened.request({ type: 'work-order.pause', ...scope, id: pending.id, expectedRevision: pending.revision, paused: true });
+    vi.setSystemTime(Date.now() + 2000); const released = reopened.request({ type: 'world.snapshot' }).world!;
+    expect(released.actors.find(actor => actor.companionId === 'alice')!.activity).not.toBe('working');
+    expect(released.scenes.flatMap(scene => scene.objects).some(object => object.reservedBy === 'alice')).toBe(false);
+    vi.setSystemTime('2026-10-17T11:00:00Z');
+    const resumed = reopened.request({ type: 'routine.get', ...scope }).routine!.habitProgress[0]!;
+    expect(resumed).toMatchObject({ completedCount: 0, streak: 1 });
+    expect(resumed.practicedMinutes).toBeGreaterThan(29); expect(resumed.practicedMinutes).toBeLessThan(30);
+    expect(reopened.getAction(action.id).status).toBe('interrupted'); expect(reopened.getAction(action.id).result).toBeUndefined();
+    expect(reopened.getMessage(source.id).content).toBe(source.content);
+    reopened.close(); stores.delete(reopened);
+    const Database = (await import('better-sqlite3')).default as { new(filename: string, options: { readonly: boolean }): CompanionConnection };
+    const db = new Database(filename, { readonly: true });
+    try {
+      expect(db.prepare('SELECT last_observed_at,ends_at FROM companion_routine_work WHERE work_id=?').get('action:' + action.id))
+        .toEqual({ last_observed_at: lastObservedAt, ends_at: lastObservedAt });
+    } finally { db.close(); }
   });
 });

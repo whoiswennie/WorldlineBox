@@ -48,7 +48,7 @@ import {
   setApplicationMenuCommandEnabled,
   setApplicationMenuCommandLabel,
 } from "./application-menu";
-import { applyDevAppIcon, appIconImage } from "./app-icon";
+import { applyDevAppIcon, appIconImage, withAppWindowIcon } from "./app-icon";
 import { ArtifactPathCache } from "./artifact-path-cache";
 import { SourcePathCache, type SourcePathResolution } from "./source-path-cache";
 import {
@@ -3715,7 +3715,7 @@ async function startApplication(): Promise<void> {
     companionService.registerIpc();
     companionWorldWindows = new CompanionWorldWindowManager({
       ipc: ipcMain, getMainWindow: () => mainWindow, preload: path.join(__dirname, 'index.js'),
-      createWindow: options => new BrowserWindow(options),
+      createWindow: options => new BrowserWindow(withAppWindowIcon(options)),
       request: request => companionService!.handle(request), report: error => logger?.error('companions.world-window', error),
       load: async observer => {
         const window = observer as BrowserWindow;
@@ -3768,7 +3768,7 @@ async function startApplication(): Promise<void> {
   }
   criticalConfirmationWindowManager = new CriticalConfirmationWindowManager({
     getParentWindow: () => mainWindow ?? null,
-    createWindow: (options) => new BrowserWindow(options),
+    createWindow: (options) => new BrowserWindow(withAppWindowIcon(options)),
     ipcMain,
     preloadPath: path.join(__dirname, 'critical-confirmation.js'),
     logger,
@@ -3831,7 +3831,7 @@ async function startApplication(): Promise<void> {
   // as the standard `thumbnail` artifact.
   offscreenThumbnailRenderer = createOffscreenThumbnailRenderer({
     createWindow: (options) => {
-      const offscreenWindow = new BrowserWindow(options);
+      const offscreenWindow = new BrowserWindow(withAppWindowIcon(options));
       offscreenWindow.webContents.on(
         "console-message",
         (details) => {

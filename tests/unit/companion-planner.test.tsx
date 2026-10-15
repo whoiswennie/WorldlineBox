@@ -9,6 +9,7 @@ import type { Companion, CompanionAction, CompanionsRequest, CompanionsResponse,
 import type { CompanionSchedule } from '../../src/shared/companion-schedule';
 import type { CompanionRuntimeState } from '../../src/shared/companion-state';
 import type { CompanionRoutine } from '../../src/shared/companion-routine';
+import type { CompanionWorkOrder } from '../../src/shared/companion-work-order';
 import { CompanionRoutineEditor } from '../../src/renderer/companions/CompanionRoutineEditor';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -20,7 +21,7 @@ const schedule: CompanionSchedule = { id: 'plan', companionId: companion.id, con
 const runtime: CompanionRuntimeState = { companionId: companion.id, energy: 67, mood: 'bright', expression: 'playful', affect: { pleasure: .4, arousal: .2, dominance: .1 }, relationship: { affinity: 52, trust: 61, respect: 70 }, focus: '旅行相册', reason: '刚完成一起整理照片的任务。', familiarity: { stage: 'acquainted', interactionCount: 12, sharedEventCount: 2 }, updatedAt: at, revision: 5 };
 const routine: CompanionRoutine = { companionId: companion.id, revision: 3, config: { timeZone: 'Asia/Shanghai', sleepAt: '23:00', wakeAt: '07:00', meals: [{ name: '晚餐', at: '19:00', durationMinutes: 30 }], habits: [{ id: 'reading', title: '睡前读书', at: '21:00', durationMinutes: 25, kind: 'study' }] }, createdAt: at, updatedAt: at, habitProgress: [{ id: 'reading', strength: 42, completedCount: 10, streak: 4 }], runtime: { phase: 'awake', canRespond: true, nextTransitionAt: '2026-10-14T11:00:00.000Z', simulation: true } };
 type Request = (input: CompanionsRequest) => Promise<CompanionsResponse | undefined>;
-function fixture() { return vi.fn(async (input: CompanionsRequest): Promise<CompanionsResponse> => input.type === 'schedule.list' ? { ok: true, schedules: [schedule], scheduleOccurrences: [] } : input.type === 'state.get' ? { ok: true, runtimeState: runtime } : input.type === 'routine.get' ? { ok: true, routine } : { ok: true }); }
+function fixture() { return vi.fn(async (input: CompanionsRequest): Promise<CompanionsResponse> => input.type === 'work-order.list' ? { ok: true, workOrderPage: { items: [], hasMore: false } } : input.type === 'schedule.list' ? { ok: true, schedules: [schedule], scheduleOccurrences: [] } : input.type === 'state.get' ? { ok: true, runtimeState: runtime } : input.type === 'routine.get' ? { ok: true, routine } : { ok: true }); }
 async function mount(element: React.ReactNode) { vi.useFakeTimers(); container = document.createElement('div'); document.body.append(container); root = createRoot(container); await act(async () => root!.render(element)); await advance(); }
 async function advance() { await act(async () => { await vi.advanceTimersByTimeAsync(300); }); }
 function button(label: string) { const found = [...container!.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === label || item.textContent === label); if (!found) throw new Error('Missing button ' + label); return found; }
@@ -33,7 +34,7 @@ it('keeps detailed state out of the journal until opened and refreshes actual sc
   const request: Request = input => input.type === 'state.get' ? Promise.resolve({ ok: true, runtimeState: current }) : base(input);
   const api: WorldlineBoxCompanionsApi = { request: async input => (await request(input)) ?? { ok: false }, onChanged: listener => { changed = listener; return () => { changed = undefined; }; }, onReplyStream: () => () => undefined };
   const memory = vi.fn(), schedules = vi.fn(), profile = vi.fn();
-  await mount(<CompanionPlanner companion={companion} members={[companion]} conversationId="room" actions={[]} request={request} api={api} onOwnerChange={vi.fn()} onClose={vi.fn()} onProfile={profile} onMemory={memory} onTasks={vi.fn()} onSchedules={schedules} onOpenAction={vi.fn()} />);
+  await mount(<CompanionPlanner companion={companion} members={[companion]} conversationId="room" actions={[]} request={request} api={api} onOwnerChange={vi.fn()} onClose={vi.fn()} onProfile={profile} onMemory={memory} onTasks={vi.fn()} onSchedules={schedules} onWork={vi.fn()} />);
   expect(container!.textContent).toContain('心情明亮'); expect(container!.textContent).toContain('旅行相册'); expect(container!.textContent).toContain('好感 52');
   expect(container!.querySelector('[role="progressbar"]')!.getAttribute('aria-valuenow')).toBe('67');
   expect(container!.textContent).not.toContain('情绪维度'); expect(container!.textContent).not.toContain('共同记忆管理');
@@ -60,15 +61,17 @@ it('preserves revision and timing when editing, clears repeat-only fields, and d
 it('summarizes all concurrent work in two compact rows and opens the correct scoped work or history view', async () => {
   const actions: CompanionAction[] = Array.from({ length: 20 }, (_, index) => ({ id: 'work' + index, companionId: companion.id, conversationId: 'room', sourceMessageId: 'source', title: '独立任务' + index, status: index < 12 ? 'running' : 'queued', createdAt: at, updatedAt: at }));
   const tasks = vi.fn(), open = vi.fn();
-  await mount(<CompanionPlanner companion={companion} members={[companion]} conversationId="room" actions={actions} request={fixture()} onOwnerChange={vi.fn()} onClose={vi.fn()} onProfile={vi.fn()} onMemory={vi.fn()} onTasks={tasks} onSchedules={vi.fn()} onOpenAction={open} />);
-  expect(container!.querySelector('[aria-label="任务数量"]')!.textContent).toBe('12进行中8等待中0待确认');
+  const orders: CompanionWorkOrder[] = actions.map(action => ({ id: action.id, companionId: companion.id, publisherId: 'user', conversationId: 'room', sourceMessageId: 'source', authorizationSourceMessageIds: ['source'], title: action.title, instruction: '完整的任务目标', execution: 'external', status: action.status === 'running' ? 'running' : 'accepted', revision: 1, actionId: action.id, createdAt: at, worldCreatedAt: at, updatedAt: at }));
+  const base = fixture(), request: Request = input => input.type === 'work-order.list' ? Promise.resolve({ ok: true, workOrderPage: { items: orders, hasMore: false } }) : base(input);
+  await mount(<CompanionPlanner companion={companion} members={[companion]} conversationId="room" actions={actions} request={request} onOwnerChange={vi.fn()} onClose={vi.fn()} onProfile={vi.fn()} onMemory={vi.fn()} onTasks={tasks} onSchedules={vi.fn()} onWork={open} />);
+  expect(container!.querySelector('[aria-label="工作数量"]')!.textContent).toBe('12进行中8待处理0已暂停');
   expect(container!.querySelectorAll('[data-work-preview]')).toHaveLength(2);
   expect(container!.textContent).toContain('另有 18 件');
   expect(container!.textContent).toContain('正在照看 20 件事');
   expect(container!.querySelector('.companions-planner-agenda')!.textContent).not.toContain('独立任务');
   await act(async () => container!.querySelector<HTMLButtonElement>('[data-work-preview="work0"]')!.click());
   expect(open).toHaveBeenCalledWith('work0');
-  await click('查看全部伙伴工作'); expect(tasks).toHaveBeenLastCalledWith('active', companion.id);
+  await click('查看全部伙伴工作'); expect(open).toHaveBeenLastCalledWith();
   await click('查看任务历史'); expect(tasks).toHaveBeenLastCalledWith('history', companion.id);
 });
 

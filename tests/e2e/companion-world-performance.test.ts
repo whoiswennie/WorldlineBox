@@ -102,7 +102,7 @@ test('profiles two and four visible independent homes during actual movement whi
     await expect.poll(async () => Number(await windows[0]!.locator('canvas').getAttribute('data-world-frames'))).toBeGreaterThan(before);
     const gpu = await windows[0]!.locator('canvas').evaluate(canvas => { const gl = (canvas as HTMLCanvasElement).getContext('webgl2')!, extension = gl.getExtension('WEBGL_debug_renderer_info'); return extension ? { renderer: gl.getParameter(extension.UNMASKED_RENDERER_WEBGL), vendor: gl.getParameter(extension.UNMASKED_VENDOR_WEBGL) } : {}; });
     const result = { features: await application.evaluate(({ app }) => app.getGPUFeatureStatus()), gpu, opacity: 0, phases, minimized: { hidden, stillVisible } };
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true }); writeFileSync(path.join(artifacts, 'verified-world-multiwindow-performance.json'), JSON.stringify(result, null, 2));
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); writeFileSync(path.join(artifacts, 'verified-world-multiwindow-performance.json'), JSON.stringify(result, null, 2));
     await testInfo.attach('world-multiwindow-performance', { body: JSON.stringify(result, null, 2), contentType: 'application/json' });
   } finally {
     await application?.close().catch(() => undefined); await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });

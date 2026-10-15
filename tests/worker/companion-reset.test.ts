@@ -136,6 +136,6 @@ it('resumes indexed batches after restart across 100000 messages and 100000 sour
   }
   timings.sort((a, b) => a - b);
   const report = { messages: 100000, memories: 100000, beginMs, maxBatchMs, maxPhase, p95BatchMs: timings[Math.floor(timings.length * .95)], p99BatchMs: timings[Math.floor(timings.length * .99)], totalMs: performance.now() - started, batches, restarted: true, renderer: false, gpu: false };
-  console.log(JSON.stringify({ resetBenchmark: report })); mkdirSync('artifacts/companions', { recursive: true }); writeFileSync('artifacts/companions/verified-companion-reset-pressure.json', JSON.stringify(report, null, 2) + '\n');
+  console.log(JSON.stringify({ resetBenchmark: report })); mkdirSync('.tools/test-output/companions', { recursive: true }); writeFileSync('.tools/test-output/companions/verified-companion-reset-pressure.json', JSON.stringify(report, null, 2) + '\n');
   expect(beginMs).toBeLessThan(500); expect(maxBatchMs).toBeLessThan(1000); expect(store.request({ type: 'messages', conversationId: f.room.id }).messages).toEqual([]); expect(store.listMemory('alice')).toEqual([]);
 }, 120000);

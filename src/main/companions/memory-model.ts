@@ -191,7 +191,7 @@ function querySources(input: CompanionMemoryQueryInput) {
   const latest = pinned ?? [...visible].reverse().find(message => message.authorId === 'user');
   const messages = visible.filter(message => !latest || message.sequence <= latest.sequence).slice(-50);
   return { messages, current: { id: input.currentMessageId ?? latest?.id ?? null,
-    content: input.currentMessage ?? latest?.content ?? '', authorId: latest?.authorId ?? 'user', createdAt: latest?.createdAt ?? null } };
+    content: input.currentMessage ?? latest?.content ?? '', authorId: latest?.authorId ?? 'user', createdAt: latest?.worldCreatedAt ?? latest?.createdAt ?? null } };
 }
 function visibleMessages(messages: readonly CompanionMessage[], conversation: CompanionConversation): CompanionMessage[] {
   return messages.filter(message => message.status === 'sent' && message.conversationId === conversation.id).sort((a, b) => a.sequence - b.sequence);
@@ -203,7 +203,7 @@ function visibleMemories(memories: readonly CompanionMemory[], input: Pick<Compa
 }
 function sourceRow(message: CompanionMessage) {
   return { id: message.id, conversationId: message.conversationId, sequence: message.sequence,
-    authorId: message.authorId, kind: message.kind, createdAt: message.createdAt, content: message.content,
+    authorId: message.authorId, kind: message.kind, createdAt: message.worldCreatedAt ?? message.createdAt, realCreatedAt: message.createdAt, content: message.content,
     ...(message.replyToId ? { replyToId: message.replyToId } : {}) };
 }
 function invalid(message: string): CompanionModelError { return new CompanionModelError('INVALID_RESPONSE', message); }

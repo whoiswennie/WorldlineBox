@@ -105,8 +105,10 @@ export class CompanionMemoryStore {
 
   private source(row: Row) {
     const publication = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + row.id);
+    const worldTime = this.db.prepare('SELECT world_at FROM companion_message_times WHERE message_id=?').get(row.id);
     return { messageId: String(row.id), conversationId: String(row.conversation_id), sequence: Number(row.sequence),
       authorId: String(row.author_id), revision: Number(row.revision ?? 1), checksum: checksum(String(row.content)), createdAt: String(row.created_at),
+      ...(worldTime ? { worldCreatedAt: String(asRow(worldTime).world_at) } : {}),
       ...(publication ? { publishedAfterSequence: Number(asRow(publication).value) } : {}) };
   }
 
@@ -576,8 +578,8 @@ export class CompanionMemoryStore {
     if (query.eventId) { anchors.push('r.event_id=?'); anchorArgs.push(query.eventId); }
     const match = this.fulltextMatch(terms);
     const anchor = anchors.length ? '(' + anchors.join(' AND ') + ')' : '0';
-    if (query.from) { filters.push("COALESCE(json_extract(m.data,'$.validFrom'),json_extract(m.data,'$.sources[0].createdAt'))>=?"); args.push(query.from); }
-    if (query.to) { filters.push("COALESCE(json_extract(m.data,'$.validFrom'),json_extract(m.data,'$.sources[0].createdAt'))<=?"); args.push(query.to); }
+    if (query.from) { filters.push("COALESCE(json_extract(m.data,'$.validFrom'),json_extract(m.data,'$.sources[0].worldCreatedAt'),json_extract(m.data,'$.sources[0].createdAt'))>=?"); args.push(query.from); }
+    if (query.to) { filters.push("COALESCE(json_extract(m.data,'$.validFrom'),json_extract(m.data,'$.sources[0].worldCreatedAt'),json_extract(m.data,'$.sources[0].createdAt'))<=?"); args.push(query.to); }
     const baseScope = ['r.companion_id=?'], baseArgs: unknown[] = [query.companionId];
     if (conversation.kind === 'group') { baseScope.push('r.conversation_id=?'); baseArgs.push(query.conversationId); }
     if (query.beforeSequence !== undefined) { baseScope.push('(r.source_sequence<=? OR EXISTS(SELECT 1 FROM memory_sources s JOIN messages sm ON sm.id=s.message_id WHERE s.memory_id=r.memory_id AND sm.sequence<=?))'); baseArgs.push(query.beforeSequence, query.beforeSequence); }
@@ -651,10 +653,10 @@ export class CompanionMemoryStore {
     const conditions = ['o.companion_id=?'], values: unknown[] = [match, query.companionId];
     if (conversation.kind === 'group') { conditions.push('m.conversation_id=?'); values.push(query.conversationId); }
     if (query.beforeSequence !== undefined) { conditions.push('m.sequence<=?'); values.push(query.beforeSequence); }
-    if (query.from) { conditions.push('m.created_at>=?'); values.push(query.from); }
-    if (query.to) { conditions.push('m.created_at<=?'); values.push(query.to); }
+    if (query.from) { conditions.push('COALESCE(wt.world_at,m.created_at)>=?'); values.push(query.from); }
+    if (query.to) { conditions.push('COALESCE(wt.world_at,m.created_at)<=?'); values.push(query.to); }
     const statement = this.db.prepare(`WITH ranked AS MATERIALIZED (SELECT rowid,bm25(message_search,1.0,0.0) AS score FROM message_search WHERE message_search MATCH ?)
-      SELECT m.* FROM ranked f JOIN messages m ON m.sequence=f.rowid JOIN memory_observers o ON o.message_id=m.id WHERE ${conditions.join(' AND ')} ORDER BY f.score,m.sequence DESC LIMIT ? OFFSET ?`);
+      SELECT m.* FROM ranked f JOIN messages m ON m.sequence=f.rowid JOIN memory_observers o ON o.message_id=m.id LEFT JOIN companion_message_times wt ON wt.message_id=m.id WHERE ${conditions.join(' AND ')} ORDER BY f.score,m.sequence DESC LIMIT ? OFFSET ?`);
     const memorySources: CompanionMessage[] = []; let examined = query.sourceCursor ?? 0, hasMore = false;
     for (;;) {
       const batch = asRows(statement.all(...values, 128, examined));

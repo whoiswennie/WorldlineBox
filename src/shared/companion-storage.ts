@@ -10,10 +10,12 @@ import { companionMemoryStorageCommands, companionMemoryJobSchema } from './comp
 import { companionScheduleStorageCommands, companionScheduleOccurrenceSchema, companionScheduleSchema } from './companion-schedule';
 import { companionStateStorageCommands, companionRuntimeStateSchema } from './companion-state';
 import { companionRoutineStorageCommands } from './companion-routine';
-import { companionWorldStorageCommands, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema } from './companion-world';
-import { companionSocialStorageCommands, companionSocialConversationSchema, companionSocialMessageSchema, companionSocialJobSchema } from './companion-social';
+import { companionWorldStorageCommands, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema, companionWorldTimeSchema } from './companion-world';
+import { companionSocialStorageCommands, companionSocialConversationSchema, companionSocialMessageSchema, companionSocialJobSchema, companionSocialNotificationSchema } from './companion-social';
 import { playerProfileCommands } from './companion-profile';
 import { companionResetCommands } from './companion-reset';
+import { companionWorkOrderStorageCommands, companionWorkOrderClaimSchema } from './companion-work-order';
+import { companionLifeStorageCommands } from './companion-life-event';
 
 export const appendCompanionMessageSchema = z.strictObject({
   conversationId: companionIdSchema, authorId: companionIdSchema,
@@ -77,6 +79,8 @@ export type CompanionProactiveState = z.infer<typeof companionProactiveStateSche
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   ...playerProfileCommands,
   ...companionResetCommands,
+  ...companionWorkOrderStorageCommands,
+  ...companionLifeStorageCommands,
   z.strictObject({ type: z.literal('companion.reset.cleanup'), id: companionIdSchema, jobId: companionIdSchema }),
   z.strictObject({ type: z.literal('companion.reset.cleanup-failed'), id: companionIdSchema, jobId: companionIdSchema, error: z.string().max(1000) }),
   z.strictObject({ type: z.literal('companion.task-ids'), id: companionIdSchema }),
@@ -144,6 +148,8 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   fileToolResult: fileToolResultSchema.optional(),
   resetTaskIds: z.array(z.string().max(200)).optional(),
   companionTaskIds: z.array(z.string().max(200)).optional(),
+  worldClock: companionWorldTimeSchema.optional(),
+  workOrderClaim: companionWorkOrderClaimSchema.optional(),
   action: actionSchema.optional(),
   proactive: companionProactiveStateSchema.optional(),
   checkpoint: companionTaskCheckpointSchema.optional(), replyRecovery: companionReplyRecoverySchema.optional(),
@@ -156,7 +162,7 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   runtimeState: companionRuntimeStateSchema.optional(),
   world: companionWorldSnapshotSchema.optional(), worldWork: companionWorldWorkSchema.optional(), worldJob: companionWorldJobSchema.optional(),
   socialConversation: companionSocialConversationSchema.optional(), socialMessage: companionSocialMessageSchema.optional(), socialJob: companionSocialJobSchema.optional(),
-  socialPending: z.boolean().optional(),
+  socialPending: z.boolean().optional(), socialNotification: companionSocialNotificationSchema.optional(),
 });
 export type CompanionStorageResponse = z.infer<typeof companionStorageResponseSchema>;
 

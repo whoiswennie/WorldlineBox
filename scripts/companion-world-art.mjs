@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 import { COMPANION_WORLD_ART_ACTIONS } from '../src/shared/companion-world-actions.ts';
 import { calibrateCompanionWorldSheet, companionWorldFramePose } from '../src/shared/companion-world-art-calibration.ts';
+import { normalizeCompanionWorldActionSheet } from './companion-world-sheet.ts';
 
 const root = process.cwd();
 const manifestFile = path.join(root, 'src/shared/companion-world-art-data.json');
@@ -89,9 +90,8 @@ if (command === 'import') {
     const input = await fs.readFile(path.resolve(record.input)), sourceHash = digest(input);
     if (sources.has(sourceHash)) throw new Error(`Each action must have an independently authored source: ${identity}`);
     sources.add(sourceHash);
-    const metadata = await sharp(input).metadata();
-    if (!metadata.hasAlpha || Math.abs(metadata.width / metadata.height - 3) > .025) throw new Error(`Expected one transparent three-frame row: ${identity}`);
-    const buffer = await sharp(input).resize(1152, 384).webp({ quality: 92, alphaQuality: 100, effort: 4 }).toBuffer();
+    const normalized = await normalizeCompanionWorldActionSheet(input, record);
+    const buffer = await sharp(normalized.image).webp({ quality: 92, alphaQuality: 100, effort: 4 }).toBuffer();
     const { data: pixels, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const frames = [];
     for (let index = 0; index < 3; index++) {
@@ -118,6 +118,7 @@ if (command === 'import') {
       ...(record.neutralHeightPixels !== undefined ? { neutralHeightPixels: record.neutralHeightPixels }
         : neutralActions.has(record.action) && frames[0].contacts.posture === 'standing' ? { neutralHeightPixels: frames[0].bounds.height } : {}),
       sha256: digest(buffer), source: { kind: 'builtin-imagegen', action: record.action, sha256: sourceHash, prompt: record.prompt,
+        ...(normalized.normalization ? { normalization: normalized.normalization } : {}),
         ...(record.references ? { references: record.references } : {}), ...(record.scaleReview ? { scaleReview: record.scaleReview } : {}) }, frames };
     calibrateAsset(asset,record.action,pixels,info);
     data[record.avatar].actions[record.action] = asset;
@@ -129,7 +130,7 @@ if (command === 'import') {
   await writeManifest(data);
   console.log(`Registered ${prepared.length} independent action sheets.`);
 } else if (command === 'calibrate') {
-  const data=JSON.parse(await fs.readFile(manifestFile,'utf8')), report=[], output=path.resolve(process.argv[3]||'.tools/world-art-calibration');
+  const data=JSON.parse(await fs.readFile(manifestFile,'utf8')), report=[], output=path.resolve(process.argv[3]||'.tools/test-output/world-art-calibration');
   const selected = process.argv[4] ? new Set(process.argv[4].split(',')) : undefined;
   if (selected && [...selected].some(id => !data[id])) throw new Error('Unknown character in the requested calibration selection.');
   await fs.mkdir(output,{recursive:true});

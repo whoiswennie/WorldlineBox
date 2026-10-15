@@ -74,7 +74,7 @@ export class CompanionResetStore {
     for (const value of [input.action, input.work, input.checkpoint, input.memory]) if (value?.companionId) { owner = value.companionId; source = value.sourceMessageId; }
     const table = input.type.startsWith('action.') || input.type.startsWith('checkpoint.') || input.type === 'state.action' ? 'actions'
       : input.type.startsWith('memory.jobs.') ? 'memory_jobs' : input.type.startsWith('world.job.') ? 'companion_world_jobs'
-        : input.type.startsWith('social.job.') ? 'companion_social_jobs' : input.type === 'work.status' ? 'companion_work_queue'
+        : input.type.startsWith('social.job.') ? 'companion_social_jobs' : input.type.startsWith('work-order.') ? 'companion_work_orders' : input.type === 'work.status' ? 'companion_work_queue'
           : input.type === 'memory.delete' ? 'memories' : input.type.startsWith('schedule.') && 'id' in input ? 'companion_schedules' : undefined;
     if (!owner && table && (input.id || input.actionId)) { const found = this.db.prepare(`SELECT companion_id FROM ${ident(table)} WHERE id=?`).get(input.id ?? input.actionId); if (found) owner = String(row(found).companion_id); }
     if (input.type === 'schedule.occurrence.update' && input.id) { const found = this.db.prepare('SELECT s.companion_id FROM companion_schedule_occurrences o JOIN companion_schedules s ON s.id=o.schedule_id WHERE o.id=?').get(input.id); if (found) owner = String(row(found).companion_id); }
@@ -148,7 +148,14 @@ export class CompanionResetStore {
     return [
       ...['memory_tags', 'memory_jobs', 'memory_observers', 'memory_source_blocks', 'memory_forget_rules', 'memory_operations'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
       ['companion_schedule_occurrences', 'schedule_id IN(SELECT id FROM companion_schedules WHERE companion_id=?)', [id]],
-      ...['companion_schedules', 'companion_state_interactions', 'companion_appraisal_sources', 'companion_state_appraisals', 'companion_state_events', 'companion_routine_interruptions', 'companion_routine_audit', 'companion_routine_work', 'companion_routines', 'companion_runtime_states', 'companion_world_occupancy', 'companion_world_attention', 'companion_world_work_records', 'companion_world_dream_watermark', 'companion_world_jobs', 'companion_social_jobs', 'companion_social_outbox', 'companion_social_budget', 'companion_social_communication', 'companion_work_queue', 'proactive_state'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
+      ['companion_work_order_audit', 'order_id IN(SELECT id FROM companion_work_orders WHERE companion_id=?)', [id]],
+      ['companion_work_orders', 'companion_id=?', [id]],
+      ['companion_life_occurrences', 'companion_id=?', [id]],
+      ['metadata', "key IN(SELECT 'life-rule-removed/'||id FROM companion_life_rules WHERE companion_id=?)", [id]],
+      ['metadata', 'key GLOB ?', ['life-create/' + id + '/*']],
+      ['companion_life_rules', 'companion_id=?', [id]],
+      ['metadata', 'key=?', ['life-rules-initialized/' + id]],
+      ...['companion_schedules', 'companion_state_interactions', 'companion_appraisal_sources', 'companion_state_appraisals', 'companion_state_events', 'companion_routine_interruptions', 'companion_routine_audit', 'companion_routine_work', 'companion_routines', 'companion_runtime_states', 'companion_world_occupancy', 'companion_world_attention', 'companion_world_work_records', 'companion_world_dream_watermark', 'companion_world_jobs', 'companion_social_jobs', 'companion_social_outbox', 'companion_social_budget', 'companion_social_communication', 'companion_social_delegations', 'companion_social_notifications', 'companion_work_queue', 'proactive_state'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
       ['companion_world_peer_appraisals', 'companion_id=? OR target_id=?', [id, id]],
       ['companion_world_visit_records', 'guest_id=? OR host_id=?', [id, id]],
       ...['actorId', 'targetId', 'privateOwner'].map(field => ['companion_world_events', `json_extract(data,'$.${field}')=?`, [id]] as [string, string, unknown[]]),

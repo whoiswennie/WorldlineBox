@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Companion, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import type { CompanionWorldSnapshot } from '../../src/shared/companion-world';
-import { createCompanionWorldHome } from '../../src/shared/companion-world-engine';
+import { createCompanionWorldCommons, createCompanionWorldHome } from '../../src/shared/companion-world-engine';
 import { CompanionWorld } from '../../src/renderer/companions/world/CompanionWorld';
 import { createWorldViewport } from '../../src/renderer/companions/world/world-engine';
 import { WORLD_OBSERVER_PREFERENCES_KEY, readWorldObserverPreferences, saveWorldObserverPreferences } from '../../src/renderer/companions/world/world-observer-preferences';
@@ -20,11 +20,23 @@ afterEach(async () => { await act(() => root?.unmount()); container?.remove(); r
 const at = '2026-10-14T08:00:00.000Z';
 const companions: Companion[] = BUILTIN_COMPANIONS.slice(0, 2).map(item => ({ ...item, builtin: true, createdAt: at }));
 const first = companions[0]!, second = companions[1]!;
-function world(): CompanionWorldSnapshot { return { settings: { revision: 4, mode: 'compressed', dayDurationMinutes: 20, timeZone: 'Asia/Shanghai' }, clock: { realNow: at, virtualNow: at, hour: 16, day: 10, daylight: true, speed: 72 }, environment: { weather: 'clear', light: .7, outdoorTemperature: 21.5, indoorTemperature: 22.2 }, scenes: [createCompanionWorldHome(first.id, 0), createCompanionWorldHome(second.id, 1)], actors: [{ companionId: first.id, homeSceneId: 'home_' + first.id, sceneId: 'home_' + first.id, position: { x: 5.3, y: 4 }, facing: 'west', frame: 1, activity: 'walking', activityStartedAtReal: at, artAction: 'walk', locomotion: 'walk', movementSpeed: 2.4, state: { energy: 75, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: .1, dominance: .1 }, thermalComfort: .9 }, route: [{ sceneId: 'home_' + first.id, x: 4, y: 4 }], routinePhase: 'awake' }], visits: [{ id: 'visit', guestId: second.id, hostId: first.id, status: 'requested', reason: '想一起喝杯茶', createdAt: at, expiresAt: '2026-10-14T09:00:00.000Z' }], works: [{ workId: 'work', companionId: first.id, kind: 'chat', status: 'moving', computerId: first.id + '_computer', reason: '先走到自己的电脑前' }], events: [], relationships: [], residents: companions.map(item => ({ companionId: item.id, name: item.name, homeSceneId: "home_" + item.id })), lastEventSequence: 0, backlog: false }; }
+function world(): CompanionWorldSnapshot { return { settings: { revision: 4, mode: 'compressed', dayDurationMinutes: 20, timeZone: 'Asia/Shanghai' }, clock: { realNow: at, virtualNow: at, hour: 16, day: 10, daylight: true, speed: 72 }, environment: { weather: 'clear', light: .7, outdoorTemperature: 21.5, indoorTemperature: 22.2 }, scenes: [createCompanionWorldHome(first.id, 0), createCompanionWorldHome(second.id, 1)], actors: [{ companionId: first.id, homeSceneId: 'home_' + first.id, sceneId: 'home_' + first.id, position: { x: 5.3, y: 4 }, facing: 'west', frame: 1, activity: 'walking', activityStartedAtReal: at, artAction: 'walk', locomotion: 'walk', movementSpeed: 2.4, state: { energy: 75, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: .1, dominance: .1 }, thermalComfort: .9 }, route: [{ sceneId: 'home_' + first.id, x: 4, y: 4 }], routinePhase: 'awake' }], visits: [{ id: 'visit', guestId: second.id, hostId: first.id, status: 'requested', reason: '想一起喝杯茶', createdAt: at, expiresAt: '2026-10-14T09:00:00.000Z' }], works: [{ workId: 'work', companionId: first.id, kind: 'action', status: 'moving', computerId: first.id + '_computer', reason: '先走到自己的电脑前' }], events: [], relationships: [], residents: companions.map(item => ({ companionId: item.id, name: item.name, homeSceneId: "home_" + item.id })), lastEventSequence: 0, backlog: false }; }
 function apiFor(get: () => CompanionWorldSnapshot, config?: (input: CompanionsRequest) => CompanionsResponse): WorldlineBoxCompanionsApi { return { request: vi.fn(async input => input.type === 'world.snapshot' ? { ok: true, world: get() } : config?.(input) ?? { ok: true, world: get() }), onChanged: vi.fn(() => () => undefined), onReplyStream: vi.fn(() => () => undefined) }; }
 async function mount(api: WorldlineBoxCompanionsApi, initialCompanionId: string | null = first.id) { vi.useFakeTimers(); container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); await act(async () => root!.render(<CompanionWorld api={api} companions={companions} initialCompanionId={initialCompanionId ?? undefined} onClose={vi.fn()} />)); }
 function button(label: string) { const found = [...container!.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === label || item.textContent === label); if (!found) throw new Error('No button ' + label); return found; }
 async function click(label: string) { await act(async () => button(label).click()); }
+
+it('pauses the three-dimensional renderer while observing the real neighborhood map and reopens the selected home', async () => {
+  const snapshot = world(); snapshot.scenes.unshift(createCompanionWorldCommons(snapshot.scenes));
+  saveWorldObserverPreferences({ sceneId: 'commons', views: {} });
+  await mount(apiFor(() => snapshot), null);
+  expect(container!.querySelector('[data-world-map-ready]')).not.toBeNull();
+  expect(view.update).not.toHaveBeenCalled(); expect(view.setActive).toHaveBeenLastCalledWith(false);
+  await click('观察' + second.name + '的小屋');
+  expect(container!.querySelector('[data-world-map-ready]')).toBeNull();
+  expect(view.update.mock.calls.at(-1)?.[1].id).toBe('home_' + second.id);
+  expect(view.setActive).toHaveBeenLastCalledWith(true);
+});
 
 it('shows actual host positions, movement, environment and visit outcomes without impersonating an owner decision', async () => {
   let snapshot = { ...world(), backlog: true }; const api = apiFor(() => snapshot); await mount(api);
@@ -34,7 +46,7 @@ it('shows actual host positions, movement, environment and visit outcomes withou
   expect([...container!.querySelectorAll('button')].some(item => /批准|拒绝拜访/.test(item.textContent ?? ''))).toBe(false);
   snapshot = { ...snapshot, backlog: false, actors: [{ ...snapshot.actors[0]!, position: { x: 4, y: 4 }, activity: 'working' }], works: [{ ...snapshot.works[0]!, status: 'ready' }], visits: [{ ...snapshot.visits[0]!, status: 'denied', response: '现在有一点忙，晚些再见。' }] };
   await act(async () => vi.advanceTimersByTimeAsync(1000));
-  expect(container!.textContent).toContain('已就座，可以处理'); expect(container!.textContent).toContain('正在回复消息'); expect(container!.textContent).toContain('对方暂不方便'); expect(container!.textContent).toContain('现在有一点忙');
+  expect(container!.textContent).toContain('已就座，可以处理'); expect(container!.textContent).toContain('正在处理任务'); expect(container!.textContent).toContain('对方暂不方便'); expect(container!.textContent).toContain('现在有一点忙');
   expect(container!.querySelector('[role="status"]')).toBeNull();
   expect(api.request).toHaveBeenCalledTimes(2); expect(api.onChanged).not.toHaveBeenCalled();
   expect(view.update).toHaveBeenLastCalledWith(snapshot, snapshot.scenes[0], companions);
@@ -49,6 +61,21 @@ it('switches homes and routes camera controls without issuing actor commands', a
   await click('放大世界'); await click('向左旋转世界'); await click('重置世界视角');
   expect(view.zoom).toHaveBeenCalledWith(1.2); expect(view.rotate).toHaveBeenCalledWith(-Math.PI / 8); expect(view.reset).toHaveBeenCalledOnce();
   expect(vi.mocked(api.request).mock.calls.every(([input]) => input.type === 'world.snapshot')).toBe(true);
+});
+
+it('keeps the compact header on authoritative world date/time and presents realtime as the default recommendation', async () => {
+  const snapshot = world(); snapshot.clock.hour = 4;
+  await mount(apiFor(() => snapshot)); vi.setSystemTime(new Date('2035-01-01T01:00:00Z'));
+  const header = container!.querySelector('.companion-world-header')!;
+  expect(header.querySelector('time')?.dateTime).toBe(snapshot.clock.virtualNow);
+  expect(header.textContent).toContain('2026/10/14'); expect(header.textContent).toContain('16:00');
+  expect(header.textContent).toContain('21.5°C'); expect(header.textContent).toContain('晴');
+  expect(header.querySelector('h2')).toBeNull(); expect(container!.querySelector('.companion-world-brand')).toBeNull();
+  expect(container!.textContent).not.toMatch(/A LITTLE WORLD|日子，在这里发生|HOME, SWEET HOME|THE NEIGHBORHOOD/);
+  await click('世界设置');
+  const labels = [...container!.querySelectorAll('.companion-world-mode')].map(item => item.textContent);
+  expect(labels.find(value => value?.includes('与你使用相同的时间'))).toContain('默认 · 推荐');
+  expect(labels.find(value => value?.includes('加速体验一天'))).not.toContain('默认');
 });
 
 it('saves the inspected settings revision and keeps the previous world on conflict', async () => {
@@ -82,7 +109,7 @@ it('describes actual physical behavior before work promises and distinguishes de
   expect(status({ activity: 'sleeping' }, [{ ...snapshot.works[0]!, status: 'waiting' }])).toMatchObject({ label: '正在睡觉', kind: 'sleep', detail: '有事项等醒来后处理' });
   expect(status({ activity: 'eating' }, [{ ...snapshot.works[0]!, status: 'waiting' }]).label).toBe('正在用餐');
   expect(status({ activity: 'seating' }, [{ ...snapshot.works[0]!, status: 'seating' }]).label).toBe('正在电脑前坐稳');
-  expect(status({ activity: 'working' }, [{ ...snapshot.works[0]!, status: 'ready' }]).label).toBe('正在回复消息');
+  expect(status({ activity: 'working' }, [{ ...snapshot.works[0]!, status: 'ready' }]).label).toBe('正在处理任务');
   expect(status({ activity: 'working' }, [{ ...snapshot.works[0]!, kind: 'action', status: 'ready' }]).label).toBe('正在处理任务');
   expect(status({ activity: 'working' }, [{ ...snapshot.works[0]!, status: 'ready' }, { ...snapshot.works[0]!, workId: 'parallel', status: 'ready' }]).label).toBe('正在处理 2 件事');
   expect(status({ activity: 'working' }, []).label).toBe('在电脑前工作');
@@ -101,6 +128,8 @@ it('shows the actual phone correspondent while preserving physical activity and 
   expect(status({ activity: 'sitting' }).label).toBe('正在给' + second.name + '发消息');
   expect(status({ communication: { ...communication, recipientIds: [second.id, 'third'] } }).label).toBe('正在群聊里发消息');
   expect(status({ communication: { ...communication, phase: 'notification' } }).label).toBe('收到' + second.name + '的消息');
+  expect(status({ activity: 'sitting', communication: { ...communication, phase: 'responding', recipientIds: ['user'] } }).label).toBe('正在回复聊天');
+  expect(status({ activity: 'habit', communication: { ...communication, phase: 'responding', recipientIds: ['user'] } }).label).toBe('正在回复聊天');
   expect(status({ activity: 'sleeping' }).label).toBe('正在睡觉');
   expect(status({ activity: 'eating' }).label).toBe('正在用餐');
   expect(status({ activity: 'working' }).label).toBe('在电脑前工作');

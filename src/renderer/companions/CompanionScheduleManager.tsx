@@ -8,13 +8,14 @@ import { useDialogFocusTrap } from '../use-dialog-focus-trap';
 import { companionTimestamp } from '../../shared/companion-time';
 import { RECURRENCE_LABELS, scheduleStatus, scheduleTime, useCompanionSchedules, type ScheduleRequest } from './companion-schedules';
 import { CompanionRoutineEditor } from './CompanionRoutineEditor';
+import { CompanionLifeEvents } from './CompanionLifeEvents';
 
 interface ScheduleDraft { title: string; prompt: string; kind: 'reminder' | 'task'; runAt: string; timeZone: string; recurrence: CompanionSchedule['recurrence']; intervalMinutes: number; weekDays: number[]; flexible: boolean }
 function inputDateTime(value: string) { const date = new Date(value); const pad = (part: number) => String(part).padStart(2, '0'); return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds()); }
 function emptyDraft(): ScheduleDraft { return { title: '', prompt: '', kind: 'reminder', runAt: inputDateTime(new Date(Date.now() + 3600_000).toISOString()), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, recurrence: 'once', intervalMinutes: 60, weekDays: [new Date().getDay()], flexible: false }; }
 const DAYS = ['日', '一', '二', '三', '四', '五', '六'];
 
-export function CompanionScheduleManager({ companion, conversationId, conversationKind = 'private', request, api, onClose, requestError, onDismissError }: { readonly companion: Companion; readonly conversationId: string; readonly conversationKind?: 'private' | 'group'; readonly request: ScheduleRequest; readonly api?: WorldlineBoxCompanionsApi; readonly onClose: () => void; readonly requestError?: string; readonly onDismissError: () => void }) {
+export function CompanionScheduleManager({ companion, companions = [companion], conversationId, conversationKind = 'private', request, api, onClose, requestError, onDismissError }: { readonly companion: Companion; readonly companions?: Companion[]; readonly conversationId: string; readonly conversationKind?: 'private' | 'group'; readonly request: ScheduleRequest; readonly api?: WorldlineBoxCompanionsApi; readonly onClose: () => void; readonly requestError?: string; readonly onDismissError: () => void }) {
   useDialogFocusTrap(true, '伙伴日程');
   const { schedules, occurrences, error: loadError, loading, refresh } = useCompanionSchedules(companion.id, conversationId, request, api);
   const [draft, setDraft] = useState<ScheduleDraft>(emptyDraft);
@@ -24,7 +25,7 @@ export function CompanionScheduleManager({ companion, conversationId, conversati
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<'upcoming' | 'completed' | 'all'>('upcoming');
   const [confirmCancel, setConfirmCancel] = useState<string>();
-  const [page, setPage] = useState<'plans' | 'routine'>('plans');
+  const [page, setPage] = useState<'plans' | 'routine' | 'life'>('plans');
   const clientId = useRef(crypto.randomUUID());
   const submittedEntry = useRef<string | undefined>(undefined);
   useEffect(() => { const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }; document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key); }, [onClose]);
@@ -57,10 +58,10 @@ export function CompanionScheduleManager({ companion, conversationId, conversati
   const visible = schedules.filter(schedule => filter === 'all' || (filter === 'completed' ? scheduleStatus(schedule) === '已完成' || schedule.status === 'cancelled' : schedule.status !== 'cancelled' && scheduleStatus(schedule) !== '已完成'));
   return <div className="companions-modal-backdrop companions-workspace-backdrop" onClick={onClose}>
     <section className="companions-schedule-manager" role="dialog" aria-modal="true" aria-label="伙伴日程" onClick={event => event.stopPropagation()}>
-      <header><div className="companions-workspace-title"><span className="companions-workspace-symbol"><Icon name="clock" /></span><div><h2>一起安排接下来的日子</h2><p>提醒与任务，都按真实时间进行</p></div></div><div className="companions-memory-manager-owner"><Avatar companion={companion} showPresence={false} /><span>{companion.name}</span><button className="companion-icon-button" aria-label="关闭伙伴日程" onClick={onClose}>×</button></div></header>
+      <header><div className="companions-workspace-title"><span className="companions-workspace-symbol"><Icon name="clock" /></span><div><h2>一起安排接下来的日子</h2><p>守时的约定，也有自由生长的日常</p></div></div><div className="companions-memory-manager-owner"><Avatar companion={companion} showPresence={false} /><span>{companion.name}</span><button className="companion-icon-button" aria-label="关闭伙伴日程" onClick={onClose}>×</button></div></header>
       {requestError && <div className="companions-workspace-request-error" role="alert"><span>{requestError}</span><button aria-label="关闭错误提示" onClick={onDismissError}>×</button></div>}
-      <nav className="companions-workspace-tabs" aria-label="伙伴日程内容"><button aria-pressed={page === 'plans'} onClick={() => setPage('plans')}><Icon name="clipboard" />日历与待办</button><button aria-pressed={page === 'routine'} onClick={() => setPage('routine')}><Icon name="clock" />作息与习惯</button></nav>
-      {page === 'routine' ? <CompanionRoutineEditor companionId={companion.id} conversationId={conversationId} readOnly={conversationKind === 'group'} request={request} api={api} /> : <div className="companions-schedule-workspace"><div className="companions-schedule-list">
+      <nav className="companions-workspace-tabs" aria-label="伙伴日程内容"><button aria-pressed={page === 'plans'} onClick={() => setPage('plans')}><Icon name="clipboard" />日历与待办</button><button aria-pressed={page === 'routine'} onClick={() => setPage('routine')}><Icon name="clock" />作息与习惯</button><button aria-pressed={page === 'life'} onClick={() => setPage('life')}><Icon name="message-circle" />日常事件</button></nav>
+      {page === 'life' ? <CompanionLifeEvents companion={companion} companions={companions} request={request} api={api} /> : page === 'routine' ? <CompanionRoutineEditor companionId={companion.id} conversationId={conversationId} readOnly={conversationKind === 'group'} request={request} api={api} /> : <div className="companions-schedule-workspace"><div className="companions-schedule-list">
         <div className="companions-schedule-toolbar"><nav aria-label="日程筛选"><button className={filter === 'upcoming' ? 'is-active' : ''} onClick={() => setFilter('upcoming')}>接下来的安排</button><button className={filter === 'completed' ? 'is-active' : ''} onClick={() => setFilter('completed')}>已结束</button><button className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>全部</button></nav><button className="companion-primary-button" onClick={() => begin()}><Icon name="plus" />添加安排</button></div>
         {(error || loadError) && <p className="companions-memory-error" role="alert">{error || loadError} <button onClick={() => void refresh()}>刷新</button></p>}
         {loading && <p className="companions-subtle">正在读取日程…</p>}

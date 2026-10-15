@@ -21,4 +21,13 @@ describe('authoritative physical participation', () => {
     const windows = [{ start: begin, end: begin + 60000, phase: 'sleeping' as const }];
     expect(advanceCompanionWorldEnergy(windows, begin, end, 90, virtual)).toBeCloseTo(94.24);
   });
+  it('preserves actual recovery and practice across a virtual-date rollback without inventing or losing elapsed time', () => {
+    const begin = at('2026-10-14T10:00:00Z'), boundary = begin + 60000, end = boundary + 60000;
+    const virtual = (real: number, reference = real) => reference < boundary ? begin + (real - begin) * 72 : real;
+    const real = (virtual: number, reference = end) => reference < boundary ? begin + (virtual - begin) / 72 : virtual;
+    expect(advanceCompanionWorldEnergy([{ start: begin, end, phase: 'sleeping' }], begin, end, 50, virtual, [boundary])).toBeCloseTo(71.9);
+    expect(advanceCompanionWorldEnergy([], begin, end, 50, virtual, [boundary])).toBeCloseTo(44.16);
+    const windows = [{ start: begin, end, phase: 'habit' as const, habitId: 'read', habitKind: 'study' as const }];
+    expect(deriveCompanionWorldHabitProgress(config, windows, end, virtual, real, [boundary])[0]).toMatchObject({ completedCount: 2, practicedMinutes: 73, lastCompletedAt: new Date(begin + 50000).toISOString() });
+  });
 });

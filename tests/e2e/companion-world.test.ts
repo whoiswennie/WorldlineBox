@@ -103,7 +103,7 @@ test('observes real homes, host-driven bedtime and movement, camera controls and
     expect(actor.furnitureId).toBe(bedOwner + '_bed'); expect(actor.route).toEqual([]);
     await expect(world.locator('[data-world-actor="deepseek-sister"]')).toContainText(`位置 ${actor.position.x.toFixed(1)}, ${actor.position.y.toFixed(1)}`);
     await expect.poll(async () => Number(await scene.locator('canvas').getAttribute('data-world-loaded-actors'))).toBeGreaterThan(0);
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true });
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
     const renderMetrics = () => scene.locator('canvas').evaluate(element => Object.fromEntries(Object.entries((element as HTMLCanvasElement).dataset).filter(([key]) => ['worldFps', 'worldDrawCalls', 'worldTriangles', 'worldTextures', 'worldGeometries', 'worldFrames'].includes(key)).map(([key, value]) => [key, Number(value)])));
     await expect.poll(async () => (await renderMetrics()).worldFrames ?? 0).toBeGreaterThan(2);
     const beforeSwitch = await renderMetrics();
@@ -151,7 +151,7 @@ test('measures the normal GPU renderer with movement, orbit and bounded scene re
   try {
     const started = await launch(path.join(directory, 'profile'), 'hardware'); application = started.application; const page = started.page;
     const features = await application.evaluate(({ app }) => app.getGPUFeatureStatus());
-    const perfPath = path.resolve('artifacts/companions/verified-companion-world-performance.json'); mkdirSync(path.dirname(perfPath), { recursive: true }); writeFileSync(perfPath, JSON.stringify({ features }, null, 2));
+    const perfPath = path.resolve('.tools/test-output/companions/verified-companion-world-performance.json'); mkdirSync(path.dirname(perfPath), { recursive: true }); writeFileSync(perfPath, JSON.stringify({ features }, null, 2));
     const worldPage = await openCompanionWorldWindow(application, page);
     const world = worldPage.getByRole('region', { name: '伙伴世界', exact: true }), canvas = world.locator('canvas');
     const initial = (await request(page, { type: 'world.snapshot' })).world!, companionId = 'deepseek-sister';
@@ -226,7 +226,7 @@ test('renders daylight, night and rain from actual persisted world clock fixture
   let application: ElectronApplication | undefined;
   try {
     const bootstrap = await launch(profile); application = bootstrap.application; await request(bootstrap.page, { type: 'world.snapshot' }); await application.close(); application = undefined;
-    const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true });
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
     const conditions = [{ weather: 'clear', hour: 12, scene: 'home_deepseek-sister', file: 'verified-companion-world-day.png' }, { weather: 'clear', hour: 0, scene: 'home_deepseek-sister', file: 'verified-companion-world-night.png' }, { weather: 'rain', hour: 12, scene: 'commons', file: 'verified-companion-world-rain.png' }] as const;
     for (const condition of conditions) {
       seedWorldClock(profile, environmentDate(condition.weather, condition.hour));

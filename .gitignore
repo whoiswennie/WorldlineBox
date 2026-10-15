@@ -16,11 +16,8 @@ coverage/
 playwright-report/
 test-results/
 /test-results-*/
-# Real user desktop task receipts stay local; fixture UI screenshots may be tracked.
-artifacts/companions/live/
-# Generated model acceptance outputs remain local; source and fixture screenshots are public.
-artifacts/companions/novel-loop-*/
-artifacts/companions/recovery-loop-*/
+# Generated screenshots, test receipts and release staging are local outputs.
+/artifacts/
 *.log
 .env
 .env.*
@@ -35,7 +32,6 @@ resources/media-binaries/*/manifest.json
 resources/media-binaries/*/licenses/
 resources/media-binaries/vcpkg/vcpkg_installed/
 .media-build/
-artifacts/media-binaries/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

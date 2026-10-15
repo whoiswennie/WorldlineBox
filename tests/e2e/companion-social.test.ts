@@ -115,7 +115,7 @@ for (const group of [false, true]) {
       expect(rooms).toHaveLength(1); expect(rooms[0]!.id).toBe(room.id);
       await page.getByRole('button', { name: '打开伙伴社交观察' }).click(); await expect(page.getByRole('dialog', { name: '伙伴社交观察' })).toBeVisible();
       await page.locator(`[data-social-conversation="${room.id}"]`).click(); await expect(page.locator(`[data-social-message="${initial.message.id}"]`)).toBeVisible();
-      const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true }); await page.screenshot({ path: path.join(artifacts, group ? 'verified-social-phone-group.png' : 'verified-social-phone-private.png') });
+      const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); await page.screenshot({ path: path.join(artifacts, group ? 'verified-social-phone-group.png' : 'verified-social-phone-private.png') });
       await testInfo.attach('real-peer-phone-chain', { body: JSON.stringify({ room, messages, logs: fixture.logs, typing: typing.actors.find(actor => actor.companionId === typingOwner) }), contentType: 'application/json' });
     } catch (error) {
       await testInfo.attach('social-failure', { body: JSON.stringify({ error: error instanceof Error ? error.message : String(error), logs: fixture.logs }), contentType: 'application/json' });

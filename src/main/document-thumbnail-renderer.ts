@@ -19,6 +19,7 @@ import {
   type DocumentThumbnailRenderResponse,
 } from '../shared/document-thumbnail-protocol';
 import type { AppLogger } from './app-logger';
+import { withAppWindowIcon } from './app-icon';
 
 function isPng(buffer: Buffer): boolean {
   return buffer.length > 8
@@ -39,7 +40,7 @@ export async function renderDocumentThumbnail(
 ): Promise<DocumentThumbnailRenderResponse['result']> {
   let window: BrowserWindow | null = null;
   try {
-    window = new BrowserWindow({
+    window = new BrowserWindow(withAppWindowIcon({
       // `useContentSize` makes width/height the *page* viewport: without it the
       // window frame is subtracted from the height, so a 1024×576 (16:9)
       // request captured 1024×520 and the font cover came out at ~1.97:1.
@@ -54,7 +55,7 @@ export async function renderDocumentThumbnail(
         // No preload: the page must not receive any extra capability.
         webSecurity: true,
       },
-    });
+    }));
     // Suppress popups / new windows and block navigation away from the source.
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', (event, url) => {

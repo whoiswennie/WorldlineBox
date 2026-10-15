@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { companionWorldSnapshotSchema, type CompanionWorldActor, type CompanionWorldEvent, type CompanionWorldJob, type CompanionWorldRelationship,
+import { COMPANION_WORLD_DEFAULT_SETTINGS, companionWorldSnapshotSchema, type CompanionWorldActor, type CompanionWorldEvent, type CompanionWorldJob, type CompanionWorldRelationship,
   type CompanionWorldScene, type CompanionWorldScope, type CompanionWorldSettings, type CompanionWorldSnapshot, type CompanionWorldVisit, type CompanionWorldWork } from '../shared/companion-world';
 import type { CompanionWorldOccupancy } from '../shared/companion-world';
 import { advanceCompanionWorldActor, companionWorldEnvironment, companionWorldRealAt, companionWorldSpeed, companionWorldVirtualAt,
@@ -17,13 +17,15 @@ import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionSocialMessage } from '../shared/companion-social';
 import type { CompanionSocialStore } from './social-store';
+import type { CompanionWorkOrderStore } from './work-order-store';
 import { companionTimeInZone } from '../shared/companion-schedule-time';
 
 type Row = Record<string, string | number | null>;
 type StoredActor = CompanionWorldActor & { arrivalActivity?: CompanionWorldActor['activity']; seatUntil?: number; lastDecisionAt: number; lastDreamDay?: number;
+  phoneResume?: { activity: CompanionWorldActor['activity'] };
   afterWork?: { scope: CompanionWorldScope; args: CompanionWorldArguments; sourceMessageId?: string }; lastClimateKey?: string;
   transition?: { until: number; after: CompanionWorldActor['activity'] }; manualActivityUntil?: number; manualArtAction?: CompanionWorldActor['artAction']; pendingVisitId?: string };
-type StoredWork = CompanionWorldWork & { conversationId: string; sourceMessageId?: string; urgent: boolean; fixed: boolean };
+type StoredWork = CompanionWorldWork & { conversationId: string; sourceMessageId?: string; urgent: boolean; fixed: boolean; requestedAtReal: number; workOrderId?: string };
 type StoredVisit = CompanionWorldVisit & { responseSourceMessageId?: string; responseConversationId?: string; settledAt?: number };
 type StoredJob = CompanionWorldJob & { memoryVersions?: Array<{ id: string; version: number }>; readSet?: Array<{ eventId: string; checksum: string; sourceChecksum?: string; sourceRevision?: number }> };
 type StoredEvent = CompanionWorldEvent & { privateOwner?: string; sourceMemoryIds?: string[]; sourceMessageIds?: string[]; evidence?: Array<{ sourceMessageId: string; quote: string }>; positiveChange?: number; appraisalDay?: string;
@@ -47,6 +49,7 @@ export class CompanionWorldStore {
   private actorProjection: StoredActor[] = [];
   private unseenCache = new Map<string, { token: string; present: boolean }>();
   private social?: CompanionSocialStore;
+  private orders?: CompanionWorkOrderStore;
   private atomic<T>(fn: () => T): T {
     try { return this.db.transaction(fn).immediate(); } catch (error) { this.clockAnchors = undefined; this.actorProjection = []; this.through = 0; this.dirty = true; throw error; }
   }
@@ -57,18 +60,28 @@ export class CompanionWorldStore {
     private readonly recordMemory: (scope: CompanionWorldScope, candidate: CompanionMemoryCandidate) => void) {}
 
   connectSocial(social: CompanionSocialStore): void { this.social = social; }
+  connectWorkOrders(orders: CompanionWorkOrderStore): void { this.orders = orders; }
   socialContext(): { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean } {
     const now = Date.now(); this.ensureThrough(now); const state = this.load(), at = this.virtualFor(state, state.cursor), day = companionTimeInZone(at, state.settings.timeZone);
     return { timeZone: state.settings.timeZone, virtualNow: iso(at), observedDay: `${day.year}-${String(day.month).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`, backlog: state.cursor + 1 < now };
   }
   socialAvailable(owner: string, channel: 'phone' | 'face_to_face', recipients: string[]): boolean {
     const state = this.load(), actor = state.actors.find(actor => actor.companionId === owner);
-    if (!actor || actor.route.length || actor.transition || !['idle', 'sitting'].includes(actor.activity) ||
-      !evaluateCompanionRoutine(this.routineConfig(owner), iso(this.virtualFor(state, state.cursor))).canRespond ||
-      state.works.some(work => work.companionId === owner && work.status !== 'ended') ||
-      this.db.prepare("SELECT 1 FROM actions WHERE companion_id=? AND status IN('queued','running') LIMIT 1").get(owner) ||
-      this.db.prepare("SELECT 1 FROM companion_work_queue WHERE companion_id=? AND status='running' LIMIT 1").get(owner)) return false;
-    return channel === 'phone' || recipients.every(id => { const peer = state.actors.find(actor => actor.companionId === id); return peer && peer.sceneId === actor.sceneId && Math.hypot(peer.position.x - actor.position.x, peer.position.y - actor.position.y) <= 5; });
+    if (!actor || !this.phoneAvailable(state, actor)) return false;
+    if (channel === 'phone') return true;
+    return !actor.route.length && !actor.transition && ['idle', 'sitting'].includes(actor.activity)
+      && evaluateCompanionRoutine(this.routineConfig(owner), iso(this.virtualFor(state, state.cursor))).canRespond
+      && !state.works.some(work => work.companionId === owner && work.status !== 'ended')
+      && recipients.every(id => { const peer = state.actors.find(actor => actor.companionId === id); return peer && peer.sceneId === actor.sceneId && Math.hypot(peer.position.x - actor.position.x, peer.position.y - actor.position.y) <= 5; });
+  }
+  private phoneAvailable(state: StoredWorld, actor: StoredActor): boolean {
+    const phase = evaluateCompanionRoutine(this.routineConfig(actor.companionId), iso(this.virtualFor(state, state.cursor)));
+    return !['sleeping', 'eating'].includes(phase.phase) && !['sleeping', 'lyingDown', 'waking', 'eating', 'working'].includes(actor.activity)
+      && !state.works.some(work => work.companionId === actor.companionId && work.kind !== 'chat' && work.status !== 'ended')
+      && !this.db.prepare("SELECT 1 FROM actions WHERE companion_id=? AND status IN('queued','running') LIMIT 1").get(actor.companionId);
+  }
+  private peerPhoneActive(owner: string, now: number): boolean {
+    return !!this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing' UNION ALL SELECT 1 FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(owner, iso(now), owner, iso(now));
   }
   recordSocialSpeech(message: CompanionSocialMessage, channel: 'phone' | 'face_to_face'): void {
     const state = this.load(), owner = message.message.authorId, actor = state.actors.find(actor => actor.companionId === owner);
@@ -107,13 +120,14 @@ export class CompanionWorldStore {
     // The stopped process did no external work during its absence. Keep positions
     // and routes; close only computer reservations belonging to that process.
     for (const work of state.works) if (work.status !== 'ended') work.status = 'ended';
+    for (const actor of state.actors) this.releasePhone(actor, state.cursor);
     for (const actor of state.actors) if (actor.activity === 'working' || actor.activity === 'seating') { actor.activity = 'idle'; actor.route = []; delete actor.furnitureId; delete actor.destinationId; }
     this.save(state);
   }
   private load(): StoredWorld {
     const existing = this.db.prepare('SELECT data FROM companion_world WHERE id=1').get();
     if (existing) { const state = parse<StoredWorld>(row(existing).data); this.rememberClock(state); return state; }
-    const now = Date.now(), settings: CompanionWorldSettings = { revision: 1, mode: 'compressed', dayDurationMinutes: 20, timeZone: resolveCompanionScheduleTimeZone('system') };
+    const now = Date.now(), settings: CompanionWorldSettings = { ...COMPANION_WORLD_DEFAULT_SETTINGS, revision: 1, timeZone: resolveCompanionScheduleTimeZone('system') };
     const fresh: StoredWorld = { settings, anchors: [{ realAt: now, virtualAt: now, settings }], cursor: now, slots: [], actors: [], works: [], visits: [], relationships: [] };
     this.save(fresh); return fresh;
   }
@@ -196,7 +210,7 @@ export class CompanionWorldStore {
   urgent(companionId: string, sourceMessageId: string, now = Date.now()): boolean {
     const saved = this.db.prepare("SELECT a.*,m.content,m.created_at FROM companion_world_attention a JOIN messages m ON m.id=a.source_message_id WHERE a.companion_id=? AND a.source_message_id=?").get(companionId, sourceMessageId);
     if (!saved) return false; const value = row(saved);
-    return value.urgency === 'urgent' && Number(value.confidence) >= .85 && now - Number(value.at) < 1800000 && now - Date.parse(String(value.created_at)) < 1800000 &&
+    return value.urgency === 'urgent' && Number(value.confidence) >= .85 && now >= Number(value.at) && now - Number(value.at) < 1800000 && now >= Date.parse(String(value.created_at)) && now - Date.parse(String(value.created_at)) < 1800000 &&
       value.checksum === createHash('sha256').update(String(value.content)).digest('hex');
   }
   private recordAttention(command: Extract<CompanionStorageCommand, { type: 'world.attention.record' }>): void {
@@ -206,25 +220,37 @@ export class CompanionWorldStore {
     if (previous && row(previous).checksum !== command.sourceChecksum) throw new Error('通知来源已经修改。');
     if (previous && Number(row(previous).confidence) >= command.confidence) return;
     this.db.prepare('INSERT INTO companion_world_attention(companion_id,source_message_id,checksum,urgency,confidence,at,data) VALUES(?,?,?,?,?,?,?) ON CONFLICT(companion_id,source_message_id) DO UPDATE SET urgency=excluded.urgency,confidence=excluded.confidence,data=excluded.data').run(command.companionId, source.id, command.sourceChecksum, command.urgency, command.confidence, Date.now(), JSON.stringify(command));
-    const state = this.load(); for (const work of state.works) if (work.companionId === command.companionId && work.sourceMessageId === source.id && work.status === 'waiting') work.urgent = this.urgent(command.companionId, source.id);
+    const state = this.load(); for (const work of state.works) if (work.companionId === command.companionId && work.sourceMessageId === source.id && work.status !== 'ended') work.urgent = this.urgent(command.companionId, source.id);
     this.dirty = true; this.save(state);
   }
-  private clockAnchor(anchors: ClockSegment[], at: number, axis: 'realAt' | 'virtualAt'): ClockSegment {
+  private clockAnchor(anchors: ClockSegment[], at: number): ClockSegment {
     const latest = anchors.at(-1)!;
-    if (latest[axis] <= at) return latest;
-    const column = axis === 'realAt' ? 'real_at' : 'virtual_at';
-    const found = this.db.prepare(`SELECT data FROM companion_world_clock_segments WHERE ${column}<=? ORDER BY ${column} DESC,revision DESC LIMIT 1`).get(at)
-      ?? this.db.prepare(`SELECT data FROM companion_world_clock_segments ORDER BY ${column},revision LIMIT 1`).get();
+    if (latest.realAt <= at) return latest;
+    const found = this.db.prepare('SELECT data FROM companion_world_clock_segments WHERE real_at<=? ORDER BY real_at DESC,revision DESC LIMIT 1').get(at)
+      ?? this.db.prepare('SELECT data FROM companion_world_clock_segments ORDER BY real_at,revision LIMIT 1').get();
     return found ? parse<ClockSegment>(row(found).data) : anchors[0]!;
   }
-  virtualAt(realAt = Date.now()): number { if (!this.clockAnchors) this.load(); const anchor = this.clockAnchor(this.clockAnchors!, realAt, 'realAt'); return companionWorldVirtualAt(anchor, anchor.settings, realAt); }
-  realAt(virtualAt: number): number { if (!this.clockAnchors) this.load(); const anchor = this.clockAnchor(this.clockAnchors!, virtualAt, 'virtualAt'); return companionWorldRealAt(anchor, anchor.settings, virtualAt); }
+  virtualAt(realAt = Date.now(), referenceRealAt = realAt): number { if (!this.clockAnchors) this.load(); const anchor = this.clockAnchor(this.clockAnchors!, referenceRealAt); return companionWorldVirtualAt(anchor, anchor.settings, realAt); }
+  realAt(virtualAt: number, referenceRealAt = this.through): number { if (!this.clockAnchors) this.load(); const anchor = this.clockAnchor(this.clockAnchors!, referenceRealAt); return companionWorldRealAt(anchor, anchor.settings, virtualAt); }
+  clockBoundaries(from: number, to: number): number[] { return (this.db.prepare('SELECT real_at FROM companion_world_clock_segments WHERE real_at>? AND real_at<? ORDER BY real_at,revision').all(from, to) as Row[]).map(value => Number(value.real_at)); }
+  timeZone(): string { if (!this.clockAnchors) this.load(); return this.clockAnchors!.at(-1)!.settings.timeZone; }
+  elapsedVirtual(from: number, to: number): number {
+    let cursor = from, elapsed = 0;
+    for (const end of [...this.clockBoundaries(from, to), to]) { if (end > cursor) elapsed += Math.max(0, this.virtualAt(end, cursor) - this.virtualAt(cursor)); cursor = end; }
+    return elapsed;
+  }
+  clock(since?: string[]) {
+    const now = Date.now(), observedAt = this.ensureThrough(now), state = this.load();
+    return { realNow: iso(now), virtualNow: iso(this.virtualFor(state, observedAt)), timeZone: state.settings.timeZone,
+      mode: state.settings.mode, speed: companionWorldSpeed(state.settings), backlog: observedAt < now,
+      ...(since ? { elapsed: since.map(realAt => ({ realAt, milliseconds: this.elapsedVirtual(Date.parse(realAt), observedAt) })) } : {}) };
+  }
   private virtualFor(state: StoredWorld, realAt: number): number {
-    const anchor = this.clockAnchor(state.anchors, realAt, 'realAt');
+    const anchor = this.clockAnchor(state.anchors, realAt);
     return companionWorldVirtualAt(anchor, anchor.settings, realAt);
   }
   private realFor(state: StoredWorld, virtualAt: number): number {
-    const anchor = this.clockAnchor(state.anchors, virtualAt, 'virtualAt');
+    const anchor = this.clockAnchor(state.anchors, state.cursor);
     return companionWorldRealAt(anchor, anchor.settings, virtualAt);
   }
   private scenes(state: StoredWorld): CompanionWorldScene[] {
@@ -314,10 +340,32 @@ export class CompanionWorldStore {
     else { actor.activity = activity; actor.activityStartedAtReal = iso(at); }
   }
   private planRoutine(state: StoredWorld, actor: StoredActor): void {
+    const focus = this.orders?.focus(actor.companionId);
+    let releasedFocus = false;
+    for (const held of state.works.filter(work => work.companionId === actor.companionId && work.workOrderId && work.status !== 'ended')) {
+      if (held.workOrderId !== focus?.id) { held.status = 'ended'; releasedFocus = true; }
+      else if (focus) held.sourceMessageId = focus.sourceMessageId;
+    }
+    if (focus && !state.works.some(work => work.companionId === actor.companionId && work.workOrderId === focus.id && work.status !== 'ended')) {
+      state.works.push({ workId: 'order_hold_' + focus.id, workOrderId: focus.id, companionId: actor.companionId, conversationId: focus.conversationId, sourceMessageId: focus.sourceMessageId, kind: 'action', urgent: false, fixed: true, requestedAtReal: Date.parse(focus.createdAt), status: 'waiting', reason: '已受理工作尚未结束，保持集中工作' });
+    }
     const active = state.works.filter(work => work.companionId === actor.companionId && work.status !== 'ended');
     const phase = evaluateCompanionRoutine(this.routineConfig(actor.companionId), iso(this.virtualFor(state, state.cursor)));
     actor.routinePhase = phase.phase;
-    if (active.length) { this.planComputer(state, actor, active); if (active.some(work => work.status !== 'waiting')) return; }
+    const computer = active.filter(work => work.kind !== 'chat'), phone = active.filter(work => work.kind === 'chat');
+    const peerPhone = this.peerPhoneActive(actor.companionId, state.cursor);
+    if (releasedFocus && !computer.length && ['working', 'seating'].includes(actor.activity)) {
+      delete actor.seatUntil; delete actor.destinationId;
+      this.startTransition(actor, 'standingUp', 'idle', state.cursor);
+    }
+    if (actor.phoneResume && (computer.length || !phone.some(work => work.status === 'ready') && !(peerPhone && this.phoneAvailable(state, actor)))) this.releasePhone(actor, state.cursor);
+    if (computer.length) this.planComputer(state, actor, computer);
+    if (phone.length) this.planPhone(state, actor, phone, computer);
+    if (active.some(work => work.status !== 'waiting')) return;
+    if (peerPhone && this.phoneAvailable(state, actor)) {
+      if (!actor.transition) this.holdPhone(actor, state.cursor);
+      return;
+    }
     if (actor.transition && actor.transition.until > state.cursor) return;
     if (actor.manualActivityUntil && actor.manualActivityUntil > this.virtualFor(state, state.cursor) && phase.canRespond) return;
     delete actor.manualActivityUntil; delete actor.manualArtAction;
@@ -353,12 +401,41 @@ export class CompanionWorldStore {
       this.enterFurniture(actor, activity, state.cursor);
     }
   }
+  private releasePhone(actor: StoredActor, now: number): void {
+    if (!actor.phoneResume) return;
+    if (!actor.transition || actor.transition.until <= now) { actor.activity = actor.phoneResume.activity; actor.activityStartedAtReal = iso(now); }
+    delete actor.phoneResume;
+  }
+  private holdPhone(actor: StoredActor, now: number): void {
+    if (actor.phoneResume) return;
+    actor.phoneResume = { activity: actor.activity };
+    if (!['working', 'sitting', 'resting'].includes(actor.activity)) actor.activity = 'idle';
+    actor.activityStartedAtReal = iso(now);
+  }
+  private planPhone(state: StoredWorld, actor: StoredActor, phones: StoredWork[], computers: StoredWork[]): void {
+    // A reply awaiting its own computer work cannot also hold the walking actor
+    // on the phone. A distinct urgent message may still interrupt that work.
+    const awaitingComputer = (phone: StoredWork) => !!phone.sourceMessageId && computers.some(work => work.conversationId === phone.conversationId && work.sourceMessageId === phone.sourceMessageId);
+    const urgentSources = phones.filter(work => work.urgent && work.sourceMessageId && !awaitingComputer(work)).flatMap(work => this.db.prepare('SELECT sequence,conversation_id FROM messages WHERE id=?').all(work.sourceMessageId) as Row[]);
+    const ordinaryAllowed = this.phoneAvailable(state, actor) && !this.peerPhoneActive(actor.companionId, state.cursor);
+    const eligible = phones.filter(work => work.requestedAtReal <= state.cursor && !awaitingComputer(work) && (ordinaryAllowed || work.urgent || work.sourceMessageId && urgentSources.some(source => source.conversation_id === work.conversationId && Number(row(this.db.prepare('SELECT sequence FROM messages WHERE id=?').get(work.sourceMessageId)).sequence) >= Number(source.sequence))));
+    for (const work of phones) {
+      delete work.computerId; work.nextCheckAt = iso(Math.max(state.cursor + 500, work.requestedAtReal));
+      if (!eligible.includes(work)) { work.status = 'waiting'; work.reason = work.requestedAtReal > state.cursor ? '正在补算世界存档' : awaitingComputer(work) ? '这条请求正在电脑执行，等待实际结果后继续手机回复' : this.peerPhoneActive(actor.companionId, state.cursor) ? '正在用手机处理先前消息，稍后依次回复' : '正在工作、用餐或睡眠，稍后用手机回复'; }
+    }
+    if (!eligible.length) { if (!this.peerPhoneActive(actor.companionId, state.cursor) || !this.phoneAvailable(state, actor)) this.releasePhone(actor, state.cursor); return; }
+    if (['sleeping', 'lyingDown'].includes(actor.activity)) this.enterFurniture(actor, 'idle', state.cursor);
+    else if (actor.activity === 'eating') this.enterFurniture(actor, 'idle', state.cursor);
+    if (actor.transition && actor.transition.until > state.cursor) { for (const work of eligible) { work.status = 'moving'; work.reason = '正在结束当前姿态，准备查看手机'; } return; }
+    this.holdPhone(actor, state.cursor);
+    for (const work of eligible) { work.status = 'ready'; delete work.reason; }
+  }
   private planComputer(state: StoredWorld, actor: StoredActor, works: StoredWork[]): void {
     const phase = evaluateCompanionRoutine(this.routineConfig(actor.companionId), iso(this.virtualFor(state, state.cursor)));
     const urgentSources = works.filter(work => work.urgent && work.sourceMessageId).flatMap(work => this.db.prepare('SELECT sequence,conversation_id FROM messages WHERE id=?').all(work.sourceMessageId) as Row[]);
-    const eligible = works.filter(work => phase.canRespond || work.urgent || work.fixed || ['moving', 'seating', 'ready'].includes(work.status) || work.sourceMessageId &&
-      urgentSources.some(source => source.conversation_id === work.conversationId && Number(row(this.db.prepare('SELECT sequence FROM messages WHERE id=?').get(work.sourceMessageId)).sequence) >= Number(source.sequence)));
-    for (const work of works.filter(work => !eligible.includes(work))) { work.status = 'waiting'; work.reason = '按照世界作息休息，等待醒来'; work.nextCheckAt = iso(this.realFor(state, Date.parse(phase.nextTransitionAt))); delete work.computerId; }
+    const eligible = works.filter(work => work.requestedAtReal <= state.cursor && (phase.canRespond || work.urgent || work.fixed || ['moving', 'seating', 'ready'].includes(work.status) || work.sourceMessageId &&
+      urgentSources.some(source => source.conversation_id === work.conversationId && Number(row(this.db.prepare('SELECT sequence FROM messages WHERE id=?').get(work.sourceMessageId)).sequence) >= Number(source.sequence))));
+    for (const work of works.filter(work => !eligible.includes(work))) { work.status = 'waiting'; work.reason = work.requestedAtReal > state.cursor ? '正在补算世界存档，尚未到达这次请求的实际时刻' : '按照世界作息休息，等待醒来'; work.nextCheckAt = iso(Math.max(work.requestedAtReal, this.realFor(state, Date.parse(phase.nextTransitionAt)))); delete work.computerId; }
     if (!eligible.length) return;
     const scenes = this.scenes(state), current = scenes.find(scene => scene.id === actor.sceneId)!;
     const foreign = current.kind === 'home' && current.ownerId !== actor.companionId && current.ownerId && this.permitted(state, actor.companionId, current.ownerId) ? current : undefined;
@@ -368,6 +445,12 @@ export class CompanionWorldStore {
     if (!computer) { for (const work of eligible) { work.status = 'waiting'; work.reason = '电脑正在被使用'; work.nextCheckAt = iso(state.cursor + 1000); } return; }
     for (const work of eligible) { work.computerId = computer.id; delete work.reason; work.nextCheckAt = iso(state.cursor + 500); }
     if (actor.destinationId !== computer.id) this.move(state, actor, scene, computer.anchor, computer.id, 'seating');
+    if (actor.route.length) {
+      const running = eligible.some(work => work.urgent && work.sourceMessageId && this.urgent(actor.companionId, work.sourceMessageId, state.cursor));
+      const locomotion = running ? 'run' : 'walk';
+      if (actor.locomotion !== locomotion && actor.activity === 'walking') actor.activityStartedAtReal = iso(state.cursor);
+      actor.locomotion = locomotion; actor.movementSpeed = running ? 4.8 : COMPANION_WORLD_WALK_TILES_PER_SECOND;
+    }
     if (actor.transition && actor.transition.until > state.cursor) { for (const work of eligible) work.status = 'moving'; return; }
     if (!actor.route.length && actor.sceneId === scene.id && Math.hypot(actor.position.x - computer.anchor.x, actor.position.y - computer.anchor.y) < .01) {
       if (!actor.seatUntil) actor.seatUntil = state.cursor + COMPANION_WORLD_SEATING_MS;
@@ -388,6 +471,9 @@ export class CompanionWorldStore {
         for (const actor of state.actors) this.planRoutine(state, actor);
         this.syncOccupancy(state);
         let next = target;
+        const segment = this.db.prepare('SELECT real_at FROM companion_world_clock_segments WHERE real_at>? AND real_at<=? ORDER BY real_at,revision LIMIT 1').get(state.cursor, target);
+        if (segment) next = Math.min(next, Number(row(segment).real_at));
+        for (const work of state.works) if (work.status !== 'ended' && work.requestedAtReal > state.cursor) next = Math.min(next, work.requestedAtReal);
         for (const visit of state.visits) if (['allowed', 'requested'].includes(visit.status)) {
           const expires = this.realFor(state, Date.parse(visit.expiresAt)); if (expires > state.cursor) next = Math.min(next, expires);
         }
@@ -529,14 +615,19 @@ export class CompanionWorldStore {
         const expression = companionWorldExpression({ companionId: actor.companionId, pose, state: runtime, events, now: observedAt });
         const communicationRow = this.db.prepare('SELECT data FROM companion_social_communication WHERE companion_id=? AND until_real>?').get(actor.companionId, iso(observedAt));
         const storedCommunication = communicationRow ? parse<NonNullable<CompanionWorldActor['communication']>>(row(communicationRow).data) : undefined;
-        const communication = storedCommunication ? { channel: storedCommunication.channel, phase: storedCommunication.phase, conversationId: storedCommunication.conversationId, recipientIds: storedCommunication.recipientIds, untilReal: storedCommunication.untilReal } : undefined;
-        const phonePose = communication?.phase === 'typing' && ['idle', 'sitting'].includes(actor.activity) && !actor.route.length ? actor.activity === 'sitting' ? 'phoneTypingSeated' : 'phoneTypingStanding' : undefined;
+        const noticeRow = this.db.prepare("SELECT data,lease_until FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>? ORDER BY created_at,id LIMIT 1").get(actor.companionId, iso(observedAt));
+        const noticeCommunication = noticeRow ? { channel: 'phone' as const, phase: 'typing' as const, conversationId: parse<{ conversationId: string }>(row(noticeRow).data).conversationId, recipientIds: ['user'], untilReal: String(row(noticeRow).lease_until) } : undefined;
+        const chat = state.works.find(work => work.companionId === actor.companionId && work.kind === 'chat' && work.status === 'ready');
+        const communication: CompanionWorldActor['communication'] = chat ? { channel: 'phone', phase: 'responding', conversationId: chat.conversationId, recipientIds: ['user'], untilReal: iso(observedAt + 5000) }
+          : storedCommunication ? { channel: storedCommunication.channel, phase: storedCommunication.phase, conversationId: storedCommunication.conversationId, recipientIds: storedCommunication.recipientIds, untilReal: storedCommunication.untilReal } : noticeCommunication;
+        const phonePose = ['typing', 'responding'].includes(communication?.phase ?? '') && ['idle', 'sitting', 'resting', 'working'].includes(actor.activity) ? ['sitting', 'resting', 'working'].includes(actor.activity) ? 'phoneTypingSeated' : 'phoneTypingStanding' : undefined;
         return { ...actor,
         frame: actor.transition ? Math.min(2, Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / (actor.transition.until - Date.parse(actor.activityStartedAtReal)) * 3)) :
           actor.activity === 'seating' && actor.seatUntil ? Math.min(2, Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / COMPANION_WORLD_SEATING_MS * 3)) :
             Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / (actor.activity === 'walking' ? 180 : 700)) % 3,
         transitionEndsAtReal: actor.transition ? iso(actor.transition.until) : actor.activity === 'seating' && actor.seatUntil ? iso(actor.seatUntil) : undefined,
-        state: runtime, artAction: phonePose ?? expression.action, artStartedAtReal: expression.startedAtReal, communication,
+        state: runtime, artAction: phonePose ?? expression.action, artStartedAtReal: expression.startedAtReal,
+        communication: !scope || scope.companionId === actor.companionId || communication?.recipientIds.includes(scope.companionId) ? communication : undefined,
         activityLabel: actor.routinePhase === 'habit' ? '个人日常活动' : undefined }; }),
       visits: state.visits.filter(visit => !scope || visit.hostId === scope.companionId || visit.guestId === scope.companionId).map(visit => {
         const visible = (owner: string, sourceId?: string, conversationId?: string) => {
@@ -556,37 +647,53 @@ export class CompanionWorldStore {
     return kind === 'study' ? 'read' : kind === 'exercise' ? 'exercise' : kind === 'rest' || kind === 'leisure' ? 'rest' : 'idle';
   }
   configure(expectedRevision: number, patch: Partial<Omit<CompanionWorldSettings, 'revision'>>): CompanionWorldSnapshot {
-    this.advance(); const state = this.load(); if (state.settings.revision !== expectedRevision) throw new Error('世界设置已更新，请重新读取。');
-    const current = this.virtualFor(state, Date.now()); state.settings = { ...state.settings, ...patch, revision: state.settings.revision + 1 };
+    const now = Date.now(); this.advance(now); return this.atomic(() => { const state = this.load(); if (state.settings.revision !== expectedRevision) throw new Error('世界设置已更新，请重新读取。');
+    if (state.cursor < now) throw new Error('世界存档仍在补算，请完成后再修改时间设置。');
+    const current = this.virtualFor(state, now); state.settings = { ...state.settings, ...patch, revision: state.settings.revision + 1 };
     if (!isCompanionScheduleTimeZone(state.settings.timeZone)) throw new Error('世界时区无效。'); state.settings.timeZone = resolveCompanionScheduleTimeZone(state.settings.timeZone);
-    state.anchors.push({ realAt: Date.now(), virtualAt: current, settings: { ...state.settings } }); this.save(state); return this.snapshotValue(state, Date.now());
+    const nextVirtual = state.settings.mode === 'realtime' ? now : current, shift = nextVirtual - current;
+    for (const visit of state.visits) if (activeVisit(visit)) visit.expiresAt = iso(Math.max(nextVirtual, Date.parse(visit.expiresAt) + shift));
+    for (const actor of state.actors) {
+      actor.lastDecisionAt += shift;
+      if (actor.manualActivityUntil !== undefined) actor.manualActivityUntil += shift;
+    }
+    state.anchors.push({ realAt: now, virtualAt: nextVirtual, settings: { ...state.settings } }); this.rememberClock(state);
+    this.syncOccupancy(state); this.save(state); this.dirty = true; return this.snapshotValue(state, now); });
   }
   begin(scope: CompanionWorldScope, workId: string, kind: CompanionWorldWork['kind'], sourceMessageId?: string, urgent = false, fixed = false): CompanionWorldWork {
-    this.requireScope(scope); this.advance(); const state = this.load();
+    const requestedAtReal = Date.now(); this.requireScope(scope); this.advance(requestedAtReal); const state = this.load();
     if (sourceMessageId) { const source = this.visibleSources(scope, [sourceMessageId])[0]; if (!source || source.authorId !== 'user') throw new Error('工作需要真实可见的用户来源。'); const verified = this.urgent(scope.companionId, sourceMessageId); if (urgent && !verified) throw new Error('来源缺少已核验的紧急通知判断。'); urgent = verified; }
     else if (!fixed) throw new Error('工作缺少真实用户来源。');
     let work = state.works.find(work => work.workId === workId);
     if (!work) { const saved = this.db.prepare('SELECT data FROM companion_world_work_records WHERE work_id=?').get(workId); if (saved) { work = parse<StoredWork>(row(saved).data); state.works.push(work); } }
     if (work && (work.companionId !== scope.companionId || work.conversationId !== scope.conversationId || work.kind !== kind || work.sourceMessageId !== sourceMessageId)) throw new Error('工作不属于当前伙伴或原来的来源。');
-    if (!work) { work = { workId, companionId: scope.companionId, conversationId: scope.conversationId, kind, sourceMessageId, urgent, fixed, status: 'waiting' }; state.works.push(work); }
-    else if (work.status === 'ended') { work.status = 'waiting'; work.urgent = urgent; work.fixed = fixed; delete work.computerId; delete work.reason; }
-    this.planComputer(state, state.actors.find(actor => actor.companionId === scope.companionId)!, state.works.filter(item => item.companionId === scope.companionId && item.status !== 'ended'));
+    if (!work) { work = { workId, companionId: scope.companionId, conversationId: scope.conversationId, kind, sourceMessageId, urgent, fixed, requestedAtReal, status: 'waiting' }; state.works.push(work); }
+    else if (work.status === 'ended') { work.status = 'waiting'; work.urgent = urgent; work.fixed = fixed; work.requestedAtReal = requestedAtReal; delete work.computerId; delete work.reason; }
+    this.planRoutine(state, state.actors.find(actor => actor.companionId === scope.companionId)!);
     this.syncOccupancy(state); this.save(state); return work;
   }
   ready(companionId: string, workId: string): CompanionWorldWork {
-    this.advance(); const saved = this.db.prepare('SELECT data FROM companion_world_work_records WHERE work_id=? AND companion_id=?').get(workId, companionId); if (!saved) throw new Error('工作不存在。'); return parse<StoredWork>(row(saved).data);
+    const now = Date.now(); this.advance(now); const saved = this.db.prepare('SELECT data FROM companion_world_work_records WHERE work_id=? AND companion_id=?').get(workId, companionId); if (!saved) throw new Error('工作不存在。');
+    const work = parse<StoredWork>(row(saved).data);
+    return this.through < now && work.status !== 'ended' ? { ...work, status: 'waiting', reason: '正在补算世界存档', nextCheckAt: iso(now + 250) } : work;
   }
   end(companionId: string, workId: string): CompanionWorldWork | undefined {
     this.ensureThrough(Date.now());
     const state = this.load(), work = state.works.find(item => item.workId === workId && item.companionId === companionId); if (!work) { const saved = this.db.prepare('SELECT data FROM companion_world_work_records WHERE work_id=? AND companion_id=?').get(workId, companionId); return saved ? parse<StoredWork>(row(saved).data) : undefined; }
     if (work.status !== 'ended') { work.status = 'ended'; const actor = state.actors.find(actor => actor.companionId === companionId)!;
-      if (!state.works.some(item => item.companionId === companionId && ['moving', 'seating', 'ready'].includes(item.status))) {
+      if (work.kind === 'chat') {
+        if (!state.works.some(item => item.companionId === companionId && item.kind === 'chat' && item.status === 'ready')) this.releasePhone(actor, state.cursor);
+        this.event(state, { kind: 'phone_response_end', actorId: companionId, text: '结束手机回复，继续当前生活' }); this.planRoutine(state, actor); this.syncOccupancy(state);
+      } else if (!state.works.some(item => item.companionId === companionId && ['moving', 'seating', 'ready'].includes(item.status))) {
         actor.route = []; delete actor.destinationId; delete actor.seatUntil;
         if (['working', 'sitting', 'seating'].includes(actor.activity)) this.startTransition(actor, 'standingUp', 'idle', state.cursor);
         else if (actor.transition) actor.transition.after = 'idle';
         else { actor.activity = 'idle'; delete actor.furnitureId; }
       }
-      this.event(state, { kind: 'work_end', actorId: companionId, text: '结束电脑工作并释放预约' }); this.save(state); }
+      if (work.kind !== 'chat' && actor.phoneResume?.activity === 'working' && !state.works.some(item => item.companionId === companionId && item.kind !== 'chat' && ['moving', 'seating', 'ready'].includes(item.status))) {
+        actor.phoneResume.activity = 'sitting'; actor.activity = 'sitting';
+      }
+      if (work.kind !== 'chat') this.event(state, { kind: 'work_end', actorId: companionId, text: '结束电脑工作并释放预约' }); this.save(state); }
     const actor = state.actors.find(item => item.companionId === companionId);
     if (actor?.afterWork && !state.works.some(item => item.companionId === companionId && ['moving', 'seating', 'ready'].includes(item.status))) {
       const deferred = actor.afterWork; delete actor.afterWork; this.save(state);
@@ -596,6 +703,17 @@ export class CompanionWorldStore {
   }
   tool(scope: CompanionWorldScope, args: CompanionWorldArguments, sourceMessageId?: string): CompanionWorldSnapshot {
     return this.atomic(() => this.performTool(scope, args, sourceMessageId));
+  }
+  startLifeActivity(scope: CompanionWorldScope, kind: 'rest' | 'study' | 'leisure'): void {
+    this.atomic(() => {
+      this.requireScope(scope); this.ensureThrough(Date.now()); const state = this.load(), actor = state.actors.find(actor => actor.companionId === scope.companionId)!;
+      if (state.works.some(work => work.companionId === actor.companionId && work.status !== 'ended')) throw new Error('正在回应或工作，不能同时开始新的生活活动。');
+      const home = this.scenes(state).find(scene => scene.id === actor.homeSceneId)!, object = home.objects.find(object => object.kind === (kind === 'rest' ? 'sofa' : 'habit'))!;
+      this.move(state, actor, home, object.anchor, object.id, kind === 'rest' ? 'resting' : 'habit');
+      actor.manualActivityUntil = this.virtualFor(state, state.cursor) + 30 * 60000;
+      actor.manualArtAction = kind === 'study' ? 'standingRead' : kind === 'leisure' ? 'think' : undefined;
+      this.event(state, { kind: 'life_activity', actorId: actor.companionId, sceneId: actor.sceneId, text: '开始前往' + object.name + '进行' + kind }); this.syncOccupancy(state); this.save(state);
+    });
   }
   private performTool(scope: CompanionWorldScope, args: CompanionWorldArguments, sourceMessageId?: string): CompanionWorldSnapshot {
     this.requireScope(scope); this.advance(); const state = this.load(), actor = state.actors.find(actor => actor.companionId === scope.companionId)!;
@@ -624,6 +742,8 @@ export class CompanionWorldStore {
       this.event(state, { kind: 'interact', actorId: actor.companionId, sceneId: scene.id, text: args.interaction + ' ' + object.name, sourceMessageId, conversationId: scope.conversationId });
     } else if (args.action === 'visit') {
       if (!state.actors.some(item => item.companionId === args.targetCompanionId) || args.targetCompanionId === actor.companionId) throw new Error('拜访对象无效。');
+      const playerRequested = !!sourceMessageId && this.visibleSources(scope, [sourceMessageId])[0]?.authorId === 'user';
+      if (!playerRequested && !row(this.db.prepare("SELECT json_extract(data,'$.proactive') AS proactive FROM companions WHERE id=?").get(actor.companionId)).proactive && !this.social?.continuity.hasDelegationTo(actor.companionId, args.targetCompanionId)) throw new Error('伙伴未开启主动联系，也没有对应的真实委托，不能自行发起拜访。');
       const pending = state.visits.find(visit => visit.guestId === actor.companionId && visit.hostId === args.targetCompanionId && ['requested', 'allowed'].includes(visit.status));
       if (!pending) { state.visits.push({ id: randomUUID(), guestId: actor.companionId, hostId: args.targetCompanionId, reason: args.reason, status: 'requested', createdAt: iso(this.virtualFor(state, state.cursor)), expiresAt: iso(this.virtualFor(state, state.cursor) + 6 * 3600000), sourceMessageId, conversationId: scope.conversationId });
         this.event(state, { kind: 'visit_request', actorId: actor.companionId, targetId: args.targetCompanionId, text: args.reason, sourceMessageId, conversationId: scope.conversationId }); this.queueJob(state, args.targetCompanionId, 'decision'); }
@@ -728,7 +848,7 @@ export class CompanionWorldStore {
         const local = companionTimeInZone(Date.parse(event.at), state.settings.timeZone), appraisalDay = `${local.year}-${String(local.month).padStart(2, '0')}-${String(local.day).padStart(2, '0')}`;
         const used = Number(row(this.db.prepare('SELECT COALESCE(SUM(positive_change),0) AS n FROM companion_world_peer_appraisals WHERE companion_id=? AND day=? AND active=1').get(job.companionId, appraisalDay)).n);
         const before = { affinity: relation.affinity, trust: relation.trust };
-        const result = applyCompanionAppraisal({ affect: { pleasure: 0, arousal: 0, dominance: 0 }, relationship: { affinity: relation.affinity, trust: relation.trust, respect: 50 } }, { ...appraisal, target: 'user' }, Math.max(0, this.virtualFor(state, state.cursor) - Date.parse(event.at)), Math.max(0, 6 - used));
+        const result = applyCompanionAppraisal({ affect: { pleasure: 0, arousal: 0, dominance: 0 }, relationship: { affinity: relation.affinity, trust: relation.trust, respect: 50 } }, { ...appraisal, target: 'user' }, this.elapsedVirtual(Date.parse(event.realAt), state.cursor), Math.max(0, 6 - used));
         relation.affinity = result.relationship.affinity; relation.trust = result.relationship.trust; relation.updatedAt = iso(this.virtualFor(state, state.cursor));
         this.db.prepare('INSERT INTO companion_world_peer_appraisals(companion_id,event_id,target_id,source_message_id,day,positive_change,affinity_delta,trust_delta) VALUES(?,?,?,?,?,?,?,?)').run(job.companionId, event.id, appraisal.targetCompanionId, event.sourceMessageId ?? null, appraisalDay, result.positiveChange, relation.affinity - before.affinity, relation.trust - before.trust);
         this.event(state, { kind: 'social_appraisal', actorId: job.companionId, targetId: appraisal.targetCompanionId, text: '对真实伙伴互动形成感受', positiveChange: result.positiveChange, appraisalDay, sourceMessageId: event.sourceMessageId, conversationId: event.conversationId,
@@ -741,6 +861,7 @@ export class CompanionWorldStore {
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {
+      case 'world.clock': return { ok: true, worldClock: this.clock(command.since) };
       case 'world.snapshot': return { ok: true, world: this.tick() };
       case 'world.observe': return { ok: true, world: this.snapshot(command) };
       case 'world.tick': { const now = command.now ? Date.parse(command.now) : Date.now(); this.advance(now); return { ok: true, ...(command.snapshot ? { world: this.snapshotValue(this.load(), now) } : {}) }; }

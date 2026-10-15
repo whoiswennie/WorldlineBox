@@ -6,23 +6,26 @@ import { CompanionsStore, type CompanionSeed } from '../../src/companions/store'
 import { companionWorldCellWalkable, createCompanionWorldHome, createCompanionWorldCommons, findCompanionWorldPath } from '../../src/shared/companion-world-engine';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
-const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '认真友好', description: '', model: '', avatar: 'sister', proactive: false }));
+const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '认真友好', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), roots: string[] = [];
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T10:00:00Z'); });
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
-function fixture() {
+function fixture(mode: 'compressed' | 'realtime' = 'compressed') {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
   const store = new CompanionsStore(filename, seeds); stores.add(store);
   const alice = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, bob = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
+  const initial = store.request({ type: 'world.snapshot' }).world!;
+  store.request({ type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode, timeZone: 'UTC' } });
   for (const scope of [alice, bob]) {
     const routine = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } });
   }
-  return { store, filename, alice, bob };
+  return { store, filename, alice, bob, initial };
 }
 function advance(store: CompanionsStore, milliseconds: number) { vi.setSystemTime(Date.now() + milliseconds); return store.request({ type: 'world.tick', snapshot: true }).world!; }
 function tool(store: CompanionsStore, scope: { companionId: string; conversationId: string }, args: Extract<CompanionStorageCommand, { type: 'world.tool' }>['arguments']) {
-  return store.request({ type: 'world.tool', ...scope, arguments: args }).world!;
+  const source = args.action === 'visit' ? store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: `请拜访 ${args.targetCompanionId}：${args.reason}`, replyDirective: 'none' }) : undefined;
+  return store.request({ type: 'world.tool', ...scope, ...(source ? { sourceMessageId: source.id } : {}), arguments: args }).world!;
 }
 function allowVisit(f: ReturnType<typeof fixture>) {
   const requested = tool(f.store, f.alice, { action: 'visit', targetCompanionId: 'bob', reason: '一起看书' });
@@ -32,12 +35,14 @@ function allowVisit(f: ReturnType<typeof fixture>) {
 }
 
 describe('one authoritative companion world', () => {
-  it('compresses a day into twenty real minutes, keeps clock continuous on mode change and restores the same clock', () => {
-    const f = fixture(), first = f.store.request({ type: 'world.snapshot' }).world!;
-    expect(first.settings).toMatchObject({ mode: 'compressed', dayDurationMinutes: 20 }); expect(first.clock.speed).toBe(72);
+  it('defaults to the computer date, optionally compresses twenty minutes into a day, and realigns to wall time when restored', () => {
+    const f = fixture('realtime'), first = f.store.request({ type: 'world.snapshot' }).world!;
+    expect(f.initial.settings.mode).toBe('realtime'); expect(first.clock.speed).toBe(1); expect(first.clock.virtualNow).toBe(new Date().toISOString());
+    const compressed = f.store.request({ type: 'world.configure', expectedRevision: first.settings.revision, patch: { mode: 'compressed' } }).world!;
+    expect(compressed.clock.virtualNow).toBe(first.clock.virtualNow);
     const later = advance(f.store, 20 * 60000); expect(Date.parse(later.clock.virtualNow) - Date.parse(first.clock.virtualNow)).toBe(86400000);
-    const changed = f.store.request({ type: 'world.configure', expectedRevision: first.settings.revision, patch: { mode: 'realtime' } }).world!;
-    expect(changed.clock.virtualNow).toBe(later.clock.virtualNow); const real = advance(f.store, 60000); expect(Date.parse(real.clock.virtualNow) - Date.parse(later.clock.virtualNow)).toBe(60000);
+    const changed = f.store.request({ type: 'world.configure', expectedRevision: compressed.settings.revision, patch: { mode: 'realtime' } }).world!;
+    expect(changed.clock.virtualNow).toBe(new Date().toISOString()); const real = advance(f.store, 60000); expect(Date.parse(real.clock.virtualNow) - Date.parse(changed.clock.virtualNow)).toBe(60000);
     f.store.close(); stores.delete(f.store); const reopened = new CompanionsStore(f.filename, seeds); stores.add(reopened);
     expect(reopened.request({ type: 'world.snapshot' }).world!.clock.virtualNow).toBe(real.clock.virtualNow);
   });
@@ -72,7 +77,7 @@ describe('one authoritative companion world', () => {
   it('does not become work-ready until arrival and seating, and shared jobs release the reservation only after the final end', () => {
     vi.setSystemTime('2026-10-14T02:00:00Z');
     const f = fixture(), source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content: '请帮我解释代码' });
-    const request = { type: 'world.work.begin', ...f.alice, kind: 'chat', sourceMessageId: source.id } as const;
+    const request = { type: 'world.work.begin', ...f.alice, kind: 'action', sourceMessageId: source.id } as const;
     const initial = f.store.request({ ...request, workId: 'chat_one' }).worldWork!; expect(initial.status).toBe('waiting');
     // This virtual clock is 02:00 UTC: ordinary requests sleep, urgent requests wake.
     const urgent = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content: '紧急，马上帮我处理' });
@@ -94,13 +99,13 @@ describe('one authoritative companion world', () => {
     vi.setSystemTime('2026-10-14T10:00:00Z'); const f = fixture(); allowVisit(f); advance(f.store, 30000);
     const user = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content: '紧急帮忙' });
     recordUrgentAttention(f.store, 'alice', user);
-    const borrowed = f.store.request({ type: 'world.work.begin', ...f.alice, kind: 'chat', workId: 'borrow', sourceMessageId: user.id, urgent: true }).worldWork!;
+    const borrowed = f.store.request({ type: 'world.work.begin', ...f.alice, kind: 'action', workId: 'borrow', sourceMessageId: user.id, urgent: true }).worldWork!;
     expect(borrowed.computerId).toBe('bob_computer'); advance(f.store, 15000); expect(f.store.request({ type: 'world.work.ready', companionId: 'alice', workId: 'borrow' }).worldWork!.status).toBe('ready');
     f.store.request({ type: 'world.work.end', companionId: 'alice', workId: 'borrow' });
     advance(f.store, 1500);
     const hostSource = f.store.appendMessage({ conversationId: f.bob.conversationId, authorId: 'user', content: '请处理任务' });
-    f.store.request({ type: 'world.work.begin', ...f.bob, kind: 'chat', workId: 'host_work', sourceMessageId: hostSource.id });
-    const returning = f.store.request({ type: 'world.work.begin', ...f.alice, kind: 'chat', workId: 'return_home', sourceMessageId: user.id, urgent: true }).worldWork!;
+    f.store.request({ type: 'world.work.begin', ...f.bob, kind: 'action', workId: 'host_work', sourceMessageId: hostSource.id });
+    const returning = f.store.request({ type: 'world.work.begin', ...f.alice, kind: 'action', workId: 'return_home', sourceMessageId: user.id, urgent: true }).worldWork!;
     expect(returning.computerId).toBe('alice_computer'); expect(returning.status).toBe('moving');
     expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.route.some(point => point.sceneId === 'commons')).toBe(true);
   });
@@ -185,7 +190,7 @@ describe('one authoritative companion world', () => {
     expect(f.store.request({ type: 'routine.get', ...f.alice }).routine!.runtime.phase).toBe('awake');
     const rested = advance(f.store, 5001).actors.find(actor => actor.companionId === 'alice')!; expect(rested.activity).toBe('sleeping'); expect(rested.state.energy).toBeGreaterThan(beforeEnd.state.energy);
     const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content: '现在有一件必须立即帮忙的事。' }); recordUrgentAttention(f.store, 'alice', source);
-    f.store.request({ type: 'world.work.begin', ...f.alice, workId: 'wake_real', kind: 'chat', sourceMessageId: source.id });
+    f.store.request({ type: 'world.work.begin', ...f.alice, workId: 'wake_real', kind: 'action', sourceMessageId: source.id });
     const waking = f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!; expect(waking.artAction).toBe('wake');
     expect(advance(f.store, 2700).actors.find(actor => actor.companionId === 'alice')!.position).toEqual(position);
     expect(advance(f.store, 500).actors.find(actor => actor.companionId === 'alice')!.position).not.toEqual(position);

@@ -71,6 +71,7 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
       case 'memory.list': return { ok: true, memories: memories.filter(item => item.companionId === input.companionId) };
       case 'memory.browse': return { ok: true, memoryPage: { items: memories.filter(item => item.companionId === input.companionId).map(memory => ({ memory, reasons: [], path: [] })), hasMore: false } };
       case 'schedule.list': return { ok: true, schedules: [], scheduleOccurrences: [] };
+      case 'work-order.list': return { ok: true, workOrderPage: { items: [], hasMore: false } };
       case 'state.get': return { ok: true, runtimeState: { companionId: input.companionId, energy: 82, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: -.1, dominance: .1 }, relationship: { affinity: 45, trust: 50, respect: 60 }, familiarity: { stage: 'acquainted', interactionCount: 4, sharedEventCount: 1 }, updatedAt: date, revision: 1 } };
       case 'memory.save': {
         const saved: CompanionMemory = { id: input.id ?? 'memory-a', companionId: input.companionId, content: input.content, sourceMessageId: input.sourceMessageId, origin: 'user', createdAt: date, updatedAt: date };
@@ -364,7 +365,7 @@ it('adds a custom contact with the complete global connection inherited by defau
   await fill('[role="dialog"] input', '阿蓝'); await fill('[role="dialog"] textarea', '喜欢海风，也会有自己的看法。');
   expect(container!.querySelector('[role="dialog"] input[aria-label="模型"]')).toBeNull();
   await submitDialog();
-  expect(f.request).toHaveBeenCalledWith({ type: 'companion.create', companion: { name: '阿蓝', description: '', persona: '喜欢海风，也会有自己的看法。', model: '', avatar: 'custom', proactive: false } });
+  expect(f.request).toHaveBeenCalledWith({ type: 'companion.create', companion: { name: '阿蓝', description: '', persona: '喜欢海风，也会有自己的看法。', model: '', avatar: 'custom', proactive: true } });
   await click('联系人'); expect(container!.querySelector('[data-companion-contact="new-companion"]')).not.toBeNull();
 });
 
@@ -396,7 +397,7 @@ it('selects a local image avatar, preserves it when contact settings change, and
   await click('联系人'); await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-contact="new-companion"]')!.click());
   expect(container!.querySelector<HTMLElement>('.companions-profile-heading .companion-avatar')!.style.backgroundImage).toContain('worldlinebox-companion://attachment/cropped-photo');
   await act(() => container!.querySelector<HTMLInputElement>('.companions-contact-profile input[type="checkbox"]')!.click());
-  expect(f.request.mock.calls.filter(([input]) => input.type === 'companion.update').at(-1)![0]).toEqual(expect.objectContaining({ companion: expect.objectContaining({ proactive: true, avatarAttachmentId: 'cropped-photo' }) }));
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'companion.update').at(-1)![0]).toEqual(expect.objectContaining({ companion: expect.objectContaining({ proactive: false, avatarAttachmentId: 'cropped-photo' }) }));
   await click('编辑资料'); await click('恢复名字头像');
   const restored = container!.querySelector<HTMLElement>('.companions-avatar-editor .companion-avatar')!;
   expect(restored.style.backgroundImage).toBe(''); expect(restored.textContent).toBe('海');
@@ -463,7 +464,7 @@ it('configures an independent service without revealing a saved key and retains 
   await act(() => proactive.click());
   expect(f.request).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'state' }));
   const updateCalls = f.request.mock.calls.filter(([input]) => input.type === 'companion.update');
-  expect(updateCalls.at(-1)![0]).toEqual(expect.objectContaining({ companion: expect.objectContaining({ proactive: true, llm: { apiFormat: 'openai_responses', baseUrl: 'https://example.test', model: 'another-model' } }) }));
+  expect(updateCalls.at(-1)![0]).toEqual(expect.objectContaining({ companion: expect.objectContaining({ proactive: false, llm: { apiFormat: 'openai_responses', baseUrl: 'https://example.test', model: 'another-model' } }) }));
 });
 
 it('creates a group and manages its name and membership in the same conversation', async () => {

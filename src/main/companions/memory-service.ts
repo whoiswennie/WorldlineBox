@@ -119,6 +119,9 @@ export class CompanionMemoryService {
 
   private async process(): Promise<void> {
     if (this.closed) return;
+    // A present-day source must not affect the simulated past. Leave the
+    // extraction lease and watermark untouched until physical catch-up is done.
+    if ((await this.options.request({ type: 'world.clock' })).worldClock?.backlog) { this.again = true; return; }
     // Reconcile current-schema sources durably after a crash or an interrupted index rebuild.
     const backfill = await this.options.request({ type: 'memory.jobs.backfill', limit: 200 });
     if (!backfill.backfillComplete) this.again = true;

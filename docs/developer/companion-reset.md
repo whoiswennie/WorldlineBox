@@ -35,6 +35,6 @@
 
 `tests/worker/companion-reset.test.ts` 使用隔离临时 SQLite，覆盖不可删除规则、默认资料恢复、停止确认及失败重试、旧作业拒绝、共享来源失效、两类混合群边界、附件引用与源文件保护，以及中途关闭重开后续删。
 
-合成压力数据包含 100,000 条消息和 100,000 条带来源记忆。完整实测数字单独记录在 `artifacts/companions/verified-companion-reset-pressure.json`；原生界面验收使用 `verified-companion-reset.json`，两者互不覆盖。压力报告保留启动时间、批次数、总耗时、p95、p99 与最大停顿所在阶段，不把批次预算误写成硬实时保证。该测试没有启动 Renderer 或 GPU，也没有读取真实用户存档。
+合成压力数据包含 100,000 条消息和 100,000 条带来源记忆。运行 `node scripts/run-vitest-with-electron.mjs run tests/worker/companion-reset.test.ts` 会将压力报告写入本地忽略目录 `.tools/test-output/companions/verified-companion-reset-pressure.json`；运行 `node scripts/run-e2e.mjs tests/e2e/companion-reset.test.ts` 生成同目录的 `verified-companion-reset.json`，两者互不覆盖。历史实测报告不随源码分发。压力报告保留启动时间、批次数、总耗时、p95、p99 与最大停顿所在阶段，不把批次预算误写成硬实时保证。压力测试没有启动 Renderer 或 GPU，也没有读取真实用户存档。
 
 2026-10-15 分离报告后的实测：启动事务 8.59 ms，2,010 批共 11.08 秒，中途关闭重开后继续完成；批次 p95 为 13.46 ms、p99 为 54.03 ms，最大批次 393.07 ms，发生在消息引用阶段折叠到批删除与全文索引维护的调用中。

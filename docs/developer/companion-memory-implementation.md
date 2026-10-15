@@ -50,7 +50,7 @@
 
 两项实际 Electron 验收已分别通过。自动记忆用例从空临时用户目录启动，通过普通「我喜欢看海」自动形成有来源的偏好，下一次普通提问收到自动召回；并实测并发修订冲突拒绝覆盖、刷新后保存、确认遗忘，以及重启后仅返回脱敏墓碑且召回为空。手帐用例通过普通感谢消息和有来源的原生状态调用更新 PAD 与关系，在 UI 创建数秒后的提醒并确认只收到一次真实消息，再创建弹性任务、调整作息与习惯并检查联系人完整人设。时钟自然推进曾导致状态修订必然冲突，已修复并增加实际调用成功断言。
 
-两项均使用真实 Preload、IPC、Main、UtilityProcess 与 SQLite，仅外部模型由本地 HTTP fixture 替代，不调用真实付费模型。界面检查包含独立记忆双栏、320 px 手帐无横向溢出、日程与作息大窗口，以及亮暗两种主题。记忆截图为 `artifacts/companions/verified-memory-system*.png`，手帐、日程和作息截图为 `verified-companion-journal-*.png`、`verified-companion-schedules-*.png`、`verified-companion-routine-*.png`。这些是实际应用界面截图，不能当作真实模型语义准确率或长期养成效果的评测。
+两项均使用真实 Preload、IPC、Main、UtilityProcess 与 SQLite，仅外部模型由本地 HTTP fixture 替代，不调用真实付费模型。界面检查包含独立记忆双栏、320 px 手帐无横向溢出、日程与作息大窗口，以及亮暗两种主题。运行 `node scripts/run-e2e.mjs tests/e2e/companions.test.ts` 可重新生成记忆、手帐、日程和作息截图，输出到本地忽略目录 `.tools/test-output/companions/`。历史截图和原始回执不随源码分发；这些界面验收不能当作真实模型语义准确率或长期养成效果的评测。
 
 最终统一构建 Main、Preload、存储进程和 Renderer 后，两项桌面用例在同一轮运行通过，输出 `2 passed (1.3m)`；自动记忆用例 52.3 秒，手帐/日程用例 22.9 秒。最终八张截图已逐张检查，已有历史截图没有改写。
 

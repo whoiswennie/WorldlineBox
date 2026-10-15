@@ -96,9 +96,9 @@ companion-runtime-source.ts 是已安装官方 SDK 的薄适配器。它在 crea
 
 ## 验证
 
-数据库测试使用 Electron ABI 的真实 better-sqlite3；模型协议与 UI 测试使用明确 fixture。桌面测试使用独立用户目录、真实 IPC/UtilityProcess/SQLite 与本地 HTTP 模型服务，验证全局连接继承、专属连接隔离、密钥加密和重启持久性。自动测试不调用真实付费模型账户；维护者另行授权的真实桌面任务使用应用已保存的连接，验证记录保存在 Git 忽略的 `artifacts/companions/live/`。
+数据库测试使用 Electron ABI 的真实 better-sqlite3；模型协议与 UI 测试使用明确 fixture。桌面测试使用独立用户目录、真实 IPC/UtilityProcess/SQLite 与本地 HTTP 模型服务，验证全局连接继承、专属连接隔离、密钥加密和重启持久性。自动测试不调用真实付费模型账户；维护者另行授权的真实桌面任务使用应用已保存的连接。文档保留当时的实测结论，历史原始回执、截图和生成作品不随源码分发。
 
-原生工具集测试直接加载上述两个封装 SDK，验证文件、图片、搜索与平台 shell 的实际注册；权限验收对每个 SDK 的三种策略实测工作区内外的文件及 PowerShell 写入，模型请求数为零。消息与联系人界面的截图在 `artifacts/companions/verified-*.png`。
+原生工具集测试直接加载上述两个封装 SDK，验证文件、图片、搜索与平台 shell 的实际注册；权限验收对每个 SDK 的三种策略实测工作区内外的文件及 PowerShell 写入，模型请求数为零。运行 `npm run test:e2e:companions` 可生成当前界面验收的截图与报告，输出到本地忽略目录 `.tools/test-output/companions/`；正式测试源码继续保留在 `tests/`。
 
 新架构的真实两角色十章写作、下一步骤引导、下一轮排队、并发和自然时间查询结果见 [任务循环验收](companion-loop-acceptance.md)。自动化另用 125 条真实 SQLite 记录验证完整任务分页、角色隔离与重启，桌面测试用 45 条离线 fixture 验证布局、精确时间与翻页；这些 fixture 不冒充真实模型执行。
 

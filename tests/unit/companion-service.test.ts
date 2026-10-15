@@ -10,6 +10,7 @@ import type { DshTaskEvent, DshTaskRecord } from '../../src/shared/dsh-tasks';
 import type { DshLauncher } from '../../src/main/dsh/launcher';
 import { CompanionService } from '../../src/main/companions/service';
 import type { CompanionFileReader } from '../../src/main/companions/file-reader';
+import type { CompanionMemoryService } from '../../src/main/companions/memory-service';
 import type { BrowserWindow } from 'electron';
 import { COMPANION_REPLY_STREAM_CHANNEL, type CompanionReplyStreamEvent } from '../../src/shared/companions';
 
@@ -85,7 +86,7 @@ function modelResponseForJson(value: unknown): Response { return new Response(JS
 function sourceContext(serialized: string) {
   // The source window stays frozen. Current host facts (including the public
   // identity projection) are intentionally refreshed on each inference.
-  const { hostClock: _clock, runtimeState: _state, runtimeBehavior: _behavior, world: _world, worldTrust: _worldTrust,
+  const { worldClock: _clock, runtimeState: _state, runtimeBehavior: _behavior, world: _world, worldTrust: _worldTrust,
     identity: _identity, publicProfiles: _profiles, visionManifest: _vision, visionNotice: _notice, ...sources } = JSON.parse(serialized);
   void _clock; void _state; void _behavior; void _world; void _worldTrust;
   void _identity; void _profiles; void _vision; void _notice;
@@ -108,7 +109,9 @@ function fixture(dsh: DshLauncher, publish = false, prepareComputer = true) {
   stores.add(store);
   const conversation = store.openPrivate('sister');
   const world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
+  const scope = { companionId: 'sister', conversationId: conversation.id }, routine = store.request({ type: 'routine.get', ...scope }).routine!;
+  store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '01:00', meals: [], habits: [] } });
   const source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: '帮我整理这些文件。' });
   if (prepareComputer) {
     const computer = world.scenes.find(scene => scene.ownerId === 'sister')!.objects.find(object => object.kind === 'computer')!;
@@ -119,6 +122,10 @@ function fixture(dsh: DshLauncher, publish = false, prepareComputer = true) {
   bindStorage(store);
   const service = startService(root, dsh, publish);
   return { root, databasePath, store, service, conversation, source };
+}
+function keepAwake(store: CompanionsStore, companionId: string, conversationId: string) {
+  const scope = { companionId, conversationId }, routine = store.request({ type: 'routine.get', ...scope }).routine!;
+  store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '01:00', meals: [], habits: [] } });
 }
 function bindStorage(store: CompanionsStore) {
   transport.request.mockImplementation(async command => store.request(command));
@@ -246,6 +253,7 @@ describe('CompanionService owner process stop boundary', () => {
     await f.service.handle({ type: 'state' });
     const custom = f.store.createCompanion({ name: '独立伙伴', description: '', persona: '安静友好', model: '', avatar: 'flash', proactive: false });
     const room = f.store.openPrivate(custom.id);
+    keepAwake(f.store, custom.id, room.id);
     const source = f.store.appendMessage({ conversationId: room.id, authorId: 'user', content: '这份委托和资料要保留。' });
     const home = f.store.request({ type: 'world.snapshot' }).world!.scenes.find(scene => scene.ownerId === custom.id)!;
     f.store.request({ type: 'world.tool', companionId: custom.id, conversationId: room.id, sourceMessageId: source.id,
@@ -545,23 +553,28 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     await f.service.handle({ type: 'world.observe', companionId: 'sister', conversationId: f.conversation.id });
     expect(transport.send).not.toHaveBeenCalled();
   });
-  it('shows real movement before any task inference and releases the computer when the user cancels on the way', async () => {
+  it('answers chat in place by phone and cancellation prevents the pending answer without reserving a computer', async () => {
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true });
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), requestTask), false, false);
+    const pending = deferred<Response>(); transport.fetch.mockImplementation(() => pending.promise);
+    const initial = f.store.request({ type: 'world.snapshot' }).world!.actors[0]!, before = initial.position, beforeRoute = initial.route;
     await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '请解释这段代码。', clientId: 'walking-before-inference' });
     await vi.advanceTimersByTimeAsync(1000);
-    const walking = f.store.request({ type: 'world.snapshot' }).world!;
-    expect(walking.works.some(work => work.kind === 'chat' && work.status === 'moving')).toBe(true);
-    expect(walking.actors[0]!.route.length).toBeGreaterThan(0);
-    expect(transport.fetch).not.toHaveBeenCalled(); expect(requestTask).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledOnce(), { timeout: 5000 });
+    const phone = f.store.request({ type: 'world.snapshot' }).world!;
+    expect(phone.works.some(work => work.kind === 'chat' && work.status === 'ready' && !work.computerId)).toBe(true);
+    expect(phone.actors[0]!.position).toEqual(before); expect(phone.actors[0]!.route).toEqual(beforeRoute);
+    expect(phone.actors[0]!.communication?.phase).toBe('responding'); expect(requestTask).not.toHaveBeenCalled();
     await f.service.handle({ type: 'reply.cancel', conversationId: f.conversation.id });
+    pending.resolve(modelResponse('已取消的迟到手机回答不能发送。'));
     await vi.advanceTimersByTimeAsync(1000);
     const stopped = f.store.request({ type: 'world.snapshot' }).world!;
     expect(stopped.works.every(work => work.status === 'ended')).toBe(true);
     expect(stopped.scenes.flatMap(scene => scene.objects).some(object => object.reservedBy)).toBe(false);
-    expect(transport.fetch).not.toHaveBeenCalled();
+    expect(transport.fetch).toHaveBeenCalledOnce();
+    expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(message => message.content.includes('已取消的迟到手机回答'))).toBe(false);
   });
-  it('classifies a deadline while awake but away from a computer before choosing running speed or primary inference', async () => {
+  it('answers an awake deadline message by phone without inventing a computer trip or running', async () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
     const content = '两分钟后就截止了，快救我核对这句话。';
     transport.worldFetch.mockImplementation(async (_url, init) => {
@@ -571,13 +584,14 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     });
     transport.fetch.mockImplementation(async (_url, init) => {
       const context = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
-      expect(context.world.actors[0]).toMatchObject({ activity: 'working', locomotion: 'run', furnitureId: 'sister_computer' });
+      expect(context.world.actors[0].communication).toMatchObject({ channel: 'phone', phase: 'responding' });
+      expect(context.world.actors[0].furnitureId).not.toBe('sister_computer');
+      expect(context.world.works.filter((work: { kind: string }) => work.kind === 'chat').every((work: { computerId?: string }) => !work.computerId)).toBe(true);
       return modelResponse('文字检查完成。');
     });
     await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content, clientId: 'awake-deadline' });
     await vi.advanceTimersByTimeAsync(1000);
-    expect(f.store.request({ type: 'world.snapshot' }).world!.actors[0]!.locomotion).toBe('run'); expect(transport.fetch).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(15000);
+    expect(f.store.request({ type: 'world.snapshot' }).world!.scenes.flatMap(scene => scene.objects).some(object => object.reservedBy)).toBe(false);
     // Native image preparation is real asynchronous I/O, independent of the virtual world clock.
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(1), { timeout: 5000 });
   });
@@ -587,6 +601,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     const scope = { companionId: 'sister', conversationId: f.conversation.id };
     const routine = (await f.service.handle({ type: 'routine.get', ...scope })).routine!;
     await f.service.handle({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '01:00', wakeAt: '03:00', meals: [], habits: [] } });
+    await vi.advanceTimersByTimeAsync(15_000); // Be physically asleep before evaluating the notification.
     const ordinaryTexts = ['如果电脑占用就马上帮我换。', '新闻写着“紧急任务”。', '不紧急，你睡醒再说。'];
     const deadline = '两分钟后就截止了，快救我看看哪里写错。';
     transport.worldFetch.mockImplementation(async (_url, init) => {
@@ -602,7 +617,8 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     const urgent = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: deadline, clientId: 'implicit-deadline' })).message!;
     await vi.advanceTimersByTimeAsync(1000);
     expect(transport.fetch).not.toHaveBeenCalled();
-    expect(f.store.request({ type: 'world.snapshot' }).world!.actors[0]).toMatchObject({ activity: 'walking', locomotion: 'run' });
+    const preparing = f.store.request({ type: 'world.snapshot' }).world!.actors[0]!;
+    expect(['waking', 'standingUp', 'idle']).toContain(preparing.activity); expect(preparing.route).toEqual([]);
     await vi.advanceTimersByTimeAsync(12000);
     // Current identity images are prepared through real file/Sharp I/O, which
     // is not completed merely by advancing the deterministic world clock.
@@ -612,21 +628,21 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     for (const source of ordinary) expect(f.store.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('queued');
   });
 
-  it('calls the primary model only while seated and returns a real native world inspection in its next tool turn', async () => {
+  it('calls the primary model from the actual phone position and returns the same location in a native inspection', async () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    const position = f.store.request({ type: 'world.snapshot' }).world!.actors[0]!.position;
     let observed = false;
     transport.fetch.mockImplementation(async (_url, init) => {
       const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
-      expect(data.world.actors.find((actor: { companionId: string }) => actor.companionId === 'sister').activity).toBe('working');
+      expect(data.world.actors.find((actor: { companionId: string }) => actor.companionId === 'sister')).toMatchObject({ position, communication: { phase: 'responding' } });
       expect(data.world.works.some((work: { status: string }) => work.status === 'ready')).toBe(true);
       const tool = request.messages.findLast((message: { role: string }) => message.role === 'tool');
       if (!tool) return new Response(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ id: 'inspect-actual-world', type: 'function', function: { name: 'world', arguments: '{"action":"inspect"}' } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
-      expect(JSON.parse(tool.content).world.actors[0].furnitureId).toBe('sister_computer'); observed = true;
-      return modelResponse('我在自己的电脑前，已经坐好了。');
+      expect(JSON.parse(tool.content).world.actors[0].position).toEqual(position); observed = true;
+      return modelResponse('我在这里用手机回复你。');
     });
     const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '看看你现在在哪里。', clientId: 'native-world' })).message!;
-    await vi.advanceTimersByTimeAsync(1000); expect(transport.fetch).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(12000);
+    await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(observed).toBe(true), { timeout: 5000 });
     expect(f.store.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('done');
     await vi.waitFor(() => expect(f.store.request({ type: 'world.snapshot' }).world!.scenes.flatMap(scene => scene.objects).some(object => object.reservedBy)).toBe(false), { timeout: 5000 });
@@ -657,7 +673,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     transport.fetch.mockImplementation(async (_url, init) => {
       const body = JSON.parse(String(init?.body));
       const context = JSON.parse(body.messages[1].content);
-      expect(context.hostClock.now).toBeDefined();
+      expect(context.worldClock.now).toBeDefined();
       expect(context.runtimeState.companionId).toBe('sister');
       if (submitted) return modelResponse('两项提醒已经设置好了。');
       submitted = true;
@@ -671,7 +687,9 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
       content: '请设置两个定时提醒，2 秒后喝水，5 秒后休息。', clientId: 'native-schedule-request' })).message!;
     await vi.waitFor(() => expect(f.store.request({ type: 'schedule.list', companionId: 'sister', conversationId: f.conversation.id }).schedules).toHaveLength(2), { timeout: 5000 });
     expect(f.store.request({ type: 'schedule.list', companionId: 'sister', conversationId: f.conversation.id }).schedules?.every(schedule => schedule.sourceMessageId === source.id)).toBe(true);
-    await vi.advanceTimersByTimeAsync(6_000);
+    // Reminders retain the physical promise gate: after phone chat, the actor
+    // must walk to the reserved computer and finish seating before delivery.
+    await vi.advanceTimersByTimeAsync(15_000);
     const listed = f.store.request({ type: 'schedule.list', companionId: 'sister', conversationId: f.conversation.id, includeHistory: true });
     expect(listed.scheduleOccurrences).toHaveLength(2);
     expect(listed.scheduleOccurrences?.every(occurrence => occurrence.status === 'done')).toBe(true);
@@ -889,6 +907,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true });
     const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), requestTask), f = fixture(dsh);
     const flash = f.store.createCompanion({ name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false });
+    keepAwake(f.store, flash.id, f.store.openPrivate(flash.id).id);
     const group = f.store.createConversation('', ['sister', flash.id]);
     await f.service.handle({ type: 'message.send', conversationId: group.id, content: '大家聊聊今天的心情吧。', clientId: 'group-recovery-source', delivery: 'chat' });
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 12000 });
@@ -1172,7 +1191,7 @@ function capabilityResponse(text: string, tasks: Array<{ title: string; prompt: 
     { headers: { 'Content-Type': 'application/json' } });
 }
 describe('one durable bubble per source and native multi-step main loop', () => {
-  it('keeps concurrent weather and clock requests in separate loops even when the clock finishes first', async () => {
+  it('keeps weather and queued clock requests in separate loops while the current computer work finishes first', async () => {
     const jobs: DshTaskRecord[] = [];
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => {
       if (request.type === 'task.run') {
@@ -1196,17 +1215,18 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     const weather = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '上海天气如何', clientId: 'weather-source' })).message!;
     await vi.waitFor(() => expect(jobs).toHaveLength(1), { timeout: 5000 });
     const clock = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '现在几点了', clientId: 'clock-source' })).message!;
-    await vi.waitFor(() => expect(jobs).toHaveLength(2), { timeout: 5000 });
-    expect(jobs.map(item => item.title)).toEqual(['查询上海天气', '读取系统时间']);
+    await vi.advanceTimersByTimeAsync(1000); expect(jobs).toHaveLength(1);
     const weatherSnapshot = f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop!.context!;
-    const clockSnapshot = f.store.request({ type: 'loop.get', sourceMessageId: clock.id, companionId: 'sister' }).loop!.context!;
     expect(weatherSnapshot.user).not.toContain('现在几点了');
-    expect(JSON.parse(clockSnapshot.user).taskRequest).toEqual({ sourceMessageId: clock.id, prompt: '现在几点了' });
-    jobs[1]!.status = 'succeeded'; await vi.advanceTimersByTimeAsync(1000);
-    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: clock.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
     expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('running');
     jobs[0]!.status = 'succeeded'; await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+    await vi.waitFor(() => expect(jobs).toHaveLength(2), { timeout: 5000 });
+    expect(jobs.map(item => item.title)).toEqual(['查询上海天气', '读取系统时间']);
+    const clockSnapshot = f.store.request({ type: 'loop.get', sourceMessageId: clock.id, companionId: 'sister' }).loop!.context!;
+    expect(JSON.parse(clockSnapshot.user).taskRequest).toEqual({ sourceMessageId: clock.id, prompt: '现在几点了' });
+    jobs[1]!.status = 'succeeded'; await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: clock.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
     const replies = f.store.messages({ conversationId: f.conversation.id }).messages.filter(item => item.authorId === 'sister' && !item.memoryEvidenceOnly);
     expect(replies).toHaveLength(2);
     expect(replies.find(item => item.replyToId === clock.id)?.content).toBe('系统时间查询结果');
@@ -1277,7 +1297,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     expect(body.tools.map((item: { function: { name: string } }) => item.function.name)).toEqual([
       'dsh', 'memory_search', 'memory_read', 'memory_record', 'memory_revise', 'memory_organize', 'memory_forget',
       'schedule', 'state',
-      'routine', 'world',
+      'routine', 'world', 'work', 'life_rule',
       'read_file', 'read_image', 'send_file',
     ]);
   });
@@ -1354,5 +1374,143 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     await vi.waitFor(() => expect(reopened.messages({ conversationId: f.conversation.id }).messages.filter(item => item.content === '自动继续未开始的排队消息。')).toHaveLength(2), { timeout: 5000 });
     expect(reopened.request({ type: 'work.list' }).works?.filter(item => item.status === 'done').map(item => item.sourceMessageId)).toEqual(ids.slice(5));
     await closeService(restarted);
+  });
+});
+
+describe('CompanionService native work and life management', () => {
+  function native(service: CompanionService, name: string, args: unknown, scope: { companionId: string; conversationId: string }, ids: string[], identity: string, sequence: number, current = true) {
+    return (service as unknown as { executePartnerTool(name: string, serialized: string, scope: { companionId: string; conversationId: string }, ids: string[], identity: string, sequence: number, signal: undefined, current: boolean): Promise<CompanionStorageResponse> })
+      .executePartnerTool(name, JSON.stringify(args), scope, ids, identity, sequence, undefined, current);
+  }
+  function authorize() {
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      expect(data.purpose).toBe('companion_management_authorization');
+      return modelResponseForJson({ allowed: true, confidence: .98, sourceMessageId: data.source.id, tool: data.tool, action: data.action, targetId: data.targetId, evidence: [data.source.content] });
+    });
+  }
+  it('binds native work and life writes to the exact current human and keeps creation retries idempotent', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' }); authorize();
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '请建立只读整理照片的工作，禁止删除或改写原文件；并增加每天14点到18点有35%机会问候朋友的生活事件。', replyDirective: 'none' });
+    const work = { action: 'create', title: '只读整理照片', instruction: '只读整理照片，禁止删除或改写原文件。', sourceMessageId: source.id, evidence: ['请建立只读整理照片的工作，禁止删除或改写原文件'] };
+    const created = await native(f.service, 'work', work, scope, [source.id], 'work-tool-call', source.sequence);
+    expect(created.workOrder).toMatchObject({ companionId: 'sister', publisherId: 'user', sourceMessageId: source.id, execution: 'external', status: 'accepted', instruction: work.instruction });
+    expect((await native(f.service, 'work', work, scope, [source.id], 'work-tool-call', source.sequence)).workOrder!.id).toBe(created.workOrder!.id);
+    const rule = { title: '午后问候朋友', enabled: true, startMinute: 840, endMinute: 1080, probability: .35, action: 'message' };
+    const args = { action: 'create', rule, sourceMessageId: source.id, evidence: ['增加每天14点到18点有35%机会问候朋友的生活事件'] };
+    const first = await native(f.service, 'life_rule', args, scope, [source.id], 'life-tool-call', source.sequence);
+    expect(first.lifeRule).toMatchObject({ companionId: 'sister', ...rule });
+    expect((await native(f.service, 'life_rule', args, scope, [source.id], 'life-tool-call', source.sequence)).lifeRule!.id).toBe(first.lifeRule!.id);
+    const checks = transport.fetch.mock.calls.map(([, init]) => JSON.parse(JSON.parse(String(init?.body)).messages[1].content));
+    expect(checks.every(value => value.source.id === source.id && value.source.authorId === 'user')).toBe(true);
+    expect(checks[0].requested.instruction).toContain('禁止删除或改写');
+    expect(f.store.listAction(scope.conversationId)).toHaveLength(0);
+  });
+  it('denies recalled, autonomous, semantically unrequested or newly withdrawn management sources before durable mutation', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id }, source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '今天只是聊天，不要创建工作。', replyDirective: 'none' });
+    const args = { action: 'create', title: '不该创建的工作', instruction: '擅自改文件', sourceMessageId: source.id, evidence: [source.content] };
+    expect((await native(f.service, 'work', args, scope, [f.source.id], 'old-source', source.sequence)).ok).toBe(false);
+    expect((await native(f.service, 'work', args, scope, [source.id], 'proactive-source', source.sequence, false)).ok).toBe(false);
+    expect(transport.fetch).not.toHaveBeenCalled();
+    transport.fetch.mockImplementation(async (_url, init) => { const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); return modelResponseForJson({ allowed: false, confidence: .99, sourceMessageId: source.id, tool: data.tool, action: data.action, targetId: null, evidence: [source.content] }); });
+    expect((await native(f.service, 'work', args, scope, [source.id], 'unrequested', source.sequence)).ok).toBe(false);
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      f.store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] });
+      return modelResponseForJson({ allowed: true, confidence: .99, sourceMessageId: source.id, tool: data.tool, action: data.action, targetId: null, evidence: [source.content] });
+    });
+    expect((await native(f.service, 'work', args, scope, [source.id], 'withdrawn-during-check', source.sequence)).ok).toBe(false);
+    expect(f.store.request({ type: 'work-order.list', ...scope, includeHistory: true }).workOrderPage!.items).toHaveLength(0);
+  });
+  it('does not acknowledge a native work pause until the actual owner task termination resolves', async () => {
+    const stopped = deferred<void>(); let status: DshTaskRecord['status'] = 'running';
+    const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async command => { if (command.type === 'task.terminate') { await stopped.promise; status = 'cancelled'; } return { ok: true }; });
+    const f = fixture(fakeDsh(() => ({ tasks: [taskRecord(status)], operations: [] }), requestTask));
+    await f.service.handle({ type: 'state' }); authorize();
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const action = f.store.createAction({ ...scope, sourceMessageId: f.source.id, title: '整理照片', status: 'running', taskId: 'dsh-task' });
+    const order = f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(order => order.actionId === action.id)!;
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '请暂停整理照片这份工作，原文件保留。', replyDirective: 'none' });
+    let acknowledged = false;
+    const pending = native(f.service, 'work', { action: 'pause', paused: true, id: order.id, expectedRevision: order.revision, sourceMessageId: source.id, evidence: [source.content] }, scope, [source.id], 'pause-real-owner', source.sequence).then(result => { acknowledged = true; return result; });
+    await vi.waitFor(() => expect(requestTask).toHaveBeenCalledWith({ type: 'task.terminate', taskId: 'dsh-task' }));
+    expect(acknowledged).toBe(false); expect(f.store.listAction(scope.conversationId).find(item => item.id === action.id)!.status).toBe('running');
+    stopped.resolve(); expect((await pending).ok).toBe(true); expect(acknowledged).toBe(true);
+    expect(f.store.listAction(scope.conversationId).find(item => item.id === action.id)!.status).toBe('cancelled');
+    expect(f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(item => item.id === order.id)!.status).toBe('paused');
+  });
+});
+
+describe('CompanionService executor feedback evidence boundary', () => {
+  function feedback(service: CompanionService, action: ReturnType<CompanionsStore['createAction']>) {
+    return (service as unknown as { feedbackAction(value: typeof action, status: 'succeeded', content: string): Promise<void> })
+      .feedbackAction(action, 'succeeded', '执行器实际返回的结果。');
+  }
+  it.each([['forget', false], ['forget', true], ['reset', false], ['reset', true]] as const)('suppresses both normal and fallback late feedback after %s (provider fails=%s)', async (withdrawal, fails) => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '只读核对SOURCE_FEEDBACK_SECRET。', replyDirective: 'none' });
+    const action = f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: source.id, title: 'FALLBACK_TITLE_SECRET', status: 'succeeded' });
+    const generated = deferred<Response>();
+    transport.fetch.mockImplementation(async () => { const response = await generated.promise; if (fails) throw new Error('Provider failed after withdrawal'); return response; });
+    const pending = feedback(f.service, action);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledOnce());
+    if (withdrawal === 'forget') await f.service.handle({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [source.id], persistent: true });
+    else { await f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' }); await finishReset(f.store); }
+    generated.resolve(modelResponse('SOURCE_FEEDBACK_SECRET不得迟到重现。')); await pending;
+    const room = f.store.openPrivate('sister');
+    expect(f.store.messages({ conversationId: room.id }).messages.filter(message => message.authorId !== 'user' && !message.memoryEvidenceOnly).some(message => /SOURCE_FEEDBACK_SECRET|FALLBACK_TITLE_SECRET|执行器已返回结果/u.test(message.content))).toBe(false);
+    expect(transport.fetch).toHaveBeenCalledOnce();
+  });
+  it('discards a reply referencing withdrawn memory and regenerates once with the new real SQLite context', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const history = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我喜欢REFERENCE_MEMORY_SECRET。', replyDirective: 'none' });
+    const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '请反馈这份只读检查的实际结果。', replyDirective: 'none' });
+    const memory = f.store.request({ type: 'memory.record', ...scope, beforeSequence: source.sequence, candidate: { kind: 'preference', subject: 'user', factKey: 'favorite_reference', value: 'REFERENCE_MEMORY_SECRET', content: history.content, sourceMessageIds: [history.id], evidence: [{ sourceMessageId: history.id, quote: history.content }] } }).memories![0]!;
+    // Only semantic retrieval selection is fixed; evidence validity remains the real SQLite implementation.
+    const serviceMemory = (f.service as unknown as { memory: CompanionMemoryService }).memory;
+    vi.spyOn(serviceMemory, 'recall').mockImplementation(async () => ({
+      memories: f.store.request({ type: 'memory.records.filter', ...scope, ids: [memory.id] }).memories ?? [],
+      sources: f.store.request({ type: 'memory.sources.filter', ...scope, ids: [history.id] }).memorySources ?? [],
+      reasons: [], pending: false, degraded: false,
+    }));
+    const action = f.store.createAction({ ...scope, sourceMessageId: source.id, title: '核对实际结果', status: 'succeeded' });
+    const generated = deferred<Response>(); let calls = 0;
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      if (++calls === 1) { expect(JSON.stringify(data)).toContain('REFERENCE_MEMORY_SECRET'); return generated.promise; }
+      expect(JSON.stringify(data)).not.toContain('REFERENCE_MEMORY_SECRET'); return modelResponse('实际检查结果已返回，详情在工作卡中。');
+    });
+    const pending = feedback(f.service, action); await vi.waitFor(() => expect(calls).toBe(1));
+    await f.service.handle({ type: 'memory.forget', ...scope, sourceMessageIds: [history.id], persistent: true });
+    generated.resolve(modelResponse('带有REFERENCE_MEMORY_SECRET的旧回答')); await pending;
+    const sent = f.store.messages({ conversationId: scope.conversationId }).messages.filter(message => message.authorId === 'sister' && !message.memoryEvidenceOnly);
+    expect(calls).toBe(2); expect(sent).toHaveLength(1); expect(sent[0]!.content).toBe('实际检查结果已返回，详情在工作卡中。');
+  });
+  it('bounds repeated evidence changes to the initial generation plus two retries and never publishes a stale result', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })))); await f.service.handle({ type: 'state' });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id }, action = f.store.createAction({ ...scope, sourceMessageId: f.source.id, title: '已完成的检查', status: 'succeeded' });
+    const unrelated = Array.from({ length: 3 }, (_, index) => f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '稍后独立的话题' + index, replyDirective: 'none' }));
+    let calls = 0;
+    transport.fetch.mockImplementation(async () => { const source = unrelated[calls++]!; await f.service.handle({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id], persistent: true }); return modelResponse('证据变化中的旧回答'); });
+    await feedback(f.service, action); expect(calls).toBe(3);
+    expect(f.store.messages({ conversationId: scope.conversationId }).messages.some(message => message.content === '证据变化中的旧回答')).toBe(false);
+  });
+  it('uses one feedback idempotency key and a generic safe fallback instead of reviving the action title', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })))); await f.service.handle({ type: 'state' });
+    const action = f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id, title: 'PRIVATE_ACTION_TITLE', status: 'succeeded' });
+    transport.fetch.mockResolvedValue(modelResponse('执行器结果已经返回。'));
+    await feedback(f.service, action); await feedback(f.service, action);
+    transport.fetch.mockRejectedValue(new Error('Provider unavailable')); await feedback(f.service, action);
+    const replies = f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => !message.memoryEvidenceOnly && message.authorId !== 'user');
+    expect(replies).toHaveLength(1); expect(replies[0]!.content).toBe('执行器结果已经返回。');
+    const writes = transport.request.mock.calls.map(([command]) => command).filter(command => command.type === 'message.append' && command.message.replyToId === f.source.id);
+    expect(new Set(writes.map(command => command.type === 'message.append' ? command.message.clientId : undefined)).size).toBe(1);
   });
 });

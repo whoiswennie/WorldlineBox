@@ -5,6 +5,7 @@ import { COMPANION_WORLD_ART_ACTIONS } from './companion-world-actions';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const point = z.object({ x: z.number().finite(), y: z.number().finite() });
+export const COMPANION_WORLD_DEFAULT_SETTINGS = { mode: 'realtime', dayDurationMinutes: 20, timeZone: 'system' } as const;
 export const companionWorldSettingsSchema = z.object({ revision: z.number().int().positive(), mode: z.enum(['compressed', 'realtime']),
   dayDurationMinutes: z.number().min(5).max(1440), timeZone: z.string().min(1).max(100) });
 export const companionWorldFurnitureSchema = z.object({ id, kind: z.enum(['bed', 'desk', 'computer', 'chair', 'kitchen', 'dining', 'sofa', 'habit', 'door', 'tree', 'bench', 'building']),
@@ -22,7 +23,7 @@ export const companionWorldActorSchema = z.object({ companionId: id, sceneId: id
     expression: z.enum(['gentle', 'direct', 'playful', 'reserved']), affect: z.object({ pleasure: z.number().min(-1).max(1), arousal: z.number().min(-1).max(1), dominance: z.number().min(-1).max(1) }), thermalComfort: z.number().min(0).max(1) }),
   route: z.array(z.object({ sceneId: id, x: z.number(), y: z.number() })), destinationId: id.optional(), furnitureId: id.optional(),
   routinePhase: z.enum(['awake', 'sleeping', 'eating', 'resting', 'habit']), activityLabel: z.string().optional(),
-  communication: z.object({ channel: z.literal('phone'), phase: z.enum(['notification', 'typing']), conversationId: id, recipientIds: z.array(id).max(20), untilReal: z.iso.datetime() }).optional() });
+  communication: z.object({ channel: z.literal('phone'), phase: z.enum(['notification', 'typing', 'responding']), conversationId: id, recipientIds: z.array(id).max(20), untilReal: z.iso.datetime() }).optional() });
 export const companionWorldVisitSchema = z.object({ id, guestId: id, hostId: id, status: z.enum(['requested', 'allowed', 'denied', 'left', 'expired']),
   reason: z.string(), response: z.string().optional(), createdAt: z.iso.datetime(), expiresAt: z.iso.datetime(), sourceMessageId: id.optional(), conversationId: id.optional() });
 export const companionWorldEventSchema = z.object({ id, sequence: z.number().int().positive(), at: z.iso.datetime(), realAt: z.iso.datetime(),
@@ -52,6 +53,10 @@ export type CompanionWorldRelationship = z.infer<typeof companionWorldRelationsh
 export type CompanionWorldWork = z.infer<typeof companionWorldWorkSchema>;
 export type CompanionWorldJob = z.infer<typeof companionWorldJobSchema>;
 export type CompanionWorldSnapshot = z.infer<typeof companionWorldSnapshotSchema>;
+export const companionWorldTimeSchema = z.object({ realNow: z.iso.datetime(), virtualNow: z.iso.datetime(),
+  timeZone: z.string(), mode: z.enum(['compressed', 'realtime']), speed: z.number().positive(), backlog: z.boolean(),
+  elapsed: z.array(z.object({ realAt: z.iso.datetime(), milliseconds: z.number().nonnegative() })).max(10).optional() });
+export type CompanionWorldTime = z.infer<typeof companionWorldTimeSchema>;
 export type CompanionWorldScope = { companionId: string; conversationId: string; beforeSequence?: number };
 export type CompanionWorldOccupancy = { start: number; end: number; phase: 'sleeping' | 'eating' | 'resting' | 'habit'; habitId?: string; habitKind?: 'rest' | 'exercise' | 'study' | 'leisure' | 'custom' };
 const scope = z.object({ companionId: id, conversationId: id, beforeSequence: z.number().int().positive().optional() });
@@ -63,6 +68,7 @@ export const companionWorldPublicCommands = [
 ] as const;
 export const companionWorldStorageCommands = [
   ...companionWorldPublicCommands,
+  z.strictObject({ type: z.literal('world.clock'), since: z.array(z.iso.datetime()).max(10).optional() }),
   z.strictObject({ type: z.literal('world.tick'), now: z.iso.datetime().optional(), snapshot: z.boolean().default(false) }),
   scope.extend({ type: z.literal('world.attention.record'), sourceMessageId: id, sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/), urgency: z.enum(['urgent', 'ordinary']), confidence: z.number().min(0).max(1), evidence: z.array(z.string().min(1).max(4000)).min(1).max(10), reason: z.string().min(1).max(1000) }).strict(),
   scope.extend({ type: z.literal('world.work.begin'), workId: id, kind: z.enum(['chat', 'action', 'schedule']), sourceMessageId: id.optional(), urgent: z.boolean().default(false), fixed: z.boolean().default(false) }).strict(),
