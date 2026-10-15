@@ -4,6 +4,7 @@ import { COMPANION_WORLD_DEFAULT_SETTINGS, companionWorldSnapshotSchema, type Co
 import type { CompanionWorldOccupancy } from '../shared/companion-world';
 import { advanceCompanionWorldActor, companionWorldEnvironment, companionWorldRealAt, companionWorldSpeed, companionWorldVirtualAt,
   COMPANION_WORLD_SEATING_MS, COMPANION_WORLD_ACTION_TIMINGS, COMPANION_WORLD_WALK_TILES_PER_SECOND, createCompanionWorldCommons, createCompanionWorldHome, routeCompanionWorldActor } from '../shared/companion-world-engine';
+import { companionWorldCellWalkable, findCompanionWorldPath } from '../shared/companion-world-engine';
 import { evaluateCompanionRoutine } from '../shared/companion-routine-time';
 import { resolveCompanionScheduleTimeZone, isCompanionScheduleTimeZone } from '../shared/companion-schedule-time';
 import { applyCompanionAppraisal } from '../shared/companion-affect';
@@ -19,16 +20,22 @@ import type { CompanionSocialMessage } from '../shared/companion-social';
 import type { CompanionSocialStore } from './social-store';
 import type { CompanionWorkOrderStore } from './work-order-store';
 import { companionTimeInZone } from '../shared/companion-schedule-time';
+import { companionWorldParkCircuit, companionWorldParkContains, companionWorldParkLayout, companionWorldParkSuitable } from '../shared/companion-world-park';
+import { companionLifeHazard, companionLifeMultiplier, companionLifeThreshold } from '../shared/companion-life-event';
+import { COMPANION_WORLD_PERCEPTION_INTERVAL_MS, sampleCompanionWorldPerception, companionWorldPerceptionSignature,
+  type CompanionWorldPerception } from '../shared/companion-world-perception';
 
 type Row = Record<string, string | number | null>;
-type StoredActor = CompanionWorldActor & { arrivalActivity?: CompanionWorldActor['activity']; seatUntil?: number; lastDecisionAt: number; lastDreamDay?: number;
+type StoredActor = Omit<CompanionWorldActor, 'parkWalk'> & { arrivalActivity?: CompanionWorldActor['activity']; lastDecisionAt: number; lastDreamDay?: number;
+  parkWalk?: NonNullable<CompanionWorldActor['parkWalk']> & { waypointIndex: number; comfortTicks: number; occurrenceId?: string };
+  meetingHold?: { jobId: string; memberIds: string[]; untilReal: number }; meetingResume?: CompanionWorldActor['activity'];
   phoneResume?: { activity: CompanionWorldActor['activity'] };
   afterWork?: { scope: CompanionWorldScope; args: CompanionWorldArguments; sourceMessageId?: string }; lastClimateKey?: string;
-  transition?: { until: number; after: CompanionWorldActor['activity'] }; manualActivityUntil?: number; manualArtAction?: CompanionWorldActor['artAction']; pendingVisitId?: string };
+  transition?: { eventId?: string; action?: CompanionWorldActor['activity']; until: number; after: CompanionWorldActor['activity'] }; manualActivityUntil?: number; manualArtAction?: CompanionWorldActor['artAction']; pendingVisitId?: string };
 type StoredWork = CompanionWorldWork & { conversationId: string; sourceMessageId?: string; urgent: boolean; fixed: boolean; requestedAtReal: number; workOrderId?: string };
 type StoredVisit = CompanionWorldVisit & { responseSourceMessageId?: string; responseConversationId?: string; settledAt?: number };
 type StoredJob = CompanionWorldJob & { memoryVersions?: Array<{ id: string; version: number }>; readSet?: Array<{ eventId: string; checksum: string; sourceChecksum?: string; sourceRevision?: number }> };
-type StoredEvent = CompanionWorldEvent & { privateOwner?: string; sourceMemoryIds?: string[]; sourceMessageIds?: string[]; evidence?: Array<{ sourceMessageId: string; quote: string }>; positiveChange?: number; appraisalDay?: string;
+type StoredEvent = CompanionWorldEvent & { privateOwner?: string; witnessIds?: string[]; sourceMemoryIds?: string[]; sourceMessageIds?: string[]; evidence?: Array<{ sourceMessageId: string; quote: string }>; positiveChange?: number; appraisalDay?: string;
   memoryVersions?: Array<{ id: string; version: number }>; relationshipDelta?: { affinity: number; trust: number }; withdrawn?: boolean };
 type ClockSegment = { realAt: number; virtualAt: number; settings: CompanionWorldSettings };
 type StoredWorld = { settings: CompanionWorldSettings; anchors: ClockSegment[]; cursor: number; slots: string[]; actors: StoredActor[];
@@ -48,10 +55,12 @@ export class CompanionWorldStore {
   private through = 0;
   private actorProjection: StoredActor[] = [];
   private unseenCache = new Map<string, { token: string; present: boolean }>();
+  private perceptionNextAt = 0;
   private social?: CompanionSocialStore;
   private orders?: CompanionWorkOrderStore;
+  private life?: { completePhysical(id: string, companionId: string, outcome: 'done' | 'cancelled', result: string): void };
   private atomic<T>(fn: () => T): T {
-    try { return this.db.transaction(fn).immediate(); } catch (error) { this.clockAnchors = undefined; this.actorProjection = []; this.through = 0; this.dirty = true; throw error; }
+    try { return this.db.transaction(fn).immediate(); } catch (error) { this.clockAnchors = undefined; this.actorProjection = []; this.through = 0; this.perceptionNextAt = 0; this.dirty = true; throw error; }
   }
   constructor(private readonly db: CompanionConnection, private readonly routineConfig: (id: string) => CompanionRoutineConfig,
     private readonly visibleSources: (scope: CompanionWorldScope, ids: string[]) => CompanionMessage[],
@@ -61,22 +70,78 @@ export class CompanionWorldStore {
 
   connectSocial(social: CompanionSocialStore): void { this.social = social; }
   connectWorkOrders(orders: CompanionWorkOrderStore): void { this.orders = orders; }
+  connectLife(life: NonNullable<CompanionWorldStore['life']>): void { this.life = life; }
+  perception(companionId: string): CompanionWorldPerception | undefined {
+    const found = this.db.prepare('SELECT data FROM companion_world_perceptions WHERE companion_id=?').get(companionId);
+    return found ? parse<CompanionWorldPerception>(row(found).data) : undefined;
+  }
+  private refreshPerceptions(state: StoredWorld, target: number): void {
+    // Perception samples the reached present once, never invents observations
+    // along an unobserved offline route or scales with observer window count.
+    if (state.cursor + 1 < target || state.cursor < this.perceptionNextAt) return;
+    const scenes = this.scenes(state), virtualAt = this.virtualFor(state, state.cursor), climate = companionWorldEnvironment(virtualAt, state.settings.timeZone);
+    let nextSampleAt = state.cursor + COMPANION_WORLD_PERCEPTION_INTERVAL_MS;
+    for (const actor of state.actors) {
+      const saved = this.db.prepare('SELECT data,last_event_at,last_signature FROM companion_world_perceptions WHERE companion_id=?').get(actor.companionId), previous = saved ? parse<CompanionWorldPerception>(row(saved).data) : undefined;
+      if (previous && previous.sceneId === actor.sceneId && previous.awake === (actor.activity !== 'sleeping')
+        && state.cursor < Date.parse(previous.observedAtReal) + COMPANION_WORLD_PERCEPTION_INTERVAL_MS) {
+        nextSampleAt = Math.min(nextSampleAt, Date.parse(previous.observedAtReal) + COMPANION_WORLD_PERCEPTION_INTERVAL_MS); continue;
+      }
+      const perception = sampleCompanionWorldPerception({ self: actor, scenes, actors: state.actors, environment: { ...climate.environment, daylight: climate.clock.daylight },
+        virtualAt: iso(virtualAt), realAt: iso(state.cursor), previous });
+      let lastEvent = saved ? Number(row(saved).last_event_at) : 0;
+      let lastSignature = saved ? String(row(saved).last_signature) : '';
+      const signature = companionWorldPerceptionSignature(perception), changed = signature !== lastSignature;
+      if (changed && (!previous || previous.sceneId !== perception.sceneId || previous.awake !== perception.awake || state.cursor - lastEvent >= 10000)) {
+        this.event(state, { kind: 'perception', actorId: actor.companionId, privateOwner: actor.companionId, sceneId: actor.sceneId,
+          text: perception.awake ? `观察周围：范围${Math.round(perception.radius)}格，看到${perception.visibleObjectIds.length}件物体、${perception.visibleCompanionIds.length}位伙伴，更新自己的环境认知。` : '进入睡眠，停止视觉感知，先前观察仅保留为历史认知。',
+          perception: { revision: perception.revision, radius: perception.radius, visibleObjectIds: perception.visibleObjectIds, visibleCompanionIds: perception.visibleCompanionIds, environment: perception.environment } });
+        lastEvent = state.cursor;
+        lastSignature = signature;
+      }
+      this.db.prepare('INSERT INTO companion_world_perceptions(companion_id,last_event_at,last_signature,samples,data) VALUES(?,?,?,1,?) ON CONFLICT(companion_id) DO UPDATE SET last_event_at=excluded.last_event_at,last_signature=excluded.last_signature,samples=samples+1,data=excluded.data')
+        .run(actor.companionId, lastEvent, lastSignature, JSON.stringify(perception));
+    }
+    this.perceptionNextAt = nextSampleAt;
+  }
   socialContext(): { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean } {
     const now = Date.now(); this.ensureThrough(now); const state = this.load(), at = this.virtualFor(state, state.cursor), day = companionTimeInZone(at, state.settings.timeZone);
     return { timeZone: state.settings.timeZone, virtualNow: iso(at), observedDay: `${day.year}-${String(day.month).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`, backlog: state.cursor + 1 < now };
   }
   socialAvailable(owner: string, channel: 'phone' | 'face_to_face', recipients: string[]): boolean {
     const state = this.load(), actor = state.actors.find(actor => actor.companionId === owner);
-    if (!actor || !this.phoneAvailable(state, actor)) return false;
-    if (channel === 'phone') return true;
-    return !actor.route.length && !actor.transition && ['idle', 'sitting'].includes(actor.activity)
-      && evaluateCompanionRoutine(this.routineConfig(owner), iso(this.virtualFor(state, state.cursor))).canRespond
-      && !state.works.some(work => work.companionId === owner && work.status !== 'ended')
-      && recipients.every(id => { const peer = state.actors.find(actor => actor.companionId === id); return peer && peer.sceneId === actor.sceneId && Math.hypot(peer.position.x - actor.position.x, peer.position.y - actor.position.y) <= 5; });
+    if (!actor) return false;
+    if (channel === 'phone') return this.phoneAvailable(state, actor);
+    return this.faceGroupAvailable(state, [owner, ...recipients]);
+  }
+  private faceMemberAvailable(state: StoredWorld, actor: StoredActor): boolean {
+    const owner = state.slots.find(id => 'home_' + id === actor.sceneId);
+    if (owner && !this.permitted(state, actor.companionId, owner)) return false;
+    return !actor.transition && !['working', 'eating', 'sleeping', 'lyingDown', 'waking', 'seating', 'standingUp'].includes(actor.activity)
+      && !['eating', 'sleeping'].includes(evaluateCompanionRoutine(this.routineConfig(actor.companionId), iso(this.virtualFor(state, state.cursor))).phase)
+      && !state.works.some(work => work.companionId === actor.companionId && work.status !== 'ended' && (work.kind !== 'chat' || work.status === 'ready'))
+      && !this.peerPhoneActive(actor.companionId, state.cursor)
+      && !this.db.prepare("SELECT 1 FROM actions WHERE companion_id=? AND status IN('queued','running') LIMIT 1").get(actor.companionId);
+  }
+  private faceGroupAvailable(state: StoredWorld, ids: string[]): boolean {
+    if (ids.length < 2 || new Set(ids).size !== ids.length) return false;
+    const actors = ids.map(id => state.actors.find(actor => actor.companionId === id));
+    return actors.every(actor => actor && this.faceMemberAvailable(state, actor) && (() => {
+      const sense = this.perception(actor.companionId);
+      return sense?.awake && sense.sceneId === actor.sceneId && state.cursor - Date.parse(sense.observedAtReal) <= 2000
+        && ids.every(id => id === actor.companionId || sense.visibleCompanionIds.includes(id));
+    })() && (() => { const communication = this.faceCommunication(actor.companionId, state.cursor);
+      return !communication || communication.recipientIds.length === ids.length - 1 && communication.recipientIds.every(id => ids.includes(id)); })() && actors.every(peer => peer && peer.sceneId === actor.sceneId
+      && Math.hypot(peer.position.x - actor.position.x, peer.position.y - actor.position.y) <= 5));
+  }
+  private faceCommunication(owner: string, now: number): CompanionWorldActor['communication'] {
+    const found = this.db.prepare("SELECT data FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.channel')='face_to_face'").get(owner, iso(now));
+    return found ? parse<NonNullable<CompanionWorldActor['communication']>>(row(found).data) : undefined;
   }
   private phoneAvailable(state: StoredWorld, actor: StoredActor): boolean {
     const phase = evaluateCompanionRoutine(this.routineConfig(actor.companionId), iso(this.virtualFor(state, state.cursor)));
     return !['sleeping', 'eating'].includes(phase.phase) && !['sleeping', 'lyingDown', 'waking', 'eating', 'working'].includes(actor.activity)
+      && !(actor.meetingHold && actor.meetingHold.untilReal > state.cursor) && !this.faceCommunication(actor.companionId, state.cursor)
       && !state.works.some(work => work.companionId === actor.companionId && work.kind !== 'chat' && work.status !== 'ended')
       && !this.db.prepare("SELECT 1 FROM actions WHERE companion_id=? AND status IN('queued','running') LIMIT 1").get(actor.companionId);
   }
@@ -100,6 +165,7 @@ export class CompanionWorldStore {
       CREATE TABLE IF NOT EXISTS companion_world_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS companion_world_jobs(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL REFERENCES companions(id),kind TEXT NOT NULL,status TEXT NOT NULL,lease_until TEXT,data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS companion_world_job_status ON companion_world_jobs(kind,status,lease_until);`);
+    this.db.exec("CREATE TABLE IF NOT EXISTS companion_world_perceptions(companion_id TEXT PRIMARY KEY REFERENCES companions(id),last_event_at INTEGER NOT NULL,last_signature TEXT NOT NULL DEFAULT '',samples INTEGER NOT NULL,data TEXT NOT NULL)");
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_world_occupancy(id INTEGER PRIMARY KEY AUTOINCREMENT,companion_id TEXT NOT NULL,phase TEXT NOT NULL,habit_id TEXT,habit_kind TEXT,starts_at INTEGER NOT NULL,ends_at INTEGER);
       CREATE UNIQUE INDEX IF NOT EXISTS companion_world_occupancy_open ON companion_world_occupancy(companion_id) WHERE ends_at IS NULL;
       CREATE INDEX IF NOT EXISTS companion_world_occupancy_time ON companion_world_occupancy(companion_id,starts_at);
@@ -111,18 +177,24 @@ export class CompanionWorldStore {
       CREATE INDEX IF NOT EXISTS companion_world_peer_source ON companion_world_peer_appraisals(companion_id,source_message_id,active);
       CREATE INDEX IF NOT EXISTS companion_world_event_effects ON companion_world_events(sequence) WHERE json_extract(data,'$.effect') IS NOT NULL;`);
     this.db.exec('CREATE TABLE IF NOT EXISTS companion_world_dream_watermark(companion_id TEXT NOT NULL,memory_id TEXT NOT NULL,version INTEGER NOT NULL,processed_at TEXT NOT NULL,PRIMARY KEY(companion_id,memory_id,version))');
+    this.db.exec('CREATE TABLE IF NOT EXISTS companion_world_encounters(pair_key TEXT PRIMARY KEY,left_id TEXT NOT NULL,right_id TEXT NOT NULL,data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS companion_world_encounter_left ON companion_world_encounters(left_id); CREATE INDEX IF NOT EXISTS companion_world_encounter_right ON companion_world_encounters(right_id)');
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_world_visit_records(id TEXT PRIMARY KEY,guest_id TEXT NOT NULL,host_id TEXT NOT NULL,status TEXT NOT NULL,settled_at INTEGER,data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS companion_world_visit_history ON companion_world_visit_records(guest_id,host_id,status,settled_at DESC);
       CREATE TABLE IF NOT EXISTS companion_world_clock_segments(revision INTEGER PRIMARY KEY,real_at INTEGER NOT NULL,virtual_at INTEGER NOT NULL,data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS companion_world_clock_real ON companion_world_clock_segments(real_at DESC,revision DESC);
       CREATE INDEX IF NOT EXISTS companion_world_clock_virtual ON companion_world_clock_segments(virtual_at DESC,revision DESC);`);
-    const state = this.load(); this.sync(state);
+    this.atomic(() => { const state = this.load(); this.sync(state);
     // The stopped process did no external work during its absence. Keep positions
     // and routes; close only computer reservations belonging to that process.
     for (const work of state.works) if (work.status !== 'ended') work.status = 'ended';
     for (const actor of state.actors) this.releasePhone(actor, state.cursor);
-    for (const actor of state.actors) if (actor.activity === 'working' || actor.activity === 'seating') { actor.activity = 'idle'; actor.route = []; delete actor.furnitureId; delete actor.destinationId; }
-    this.save(state);
+    for (const actor of state.actors) if (actor.activity === 'working' || actor.activity === 'seating' && actor.transition?.after === 'working') {
+      if (actor.transition?.eventId) this.event(state, { kind: 'behavior_interrupted', actorId: actor.companionId, sceneId: actor.sceneId,
+        text: '执行进程已经停止，结束未完成的电脑就座动作', behavior: { id: actor.transition.eventId, kind: actor.transition.action ?? 'seating', phase: 'interrupted', targetId: actor.furnitureId } });
+      delete actor.transition; actor.activity = 'idle'; actor.route = []; delete actor.furnitureId; delete actor.destinationId;
+    }
+    this.repairObstructedRoutes(state);
+    this.save(state); });
   }
   private load(): StoredWorld {
     const existing = this.db.prepare('SELECT data FROM companion_world WHERE id=1').get();
@@ -132,8 +204,10 @@ export class CompanionWorldStore {
     this.save(fresh); return fresh;
   }
   private rememberClock(state: StoredWorld): void { this.clockAnchors = state.anchors; this.through = state.cursor; this.actorProjection = state.actors; }
-  changed(): void { this.dirty = true; }
+  changed(): void { this.dirty = true; this.perceptionNextAt = 0; }
   resetCompanion(id: string): void {
+    this.db.prepare('DELETE FROM companion_world_perceptions WHERE companion_id=?').run(id); this.perceptionNextAt = 0;
+    this.db.prepare('DELETE FROM companion_world_encounters WHERE left_id=? OR right_id=?').run(id, id);
     const state = this.load();
     state.actors = state.actors.filter(actor => actor.companionId !== id);
     state.works = state.works.filter(work => work.companionId !== id);
@@ -186,6 +260,8 @@ export class CompanionWorldStore {
   actual(companionId: string, now: number): { phase: 'awake' | 'sleeping' | 'eating' | 'resting' | 'habit'; activity?: string; activeHabitId?: string } {
     this.ensureThrough(now); const actor = this.actorProjection.find(actor => actor.companionId === companionId);
     if (!actor) return { phase: 'awake' };
+    if (actor.parkWalk && actor.activity === 'walking') return { phase: actor.parkWalk.stage === 'strolling' ? 'habit' : 'awake',
+      activity: actor.parkWalk.stage === 'travelling' ? '正在步行前往公共花园' : actor.parkWalk.stage === 'returning' ? '散步后正在步行回家' : '在公共花园散步放松' };
     if (actor.transition) return { phase: 'awake', activity: actor.activity === 'lyingDown' ? '正在床上躺下，尚未入睡' : actor.activity === 'waking' ? '正在醒来起床' : actor.activity === 'standingUp' ? '正在起身准备行动' : actor.activity === 'seating' ? '正在家具前坐下' : '正在转身' };
     if (actor.activity === 'walking') return { phase: 'awake', activity: '正在前往' + (actor.destinationId?.endsWith('_bed') ? '床边准备睡觉' : actor.destinationId?.endsWith('_dining') ? '餐桌准备吃饭' : actor.destinationId?.endsWith('_sofa') ? '沙发准备休息' : actor.destinationId?.endsWith('_computer') ? '电脑前' : '日常活动地点') };
     if (['sleeping', 'eating', 'resting', 'habit'].includes(actor.activity)) {
@@ -198,11 +274,13 @@ export class CompanionWorldStore {
     const present = new Set(state.actors.map(actor => actor.companionId));
     for (const open of this.db.prepare('SELECT id,companion_id FROM companion_world_occupancy WHERE ends_at IS NULL').all() as Row[]) if (!present.has(String(open.companion_id))) this.db.prepare('UPDATE companion_world_occupancy SET ends_at=? WHERE id=?').run(state.cursor, open.id);
     for (const actor of state.actors) {
-      const phase = ['sleeping', 'eating', 'resting', 'habit'].includes(actor.activity) && !actor.route.length && actor.furnitureId ? actor.activity : undefined;
+      const strolling = actor.parkWalk?.stage === 'strolling' && actor.sceneId === 'commons' && actor.activity === 'walking' && actor.route.length > 0;
+      const phase = strolling ? 'habit' : ['sleeping', 'eating', 'resting', 'habit'].includes(actor.activity) && !actor.route.length && actor.furnitureId ? actor.activity : undefined;
       const config = this.routineConfig(actor.companionId), planned = evaluateCompanionRoutine(config, iso(this.virtualFor(state, state.cursor)));
-      const habitId = phase === 'habit' || phase === 'resting' ? planned.activeHabitId : undefined, habitKind = config.habits.find(habit => habit.id === habitId)?.kind;
+      const habitId = strolling ? undefined : phase === 'habit' || phase === 'resting' ? planned.activeHabitId : undefined,
+        habitKind = strolling ? 'exercise' : config.habits.find(habit => habit.id === habitId)?.kind;
       const open = this.db.prepare('SELECT * FROM companion_world_occupancy WHERE companion_id=? AND ends_at IS NULL').get(actor.companionId);
-      if (open && row(open).phase === phase && (row(open).habit_id ?? undefined) === habitId) continue;
+      if (open && row(open).phase === phase && (row(open).habit_id ?? undefined) === habitId && (row(open).habit_kind ?? undefined) === habitKind) continue;
       if (open) this.db.prepare('UPDATE companion_world_occupancy SET ends_at=? WHERE id=?').run(state.cursor, row(open).id);
       if (phase) this.db.prepare('INSERT INTO companion_world_occupancy(companion_id,phase,habit_id,habit_kind,starts_at) VALUES(?,?,?,?,?)').run(actor.companionId, phase, habitId ?? null, habitKind ?? null, state.cursor);
     }
@@ -264,6 +342,16 @@ export class CompanionWorldStore {
       const computer = scenes.flatMap(scene => scene.objects).find(object => object.id === actor.furnitureId && object.kind === 'computer');
       if (computer) { computer.occupantId = actor.companionId; computer.reservedBy = actor.companionId; }
     }
+    for (const actor of state.actors) {
+      const bench = scenes[0]!.objects.find(object => object.kind === 'bench' && object.id === actor.furnitureId);
+      if (bench && ((!actor.route.length && ['seating', 'sitting', 'resting'].includes(actor.activity)) || actor.activity === 'standingUp')) {
+        bench.occupantId = actor.companionId; bench.reservedBy = actor.companionId;
+      }
+    }
+    for (const actor of state.actors) if (actor.route.length) {
+      const bench = scenes[0]!.objects.find(object => object.kind === 'bench' && object.id === actor.destinationId);
+      if (bench && !bench.reservedBy) bench.reservedBy = actor.companionId;
+    }
     return scenes;
   }
   private sync(state: StoredWorld): void {
@@ -293,7 +381,11 @@ export class CompanionWorldStore {
     return ownerId === actorId || state.visits.some(visit => visit.hostId === ownerId && visit.guestId === actorId && visit.status === 'allowed' && Date.parse(visit.expiresAt) > this.virtualFor(state, state.cursor));
   }
   private event(state: StoredWorld, input: Omit<StoredEvent, 'id' | 'sequence' | 'at' | 'realAt' | 'simulation'>, at = state.cursor): StoredEvent {
-    const event = { ...input, id: randomUUID(), sequence: 1, at: iso(this.virtualFor(state, at)), realAt: iso(at), simulation: true as const };
+    const witnessIds = input.actorId && input.sceneId && !input.privateOwner ? state.actors.filter(actor => actor.companionId !== input.actorId && (() => {
+      const perception = this.perception(actor.companionId);
+      return perception?.awake && perception.sceneId === input.sceneId && at >= Date.parse(perception.observedAtReal) && at - Date.parse(perception.observedAtReal) <= 2000 && perception.visibleCompanionIds.includes(input.actorId!);
+    })()).map(actor => actor.companionId) : undefined;
+    const event = { ...input, ...(witnessIds?.length ? { witnessIds } : {}), id: randomUUID(), sequence: 1, at: iso(this.virtualFor(state, at)), realAt: iso(at), simulation: true as const };
     const result = this.db.prepare('INSERT INTO companion_world_events(id,data) VALUES(?,?)').run(event.id, JSON.stringify(event)); event.sequence = Number(result.lastInsertRowid);
     this.db.prepare('UPDATE companion_world_events SET data=? WHERE id=?').run(JSON.stringify(event), event.id);
     return event;
@@ -307,43 +399,56 @@ export class CompanionWorldStore {
     const running = state.works.some(work => work.companionId === actor.companionId && work.urgent && work.status !== 'ended');
     actor.locomotion = running ? 'run' : 'walk'; actor.movementSpeed = running ? 4.8 : COMPANION_WORLD_WALK_TILES_PER_SECOND;
     actor.activityStartedAtReal = iso(state.cursor);
-    delete actor.seatUntil;
-    if (transition && transition.until > state.cursor) { actor.activity = previous; transition.after = route.length ? 'walking' : activity; }
-    else if (['sleeping', 'lyingDown'].includes(previous)) this.startTransition(actor, 'waking', 'walking', state.cursor);
-    else if (['sitting', 'working', 'eating', 'resting', 'seating'].includes(previous)) this.startTransition(actor, 'standingUp', 'walking', state.cursor);
+    if (transition && transition.until > state.cursor && previous === 'seating') this.startTransition(state, actor, 'standingUp', route.length ? 'walking' : activity, state.cursor);
+    else if (transition && transition.until > state.cursor) { actor.activity = previous; transition.after = route.length ? 'walking' : activity; }
+    else if (['sleeping', 'lyingDown'].includes(previous)) this.startTransition(state, actor, 'waking', 'walking', state.cursor);
+    else if (['sitting', 'working', 'eating', 'resting', 'seating'].includes(previous)) this.startTransition(state, actor, 'standingUp', 'walking', state.cursor);
     else if (route.length) {
       const first = route.find(point => point.sceneId === actor.sceneId && Math.hypot(point.x - actor.position.x, point.y - actor.position.y) > .01);
       const facing = first ? Math.abs(first.x - actor.position.x) > Math.abs(first.y - actor.position.y) ? first.x > actor.position.x ? 'east' : 'west' : first.y > actor.position.y ? 'south' : 'north' : actor.facing;
-      if (facing !== actor.facing) { actor.facing = facing; this.startTransition(actor, 'turning', 'walking', state.cursor); }
+      if (facing !== actor.facing) { actor.facing = facing; this.startTransition(state, actor, 'turning', 'walking', state.cursor); }
     }
     if (!actor.transition) delete actor.furnitureId;
-    if (!route.length && !actor.transition && activity === 'sleeping') { actor.furnitureId = destinationId; this.startTransition(actor, 'lyingDown', 'sleeping', state.cursor); }
-    else if (!route.length && !actor.transition && (activity === 'eating' || activity === 'resting')) { actor.furnitureId = destinationId; this.startTransition(actor, 'seating', activity, state.cursor); }
+    if (!route.length && !actor.transition && activity === 'sleeping') { actor.furnitureId = destinationId; this.startTransition(state, actor, 'lyingDown', 'sleeping', state.cursor); }
+    else if (!route.length && !actor.transition && (activity === 'eating' || activity === 'resting')) { actor.furnitureId = destinationId; this.startTransition(state, actor, 'seating', activity, state.cursor); }
     this.event(state, { kind: 'move', actorId: actor.companionId, sceneId: actor.sceneId, text: '开始步行前往' + destinationId });
   }
-  private startTransition(actor: StoredActor, action: 'seating' | 'standingUp' | 'lyingDown' | 'waking' | 'turning', after: CompanionWorldActor['activity'], at: number): void {
-    const duration = action === 'seating' ? COMPANION_WORLD_ACTION_TIMINGS.sitDown : action === 'standingUp' ? COMPANION_WORLD_ACTION_TIMINGS.standUp : action === 'lyingDown' ? COMPANION_WORLD_ACTION_TIMINGS.lieDown : action === 'waking' ? COMPANION_WORLD_ACTION_TIMINGS.wake : COMPANION_WORLD_ACTION_TIMINGS.turn;
-    actor.activity = action; actor.activityStartedAtReal = iso(at); actor.transition = { until: at + duration, after };
+  private startTransition(state: StoredWorld, actor: StoredActor, action: 'seating' | 'standingUp' | 'lyingDown' | 'waking' | 'turning', after: CompanionWorldActor['activity'], at: number): void {
+    if (actor.transition && actor.activity === action && actor.transition.after === after && actor.transition.until > at) return;
+    const labels = { seating: '坐下', standingUp: '起身', lyingDown: '躺下', waking: '醒来起床', turning: '转身' };
+    if (actor.transition && actor.transition.until > at) this.event(state, { kind: 'behavior_interrupted', actorId: actor.companionId, sceneId: actor.sceneId,
+      text: '先前的姿态动作被新的实际安排中断', behavior: actor.transition.eventId ? { id: actor.transition.eventId, kind: actor.transition.action ?? actor.activity, phase: 'interrupted', targetId: actor.furnitureId } : undefined }, at);
+    const duration = action === 'seating' ? COMPANION_WORLD_SEATING_MS : action === 'standingUp' ? COMPANION_WORLD_ACTION_TIMINGS.standUp : action === 'lyingDown' ? COMPANION_WORLD_ACTION_TIMINGS.lieDown : action === 'waking' ? COMPANION_WORLD_ACTION_TIMINGS.wake : COMPANION_WORLD_ACTION_TIMINGS.turn;
+    const eventId = randomUUID();
+    actor.activity = action; actor.activityStartedAtReal = iso(at); actor.transition = { eventId, action, until: at + duration, after };
+    this.event(state, { kind: 'behavior_started', actorId: actor.companionId, sceneId: actor.sceneId, text: '开始' + labels[action],
+      behavior: { id: eventId, kind: action, phase: 'started', targetId: actor.furnitureId,
+        parentId: actor.parkWalk?.occurrenceId ?? state.works.find(work => work.companionId === actor.companionId && work.status !== 'ended')?.workId } }, at);
   }
   private finishTransitions(state: StoredWorld): void {
     for (const actor of state.actors) if (actor.transition && actor.transition.until <= state.cursor) {
-      const transition = actor.transition; actor.activity = transition.after; actor.activityStartedAtReal = iso(transition.until); delete actor.transition;
+      const transition = actor.transition, completedAction = transition.action ?? actor.activity; actor.activity = transition.after; actor.activityStartedAtReal = iso(transition.until); delete actor.transition;
+      this.event(state, { kind: 'behavior_completed', actorId: actor.companionId, sceneId: actor.sceneId, text: '姿态动作已实际完成，进入' + transition.after,
+        behavior: transition.eventId ? { id: transition.eventId, kind: completedAction, phase: 'completed', targetId: actor.furnitureId } : undefined }, transition.until);
       if (actor.activity === 'walking' || actor.activity === 'idle') delete actor.furnitureId;
     }
   }
-  private enterFurniture(actor: StoredActor, activity: CompanionWorldActor['activity'], at: number): void {
+  private enterFurniture(state: StoredWorld, actor: StoredActor, activity: CompanionWorldActor['activity'], at: number): void {
     if (actor.activity === activity) return;
-    if (activity === 'sleeping') this.startTransition(actor, 'lyingDown', 'sleeping', at);
-    else if (['eating', 'resting', 'sitting'].includes(activity)) this.startTransition(actor, 'seating', activity, at);
-    else if (activity === 'idle' && ['sleeping', 'lyingDown'].includes(actor.activity)) this.startTransition(actor, 'waking', 'idle', at);
-    else if (activity === 'idle' && ['sitting', 'seating', 'resting', 'eating', 'working'].includes(actor.activity)) this.startTransition(actor, 'standingUp', 'idle', at);
-    else { actor.activity = activity; actor.activityStartedAtReal = iso(at); }
+    if (activity === 'sleeping') this.startTransition(state, actor, 'lyingDown', 'sleeping', at);
+    else if (activity === 'seating') this.startTransition(state, actor, 'seating', 'working', at);
+    else if (['eating', 'resting', 'sitting'].includes(activity)) this.startTransition(state, actor, 'seating', activity, at);
+    else if (activity === 'idle' && ['sleeping', 'lyingDown'].includes(actor.activity)) this.startTransition(state, actor, 'waking', 'idle', at);
+    else if (activity === 'idle' && ['sitting', 'seating', 'resting', 'eating', 'working'].includes(actor.activity)) this.startTransition(state, actor, 'standingUp', 'idle', at);
+    else {
+      actor.activity = activity; actor.activityStartedAtReal = iso(at);
+      this.event(state, { kind: 'activity_entered', actorId: actor.companionId, sceneId: actor.sceneId, text: '实际进入' + activity + '状态' }, at);
+    }
   }
   private planRoutine(state: StoredWorld, actor: StoredActor): void {
     const focus = this.orders?.focus(actor.companionId);
-    let releasedFocus = false;
     for (const held of state.works.filter(work => work.companionId === actor.companionId && work.workOrderId && work.status !== 'ended')) {
-      if (held.workOrderId !== focus?.id) { held.status = 'ended'; releasedFocus = true; }
+      if (held.workOrderId !== focus?.id) held.status = 'ended';
       else if (focus) held.sourceMessageId = focus.sourceMessageId;
     }
     if (focus && !state.works.some(work => work.companionId === actor.companionId && work.workOrderId === focus.id && work.status !== 'ended')) {
@@ -353,10 +458,15 @@ export class CompanionWorldStore {
     const phase = evaluateCompanionRoutine(this.routineConfig(actor.companionId), iso(this.virtualFor(state, state.cursor)));
     actor.routinePhase = phase.phase;
     const computer = active.filter(work => work.kind !== 'chat'), phone = active.filter(work => work.kind === 'chat');
+    if (actor.meetingResume && (computer.length || ['sleeping', 'eating'].includes(phase.phase) || phone.some(work => work.urgent))) this.releaseMeeting(actor, true);
+    if (actor.parkWalk && (computer.length || ['sleeping', 'eating'].includes(phase.phase))) {
+      this.finishParkWalk(state, actor, computer.length ? '开始集中工作，结束这次散步' : '到了用餐或睡眠时间，结束这次散步', false);
+    }
     const peerPhone = this.peerPhoneActive(actor.companionId, state.cursor);
-    if (releasedFocus && !computer.length && ['working', 'seating'].includes(actor.activity)) {
-      delete actor.seatUntil; delete actor.destinationId;
-      this.startTransition(actor, 'standingUp', 'idle', state.cursor);
+    if (!computer.length && actor.phoneResume?.activity === 'working') actor.phoneResume.activity = 'sitting';
+    if (!computer.length && (actor.activity === 'working' || actor.activity === 'seating' && actor.transition?.after === 'working')) {
+      delete actor.destinationId;
+      this.startTransition(state, actor, 'standingUp', 'idle', state.cursor);
     }
     if (actor.phoneResume && (computer.length || !phone.some(work => work.status === 'ready') && !(peerPhone && this.phoneAvailable(state, actor)))) this.releasePhone(actor, state.cursor);
     if (computer.length) this.planComputer(state, actor, computer);
@@ -367,6 +477,8 @@ export class CompanionWorldStore {
       return;
     }
     if (actor.transition && actor.transition.until > state.cursor) return;
+    if (this.holdMeeting(state, actor)) return;
+    if (this.planParkWalk(state, actor)) return;
     if (actor.manualActivityUntil && actor.manualActivityUntil > this.virtualFor(state, state.cursor) && phase.canRespond) return;
     delete actor.manualActivityUntil; delete actor.manualArtAction;
     if (actor.pendingVisitId && phase.canRespond) {
@@ -380,11 +492,10 @@ export class CompanionWorldStore {
       if (actor.destinationId !== home.id) this.move(state, actor, home, { x: 10, y: 12 }, home.id, 'idle');
       return;
     }
-    if (actor.seatUntil && actor.seatUntil > state.cursor) return;
     const kind = phase.phase === 'sleeping' ? 'bed' : phase.phase === 'eating' ? 'dining' : phase.phase === 'resting' ? 'sofa' : phase.phase === 'habit' ? 'habit' : undefined;
     if (!kind) {
-      if (actor.activity === 'sleeping') this.startTransition(actor, 'waking', 'idle', state.cursor);
-      else if (['eating', 'resting'].includes(actor.activity)) this.startTransition(actor, 'standingUp', 'idle', state.cursor);
+      if (actor.activity === 'sleeping') this.startTransition(state, actor, 'waking', 'idle', state.cursor);
+      else if (['eating', 'resting'].includes(actor.activity)) this.startTransition(state, actor, 'standingUp', 'idle', state.cursor);
       else if (actor.activity === 'habit') { actor.activity = 'idle'; delete actor.furnitureId; }
       if (actor.activity !== 'walking') delete actor.destinationId;
       this.queueDecision(state, actor); return;
@@ -398,13 +509,145 @@ export class CompanionWorldStore {
     actor.arrivalActivity = activity;
     if (!actor.route.length && actor.destinationId === furniture.id && actor.activity !== activity) {
       actor.furnitureId = furniture.id;
-      this.enterFurniture(actor, activity, state.cursor);
+      this.enterFurniture(state, actor, activity, state.cursor);
     }
   }
   private releasePhone(actor: StoredActor, now: number): void {
     if (!actor.phoneResume) return;
     if (!actor.transition || actor.transition.until <= now) { actor.activity = actor.phoneResume.activity; actor.activityStartedAtReal = iso(now); }
     delete actor.phoneResume;
+  }
+  private releaseMeeting(actor: StoredActor, clear = false): void {
+    if (actor.meetingResume) {
+      actor.activity = actor.route.length ? 'walking' : actor.meetingResume; delete actor.meetingResume;
+    }
+    if (clear) { delete actor.meetingHold; this.db.prepare("DELETE FROM companion_social_communication WHERE companion_id=? AND json_extract(data,'$.channel')='face_to_face'").run(actor.companionId); }
+  }
+  private holdMeeting(state: StoredWorld, actor: StoredActor): boolean {
+    if (actor.meetingHold && actor.meetingHold.untilReal <= state.cursor) delete actor.meetingHold;
+    const communication = this.faceCommunication(actor.companionId, state.cursor), members = communication ? [actor.companionId, ...communication.recipientIds] : actor.meetingHold?.memberIds;
+    if (!members || !this.faceGroupAvailable(state, members)) { this.releaseMeeting(actor, true); return false; }
+    actor.meetingResume ??= actor.activity;
+    if (actor.activity === 'walking' || actor.activity === 'habit') { actor.activity = 'idle'; actor.activityStartedAtReal = iso(state.cursor); }
+    return true;
+  }
+  private observeEncounters(state: StoredWorld, target: number): void {
+    if (state.cursor + 1 < target) return;
+    type Clock = { present: boolean; hazard: number; threshold: number; lastRealAt: number; triggeredAt?: number };
+    const saved = new Map((this.db.prepare('SELECT pair_key,data FROM companion_world_encounters').all() as Row[]).map(value => [String(value.pair_key), parse<Clock>(value.data)]));
+    const enabled = new Set((this.db.prepare("SELECT id FROM companions WHERE deleted_at IS NULL AND COALESCE(json_extract(data,'$.proactive'),1)!=0").all() as Row[]).map(value => String(value.id)));
+    const pendingMembers = new Set((this.db.prepare("SELECT data FROM companion_world_jobs WHERE kind='decision' AND status IN('pending','running','failed') AND json_extract(data,'$.encounterMemberIds') IS NOT NULL").all() as Row[])
+      .flatMap(value => parse<CompanionWorldJob>(value.data).encounterMemberIds ?? []));
+    const actors = state.actors.filter(actor => !pendingMembers.has(actor.companionId) && this.faceMemberAvailable(state, actor)).sort((a, b) => a.companionId.localeCompare(b.companionId));
+    const near = new Set<string>(), upsert = this.db.prepare('INSERT INTO companion_world_encounters(pair_key,left_id,right_id,data) VALUES(?,?,?,?) ON CONFLICT(pair_key) DO UPDATE SET data=excluded.data');
+    for (let left = 0; left < actors.length; left++) for (let right = left + 1; right < actors.length; right++) {
+      const first = actors[left]!, second = actors[right]!, key = first.companionId + '|' + second.companionId;
+      if (first.sceneId !== second.sceneId || Math.hypot(first.position.x - second.position.x, first.position.y - second.position.y) > 5) continue;
+      const firstSense = this.perception(first.companionId), secondSense = this.perception(second.companionId);
+      const sees = (sense: CompanionWorldPerception | undefined, id: string) => sense?.awake && state.cursor - Date.parse(sense.observedAtReal) <= 2000 && sense.visibleCompanionIds.includes(id);
+      if (!sees(firstSense, second.companionId) || !sees(secondSense, first.companionId)) continue;
+      near.add(key); const clock = saved.get(key) ?? { present: false, hazard: 0, threshold: 1, lastRealAt: state.cursor };
+      if (!clock.present || state.cursor - clock.lastRealAt > 120000) { clock.hazard = 0; clock.threshold = companionLifeThreshold(key + '/' + state.cursor); }
+      const elapsed = clock.present && state.cursor - clock.lastRealAt <= 120000 ? this.elapsedVirtual(clock.lastRealAt, state.cursor) : 0;
+      clock.present = true; clock.lastRealAt = state.cursor;
+      const virtualNow = iso(this.virtualFor(state, state.cursor));
+      const mayInitiate = (actor: StoredActor) => enabled.has(actor.companionId) && !!this.social?.canInitiate(actor.companionId, virtualNow, state.settings.timeZone);
+      const owner = mayInitiate(first) ? first : mayInitiate(second) ? second : undefined;
+      if (!owner) { upsert.run(key, first.companionId, second.companionId, JSON.stringify(clock)); continue; }
+      const peer = owner === first ? second : first, relation = state.relationships.find(edge => edge.companionId === owner.companionId && edge.targetCompanionId === peer.companionId);
+      const runtime = this.runtime(owner.companionId), multiplier = companionLifeMultiplier({ energy: runtime.energy, pleasure: runtime.affect.pleasure, arousal: runtime.affect.arousal,
+        affinity: relation?.affinity ?? 50, trust: relation?.trust ?? 50, expression: runtime.expression, action: 'message', available: true });
+      const cooling = clock.triggeredAt !== undefined && (state.cursor - clock.triggeredAt < 120000 || this.elapsedVirtual(clock.triggeredAt, state.cursor) < 3600000);
+      if (!cooling) clock.hazard += companionLifeHazard(.7, 60000, elapsed, multiplier);
+      if (!cooling && clock.hazard >= clock.threshold && !owner.meetingHold && !this.faceCommunication(owner.companionId, state.cursor)) {
+        const group = [owner, peer];
+        for (const candidate of actors) if (group.length < 4 && !group.includes(candidate) && !candidate.meetingHold && !this.faceCommunication(candidate.companionId, state.cursor)
+          && group.every(member => member.sceneId === candidate.sceneId && Math.hypot(member.position.x - candidate.position.x, member.position.y - candidate.position.y) <= 5
+            && sees(this.perception(member.companionId), candidate.companionId) && sees(this.perception(candidate.companionId), member.companionId))) group.push(candidate);
+        const memberIds = group.map(member => member.companionId).sort();
+        if (group.every(member => !member.meetingHold && !this.faceCommunication(member.companionId, state.cursor))) {
+          const job = this.queueJob(state, owner.companionId, 'decision', memberIds);
+          if (job) {
+            for (const member of group) { member.meetingHold = { jobId: job.id, memberIds, untilReal: state.cursor + 60000 }; this.holdMeeting(state, member); }
+            for (let a = 0; a < memberIds.length; a++) for (let b = a + 1; b < memberIds.length; b++) {
+              const pair = memberIds[a]! + '|' + memberIds[b]!, prior = saved.get(pair) ?? { present: true, hazard: 0, threshold: 1, lastRealAt: state.cursor };
+              prior.triggeredAt = state.cursor; prior.hazard = 0; saved.set(pair, prior); upsert.run(pair, memberIds[a], memberIds[b], JSON.stringify(prior));
+            }
+            clock.triggeredAt = state.cursor; clock.hazard = 0;
+            this.event(state, { kind: 'encounter_opportunity', actorId: owner.companionId, sceneId: owner.sceneId, text: '与' + memberIds.filter(id => id !== owner.companionId).join('、') + '实际相遇，停步考虑当面交流。' });
+          }
+        }
+      }
+      saved.set(key, clock); upsert.run(key, first.companionId, second.companionId, JSON.stringify(clock));
+    }
+    for (const [key, clock] of saved) if (clock.present && !near.has(key)) { clock.present = false; clock.hazard = 0; const members = key.split('|'); upsert.run(key, members[0], members[1], JSON.stringify(clock)); }
+  }
+  private finishParkWalk(state: StoredWorld, actor: StoredActor, reason: string, returnHome: boolean): void {
+    const walk = actor.parkWalk; if (!walk) return;
+    const completed = walk.participatedMinutes + .000001 >= walk.durationMinutes;
+    if (walk.occurrenceId && (!completed || !returnHome)) this.life?.completePhysical(walk.occurrenceId, actor.companionId, 'cancelled', `${reason}；实际散步${Math.round(walk.participatedMinutes * 10) / 10}分钟。`);
+    if (walk.stage !== 'returning') this.event(state, { kind: walk.participatedMinutes + .000001 >= walk.durationMinutes ? 'park_walk_complete' : 'park_walk_interrupted',
+      actorId: actor.companionId, sceneId: actor.sceneId,
+      text: `${reason}；实际在园中散步${Math.round(walk.participatedMinutes * 10) / 10}分钟。` });
+    if (returnHome) {
+      const home = this.scenes(state).find(scene => scene.id === actor.homeSceneId)!;
+      walk.stage = 'returning'; this.move(state, actor, home, { x: 10, y: 12 }, home.id, 'idle');
+    } else {
+      delete actor.parkWalk;
+      actor.route = []; if (actor.activity === 'walking') actor.activity = 'idle';
+      delete actor.destinationId; delete actor.arrivalActivity;
+    }
+  }
+  private planParkWalk(state: StoredWorld, actor: StoredActor): boolean {
+    const walk = actor.parkWalk; if (!walk) return false;
+    if (walk.stage === 'returning') {
+      if (actor.route.length || actor.transition) return true;
+      if (walk.occurrenceId && walk.participatedMinutes + .000001 >= walk.durationMinutes) this.life?.completePhysical(walk.occurrenceId, actor.companionId, 'done', `实际在公园散步${Math.round(walk.participatedMinutes)}分钟，并已步行回到自己的家。`);
+      delete actor.parkWalk; delete actor.destinationId; return false;
+    }
+    const climate = companionWorldEnvironment(this.virtualFor(state, state.cursor), state.settings.timeZone).environment;
+    if (this.runtime(actor.companionId).energy <= 25 || actor.sceneId === 'commons' && !companionWorldParkSuitable(climate)) {
+      this.finishParkWalk(state, actor, '户外天气或当前精力不再适合散步，准备回家', true); return true;
+    }
+    if (walk.participatedMinutes + .000001 >= walk.durationMinutes) {
+      this.finishParkWalk(state, actor, '完成这次花园散步，准备回家', true); return true;
+    }
+    if (actor.route.length) return true;
+    const commons = this.scenes(state).find(scene => scene.kind === 'commons')!, circuit = companionWorldParkCircuit(commons);
+    if (!circuit.length) { this.finishParkWalk(state, actor, '散步步道暂时不可达，准备回家', true); return true; }
+    if (walk.stage === 'travelling') {
+      walk.stage = 'strolling';
+      this.event(state, { kind: 'park_walk_enter', actorId: actor.companionId, sceneId: commons.id, text: `实际抵达公共花园，开始${walk.durationMinutes}分钟的散步放松。` });
+    }
+    walk.waypointIndex = (walk.waypointIndex + 1) % circuit.length;
+    this.move(state, actor, commons, circuit[walk.waypointIndex]!, 'park_promenade_' + walk.waypointIndex, 'idle');
+    return true;
+  }
+  private repairObstructedRoutes(state: StoredWorld): void {
+    const scenes = this.scenes(state), byId = new Map(scenes.map(scene => [scene.id, scene]));
+    for (const actor of state.actors) {
+      const current = byId.get(actor.sceneId); if (!current) continue;
+      const obstructedStart = !companionWorldCellWalkable(current, actor.position);
+      if (!obstructedStart && !actor.route.some(point => { const scene = byId.get(point.sceneId); return !scene || !companionWorldCellWalkable(scene, point); })) continue;
+      let destination = actor.route.at(-1);
+      if (!destination && obstructedStart) {
+        const start = { x: Math.round(actor.position.x), y: Math.round(actor.position.y) };
+        for (let radius = 1; radius <= 8 && !destination; radius++) for (let dx = -radius; dx <= radius && !destination; dx++) for (const dy of [-1, 1].map(sign => sign * (radius - Math.abs(dx)))) {
+          const point = { x: start.x + dx, y: start.y + dy };
+          if (companionWorldCellWalkable(current, point) && findCompanionWorldPath(current, actor.position, point, true)) { destination = { ...point, sceneId: current.id }; break; }
+        }
+      }
+      const route = destination && routeCompanionWorldActor(scenes, actor, destination.sceneId, destination, owner => this.permitted(state, actor.companionId, owner), obstructedStart);
+      if (route) {
+        actor.route = route;
+        if (route.length && !actor.transition && !actor.phoneResume) actor.activity = 'walking';
+        this.event(state, { kind: 'route_replanned', actorId: actor.companionId, sceneId: actor.sceneId, text: '根据当前真实场景重新规划步行路线，避开新增障碍。' });
+      } else {
+        if (actor.parkWalk) this.finishParkWalk(state, actor, '步道发生变化且目的地不可达，停止这次散步', false);
+        actor.route = []; if (actor.activity === 'walking') actor.activity = 'idle'; delete actor.destinationId; delete actor.arrivalActivity;
+        this.event(state, { kind: 'route_unavailable', actorId: actor.companionId, sceneId: actor.sceneId, text: '当前真实障碍使目的地不可达，已停止旧路线。' });
+      }
+    }
   }
   private holdPhone(actor: StoredActor, now: number): void {
     if (actor.phoneResume) return;
@@ -424,8 +667,8 @@ export class CompanionWorldStore {
       if (!eligible.includes(work)) { work.status = 'waiting'; work.reason = work.requestedAtReal > state.cursor ? '正在补算世界存档' : awaitingComputer(work) ? '这条请求正在电脑执行，等待实际结果后继续手机回复' : this.peerPhoneActive(actor.companionId, state.cursor) ? '正在用手机处理先前消息，稍后依次回复' : '正在工作、用餐或睡眠，稍后用手机回复'; }
     }
     if (!eligible.length) { if (!this.peerPhoneActive(actor.companionId, state.cursor) || !this.phoneAvailable(state, actor)) this.releasePhone(actor, state.cursor); return; }
-    if (['sleeping', 'lyingDown'].includes(actor.activity)) this.enterFurniture(actor, 'idle', state.cursor);
-    else if (actor.activity === 'eating') this.enterFurniture(actor, 'idle', state.cursor);
+    if (['sleeping', 'lyingDown'].includes(actor.activity)) this.enterFurniture(state, actor, 'idle', state.cursor);
+    else if (actor.activity === 'eating') this.enterFurniture(state, actor, 'idle', state.cursor);
     if (actor.transition && actor.transition.until > state.cursor) { for (const work of eligible) { work.status = 'moving'; work.reason = '正在结束当前姿态，准备查看手机'; } return; }
     this.holdPhone(actor, state.cursor);
     for (const work of eligible) { work.status = 'ready'; delete work.reason; }
@@ -451,11 +694,14 @@ export class CompanionWorldStore {
       if (actor.locomotion !== locomotion && actor.activity === 'walking') actor.activityStartedAtReal = iso(state.cursor);
       actor.locomotion = locomotion; actor.movementSpeed = running ? 4.8 : COMPANION_WORLD_WALK_TILES_PER_SECOND;
     }
-    if (actor.transition && actor.transition.until > state.cursor) { for (const work of eligible) work.status = 'moving'; return; }
+    if (actor.transition && actor.transition.until > state.cursor) {
+      for (const work of eligible) work.status = actor.transition.action === 'seating' && actor.transition.after === 'working' && actor.furnitureId === computer.id ? 'seating' : 'moving';
+      return;
+    }
     if (!actor.route.length && actor.sceneId === scene.id && Math.hypot(actor.position.x - computer.anchor.x, actor.position.y - computer.anchor.y) < .01) {
-      if (!actor.seatUntil) actor.seatUntil = state.cursor + COMPANION_WORLD_SEATING_MS;
-      if (state.cursor >= actor.seatUntil) { if (actor.activity !== 'working') actor.activityStartedAtReal = iso(state.cursor); actor.activity = 'working'; actor.furnitureId = computer.id; for (const work of eligible) work.status = 'ready'; }
-      else { actor.activity = 'seating'; for (const work of eligible) work.status = 'seating'; }
+      actor.furnitureId = computer.id;
+      if (actor.activity === 'working') for (const work of eligible) work.status = 'ready';
+      else { this.startTransition(state, actor, 'seating', 'working', state.cursor); for (const work of eligible) work.status = 'seating'; }
     } else for (const work of eligible) work.status = 'moving';
   }
   tick(now = Date.now()): CompanionWorldSnapshot { this.advance(now); return this.snapshotValue(this.load(), now); }
@@ -469,6 +715,7 @@ export class CompanionWorldStore {
         this.finishTransitions(state);
         for (const visit of state.visits) if (['allowed', 'requested'].includes(visit.status) && Date.parse(visit.expiresAt) <= this.virtualFor(state, state.cursor)) visit.status = 'expired';
         for (const actor of state.actors) this.planRoutine(state, actor);
+        this.repairObstructedRoutes(state);
         this.syncOccupancy(state);
         let next = target;
         const segment = this.db.prepare('SELECT real_at FROM companion_world_clock_segments WHERE real_at>? AND real_at<=? ORDER BY real_at,revision LIMIT 1').get(state.cursor, target);
@@ -484,8 +731,9 @@ export class CompanionWorldStore {
             const distance = actor.route.reduce((sum, point, index) => { const prior = index ? actor.route[index - 1]! : { ...actor.position, sceneId: actor.sceneId };
               return sum + (prior.sceneId === point.sceneId ? Math.hypot(point.x - prior.x, point.y - prior.y) : 1); }, 0);
             next = Math.min(next, state.cursor + Math.max(1, distance / actor.movementSpeed * 1000));
+            if (actor.parkWalk?.stage === 'strolling') next = Math.min(next, state.cursor + Math.max(1,
+              (actor.parkWalk.durationMinutes - actor.parkWalk.participatedMinutes) * 60000 / companionWorldSpeed(this.clockAnchor(state.anchors, state.cursor).settings)));
           }
-          if (actor.seatUntil && actor.seatUntil > state.cursor) next = Math.min(next, actor.seatUntil);
           if (actor.transition && actor.transition.until > state.cursor) next = Math.min(next, actor.transition.until);
         }
         const elapsed = next - state.cursor;
@@ -496,9 +744,24 @@ export class CompanionWorldStore {
           let priorScene = actor.sceneId;
           const forbidden = actor.route.findIndex(point => { const crossing = point.sceneId !== priorScene; priorScene = point.sceneId; return crossing && point.sceneId.startsWith('home_') && !this.permitted(state, actor.companionId, point.sceneId.slice(5)); });
           if (forbidden >= 0) { actor.route = []; delete actor.destinationId; actor.activity = 'idle'; continue; }
-          const advanced = advanceCompanionWorldActor(actor, elapsed); state.actors[index] = { ...actor, ...advanced.actor };
+          const advanced = advanceCompanionWorldActor(actor, elapsed); state.actors[index] = { ...actor, ...advanced.actor, parkWalk: actor.parkWalk };
+          const walk = actor.parkWalk;
+          if (walk?.stage === 'strolling' && actor.sceneId === 'commons') {
+            const commons = this.scenes(state).find(scene => scene.kind === 'commons')!, bounds = companionWorldParkLayout(commons);
+            if (bounds && companionWorldParkContains(bounds, actor.position)) {
+              const actualEnd = Math.min(next, state.cursor + advanced.usedMs);
+              walk.participatedMinutes = Math.min(walk.durationMinutes, walk.participatedMinutes + this.elapsedVirtual(state.cursor, actualEnd) / 60000);
+              const ticks = Math.floor((walk.participatedMinutes + .000001) / 10);
+              if (ticks > walk.comfortTicks) {
+                this.event(state, { kind: 'park_walk_relax', actorId: actor.companionId, sceneId: commons.id,
+                  text: `在花园中实际散步${Math.round(walk.participatedMinutes)}分钟，感受自然环境，逐渐放松。`,
+                  effect: { type: 'comfort', intensity: Math.min(.2, (ticks - walk.comfortTicks) * .04) } }, actualEnd);
+                walk.comfortTicks = ticks;
+              }
+            }
+          }
           if (advanced.arrived) { const arrived = state.actors[index]!; arrived.activity = arrived.arrivalActivity ?? 'idle'; arrived.activityStartedAtReal = iso(next); arrived.furnitureId = arrived.destinationId;
-            const activity = arrived.activity; arrived.activity = 'idle'; this.enterFurniture(arrived, activity, next);
+            const activity = arrived.activity; arrived.activity = 'idle'; this.enterFurniture(state, arrived, activity, next);
             this.event(state, { kind: 'arrive', actorId: actor.companionId, sceneId: arrived.sceneId, text: '步行到达' + arrived.destinationId }, next); }
         }
         state.cursor = next;
@@ -521,8 +784,10 @@ export class CompanionWorldStore {
         const stressed = band !== 'mild' || ['rain', 'snow'].includes(climate.environment.weather);
         this.event(state, { kind: 'environment', actorId: actor.companionId, sceneId: actor.sceneId, text: stressed ? '感受到户外的降水或偏冷偏热天气' : '感受到街区的自然光线与空气', effect: { type: stressed ? 'stress' : 'comfort', intensity: stressed ? .15 : .08 } });
       }
+      this.refreshPerceptions(state, target);
+      this.observeEncounters(state, target);
       this.save(state); this.dirty = false; this.flushEffects();
-    }).immediate(); } catch (error) { this.clockAnchors = undefined; this.actorProjection = []; this.through = 0; throw error; } finally { this.advancing = false; }
+    }).immediate(); } catch (error) { this.clockAnchors = undefined; this.actorProjection = []; this.through = 0; this.perceptionNextAt = 0; throw error; } finally { this.advancing = false; }
   }
   private flushEffects(): void {
     const through = Number(row(this.db.prepare("SELECT value FROM metadata WHERE key='world-effects-through'").get() ?? { value: 0 }).value);
@@ -535,7 +800,7 @@ export class CompanionWorldStore {
     if (now - actor.lastDecisionAt < 3 * 3600000 || actor.route.length) return;
     actor.lastDecisionAt = now; this.queueJob(state, actor.companionId, 'decision');
   }
-  private queueJob(state: StoredWorld, companionId: string, kind: CompanionWorldJob['kind']): void {
+  private queueJob(state: StoredWorld, companionId: string, kind: CompanionWorldJob['kind'], encounterMemberIds?: string[]): CompanionWorldJob | undefined {
     if (this.db.prepare("SELECT 1 FROM companion_world_jobs WHERE companion_id=? AND kind=? AND status IN ('pending','running','failed')").get(companionId, kind)) return;
     if (kind === 'dream' && !this.unseenAtoms(companionId, 1).length) return;
     const last = row(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM companion_world_events').get()).n;
@@ -549,8 +814,9 @@ export class CompanionWorldStore {
         this.db.prepare('INSERT INTO conversation_members(conversation_id,companion_id) VALUES(?,?)').run(conversationId, companionId);
       }
     }
-    const job: CompanionWorldJob = { id: randomUUID(), companionId, conversationId, kind, status: 'pending', throughEventSequence: Number(last), createdAt: iso(state.cursor), attempts: 0, sourceMemoryIds: [] };
+    const job: CompanionWorldJob = { id: randomUUID(), companionId, conversationId, kind, status: 'pending', throughEventSequence: Number(last), createdAt: iso(state.cursor), attempts: 0, sourceMemoryIds: [], ...(encounterMemberIds ? { encounterMemberIds } : {}) };
     this.db.prepare('INSERT INTO companion_world_jobs(id,companion_id,kind,status,data) VALUES(?,?,?,?,?)').run(job.id, companionId, kind, job.status, JSON.stringify(job));
+    return job;
   }
   private unseenAtoms(companionId: string, limit: number): Array<{ id: string; version: number }> {
     const token = String(row(this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-atom-change/' + companionId) ?? { value: '' }).value);
@@ -568,6 +834,7 @@ export class CompanionWorldStore {
   private sourceEventVisible(event: StoredEvent, scope?: CompanionWorldScope): boolean {
     if (event.withdrawn) return false;
     if (scope && event.privateOwner && event.privateOwner !== scope.companionId) return false;
+    if (scope && event.actorId !== scope.companionId && event.targetId !== scope.companionId && event.privateOwner !== scope.companionId && !event.witnessIds?.includes(scope.companionId)) return false;
     const owner = event.privateOwner ?? event.actorId;
     if (event.sourceMessageId && owner && event.conversationId) {
       let s = scope ?? { companionId: owner, conversationId: event.conversationId };
@@ -579,7 +846,8 @@ export class CompanionWorldStore {
     if (event.sourceMessageIds?.length && owner && event.conversationId && this.visibleSources(scope ?? { companionId: owner, conversationId: event.conversationId }, event.sourceMessageIds).length !== event.sourceMessageIds.length) return false;
     if (event.sourceMemoryIds?.length && owner && event.sourceMemoryIds.some(id => !this.db.prepare("SELECT 1 FROM memory_records WHERE memory_id=? AND companion_id=? AND status='active'").get(id, owner))) return false;
     if (event.memoryVersions?.some(memory => !this.db.prepare("SELECT 1 FROM memory_records WHERE memory_id=? AND version=? AND status='active'").get(memory.id, memory.version))) return false;
-    if (scope && event.sceneId?.startsWith('home_') && event.kind !== 'social_phone' && !this.permitted(this.load(), scope.companionId, event.sceneId.slice(5))) return false;
+    // A past witnessed visit stays a past experience after its entry permission
+    // expires. Current permission gates physical entry, not owned recollection.
     return true;
   }
   invalidateEvidence(companionId: string, sourceIds: string[]): void {
@@ -601,13 +869,21 @@ export class CompanionWorldStore {
     // same observed instant as positions and physical recovery, not future weather
     // or completed animation frames that the simulation has not reached.
     const observedAt = state.cursor, virtualAt = this.virtualFor(state, observedAt), environment = companionWorldEnvironment(virtualAt, state.settings.timeZone), scenes = this.scenes(state);
-    const allowedScenes = scope ? scenes.filter(scene => scene.kind === 'commons' || scene.ownerId && this.permitted(state, scope.companionId, scene.ownerId)) : scenes;
+    const perception = scope ? this.perception(scope.companionId) : undefined;
+    const allowedScenes = scope ? scenes.filter(scene => scene.kind === 'commons' || scene.ownerId && this.permitted(state, scope.companionId, scene.ownerId))
+      .map(scene => ({ ...scene, objects: perception?.objects.filter(object => object.sceneId === scene.id).map(object => ({ id: object.id, kind: object.kind, name: object.name,
+        position: object.position, width: object.width, depth: object.depth, anchor: object.anchor, blocking: object.blocking })) ?? [] })) : scenes;
     const visibleIds = new Set(allowedScenes.map(scene => scene.id));
     const found = this.db.prepare('SELECT data FROM companion_world_events ORDER BY sequence DESC LIMIT 500').all() as Row[];
     const events = found.map(value => parse<StoredEvent>(value.data)).filter(event => this.visibleEvent(event, scope)).slice(0, 100).reverse().map(event => event.kind === 'social_phone' ? { ...event, sceneId: undefined } : event);
-    return companionWorldSnapshotSchema.parse({ settings: state.settings, clock: { realNow: iso(now), virtualNow: iso(virtualAt), speed: companionWorldSpeed(state.settings), ...environment.clock }, environment: environment.environment,
+    const sensedEnvironment = perception ? { light: perception.environment.light, weather: perception.environment.weather,
+      ...(perception.sceneId === 'commons' ? { outdoorTemperature: perception.environment.temperature } : { indoorTemperature: perception.environment.temperature }) } : { light: 0 };
+    const sensedAt = perception ? Date.parse(perception.observedAtVirtual) : virtualAt;
+    return companionWorldSnapshotSchema.parse({ settings: state.settings, clock: { realNow: iso(now), virtualNow: iso(scope ? sensedAt : virtualAt), speed: companionWorldSpeed(state.settings),
+      ...(scope ? companionWorldEnvironment(sensedAt, state.settings.timeZone).clock : environment.clock) }, environment: scope ? sensedEnvironment : environment.environment,
       residents: (this.db.prepare("SELECT id,json_extract(data,'$.name') AS name FROM companions WHERE deleted_at IS NULL ORDER BY rowid").all() as Row[]).map(companion => ({ companionId: String(companion.id), name: String(companion.name), homeSceneId: 'home_' + companion.id })),
-      scenes: allowedScenes, actors: state.actors.filter(actor => visibleIds.has(actor.sceneId)).map(actor => {
+      ...(perception ? { perception } : {}),
+      scenes: allowedScenes, actors: state.actors.filter(actor => scope ? actor.companionId === scope.companionId : visibleIds.has(actor.sceneId)).map(actor => {
         const runtime = { ...this.runtime(actor.companionId), thermalComfort: Math.max(0, 1 - Math.abs((actor.sceneId === 'commons' ? environment.environment.outdoorTemperature : environment.environment.indoorTemperature) - 22) / 15) };
         const pose: CompanionWorldActor['artAction'] = actor.activity === 'walking' ? actor.locomotion : actor.activity === 'working' ? 'work' : actor.activity === 'seating' ? 'sitDown' : actor.activity === 'sitting' ? 'sit' :
           actor.activity === 'standingUp' ? 'standUp' : actor.activity === 'lyingDown' ? 'lieDown' : actor.activity === 'waking' ? 'wake' : actor.activity === 'turning' ? 'turn' : actor.activity === 'sleeping' ? 'sleep' : actor.activity === 'eating' ? 'eat' : actor.activity === 'resting' ? 'rest' :
@@ -623,12 +899,11 @@ export class CompanionWorldStore {
         const phonePose = ['typing', 'responding'].includes(communication?.phase ?? '') && ['idle', 'sitting', 'resting', 'working'].includes(actor.activity) ? ['sitting', 'resting', 'working'].includes(actor.activity) ? 'phoneTypingSeated' : 'phoneTypingStanding' : undefined;
         return { ...actor,
         frame: actor.transition ? Math.min(2, Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / (actor.transition.until - Date.parse(actor.activityStartedAtReal)) * 3)) :
-          actor.activity === 'seating' && actor.seatUntil ? Math.min(2, Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / COMPANION_WORLD_SEATING_MS * 3)) :
             Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / (actor.activity === 'walking' ? 180 : 700)) % 3,
-        transitionEndsAtReal: actor.transition ? iso(actor.transition.until) : actor.activity === 'seating' && actor.seatUntil ? iso(actor.seatUntil) : undefined,
-        state: runtime, artAction: phonePose ?? expression.action, artStartedAtReal: expression.startedAtReal,
+        transitionEndsAtReal: actor.transition ? iso(actor.transition.until) : undefined,
+        state: runtime, artAction: communication?.channel === 'face_to_face' ? communication.phase === 'speaking' ? 'communicate' : 'think' : phonePose ?? expression.action, artStartedAtReal: expression.startedAtReal,
         communication: !scope || scope.companionId === actor.companionId || communication?.recipientIds.includes(scope.companionId) ? communication : undefined,
-        activityLabel: actor.routinePhase === 'habit' ? '个人日常活动' : undefined }; }),
+        activityLabel: actor.parkWalk ? actor.parkWalk.stage === 'travelling' ? '正在前往公共花园' : actor.parkWalk.stage === 'returning' ? '散步结束，正在回家' : '在公共花园散步放松' : actor.routinePhase === 'habit' ? '个人日常活动' : undefined }; }),
       visits: state.visits.filter(visit => !scope || visit.hostId === scope.companionId || visit.guestId === scope.companionId).map(visit => {
         const visible = (owner: string, sourceId?: string, conversationId?: string) => {
           if (!sourceId) return true; if (!conversationId) return false;
@@ -641,7 +916,13 @@ export class CompanionWorldStore {
       relationships: state.relationships.filter(relation => !scope || relation.companionId === scope.companionId), works: state.works.filter(work => !scope || work.companionId === scope.companionId),
       lastEventSequence: Number(row(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM companion_world_events').get()).n), backlog: state.cursor + 1 < now });
   }
-  snapshot(scope?: CompanionWorldScope): CompanionWorldSnapshot { if (scope) this.requireScope(scope); this.ensureThrough(Date.now()); const state = this.load(); this.sync(state); this.save(state); return this.snapshotValue(state, Date.now(), scope); }
+  snapshot(scope?: CompanionWorldScope): CompanionWorldSnapshot {
+    if (scope) this.requireScope(scope);
+    const now = Date.now(); this.ensureThrough(now); return this.atomic(() => { const state = this.load(); this.sync(state); this.refreshPerceptions(state, now); this.save(state);
+    // A snapshot observes one instant. SQL/projection time after catching up is
+    // not new offline simulation debt and must not suppress autonomous events.
+    return this.snapshotValue(state, now, scope); });
+  }
   private habitArt(state: StoredWorld, actor: StoredActor): CompanionWorldActor['artAction'] {
     const config = this.routineConfig(actor.companionId), phase = evaluateCompanionRoutine(config, iso(this.virtualFor(state, state.cursor))), kind = config.habits.find(habit => habit.id === phase.activeHabitId)?.kind;
     return kind === 'study' ? 'read' : kind === 'exercise' ? 'exercise' : kind === 'rest' || kind === 'leisure' ? 'rest' : 'idle';
@@ -661,7 +942,11 @@ export class CompanionWorldStore {
     this.syncOccupancy(state); this.save(state); this.dirty = true; return this.snapshotValue(state, now); });
   }
   begin(scope: CompanionWorldScope, workId: string, kind: CompanionWorldWork['kind'], sourceMessageId?: string, urgent = false, fixed = false): CompanionWorldWork {
-    const requestedAtReal = Date.now(); this.requireScope(scope); this.advance(requestedAtReal); const state = this.load();
+    const requestedAtReal = Date.now(); this.requireScope(scope); this.advance(requestedAtReal);
+    return this.atomic(() => this.beginAt(scope, workId, kind, requestedAtReal, sourceMessageId, urgent, fixed));
+  }
+  private beginAt(scope: CompanionWorldScope, workId: string, kind: CompanionWorldWork['kind'], requestedAtReal: number, sourceMessageId?: string, urgent = false, fixed = false): CompanionWorldWork {
+    const state = this.load();
     if (sourceMessageId) { const source = this.visibleSources(scope, [sourceMessageId])[0]; if (!source || source.authorId !== 'user') throw new Error('工作需要真实可见的用户来源。'); const verified = this.urgent(scope.companionId, sourceMessageId); if (urgent && !verified) throw new Error('来源缺少已核验的紧急通知判断。'); urgent = verified; }
     else if (!fixed) throw new Error('工作缺少真实用户来源。');
     let work = state.works.find(work => work.workId === workId);
@@ -679,14 +964,17 @@ export class CompanionWorldStore {
   }
   end(companionId: string, workId: string): CompanionWorldWork | undefined {
     this.ensureThrough(Date.now());
+    return this.atomic(() => this.endAt(companionId, workId));
+  }
+  private endAt(companionId: string, workId: string): CompanionWorldWork | undefined {
     const state = this.load(), work = state.works.find(item => item.workId === workId && item.companionId === companionId); if (!work) { const saved = this.db.prepare('SELECT data FROM companion_world_work_records WHERE work_id=? AND companion_id=?').get(workId, companionId); return saved ? parse<StoredWork>(row(saved).data) : undefined; }
     if (work.status !== 'ended') { work.status = 'ended'; const actor = state.actors.find(actor => actor.companionId === companionId)!;
       if (work.kind === 'chat') {
         if (!state.works.some(item => item.companionId === companionId && item.kind === 'chat' && item.status === 'ready')) this.releasePhone(actor, state.cursor);
         this.event(state, { kind: 'phone_response_end', actorId: companionId, text: '结束手机回复，继续当前生活' }); this.planRoutine(state, actor); this.syncOccupancy(state);
       } else if (!state.works.some(item => item.companionId === companionId && ['moving', 'seating', 'ready'].includes(item.status))) {
-        actor.route = []; delete actor.destinationId; delete actor.seatUntil;
-        if (['working', 'sitting', 'seating'].includes(actor.activity)) this.startTransition(actor, 'standingUp', 'idle', state.cursor);
+        actor.route = []; delete actor.destinationId;
+        if (['working', 'sitting', 'seating'].includes(actor.activity)) this.startTransition(state, actor, 'standingUp', 'idle', state.cursor);
         else if (actor.transition) actor.transition.after = 'idle';
         else { actor.activity = 'idle'; delete actor.furnitureId; }
       }
@@ -707,12 +995,37 @@ export class CompanionWorldStore {
   startLifeActivity(scope: CompanionWorldScope, kind: 'rest' | 'study' | 'leisure'): void {
     this.atomic(() => {
       this.requireScope(scope); this.ensureThrough(Date.now()); const state = this.load(), actor = state.actors.find(actor => actor.companionId === scope.companionId)!;
+      if (actor.parkWalk) this.finishParkWalk(state, actor, '改为进行另一项生活活动', false);
       if (state.works.some(work => work.companionId === actor.companionId && work.status !== 'ended')) throw new Error('正在回应或工作，不能同时开始新的生活活动。');
       const home = this.scenes(state).find(scene => scene.id === actor.homeSceneId)!, object = home.objects.find(object => object.kind === (kind === 'rest' ? 'sofa' : 'habit'))!;
       this.move(state, actor, home, object.anchor, object.id, kind === 'rest' ? 'resting' : 'habit');
       actor.manualActivityUntil = this.virtualFor(state, state.cursor) + 30 * 60000;
       actor.manualArtAction = kind === 'study' ? 'standingRead' : kind === 'leisure' ? 'think' : undefined;
       this.event(state, { kind: 'life_activity', actorId: actor.companionId, sceneId: actor.sceneId, text: '开始前往' + object.name + '进行' + kind }); this.syncOccupancy(state); this.save(state);
+    });
+  }
+  startParkWalk(scope: CompanionWorldScope, durationMinutes: number, occurrenceId?: string): void {
+    if (!Number.isInteger(durationMinutes) || durationMinutes < 10 || durationMinutes > 120) throw new Error('公园散步时长需要在10到120分钟之间。');
+    this.atomic(() => {
+      this.requireScope(scope); const now = Date.now(); this.ensureThrough(now); const state = this.load(), actor = state.actors.find(actor => actor.companionId === scope.companionId)!;
+      if (actor.parkWalk) {
+        if (occurrenceId && actor.parkWalk.occurrenceId === occurrenceId) return;
+        throw new Error('伙伴已经在进行一次公园散步。');
+      }
+      const phase = evaluateCompanionRoutine(this.routineConfig(actor.companionId), iso(this.virtualFor(state, state.cursor)));
+      if (state.cursor + 1 < now || ['sleeping', 'eating'].includes(phase.phase) || ['working', 'eating', 'sleeping', 'lyingDown', 'waking'].includes(actor.activity)
+        || state.works.some(work => work.companionId === actor.companionId && work.kind !== 'chat' && work.status !== 'ended')) throw new Error('伙伴此刻正在工作、用餐、睡眠或恢复存档，无法开始散步。');
+      const climate = companionWorldEnvironment(this.virtualFor(state, state.cursor), state.settings.timeZone).environment;
+      if (this.runtime(actor.companionId).energy <= 25 || actor.sceneId === 'commons' && !companionWorldParkSuitable(climate)) throw new Error('当前感受到的户外天气或伙伴精力不适合开始公园散步。');
+      const scenes = this.scenes(state), commons = scenes.find(scene => scene.kind === 'commons')!, circuit = companionWorldParkCircuit(commons);
+      if (!circuit.length) throw new Error('公园的真实步道暂时不可达。');
+      const current = scenes.find(scene => scene.id === actor.sceneId)!, outside = current.kind === 'home' ? { x: current.origin.x + 10, y: current.origin.y + 16 } : actor.position;
+      const waypointIndex = circuit.reduce((best, point, index) => Math.hypot(point.x - outside.x, point.y - outside.y) < Math.hypot(circuit[best]!.x - outside.x, circuit[best]!.y - outside.y) ? index : best, 0);
+      actor.parkWalk = { stage: 'travelling', durationMinutes, participatedMinutes: 0, waypointIndex, comfortTicks: 0, occurrenceId };
+      this.move(state, actor, commons, circuit[waypointIndex]!, 'park_promenade_' + waypointIndex, 'idle');
+      this.event(state, { kind: 'park_walk_start', actorId: actor.companionId, sceneId: actor.sceneId,
+        text: `决定去公共花园散步${durationMinutes}分钟；先真实步行前往，抵达后才计算散步时间。` });
+      this.syncOccupancy(state); this.save(state);
     });
   }
   private performTool(scope: CompanionWorldScope, args: CompanionWorldArguments, sourceMessageId?: string): CompanionWorldSnapshot {
@@ -725,9 +1038,11 @@ export class CompanionWorldStore {
       this.save(state); return this.snapshotValue(state, Date.now(), scope);
     }
     const scenes = this.scenes(state);
+    if (actor.parkWalk && ['move', 'visit', 'interact', 'leave'].includes(args.action)) this.finishParkWalk(state, actor, '收到新的行动安排，结束这次散步', false);
     if (args.action === 'move') {
       const scene = scenes.find(scene => scene.id === args.destinationId || scene.objects.some(object => object.id === args.destinationId));
       if (!scene) throw new Error('地点不存在。'); const object = scene.objects.find(object => object.id === args.destinationId);
+      if (object?.kind === 'bench' && object.reservedBy && object.reservedBy !== actor.companionId) throw new Error('这张长椅正在被其他伙伴使用或前往，请选择另一张。');
       this.move(state, actor, scene, object?.anchor ?? scene.door, args.destinationId, 'idle');
     } else if (args.action === 'interact') {
       const scene = scenes.find(scene => scene.id === actor.sceneId)!, object = scene.objects.find(object => object.id === args.furnitureId);
@@ -736,7 +1051,7 @@ export class CompanionWorldStore {
       const permitted = args.interaction === 'stand' || args.interaction === 'sit' && ['chair', 'sofa', 'bench', 'dining'].includes(object.kind) || args.interaction === 'sleep' && object.kind === 'bed' || args.interaction === 'eat' && ['kitchen', 'dining'].includes(object.kind) || args.interaction === 'rest' && ['sofa', 'bed', 'bench'].includes(object.kind) || args.interaction === 'study' && ['desk', 'habit'].includes(object.kind) || args.interaction === 'use' && ['computer', 'kitchen', 'habit'].includes(object.kind);
       if (!permitted) throw new Error('该家具不支持这种动作。');
       const activity = args.interaction === 'stand' ? 'idle' : args.interaction === 'sleep' ? 'sleeping' : args.interaction === 'eat' ? 'eating' : args.interaction === 'rest' ? 'resting' : args.interaction === 'study' || args.interaction === 'use' && object.kind === 'kitchen' ? 'habit' : 'sitting';
-      actor.furnitureId = object.id; this.enterFurniture(actor, activity, state.cursor);
+      actor.furnitureId = object.id; this.enterFurniture(state, actor, activity, state.cursor);
       actor.manualActivityUntil = this.virtualFor(state, state.cursor) + (activity === 'sleeping' ? 30 : activity === 'habit' ? 30 : activity === 'idle' ? 1 : 15) * 60000;
       actor.manualArtAction = args.interaction === 'study' ? 'read' : args.interaction === 'use' && object.kind === 'kitchen' ? 'cook' : undefined;
       this.event(state, { kind: 'interact', actorId: actor.companionId, sceneId: scene.id, text: args.interaction + ' ' + object.name, sourceMessageId, conversationId: scope.conversationId });
@@ -762,10 +1077,10 @@ export class CompanionWorldStore {
       this.move(state, actor, home, { x: 10, y: 12 }, home.id, 'idle');
       this.event(state, { kind: 'visit_leave', actorId: actor.companionId, text: '结束拜访，步行返回自己的小屋', sourceMessageId, conversationId: scope.conversationId });
     } else if (args.action === 'social') {
-      const peer = state.actors.find(item => item.companionId === args.targetCompanionId);
-      if (!peer || peer.companionId === actor.companionId || peer.sceneId !== actor.sceneId || Math.hypot(peer.position.x - actor.position.x, peer.position.y - actor.position.y) > 5) throw new Error('对方不在可交谈的现场范围内。');
+      const recipients = args.recipientIds ?? [args.targetCompanionId!];
+      if (!this.faceGroupAvailable(state, [actor.companionId, ...recipients])) throw new Error('所有参与者需要在同一现场、彼此5格内且方便交流。');
       if (!this.social) throw new Error('社交存储尚未连接。');
-      const room = this.social.ensure(actor.companionId, [actor.companionId, peer.companionId]);
+      const room = this.social.ensure(actor.companionId, [actor.companionId, ...recipients]);
       this.social.send({ companionId: actor.companionId, conversationId: room.id, content: args.text, channel: 'face_to_face', clientId: randomUUID() });
       return this.snapshotValue(this.load(), Date.now(), scope);
     } else if (args.action === 'message') {
@@ -787,6 +1102,7 @@ export class CompanionWorldStore {
         return actor && !busy && (kind === 'dream' ? actor.activity === 'sleeping' && !actor.route.length && state.cursor - Date.parse(actor.activityStartedAtReal) >= 5000 : actor.routinePhase === 'awake');
       }); if (!found) return undefined;
       const job = parse<StoredJob>(row(found).data); job.status = 'running'; job.leaseToken = randomUUID(); job.attempts++;
+      if (job.encounterMemberIds && !this.faceGroupAvailable(state, job.encounterMemberIds)) { job.status = 'done'; this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id); for (const actor of state.actors) if (actor.meetingHold?.jobId === job.id) this.releaseMeeting(actor, true); this.save(state); return undefined; }
       if (kind === 'dream') { job.memoryVersions = this.unseenAtoms(job.companionId, 20); job.sourceMemoryIds = job.memoryVersions.map(memory => memory.id);
         if (!job.sourceMemoryIds.length) { job.status = 'done'; this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id); return undefined; } }
       job.throughEventSequence = Number(row(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM companion_world_events').get()).n);
@@ -808,6 +1124,7 @@ export class CompanionWorldStore {
       const job = parse<StoredJob>(row(found).data); if (job.status === 'done' && job.leaseToken === command.leaseToken) return;
       if (job.status !== 'running' || job.leaseToken !== command.leaseToken || String(row(found).lease_until) < iso()) throw new Error('世界任务租约已失效。');
       const scope = { companionId: job.companionId, conversationId: job.conversationId };
+      if (job.encounterMemberIds && !this.faceGroupAvailable(this.load(), job.encounterMemberIds)) throw new Error('这次相遇的参与者已经离场或正在忙碌。');
       for (const read of job.readSet ?? []) {
         const saved = this.db.prepare('SELECT data FROM companion_world_events WHERE id=?').get(read.eventId), event = saved ? parse<StoredEvent>(row(saved).data) : undefined;
         if (!event || !this.visibleEvent(event, scope) || createHash('sha256').update(JSON.stringify(event)).digest('hex') !== read.checksum) throw new Error('世界决策读过的来源已撤回或变化，请重新观察。');
@@ -816,6 +1133,7 @@ export class CompanionWorldStore {
       }
       if (command.action) this.tool(scope, command.action);
       const state = this.load();
+      for (const actor of state.actors) if (actor.meetingHold?.jobId === job.id) delete actor.meetingHold;
       const memoryIds = [...new Set([...(command.sourceMemoryIds ?? []), ...(command.dream?.relatedMemoryIds ?? [])])];
       if (job.kind === 'dream') {
         if (memoryIds.some(id => !job.sourceMemoryIds.includes(id)) || job.memoryVersions?.some(memory => !this.db.prepare("SELECT 1 FROM memory_records WHERE memory_id=? AND version=? AND status='active'").get(memory.id, memory.version))) throw new Error('本次待整理记忆已经变化。');
@@ -873,11 +1191,12 @@ export class CompanionWorldStore {
       case 'world.work.end': return { ok: true, worldWork: this.end(command.companionId, command.workId) };
       case 'world.job.claim': return { ok: true, worldJob: this.claim(command.kind) };
       case 'world.job.complete': this.complete(command); return { ok: true };
-      case 'world.job.fail': {
+      case 'world.job.fail': return this.atomic(() => {
         const found = this.db.prepare('SELECT data FROM companion_world_jobs WHERE id=?').get(command.id); if (!found) throw new Error('世界任务不存在。'); const job = parse<CompanionWorldJob>(row(found).data);
-        if (job.status !== 'running' || job.leaseToken !== command.leaseToken) throw new Error('世界任务租约已失效。'); job.status = 'failed';
-        this.db.prepare("UPDATE companion_world_jobs SET status='failed',lease_until=?,data=? WHERE id=?").run(iso(Date.now() + Math.min(3600000, 30000 * 2 ** Math.min(job.attempts, 6))), JSON.stringify(job), job.id); return { ok: true };
-      }
+        if (job.status !== 'running' || job.leaseToken !== command.leaseToken) throw new Error('世界任务租约已失效。'); job.status = job.encounterMemberIds ? 'done' : 'failed';
+        if (job.encounterMemberIds) { const state = this.load(); for (const actor of state.actors) if (actor.meetingHold?.jobId === job.id) this.releaseMeeting(actor, true); this.save(state); }
+        this.db.prepare('UPDATE companion_world_jobs SET status=?,lease_until=?,data=? WHERE id=?').run(job.status, job.status === 'done' ? null : iso(Date.now() + Math.min(3600000, 30000 * 2 ** Math.min(job.attempts, 6))), JSON.stringify(job), job.id); return { ok: true };
+      });
       default: return undefined;
     }
   }

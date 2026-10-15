@@ -15,7 +15,7 @@ class FakeWindow implements WorldObserverWindow {
   maximize() { this.maximized = true; } unmaximize() { this.maximized = false; }
   close() { this.destroyed = true; this.visible = false; this.emit('closed'); } destroy() { this.close(); }
 }
-const world = { scenes: [{ id: 'commons' }, { id: 'home_alice' }], residents: [{ companionId: 'alice' }] };
+const world = { scenes: [{ id: 'commons', kind: 'commons' }, { id: 'home_alice', kind: 'home' }], residents: [{ companionId: 'alice' }] };
 function fixture() {
   const main = new FakeWindow(); main.show(); const created: Array<{ window: FakeWindow; options: WorldObserverWindowOptions }> = [];
   let handler: ((event: WorldObserverIpcEvent, input: unknown) => Promise<CompanionWorldWindowResult>) | undefined;
@@ -31,6 +31,17 @@ function fixture() {
   return { manager, main, created, ipc, request, load, report, invoke };
 }
 afterEach(() => vi.useRealTimers());
+
+it('opens a park camera only over the real public scene without creating another simulation', async () => {
+  const f = fixture();
+  expect((await f.invoke(f.main, { type: 'open', sceneId: 'home_alice', view: 'park' })).ok).toBe(false);
+  expect((await f.invoke(f.main, { type: 'open', companionId: 'alice', view: 'park' })).ok).toBe(false);
+  expect((await f.invoke(f.main, { type: 'open', view: 'park' })).ok).toBe(true);
+  const context = (await f.invoke(f.created[0]!.window, { type: 'context' })).context!;
+  expect(context).toMatchObject({ sceneId: 'commons', view: 'park' });
+  expect(f.request.mock.calls.every(([request]) => ['world.snapshot', 'state'].includes(request.type))).toBe(true);
+  f.manager.dispose();
+});
 
 it('opens independent native windows, scopes contacts and reuses the smallest released observer slot', async () => {
   const f = fixture();

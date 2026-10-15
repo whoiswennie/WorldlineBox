@@ -8,14 +8,14 @@ export const COMPANION_WORLD_WINDOW_VISIBILITY_CHANNEL = 'worldlinebox:companion
 export const COMPANION_WORLD_WINDOW_ARGUMENT = '--worldlinebox-companion-world';
 export type CompanionWorldContact = Pick<Companion, 'id' | 'name' | 'avatar' | 'avatarAttachmentId'>;
 export const companionWorldContactSchema = companionSchema.pick({ id: true, name: true, avatar: true, avatarAttachmentId: true });
-export const companionWorldWindowOpenSchema = z.strictObject({ sceneId: companionIdSchema.optional(), companionId: companionIdSchema.optional() });
+export const companionWorldWindowOpenSchema = z.strictObject({ sceneId: companionIdSchema.optional(), companionId: companionIdSchema.optional(), view: z.literal('park').optional() });
 export type CompanionWorldWindowOpen = z.infer<typeof companionWorldWindowOpenSchema>;
 export const companionWorldObserverRequestSchema = z.discriminatedUnion('type', [companionWorldPublicCommands[0], companionWorldPublicCommands[1]]);
 export type CompanionWorldObserverRequest = z.infer<typeof companionWorldObserverRequestSchema>;
 export const companionWorldWindowControlSchema = z.enum(['get-state', 'minimize', 'maximize-toggle', 'close']);
 export type CompanionWorldWindowControl = z.infer<typeof companionWorldWindowControlSchema>;
 export const companionWorldWindowContextSchema = z.object({ observerKey: z.string().regex(/^companion-world-observer(?:-\d+)?$/),
-  companionId: companionIdSchema.optional(), sceneId: companionIdSchema.optional(), companions: z.array(companionWorldContactSchema), visible: z.boolean(), visibleWindowCount: z.number().int().nonnegative() });
+  companionId: companionIdSchema.optional(), sceneId: companionIdSchema.optional(), view: z.literal('park').optional(), companions: z.array(companionWorldContactSchema), visible: z.boolean(), visibleWindowCount: z.number().int().nonnegative() });
 export type CompanionWorldWindowContext = z.infer<typeof companionWorldWindowContextSchema>;
 export const companionWorldWindowVisibilitySchema = z.object({ visible: z.boolean(), visibleWindowCount: z.number().int().nonnegative() });
 export const companionWorldWindowCommandSchema = z.discriminatedUnion('type', [

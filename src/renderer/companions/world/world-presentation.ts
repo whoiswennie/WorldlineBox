@@ -21,16 +21,25 @@ export function worldActorStatus(actor: CompanionWorldActor, snapshot: Companion
   const name = (id: string | undefined) => companions.find(item => item.id === id)?.name ?? snapshot.residents.find(item => item.companionId === id)?.name ?? '伙伴';
   const detail = work?.reason;
   const communication = actor.communication;
+  const peers = [...new Set(communication?.recipientIds.filter(id => id !== actor.companionId) ?? [])];
+  const audience = peers.length > 1 ? `${peers.length}位伙伴` : name(peers[0]);
+  const inPerson = communication?.channel === 'face_to_face';
   const phone = communication && Date.parse(communication.untilReal) > Date.parse(snapshot.clock.realNow) ? {
     kind: 'social' as const,
-    label: communication.phase === 'responding' ? '正在回复聊天' : communication.phase === 'typing'
+    label: inPerson ? communication.phase === 'listening' || communication.phase === 'notification'
+      ? `正在听${audience}${peers.length > 1 ? '交流' : '说话'}` : `正在与${audience}当面交谈`
+      : communication.phase === 'responding' ? '正在回复聊天' : communication.phase === 'typing'
       ? communication.recipientIds.length > 1 ? '正在群聊里发消息' : '正在给' + name(communication.recipientIds[0]) + '发消息'
       : '收到' + name(communication.recipientIds[0]) + '的消息',
+    ...(inPerson && peers.length > 1 ? { detail: peers.map(name).join('、') } : {}),
   } : undefined;
   switch (actor.activity) {
     case 'walking': {
       const verb = actor.locomotion === 'run' ? '跑向' : '走向';
       if (work?.status === 'moving' && destination) return { kind: 'movement', label: destination.scene.ownerId === actor.companionId ? (actor.sceneId === actor.homeSceneId ? verb + '自己的电脑' : '赶回家里的电脑前') : verb + name(destination.scene.ownerId) + '家的电脑', detail };
+      if (actor.parkWalk) return { kind: actor.parkWalk.stage === 'strolling' ? 'rest' : 'movement',
+        label: actor.parkWalk.stage === 'travelling' ? '正在前往公共花园' : actor.parkWalk.stage === 'returning' ? '散步后正在回家' : '在花园里散步放松',
+        detail: `已散步${Math.floor(actor.parkWalk.participatedMinutes)} / ${actor.parkWalk.durationMinutes}分钟` };
       const visit = snapshot.visits.find(item => item.guestId === actor.companionId && item.status === 'allowed' && snapshot.scenes.some(scene => scene.ownerId === item.hostId && (scene.id === actor.destinationId || scene.objects.some(object => object.id === actor.destinationId))));
       if (visit) return { kind: 'movement', label: '去' + name(visit.hostId) + '家做客', detail: visit.reason };
       if (destination) return { kind: 'movement', label: verb + destination.object.name, detail };

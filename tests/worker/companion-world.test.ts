@@ -6,10 +6,11 @@ import { CompanionsStore, type CompanionSeed } from '../../src/companions/store'
 import { companionWorldCellWalkable, createCompanionWorldHome, createCompanionWorldCommons, findCompanionWorldPath } from '../../src/shared/companion-world-engine';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
+import { CompanionWorldStore } from '../../src/companions/world-store';
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '认真友好', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), roots: string[] = [];
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T10:00:00Z'); });
-afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 function fixture(mode: 'compressed' | 'realtime' = 'compressed') {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
   const store = new CompanionsStore(filename, seeds); stores.add(store);
@@ -35,6 +36,18 @@ function allowVisit(f: ReturnType<typeof fixture>) {
 }
 
 describe('one authoritative companion world', () => {
+  it('does not mistake SQL/projection latency for offline debt or suppress probability observation', () => {
+    const f = fixture();
+    const prototype = CompanionWorldStore.prototype as unknown as { save(value: unknown): void };
+    const save = prototype.save;
+    vi.spyOn(prototype, 'save').mockImplementation(function (this: typeof prototype, value) { save.call(this, value); vi.setSystemTime(Date.now() + 8); });
+    const world = f.store.request({ type: 'world.observe', ...f.alice }).world!;
+    expect(Date.now()).toBeGreaterThan(Date.parse(world.clock.realNow));
+    expect(world.backlog).toBe(false);
+    f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '正常观察散步机会', action: 'park_walk', startMinute: 600, endMinute: 660, probability: .5, durationMinutes: 35 } });
+    f.store.request({ type: 'life-event.tick' });
+    expect(f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.some(occ => occ.rule.title === '正常观察散步机会')).toBe(true);
+  });
   it('defaults to the computer date, optionally compresses twenty minutes into a day, and realigns to wall time when restored', () => {
     const f = fixture('realtime'), first = f.store.request({ type: 'world.snapshot' }).world!;
     expect(f.initial.settings.mode).toBe('realtime'); expect(first.clock.speed).toBe(1); expect(first.clock.virtualNow).toBe(new Date().toISOString());

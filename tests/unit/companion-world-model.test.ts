@@ -6,6 +6,7 @@ import { companionWorldArgumentsSchema } from '../../src/shared/companion-world-
 import type { CompanionWorldJob, CompanionWorldSnapshot } from '../../src/shared/companion-world';
 import { createCompanionWorldHome, createCompanionWorldCommons } from '../../src/shared/companion-world-engine';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
+import { sampleCompanionWorldPerception } from '../../src/shared/companion-world-perception';
 
 const at = '2026-10-14T02:00:00.000Z';
 const input: CompanionReplyInput = { companion: { id: 'sister', name: '姐姐', description: '', persona: '沉稳温柔，喜欢海。', model: '', avatar: 'sister', builtin: true, proactive: false, createdAt: at },
@@ -25,6 +26,9 @@ const world: CompanionWorldSnapshot = { settings: { revision: 1, mode: 'compress
   visits: [{ id: 'visit', guestId: 'peer', hostId: 'sister', status: 'requested', reason: '想聊聊', createdAt: at, expiresAt: '2026-10-15T02:00:00.000Z' }],
   events: [{ id: 'peer_event', sequence: 1, actorId: 'peer', targetId: 'sister', sceneId: 'commons', kind: 'social_comfort', text: '我支持你，慢慢来。', at, realAt: at, simulation: true }],
   relationships: [], works: [], lastEventSequence: 1, backlog: false };
+world.perception = sampleCompanionWorldPerception({ self: world.actors[0]!, actors: world.actors, scenes: world.scenes,
+  environment: { weather: 'rain', light: .5, outdoorTemperature: 12, indoorTemperature: 21, daylight: world.clock.daylight },
+  virtualAt: world.clock.virtualNow, realAt: world.clock.realNow });
 const job: CompanionWorldJob = { id: 'decision_job', conversationId: 'world_sister', kind: 'decision', companionId: 'sister', status: 'running', leaseToken: 'lease', throughEventSequence: 1, createdAt: at, attempts: 1, sourceMemoryIds: [] };
 function envelope(format: AiApiFormat, value: unknown, tool = false) {
   const text = JSON.stringify(value), fn = { id: 'world_call', name: 'world', arguments: text };
@@ -92,6 +96,7 @@ describe('world reasoning and native tools', () => {
   it('can appraise an actual remote phone sender without observing their private position or task reason', async () => {
     const output = { action: null, reason: '依据收到的真实伙伴支持，不猜对方私室状态。', appraisals: [{ eventId: 'peer_event', targetCompanionId: 'peer', type: 'support', intensity: .5, confidence: .95, quote: '我支持你' }] };
     const remote = { ...world, actors: world.actors.filter(actor => actor.companionId === 'sister'),
+      perception: { ...world.perception!, people: [], visibleCompanionIds: [] },
       events: world.events.map(event => ({ ...event, kind: 'social_phone', conversationId: 'world_pair', sourceMessageId: 'real_peer_source' })),
       works: [{ workId: 'opaque_work', companionId: 'sister', kind: 'action' as const, status: 'waiting' as const, reason: 'PRIVATE_TASK_REASON' }] };
     const fetchFn: typeof fetch = async (_url, init) => {

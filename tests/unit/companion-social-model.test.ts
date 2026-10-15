@@ -11,7 +11,16 @@ const members = [companion, { ...companion, id: 'deepseek-sister', name: '大肥
 const conversation: CompanionConversation = { id: 'peer_room', kind: 'group', memberIds: members.map(member => member.id), title: '伙伴群', unread: 0, muted: false, pinned: false, updatedAt: '2026-10-15T00:00:00Z', lastMessage: '' };
 const source: CompanionMessage = { id: 'actual_peer', conversationId: conversation.id, sequence: 10, authorId: 'deepseek-sister', content: '妹妹，你想听哪首歌？', kind: 'text', status: 'sent', attachments: [], createdAt: '2026-10-15T00:00:00Z' };
 const job: CompanionSocialJob = { id: 'job', companionId: companion.id, conversationId: conversation.id, sourceMessageId: source.id, throughSequence: 10, chainId: 'chain', remainingTurns: 3, memberIds: conversation.memberIds, channel: 'phone', status: 'running', attempts: 1, leaseToken: 'lease', typingNotBefore: '2026-10-15T00:00:02Z', createdAt: source.createdAt };
-const input = () => ({ companion, conversation, source, messages: [source], job, members, world: { actors: [], events: [], relationships: [], residents: [], scenes: [], works: [], clock: {}, environment: {} } as unknown as CompanionWorldSnapshot });
+const input = () => ({ companion, conversation, source, messages: [source], job, members, world: {
+  settings: { revision: 1, mode: 'realtime', dayDurationMinutes: 20, timeZone: 'UTC' },
+  clock: { realNow: source.createdAt, virtualNow: source.createdAt, speed: 1, day: 1, hour: 0, daylight: false },
+  actors: [], events: [], relationships: [], residents: [], scenes: [], works: [], visits: [], lastEventSequence: 0, backlog: false,
+  environment: { weather: 'rain', light: .2, outdoorTemperature: 14, indoorTemperature: 21 },
+  perception: { companionId: companion.id, observedAtReal: source.createdAt, observedAtVirtual: source.createdAt,
+    sceneId: 'home_flash', position: { x: 4, y: 4 }, activity: 'idle', radius: 5, awake: true, revision: 1,
+    environment: { time: source.createdAt, light: .3, temperature: 21, daylight: false },
+    people: [], objects: [], visibleObjectIds: [], visibleCompanionIds: [] },
+} as CompanionWorldSnapshot });
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
 it('provides actual peer identity and bounded turn budget without execution tools or later/user messages', async () => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {

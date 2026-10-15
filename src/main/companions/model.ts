@@ -6,6 +6,7 @@ import {
 import type { Companion } from '../../shared/companions';
 import { isDeepseekOfficialEndpoint } from '../../shared/llm';
 import { buildCompanionContext, refreshCompanionContextClock, refreshCompanionRuntimeStateContext, refreshCompanionIdentityContext, refreshCompanionFilesContext, type CompanionReplyInput } from './context';
+import { companionPerceivedToolTurns } from './world-perception-context';
 import { COMPANION_DSH_TOOL } from '../../shared/companion-dsh-tool';
 import { COMPANION_MEMORY_TOOLS, normalizeCompanionMemoryToolName, providerCompanionMemoryToolName } from '../../shared/companion-memory-tool';
 import { COMPANION_SCHEDULE_TOOL } from '../../shared/companion-schedule-tool';
@@ -65,7 +66,8 @@ export async function generateCompanionReply(
   if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
   const context = refreshCompanionContextClock(refreshCompanionFilesContext(refreshCompanionPublicProfileContext(refreshCompanionIdentityContext(refreshCompanionRuntimeStateContext(
     options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop }), input.runtimeState, input.companion.id, input.conversation), input),
-  { companionId: input.companion.id, memberIds: input.conversation.memberIds, audience: input.audience, publicProfiles: input.publicProfiles }), input.fileInputs), input.world);
+  { companionId: input.companion.id, memberIds: input.conversation.memberIds, audience: input.audience, publicProfiles: input.publicProfiles }), input.fileInputs), input.world, input.companion.id);
+  const turns = companionPerceivedToolTurns(options.turns ?? [], input.companion.id);
   const controller = new AbortController();
   let rejectAbort: (error: CompanionModelError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
@@ -86,9 +88,9 @@ export async function generateCompanionReply(
     if (signal?.aborted) cancel();
     const operation = async (): Promise<CompanionReply> => {
       const response = await fetchCompanionProvider(controller.signal, fetchFn, rejected => {
-        const current = prepareCompanionLoopVisuals(context, input.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? options.turns ?? [] : [], config, rejected);
+        const current = prepareCompanionLoopVisuals(context, input.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? turns : [], config, rejected);
         const request = providerRequest({ ...config, model }, current.context, controller.signal, options.loop === true, options.loop === true, true, current.images);
-        if (options.loop) appendLoopHistory(request, config, options.turns ?? [], options.supplements ?? [], current.tools);
+        if (options.loop) appendLoopHistory(request, config, turns, options.supplements ?? [], current.tools);
         return { request, hasImages: current.images.length > 0 || current.tools.some(tool => !!tool.image) };
       });
       let body: unknown;

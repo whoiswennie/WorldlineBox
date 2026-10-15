@@ -7,9 +7,9 @@ export const companionSocialDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).
   const parsed = Date.parse(value + 'T00:00:00Z'); return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
 }, '日期无效');
 const month = z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/);
-export interface CompanionSocialMessage { message: CompanionMessage; virtualCreatedAt: string; recipientIds: string[] }
+export interface CompanionSocialMessage { message: CompanionMessage; virtualCreatedAt: string; recipientIds: string[]; channel?: 'phone' | 'face_to_face' }
 export const companionSocialMessageSchema: z.ZodType<CompanionSocialMessage> = z.strictObject({
-  message: z.lazy(() => messageSchema), virtualCreatedAt: z.iso.datetime(), recipientIds: z.array(id).max(20),
+  message: z.lazy(() => messageSchema), virtualCreatedAt: z.iso.datetime(), recipientIds: z.array(id).max(20), channel: z.enum(['phone', 'face_to_face']).optional(),
 });
 export const companionSocialConversationSchema = z.strictObject({
   id, kind: z.enum(['private', 'group']), title: z.string().max(100), memberIds: z.array(id).min(2).max(20),

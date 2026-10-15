@@ -194,7 +194,8 @@ it('resets work and life state in batches, blocks stale completion and preserves
   expect(() => f.store.request({ type: 'work-order.complete', id: order.id, leaseToken: claim.leaseToken, result: '不能复活' })).toThrow('不存在');
   expect(f.store.request({ type: 'work-order.list', ...f.scope, includeHistory: true }).workOrderPage!.items).toEqual([]);
   expect(companionStorageResponseSchema.parse(f.store.request({ type: 'work-order.list', ...bob })).workOrderPage!.items[0]!.id).toBe(other.id);
-  expect(f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules).toHaveLength(2);
+  const resetDefaults = f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!;
+  expect(resetDefaults).toHaveLength(3); expect(resetDefaults.some(rule => rule.action === 'park_walk')).toBe(true);
   expect(f.store.request(lifeRequest).lifeRule!.id).not.toBe(oldLife.id);
 });
 

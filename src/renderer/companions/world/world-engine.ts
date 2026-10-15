@@ -6,13 +6,16 @@ import { worldCharacterArt, type WorldArtAction } from '../../../shared/companio
 import { getCompanionWorldFramePlacement } from '../../../shared/companion-world-art-calibration';
 import { companionPortrait } from '../CompanionVisuals';
 import { createWorldRoomModel } from './world-room-model';
+import { createWorldParkModel } from './world-park-model';
+import { companionWorldParkLayout, companionWorldParkContains, type CompanionWorldParkBounds } from '../../../shared/companion-world-park';
+import { layoutWorldLabels, type WorldLabelAnchor } from './world-label-layout';
 import { interpolateWorldPath, worldActorAnimationFrame, worldActorStatus, worldArtAction, worldAssetUrl, worldFacingMirrored, worldInterpolationPath, worldPrecipitationHeight } from './world-presentation';
 import { worldCameraViewSchema, type WorldCameraView } from './world-observer-preferences';
 import { worldAdvanceFrameClock, worldAnimationWakeDelay, worldArrivalPresentationDuration, worldContinuePath, worldNextRenderDelay, worldScenePreparationGate, worldSnapshotInterpolationDuration, worldTargetFrameRate } from './world-render-timing';
 
 interface ActorView { group: Group; sprite: Sprite; shadow: Mesh; actor: CompanionWorldActor; path: Array<{ x: number; y: number }>; changedAt: number; duration: number; texture?: Texture; textureKey?: string; action?: WorldArtAction; animation?: { duration: number; playback: 'loop' | 'transition' }; applyFrame?: (frame: 0 | 1 | 2) => boolean; pose?: 'ground' | 'seat' | 'bed'; missingAction?: boolean; epoch: number; appliedFrame?: number; appliedMirrored?: boolean; labelPosition?: string }
 export interface WorldViewportEngine {
-  update(snapshot: CompanionWorldSnapshot, scene: CompanionWorldScene, companions: CompanionWorldContact[]): void;
+  update(snapshot: CompanionWorldSnapshot, scene: CompanionWorldScene, companions: CompanionWorldContact[], view?: 'park'): void;
   setActive(active: boolean): void;
   setVisibleWindowCount(count: number): void;
   reset(): void;
@@ -49,12 +52,22 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
   const textureCache = new Map<string, Texture>();
   const pendingTextures = new Map<string, Promise<Texture>>();
   const loader = new TextureLoader();
-  let room: ReturnType<typeof createWorldRoomModel> | undefined, roomId: string | undefined, latest: CompanionWorldSnapshot | undefined;
+  let room: { group: Group; setNight(night: boolean): void; animate?(timeMs: number): boolean; dispose(): void } | undefined, roomId: string | undefined, latest: CompanionWorldSnapshot | undefined;
+  let parkBounds: CompanionWorldParkBounds | undefined;
   let currentScene: CompanionWorldScene | undefined, contacts: CompanionWorldContact[] = [], disposed = false, active = true, raf: number | undefined, timer: ReturnType<typeof setTimeout> | undefined, scheduledAt = Infinity, lastFrame = -Infinity, resourceEpoch = 0, following: string | undefined;
   let dirty = true, interacting = false, evaluatingCamera = false, visibleWindowCount = 1, viewportWidth = 0, viewportHeight = 0, environmentKey = '';
   let weather: Points | LineSegments | undefined, weatherGeometry: BufferGeometry | undefined, weatherMaterial: PointsMaterial | LineBasicMaterial | undefined;
   let precipitation: 'rain' | 'snow' | undefined;
   const labelElements = new Map<string, HTMLDivElement>();
+  const labelLines = new Map<string, HTMLDivElement>(), labelSizes = new Map<string, { width: number; height: number }>();
+  const labelObserver = new ResizeObserver(entries => {
+    for (const entry of entries) {
+      const id = (entry.target as HTMLElement).dataset.worldActorId;
+      const box = entry.borderBoxSize[0], width = box?.inlineSize ?? entry.contentRect.width + 24, height = box?.blockSize ?? entry.contentRect.height + 15;
+      if (id && width > 0 && height > 0) labelSizes.set(id, { width, height });
+    }
+    invalidate();
+  });
   let measureStarted = performance.now(), measuredFrames = 0, totalFrames = 0;
   const drawTimes: number[] = [];
   const project = new Vector3();
@@ -92,6 +105,16 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
   function reset() {
     following = undefined;
     if (!currentScene) return;
+    if (parkBounds) {
+      const { x, y, width, height } = parkBounds, cx = x + width / 2, cz = y + height / 2, size = Math.max(width, height);
+      controls.target.set(cx, .5, cz); camera.position.set(cx + size * .48, size * .75, cz + size * .85);
+      controls.minZoom = .2; camera.zoom = 1; camera.updateProjectionMatrix(); controls.update(); camera.updateMatrixWorld();
+      let maxX = 0, maxY = 0;
+      for (const px of [x - 1, x + width + 1]) for (const pz of [y - 1, y + height + 1]) for (const py of [-1, 7]) {
+        project.set(px, py, pz).project(camera); maxX = Math.max(maxX, Math.abs(project.x)); maxY = Math.max(maxY, Math.abs(project.y));
+      }
+      camera.zoom = Math.max(controls.minZoom, Math.min(1.6, .88 / Math.max(maxX, maxY))); camera.updateProjectionMatrix(); invalidate(); return;
+    }
     const size = Math.max(currentScene.width, currentScene.depth), cx = (currentScene.width - 1) / 2, cz = (currentScene.depth - 1) / 2;
     controls.target.set(cx, 0, cz); camera.position.set(cx + size * .84, size * 1.05, cz + size * 1.08);
     camera.zoom = currentScene.kind === 'home' ? .94 : Math.max(.13, 23 / size); controls.minZoom = currentScene.kind === 'home' ? .45 : .1;
@@ -101,7 +124,7 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
   controls.addEventListener('start', () => { following = undefined; interacting = true; onFollowChange?.(undefined); invalidate(); });
   controls.addEventListener('change', () => { if (!evaluatingCamera) invalidate(); });
   controls.addEventListener('end', () => { interacting = false; invalidate(); onViewChange?.(); });
-  function removeActor(view: ActorView) { view.epoch++; scene.remove(view.group); view.sprite.material.dispose(); view.shadow.geometry.dispose(); (view.shadow.material as MeshBasicMaterial).dispose(); view.texture?.dispose(); labelElements.get(view.actor.companionId)?.remove(); labelElements.delete(view.actor.companionId); }
+  function removeActor(view: ActorView) { view.epoch++; scene.remove(view.group); view.sprite.material.dispose(); view.shadow.geometry.dispose(); (view.shadow.material as MeshBasicMaterial).dispose(); view.texture?.dispose(); const label = labelElements.get(view.actor.companionId); if (label) labelObserver.unobserve(label); label?.remove(); labelElements.delete(view.actor.companionId); labelLines.get(view.actor.companionId)?.remove(); labelLines.delete(view.actor.companionId); labelSizes.delete(view.actor.companionId); }
   function clearTextures() { resourceEpoch++; textureCache.forEach(texture => texture.dispose()); textureCache.clear(); pendingTextures.clear(); }
   function getTexture(url: string) {
     const cached = textureCache.get(url); if (cached) return Promise.resolve(cached);
@@ -161,9 +184,9 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     if (!currentScene || currentScene.kind !== 'commons' || kind !== 'rain' && kind !== 'snow') return;
     precipitation = kind;
     const rain = kind === 'rain', count = rain ? 320 : 240, stride = rain ? 6 : 3;
-    const positions = new Float32Array(count * stride); const w = currentScene.width, d = currentScene.depth;
+    const positions = new Float32Array(count * stride); const w = parkBounds?.width ?? currentScene.width, d = parkBounds?.height ?? currentScene.depth;
     for (let i = 0; i < count; i++) {
-      const index = i * stride, x = ((i * 73 % 337) / 337) * w, z = (i * 53 % 331) / 331 * d;
+      const index = i * stride, x = (parkBounds?.x ?? 0) + ((i * 73 % 337) / 337) * w, z = (parkBounds?.y ?? 0) + (i * 53 % 331) / 331 * d;
       positions[index] = x; positions[index + 2] = z;
       if (rain) { positions[index + 3] = x - .28; positions[index + 5] = z; }
     }
@@ -174,9 +197,10 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     // initial all-zero heights or recompute a bounding sphere every frame.
     weather.frustumCulled = false; scene.add(weather);
   }
-  function update(snapshot: CompanionWorldSnapshot, selectedScene: CompanionWorldScene, companions: CompanionWorldContact[]) {
+  function update(snapshot: CompanionWorldSnapshot, selectedScene: CompanionWorldScene, companions: CompanionWorldContact[], view?: 'park') {
     if (disposed) return;
-    const sceneChanged = roomId !== selectedScene.id;
+    const viewId = selectedScene.id + (view === 'park' ? ':park' : '');
+    const sceneChanged = roomId !== viewId;
     const scenePreparation = sceneChanged ? preparation.begin() : undefined;
     const weatherChanged = latest?.environment.weather !== snapshot.environment.weather;
     const previousAt = latest?.clock.realNow;
@@ -186,26 +210,39 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
       container.setAttribute('aria-busy', 'true'); renderer.domElement.dataset.worldReady = 'false';
       actors.forEach(removeActor); actors.clear(); clearTextures();
       if (room) { scene.remove(room.group); room.dispose(); }
-      room = createWorldRoomModel(selectedScene, snapshot.scenes); roomId = selectedScene.id; scene.add(room.group); reset();
+      parkBounds = view === 'park' ? companionWorldParkLayout(selectedScene) : undefined;
+      room = parkBounds ? createWorldParkModel(selectedScene) : createWorldRoomModel(selectedScene, snapshot.scenes); roomId = viewId; scene.add(room.group); reset();
+      renderer.domElement.dataset.worldView = parkBounds ? 'park' : 'home'; renderer.domElement.dataset.worldScene = selectedScene.id;
+      if (parkBounds) renderer.domElement.dataset.worldParkBounds = JSON.stringify(parkBounds); else delete renderer.domElement.dataset.worldParkBounds;
       practicalLights.clear();
-      for (const object of selectedScene.objects.filter(object => object.kind === 'desk' || object.kind === 'bed' || object.kind === 'bench')) {
+      for (const object of selectedScene.objects.filter(object => !parkBounds && (object.kind === 'desk' || object.kind === 'bed' || object.kind === 'bench'))) {
         const lamp = new PointLight('#ffd49a', 1, 9, 2);
         lamp.position.set(object.position.x + (object.kind === 'desk' ? .95 : .2), object.kind === 'desk' ? 1.45 : object.kind === 'bench' ? 2.3 : 1.2, object.position.y + (object.kind === 'desk' ? .8 : -.3)); practicalLights.add(lamp);
       }
-      sun.target.position.set(selectedScene.width / 2, 0, selectedScene.depth / 2); sun.position.set(selectedScene.width / 2 - 12, 28, selectedScene.depth / 2 + 9);
-      sun.castShadow = selectedScene.kind === 'home'; renderer.shadowMap.needsUpdate = true;
+      if (parkBounds) for (const object of selectedScene.objects.filter(object => object.kind === 'lamp')) {
+        const lamp = new PointLight('#ffd99e', 0, 9, 2); lamp.position.set(object.position.x + (object.width - 1) / 2, 3.1, object.position.y + (object.depth - 1) / 2); practicalLights.add(lamp);
+      }
+      const cx = parkBounds ? parkBounds.x + parkBounds.width / 2 : selectedScene.width / 2, cz = parkBounds ? parkBounds.y + parkBounds.height / 2 : selectedScene.depth / 2;
+      sun.target.position.set(cx, 0, cz); sun.position.set(cx - 12, 28, cz + 9);
+      const shadowSize = parkBounds ? Math.max(parkBounds.width, parkBounds.height) * .65 : 22;
+      sun.shadow.camera.left = -shadowSize; sun.shadow.camera.right = shadowSize; sun.shadow.camera.top = shadowSize; sun.shadow.camera.bottom = -shadowSize; sun.shadow.camera.updateProjectionMatrix();
+      sun.castShadow = selectedScene.kind === 'home' || !!parkBounds; renderer.shadowMap.needsUpdate = true;
     }
-    const nextEnvironment = selectedScene.id + ':' + snapshot.clock.daylight + ':' + Math.round(snapshot.environment.light * 100);
+    const nextEnvironment = viewId + ':' + snapshot.clock.daylight + ':' + Math.round(snapshot.environment.light * 100);
     if (nextEnvironment !== environmentKey) {
       environmentKey = nextEnvironment; const light = snapshot.environment.light;
       room?.setNight(!snapshot.clock.daylight);
-      scene.background = new Color().lerpColors(new Color('#303f56'), new Color('#dae3dc'), Math.max(.15, light));
+      scene.background = parkBounds ? new Color().setRGB((25 + 195 * light) / 255, (46 + 184 * light) / 255, (56 + 164 * light) / 255, SRGBColorSpace)
+        : new Color().lerpColors(new Color('#303f56'), new Color('#dae3dc'), Math.max(.15, light));
       sun.intensity = selectedScene.kind === 'home' ? 1.1 + light * 2.5 : .25 + light * 2.8;
-      hemisphere.intensity = selectedScene.kind === 'home' ? .65 + light * .7 : 1.1 + light * 1.1; ambient.intensity = selectedScene.kind === 'home' ? .14 : .12;
-      practicalLights.children.forEach(lamp => { (lamp as PointLight).intensity = snapshot.clock.daylight ? 1.5 : 15; }); invalidate();
+      hemisphere.intensity = parkBounds ? .35 + light * 1.5 : selectedScene.kind === 'home' ? .65 + light * .7 : 1.1 + light * 1.1; ambient.intensity = selectedScene.kind === 'home' ? .14 : .08;
+      if (parkBounds) sun.intensity = .08 + light * 2;
+      practicalLights.children.forEach(lamp => { (lamp as PointLight).intensity = snapshot.clock.daylight ? parkBounds ? 0 : 1.5 : parkBounds ? 30 : 15; });
+      renderer.domElement.dataset.worldLampCount = String(practicalLights.children.length); renderer.domElement.dataset.worldLampsOn = String(!snapshot.clock.daylight); renderer.domElement.dataset.worldLampRadius = parkBounds ? '9' : '';
+      renderer.shadowMap.needsUpdate = true; invalidate();
     }
     if (weatherChanged || sceneChanged) buildWeather(snapshot.environment.weather);
-    const visible = snapshot.actors.filter(actor => actor.sceneId === selectedScene.id);
+    const visible = snapshot.actors.filter(actor => actor.sceneId === selectedScene.id && (!parkBounds || companionWorldParkContains(parkBounds, actor.position)));
     for (const [id, view] of actors) if (!visible.some(actor => actor.companionId === id)) { removeActor(view); actors.delete(id); invalidate(); }
     for (const actor of visible) {
       let view = actors.get(actor.companionId);
@@ -214,7 +251,8 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
         const shadow = new Mesh(new PlaneGeometry(1.2, .65), new MeshBasicMaterial({ color: '#5e665a', transparent: true, opacity: .16, depthWrite: false })); shadow.rotation.x = -Math.PI / 2; shadow.position.y = .07;
         const group = new Group(); group.add(sprite, shadow); scene.add(group);
         view = { group, sprite, shadow, actor, path: [actor.position], changedAt: performance.now(), duration: 0, epoch: 0 }; actors.set(actor.companionId, view);
-        const label = document.createElement('div'); label.className = 'companion-world-actor-label'; label.setAttribute('role', 'button'); label.tabIndex = 0; label.append(document.createElement('small'), document.createElement('strong')); label.addEventListener('click', () => focusActor(actor.companionId)); label.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); focusActor(actor.companionId); } }); labelElements.set(actor.companionId, label); container.appendChild(label); invalidate();
+        const label = document.createElement('div'); label.className = 'companion-world-actor-label'; label.dataset.worldActorId = actor.companionId; label.setAttribute('role', 'button'); label.tabIndex = 0; label.append(document.createElement('small'), document.createElement('strong')); label.addEventListener('click', () => focusActor(actor.companionId)); label.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); focusActor(actor.companionId); } }); labelElements.set(actor.companionId, label); container.appendChild(label); labelObserver.observe(label);
+        const line = document.createElement('div'); line.className = 'companion-world-actor-leader'; line.hidden = true; labelLines.set(actor.companionId, line); container.appendChild(line); invalidate();
       } else {
         const positionChanged = actor.position.x !== view.actor.position.x || actor.position.y !== view.actor.position.y;
         if (positionChanged || snapshot.backlog || actor.activity !== 'walking' && view.path.length > 1) {
@@ -238,6 +276,7 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
       if (label.dataset.worldBehavior !== status.label) label.dataset.worldBehavior = status.label;
       if (label.dataset.kind !== status.kind) label.dataset.kind = status.kind;
       if (label.dataset.activity !== actor.activity) label.dataset.activity = actor.activity;
+      label.dataset.worldActorId = actor.companionId; label.dataset.worldHostPosition = `${actor.position.x},${actor.position.y}`;
     }
     for (const [url, texture] of textureCache) if (![...actors.values()].some(view => view.textureKey === url)) { texture.dispose(); textureCache.delete(url); }
     if (sceneChanged) {
@@ -257,12 +296,14 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     const drawStarted = performance.now();
     let changed = dirty, continuous = interacting || Boolean(precipitation), nextAnimationMs = Infinity;
     dirty = false;
+    if (room?.animate?.(time)) { changed = true; continuous = true; }
     evaluatingCamera = true;
     const cameraChanged = controls.update(); changed ||= cameraChanged; continuous ||= cameraChanged;
     if (following) { const target = actors.get(following); if (target) { const position = interpolateWorldPath(target.path, time - target.changedAt, target.duration), offset = camera.position.clone().sub(controls.target); if (Math.abs(controls.target.x - position.x) > .00001 || Math.abs(controls.target.z - position.y) > .00001) { controls.target.set(position.x, 0, position.y); camera.position.copy(controls.target).add(offset); controls.update(); changed = true; } } }
     camera.updateMatrixWorld();
     evaluatingCamera = false;
     const realNow = Date.now();
+    const labelAnchors: WorldLabelAnchor[] = [];
     for (const view of actors.values()) {
       if (view.animation) {
         changed = Boolean(view.applyFrame?.(worldActorAnimationFrame(view.actor, view.animation, latest?.backlog ?? false, realNow))) || changed;
@@ -276,12 +317,36 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
       const x = lying || couch ? furniture.position.x + (furniture.width - 1) / 2 + (couch ? .2 : 0) : position.x, z = lying || couch ? furniture.position.y + (furniture.depth - 1) / 2 : position.y;
       const height = lying ? .56 : view.pose === 'seat' ? .57 : .04;
       if (view.group.position.x !== x || view.group.position.z !== z || view.sprite.position.y !== height || view.shadow.visible !== !lying) { view.group.position.set(x, 0, z); view.sprite.position.y = height; view.shadow.visible = !lying; changed = true; }
+      // SpriteMaterial is unlit. Sample the same finite-range practical lamps
+      // explicitly so a night walker also enters/leaves their warm light pools.
+      const base = parkBounds ? .4 + .6 * (latest?.environment.light ?? 1) : 1;
+      let red = base, green = base, blue = base;
+      if (parkBounds && latest && !latest.clock.daylight) for (const light of practicalLights.children as PointLight[]) {
+        const distance = Math.hypot(x - light.position.x, height + .8 - light.position.y, z - light.position.z);
+        if (distance >= light.distance) continue;
+        const cutoff = Math.max(0, 1 - Math.pow(distance / light.distance, 4));
+        const exposure = .12 * light.intensity * cutoff * cutoff / Math.max(1, distance * distance);
+        red += exposure; green += exposure * .79; blue += exposure * .49;
+      }
+      red = Math.min(1, red); green = Math.min(1, green); blue = Math.min(1, blue);
+      const tint = view.sprite.material.color;
+      if (tint.r !== red || tint.g !== green || tint.b !== blue) { tint.setRGB(red, green, blue); changed = true; }
       project.set(x, 2.1, z).project(camera);
       const label = labelElements.get(view.actor.companionId)!;
-      const transform = `translate(${Math.round((project.x + 1) * viewportWidth / 2)}px,${Math.round((1 - project.y) * viewportHeight / 2)}px) translate(-50%, -100%)`;
-      if (view.labelPosition !== transform) { label.style.transform = transform; view.labelPosition = transform; }
+      label.dataset.worldRenderPosition = `${x},${z}`;
       const hidden = project.z < -1 || project.z > 1 || Math.abs(project.x) > 1.1 || Math.abs(project.y) > 1.1;
       if (label.hidden !== hidden) label.hidden = hidden;
+      if (!hidden) labelAnchors.push({ id: view.actor.companionId, x: Math.round((project.x + 1) * viewportWidth / 2), y: Math.round((1 - project.y) * viewportHeight / 2), ...labelSizes.get(view.actor.companionId) ?? { width: 180, height: 50 } });
+      else labelLines.get(view.actor.companionId)!.hidden = true;
+    }
+    for (const placement of layoutWorldLabels(labelAnchors, viewportWidth, viewportHeight)) {
+      const label = labelElements.get(placement.id)!, view = actors.get(placement.id)!, line = labelLines.get(placement.id)!;
+      const transform = `translate(${placement.x}px,${placement.y}px) translate(-50%, -100%)`;
+      if (view.labelPosition !== transform) { label.style.transform = transform; view.labelPosition = transform; }
+      const dx = placement.anchorX - placement.x, dy = placement.anchorY - placement.y, distance = Math.hypot(dx, dy);
+      line.hidden = distance < 8;
+      label.dataset.worldDisplaced = String(!line.hidden);
+      if (!line.hidden) { line.style.width = distance + 'px'; line.style.transform = `translate(${placement.x}px,${placement.y}px) rotate(${Math.atan2(dy, dx)}rad)`; }
     }
     // These particles illustrate the host's weather, never advance the simulation clock.
     if (weatherGeometry && precipitation) {
@@ -313,7 +378,7 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
   function contextLost(event: Event) { event.preventDefault(); cancelFrame(); onFailure('画面暂时中断，请重新打开世界。世界仍会按真实状态继续。'); }
   document.addEventListener('visibilitychange', onVisibility); renderer.domElement.addEventListener('webglcontextlost', contextLost); start();
   return { update, getView, restoreView, reset() { onFollowChange?.(undefined); reset(); onViewChange?.(); }, setActive(value) { if (active === value) return; active = value; if (!value) cancelFrame(); else start(); }, setVisibleWindowCount(count) { const next = Number.isFinite(count) ? Math.max(1, count) : 1; if (next !== visibleWindowCount) { visibleWindowCount = next; invalidate(); } }, zoom(amount) { camera.zoom = Math.max(controls.minZoom, Math.min(controls.maxZoom, camera.zoom * amount)); camera.updateProjectionMatrix(); invalidate(); onViewChange?.(); }, rotate(amount) { const offset = camera.position.clone().sub(controls.target); offset.applyAxisAngle(new Vector3(0, 1, 0), amount); camera.position.copy(controls.target).add(offset); controls.update(); invalidate(); onViewChange?.(); }, focus: focusActor, dispose() {
-    disposed = true; cancelFrame(); observer.disconnect(); controls.dispose(); document.removeEventListener('visibilitychange', onVisibility); renderer.domElement.removeEventListener('webglcontextlost', contextLost);
+    disposed = true; cancelFrame(); observer.disconnect(); labelObserver.disconnect(); controls.dispose(); document.removeEventListener('visibilitychange', onVisibility); renderer.domElement.removeEventListener('webglcontextlost', contextLost);
     actors.forEach(removeActor); actors.clear(); clearTextures(); room?.dispose(); weatherGeometry?.dispose(); weatherMaterial?.dispose(); sun.shadow.dispose(); renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove(); preparing.remove(); scene.clear();
   } };
 }

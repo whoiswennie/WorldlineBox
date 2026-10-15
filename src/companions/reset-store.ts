@@ -155,9 +155,11 @@ export class CompanionResetStore {
       ['metadata', 'key GLOB ?', ['life-create/' + id + '/*']],
       ['companion_life_rules', 'companion_id=?', [id]],
       ['metadata', 'key=?', ['life-rules-initialized/' + id]],
+      ['metadata', 'key=?', ['life-park-walk-initialized/' + id]],
       ...['companion_schedules', 'companion_state_interactions', 'companion_appraisal_sources', 'companion_state_appraisals', 'companion_state_events', 'companion_routine_interruptions', 'companion_routine_audit', 'companion_routine_work', 'companion_routines', 'companion_runtime_states', 'companion_world_occupancy', 'companion_world_attention', 'companion_world_work_records', 'companion_world_dream_watermark', 'companion_world_jobs', 'companion_social_jobs', 'companion_social_outbox', 'companion_social_budget', 'companion_social_communication', 'companion_social_delegations', 'companion_social_notifications', 'companion_work_queue', 'proactive_state'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
       ['companion_world_peer_appraisals', 'companion_id=? OR target_id=?', [id, id]],
       ['companion_world_visit_records', 'guest_id=? OR host_id=?', [id, id]],
+      ['companion_world_perceptions', 'companion_id=?', [id]],
       ...['actorId', 'targetId', 'privateOwner'].map(field => ['companion_world_events', `json_extract(data,'$.${field}')=?`, [id]] as [string, string, unknown[]]),
     ];
   }

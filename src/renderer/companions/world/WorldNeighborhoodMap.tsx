@@ -8,8 +8,8 @@ import { worldMapActors, worldMapGarden, worldNeighborhoodLayout, worldOutdoorRo
 type Contact = Pick<Companion, 'id' | 'name' | 'avatar' | 'avatarAttachmentId'>;
 export interface WorldNeighborhoodMapHandle { zoom(factor: number): void; reset(): void; focus(id: string): void }
 export const WorldNeighborhoodMap = forwardRef<WorldNeighborhoodMapHandle, {
-  snapshot: CompanionWorldSnapshot; scene: CompanionWorldScene; companions: readonly Contact[]; followId?: string; onOpenHome(id: string): void; onFollow(id?: string): void;
-}>(function WorldNeighborhoodMap({ snapshot, scene, companions, followId, onOpenHome, onFollow }, ref) {
+  snapshot: CompanionWorldSnapshot; scene: CompanionWorldScene; companions: readonly Contact[]; followId?: string; onOpenHome(id: string): void; onFollow(id?: string): void; onOpenPark?(): void;
+}>(function WorldNeighborhoodMap({ snapshot, scene, companions, followId, onOpenHome, onFollow, onOpenPark }, ref) {
   const layout = worldNeighborhoodLayout(scene, snapshot.scenes), actors = worldMapActors(snapshot, scene.id);
   const garden = worldMapGarden(scene);
   const [camera, setCamera] = useState({ x: layout.width / 2, y: layout.height / 2, zoom: 1 });
@@ -44,6 +44,9 @@ export const WorldNeighborhoodMap = forwardRef<WorldNeighborhoodMapHandle, {
         {[{ x: garden.x + 3, y: garden.y + garden.height - 6 }, { x: garden.x + garden.width * .48, y: garden.y + 4 }, { x: garden.x + garden.width - 4, y: garden.y + garden.height - 6 }].map((patch, index) => <g key={index} className="world-map-flowers" transform={`translate(${patch.x} ${patch.y})`}>{[[-.7, .4], [.8, -.4], [1.5, .7], [-.8, -1]].map(([x, y], i) => <g key={i} transform={`translate(${x} ${y})`}><path d="M0 .5v-.5" /><circle cy="-.13" r=".25" /><circle cy="-.13" r=".08" /></g>)}</g>)}
         {garden.benches.map(bench => <g key={bench.id} className="world-map-bench" data-world-map-furniture={bench.id} transform={`translate(${bench.position.x} ${bench.position.y})`}><title>{bench.name}</title><rect className="world-map-bench-back" x="0" y="-.25" width={bench.width} height=".45" rx=".12" /><rect x="-.1" y=".35" width={bench.width + .2} height=".65" rx=".15" /><path d={`M.35 1v.55M${bench.width - .35} 1v.55M.2 .65H${bench.width - .2}`} /></g>)}
         {garden.trees.map(tree => { const cx = tree.position.x + tree.width / 2, cy = tree.position.y + tree.depth / 2; return <g key={tree.id} className="world-map-tree" data-world-map-furniture={tree.id}><title>{tree.name}</title><path d={`M${cx} ${cy + 1.7}v-1.5`} /><ellipse cx={cx} cy={cy + 1.6} rx="1.5" ry=".35" /><circle cx={cx - .75} cy={cy - .1} r="1.15" /><circle cx={cx + .75} cy={cy - .1} r="1.15" /><circle cx={cx} cy={cy - 1} r="1.3" /><path className="world-map-tree-leaf" d={`M${cx - .4} ${cy - 1.4}q.45-.4 .9 .05`} /></g>; })}
+        {garden.fountain && <g className="world-map-fountain" data-world-map-furniture={garden.fountain.id} transform={`translate(${garden.fountain.position.x + (garden.fountain.width - 1) / 2} ${garden.fountain.position.y + (garden.fountain.depth - 1) / 2})`}><title>中央喷泉</title><ellipse rx="2.5" ry="1.8" /><ellipse rx="1.9" ry="1.2" /><path d="M0 .7v-2m0 .7q-1.1-1-1.4.4M0-.6q1.1-1 1.4.4" /></g>}
+        {garden.lamps.map(lamp => <g key={lamp.id} className={'world-map-lamp' + (snapshot.clock.daylight ? '' : ' is-lit')} data-world-map-furniture={lamp.id} transform={`translate(${lamp.position.x} ${lamp.position.y})`}><title>{lamp.name}</title><circle r=".7" /><circle r=".24" /></g>)}
+        {onOpenPark && <foreignObject x={garden.x + 2} y={garden.y + 6} width="15" height="3.7"><button className="world-map-park-entry" aria-label="进入公共花园" onClick={onOpenPark}>进入花园 <span aria-hidden="true">↗</span></button></foreignObject>}
       </g>}
       {layout.homes.map(home => { const inside = snapshot.actors.filter(actor => actor.sceneId === home.sceneId); return <g key={home.sceneId}>
         <path className="world-map-door-path" d={`M${home.center.x} ${home.center.y}L${home.entrance.x} ${home.entrance.y}`} />

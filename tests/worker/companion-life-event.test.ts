@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import type { CompanionLifeRule } from '../../src/shared/companion-life-event';
 
 const stores = new Set<CompanionsStore>(), roots: string[] = [];
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-15T14:00:00Z'); });
@@ -21,8 +22,8 @@ function fixture() {
   store.request({ type: 'life-event.claim' });
   return { store, file, seeds, rule };
 }
-function draft(rule: { title: string; startMinute: number; endMinute: number; probability: number; action: 'message' | 'visit' | 'rest' | 'study' | 'leisure'; targetId?: string }) {
-  return { title: rule.title, startMinute: rule.startMinute, endMinute: rule.endMinute, probability: rule.probability, action: rule.action, targetId: rule.targetId };
+function draft(rule: CompanionLifeRule) {
+  return { title: rule.title, startMinute: rule.startMinute, endMinute: rule.endMinute, probability: rule.probability, action: rule.action, targetId: rule.targetId, durationMinutes: rule.durationMinutes };
 }
 it('persists hazard, sends one formal spontaneous player message, and never rerolls on reopening', () => {
   const f = fixture(); vi.setSystemTime(Date.now() + 800);

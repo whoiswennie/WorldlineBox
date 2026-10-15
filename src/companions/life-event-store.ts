@@ -4,10 +4,11 @@ import { companionLifeHazard, companionLifeMultiplier, companionLifeRuleDraftSch
   type CompanionLifeOccurrence, type CompanionLifeRule } from '../shared/companion-life-event';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionWorldSnapshot } from '../shared/companion-world';
+import type { CompanionWorldPerception } from '../shared/companion-world-perception';
 import type { CompanionConnection } from './store';
 
 type Row = { data: string };
-type LifeOptions = { world(): CompanionWorldSnapshot; elapsed(from: number, to: number): number;
+type LifeOptions = { world(): CompanionWorldSnapshot; perception(id: string): CompanionWorldPerception | undefined; elapsed(from: number, to: number): number;
   perform(occurrence: CompanionLifeOccurrence, text?: string): string };
 const iso = (at = Date.now()) => new Date(at).toISOString();
 const read = <T>(row: unknown): T => JSON.parse((row as Row).data) as T;
@@ -32,6 +33,14 @@ export class CompanionLifeEventStore {
     this.db.prepare('INSERT INTO companion_life_occurrences(id,companion_id,rule_id,window_start,status,lease_until,data) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,lease_until=excluded.lease_until,data=excluded.data')
       .run(occ.id, occ.companionId, occ.ruleId, occ.windowStart, occ.status, occ.leaseUntil ?? null, JSON.stringify(occ));
   }
+  /** Called only by the physical host, inside its state transition transaction. */
+  completePhysical(id: string, companionId: string, outcome: 'done' | 'cancelled', result: string): void {
+    const found = this.db.prepare('SELECT data FROM companion_life_occurrences WHERE id=? AND companion_id=?').get(id, companionId);
+    if (!found) return;
+    const occurrence = read<CompanionLifeOccurrence>(found);
+    if (occurrence.status !== 'active' || occurrence.rule.action !== 'park_walk') return;
+    occurrence.status = outcome; occurrence.result = result.slice(0, 4000); this.save(occurrence);
+  }
   private rule(id: string, companionId: string, revision: number): CompanionLifeRule {
     this.owner(companionId); const row = this.db.prepare("SELECT data FROM companion_life_rules WHERE id=? AND companion_id=? AND NOT EXISTS(SELECT 1 FROM metadata WHERE key='life-rule-removed/'||?)").get(id, companionId, id);
     if (!row) throw new Error('生活事件不存在。');
@@ -40,12 +49,18 @@ export class CompanionLifeEventStore {
   private defaults(companionId: string): void {
     // Explicit user removals are persistent; an empty rule list never reseeds.
     const key = 'life-rules-initialized/' + companionId;
-    if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get(key)) return;
-    for (const rule of [
+    if (!this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get(key)) {
+      for (const rule of [
       { title: '午后问候朋友', startMinute: 14 * 60, endMinute: 18 * 60, probability: .35, action: 'message' as const },
       { title: '空闲时分享近况', startMinute: 10 * 60, endMinute: 20 * 60, probability: .2, action: 'message' as const, targetId: 'user' },
-    ]) this.create(companionId, rule);
-    this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(key, 'true');
+      ]) this.create(companionId, rule);
+      this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(key, 'true');
+    }
+    const parkKey = 'life-park-walk-initialized/' + companionId;
+    if (!this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get(parkKey) && this.rules(companionId).length < 16) {
+      this.create(companionId, { title: '去公园散步放松', startMinute: 15 * 60, endMinute: 18 * 60, probability: .55, action: 'park_walk', durationMinutes: 35 });
+      this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(parkKey, 'true');
+    }
   }
   private create(companionId: string, draft: unknown, clientId?: string): CompanionLifeRule {
     this.owner(companionId);
@@ -68,7 +83,7 @@ export class CompanionLifeEventStore {
   }
   private available(world: CompanionWorldSnapshot, id: string): boolean {
     const actor = world.actors.find(actor => actor.companionId === id);
-    return !!actor && !['working', 'eating', 'sleeping', 'lyingDown', 'waking', 'seating', 'standingUp'].includes(actor.activity)
+    return !!actor && !actor.parkWalk && !['working', 'eating', 'sleeping', 'lyingDown', 'waking', 'seating', 'standingUp'].includes(actor.activity)
       && !world.works.some(work => work.companionId === id && work.kind !== 'chat' && work.status !== 'ended');
   }
   private multiplier(world: CompanionWorldSnapshot, rule: CompanionLifeRule, targetId?: string): number {
@@ -77,10 +92,22 @@ export class CompanionLifeEventStore {
     const relationship = targetId === 'user' ? this.db.prepare('SELECT data FROM companion_runtime_states WHERE companion_id=?').get(rule.companionId) : undefined;
     const player = relationship ? read<{ relationship: { affinity: number; trust: number } }>(relationship).relationship : undefined;
     const peer = world.relationships.find(edge => edge.companionId === rule.companionId && edge.targetCompanionId === targetId);
-    const targetAvailable = !targetId || targetId === 'user' || this.available(world, targetId);
-    return companionLifeMultiplier({ ...actor.state, pleasure: actor.state.affect.pleasure, arousal: actor.state.affect.arousal,
+    const perception = this.options.perception(rule.companionId), seenTarget = perception?.people.find(person => person.companionId === targetId && person.visible);
+    // A distant friend's attention is unknown. Message delivery, rather than a
+    // telepathic probability gate, handles their actual sleeping/working state.
+    const targetAvailable = !seenTarget || !['working', 'eating', 'sleeping', 'lyingDown', 'waking'].includes(seenTarget.activity);
+    const weather = perception?.environment.weather, temperature = perception?.environment.temperature;
+    const input = { ...actor.state, pleasure: actor.state.affect.pleasure, arousal: actor.state.affect.arousal,
       affinity: player?.affinity ?? peer?.affinity ?? 50, trust: player?.trust ?? peer?.trust ?? 50,
-      action: rule.action, available: this.available(world, rule.companionId) && targetAvailable });
+      action: rule.action, available: this.available(world, rule.companionId) && targetAvailable,
+      weather, outdoorTemperature: temperature };
+    if (rule.action !== 'park_walk') return companionLifeMultiplier(input);
+    const observedAt = perception?.environment.weatherObservedAtVirtual, observedReal = perception?.environment.weatherObservedAtReal;
+    const freshness = weather !== undefined && observedAt && observedReal && Date.parse(observedAt) <= Date.parse(world.clock.virtualNow)
+      ? Math.exp(-Math.max(0, this.options.elapsed(Date.parse(observedReal), Date.parse(world.clock.realNow))) / 1800000) : 0;
+    // Old rain is evidence with fading reliability, not an eternal veto. The
+    // remaining uncertainty allows a cautious attempt to step out and observe.
+    return freshness * companionLifeMultiplier(input) + (1 - freshness) * .4 * companionLifeMultiplier({ ...input, weather: undefined });
   }
   private chooseTarget(world: CompanionWorldSnapshot, rule: CompanionLifeRule, key: string): string | undefined {
     if (rule.targetId || !['message', 'visit'].includes(rule.action)) return rule.targetId;
@@ -153,12 +180,12 @@ export class CompanionLifeEventStore {
       if (command.type === 'life-event.complete' || command.type === 'life-event.fail') {
         const found = this.db.prepare('SELECT data FROM companion_life_occurrences WHERE id=?').get(command.id);
         if (!found) throw new Error('生活事件不存在。'); const occ = read<CompanionLifeOccurrence>(found); this.owner(occ.companionId);
-        if (occ.status === 'done') return { ok: true, lifeOccurrence: occ };
+        if (occ.status === 'done' || occ.status === 'active') return { ok: true, lifeOccurrence: occ };
         if (occ.status !== 'running' || occ.leaseToken !== command.leaseToken || Date.parse(occ.leaseUntil!) <= Date.now()) throw new Error('生活事件租约已经失效。');
         if (command.type === 'life-event.complete') {
           if (!this.owner(occ.companionId).proactive || !this.ownerRuleEnabled(occ.ruleId) || !this.available(world, occ.companionId)) throw new Error('伙伴此刻无法发起这个生活事件。');
           if (['message', 'visit'].includes(occ.rule.action) && !command.text?.trim()) throw new Error('交流事件需要伙伴自己的真实发言。');
-          occ.result = this.options.perform(occ, command.text); occ.status = 'done';
+          occ.result = this.options.perform(occ, command.text); occ.status = occ.rule.action === 'park_walk' ? 'active' : 'done';
         } else { occ.reason = command.error; occ.status = occ.attempts < 3 ? 'pending' : 'failed'; }
         occ.leaseToken = undefined; occ.leaseUntil = undefined; this.save(occ); return { ok: true, lifeOccurrence: occ };
       }

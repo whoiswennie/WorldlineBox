@@ -1,4 +1,5 @@
 import type { CompanionWorldActor, CompanionWorldScene, CompanionWorldSnapshot } from '../../../shared/companion-world';
+import { companionWorldParkLayout } from '../../../shared/companion-world-park';
 
 export interface WorldMapPoint { x: number; y: number }
 export interface WorldMapHome {
@@ -35,13 +36,4 @@ export function worldOutdoorRoute(actor: Pick<CompanionWorldActor, 'sceneId' | '
 export function worldMapActors(snapshot: CompanionWorldSnapshot, sceneId: string) { return snapshot.actors.filter(actor => actor.sceneId === sceneId); }
 
 /** Decoration follows the actual public furniture, without adding obstacles. */
-export function worldMapGarden(scene: CompanionWorldScene) {
-  const objects = scene.objects.filter(object => object.kind === 'tree' || object.kind === 'bench');
-  if (!objects.length) return undefined;
-  const left = Math.max(0, Math.min(...objects.map(object => object.position.x)) - 7);
-  const top = Math.max(0, Math.min(...objects.map(object => object.position.y)) - 5);
-  const right = Math.min(scene.width, Math.max(...objects.map(object => object.position.x + object.width)) + 7);
-  const bottom = Math.min(scene.depth, Math.max(...objects.map(object => object.position.y + object.depth)) + 5);
-  return { x: left, y: top, width: right - left, height: bottom - top,
-    trees: objects.filter(object => object.kind === 'tree'), benches: objects.filter(object => object.kind === 'bench') };
-}
+export const worldMapGarden = companionWorldParkLayout;

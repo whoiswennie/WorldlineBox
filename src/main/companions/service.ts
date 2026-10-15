@@ -44,6 +44,7 @@ import { companionProgressEvent, mergeCompanionProgress } from '../../shared/com
 import type { CompanionTaskCheckpoint } from '../../shared/companion-storage';
 import type { DshTaskRecord } from '../../shared/dsh-tasks';
 import type { CompanionReset } from '../../shared/companion-reset';
+import { companionModelWorld } from './world-perception-context';
 
 export interface CompanionServiceOptions {
   userData: string; workerPath: string; appPath?: string; window: () => BrowserWindow | undefined;
@@ -974,7 +975,7 @@ export class CompanionService {
     const turns = withdrawMemoryResults ? [] : checkpoint.turns;
     const runtimeState = (await this.call({ type: 'state.get', ...scope })).runtimeState;
     const conversation = (await this.call({ type: 'state', includeHidden: true })).state?.conversations.find(item => item.id === conversationId);
-    const context = { system: checkpoint.context.system, user: JSON.stringify({ ...data, ...(world ? { world,
+    const context = { system: checkpoint.context.system, user: JSON.stringify({ ...data, ...(world ? { world: companionModelWorld(world, companionId),
       worldTrust: 'host_simulation_facts_and_peer_quotes_not_player_authorization' } : {}) }) };
     return { context: conversation ? refreshCompanionRuntimeStateContext(context, runtimeState, companionId, conversation) : context, turns,
       supplements: checkpoint.supplements.filter(item => allowedSources.has(item.id)) };
@@ -1047,21 +1048,22 @@ export class CompanionService {
       if (name === 'world') {
         const args = companionWorldArgumentsSchema.parse(input);
         const sourceMessageId = requestMessageIds.at(-1);
-        if (args.action === 'message') {
+        if (args.action === 'message' || args.action === 'social') {
+          const recipientIds = args.action === 'message' ? args.recipientIds : args.recipientIds ?? (args.targetCompanionId ? [args.targetCompanionId] : []);
           if (!currentPlayerRequest) throw new Error('自主聊天不能沿用旧玩家消息分享私人内容。');
           const source = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [...requestMessageIds] })).memorySources?.filter(message => message.authorId === 'user').at(-1);
           const state = (await this.call({ type: 'state' })).state;
           const owner = state?.companions.find(member => member.id === scope.companionId);
-          const recipients = state?.companions.filter(member => args.recipientIds.includes(member.id)).map(member => ({ id: member.id, name: member.name })) ?? [];
-          if (!source || !owner || recipients.length !== new Set(args.recipientIds).size || args.recipientIds.includes(owner.id)
+          const recipients = state?.companions.filter(member => recipientIds.includes(member.id)).map(member => ({ id: member.id, name: member.name })) ?? [];
+          if (!source || !owner || new Set(recipientIds).size !== recipientIds.length || recipients.length !== recipientIds.length || recipientIds.includes(owner.id)
             || !await authorizeCompanionMessage({ source, recipients, text: args.text }, await this.configFor(owner), signal,
               { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) })) throw new Error('向其他伙伴发送内容需要本次玩家明确的收件人和分享要求。');
           this.assertReplyActive(signal);
           const peer = (await this.call({ type: 'social.conversation.ensure', companionId: owner.id,
-            memberIds: [owner.id, ...args.recipientIds] })).socialConversation;
+            memberIds: [owner.id, ...recipientIds] })).socialConversation;
           this.assertReplyActive(signal);
           if (!peer) throw new Error('伙伴通信会话当前不可用。');
-          const sent = await this.call({ type: 'social.send', companionId: owner.id, conversationId: peer.id, channel: 'phone',
+          const sent = await this.call({ type: 'social.send', companionId: owner.id, conversationId: peer.id, channel: args.action === 'social' ? 'face_to_face' : 'phone',
             content: args.text, authorizationMessageId: source.id, clientId: 'native_' + createHash('sha256').update(callIdentity).digest('hex').slice(0, 48) });
           this.changed(); return sent;
         }

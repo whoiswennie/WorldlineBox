@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { companionLifeHazard, companionLifeMultiplier, companionLifeThreshold } from '../../src/shared/companion-life-event';
+import { companionLifeHazard, companionLifeMultiplier, companionLifeThreshold, companionLifeRuleDraftSchema } from '../../src/shared/companion-life-event';
 import { lifeWindow } from '../../src/companions/life-event-store';
 
 describe('state dependent integrated life-event hazard', () => {
@@ -22,6 +22,17 @@ describe('state dependent integrated life-event hazard', () => {
   it('retains the same exponential threshold across process restarts and world date rollback', () => {
     expect(companionLifeThreshold('rule_a/2026-10-15T10:00Z')).toBe(companionLifeThreshold('rule_a/2026-10-15T10:00Z'));
     expect(companionLifeThreshold('rule_a/2026-10-15T10:00Z')).not.toBe(companionLifeThreshold('rule_b/2026-10-15T10:00Z'));
+  });
+  it('makes long park strolls conditional on actual outdoor safety, energy and emotional regulation need', () => {
+    const base = { action: 'park_walk' as const, available: true, energy: 70, pleasure: 0, arousal: 0, affinity: 50, trust: 50, thermalComfort: 1, weather: 'clear' as const, outdoorTemperature: 22 };
+    expect(companionLifeMultiplier(base)).toBe(1);
+    for (const patch of [{ energy: 25 }, { available: false }, { weather: 'rain' }, { weather: 'snow' }, { outdoorTemperature: 35 }, { thermalComfort: 0 }] as const) expect(companionLifeMultiplier({ ...base, ...patch })).toBe(0);
+    expect(companionLifeMultiplier({ ...base, energy: 30 })).toBeLessThan(.1);
+    expect(companionLifeMultiplier({ ...base, pleasure: -.6, arousal: .5 })).toBeGreaterThan(1);
+    expect(companionLifeMultiplier({ ...base, expression: 'playful' })).toBeGreaterThan(companionLifeMultiplier({ ...base, expression: 'reserved' }));
+    const rule = { title: '公园散步', startMinute: 900, endMinute: 1080, probability: .55, action: 'park_walk', durationMinutes: 35 };
+    expect(companionLifeRuleDraftSchema.safeParse(rule).success).toBe(true);
+    for (const patch of [{ durationMinutes: 9 }, { durationMinutes: 121 }, { targetId: 'user' }, { action: 'rest' }]) expect(companionLifeRuleDraftSchema.safeParse({ ...rule, ...patch }).success).toBe(false);
   });
   it('resolves cross-midnight and DST civil windows without using the host timezone', () => {
     const overnight = lifeWindow(Date.parse('2026-10-15T01:00:00Z'), 23 * 60, 2 * 60, 'UTC');

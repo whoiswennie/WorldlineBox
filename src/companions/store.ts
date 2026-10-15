@@ -114,7 +114,7 @@ export class CompanionsStore {
     this.#workOrders = new CompanionWorkOrderStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids), humanSource,
       (scope, content, clientId, replyToId) => this.appendMessage({ conversationId: scope.conversationId, authorId: scope.companionId, content, clientId, replyToId, replyDirective: 'none' }), () => this.#world.changed());
     this.#world.connectWorkOrders(this.#workOrders);
-    this.#life = new CompanionLifeEventStore(this.#db, { world: () => this.#world.snapshot(), elapsed: (from, to) => this.#world.elapsedVirtual(from, to), perform: (occurrence, text) => {
+    this.#life = new CompanionLifeEventStore(this.#db, { world: () => this.#world.snapshot(), perception: id => this.#world.perception(id), elapsed: (from, to) => this.#world.elapsedVirtual(from, to), perform: (occurrence, text) => {
       const owner = occurrence.companionId, target = occurrence.targetId;
       if (occurrence.rule.action === 'message') {
         if (!text?.trim()) throw new Error('生活消息需要实际发言内容。');
@@ -129,8 +129,13 @@ export class CompanionsStore {
         if (!target || target === 'user' || !text?.trim()) throw new Error('拜访需要实际伙伴和申请内容。');
         this.#world.tool(scope, { action: 'visit', targetCompanionId: target, reason: text }); return '已发出拜访申请，尚未获得入门许可。';
       }
+      if (occurrence.rule.action === 'park_walk') {
+        this.#world.startParkWalk(scope, occurrence.rule.durationMinutes ?? 35, occurrence.id);
+        return '已出发去公共花园散步；抵达公园后按实际步行累计放松时长，结束后回家。';
+      }
       this.#world.startLifeActivity(scope, occurrence.rule.action); return '已开始前往日常活动家具，抵达并完成姿态后才参与活动。';
     } });
+    this.#world.connectLife(this.#life);
     this.#seeds = seeds;
     this.#reset = new CompanionResetStore(this.#db, path.dirname(databasePath), id => {
       const seed = this.#seeds.find(item => item.id === id);

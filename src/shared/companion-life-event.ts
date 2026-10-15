@@ -1,15 +1,20 @@
 import { z } from 'zod';
+import { companionWorldParkSuitable } from './companion-world-park';
+import type { CompanionWorldSnapshot } from './companion-world';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionLifeRuleDraftSchema = z.strictObject({ title: z.string().trim().min(1).max(120), enabled: z.boolean().default(true),
   startMinute: z.number().int().min(0).max(1439), endMinute: z.number().int().min(0).max(1440),
-  probability: z.number().min(0).max(1), action: z.enum(['message', 'visit', 'rest', 'study', 'leisure']), targetId: id.optional() })
+  probability: z.number().min(0).max(1), action: z.enum(['message', 'visit', 'rest', 'study', 'leisure', 'park_walk']), targetId: id.optional(),
+  durationMinutes: z.number().int().min(10).max(120).optional() })
   .refine(rule => rule.startMinute !== rule.endMinute, '时间窗口不能为空。')
-  .refine(rule => rule.action !== 'visit' || rule.targetId !== 'user', '拜访目标必须是伙伴。');
+  .refine(rule => rule.action !== 'visit' || rule.targetId !== 'user', '拜访目标必须是伙伴。')
+  .refine(rule => rule.action === 'park_walk' || rule.durationMinutes === undefined, '只有公园散步可以设置散步时长。')
+  .refine(rule => rule.action !== 'park_walk' || rule.targetId === undefined, '公园散步不指定交流对象。');
 export const companionLifeRuleSchema = companionLifeRuleDraftSchema.safeExtend({ id, companionId: id, revision: z.number().int().positive(), createdAt: z.iso.datetime() });
 export type CompanionLifeRule = z.output<typeof companionLifeRuleSchema>;
 export const companionLifeOccurrenceSchema = z.object({ id, companionId: id, ruleId: id, rule: companionLifeRuleSchema,
-  windowStart: z.iso.datetime(), windowEnd: z.iso.datetime(), status: z.enum(['observing', 'pending', 'running', 'done', 'expired', 'cancelled', 'failed']),
+  windowStart: z.iso.datetime(), windowEnd: z.iso.datetime(), status: z.enum(['observing', 'pending', 'running', 'active', 'done', 'expired', 'cancelled', 'failed']),
   hazard: z.number().nonnegative(), threshold: z.number().positive(), multiplier: z.number().nonnegative(), lastRealAt: z.iso.datetime(),
   targetId: id.optional(), leaseToken: id.optional(), leaseUntil: z.iso.datetime().optional(), attempts: z.number().int().nonnegative(),
   result: z.string().max(4000).optional(), reason: z.string().max(500).optional() });
@@ -42,8 +47,17 @@ export function companionLifeThreshold(seed: string): number {
   return -Math.log(((value >>> 0) + .5) / 4294967296);
 }
 export function companionLifeMultiplier(input: { energy: number; pleasure: number; arousal: number; affinity: number; trust: number;
-  action: CompanionLifeRule['action']; available: boolean; expression?: string; thermalComfort?: number }): number {
+  action: CompanionLifeRule['action']; available: boolean; expression?: string; thermalComfort?: number; weather?: CompanionWorldSnapshot['environment']['weather']; outdoorTemperature?: number }): number {
   if (!input.available) return 0;
+  if (input.action === 'park_walk') {
+    // A modest need for regulation raises the desire to stroll, while exhaustion
+    // and unsafe outdoor conditions suppress it rather than forcing exercise.
+    if (!companionWorldParkSuitable({ weather: input.weather ?? 'clear', outdoorTemperature: input.outdoorTemperature ?? 20 }, input.energy)) return 0;
+    const readiness = Math.max(0, Math.min(1, (input.energy - 25) / 40));
+    const expression = input.expression === 'playful' ? 1.2 : input.expression === 'reserved' ? .85 : 1;
+    return Math.min(3, readiness * readiness * (3 - 2 * readiness) * Math.exp(.45 * Math.max(0, input.arousal) - .4 * input.pleasure)
+      * expression * Math.max(0, Math.min(1, input.thermalComfort ?? 1)) * (input.weather === 'cloudy' ? .85 : 1));
+  }
   const social = input.action === 'message' || input.action === 'visit';
   const energy = (Math.max(0, Math.min(100, input.energy)) - 60) / 100;
   const relationship = social ? .9 * (input.affinity - 50) / 50 + .4 * (input.trust - 50) / 50 : 0;

@@ -39,6 +39,9 @@ export function createCompanionWorldCommons(homes: CompanionWorldScene[]): Compa
     { id: 'commons_tree', kind: 'tree', name: '街区的树', position: { x: 112, y: 57 }, width: 2, depth: 2, anchor: { x: 112, y: 59 }, blocking: true },
     { id: 'commons_tree_west', kind: 'tree', name: '花园的树', position: { x: 95, y: 52 }, width: 2, depth: 2, anchor: { x: 95, y: 54 }, blocking: true },
     { id: 'commons_tree_east', kind: 'tree', name: '花园的树', position: { x: 135, y: 50 }, width: 2, depth: 2, anchor: { x: 135, y: 52 }, blocking: true },
+    { id: 'commons_fountain', kind: 'fountain', name: '花园喷泉', position: { x: 118, y: 52 }, width: 4, depth: 4, anchor: { x: 119, y: 56 }, blocking: true },
+    ...[{ x: 93, y: 46 }, { x: 116, y: 46 }, { x: 140, y: 46 }, { x: 93, y: 66 }, { x: 116, y: 66 }, { x: 140, y: 66 }].map((position, index) =>
+      ({ id: 'commons_lamp_' + (index + 1), kind: 'lamp' as const, name: '花园路灯', position, width: 1, depth: 1, anchor: { x: position.x, y: position.y + 1 }, blocking: true })),
     ...homes.map(home => ({ id: home.ownerId + '_entrance', kind: 'door' as const, name: '小屋入口',
       position: { x: home.origin.x + 10, y: home.origin.y + 16 }, width: 1, depth: 1,
       anchor: { x: home.origin.x + 10, y: home.origin.y + 16 }, blocking: false })),
@@ -53,9 +56,15 @@ export function companionWorldCellWalkable(scene: CompanionWorldScene, point: Wo
     x >= object.position.x && x < object.position.x + object.width && y >= object.position.y && y < object.position.y + object.depth);
 }
 /** Deterministic A*, cardinal movement only; solid furniture is never crossed. */
-export function findCompanionWorldPath(scene: CompanionWorldScene, from: WorldPoint, to: WorldPoint): WorldWaypoint[] | undefined {
+export function findCompanionWorldPath(scene: CompanionWorldScene, from: WorldPoint, to: WorldPoint, escapeObstructedStart = false): WorldWaypoint[] | undefined {
   const start = { x: Math.round(from.x), y: Math.round(from.y) }, end = { x: Math.round(to.x), y: Math.round(to.y) };
   if (!companionWorldCellWalkable(scene, end)) return undefined;
+  const contains = (object: CompanionWorldScene['objects'][number], point: WorldPoint) => point.x >= object.position.x && point.x < object.position.x + object.width && point.y >= object.position.y && point.y < object.position.y + object.depth;
+  const enclosing = escapeObstructedStart ? scene.objects.filter(object => object.blocking && contains(object, start)) : [];
+  // A layout edit can place a saved actor inside a new solid base. Permit only
+  // an exit from that original footprint, never re-entry from a walkable cell.
+  const mayEscape = (current: WorldPoint, next: WorldPoint) => enclosing.length > 0 && enclosing.some(object => contains(object, current))
+    && enclosing.some(object => contains(object, next)) && !scene.objects.some(object => object.blocking && !enclosing.includes(object) && contains(object, next));
   const key = (p: WorldPoint) => p.x + ',' + p.y;
   const cost = new Map([[key(start), 0]]), parent = new Map<string, WorldPoint>();
   const open = [start], visited = new Set<string>();
@@ -72,23 +81,23 @@ export function findCompanionWorldPath(scene: CompanionWorldScene, from: WorldPo
     visited.add(k);
     for (const delta of [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }]) {
       const next = { x: current.x + delta.x, y: current.y + delta.y }, nk = key(next), candidate = cost.get(k)! + 1;
-      if (!companionWorldCellWalkable(scene, next) || candidate >= (cost.get(nk) ?? Infinity)) continue;
+      if ((!companionWorldCellWalkable(scene, next) && !mayEscape(current, next)) || candidate >= (cost.get(nk) ?? Infinity)) continue;
       cost.set(nk, candidate); parent.set(nk, current); open.push(next);
     }
   }
   return undefined;
 }
-export function routeCompanionWorldActor(scenes: CompanionWorldScene[], actor: CompanionWorldActor, sceneId: string, destination: WorldPoint, mayEnter: (owner: string) => boolean): WorldWaypoint[] | undefined {
+export function routeCompanionWorldActor(scenes: CompanionWorldScene[], actor: CompanionWorldActor, sceneId: string, destination: WorldPoint, mayEnter: (owner: string) => boolean, escapeObstructedStart = false): WorldWaypoint[] | undefined {
   const current = scenes.find(scene => scene.id === actor.sceneId), target = scenes.find(scene => scene.id === sceneId), commons = scenes.find(scene => scene.kind === 'commons');
   if (!current || !target || !commons || target.ownerId && target.ownerId !== actor.companionId && !mayEnter(target.ownerId)) return undefined;
-  if (current.id === target.id) return findCompanionWorldPath(current, actor.position, destination);
+  if (current.id === target.id) return findCompanionWorldPath(current, actor.position, destination, escapeObstructedStart);
   const route: WorldWaypoint[] = []; let outside = actor.position;
   if (current.kind === 'home') {
-    const first = findCompanionWorldPath(current, actor.position, current.door); if (!first) return undefined;
+    const first = findCompanionWorldPath(current, actor.position, current.door, escapeObstructedStart); if (!first) return undefined;
     route.push(...first); outside = { x: current.origin.x + 10, y: current.origin.y + 16 }; route.push({ ...outside, sceneId: commons.id });
   }
   const entrance = target.kind === 'home' ? { x: target.origin.x + 10, y: target.origin.y + 16 } : destination;
-  const street = findCompanionWorldPath(commons, outside, entrance); if (!street) return undefined;
+  const street = findCompanionWorldPath(commons, outside, entrance, current.kind === 'commons' && escapeObstructedStart); if (!street) return undefined;
   route.push(...street);
   if (target.kind === 'home') {
     route.push({ ...target.door, sceneId: target.id });
@@ -116,7 +125,7 @@ export function advanceCompanionWorldActor(actor: CompanionWorldActor, elapsedMs
   if (next.route.length) next.activity = 'walking';
   return { actor: next, usedMs: used, arrived: !next.route.length };
 }
-export function companionWorldEnvironment(virtualAt: number, timeZone: string): { clock: Pick<CompanionWorldSnapshot['clock'], 'day' | 'hour' | 'daylight'>; environment: CompanionWorldSnapshot['environment'] } {
+export function companionWorldEnvironment(virtualAt: number, timeZone: string): { clock: Pick<CompanionWorldSnapshot['clock'], 'day' | 'hour' | 'daylight'>; environment: Required<CompanionWorldSnapshot['environment']> } {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(virtualAt);
   const part = (name: string) => Number(parts.find(p => p.type === name)?.value ?? 0);
   const hour = part('hour') + part('minute') / 60, day = Math.floor(virtualAt / 86400000), seed = ((day * 1103515245 + 12345) >>> 0) % 100;

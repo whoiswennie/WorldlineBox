@@ -38,6 +38,27 @@ it('pauses the three-dimensional renderer while observing the real neighborhood 
   expect(view.setActive).toHaveBeenLastCalledWith(true);
 });
 
+it('enters the real public park as an independent view and remembers its camera without moving actors', async () => {
+  const snapshot = world(); snapshot.scenes.unshift(createCompanionWorldCommons(snapshot.scenes));
+  saveWorldObserverPreferences({ sceneId: 'commons', views: {} });
+  const api = apiFor(() => snapshot); await mount(api, null);
+  await click('进入公共花园');
+  expect(container!.querySelector('[data-world-map-ready]')).toBeNull();
+  expect(view.update).toHaveBeenLastCalledWith(snapshot, snapshot.scenes[0], companions, 'park');
+  expect(view.setActive).toHaveBeenLastCalledWith(true);
+  const camera = { position: { x: 130, y: 40, z: 80 }, target: { x: 115, y: 0, z: 55 }, zoom: .8 };
+  view.getView.mockReturnValue(camera);
+  await act(async () => vi.mocked(createWorldViewport).mock.calls.at(-1)![3]?.());
+  expect(readWorldObserverPreferences().views['commons:park']).toEqual(camera);
+  expect(readWorldObserverPreferences().sceneId).toBe('commons:park');
+  await click('返回街区地图');
+  expect(container!.querySelector('[data-world-map-ready]')).not.toBeNull();
+  expect(view.setActive).toHaveBeenLastCalledWith(false);
+  await click('进入公共花园');
+  expect(view.restoreView).toHaveBeenLastCalledWith(camera, undefined);
+  expect(vi.mocked(api.request).mock.calls.every(([input]) => input.type === 'world.snapshot')).toBe(true);
+});
+
 it('shows actual host positions, movement, environment and visit outcomes without impersonating an owner decision', async () => {
   let snapshot = { ...world(), backlog: true }; const api = apiFor(() => snapshot); await mount(api);
   expect(container!.querySelector('[role="status"]')!.textContent).toContain('正在接续离线期间的生活');
@@ -135,6 +156,17 @@ it('shows the actual phone correspondent while preserving physical activity and 
   expect(status({ activity: 'working' }).label).toBe('在电脑前工作');
   expect(status({ activity: 'walking' }).label).toBe('正在走动');
   expect(status({ communication: { ...communication, untilReal: at } }).kind).toBe('idle');
+});
+
+it('distinguishes live face-to-face speaking and listening, names group participants and preserves physical priority', () => {
+  const snapshot = world(), actor = snapshot.actors[0]!;
+  const communication = { channel: 'face_to_face' as const, phase: 'speaking' as const, conversationId: 'peer-room', recipientIds: [second.id], untilReal: '2026-10-14T08:00:05.000Z' };
+  const status = (patch: Partial<typeof actor> = {}) => worldActorStatus({ ...actor, activity: 'habit', artAction: 'communicate', communication, ...patch }, { ...snapshot, works: [] }, companions);
+  expect(status()).toMatchObject({ kind: 'social', label: '正在与' + second.name + '当面交谈' });
+  expect(status({ communication: { ...communication, phase: 'listening' } }).label).toBe('正在听' + second.name + '说话');
+  expect(status({ communication: { ...communication, recipientIds: [second.id, 'third', actor.companionId, second.id] } })).toMatchObject({ label: '正在与2位伙伴当面交谈', detail: second.name + '、伙伴' });
+  expect(status({ activity: 'sleeping' }).label).toBe('正在睡觉'); expect(status({ activity: 'eating' }).label).toBe('正在用餐'); expect(status({ activity: 'working' }).label).toBe('在电脑前工作');
+  expect(status({ activity: 'idle', communication: { ...communication, untilReal: at } }).kind).toBe('idle');
 });
 
 it('remembers each scene camera on interaction, close and reopen while explicit home entry overrides the last scene', async () => {

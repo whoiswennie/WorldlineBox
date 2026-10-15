@@ -95,3 +95,20 @@ it('preserves a scrolled reading window when a new peer message arrives until th
   await click('有新消息，回到最新记录');
   expect(list.textContent).toContain('刚到达的新消息');
 });
+
+it('shows actual face-to-face and phone channels on the reused private chat, without inventing a historical channel', async () => {
+  const base = fixture();
+  const request = vi.fn(async (input: CompanionsRequest) => {
+    const result = await base(input);
+    return input.type === 'social.messages' && !input.before && result.socialMessagePage ? { ...result, socialMessagePage: { ...result.socialMessagePage,
+      items: [{ ...latest[0]!, channel: 'phone' as const }, { ...latest[1]!, channel: 'face_to_face' as const }, row(53, one.id, '这条旧记录没有交流方式。')] } } : result;
+  });
+  await mount(request);
+  expect(container!.querySelector('[data-social-message="message_51"] [data-social-channel="phone"]')!.textContent).toBe('手机消息');
+  expect(container!.querySelector('[data-social-message="message_52"] [data-social-channel="face_to_face"]')!.textContent).toBe('当面交流');
+  const historical = container!.querySelector('[data-social-message="message_53"]')!;
+  expect(historical.querySelector('[data-social-channel="unknown"]')!.textContent).toBe('方式未记录'); expect(historical.querySelector('[data-social-channel="phone"]')).toBeNull();
+  expect(container!.querySelector('.companions-message-bubble strong')!.textContent).toBe('今天的海风');
+  await click('更早的消息');
+  expect(container!.querySelectorAll('[data-social-channel="unknown"]')).toHaveLength(2);
+});
