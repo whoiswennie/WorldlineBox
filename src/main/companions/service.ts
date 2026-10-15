@@ -20,6 +20,7 @@ import { CompanionScheduleService } from './schedule-service';
 import { CompanionReplyStream } from './reply-stream';
 import { CompanionWorldService } from './world-service';
 import { generateCompanionWorldAttention } from './world-model';
+import { authorizeCompanionMessage } from './social-model';
 import { evaluateCompanionRoutine } from '../../shared/companion-routine-time';
 import { companionMemoryToolArgumentsSchemas, type CompanionMemoryToolName } from '../../shared/companion-memory-tool';
 import { companionScheduleArgumentsSchema } from '../../shared/companion-schedule-tool';
@@ -36,6 +37,7 @@ export interface CompanionServiceOptions {
   userData: string; workerPath: string; window: () => BrowserWindow | undefined;
   getConfig: () => CompanionModelConfig; hasConfig: () => boolean;
   dsh: () => DshLauncher | undefined; report: (error: unknown) => void;
+  onChanged?: () => void;
 }
 
 /** Owns conversations' reasoning lifecycles; SQLite belongs exclusively to the utility worker. */
@@ -115,6 +117,7 @@ export class CompanionService {
   }
   private changed() {
     if (this.closed) return;
+    this.options.onChanged?.();
     const window = this.options.window();
     if (window && !window.isDestroyed()) window.webContents.send(COMPANIONS_CHANGED_CHANNEL);
   }
@@ -361,7 +364,7 @@ export class CompanionService {
         }
         const response = await this.call(request);
         if (!['messages', 'message.get', 'message.search', 'memory.list', 'memory.search', 'memory.browse', 'memory.inspect', 'memory.sources.search', 'memory.sources.filter', 'memory.records.filter', 'memory.read', 'memory.status', 'actions', 'actions.page', 'action.get',
-          'schedule.list', 'state.get', 'state.inspect', 'routine.get', 'world.snapshot', 'world.observe'].includes(request.type)) this.changed();
+          'schedule.list', 'state.get', 'state.inspect', 'routine.get', 'world.snapshot', 'world.observe', 'social.conversations', 'social.messages', 'social.days'].includes(request.type)) this.changed();
         return response;
       }
     }
@@ -516,6 +519,7 @@ export class CompanionService {
         let step = checkpoint.turns.length ? checkpoint.turns.length - 1 : 0;
         if (!checkpoint.context) {
           checkpoint.context = buildCompanionContext({ companion, conversation, messages, memories,
+            sourceMessage: userMessage, identityDirectory: state?.companions.map(role => ({ id: role.id, name: role.name })), addressedCompanionIds: speakers,
             memorySources: recalled.sources, memoryRecall: recalled, proactive, agentLoop: true,
             taskRequest: proactive ? undefined : { sourceMessageId: userMessage.id, prompt: userMessage.content,
               ...(reference?.conversationId === conversationId ? { replyReference: { id: reference.id, authorId: reference.authorId, content: reference.content } } : {}) },
@@ -539,6 +543,7 @@ export class CompanionService {
                 stream = new CompanionReplyStream({ checkpoint, step,
                   publish: event => this.publishReplyStream(event), save: () => this.call({ type: 'loop.save', checkpoint }) });
                 reply = await generateCompanionReply({ companion, conversation, messages, memories, proactive,
+                  sourceMessage: userMessage, identityDirectory: state?.companions.map(role => ({ id: role.id, name: role.name })), addressedCompanionIds: speakers,
                   members: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name, description: role.description })) }, config, controller.signal,
                   { loop: true, ...inference, onTextDelta: stream.onTextDelta,
                     fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
@@ -581,6 +586,7 @@ export class CompanionService {
             if (controller.signal.aborted || this.closed) break;
             let admitted = 0;
             const plans = turn.calls.map(call => {
+              if (proactive && (call.name === 'dsh' || call.name === 'memory.forget')) return { call, error: '当前是主动交流机会，没有新的玩家委托；不得沿旧消息执行现实任务或遗忘。' };
               try {
                 if (call.name in companionMemoryToolArgumentsSchemas) {
                   const name = call.name as CompanionMemoryToolName;
@@ -627,7 +633,7 @@ export class CompanionService {
                   this.assertReplyActive(controller.signal);
                   return this.executePartnerTool(plan.call.name, plan.call.arguments,
                     { companionId: id, conversationId }, [userMessage.id, ...checkpoint.supplements.map(item => item.id)],
-                    `${loopKey}:${step}:${plan.call.id}`, beforeSequence, controller.signal);
+                    `${loopKey}:${step}:${plan.call.id}`, beforeSequence, controller.signal, !proactive);
                 });
                 memoryChain = result.catch(() => undefined);
                 return { callId: plan.call.id, content: JSON.stringify(await result) };
@@ -749,13 +755,31 @@ export class CompanionService {
   }
 
   private async executePartnerTool(name: string, serialized: string, scope: { companionId: string; conversationId: string },
-    requestMessageIds: readonly string[], callIdentity: string, beforeSequence: number, signal?: AbortSignal): Promise<CompanionStorageResponse> {
+    requestMessageIds: readonly string[], callIdentity: string, beforeSequence: number, signal?: AbortSignal, currentPlayerRequest = true): Promise<CompanionStorageResponse> {
     try {
       this.assertReplyActive(signal);
       const input: unknown = JSON.parse(serialized);
       if (name === 'world') {
         const args = companionWorldArgumentsSchema.parse(input);
         const sourceMessageId = requestMessageIds.at(-1);
+        if (args.action === 'message') {
+          if (!currentPlayerRequest) throw new Error('自主聊天不能沿用旧玩家消息分享私人内容。');
+          const source = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [...requestMessageIds] })).memorySources?.filter(message => message.authorId === 'user').at(-1);
+          const state = (await this.call({ type: 'state' })).state;
+          const owner = state?.companions.find(member => member.id === scope.companionId);
+          const recipients = state?.companions.filter(member => args.recipientIds.includes(member.id)).map(member => ({ id: member.id, name: member.name })) ?? [];
+          if (!source || !owner || recipients.length !== new Set(args.recipientIds).size || args.recipientIds.includes(owner.id)
+            || !await authorizeCompanionMessage({ source, recipients, text: args.text }, await this.configFor(owner), signal,
+              { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) })) throw new Error('向其他伙伴发送内容需要本次玩家明确的收件人和分享要求。');
+          this.assertReplyActive(signal);
+          const peer = (await this.call({ type: 'social.conversation.ensure', companionId: owner.id,
+            memberIds: [owner.id, ...args.recipientIds] })).socialConversation;
+          this.assertReplyActive(signal);
+          if (!peer) throw new Error('伙伴通信会话当前不可用。');
+          const sent = await this.call({ type: 'social.send', companionId: owner.id, conversationId: peer.id, channel: 'phone',
+            content: args.text, authorizationMessageId: source.id, clientId: 'native_' + createHash('sha256').update(callIdentity).digest('hex').slice(0, 48) });
+          this.changed(); return sent;
+        }
         const result = await this.call({ type: 'world.tool', ...scope, beforeSequence, ...(sourceMessageId ? { sourceMessageId } : {}), arguments: args });
         this.changed(); return result;
       }
@@ -771,6 +795,7 @@ export class CompanionService {
       if (name === 'routine') {
         const args = companionRoutineArgumentsSchema.parse(input);
         if (args.action === 'inspect') return await this.call({ type: 'routine.get', ...scope });
+        if (!currentPlayerRequest) throw new Error('主动交流没有新的作息修改要求。');
         const requests = await Promise.all(requestMessageIds.map(id => this.call({ type: 'message.get', id })));
         this.assertReplyActive(signal);
         const source = requests.map(result => result.message).filter(message => message?.authorId === 'user' && message.conversationId === scope.conversationId).at(-1);
@@ -782,6 +807,7 @@ export class CompanionService {
       const args = companionScheduleArgumentsSchema.parse(input);
       const { action, ...parameters } = args;
       if (action === 'list') return this.call({ type: 'schedule.list', ...parameters, ...scope });
+      if (!currentPlayerRequest) throw new Error('主动交流没有新的日程管理授权。');
       const requestSources = await Promise.all(requestMessageIds.map(id => this.call({ type: 'message.get', id })));
       this.assertReplyActive(signal);
       const source = requestSources.map(result => result.message).filter(message => message?.authorId === 'user'
@@ -846,6 +872,10 @@ export class CompanionService {
   private async launchAction(request: Extract<CompanionsRequest, { type: 'action.run' }>, queuedBehind?: Promise<unknown>, waitForActionIds: string[] = [], association?: Pick<CompanionAction, 'parentMessageId' | 'toolCallId' | 'loopStep' | 'scheduleOccurrenceId'>, signal?: AbortSignal): Promise<CompanionsResponse> {
     if (this.closed) throw new Error('伙伴服务正在关闭，暂不启动新任务。');
     this.assertReplyActive(signal);
+    const source = (await this.call({ type: 'memory.sources.filter', companionId: request.companionId,
+      conversationId: request.conversationId, ids: [request.sourceMessageId] })).memorySources?.[0];
+    this.assertReplyActive(signal);
+    if (!source || source.authorId !== 'user') throw new Error('现实任务需要真实可见的玩家委托，伙伴社交消息不授予执行权限。');
     const response = await this.call({ type: 'action.create', action: { conversationId: request.conversationId,
       companionId: request.companionId, sourceMessageId: request.sourceMessageId, title: request.title, status: 'queued', stage: '正在准备能力环境', events: [], ...association },
       checkpoint: { prompt: request.prompt, supplements: [], waitForActionIds } });
@@ -961,7 +991,8 @@ export class CompanionService {
       const dsh = this.options.dsh();
       if (!dsh) throw new Error('DSH 执行环境不可用，请在启动器中创建并选择实例。');
       if (this.cancelledActions.has(action.id) || this.closed) return;
-      const source = (await this.call({ type: 'message.get', id: action.sourceMessageId })).message;
+      const source = (await this.call({ type: 'memory.sources.filter', companionId: action.companionId, conversationId: action.conversationId, ids: [action.sourceMessageId] })).memorySources?.[0];
+      if (!source) return;
       let fixed = false;
       if (action.scheduleOccurrenceId) {
         const listed = await this.call({ type: 'schedule.list', companionId: action.companionId, conversationId: action.conversationId, includeHistory: true, limit: 200 });
@@ -1075,12 +1106,14 @@ export class CompanionService {
       const recent = (await this.call({ type: 'messages', conversationId: conversation.id, limit: 50 })).messages ?? [];
       const messages = (await this.call({ type: 'memory.sources.filter', companionId: companion.id, conversationId: conversation.id,
         ids: recent.map(message => message.id) })).memorySources ?? [];
-      const source = (await this.call({ type: 'message.get', id: action.sourceMessageId })).message;
+      const source = (await this.call({ type: 'memory.sources.filter', companionId: companion.id, conversationId: conversation.id, ids: [action.sourceMessageId] })).memorySources?.[0];
+      if (!source) return;
       const recalled = source ? await this.memory.recall({ companion, conversation, messages, currentMessage: source,
         config: await this.configFor(companion), signal }) : undefined;
-      const reply = await generateCompanionReply({ companion, conversation, messages, memories: recalled?.memories ?? [],
+      const reply = await generateCompanionReply({ companion, conversation, messages: messages.some(message => message.id === source.id) ? messages : [source, ...messages], memories: recalled?.memories ?? [],
+        sourceMessage: source, identityDirectory: state?.companions.map(role => ({ id: role.id, name: role.name })),
         world: await this.world.observe({ companionId: companion.id, conversationId: conversation.id }),
-        runtimeState: (await this.call({ type: 'state.get', companionId: companion.id, conversationId: conversation.id })).runtimeState,
+        runtimeState: (await this.call({ type: 'state.get', companionId: companion.id, conversationId: conversation.id, beforeSequence: source.sequence })).runtimeState,
         memorySources: recalled?.sources, memoryRecall: recalled,
         actionResult: { id: action.id, title: action.title, status, sourceMessageId: action.sourceMessageId, content: content.slice(0, 16000) } },
       await this.configFor(companion), signal, { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });

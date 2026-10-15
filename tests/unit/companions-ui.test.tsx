@@ -131,7 +131,7 @@ it('searches and filters the full built-in catalogue and restores the selected r
 it('keeps private and group conversations in the message list and opens the same private conversation from contacts', async () => {
   const f = fixture(); await mount(f.api);
   const navigation = container!.querySelector('nav[aria-label="伙伴导航"]')!;
-  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '世界']);
+  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '世界', '社交']);
   expect(container!.querySelector('[aria-label="伙伴设置"]')).toBeNull();
   expect(container!.querySelectorAll('[data-companion-conversation]')).toHaveLength(2);
   expect(container!.querySelector('[data-companion-conversation]')!.getAttribute('data-companion-conversation')).toBe('private-sister');
@@ -284,6 +284,7 @@ it('fetches an older capability detail on demand instead of loading every histor
   f.request.mockImplementation(input => input.type === 'action.get' ? Promise.resolve({ ok: true, action }) : original(input));
   await mount(f.api); expect(f.request.mock.calls.some(([input]) => input.type === 'action.get')).toBe(false);
   await click('查看这次能力调用'); expect(f.request).toHaveBeenCalledWith({ type: 'action.get', id: action.id });
+  expect(container!.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('全部记录');
   expect(container!.textContent).toContain('原来的文件处理'); expect(container!.textContent).toContain('原始能力结果已保留');
   await f.publish(); expect(container!.textContent).toContain('原来的文件处理');
 });
@@ -300,6 +301,8 @@ it('opens the exact parallel capability from a lightweight message entry and kee
   expect(bubble.textContent).not.toContain('CLOCK TOOL STREAM');
   await click('查看任务进度 读取系统时间');
   const monitor = container!.querySelector('[role="dialog"][aria-label="伙伴实时任务"]')!;
+  expect(monitor.querySelector<HTMLSelectElement>('#companion-task-owner')!.value).toBe('deepseek-sister');
+  expect(monitor.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('当前工作');
   expect(monitor.querySelector('main')!.textContent).toContain('CLOCK TOOL STREAM');
   expect(monitor.querySelector('main')!.textContent).toContain('读取系统时间');
   await click('关闭任务监视'); expect(bubble.textContent).not.toContain('CLOCK TOOL STREAM');

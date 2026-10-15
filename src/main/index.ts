@@ -2,6 +2,7 @@ import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm
 import path from "node:path";
 import type { DshLauncher } from './dsh/launcher';
 import type { CompanionService } from './companions/service';
+import { CompanionWorldWindowManager } from './companions/world-windows';
 import type { MusicService } from './music/service';
 import { COMPANIONS_CHANNEL } from '../shared/companions';
 import { DSH_LAUNCHER_CHANNEL } from '../shared/dsh-launcher';
@@ -500,6 +501,7 @@ let mainWindow: BrowserWindow | undefined;
 let dshLauncher: DshLauncher | undefined;
 let musicService: MusicService | undefined;
 let companionService: CompanionService | undefined;
+let companionWorldWindows: CompanionWorldWindowManager | undefined;
 /** Effective UI locale for native dialogs; synced from Renderer (WorldlineBox-bwb). */
 let appLocale: AppLocale = "en";
 let workerClient: LibraryWorkerClient | undefined;
@@ -3708,9 +3710,21 @@ async function startApplication(): Promise<void> {
         const config = loadAiConfig();
         return { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: getDecryptedApiKey() };
       },
-      dsh: () => dshLauncher, report: error => logger?.error('companions.service', error),
+      dsh: () => dshLauncher, report: error => logger?.error('companions.service', error), onChanged: () => companionWorldWindows?.changed(),
     });
     companionService.registerIpc();
+    companionWorldWindows = new CompanionWorldWindowManager({
+      ipc: ipcMain, getMainWindow: () => mainWindow, preload: path.join(__dirname, 'index.js'),
+      createWindow: options => new BrowserWindow(options),
+      request: request => companionService!.handle(request), report: error => logger?.error('companions.world-window', error),
+      load: async observer => {
+        const window = observer as BrowserWindow;
+        if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+          const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL); url.searchParams.set('window', 'companion-world'); await window.loadURL(url.toString());
+        } else await window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`), { query: { window: 'companion-world' } });
+      },
+    });
+    companionWorldWindows.register();
   } catch (error) {
     logger.error('companions.initialization', error);
     ipcMain.handle(COMPANIONS_CHANNEL, () => ({ ok: false, error: '伙伴服务无法初始化，请查看诊断日志。' }));
@@ -6180,6 +6194,8 @@ if (!hasSingleInstanceLock) {
 
   app.on("before-quit", (event) => {
     applicationClosing = true;
+    companionWorldWindows?.dispose();
+    companionWorldWindows = undefined;
     aiQueueScheduler.clearAll();
     criticalConfirmationWindowManager?.dispose();
     criticalConfirmationWindowManager = undefined;

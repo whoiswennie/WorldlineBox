@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync } from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -9,6 +10,9 @@ import { DshCliTerminal, activeDshCliUses, externalShimSource, maskDshTerminalOu
 import { inventoryTree } from '../../src/main/dsh/files';
 import { instanceEnvironment } from '../../src/main/dsh/instance-process';
 import type { DshInstance } from '../../src/shared/dsh-launcher';
+import { resolvePortableTools } from '../../src/main/portable-tools';
+
+vi.mock('electron', () => ({ app: { getAppPath: () => process.cwd() } }));
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -19,7 +23,7 @@ afterEach(async () => {
     await rm(absolute, { recursive: true, force: true, maxRetries: 6, retryDelay: 50 });
   }
 });
-async function setup(adapter: 'desktop-cli-web-v1' | 'node-cli-web-v1' = 'desktop-cli-web-v1') {
+async function setup(adapter: 'desktop-cli-web-v1' | 'node-cli-web-v1' = 'desktop-cli-web-v1', toolchain?: () => Promise<{ pathDirectories: string[]; gitCaBundle?: string }>) {
   const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-cli-test-')); roots.push(root);
   const records: Array<{ id: string; version: string; contentSha256: string; adapter: string }> = [];
   const selections: DshCliSelection[] = [];
@@ -37,6 +41,7 @@ const fs=require('node:fs'),{randomUUID}=require('node:crypto');const args=proce
 if(args.includes('--version'))console.log('fixture-version-${label}');
 else if(args.includes('--help'))console.log('fixture-help-${label}');
 else if(args.includes('--hold')){console.log('fixture task held');setInterval(()=>{},1000)}
+else if(args.includes('--bundled-tools-probe')){const {spawnSync}=require('node:child_process');const run=(name,args)=>{const r=spawnSync(name,args,{encoding:'utf8',windowsHide:true,shell:false});if(r.error||r.status!==0)throw Error(name+' failed: '+r.stderr);return r.stdout.trim()};console.log('BUNDLED_TOOLS '+JSON.stringify({node:run('node.exe',['-p','process.execPath']),python:run('python.exe',['-c','import sys; print(sys.executable)']),git:run('git.exe',['--version']),ffmpeg:run('ffmpeg.exe',['-version']).split('\\n')[0],ffprobe:run('ffprobe.exe',['-version']).split('\\n')[0],pathKeys:Object.keys(process.env).filter(key=>key.toLowerCase()==='path').length}));}
 else if(args.includes('--env-probe'))console.log('FIXTURE_ENV '+JSON.stringify({npmCache:process.env.npm_config_cache,pnpmStore:process.env.pnpm_config_store_dir,credentialAbsent:!process.env.OPENAI_API_KEY,electronRunAsNode:process.env.ELECTRON_RUN_AS_NODE??null,pythonUserBase:process.env.PYTHONUSERBASE,pipUser:process.env.PIP_USER,pythonNoUserSite:process.env.PYTHONNOUSERSITE??null,psModules:process.env.PSModulePath,npmKeyCount:Object.keys(process.env).filter(key=>/^npm_config_cache$/i.test(key)).length,pnpmKeyCount:Object.keys(process.env).filter(key=>/^pnpm_config_store_dir$/i.test(key)).length,httpProxy:process.env.HTTP_PROXY??null,httpsProxy:process.env.HTTPS_PROXY??null,allProxy:process.env.ALL_PROXY??null,registry:process.env.npm_config_registry,pythonIndex:process.env.PIP_INDEX_URL}));
 else if(args[0]==='plugin'){console.log('plugin-home '+process.env.DSH_HOME);console.log('PLUGIN_ARGS '+JSON.stringify(args))}
 else{let task='';process.stdin.on('data',chunk=>task+=chunk);process.stdin.on('end',()=>{const at=args.indexOf('--session-id');const id=at>=0?args[at+1]:randomUUID();console.log(JSON.stringify({type:'session',sessionId:id}));console.log(JSON.stringify({type:'final',text:'answer-${label} '+task.trim()}));console.log('api_key="fixture secret with spaces"')})}
@@ -58,7 +63,7 @@ else{let task='';process.stdin.on('data',chunk=>task+=chunk);process.stdin.on('e
   await writeFile(path.join(root,'network.json'),JSON.stringify({proxyMode:'direct',npmRegistry:'https://registry.npmjs.org',pythonIndex:'https://pypi.org/simple'}));
   const outputs: string[] = []; const terminal = new DshCliTerminal({ rootPath: root, onChanged: () => undefined, onOutput: event => {
     outputs.push(event.text); if(event.text.includes('\x1b[6n'))terminal.write('\x1b[1;1R',event.terminalId);
-  }, resolveSelection: async () => selections[0]! });
+  }, resolveSelection: async () => selections[0]!, toolchain });
   await terminal.init();
   return { root, selections, terminal, outputs };
 }
@@ -80,6 +85,21 @@ async function waitGone(pid:number){const deadline=Date.now()+15_000;while(alive
 async function ownedParentPid(pid:number){const executable=path.join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');return Number((await promisify(execFile)(executable,['-NoLogo','-NoProfile','-NonInteractive','-Command',`[Console]::Write((Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').ParentProcessId)`],{windowsHide:true,timeout:10_000})).stdout.trim());}
 
 describe('managed CLI entrypoint', () => {
+  it.skipIf(process.platform !== 'win32' || !existsSync(path.resolve('resources/portable-tools/win32-x64/manifest.json')))('lets the DSH CLI and its child tools resolve the bundled toolchain by command name', async () => {
+    const tools = await resolvePortableTools({ appPath: process.cwd(), resourcesPath: process.cwd() });
+    const { root, selections, terminal } = await setup('desktop-cli-web-v1', async () => tools);
+    try {
+      await terminal.selectContext(selections[0]);
+      const result = await runShim(root, ['--bundled-tools-probe']);
+      expect(result.code, result.stderr).toBe(0);
+      const output = JSON.parse(/^BUNDLED_TOOLS (.+)$/m.exec(result.stdout)![1]!);
+      expect(path.resolve(output.node).toLowerCase()).toBe(path.resolve(tools.nodeExecutable).toLowerCase());
+      expect(path.resolve(output.python).toLowerCase()).toBe(path.resolve(tools.pythonExecutable).toLowerCase());
+      expect(output.git).toContain('2.48.1.windows.1');
+      expect(output.ffmpeg).toContain('8.0.1-essentials_build'); expect(output.ffprobe).toContain('8.0.1-essentials_build');
+      expect(output.pathKeys).toBe(1);
+    } finally { await terminal.close(); }
+  }, 60_000);
   it('emits syntactically valid standalone code and masks credentials including ANSI and spaces', () => {
     expect(() => new Script(externalShimSource('C:\\managed', 'C:\\managed\\cli\\context.json', 'C:\\app\\koffi.cjs'))).not.toThrow();
     expect(maskDshTerminalOutput('api_key="secret with spaces"\nauthorization=Bearer xyz\n\x1b[31mpassword: hidden\x1b[0m')).not.toMatch(/secret with spaces|xyz|hidden/);

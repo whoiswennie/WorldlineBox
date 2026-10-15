@@ -4,10 +4,9 @@ import '@fontsource-variable/noto-sans-sc/index.css';
 import './harmonyos-sans-sc-windows.css';
 import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
-import { StrictMode } from 'react';
+import { lazy, StrictMode, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { App } from './App';
 import { ElevationProvider } from './ElevationProvider';
 import { FontSizeProvider } from './FontSizeProvider';
 import { InspectorCardFeelProvider } from './InspectorCardFeelProvider';
@@ -42,6 +41,9 @@ applyMenuAcrylicPreferences(loadMenuAcrylicPreferences());
 applyFontSizePreferences(loadFontSizePreferences());
 
 const root = document.getElementById('root');
+const App = lazy(() => import('./App').then(module => ({ default: module.App })));
+const WorldWindow = lazy(() => import('./companions/world/CompanionWorldWindow').then(module => ({ default: module.CompanionWorldWindow })));
+const observer = new URLSearchParams(window.location.search).get('window') === 'companion-world';
 
 if (!root) {
   throw new Error('Renderer root element is missing.');
@@ -55,7 +57,7 @@ createRoot(root).render(
           <ElevationProvider>
             <MenuAcrylicProvider>
               <InspectorCardFeelProvider>
-                <App />
+                <Suspense fallback={<p role="status">正在打开…</p>}>{observer ? <WorldWindow /> : <App />}</Suspense>
               </InspectorCardFeelProvider>
             </MenuAcrylicProvider>
           </ElevationProvider>

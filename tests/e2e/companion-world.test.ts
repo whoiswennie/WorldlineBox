@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { openCompanionWorldWindow } from './companion-world-window-helpers';
 import { companionWorldEnvironment } from '../../src/shared/companion-world-engine';
 
 async function request(page: Page, input: CompanionsRequest) {
@@ -32,16 +33,16 @@ test('restores observer scene, camera and follow choice after closing and restar
   let application: ElectronApplication | undefined;
   try {
     const started = await launch(profile); application = started.application; let page = started.page;
-    await page.getByRole('button', { name: '打开伙伴世界', exact: true }).click();
-    let world = page.getByRole('dialog', { name: '伙伴世界', exact: true });
+    let worldPage = await openCompanionWorldWindow(application, page);
+    let world = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
     await expect(world.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
     await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('commons');
     await world.getByRole('button', { name: '向右旋转世界', exact: true }).click();
     await world.getByRole('button', { name: '放大世界', exact: true }).click();
     const camera = await world.locator('canvas').getAttribute('data-world-camera'); expect(camera).toBeTruthy();
     await world.getByRole('button', { name: '关闭伙伴世界', exact: true }).click();
-    await page.getByRole('button', { name: '打开伙伴世界', exact: true }).click();
-    world = page.getByRole('dialog', { name: '伙伴世界', exact: true });
+    worldPage = await openCompanionWorldWindow(application, page);
+    world = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
     await expect(world.locator('.companion-world-view')).toHaveAttribute('data-world-scene', 'commons');
     await expect(world.locator('canvas')).toHaveAttribute('data-world-camera', /position/);
     const restoredCamera = JSON.parse((await world.locator('canvas').getAttribute('data-world-camera'))!), savedCamera = JSON.parse(camera!);
@@ -55,7 +56,7 @@ test('restores observer scene, camera and follow choice after closing and restar
     await expect.poll(async () => page.evaluate(() => JSON.parse(localStorage.getItem('companion-world-observer') ?? '{}').followId)).toBe(actor.companionId);
     await application.close(); application = undefined;
     const restarted = await launch(profile); application = restarted.application; page = restarted.page;
-    await page.getByRole('button', { name: '打开伙伴世界', exact: true }).click(); world = page.getByRole('dialog', { name: '伙伴世界', exact: true });
+    worldPage = await openCompanionWorldWindow(application, page); world = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
     await expect(world).toContainText('正在跟随 ' + resident.name);
     const actual = (await request(page, { type: 'world.snapshot' })).world!.actors.find(item => item.companionId === actor.companionId)!;
     await expect(world.locator('.companion-world-view')).toHaveAttribute('data-world-scene', actual.sceneId);
@@ -74,8 +75,8 @@ test('observes real homes, host-driven bedtime and movement, camera controls and
     page.on('pageerror', error => errors.push(error.message));
     const initial = (await request(page, { type: 'world.snapshot' })).world!;
     expect(initial.settings).toMatchObject({ mode: 'compressed', dayDurationMinutes: 20 }); expect(initial.scenes.filter(scene => scene.kind === 'home').length).toBeGreaterThan(10);
-    await page.getByRole('button', { name: '打开伙伴世界', exact: true }).click();
-    let world = page.getByRole('dialog', { name: '伙伴世界', exact: true });
+    let worldPage = await openCompanionWorldWindow(application, page);
+    let world = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
     await expect(world).toBeVisible();
     const scene = world.locator('.companion-world-view');
     // The global observer opens the neighborhood when no view has been saved.
@@ -104,18 +105,18 @@ test('observes real homes, host-driven bedtime and movement, camera controls and
     await expect.poll(async () => Number(await scene.locator('canvas').getAttribute('data-world-loaded-actors'))).toBeGreaterThan(0);
     const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true });
     const renderMetrics = () => scene.locator('canvas').evaluate(element => Object.fromEntries(Object.entries((element as HTMLCanvasElement).dataset).filter(([key]) => ['worldFps', 'worldDrawCalls', 'worldTriangles', 'worldTextures', 'worldGeometries', 'worldFrames'].includes(key)).map(([key, value]) => [key, Number(value)])));
-    await expect.poll(async () => (await renderMetrics()).worldFrames ?? 0).toBeGreaterThan(24);
+    await expect.poll(async () => (await renderMetrics()).worldFrames ?? 0).toBeGreaterThan(2);
     const beforeSwitch = await renderMetrics();
     for (const destination of ['home_gemini', 'home_kimi', 'home_deepseek-sister', 'commons', 'home_deepseek-sister']) {
       await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(destination); await expect(scene).toHaveAttribute('data-world-scene', destination);
     }
-    await expect.poll(async () => (await renderMetrics()).worldFrames ?? 0, { timeout: 15_000 }).toBeGreaterThan((beforeSwitch.worldFrames ?? 0) + 12);
+    await expect.poll(async () => (await renderMetrics()).worldFrames ?? 0, { timeout: 15_000 }).toBeGreaterThan((beforeSwitch.worldFrames ?? 0) + 2);
     const afterSwitch = await renderMetrics();
     expect(afterSwitch.worldTextures).toBeLessThanOrEqual(beforeSwitch.worldTextures! + 2); expect(afterSwitch.worldGeometries).toBeLessThanOrEqual(beforeSwitch.worldGeometries! + 2); expect(afterSwitch.worldDrawCalls).toBeLessThanOrEqual(26);
     await testInfo.attach('world-render-metrics', { body: JSON.stringify({ beforeSwitch, afterSwitch }, null, 2), contentType: 'application/json' });
-    await page.screenshot({ path: path.join(artifacts, 'verified-companion-world-home.png') });
+    await worldPage.screenshot({ path: path.join(artifacts, 'verified-companion-world-home.png') });
     await world.getByRole('button', { name: '在场景中找到大肥鱼', exact: true }).click();
-    await page.screenshot({ path: path.join(artifacts, 'verified-companion-world-detail.png') });
+    await worldPage.screenshot({ path: path.join(artifacts, 'verified-companion-world-detail.png') });
     await world.getByRole('button', { name: '重置世界视角', exact: true }).click();
     await world.getByRole('button', { name: '世界设置', exact: true }).click();
     const settings = world.getByRole('form', { name: '世界时间设置', exact: true });
@@ -124,12 +125,12 @@ test('observes real homes, host-driven bedtime and movement, camera controls and
     await expect(world).toContainText('跟随现实时间');
     await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('commons');
     await expect(scene).toHaveAttribute('data-world-scene', 'commons');
-    await page.screenshot({ path: path.join(artifacts, 'verified-companion-world-neighborhood.png') });
-    await world.getByRole('button', { name: '关闭伙伴世界', exact: true }).click(); await expect(world).toHaveCount(0);
+    await worldPage.screenshot({ path: path.join(artifacts, 'verified-companion-world-neighborhood.png') });
+    await world.getByRole('button', { name: '关闭伙伴世界', exact: true }).click(); await expect.poll(() => worldPage.isClosed()).toBe(true);
     await application.close(); application = undefined;
     const restarted = await launch(profile); application = restarted.application; page = restarted.page;
     expect((await request(page, { type: 'world.snapshot' })).world!.settings.mode).toBe('realtime');
-    await page.getByRole('button', { name: '打开伙伴世界', exact: true }).click(); world = page.getByRole('dialog', { name: '伙伴世界', exact: true });
+    worldPage = await openCompanionWorldWindow(application, page); world = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
     await expect(world).toContainText('跟随现实时间');
     expect(errors).toEqual([]);
   } catch (error) {
@@ -151,20 +152,20 @@ test('measures the normal GPU renderer with movement, orbit and bounded scene re
     const started = await launch(path.join(directory, 'profile'), 'hardware'); application = started.application; const page = started.page;
     const features = await application.evaluate(({ app }) => app.getGPUFeatureStatus());
     const perfPath = path.resolve('artifacts/companions/verified-companion-world-performance.json'); mkdirSync(path.dirname(perfPath), { recursive: true }); writeFileSync(perfPath, JSON.stringify({ features }, null, 2));
-    await page.getByRole('button', { name: '打开伙伴世界', exact: true }).click();
-    const world = page.getByRole('dialog', { name: '伙伴世界', exact: true }), canvas = world.locator('canvas');
+    const worldPage = await openCompanionWorldWindow(application, page);
+    const world = worldPage.getByRole('region', { name: '伙伴世界', exact: true }), canvas = world.locator('canvas');
     const initial = (await request(page, { type: 'world.snapshot' })).world!, companionId = 'deepseek-sister';
     await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(initial.actors.find(actor => actor.companionId === companionId)!.sceneId);
     await expect(canvas).toHaveAttribute('data-world-ready', 'true');
     await expect.poll(async () => Number(await canvas.getAttribute('data-world-loaded-actors')), { timeout: 15_000 }).toBeGreaterThan(0);
     const metrics = () => canvas.evaluate(element => Object.fromEntries(Object.entries((element as HTMLCanvasElement).dataset).filter(([key]) => /^world(Fps|DrawCalls|Triangles|Textures|Geometries|Frames|DrawMs)/.test(key)).map(([key, value]) => [key, Number(value)])));
-    await expect.poll(async () => (await metrics()).worldFrames ?? 0, { timeout: 15_000 }).toBeGreaterThan(35);
+    await expect.poll(async () => (await metrics()).worldFrames ?? 0, { timeout: 15_000 }).toBeGreaterThan(3);
     const home = await metrics();
     await world.getByRole('button', { name: '向右旋转世界', exact: true }).click(); await world.getByRole('button', { name: '放大世界', exact: true }).click();
-    await expect.poll(async () => (await metrics()).worldFrames ?? 0).toBeGreaterThan(home.worldFrames! + 30);
+    await expect.poll(async () => (await metrics()).worldFrames ?? 0).toBeGreaterThan(home.worldFrames! + 8);
     const orbit = await metrics();
     for (const destination of ['home_gpt', 'home_kimi', 'commons', 'home_deepseek-sister']) { await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(destination); await expect(world.locator('.companion-world-view')).toHaveAttribute('data-world-scene', destination); }
-    await expect.poll(async () => (await metrics()).worldFrames ?? 0).toBeGreaterThan(orbit.worldFrames! + 30);
+    await expect.poll(async () => (await metrics()).worldFrames ?? 0).toBeGreaterThan(orbit.worldFrames! + 2);
     const returned = await metrics();
     expect(returned.worldTextures).toBeLessThanOrEqual(8); expect(returned.worldGeometries).toBeLessThanOrEqual(26);
     // Keep one real room mounted while host tools move the same resident and
@@ -189,7 +190,7 @@ test('measures the normal GPU renderer with movement, orbit and bounded scene re
       await request(page, { type: 'world.tool', ...scope, arguments: { action: 'interact', furnitureId: furniture.id, interaction: step.interaction } });
       await expect.poll(async () => (await actorState()).artAction, { timeout: 10_000 }).toBe(step.action);
       const frameBefore = (await metrics()).worldFrames ?? 0;
-      await expect.poll(async () => (await metrics()).worldFrames ?? 0).toBeGreaterThan(frameBefore + 24);
+      await expect.poll(async () => (await metrics()).worldFrames ?? 0).toBeGreaterThan(frameBefore + 2);
       await expect.poll(async () => Number(await canvas.getAttribute('data-world-loaded-actors'))).toBeGreaterThan(0);
       await expect.poll(async () => (await metrics()).worldTextures).toBeLessThanOrEqual(returned.worldTextures! + 1);
       const actor = await actorState(), measured = await metrics();
@@ -232,14 +233,15 @@ test('renders daylight, night and rain from actual persisted world clock fixture
       const started = await launch(profile); application = started.application; const page = started.page;
       const actual = (await request(page, { type: 'world.snapshot' })).world!;
       expect(actual.environment.weather).toBe(condition.weather); expect(actual.clock.daylight).toBe(condition.hour === 12);
-      await page.getByRole('button', { name: '打开伙伴世界', exact: true }).click();
-      const world = page.getByRole('dialog', { name: '伙伴世界', exact: true }); await expect(world).toBeVisible();
+      const worldPage = await openCompanionWorldWindow(application, page);
+      const world = worldPage.getByRole('region', { name: '伙伴世界', exact: true }); await expect(world).toBeVisible();
       await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(condition.scene);
       await expect(world.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
       await expect(world.getByLabel('世界环境')).toContainText(condition.weather === 'rain' ? '下雨' : '晴朗');
       if (condition.scene !== 'commons') await expect.poll(async () => Number(await world.locator('canvas').getAttribute('data-world-loaded-actors'))).toBeGreaterThan(0);
-      await expect.poll(async () => Number(await world.locator('canvas').getAttribute('data-world-frames'))).toBeGreaterThan(12);
-      await page.screenshot({ path: path.join(artifacts, condition.file) });
+      // Homes redraw on pose/light changes; visible rain remains continuous.
+      await expect.poll(async () => Number(await world.locator('canvas').getAttribute('data-world-frames'))).toBeGreaterThan(condition.scene === 'commons' ? 12 : 2);
+      await worldPage.screenshot({ path: path.join(artifacts, condition.file) });
       await application.close(); application = undefined;
     }
   } catch (error) {

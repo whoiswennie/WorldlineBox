@@ -1,0 +1,9 @@
+.companion-world-window { width: 100%; height: 100vh; min-width: 0; min-height: 0; display: flex; overflow: hidden; background: var(--ui-surface-pane); color: var(--ui-content-primary); font-family: var(--ui-font-family); font-size: var(--ui-font-size-body, 14px); line-height: 1.5; }
+:where(.companion-world-window, .companion-world-window *, .companion-world-window *::before, .companion-world-window *::after) { box-sizing: border-box; }
+:where(.companion-world-window) :where(button, input, textarea, select) { font: inherit; }
+:where(.companion-world-window) :where(button) { cursor: pointer; }
+:where(.companion-world-window) :where(button:disabled) { cursor: default; opacity: .5; }
+:where(.companion-world-window) :where(button, input, textarea, select):focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset: 2px; }
+:where(.companion-world-window) :where(h1, h2, h3, h4, p, figure) { margin: 0; }
+.companion-world-window > p { margin: auto; padding: 24px; color: var(--ui-text, inherit); }
+.companion-world-window > section { flex: 1; min-width: 0; min-height: 0; }

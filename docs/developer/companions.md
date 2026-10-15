@@ -1,8 +1,10 @@
 # 伙伴消息系统
 
-应用入口在 `ApplicationShell` 的 `companions` 模块，位于启动器和资产管理之间。消息/联系人界面通过独立 preload bridge 调用经 Zod 验证的 IPC；仅管理器主窗口的 main frame 可访问。
+应用入口在 `ApplicationShell` 的 `companions` 模块，位于启动器和资产管理之间。消息、联系人、任务与社交观察通过独立 preload bridge 调用经 Zod 验证的 IPC；仅管理器主窗口的 main frame 可访问。三维世界使用可多开的原生观察窗口与窄 preload，只能访问世界观测、设置和自身窗口控制。
 
 ## 状态与存储边界
+
+伙伴身份、玩家与 NPC 的回复对象、唯一伙伴私聊/群聊、主动手机通信和按天只读观察的契约见[伙伴身份与社交](companion-social.md)。主脑每次推理都由宿主投影真实 self、发言者、参与成员与回复源；provider 的 `role=user` 仅是传输信封。
 
 `CompanionService` 调度角色回复、主动联系和 DSH 行动。`CompanionStorageClient` 只负责 UtilityProcess 消息传输；`src/companions/worker.ts` 是独立 SQLite owner，主进程和 Renderer 不打开数据库。消息库位于 `userData/companions/messages.sqlite`，不修改资产数据库迁移。Forge 与隔离 E2E 构建均输出 `companion_worker.js`。
 
@@ -68,9 +70,9 @@ companion-runtime-source.ts 是已安装官方 SDK 的薄适配器。它在 crea
 
 `shared/companion-world.ts` 的快照是世界观测的唯一状态来源。`scene.objects` 同时提供寻路的实体占地、交互锚点和可视家具数据；Three.js 窗口不维护第二份人物移动或碰撞状态。观察相机的旋转、缩放、平移与住户切换不会发出人物指令。公开 IPC 通过同一 `companionsRequestSchema` / `companionsResponseSchema` 校验世界请求与快照；房主审批由对应伙伴完成，观测窗口只显示结果。
 
-`renderer/companions/world` 通过延迟加载打开独立窗口。窗口可见时每秒请求世界快照，React 只更新已接收的状态；24 fps 的命令式渲染负责沿已知路径插值和播放动作，不外推到尚未收到的位置。三帧动作由 `activityStartedAtReal` 与素材时长确定，动作种类、开始和结束仍由宿主决定。站立/行走使用素材固定基点，坐姿使用椅面接触点，睡姿使用床面接触点；无素材的自定义伙伴使用自己的头像标记。
+`renderer/companions/world` 延迟加载原生观察窗口，可以多开且与主聊天同时使用。可见时每秒请求世界快照，多个窗口共享短时合并结果；React 只更新已接收的状态。命令式渲染沿已知路径按快照实际间隔插值，动态上限按可见窗口数量为 30/24/20 fps，静止画面在三帧切换或状态变化时按需绘制，隐藏和最小化不绘制也不轮询。三帧动作由宿主开始时刻与素材时长确定，每帧使用配准后的独立身体锚点与语义接触点，不逐帧缩放，不把合理跑步腾空压平。无素材的自定义伙伴使用自己的头像标记。
 
-观察偏好单独保存在本机 `companion-world-observer` localStorage 项中，仅包含场景、跟随选择与各场景相机 position/target/zoom，不复制世界权威数据。`WorldViewportEngine.getView/restoreView` 提供视角接口；每秒、操作结束、隐藏、关闭和 beforeunload 保存。偏好通过有限数值、相机距离、缩放与数量边界校验，损坏或不可访问时回退。全局世界入口恢复上次观看位置，指定伙伴的小屋入口优先打开该家。真实 Electron 验收覆盖关闭重开后的相机与场景，以及应用重启后的跟随选择。
+观察偏好按窗口槽位单独保存在本机 `companion-world-observer` 及带槽位后缀的 localStorage 项中，仅包含场景、跟随选择与各场景相机 position/target/zoom，不复制世界权威数据。`WorldViewportEngine.getView/restoreView` 提供视角接口；操作结束、隐藏、关闭、beforeunload 及定期检查时仅在发生变化后保存。偏好通过有限数值、相机距离、缩放与数量边界校验，损坏或不可访问时回退。全局世界入口恢复对应窗口上次观看位置，指定伙伴的小屋入口优先打开该家。真实 Electron 验收覆盖多窗口互不覆盖、关闭重开后的相机与场景，以及应用重启后的跟随选择。
 
 静态房屋按材质合并几何体，仅保留所选场景的人物纹理；分辨率比限制为 1.5，后台停止绘制，关闭时释放控制器、监听器、几何体、材质和纹理。共享布局包含室外建筑实体占地，街区外观与室内观测分别按当前场景创建。天气、光照与温度取快照中的虚拟环境，不调用外部气象服务。
 

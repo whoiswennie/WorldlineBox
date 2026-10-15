@@ -96,12 +96,12 @@ describe('independent world cross-layer regression review', () => {
     f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'move', destinationId: 'commons' } }); advance(f.store, 30000);
     f.store.request({ type: 'world.tool', ...f.bob, arguments: { action: 'move', destinationId: 'commons' } }); advance(f.store, 30000);
     const sourceEvent = f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'social', targetCompanionId: 'bob', kind: 'talk', text: secret } }).world!.events.find(event => event.text === secret)!;
-    const job = f.store.request({ type: 'world.job.claim', kind: 'decision' }).worldJob!;
+    const job = f.store.request({ type: 'social.job.claim' }).socialJob!;
     expect(job.companionId).toBe('bob');
     expect(f.store.request({ type: 'world.observe', companionId: job.companionId, conversationId: job.conversationId }).world!.events.some(event => event.id === sourceEvent.id)).toBe(true);
-    f.store.request({ type: 'memory.forget', ...f.bob, sourceMessageIds: [sourceEvent.sourceMessageId!] });
-    expect(() => f.store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken!,
-      action: { action: 'social', targetCompanionId: 'alice', kind: 'talk', text: '刚才你说的' + secret } })).toThrow();
+    f.store.request({ type: 'memory.forget', companionId: 'bob', conversationId: job.conversationId, sourceMessageIds: [sourceEvent.sourceMessageId!] });
+    advance(f.store, Math.max(0, Date.parse(job.typingNotBefore) - Date.now()) + 1);
+    expect(() => f.store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '刚才你说的' + secret })).toThrow();
     expect(f.store.request({ type: 'world.snapshot' }).world!.events.some(event => event.actorId === 'bob' && event.text.includes(secret))).toBe(false);
   });
 });

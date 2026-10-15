@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionPlanner } from '../../src/renderer/companions/CompanionPlanner';
 import { CompanionScheduleManager } from '../../src/renderer/companions/CompanionScheduleManager';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
-import type { Companion, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
+import type { Companion, CompanionAction, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionSchedule } from '../../src/shared/companion-schedule';
 import type { CompanionRuntimeState } from '../../src/shared/companion-state';
 import type { CompanionRoutine } from '../../src/shared/companion-routine';
@@ -55,6 +55,21 @@ it('preserves revision and timing when editing, clears repeat-only fields, and d
   await click('取消安排'); expect(container!.textContent).toContain('取消后停止后续安排及正在进行的任务，已产生的结果保留。');
   expect(request.mock.calls.some(([input]) => input.type === 'schedule.cancel')).toBe(false);
   await click('确认取消安排'); expect(request).toHaveBeenCalledWith({ type: 'schedule.cancel', companionId: companion.id, conversationId: 'room', id: schedule.id, expectedRevision: 4 });
+});
+
+it('summarizes all concurrent work in two compact rows and opens the correct scoped work or history view', async () => {
+  const actions: CompanionAction[] = Array.from({ length: 20 }, (_, index) => ({ id: 'work' + index, companionId: companion.id, conversationId: 'room', sourceMessageId: 'source', title: '独立任务' + index, status: index < 12 ? 'running' : 'queued', createdAt: at, updatedAt: at }));
+  const tasks = vi.fn(), open = vi.fn();
+  await mount(<CompanionPlanner companion={companion} members={[companion]} conversationId="room" actions={actions} request={fixture()} onOwnerChange={vi.fn()} onClose={vi.fn()} onProfile={vi.fn()} onMemory={vi.fn()} onTasks={tasks} onSchedules={vi.fn()} onOpenAction={open} />);
+  expect(container!.querySelector('[aria-label="任务数量"]')!.textContent).toBe('12进行中8等待中0待确认');
+  expect(container!.querySelectorAll('[data-work-preview]')).toHaveLength(2);
+  expect(container!.textContent).toContain('另有 18 件');
+  expect(container!.textContent).toContain('正在照看 20 件事');
+  expect(container!.querySelector('.companions-planner-agenda')!.textContent).not.toContain('独立任务');
+  await act(async () => container!.querySelector<HTMLButtonElement>('[data-work-preview="work0"]')!.click());
+  expect(open).toHaveBeenCalledWith('work0');
+  await click('查看全部伙伴工作'); expect(tasks).toHaveBeenLastCalledWith('active', companion.id);
+  await click('查看任务历史'); expect(tasks).toHaveBeenLastCalledWith('history', companion.id);
 });
 
 it('retains an unsuccessful creation with the same idempotency key for retry and submits full content', async () => {

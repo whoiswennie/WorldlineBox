@@ -7,6 +7,7 @@ import { companionSchedulePublicCommands, companionScheduleSchema, companionSche
 import { companionStatePublicCommands, companionRuntimeStateSchema } from './companion-state';
 import { companionRoutinePublicCommands, companionRoutineSchema, companionRoutineRuntimeSchema } from './companion-routine';
 import { companionWorldPublicCommands, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema } from './companion-world';
+import { companionSocialPublicCommands, companionSocialConversationPageSchema, companionSocialMessagePageSchema, companionSocialDaysSchema } from './companion-social';
 
 export const COMPANIONS_CHANNEL = 'worldlinebox:companions';
 export const COMPANIONS_CHANGED_CHANNEL = 'worldlinebox:companions-changed';
@@ -151,6 +152,7 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   ...companionStatePublicCommands,
   ...companionRoutinePublicCommands,
   ...companionWorldPublicCommands,
+  ...companionSocialPublicCommands,
   z.strictObject({ type: z.literal('memory.save'), companionId: companionIdSchema, conversationId: companionIdSchema.optional(), id: companionIdSchema.optional(), content: z.string().trim().min(1).max(4000), sourceMessageId: companionIdSchema.optional(), expectedVersion: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('memory.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema }),
@@ -183,6 +185,9 @@ export const companionsResponseSchema = z.object({
   world: companionWorldSnapshotSchema.optional(),
   worldWork: companionWorldWorkSchema.optional(),
   worldJob: companionWorldJobSchema.optional(),
+  socialConversationPage: companionSocialConversationPageSchema.optional(),
+  socialMessagePage: companionSocialMessagePageSchema.optional(),
+  socialDays: companionSocialDaysSchema.optional(),
 });
 export type CompanionsResponse = z.infer<typeof companionsResponseSchema>;
 export interface WorldlineBoxCompanionsApi {

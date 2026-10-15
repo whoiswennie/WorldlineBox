@@ -5,6 +5,8 @@ import { dshLauncher } from './bridge/dsh-launcher';
 import { llm } from './bridge/llm';
 import { music } from './bridge/music';
 import { companions } from './bridge/companions';
+import { companionWorld } from './bridge/companion-world-window';
+import { COMPANION_WORLD_WINDOW_ARGUMENT } from '../shared/companion-world-window';
 import { automation } from './bridge/automation';
 import {
   armE2eBrowseSessionDelay,
@@ -43,7 +45,7 @@ const e2eDiagnostics = Object.freeze({
 
 contextBridge.exposeInMainWorld(
   'worldlinebox',
-  Object.freeze({
+  process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT) ? Object.freeze({ companionWorld }) : Object.freeze({
     library,
     shell,
     appUpdate,
@@ -51,6 +53,7 @@ contextBridge.exposeInMainWorld(
     llm,
     music,
     companions,
+    companionWorld,
     automation,
     mcp,
     plugins,

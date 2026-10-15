@@ -88,6 +88,19 @@ describe('world reasoning and native tools', () => {
     expect(body.messages[0].content).toContain('列表为空必须[]');
     expect(body.messages[0].content).toContain(input.companion.persona);
   });
+  it('can appraise an actual remote phone sender without observing their private position or task reason', async () => {
+    const output = { action: null, reason: '依据收到的真实伙伴支持，不猜对方私室状态。', appraisals: [{ eventId: 'peer_event', targetCompanionId: 'peer', type: 'support', intensity: .5, confidence: .95, quote: '我支持你' }] };
+    const remote = { ...world, actors: world.actors.filter(actor => actor.companionId === 'sister'),
+      events: world.events.map(event => ({ ...event, kind: 'social_phone', conversationId: 'world_pair', sourceMessageId: 'real_peer_source' })),
+      works: [{ workId: 'opaque_work', companionId: 'sister', kind: 'action' as const, status: 'waiting' as const, reason: 'PRIVATE_TASK_REASON' }] };
+    const fetchFn: typeof fetch = async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      expect(data.world.actors.some((actor: { companionId: string }) => actor.companionId === 'peer')).toBe(false);
+      expect(data.appraisalEvents[0].actorId).toBe('peer'); expect(JSON.stringify(data)).not.toContain('PRIVATE_TASK_REASON');
+      return envelope('openai_chat', output);
+    };
+    expect(await generateCompanionWorldDecision({ companion: input.companion, world: remote, job, members: [] }, config, undefined, { fetchFn })).toEqual(output);
+  });
   it.each([
     { action: 'dsh', tasks: [{ title: 'run', prompt: 'run command' }] }, { action: 'move', destinationId: 'never_observed' },
     { action: 'respond', requestId: 'someone_else', decision: 'allow', reason: '假装同意' },

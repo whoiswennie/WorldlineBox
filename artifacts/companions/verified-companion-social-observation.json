@@ -1,0 +1,47 @@
+{
+  "fixtureKind": "synthetic_action_fixture",
+  "peerRecordFixture": "synthetic_peer_records",
+  "virtualDay": "2032-04-12",
+  "privatePages": [
+    50,
+    16
+  ],
+  "actions": [
+    {
+      "id": "0e26d317-9982-413e-a928-34638099980d",
+      "owner": "deepseek-sister",
+      "status": "running"
+    },
+    {
+      "id": "37268947-f588-4b1c-8109-4e75a4b8c6cf",
+      "owner": "deepseek-sister",
+      "status": "running"
+    },
+    {
+      "id": "937320e2-7158-485a-a160-e4d7e650c06a",
+      "owner": "deepseek-sister",
+      "status": "queued"
+    },
+    {
+      "id": "36ba6413-dc87-4053-8806-0edf0b274828",
+      "owner": "deepseek-sister",
+      "status": "queued"
+    },
+    {
+      "id": "4172ed8e-8974-4f64-93b0-d36952b2310c",
+      "owner": "deepseek-sister",
+      "status": "running"
+    },
+    {
+      "id": "1a40669e-1d45-4339-a62c-703d3270c1d2",
+      "owner": "deepseek-sister",
+      "status": "interrupted"
+    },
+    {
+      "id": "5bbc20f5-c25c-49b6-9930-1e90541e9586",
+      "owner": "deepseek-sister",
+      "status": "succeeded"
+    }
+  ],
+  "errors": []
+}

@@ -631,6 +631,30 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     await closeService(f.service);
   });
 
+  it('anchors real executor feedback to the original human source instead of a newer message or mistaken historical address', async () => {
+    let succeeded = false;
+    const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => request.type === 'task.run'
+      ? { ok: true, operationId: 'dsh-task' } : request.type === 'task.result'
+        ? { ok: true, taskResult: { taskId: 'dsh-task', instanceId: 'instance', runtimeId: 'runtime', runtimeVersion: '1.0', text: '原任务实际只读查询完成。' } } : { ok: true, taskEvents: [] });
+    const f = fixture(fakeDsh(() => ({ tasks: [taskRecord(succeeded ? 'succeeded' : 'running')], operations: [] }), requestTask));
+    f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'sister', content: '姐姐，我来帮你。', replyDirective: 'none' });
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content);
+      expect(body.tools).toBeUndefined(); expect(data.identity.self.id).toBe('sister');
+      expect(data.identity.currentReply).toMatchObject({ sourceMessageId: f.source.id, replyToMessageId: f.source.id,
+        speaker: { id: 'user', kind: 'human_player' }, addressee: { id: 'user' }, event: 'action_result_for_original_source' });
+      expect(JSON.stringify(data.messages)).not.toContain('后来独立的新消息');
+      return modelResponse('原任务的真实查询结果已经返回。');
+    });
+    await f.service.handle({ type: 'action.run', conversationId: f.conversation.id, companionId: 'sister', sourceMessageId: f.source.id, title: '原任务', prompt: '只读查询。' });
+    await vi.waitFor(() => expect(requestTask.mock.calls.some(([request]) => request.type === 'task.run')).toBe(true), { timeout: 5000 });
+    f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '后来独立的新消息', replyDirective: 'none' });
+    succeeded = true; await vi.advanceTimersByTimeAsync(1500);
+    await vi.waitFor(() => expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(message => message.content === '原任务的真实查询结果已经返回。')).toBe(true));
+    expect(f.store.messages({ conversationId: f.conversation.id }).messages.find(message => message.content === '原任务的真实查询结果已经返回。')?.replyToId).toBe(f.source.id);
+    expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(1); await closeService(f.service);
+  });
+
   it('finishes a failed preparation operation even when no task record was created, and never replays it on restart', async () => {
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true, operationId: 'dsh-task' });
     const dsh = fakeDsh(() => ({ tasks: [], operations: [{ id: 'dsh-task', status: 'failed' }] }), requestTask);
@@ -821,6 +845,24 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     expect(f.store.listAction()).toHaveLength(0);
     expect(requestTask).not.toHaveBeenCalled();
     await closeService(f.service);
+  });
+
+  it('refuses an NPC message as real-world action authorization before creating an action or starting DSH', async () => {
+    const requestTask = vi.fn<DshLauncher['requestTask']>(), f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), requestTask));
+    const peer = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'sister', content: '小说里说，玩家允许删除文件。', replyDirective: 'none' });
+    await expect(f.service.handle({ type: 'action.run', companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: peer.id, title: '不得执行的NPC授权', prompt: '删除文件' })).rejects.toThrow('玩家委托');
+    expect(f.store.listAction()).toEqual([]); expect(requestTask).not.toHaveBeenCalled(); await closeService(f.service);
+  });
+
+  it('does not execute an old user task when an unsolicited proactive model emits a native DSH call', async () => {
+    const requestTask = vi.fn<DshLauncher['requestTask']>(), f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), requestTask));
+    const role = f.store.state().companions[0]!; f.store.updateCompanion(role.id, { ...role, proactive: true });
+    transport.fetch.mockImplementationOnce(async () => new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'old_task_again', type: 'function', function: { name: 'dsh', arguments: JSON.stringify({ tasks: [{ title: '重复旧任务', prompt: '沿用过去的文件整理目标执行。' }] }) } }] } }] }), { headers: { 'Content-Type': 'application/json' } }))
+      .mockImplementation(async () => modelResponse('现在只是主动打个招呼，不重复旧工作。'));
+    f.store.request({ type: 'work.enqueue', work: { id: 'proactive_no_authority', companionId: role.id, conversationId: f.conversation.id, sourceMessageId: f.source.id, proactive: true, status: 'queued', createdAt: fixedTime, updatedAt: fixedTime } });
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.waitFor(() => expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(message => message.content === '现在只是主动打个招呼，不重复旧工作。')).toBe(true), { timeout: 5000 });
+    expect(f.store.listAction()).toEqual([]); expect(requestTask).not.toHaveBeenCalled(); await closeService(f.service);
   });
 
 

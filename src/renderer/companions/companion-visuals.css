@@ -1,0 +1,32 @@
+.companions-app, .companion-world-window {
+  --companion-blue: var(--ui-content-accent);
+  --companion-blue-soft: color-mix(in srgb, var(--ui-content-accent) 7%, transparent);
+  --companion-pane: var(--ui-surface-pane);
+  --companion-chat: color-mix(in srgb, var(--ui-surface-pane) 38%, var(--ui-content-inverse));
+  --companion-selected: color-mix(in srgb, var(--ui-content-secondary) 10%, transparent);
+  --companion-composer: color-mix(in srgb, var(--ui-surface-pane) 15%, var(--ui-content-inverse));
+}
+.companion-icon-button { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; border-radius: 8px; padding: 5px; background: transparent; color: var(--ui-content-secondary); font-size: 23px; line-height: 1; }
+.companion-icon-button:hover { color: var(--ui-content-primary); background: var(--ui-surface-hover); }
+.companion-icon-button.is-active { color: var(--ui-content-primary); background: var(--companion-selected); }
+.companion-avatar { position: relative; display: inline-grid; flex: 0 0 auto; place-items: center; width: 40px; height: 40px; overflow: visible; border-radius: 50%; color: var(--ui-content-secondary); background-color: var(--companion-selected); font-size: 16px; font-weight: 500; background-repeat: no-repeat; }
+.companion-avatar-presence { position: absolute; width: 10px; height: 10px; right: -1px; bottom: -1px; box-sizing: content-box; border: 2px solid var(--companion-pane); border-radius: 50%; background: #42ad83; }
+.companion-avatar-presence[data-status="working"] { background: #dfa149; }
+.companion-avatar-presence[data-status="waiting"] { background: #9587c8; }
+.companion-avatar-presence[data-status="offline"] { background: #a1a7b2; }
+.companion-group-avatar .companion-avatar-presence { width: 7px; height: 7px; border-width: 1.5px; }
+.companion-avatar.has-image { background-size: 630%; background-position: 10% 14%; background-color: var(--ui-surface-raised); }
+.companion-avatar.has-local-image { background-size: cover; background-position: center; }
+.companion-avatar.has-square-image { background-size: cover; background-position: center; }
+.companion-avatar.is-large { width: 74px; height: 74px; font-size: 30px; }
+.companion-group-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 40px; height: 40px; border-radius: 10px; background: var(--companion-selected); color: var(--ui-content-secondary); }
+.companion-group-avatar .companion-avatar { position: absolute; width: 29px; height: 29px; border: 2px solid var(--companion-pane); font-size: 12px; }
+.companion-group-avatar .companion-avatar:first-child { top: 1px; left: 0; }
+.companion-group-avatar .companion-avatar:nth-child(2) { right: 0; bottom: 1px; }
+.companion-primary-button, .companion-secondary-button, .companion-danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 36px; padding: 8px 20px; border-radius: 8px; border: 1px solid transparent; font-weight: 500; font-size: 13px; }
+.companion-primary-button { background: var(--ui-content-primary); color: var(--ui-content-inverse); }
+.companion-primary-button:hover:not(:disabled) { background: color-mix(in srgb, var(--ui-content-primary) 85%, var(--ui-content-secondary)); }
+.companion-secondary-button { background: var(--ui-surface-raised); color: var(--ui-content-primary); border-color: var(--ui-border-control); }
+.companion-secondary-button:hover:not(:disabled) { background: var(--ui-surface-hover); }
+.companion-danger-button { background: #cc5665; color: white; }
+.companion-text-danger { background: transparent; border: 0; color: #c86472; padding: 7px; font-size: 12px; }

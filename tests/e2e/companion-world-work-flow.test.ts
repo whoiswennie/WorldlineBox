@@ -8,6 +8,7 @@ import type { CompanionReplyStreamEvent, CompanionsRequest, WorldlineBoxCompanio
 import type { CompanionWorldActor, CompanionWorldSnapshot } from '../../src/shared/companion-world';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { openCompanionWorldWindow } from './companion-world-window-helpers';
 
 const guestId = 'deepseek-sister', hostId = 'deepseek-flash';
 const urgent = '两分钟后就截止了，快救我核对这句消息；只检查文字，不执行文件操作。';
@@ -105,8 +106,8 @@ test('urgent notification runs home from an occupied borrowed computer and cance
     expect(actor(occupied).furnitureId).toBe(hostId + '_sofa');
     await page.evaluate(() => { const bridge = window as unknown as Bridge; bridge.worldFlowStreams = []; bridge.worldlinebox.companions.onReplyStream(event => bridge.worldFlowStreams!.push({ at: Date.now(), event })); });
     await page.locator('[data-companion-conversation="' + guestRoom.id + '"]').click();
-    await page.getByRole('button', { name: '打开伙伴世界', exact: true }).click();
-    const modal = page.getByRole('dialog', { name: '伙伴世界', exact: true }); await modal.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('commons');
+    const worldPage = await openCompanionWorldWindow(application, page);
+    const modal = worldPage.getByRole('region', { name: '伙伴世界', exact: true }); await modal.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('commons');
     const source = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: urgent, clientId: randomUUID() })).message!;
     let streetCaptured = false, sawStand = false, sawRun = false;
     await expect.poll(async () => {
@@ -116,7 +117,7 @@ test('urgent notification runs home from an occupied borrowed computer and cance
       if (!world.works.some(work => work.companionId === guestId && work.status === 'ready')) expect(replies).toHaveLength(0);
       if (current.sceneId === 'commons' && current.activity === 'walking' && !streetCaptured) {
         await expect(modal.locator('[data-world-actor="' + guestId + '"]')).toBeVisible();
-        await page.screenshot({ path: path.join(artifacts, 'verified-world-urgent-running-home.png') }); streetCaptured = true;
+        await worldPage.screenshot({ path: path.join(artifacts, 'verified-world-urgent-running-home.png') }); streetCaptured = true;
       }
       return replies.length > 0;
     }, { timeout: 40000, intervals: [150, 250] }).toBe(true);
@@ -128,7 +129,7 @@ test('urgent notification runs home from an occupied borrowed computer and cance
     await expect.poll(async () => (await page.evaluate(() => (window as unknown as Bridge).worldFlowStreams))!.some(value => value.event.sourceMessageId === source.id && value.event.text.includes(provider.firstText))).toBe(true);
     await modal.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('home_' + guestId);
     await expect(modal.locator('[data-world-actor="' + guestId + '"]')).toHaveAttribute('data-world-activity', 'working');
-    await page.screenshot({ path: path.join(artifacts, 'verified-world-urgent-work-ready.png') });
+    await worldPage.screenshot({ path: path.join(artifacts, 'verified-world-urgent-work-ready.png') });
     provider.finish(urgent); await modal.getByRole('button', { name: '关闭伙伴世界', exact: true }).click();
     await expect(page.locator('[data-companion-messages]')).toContainText(provider.finalText);
     await page.screenshot({ path: path.join(artifacts, 'verified-world-urgent-feedback.png') });
@@ -214,11 +215,11 @@ test('world save resumes an actual route, peer relationship and visit after proc
     expect((await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.filter(message => message.replyToId === source.id && message.authorId === guestId && message.content.includes(provider.finalText))).toHaveLength(1);
     const evidence = { sourceId: source.id, savedAt, restoredAt: Date.now(), saved, restored, providerRequests: provider.requests };
     const artifacts = path.resolve('artifacts/companions'); mkdirSync(artifacts, { recursive: true }); writeFileSync(path.join(artifacts, 'verified-world-save-restart.json'), JSON.stringify(evidence, null, 2));
-    await page.getByRole('button', { name: '打开伙伴世界', exact: true }).click();
-    const modal = page.getByRole('dialog', { name: '伙伴世界', exact: true });
+    const worldPage = await openCompanionWorldWindow(application, page);
+    const modal = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
     await modal.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(restoredActor.sceneId);
     await expect(modal.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
-    await page.screenshot({ path: path.join(artifacts, 'verified-world-save-restart.png') });
+    await worldPage.screenshot({ path: path.join(artifacts, 'verified-world-save-restart.png') });
     await modal.getByRole('button', { name: '关闭伙伴世界', exact: true }).click();
     // A different, real in-flight reply must survive as a draft, never acquire a
     // successful result merely because the world clock advances while offline.

@@ -15,6 +15,9 @@ import type { CompanionRuntimeState } from '../shared/companion-state';
 import type { CompanionMemoryCandidate } from '../shared/companion-memory';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
+import type { CompanionSocialMessage } from '../shared/companion-social';
+import type { CompanionSocialStore } from './social-store';
+import { companionTimeInZone } from '../shared/companion-schedule-time';
 
 type Row = Record<string, string | number | null>;
 type StoredActor = CompanionWorldActor & { arrivalActivity?: CompanionWorldActor['activity']; seatUntil?: number; lastDecisionAt: number; lastDreamDay?: number;
@@ -43,15 +46,41 @@ export class CompanionWorldStore {
   private through = 0;
   private actorProjection: StoredActor[] = [];
   private unseenCache = new Map<string, { token: string; present: boolean }>();
+  private social?: CompanionSocialStore;
   private atomic<T>(fn: () => T): T {
     try { return this.db.transaction(fn).immediate(); } catch (error) { this.clockAnchors = undefined; this.actorProjection = []; this.through = 0; this.dirty = true; throw error; }
   }
   constructor(private readonly db: CompanionConnection, private readonly routineConfig: (id: string) => CompanionRoutineConfig,
     private readonly visibleSources: (scope: CompanionWorldScope, ids: string[]) => CompanionMessage[],
-    private readonly appendSpeech: (conversationId: string, actorId: string, text: string, clientId: string) => CompanionMessage,
     private readonly runtime: (id: string) => Pick<CompanionRuntimeState, 'energy' | 'mood' | 'expression' | 'affect'>,
     private readonly applyEffect: (event: CompanionWorldEvent) => void,
     private readonly recordMemory: (scope: CompanionWorldScope, candidate: CompanionMemoryCandidate) => void) {}
+
+  connectSocial(social: CompanionSocialStore): void { this.social = social; }
+  socialContext(): { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean } {
+    const now = Date.now(); this.ensureThrough(now); const state = this.load(), at = this.virtualFor(state, state.cursor), day = companionTimeInZone(at, state.settings.timeZone);
+    return { timeZone: state.settings.timeZone, virtualNow: iso(at), observedDay: `${day.year}-${String(day.month).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`, backlog: state.cursor + 1 < now };
+  }
+  socialAvailable(owner: string, channel: 'phone' | 'face_to_face', recipients: string[]): boolean {
+    const state = this.load(), actor = state.actors.find(actor => actor.companionId === owner);
+    if (!actor || actor.route.length || actor.transition || !['idle', 'sitting'].includes(actor.activity) ||
+      !evaluateCompanionRoutine(this.routineConfig(owner), iso(this.virtualFor(state, state.cursor))).canRespond ||
+      state.works.some(work => work.companionId === owner && work.status !== 'ended') ||
+      this.db.prepare("SELECT 1 FROM actions WHERE companion_id=? AND status IN('queued','running') LIMIT 1").get(owner) ||
+      this.db.prepare("SELECT 1 FROM companion_work_queue WHERE companion_id=? AND status='running' LIMIT 1").get(owner)) return false;
+    return channel === 'phone' || recipients.every(id => { const peer = state.actors.find(actor => actor.companionId === id); return peer && peer.sceneId === actor.sceneId && Math.hypot(peer.position.x - actor.position.x, peer.position.y - actor.position.y) <= 5; });
+  }
+  recordSocialSpeech(message: CompanionSocialMessage, channel: 'phone' | 'face_to_face'): void {
+    const state = this.load(), owner = message.message.authorId, actor = state.actors.find(actor => actor.companionId === owner);
+    for (const recipient of message.recipientIds) this.event(state, { kind: channel === 'phone' ? 'social_phone' : 'social_talk', actorId: owner, targetId: recipient, sceneId: channel === 'phone' ? undefined : actor?.sceneId,
+      text: message.message.content, sourceMessageId: message.message.id, conversationId: message.message.conversationId });
+    for (const peer of message.recipientIds) for (const [from, to] of [[owner, peer], [peer, owner]]) {
+      let relation = state.relationships.find(item => item.companionId === from && item.targetCompanionId === to);
+      if (!relation) { relation = { companionId: from!, targetCompanionId: to!, affinity: 50, trust: 50, interactions: 0, updatedAt: message.virtualCreatedAt }; state.relationships.push(relation); }
+      relation.interactions++; relation.updatedAt = message.virtualCreatedAt;
+    }
+    this.save(state);
+  }
 
   initialize(): void {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_world(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL);
@@ -451,7 +480,7 @@ export class CompanionWorldStore {
     if (event.sourceMessageIds?.length && owner && event.conversationId && this.visibleSources(scope ?? { companionId: owner, conversationId: event.conversationId }, event.sourceMessageIds).length !== event.sourceMessageIds.length) return false;
     if (event.sourceMemoryIds?.length && owner && event.sourceMemoryIds.some(id => !this.db.prepare("SELECT 1 FROM memory_records WHERE memory_id=? AND companion_id=? AND status='active'").get(id, owner))) return false;
     if (event.memoryVersions?.some(memory => !this.db.prepare("SELECT 1 FROM memory_records WHERE memory_id=? AND version=? AND status='active'").get(memory.id, memory.version))) return false;
-    if (scope && event.sceneId?.startsWith('home_') && !this.permitted(this.load(), scope.companionId, event.sceneId.slice(5))) return false;
+    if (scope && event.sceneId?.startsWith('home_') && event.kind !== 'social_phone' && !this.permitted(this.load(), scope.companionId, event.sceneId.slice(5))) return false;
     return true;
   }
   invalidateEvidence(companionId: string, sourceIds: string[]): void {
@@ -476,7 +505,7 @@ export class CompanionWorldStore {
     const allowedScenes = scope ? scenes.filter(scene => scene.kind === 'commons' || scene.ownerId && this.permitted(state, scope.companionId, scene.ownerId)) : scenes;
     const visibleIds = new Set(allowedScenes.map(scene => scene.id));
     const found = this.db.prepare('SELECT data FROM companion_world_events ORDER BY sequence DESC LIMIT 500').all() as Row[];
-    const events = found.map(value => parse<StoredEvent>(value.data)).filter(event => this.visibleEvent(event, scope)).slice(0, 100).reverse();
+    const events = found.map(value => parse<StoredEvent>(value.data)).filter(event => this.visibleEvent(event, scope)).slice(0, 100).reverse().map(event => event.kind === 'social_phone' ? { ...event, sceneId: undefined } : event);
     return companionWorldSnapshotSchema.parse({ settings: state.settings, clock: { realNow: iso(now), virtualNow: iso(virtualAt), speed: companionWorldSpeed(state.settings), ...environment.clock }, environment: environment.environment,
       residents: (this.db.prepare("SELECT id,json_extract(data,'$.name') AS name FROM companions WHERE deleted_at IS NULL ORDER BY rowid").all() as Row[]).map(companion => ({ companionId: String(companion.id), name: String(companion.name), homeSceneId: 'home_' + companion.id })),
       scenes: allowedScenes, actors: state.actors.filter(actor => visibleIds.has(actor.sceneId)).map(actor => {
@@ -485,12 +514,16 @@ export class CompanionWorldStore {
           actor.activity === 'standingUp' ? 'standUp' : actor.activity === 'lyingDown' ? 'lieDown' : actor.activity === 'waking' ? 'wake' : actor.activity === 'turning' ? 'turn' : actor.activity === 'sleeping' ? 'sleep' : actor.activity === 'eating' ? 'eat' : actor.activity === 'resting' ? 'rest' :
             actor.activity === 'habit' ? actor.manualArtAction ?? this.habitArt(state, actor) : 'idle';
         const expression = companionWorldExpression({ companionId: actor.companionId, pose, state: runtime, events, now: observedAt });
+        const communicationRow = this.db.prepare('SELECT data FROM companion_social_communication WHERE companion_id=? AND until_real>?').get(actor.companionId, iso(observedAt));
+        const storedCommunication = communicationRow ? parse<NonNullable<CompanionWorldActor['communication']>>(row(communicationRow).data) : undefined;
+        const communication = storedCommunication ? { channel: storedCommunication.channel, phase: storedCommunication.phase, conversationId: storedCommunication.conversationId, recipientIds: storedCommunication.recipientIds, untilReal: storedCommunication.untilReal } : undefined;
+        const phonePose = communication?.phase === 'typing' && ['idle', 'sitting'].includes(actor.activity) && !actor.route.length ? actor.activity === 'sitting' ? 'phoneTypingSeated' : 'phoneTypingStanding' : undefined;
         return { ...actor,
         frame: actor.transition ? Math.min(2, Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / (actor.transition.until - Date.parse(actor.activityStartedAtReal)) * 3)) :
           actor.activity === 'seating' && actor.seatUntil ? Math.min(2, Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / COMPANION_WORLD_SEATING_MS * 3)) :
             Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / (actor.activity === 'walking' ? 180 : 700)) % 3,
         transitionEndsAtReal: actor.transition ? iso(actor.transition.until) : actor.activity === 'seating' && actor.seatUntil ? iso(actor.seatUntil) : undefined,
-        state: runtime, artAction: expression.action, artStartedAtReal: expression.startedAtReal,
+        state: runtime, artAction: phonePose ?? expression.action, artStartedAtReal: expression.startedAtReal, communication,
         activityLabel: actor.routinePhase === 'habit' ? '个人日常活动' : undefined }; }),
       visits: state.visits.filter(visit => !scope || visit.hostId === scope.companionId || visit.guestId === scope.companionId).map(visit => {
         const visible = (owner: string, sourceId?: string, conversationId?: string) => {
@@ -598,18 +631,15 @@ export class CompanionWorldStore {
     } else if (args.action === 'social') {
       const peer = state.actors.find(item => item.companionId === args.targetCompanionId);
       if (!peer || peer.companionId === actor.companionId || peer.sceneId !== actor.sceneId || Math.hypot(peer.position.x - actor.position.x, peer.position.y - actor.position.y) > 5) throw new Error('对方不在可交谈的现场范围内。');
-      const pair = 'world_pair_' + createHash('sha256').update([actor.companionId, peer.companionId].sort().join('|')).digest('hex').slice(0, 24);
-      this.db.prepare("INSERT OR IGNORE INTO conversations(id,kind,title,private_companion_id,updated_at,hidden_at) VALUES(?,'group','伙伴之间的交流',NULL,?,?)").run(pair, iso(), iso());
-      this.db.prepare('INSERT OR IGNORE INTO metadata(key,value) VALUES(?,?)').run('world-room/' + pair, 'true');
-      for (const member of [actor.companionId, peer.companionId]) this.db.prepare('INSERT OR IGNORE INTO conversation_members(conversation_id,companion_id) VALUES(?,?)').run(pair, member);
-      const event = this.event(state, { kind: 'social_' + args.kind, actorId: actor.companionId, targetId: peer.companionId, sceneId: actor.sceneId, text: args.text });
-      const source = this.appendSpeech(pair, actor.companionId, args.text, 'world_' + event.id);
-      event.sourceMessageId = source.id; event.conversationId = pair;
-      this.db.prepare('UPDATE companion_world_events SET data=? WHERE id=?').run(JSON.stringify(event), event.id);
-      this.db.prepare('UPDATE conversations SET hidden_at=? WHERE id=?').run(iso(), pair);
-      for (const [owner, target] of [[actor.companionId, peer.companionId], [peer.companionId, actor.companionId]] as Array<[string, string]>) if (!state.relationships.some(item => item.companionId === owner && item.targetCompanionId === target)) state.relationships.push({ companionId: owner, targetCompanionId: target, affinity: 50, trust: 50, interactions: 0, updatedAt: iso(this.virtualFor(state, state.cursor)) });
-      for (const relation of state.relationships.filter(item => item.companionId === actor.companionId && item.targetCompanionId === peer.companionId || item.companionId === peer.companionId && item.targetCompanionId === actor.companionId)) { relation.interactions++; relation.updatedAt = iso(this.virtualFor(state, state.cursor)); }
-      this.queueJob(state, peer.companionId, 'decision');
+      if (!this.social) throw new Error('社交存储尚未连接。');
+      const room = this.social.ensure(actor.companionId, [actor.companionId, peer.companionId]);
+      this.social.send({ companionId: actor.companionId, conversationId: room.id, content: args.text, channel: 'face_to_face', clientId: randomUUID() });
+      return this.snapshotValue(this.load(), Date.now(), scope);
+    } else if (args.action === 'message') {
+      if (!this.social) throw new Error('社交存储尚未连接。');
+      const room = this.social.ensure(actor.companionId, [actor.companionId, ...args.recipientIds]);
+      this.social.send({ companionId: actor.companionId, conversationId: room.id, content: args.text, channel: 'phone', clientId: randomUUID() });
+      return this.snapshotValue(this.load(), Date.now(), scope);
     }
     this.syncOccupancy(state); this.save(state); return this.snapshotValue(state, Date.now(), scope);
   }
@@ -674,12 +704,16 @@ export class CompanionWorldStore {
       }
       for (const appraisal of command.appraisals ?? []) {
         if (appraisal.confidence < .65 || this.db.prepare('SELECT 1 FROM companion_world_peer_appraisals WHERE companion_id=? AND event_id=?').get(job.companionId, appraisal.eventId)) continue;
+        if (!job.readSet?.some(read => read.eventId === appraisal.eventId)) continue;
         const foundEvent = this.db.prepare('SELECT data FROM companion_world_events WHERE id=? AND sequence<=?').get(appraisal.eventId, job.throughEventSequence); if (!foundEvent) continue;
         const event = parse<StoredEvent>(row(foundEvent).data);
-        if (!this.visibleEvent(event, scope) || event.actorId !== appraisal.targetCompanionId || event.targetId !== job.companionId || !event.kind.startsWith('social_')) continue;
+        const actualSource = event.sourceMessageId ? this.db.prepare('SELECT author_id,conversation_id FROM messages WHERE id=?').get(event.sourceMessageId) : undefined;
+        if (!this.visibleEvent(event, scope) || event.actorId !== appraisal.targetCompanionId || event.targetId !== job.companionId || !event.kind.startsWith('social_') ||
+          !actualSource || row(actualSource).author_id !== event.actorId || row(actualSource).conversation_id !== event.conversationId) continue;
         let relation = state.relationships.find(item => item.companionId === job.companionId && item.targetCompanionId === appraisal.targetCompanionId);
         if (!relation) { relation = { companionId: job.companionId, targetCompanionId: appraisal.targetCompanionId, affinity: 50, trust: 50, interactions: 0, updatedAt: iso() }; state.relationships.push(relation); }
-        const appraisalDay = event.at.slice(0, 10), used = Number(row(this.db.prepare('SELECT COALESCE(SUM(positive_change),0) AS n FROM companion_world_peer_appraisals WHERE companion_id=? AND day=? AND active=1').get(job.companionId, appraisalDay)).n);
+        const local = companionTimeInZone(Date.parse(event.at), state.settings.timeZone), appraisalDay = `${local.year}-${String(local.month).padStart(2, '0')}-${String(local.day).padStart(2, '0')}`;
+        const used = Number(row(this.db.prepare('SELECT COALESCE(SUM(positive_change),0) AS n FROM companion_world_peer_appraisals WHERE companion_id=? AND day=? AND active=1').get(job.companionId, appraisalDay)).n);
         const before = { affinity: relation.affinity, trust: relation.trust };
         const result = applyCompanionAppraisal({ affect: { pleasure: 0, arousal: 0, dominance: 0 }, relationship: { affinity: relation.affinity, trust: relation.trust, respect: 50 } }, { ...appraisal, target: 'user' }, Math.max(0, this.virtualFor(state, state.cursor) - Date.parse(event.at)), Math.max(0, 6 - used));
         relation.affinity = result.relationship.affinity; relation.trust = result.relationship.trust; relation.updatedAt = iso(this.virtualFor(state, state.cursor));

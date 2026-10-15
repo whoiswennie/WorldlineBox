@@ -16,6 +16,7 @@ import gugaImage from '../../../assets/companions/portraits/guga-v1.png';
 import doroImage from '../../../assets/companions/portraits/doro-v1.png';
 import phoebeImage from '../../../assets/companions/portraits/phoebe-v1.png';
 import phrolovaImage from '../../../assets/companions/portraits/phrolova-v1.png';
+import './companion-visuals.css';
 
 export const companionImages: Record<Exclude<Companion['avatar'], 'custom'>, string> = {
   sister: sisterImage, flash: flashImage, 'huan-white': whiteImage, 'huan-black': blackImage,

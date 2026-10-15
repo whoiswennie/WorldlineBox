@@ -5,7 +5,7 @@ import {
 } from '../../shared/ai-endpoints';
 import type { Companion } from '../../shared/companions';
 import { isDeepseekOfficialEndpoint } from '../../shared/llm';
-import { buildCompanionContext, refreshCompanionContextClock, refreshCompanionRuntimeStateContext, type CompanionReplyInput } from './context';
+import { buildCompanionContext, refreshCompanionContextClock, refreshCompanionRuntimeStateContext, refreshCompanionIdentityContext, type CompanionReplyInput } from './context';
 import { COMPANION_DSH_TOOL } from '../../shared/companion-dsh-tool';
 import { COMPANION_MEMORY_TOOLS, normalizeCompanionMemoryToolName, providerCompanionMemoryToolName } from '../../shared/companion-memory-tool';
 import { COMPANION_SCHEDULE_TOOL } from '../../shared/companion-schedule-tool';
@@ -53,8 +53,8 @@ export async function generateCompanionReply(
   validateConfig(config);
   const model = resolveCompanionModel(input.companion, config);
   if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
-  const context = refreshCompanionContextClock(refreshCompanionRuntimeStateContext(
-    options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop }), input.runtimeState, input.companion.id, input.conversation));
+  const context = refreshCompanionContextClock(refreshCompanionIdentityContext(refreshCompanionRuntimeStateContext(
+    options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop }), input.runtimeState, input.companion.id, input.conversation), input));
   const controller = new AbortController();
   let rejectAbort: (error: CompanionModelError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });

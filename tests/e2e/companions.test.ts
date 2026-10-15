@@ -753,6 +753,8 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
         };
         let text: string, stateCall: Record<string, unknown> | undefined;
         if (context.purpose === 'world_decision') text = JSON.stringify({ action: null, reason: '没有需要打扰的世界事件。', appraisals: [] });
+        else if (context.purpose === 'world_social') text = JSON.stringify({ text: null, reason: '本例不继续伙伴话题。' });
+        else if (context.purpose === 'world_message_authorization') text = JSON.stringify({ allowed: false, confidence: .99, evidence: [], reason: '本例无转发委托。' });
         else if (context.purpose === 'world_attention') text = JSON.stringify({ urgency: 'ordinary', confidence: .95, evidence: [context.source?.content ?? ''], reason: '用户没有请求打断当前作息。' });
         else if (context.purpose === 'memory_dream') text = JSON.stringify({ candidates: [], dream: null });
         else if (['memory_extraction', 'memory_query', 'memory_maintenance'].includes(context.purpose ?? '')) {

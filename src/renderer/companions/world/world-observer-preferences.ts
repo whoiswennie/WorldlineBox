@@ -14,17 +14,20 @@ export type WorldObserverPreferences = z.infer<typeof preferencesSchema>;
 type PreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
 /** Camera preferences are local presentation only; no actor or simulation state is stored here. */
-export function readWorldObserverPreferences(storage?: PreferenceStorage): WorldObserverPreferences {
+export function readWorldObserverPreferences(storage?: PreferenceStorage, key = WORLD_OBSERVER_PREFERENCES_KEY): WorldObserverPreferences {
   try {
-    const raw = (storage ?? globalThis.localStorage)?.getItem(WORLD_OBSERVER_PREFERENCES_KEY);
+    const raw = (storage ?? globalThis.localStorage)?.getItem(key);
     if (!raw || raw.length > 200_000) return { views: {} };
     const parsed = preferencesSchema.safeParse(JSON.parse(raw));
     return parsed.success ? parsed.data : { views: {} };
   } catch { return { views: {} }; }
 }
-export function saveWorldObserverPreferences(preferences: WorldObserverPreferences, storage?: PreferenceStorage): void {
+export function saveWorldObserverPreferences(preferences: WorldObserverPreferences, storage?: PreferenceStorage, key = WORLD_OBSERVER_PREFERENCES_KEY): void {
   try {
     const parsed = preferencesSchema.safeParse(preferences);
-    if (parsed.success) (storage ?? globalThis.localStorage)?.setItem(WORLD_OBSERVER_PREFERENCES_KEY, JSON.stringify(parsed.data));
+    if (parsed.success) {
+      const target = storage ?? globalThis.localStorage, serialized = JSON.stringify(parsed.data);
+      if (target?.getItem(key) !== serialized) target?.setItem(key, serialized);
+    }
   } catch { /* Observation still works when local storage is unavailable or full. */ }
 }

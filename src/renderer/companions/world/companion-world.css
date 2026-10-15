@@ -1,5 +1,5 @@
-.companion-world-backdrop { padding: 14px; background: color-mix(in srgb, var(--ui-surface-scrim) 87%, #34463f); }
-.companion-world { --world-paper: color-mix(in srgb, var(--ui-surface-pane) 96%, #efe9d9); --world-muted: var(--ui-content-secondary); position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; max-width: 1680px; max-height: 1100px; overflow: hidden; border: 1px solid var(--ui-border-subtle); border-radius: 20px; color: var(--ui-content-primary); background: var(--world-paper); box-shadow: 0 25px 90px rgb(10 20 18 / 30%); }
+.companion-world-window { width: 100%; height: 100%; min-height: 0; overflow: hidden; }
+.companion-world { --world-paper: color-mix(in srgb, var(--ui-surface-pane) 96%, #efe9d9); --world-muted: var(--ui-content-secondary); position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; overflow: hidden; color: var(--ui-content-primary); background: var(--world-paper); }
 .companion-world-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 17px 22px; border-bottom: 1px solid var(--ui-border-subtle); flex-shrink: 0; }
 .companion-world-brand { display: flex; align-items: center; gap: 12px; }
 .companion-world-brand > span { display: grid; place-items: center; width: 39px; height: 39px; border: 1px solid color-mix(in srgb, #8b9c80 35%, var(--ui-border-subtle)); border-radius: 50%; color: #82967c; }
@@ -28,7 +28,16 @@
 .companion-world-camera i { width: 1px; height: 18px; align-self: center; background: #cbd5c6; margin: 0 5px; }
 .companion-world-stage-footer { display: flex; justify-content: space-between; position: absolute; left: 25px; right: 25px; bottom: 18px; color: #263f34; font-size: 10px; pointer-events: none; }
 .companion-world-stage-footer > span { background: rgb(243 246 234 / 78%); border: 1px solid rgb(255 255 255 / 25%); border-radius: 6px; padding: 5px 8px; }
-.companion-world-actor-label { position: absolute; top: 0; left: 0; cursor: pointer; white-space: nowrap; padding: 4px 10px; border: 1px solid rgb(255 255 255 / 60%); border-radius: 12px; background: rgb(247 247 238 / 88%); color: #4c6258; font-size: 10px; box-shadow: 0 2px 8px rgb(27 46 35 / 8%); }
+.companion-world-actor-label { position: absolute; top: 0; left: 0; cursor: pointer; display: grid; justify-items: center; gap: 3px; max-width: 220px; white-space: nowrap; padding: 6px 11px 7px; border: 1px solid rgb(255 255 255 / 75%); border-radius: 10px; background: rgb(250 250 242 / 96%); color: #405b4d; font-size: 11px; box-shadow: 0 3px 10px rgb(27 46 35 / 13%); pointer-events: auto; }
+.companion-world-actor-label::after { content: ''; position: absolute; left: calc(50% - 3px); bottom: -4px; width: 7px; height: 7px; background: #fafaf2; transform: rotate(45deg); border-bottom: 1px solid rgb(255 255 255 / 75%); border-right: 1px solid rgb(255 255 255 / 75%); }
+.companion-world-actor-label > small { font-size: 9px; font-weight: 400; opacity: .7; }
+.companion-world-actor-label > strong { font-size: 11px; font-weight: 600; max-width: 195px; overflow: hidden; text-overflow: ellipsis; }
+.companion-world-actor-label[data-kind="work"] { color: #4c5f8a; background: #f3f5fe; }
+.companion-world-actor-label[data-kind="sleep"] { color: #6e648a; background: #f7f3ff; }
+.companion-world-actor-label[data-kind="meal"] { color: #876542; background: #fff9ee; }
+.companion-world-actor-label[data-kind="movement"] { color: #3e7462; }
+.companion-world-actor-label:focus-visible { outline: 2px solid #617f6d; outline-offset: 3px; }
+.companion-world-inspector[hidden] { display: none; }
 .companion-world-inspector { width: 286px; flex: 0 0 286px; padding: 22px 20px; overflow: auto; scrollbar-width: thin; border-left: 1px solid var(--ui-border-subtle); }
 .companion-world-location label { display: block; font-size: 10px; color: var(--world-muted); margin-bottom: 9px; }
 .companion-world-location select { width: 100%; padding: 10px 12px; border: 1px solid var(--ui-border-subtle); background: var(--ui-surface-canvas); border-radius: 9px; font-size: 12px; color: inherit; }
@@ -89,4 +98,4 @@
 .companions-world-entry strong { color: var(--ui-content-primary); font-size: 11px; font-weight: 500; }
 .companions-world-entry small { font-size: 9px; }
 @media (max-width: 1000px) { .companion-world-header { gap: 10px; padding: 14px; } .companion-world-brand h2 { font-size: 14px; } .companion-world-brand small { font-size: 7px; } .companion-world-inspector { width: 244px; flex-basis: 244px; padding: 18px 15px; } .companion-world-environment { gap: 10px; } .companion-world-environment span:last-child { display: none; } }
-@media (max-width: 760px) { .companion-world-backdrop { padding: 4px; } .companion-world { border-radius: 12px; } .companion-world-body { flex-direction: column; } .companion-world-stage { min-height: 340px; } .companion-world-inspector { width: auto; flex: 0 0 200px; display: flex; flex-wrap: wrap; gap: 15px; } .companion-world-inspector > section, .companion-world-location { min-width: 180px; flex: 1; } .companion-world-environment span { display: none; } .companion-world-environment strong { font-size: 18px; } .companion-world-stage-footer span:first-child { display: none; } }
+@media (max-width: 760px) { .companion-world-header { padding: 11px 12px; } .companion-world-brand > span { display: none; } .companion-world-brand small { display: none; } .companion-world-brand h2 { font-size: 12px; } .companion-world-header-actions { gap: 3px; } .companion-world-body { flex-direction: column; } .companion-world-stage { min-height: 180px; } .companion-world-inspector { width: auto; flex: 0 0 170px; display: flex; flex-wrap: wrap; gap: 15px; border-left: 0; border-top: 1px solid var(--ui-border-subtle); } .companion-world-inspector > section, .companion-world-location { min-width: 180px; flex: 1; } .companion-world-environment span { display: none; } .companion-world-environment strong { font-size: 18px; } .companion-world-stage-footer span:first-child { display: none; } .companion-world-place { top: 12px; left: 12px; padding: 9px 12px; } .companion-world-place h3 { font-size: 17px; margin-bottom: 0; } .companion-world-place p { display: none; } }

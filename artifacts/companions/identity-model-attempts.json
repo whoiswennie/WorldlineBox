@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-10-15T00:57:55.076Z",
+  "results": [
+    {
+      "id": "player_after_wrong_history",
+      "ok": false,
+      "code": "TIMEOUT",
+      "elapsedMs": 120257
+    },
+    {
+      "id": "action_feedback_original_player",
+      "ok": false,
+      "code": "TIMEOUT",
+      "elapsedMs": 120124
+    }
+  ],
+  "stopped": "Stopped after two consecutive 120-second timeouts using production Electron net.fetch; third request cancelled, final case not run; original user profile and database untouched."
+}

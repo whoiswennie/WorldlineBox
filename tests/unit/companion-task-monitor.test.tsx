@@ -51,6 +51,32 @@ it('keeps milliseconds and calendar fields exact rather than replacing missing t
   expect(companionTimestamp('invalid')).toBe('时间不可用');
 });
 
+it('shows concurrent active tasks together without history noise and keeps the selected work stable when another arrives or finishes', async () => {
+  const base = { conversationId: 'room', companionId: 'one', sourceMessageId: 'source', createdAt: '2026-10-15T01:00:00.000Z', updatedAt: '2026-10-15T01:00:00.000Z' };
+  const first: CompanionAction = { ...base, id: 'first', title: '核对新闻', status: 'running' };
+  const second: CompanionAction = { ...base, id: 'second', title: '查询天气', status: 'queued' };
+  const done: CompanionAction = { ...base, id: 'done', title: '昨天已经完成', status: 'succeeded' };
+  let tasks = [first, second, done];
+  const request = vi.fn(async (input: CompanionsRequest) => input.type === 'action.get' ? { ok: true, action: tasks.find(item => item.id === input.id) } : { ok: true, actionPage: { items: tasks, total: tasks.length, hasMore: false, owners: [] } });
+  const props = { actions: tasks, companions: [], conversationId: 'room', initialView: 'active' as const, request, now: Date.now(), onClose: vi.fn(), onStop: vi.fn(), onGuide: vi.fn(), onOpenUrl: vi.fn() };
+  container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  await act(async () => root!.render(<CompanionTaskMonitor {...props} />));
+  const nav = () => container!.querySelector('nav')!;
+  expect(nav().querySelectorAll('button')).toHaveLength(2);
+  expect(nav().textContent).not.toContain('昨天已经完成');
+  expect(container.querySelector('header')!.textContent).toContain('1 件进行中 · 1 件等待中');
+  await act(async () => nav().querySelectorAll<HTMLButtonElement>('button')[1]!.click());
+  tasks = [{ ...second, status: 'succeeded', result: '上海晴天' }, first, { ...first, id: 'third', title: '新来的任务' }, done];
+  await act(async () => root!.render(<CompanionTaskMonitor {...props} actions={tasks} />));
+  expect(container.querySelector('main')!.textContent).toContain('查询天气');
+  expect(container.querySelector('main')!.textContent).not.toContain('新来的任务');
+  expect(nav().querySelectorAll('button')).toHaveLength(2);
+  const history = [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(button => button.textContent === '全部记录')!;
+  await act(async () => history.click());
+  expect(nav().textContent).toContain('昨天已经完成');
+  expect(request.mock.calls.some(([input]) => input.type === 'actions.page')).toBe(true);
+});
+
 it('opens an older linked task outside the first page and follows its own stream until the user chooses another task', async () => {
   const action: CompanionAction = { id: 'linked-old', conversationId: 'group', companionId: 'role', sourceMessageId: 'source',
     title: '从聊天打开的旧任务', status: 'running', createdAt: '2026-10-13T02:00:00.123Z', updatedAt: '2026-10-13T03:00:00.456Z',

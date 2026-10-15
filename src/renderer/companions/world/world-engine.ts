@@ -1,17 +1,20 @@
 import { AmbientLight, BufferGeometry, Color, DirectionalLight, Float32BufferAttribute, Group, HemisphereLight, LinearFilter, LineBasicMaterial, LineSegments, Mesh, MeshBasicMaterial, OrthographicCamera, PCFSoftShadowMap, PlaneGeometry, PointLight, Points, PointsMaterial, Scene, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, Vector3, WebGLRenderer, type Texture } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import type { Companion } from '../../../shared/companions';
+import type { CompanionWorldContact } from '../../../shared/companion-world-window';
 import type { CompanionWorldActor, CompanionWorldScene, CompanionWorldSnapshot } from '../../../shared/companion-world';
 import { worldCharacterArt, type WorldArtAction } from '../../../shared/companion-world-art';
+import { getCompanionWorldFramePlacement } from '../../../shared/companion-world-art-calibration';
 import { companionPortrait } from '../CompanionVisuals';
 import { createWorldRoomModel } from './world-room-model';
-import { interpolateWorldPath, worldActorAnimationFrame, worldArtAction, worldAssetUrl, worldFacingMirrored, worldInterpolationPath, worldPrecipitationHeight } from './world-presentation';
+import { interpolateWorldPath, worldActorAnimationFrame, worldActorStatus, worldArtAction, worldAssetUrl, worldFacingMirrored, worldInterpolationPath, worldPrecipitationHeight } from './world-presentation';
 import { worldCameraViewSchema, type WorldCameraView } from './world-observer-preferences';
+import { worldAdvanceFrameClock, worldAnimationWakeDelay, worldArrivalPresentationDuration, worldContinuePath, worldNextRenderDelay, worldScenePreparationGate, worldSnapshotInterpolationDuration, worldTargetFrameRate } from './world-render-timing';
 
-interface ActorView { group: Group; sprite: Sprite; shadow: Mesh; actor: CompanionWorldActor; path: Array<{ x: number; y: number }>; changedAt: number; texture?: Texture; textureKey?: string; action?: WorldArtAction; animation?: { duration: number; playback: 'loop' | 'transition' }; applyFrame?: (frame: 0 | 1 | 2) => void; pose?: 'ground' | 'seat' | 'bed'; missingAction?: boolean; epoch: number }
+interface ActorView { group: Group; sprite: Sprite; shadow: Mesh; actor: CompanionWorldActor; path: Array<{ x: number; y: number }>; changedAt: number; duration: number; texture?: Texture; textureKey?: string; action?: WorldArtAction; animation?: { duration: number; playback: 'loop' | 'transition' }; applyFrame?: (frame: 0 | 1 | 2) => boolean; pose?: 'ground' | 'seat' | 'bed'; missingAction?: boolean; epoch: number; appliedFrame?: number; appliedMirrored?: boolean; labelPosition?: string }
 export interface WorldViewportEngine {
-  update(snapshot: CompanionWorldSnapshot, scene: CompanionWorldScene, companions: Companion[]): void;
+  update(snapshot: CompanionWorldSnapshot, scene: CompanionWorldScene, companions: CompanionWorldContact[]): void;
   setActive(active: boolean): void;
+  setVisibleWindowCount(count: number): void;
   reset(): void;
   zoom(amount: number): void;
   rotate(amount: number): void;
@@ -23,13 +26,15 @@ export interface WorldViewportEngine {
 
 /** Imperative, bounded renderer. React never receives an animation-frame state update. */
 export function createWorldViewport(container: HTMLElement, onFailure: (message: string) => void, onFollowChange?: (id: string | undefined) => void, onViewChange?: () => void): WorldViewportEngine {
-  const renderer = new WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'low-power' });
+  const renderer = new WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = false;
   renderer.domElement.setAttribute('aria-label', '伙伴世界三维场景');
   renderer.domElement.setAttribute('role', 'img');
   container.appendChild(renderer.domElement);
+  const preparing = document.createElement('div'); preparing.className = 'companion-world-loading'; preparing.textContent = '正在打开这处生活…'; preparing.setAttribute('role', 'status'); container.appendChild(preparing);
+  const preparation = worldScenePreparationGate();
   const scene = new Scene(); scene.background = new Color('#d9e1dc');
   const camera = new OrthographicCamera(-16, 16, 13, -13, .1, 600);
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -45,17 +50,28 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
   const pendingTextures = new Map<string, Promise<Texture>>();
   const loader = new TextureLoader();
   let room: ReturnType<typeof createWorldRoomModel> | undefined, roomId: string | undefined, latest: CompanionWorldSnapshot | undefined;
-  let currentScene: CompanionWorldScene | undefined, contacts: Companion[] = [], disposed = false, active = true, raf: number | undefined, lastFrame = 0, resourceEpoch = 0, following: string | undefined;
+  let currentScene: CompanionWorldScene | undefined, contacts: CompanionWorldContact[] = [], disposed = false, active = true, raf: number | undefined, timer: ReturnType<typeof setTimeout> | undefined, scheduledAt = Infinity, lastFrame = -Infinity, resourceEpoch = 0, following: string | undefined;
+  let dirty = true, interacting = false, evaluatingCamera = false, visibleWindowCount = 1, viewportWidth = 0, viewportHeight = 0, environmentKey = '';
   let weather: Points | LineSegments | undefined, weatherGeometry: BufferGeometry | undefined, weatherMaterial: PointsMaterial | LineBasicMaterial | undefined;
   let precipitation: 'rain' | 'snow' | undefined;
   const labelElements = new Map<string, HTMLDivElement>();
   let measureStarted = performance.now(), measuredFrames = 0, totalFrames = 0;
   const drawTimes: number[] = [];
   const project = new Vector3();
+  function cancelFrame() { if (raf !== undefined) cancelAnimationFrame(raf); if (timer !== undefined) clearTimeout(timer); raf = undefined; timer = undefined; scheduledAt = Infinity; }
+  function schedule(delay = 0) {
+    if (disposed || !active || document.hidden) return;
+    const due = performance.now() + delay;
+    if (due >= scheduledAt - .5) return;
+    cancelFrame(); scheduledAt = due;
+    if (delay <= 0) raf = requestAnimationFrame(frame);
+    else timer = setTimeout(() => { timer = undefined; raf = requestAnimationFrame(frame); }, Math.max(0, delay - 8));
+  }
+  function invalidate() { dirty = true; schedule(); }
   function resize() {
     const { width, height } = container.getBoundingClientRect(); if (width < 1 || height < 1) return;
     const aspect = width / height; camera.left = -13 * aspect; camera.right = 13 * aspect; camera.top = 13; camera.bottom = -13; camera.updateProjectionMatrix();
-    renderer.setSize(width, height); renderer.shadowMap.needsUpdate = true;
+    viewportWidth = width; viewportHeight = height; renderer.setSize(width, height); invalidate();
   }
   const observer = new ResizeObserver(resize); observer.observe(container); resize();
   function getView(): WorldCameraView | undefined {
@@ -71,7 +87,7 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     following = followId && actors.has(followId) ? followId : undefined;
     camera.position.set(view.position.x, view.position.y, view.position.z); controls.target.set(view.target.x, view.target.y, view.target.z);
     camera.zoom = Math.max(controls.minZoom, Math.min(controls.maxZoom, view.zoom)); camera.updateProjectionMatrix();
-    const damping = controls.enableDamping; controls.enableDamping = false; controls.update(); controls.enableDamping = damping; getView();
+    const damping = controls.enableDamping; controls.enableDamping = false; controls.update(); controls.enableDamping = damping; getView(); invalidate();
   }
   function reset() {
     following = undefined;
@@ -79,11 +95,12 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     const size = Math.max(currentScene.width, currentScene.depth), cx = (currentScene.width - 1) / 2, cz = (currentScene.depth - 1) / 2;
     controls.target.set(cx, 0, cz); camera.position.set(cx + size * .84, size * 1.05, cz + size * 1.08);
     camera.zoom = currentScene.kind === 'home' ? .94 : Math.max(.13, 23 / size); controls.minZoom = currentScene.kind === 'home' ? .45 : .1;
-    camera.updateProjectionMatrix(); controls.update();
+    camera.updateProjectionMatrix(); controls.update(); invalidate();
   }
-  function focusActor(id: string) { const actor = actors.get(id); if (!actor) return; following = id; onFollowChange?.(id); const offset = camera.position.clone().sub(controls.target); controls.target.set(actor.actor.position.x, 0, actor.actor.position.y); camera.position.copy(controls.target).add(offset); camera.zoom = Math.max(camera.zoom, 2.1); camera.updateProjectionMatrix(); controls.update(); onViewChange?.(); }
-  controls.addEventListener('start', () => { following = undefined; onFollowChange?.(undefined); });
-  controls.addEventListener('end', () => onViewChange?.());
+  function focusActor(id: string) { const actor = actors.get(id); if (!actor) return; following = id; onFollowChange?.(id); const offset = camera.position.clone().sub(controls.target); controls.target.set(actor.actor.position.x, 0, actor.actor.position.y); camera.position.copy(controls.target).add(offset); camera.zoom = Math.max(camera.zoom, 2.1); camera.updateProjectionMatrix(); controls.update(); invalidate(); onViewChange?.(); }
+  controls.addEventListener('start', () => { following = undefined; interacting = true; onFollowChange?.(undefined); invalidate(); });
+  controls.addEventListener('change', () => { if (!evaluatingCamera) invalidate(); });
+  controls.addEventListener('end', () => { interacting = false; invalidate(); onViewChange?.(); });
   function removeActor(view: ActorView) { view.epoch++; scene.remove(view.group); view.sprite.material.dispose(); view.shadow.geometry.dispose(); (view.shadow.material as MeshBasicMaterial).dispose(); view.texture?.dispose(); labelElements.get(view.actor.companionId)?.remove(); labelElements.delete(view.actor.companionId); }
   function clearTextures() { resourceEpoch++; textureCache.forEach(texture => texture.dispose()); textureCache.clear(); pendingTextures.clear(); }
   function getTexture(url: string) {
@@ -100,42 +117,45 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     }
     return promise;
   }
-  function fallbackTexture(companion: Companion | undefined) {
+  function fallbackTexture(companion: CompanionWorldContact | undefined) {
     // Custom characters keep their actual avatar marker instead of borrowing another character's body.
     const portrait = companion && companionPortrait(companion);
-    if (portrait) { const texture = loader.load(portrait); texture.colorSpace = SRGBColorSpace; return texture; }
+    if (portrait) { const texture = loader.load(portrait, invalidate); texture.colorSpace = SRGBColorSpace; return texture; }
     const canvas = document.createElement('canvas'); canvas.width = canvas.height = 128; const ctx = canvas.getContext('2d');
     if (ctx) { ctx.fillStyle = '#8da0af'; ctx.beginPath(); ctx.arc(64, 64, 52, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff9f0'; ctx.font = '52px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(companion?.name.slice(0, 1) ?? '客', 64, 68); }
-    const texture = new TextureLoader().load(canvas.toDataURL()); texture.colorSpace = SRGBColorSpace; return texture;
+    const texture = new TextureLoader().load(canvas.toDataURL(), invalidate); texture.colorSpace = SRGBColorSpace; return texture;
   }
-  function updateSprite(view: ActorView, companion: Companion | undefined) {
+  function updateSprite(view: ActorView, companion: CompanionWorldContact | undefined) {
     const art = companion ? worldCharacterArt(companion.avatar) : undefined;
     const action = worldArtAction(view.actor), sheet = art?.actions[action];
     view.missingAction = Boolean(art && !sheet);
     if (!art || !sheet) {
-      if (view.textureKey !== 'custom') { view.texture?.dispose(); view.texture = fallbackTexture(companion); view.textureKey = 'custom'; view.sprite.material.map = view.texture; view.sprite.material.needsUpdate = true; }
+      if (view.textureKey !== 'custom') { view.epoch++; view.texture?.dispose(); view.texture = fallbackTexture(companion); view.textureKey = 'custom'; view.sprite.material.map = view.texture; view.sprite.material.needsUpdate = true; invalidate(); }
       view.sprite.scale.set(1.7, 1.7, 1); view.sprite.center.set(.5, 0); view.sprite.visible = true; view.animation = undefined; view.applyFrame = undefined; view.pose = 'ground'; return;
     }
     const apply = (frameIndex: 0 | 1 | 2) => {
-      if (!view.texture) return;
-      const frame = sheet.frames[frameIndex], mirrored = worldFacingMirrored(view.actor.facing, { x: camera.matrixWorld.elements[0]!, z: camera.matrixWorld.elements[2]! });
-      const lying = frame.contacts.posture === 'lying' || frame.contacts.posture === 'transition' && frame.contacts.bed !== null;
-      const sitting = frame.contacts.posture === 'sitting' || frame.contacts.posture === 'transition' && frame.contacts.seat !== null;
-      const contact = lying ? frame.contacts.bed ?? frame.contacts.origin : sitting ? frame.contacts.seat ?? frame.contacts.origin : sheet.defaultOrigin ?? art.defaultOrigin;
-      view.pose = lying ? 'bed' : sitting ? 'seat' : 'ground';
-      const scale = art.heightTiles / Math.max(1, sheet.neutralHeightPixels ?? art.neutralHeightPixels);
-      view.sprite.scale.set(sheet.frameWidth * scale, sheet.frameHeight * scale, 1);
-      view.sprite.center.set(mirrored ? 1 - contact.x / sheet.frameWidth : contact.x / sheet.frameWidth, 1 - contact.y / sheet.frameHeight);
-      view.texture.repeat.set((mirrored ? -1 : 1) / 3, 1); view.texture.offset.set((frameIndex + (mirrored ? 1 : 0)) / 3, 0);
+      if (!view.texture) return false;
+      const mirrored = worldFacingMirrored(view.actor.facing, { x: camera.matrixWorld.elements[0]!, z: camera.matrixWorld.elements[2]! });
+      if (view.appliedFrame === frameIndex && view.appliedMirrored === mirrored) return false;
+      view.appliedFrame = frameIndex; view.appliedMirrored = mirrored;
+      const { source, sourceImage, anchor, scale, pose } = getCompanionWorldFramePlacement(art, sheet, frameIndex);
+      view.pose = pose;
+      view.sprite.scale.set(source.width * scale, source.height * scale, 1);
+      view.sprite.center.set(mirrored ? 1 - anchor.x / source.width : anchor.x / source.width, 1 - anchor.y / source.height);
+      // Inset by half a source texel so linear filtering cannot sample an adjacent cell.
+      view.texture.repeat.set((mirrored ? -1 : 1) * (source.width - 1) / sourceImage.width, (source.height - 1) / sourceImage.height);
+      view.texture.offset.set((source.x + (mirrored ? source.width - .5 : .5)) / sourceImage.width, 1 - (source.y + source.height - .5) / sourceImage.height);
+      return true;
     };
     const transitionDuration = view.actor.transitionEndsAtReal ? Date.parse(view.actor.transitionEndsAtReal) - Date.parse(view.actor.activityStartedAtReal) : undefined;
     view.applyFrame = apply; view.animation = { duration: transitionDuration && transitionDuration > 0 ? transitionDuration : sheet.durationMs, playback: view.actor.transitionEndsAtReal ? 'transition' : sheet.playback };
     if (view.textureKey !== sheet.url) {
-      view.textureKey = sheet.url; const epoch = ++view.epoch; view.texture?.dispose(); view.texture = undefined; view.sprite.visible = false;
-      void getTexture(sheet.url).then(texture => { if (disposed || view.epoch !== epoch) return; view.texture = texture.clone(); view.sprite.material.map = view.texture; view.sprite.material.needsUpdate = true; view.sprite.visible = true; view.applyFrame?.(view.actor.frame); }).catch(() => { /* A missing asset must not replace the host's actor state. */ });
-    } else apply(view.actor.frame);
+      view.textureKey = sheet.url; view.appliedFrame = undefined; view.appliedMirrored = undefined; const epoch = ++view.epoch; view.texture?.dispose(); view.texture = undefined; view.sprite.visible = false; invalidate();
+      void getTexture(sheet.url).then(texture => { if (disposed || view.epoch !== epoch) return; view.texture = texture.clone(); view.sprite.material.map = view.texture; view.sprite.material.needsUpdate = true; view.sprite.visible = true; view.applyFrame?.(view.actor.frame); invalidate(); }).catch(() => { /* A missing asset must not replace the host's actor state. */ });
+    }
   }
   function buildWeather(kind: CompanionWorldSnapshot['environment']['weather']) {
+    invalidate();
     if (weather) { scene.remove(weather); weatherGeometry?.dispose(); weatherMaterial?.dispose(); weather = undefined; weatherGeometry = undefined; weatherMaterial = undefined; }
     precipitation = undefined;
     if (!currentScene || currentScene.kind !== 'commons' || kind !== 'rain' && kind !== 'snow') return;
@@ -154,12 +174,16 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     // initial all-zero heights or recompute a bounding sphere every frame.
     weather.frustumCulled = false; scene.add(weather);
   }
-  function update(snapshot: CompanionWorldSnapshot, selectedScene: CompanionWorldScene, companions: Companion[]) {
+  function update(snapshot: CompanionWorldSnapshot, selectedScene: CompanionWorldScene, companions: CompanionWorldContact[]) {
     if (disposed) return;
     const sceneChanged = roomId !== selectedScene.id;
+    const scenePreparation = sceneChanged ? preparation.begin() : undefined;
     const weatherChanged = latest?.environment.weather !== snapshot.environment.weather;
+    const previousAt = latest?.clock.realNow;
     latest = snapshot; contacts = companions; currentScene = selectedScene;
     if (sceneChanged) {
+      if (!preparing.isConnected) container.appendChild(preparing);
+      container.setAttribute('aria-busy', 'true'); renderer.domElement.dataset.worldReady = 'false';
       actors.forEach(removeActor); actors.clear(); clearTextures();
       if (room) { scene.remove(room.group); room.dispose(); }
       room = createWorldRoomModel(selectedScene, snapshot.scenes); roomId = selectedScene.id; scene.add(room.group); reset();
@@ -171,55 +195,93 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
       sun.target.position.set(selectedScene.width / 2, 0, selectedScene.depth / 2); sun.position.set(selectedScene.width / 2 - 12, 28, selectedScene.depth / 2 + 9);
       sun.castShadow = selectedScene.kind === 'home'; renderer.shadowMap.needsUpdate = true;
     }
-    const light = snapshot.environment.light;
-    room?.setNight(!snapshot.clock.daylight);
-    scene.background = new Color().lerpColors(new Color('#303f56'), new Color('#dae3dc'), Math.max(.15, light));
-    sun.intensity = selectedScene.kind === 'home' ? 1.1 + light * 2.5 : .25 + light * 2.8;
-    hemisphere.intensity = selectedScene.kind === 'home' ? .65 + light * .7 : 1.1 + light * 1.1; ambient.intensity = selectedScene.kind === 'home' ? .14 : .12;
-    practicalLights.children.forEach(lamp => { (lamp as PointLight).intensity = snapshot.clock.daylight ? 1.5 : 15; });
+    const nextEnvironment = selectedScene.id + ':' + snapshot.clock.daylight + ':' + Math.round(snapshot.environment.light * 100);
+    if (nextEnvironment !== environmentKey) {
+      environmentKey = nextEnvironment; const light = snapshot.environment.light;
+      room?.setNight(!snapshot.clock.daylight);
+      scene.background = new Color().lerpColors(new Color('#303f56'), new Color('#dae3dc'), Math.max(.15, light));
+      sun.intensity = selectedScene.kind === 'home' ? 1.1 + light * 2.5 : .25 + light * 2.8;
+      hemisphere.intensity = selectedScene.kind === 'home' ? .65 + light * .7 : 1.1 + light * 1.1; ambient.intensity = selectedScene.kind === 'home' ? .14 : .12;
+      practicalLights.children.forEach(lamp => { (lamp as PointLight).intensity = snapshot.clock.daylight ? 1.5 : 15; }); invalidate();
+    }
     if (weatherChanged || sceneChanged) buildWeather(snapshot.environment.weather);
     const visible = snapshot.actors.filter(actor => actor.sceneId === selectedScene.id);
-    for (const [id, view] of actors) if (!visible.some(actor => actor.companionId === id)) { removeActor(view); actors.delete(id); }
+    for (const [id, view] of actors) if (!visible.some(actor => actor.companionId === id)) { removeActor(view); actors.delete(id); invalidate(); }
     for (const actor of visible) {
       let view = actors.get(actor.companionId);
       if (!view) {
         const sprite = new Sprite(new SpriteMaterial({ transparent: true, depthWrite: false, alphaTest: .015 }));
         const shadow = new Mesh(new PlaneGeometry(1.2, .65), new MeshBasicMaterial({ color: '#5e665a', transparent: true, opacity: .16, depthWrite: false })); shadow.rotation.x = -Math.PI / 2; shadow.position.y = .07;
         const group = new Group(); group.add(sprite, shadow); scene.add(group);
-        view = { group, sprite, shadow, actor, path: [actor.position], changedAt: performance.now(), epoch: 0 }; actors.set(actor.companionId, view);
-        const label = document.createElement('div'); label.className = 'companion-world-actor-label'; label.setAttribute('role', 'button'); label.tabIndex = 0; label.addEventListener('click', () => focusActor(actor.companionId)); label.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); focusActor(actor.companionId); } }); labelElements.set(actor.companionId, label); container.appendChild(label);
+        view = { group, sprite, shadow, actor, path: [actor.position], changedAt: performance.now(), duration: 0, epoch: 0 }; actors.set(actor.companionId, view);
+        const label = document.createElement('div'); label.className = 'companion-world-actor-label'; label.setAttribute('role', 'button'); label.tabIndex = 0; label.append(document.createElement('small'), document.createElement('strong')); label.addEventListener('click', () => focusActor(actor.companionId)); label.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); focusActor(actor.companionId); } }); labelElements.set(actor.companionId, label); container.appendChild(label); invalidate();
       } else {
-        view.path = worldInterpolationPath(view.actor, actor.position); view.changedAt = performance.now(); view.actor = actor;
+        const positionChanged = actor.position.x !== view.actor.position.x || actor.position.y !== view.actor.position.y;
+        if (positionChanged || snapshot.backlog || actor.activity !== 'walking' && view.path.length > 1) {
+          const now = performance.now(), received = worldInterpolationPath(view.actor, actor.position);
+          const continued = worldContinuePath(view.path, now - view.changedAt, view.duration, received);
+          const arrivalDuration = !snapshot.backlog && view.actor.activity === 'walking' ? worldArrivalPresentationDuration(actor.activity, continued, actor.movementSpeed) : 0;
+          view.path = !snapshot.backlog && (actor.activity === 'walking' || arrivalDuration > 0) ? continued : [actor.position];
+          view.changedAt = now; view.duration = actor.activity === 'walking' ? worldSnapshotInterpolationDuration(previousAt, snapshot.clock.realNow) : arrivalDuration; invalidate();
+        }
+        if (view.actor.facing !== actor.facing || view.actor.artAction !== actor.artAction || snapshot.backlog && view.actor.frame !== actor.frame || view.actor.activity !== actor.activity) invalidate();
+        view.actor = actor;
       }
       const companion = contacts.find(item => item.id === actor.companionId); updateSprite(view, companion);
-      const label = labelElements.get(actor.companionId)!; label.textContent = (companion?.name ?? '伙伴') + (view.missingAction ? ' · 动作图待补' : ''); label.setAttribute('aria-label', '近看' + (companion?.name ?? '伙伴')); label.dataset.activity = actor.activity;
+      const label = labelElements.get(actor.companionId)!, status = worldActorStatus(actor, snapshot, contacts), name = companion?.name ?? '伙伴';
+      const behavior = status.label + (view.missingAction ? ' · 动作图待补' : '');
+      if (label.firstElementChild!.textContent !== name) label.firstElementChild!.textContent = name;
+      if (label.lastElementChild!.textContent !== behavior) label.lastElementChild!.textContent = behavior;
+      const ariaLabel = '近看' + name + '，' + status.label;
+      if (label.getAttribute('aria-label') !== ariaLabel) label.setAttribute('aria-label', ariaLabel);
+      if (label.title !== (status.detail ?? '')) label.title = status.detail ?? '';
+      if (label.dataset.worldBehavior !== status.label) label.dataset.worldBehavior = status.label;
+      if (label.dataset.kind !== status.kind) label.dataset.kind = status.kind;
+      if (label.dataset.activity !== actor.activity) label.dataset.activity = actor.activity;
     }
     for (const [url, texture] of textureCache) if (![...actors.values()].some(view => view.textureKey === url)) { texture.dispose(); textureCache.delete(url); }
+    if (sceneChanged) {
+      // Wait for this scene's static shader programs before its first draw.
+      // A later sprite texture upload may still have its own driver cost.
+      const finish = () => { if (!disposed && preparation.complete(scenePreparation!)) { preparing.remove(); container.setAttribute('aria-busy', 'false'); invalidate(); } };
+      void renderer.compileAsync(scene, camera).then(finish, finish);
+    }
+    schedule();
   }
   function frame(time: number) {
-    if (disposed || !active || document.hidden) { raf = undefined; return; }
-    raf = requestAnimationFrame(frame);
-    const frameInterval = 1000 / 24;
-    if (time - lastFrame < frameInterval) return;
-    lastFrame = time - (time - lastFrame) % frameInterval;
+    raf = undefined; scheduledAt = Infinity;
+    if (disposed || !active || document.hidden) return;
+    if (!preparation.ready) { controls.update(); return; }
+    const frameInterval = 1000 / worldTargetFrameRate(visibleWindowCount);
+    if (time - lastFrame < frameInterval - .5) { schedule(frameInterval - (time - lastFrame)); return; }
     const drawStarted = performance.now();
-    controls.update();
-    if (following) { const target = actors.get(following); if (target) { const position = interpolateWorldPath(target.path, time - target.changedAt), offset = camera.position.clone().sub(controls.target); controls.target.set(position.x, 0, position.y); camera.position.copy(controls.target).add(offset); controls.update(); } }
+    let changed = dirty, continuous = interacting || Boolean(precipitation), nextAnimationMs = Infinity;
+    dirty = false;
+    evaluatingCamera = true;
+    const cameraChanged = controls.update(); changed ||= cameraChanged; continuous ||= cameraChanged;
+    if (following) { const target = actors.get(following); if (target) { const position = interpolateWorldPath(target.path, time - target.changedAt, target.duration), offset = camera.position.clone().sub(controls.target); if (Math.abs(controls.target.x - position.x) > .00001 || Math.abs(controls.target.z - position.y) > .00001) { controls.target.set(position.x, 0, position.y); camera.position.copy(controls.target).add(offset); controls.update(); changed = true; } } }
     camera.updateMatrixWorld();
+    evaluatingCamera = false;
+    const realNow = Date.now();
     for (const view of actors.values()) {
-      if (view.animation) view.applyFrame?.(worldActorAnimationFrame(view.actor, view.animation, latest?.backlog ?? false, Date.now()));
-      const position = interpolateWorldPath(view.path, time - view.changedAt);
+      if (view.animation) {
+        changed = Boolean(view.applyFrame?.(worldActorAnimationFrame(view.actor, view.animation, latest?.backlog ?? false, realNow))) || changed;
+        nextAnimationMs = Math.min(nextAnimationMs, worldAnimationWakeDelay(view.actor.artStartedAtReal ?? view.actor.activityStartedAtReal, view.animation.duration, view.animation.playback, realNow, latest?.backlog ?? false));
+      }
+      const position = interpolateWorldPath(view.path, time - view.changedAt, view.duration);
+      continuous ||= !latest?.backlog && view.path.length > 1 && time - view.changedAt < view.duration;
       const furniture = currentScene?.objects.find(item => item.id === view.actor.furnitureId);
       const lying = view.pose === 'bed' && furniture?.kind === 'bed';
       const couch = (furniture?.kind === 'sofa' || furniture?.kind === 'bench') && view.pose === 'seat';
       const x = lying || couch ? furniture.position.x + (furniture.width - 1) / 2 + (couch ? .2 : 0) : position.x, z = lying || couch ? furniture.position.y + (furniture.depth - 1) / 2 : position.y;
-      view.group.position.set(x, 0, z);
-      view.sprite.position.y = lying ? .56 : view.pose === 'seat' ? .57 : .04;
-      view.shadow.visible = !lying;
+      const height = lying ? .56 : view.pose === 'seat' ? .57 : .04;
+      if (view.group.position.x !== x || view.group.position.z !== z || view.sprite.position.y !== height || view.shadow.visible !== !lying) { view.group.position.set(x, 0, z); view.sprite.position.y = height; view.shadow.visible = !lying; changed = true; }
       project.set(x, 2.1, z).project(camera);
-      const label = labelElements.get(view.actor.companionId)!; const width = container.clientWidth, height = container.clientHeight;
-      label.style.transform = `translate(${(project.x + 1) * width / 2}px,${(1 - project.y) * height / 2}px) translate(-50%, -100%)`;
-      label.hidden = project.z < -1 || project.z > 1 || Math.abs(project.x) > 1.1 || Math.abs(project.y) > 1.1;
+      const label = labelElements.get(view.actor.companionId)!;
+      const transform = `translate(${Math.round((project.x + 1) * viewportWidth / 2)}px,${Math.round((1 - project.y) * viewportHeight / 2)}px) translate(-50%, -100%)`;
+      if (view.labelPosition !== transform) { label.style.transform = transform; view.labelPosition = transform; }
+      const hidden = project.z < -1 || project.z > 1 || Math.abs(project.x) > 1.1 || Math.abs(project.y) > 1.1;
+      if (label.hidden !== hidden) label.hidden = hidden;
     }
     // These particles illustrate the host's weather, never advance the simulation clock.
     if (weatherGeometry && precipitation) {
@@ -230,23 +292,28 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
         else position.setY(i, height);
       }
       position.needsUpdate = true;
+      changed = true;
     }
-    renderer.render(scene, camera);
-    drawTimes.push(performance.now() - drawStarted); if (drawTimes.length > 120) drawTimes.shift();
-    renderer.domElement.dataset.worldReady = 'true'; renderer.domElement.dataset.worldLoadedActors = String([...actors.values()].filter(view => view.sprite.visible && view.texture).length);
-    measuredFrames++; totalFrames++;
+    if (changed) {
+      renderer.render(scene, camera); lastFrame = worldAdvanceFrameClock(lastFrame, time, visibleWindowCount);
+      drawTimes.push(performance.now() - drawStarted); if (drawTimes.length > 120) drawTimes.shift();
+      renderer.domElement.dataset.worldReady = 'true'; renderer.domElement.dataset.worldLoadedActors = String([...actors.values()].filter(view => view.sprite.visible && view.texture).length);
+      measuredFrames++; totalFrames++; renderer.domElement.dataset.worldFrames = String(totalFrames);
+    }
     if (time - measureStarted >= 1000) {
       const sortedTimes = [...drawTimes].sort((a, b) => a - b);
-      Object.assign(renderer.domElement.dataset, { worldFps: (measuredFrames * 1000 / (time - measureStarted)).toFixed(1), worldDrawMsMedian: sortedTimes[Math.floor(sortedTimes.length / 2)]?.toFixed(2), worldDrawMs95: sortedTimes[Math.floor(sortedTimes.length * .95)]?.toFixed(2), worldDrawCalls: String(renderer.info.render.calls), worldTriangles: String(renderer.info.render.triangles), worldTextures: String(renderer.info.memory.textures), worldGeometries: String(renderer.info.memory.geometries), worldFrames: String(totalFrames) });
+      Object.assign(renderer.domElement.dataset, { worldFps: (measuredFrames * 1000 / (time - measureStarted)).toFixed(1), worldTargetFps: String(worldTargetFrameRate(visibleWindowCount)), worldDrawMsMedian: sortedTimes[Math.floor(sortedTimes.length / 2)]?.toFixed(2), worldDrawMs95: sortedTimes[Math.floor(sortedTimes.length * .95)]?.toFixed(2), worldDrawCalls: String(renderer.info.render.calls), worldTriangles: String(renderer.info.render.triangles), worldTextures: String(renderer.info.memory.textures), worldGeometries: String(renderer.info.memory.geometries), worldFrames: String(totalFrames), worldSourceTextures: String(textureCache.size), worldPendingTextures: String(pendingTextures.size) });
       measureStarted = time; measuredFrames = 0;
     }
+    const delay = worldNextRenderDelay({ active: active && !document.hidden, dirty, continuous, visibleWindowCount, sinceLastDrawMs: performance.now() - lastFrame, nextAnimationMs });
+    if (delay !== undefined) schedule(delay);
   }
-  function start() { if (!disposed && active && !document.hidden && raf === undefined) { lastFrame = 0; measureStarted = performance.now(); measuredFrames = 0; raf = requestAnimationFrame(frame); } }
-  function onVisibility() { if (document.hidden) { if (raf !== undefined) cancelAnimationFrame(raf); raf = undefined; } else start(); }
-  function contextLost(event: Event) { event.preventDefault(); if (raf !== undefined) cancelAnimationFrame(raf); raf = undefined; onFailure('画面暂时中断，请重新打开世界。世界仍会按真实状态继续。'); }
+  function start() { if (!disposed && active && !document.hidden) { measureStarted = performance.now(); measuredFrames = 0; invalidate(); } }
+  function onVisibility() { if (document.hidden) cancelFrame(); else start(); }
+  function contextLost(event: Event) { event.preventDefault(); cancelFrame(); onFailure('画面暂时中断，请重新打开世界。世界仍会按真实状态继续。'); }
   document.addEventListener('visibilitychange', onVisibility); renderer.domElement.addEventListener('webglcontextlost', contextLost); start();
-  return { update, getView, restoreView, reset() { onFollowChange?.(undefined); reset(); onViewChange?.(); }, setActive(value) { active = value; if (!value) { if (raf !== undefined) cancelAnimationFrame(raf); raf = undefined; } else start(); }, zoom(amount) { camera.zoom = Math.max(controls.minZoom, Math.min(controls.maxZoom, camera.zoom * amount)); camera.updateProjectionMatrix(); onViewChange?.(); }, rotate(amount) { const offset = camera.position.clone().sub(controls.target); offset.applyAxisAngle(new Vector3(0, 1, 0), amount); camera.position.copy(controls.target).add(offset); controls.update(); onViewChange?.(); }, focus: focusActor, dispose() {
-    disposed = true; if (raf !== undefined) cancelAnimationFrame(raf); observer.disconnect(); controls.dispose(); document.removeEventListener('visibilitychange', onVisibility); renderer.domElement.removeEventListener('webglcontextlost', contextLost);
-    actors.forEach(removeActor); actors.clear(); clearTextures(); room?.dispose(); weatherGeometry?.dispose(); weatherMaterial?.dispose(); sun.shadow.dispose(); renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove(); scene.clear();
+  return { update, getView, restoreView, reset() { onFollowChange?.(undefined); reset(); onViewChange?.(); }, setActive(value) { if (active === value) return; active = value; if (!value) cancelFrame(); else start(); }, setVisibleWindowCount(count) { const next = Number.isFinite(count) ? Math.max(1, count) : 1; if (next !== visibleWindowCount) { visibleWindowCount = next; invalidate(); } }, zoom(amount) { camera.zoom = Math.max(controls.minZoom, Math.min(controls.maxZoom, camera.zoom * amount)); camera.updateProjectionMatrix(); invalidate(); onViewChange?.(); }, rotate(amount) { const offset = camera.position.clone().sub(controls.target); offset.applyAxisAngle(new Vector3(0, 1, 0), amount); camera.position.copy(controls.target).add(offset); controls.update(); invalidate(); onViewChange?.(); }, focus: focusActor, dispose() {
+    disposed = true; cancelFrame(); observer.disconnect(); controls.dispose(); document.removeEventListener('visibilitychange', onVisibility); renderer.domElement.removeEventListener('webglcontextlost', contextLost);
+    actors.forEach(removeActor); actors.clear(); clearTextures(); room?.dispose(); weatherGeometry?.dispose(); weatherMaterial?.dispose(); sun.shadow.dispose(); renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove(); preparing.remove(); scene.clear();
   } };
 }

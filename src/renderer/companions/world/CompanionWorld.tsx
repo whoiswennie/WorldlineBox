@@ -5,15 +5,21 @@ import { Icon } from '../../Icons';
 import { Avatar } from '../CompanionVisuals';
 import { createWorldViewport, type WorldViewportEngine } from './world-engine';
 import { readWorldObserverPreferences, saveWorldObserverPreferences } from './world-observer-preferences';
-import { WORLD_ACTIVITY_LABELS, WORLD_VISIT_LABELS, WORLD_WEATHER_LABELS, WORLD_WORK_LABELS, worldClockLabel } from './world-presentation';
+import { WORLD_VISIT_LABELS, WORLD_WEATHER_LABELS, WORLD_WORK_LABELS, worldActorStatus, worldClockLabel } from './world-presentation';
 import './companion-world.css';
 
-export function CompanionWorld({ api, companions, initialCompanionId, active = true, onClose }: { readonly api?: WorldlineBoxCompanionsApi; readonly companions: Companion[]; readonly initialCompanionId?: string; readonly active?: boolean; readonly onClose: () => void }) {
-  const [savedObserver] = useState(readWorldObserverPreferences);
+export function CompanionWorld({ api, companions, initialCompanionId, initialSceneId, observerKey, visibleWindowCount = 1, active = true, onClose, onOpenWindow }: {
+  readonly api?: WorldlineBoxCompanionsApi;
+  readonly companions: Pick<Companion, 'id' | 'name' | 'avatar' | 'avatarAttachmentId'>[];
+  readonly initialCompanionId?: string; readonly initialSceneId?: string; readonly observerKey?: string; readonly visibleWindowCount?: number; readonly active?: boolean;
+  readonly onClose: () => void; readonly onOpenWindow?: (sceneId?: string) => void;
+}) {
+  const [savedObserver] = useState(() => readWorldObserverPreferences(undefined, observerKey));
   const observerPreferences = useRef(savedObserver);
   const [snapshot, setSnapshot] = useState<CompanionWorldSnapshot>();
-  const [sceneId, setSceneId] = useState<string | undefined>(initialCompanionId ? undefined : savedObserver.sceneId);
-  const [followId, setFollowId] = useState<string | undefined>(!initialCompanionId && companions.some(companion => companion.id === savedObserver.followId) ? savedObserver.followId : undefined);
+  const [sceneId, setSceneId] = useState<string | undefined>(initialSceneId ?? (initialCompanionId ? undefined : savedObserver.sceneId));
+  const [followId, setFollowId] = useState<string | undefined>(!initialCompanionId && !initialSceneId && companions.some(companion => companion.id === savedObserver.followId) ? savedObserver.followId : undefined);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const [error, setError] = useState('');
   const [renderError, setRenderError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -33,8 +39,8 @@ export function CompanionWorld({ api, companions, initialCompanionId, active = t
   const rememberView = useCallback(() => {
     const view = engine.current?.getView(), id = drawnScene.current;
     if (view && id) observerPreferences.current.views[id] = view;
-    saveWorldObserverPreferences(observerPreferences.current);
-  }, []);
+    saveWorldObserverPreferences(observerPreferences.current, undefined, observerKey);
+  }, [observerKey]);
   const changeFollow = useCallback((id: string | undefined) => { observerPreferences.current.followId = id; if (!id && drawnScene.current) setSceneId(drawnScene.current); setFollowId(id); }, []);
   const load = useCallback(async () => {
     if (!api || loadInFlight.current || document.hidden) return;
@@ -43,7 +49,15 @@ export function CompanionWorld({ api, companions, initialCompanionId, active = t
     catch (cause) { if (alive.current) setError(cause instanceof Error ? cause.message : '世界状态暂时未连接。'); }
     finally { loadInFlight.current = false; }
   }, [api]);
-  useEffect(() => { alive.current = true; void Promise.resolve().then(() => { if (active && alive.current) void load(); }); const timer = setInterval(() => { if (active) void load(); }, 1000); const refreshVisible = () => { if (!document.hidden && active) void load(); }; document.addEventListener('visibilitychange', refreshVisible); return () => { alive.current = false; clearInterval(timer); document.removeEventListener('visibilitychange', refreshVisible); }; }, [load, active]);
+  useEffect(() => {
+    alive.current = true;
+    if (!active) return () => { alive.current = false; };
+    void Promise.resolve().then(() => { if (alive.current) void load(); });
+    const timer = setInterval(() => void load(), 1000);
+    const refreshVisible = () => { if (!document.hidden) void load(); };
+    document.addEventListener('visibilitychange', refreshVisible);
+    return () => { alive.current = false; clearInterval(timer); document.removeEventListener('visibilitychange', refreshVisible); };
+  }, [load, active]);
   useEffect(() => {
     if (!viewport.current) return;
     try { engine.current = createWorldViewport(viewport.current, setRenderError, changeFollow, rememberView); }
@@ -72,6 +86,7 @@ export function CompanionWorld({ api, companions, initialCompanionId, active = t
     return () => { clearInterval(timer); window.removeEventListener('beforeunload', rememberView); document.removeEventListener('visibilitychange', onVisibility); };
   }, [rememberView]);
   useEffect(() => { engine.current?.setActive(active && !settingsOpen); if (!active) rememberView(); }, [active, settingsOpen, rememberView]);
+  useEffect(() => { engine.current?.setVisibleWindowCount(visibleWindowCount); }, [visibleWindowCount]);
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { if (settingsOpen) setSettingsOpen(false); else onClose(); } }; document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, [onClose, settingsOpen]);
   async function saveSettings(event: FormEvent) {
     event.preventDefault(); if (!settings || !api || saving) return; setSaving(true); setError('');
@@ -85,9 +100,9 @@ export function CompanionWorld({ api, companions, initialCompanionId, active = t
     const labels = [...companions.map(companion => [companion.id, companion.name] as const), ...scenes.flatMap(scene => [[scene.id, scene.kind === 'home' ? name(scene.ownerId) + '的小屋' : scene.name] as const, ...scene.objects.map(object => [object.id, object.name] as const)])].sort((a, b) => b[0].length - a[0].length);
     return labels.reduce((value, [id, label]) => value.replaceAll(id, label), text);
   }
-  return <div className="companions-modal-backdrop companion-world-backdrop">
-    <section className="companion-world" role="dialog" aria-modal="true" aria-label="伙伴世界">
-      <header className="companion-world-header"><div className="companion-world-brand"><span><Icon name="globe" /></span><div><small>A LITTLE WORLD, TOGETHER</small><h2>日子，在这里发生</h2></div></div><div className="companion-world-environment" aria-label="世界环境">{snapshot ? <><span className="companion-world-sun" aria-hidden="true">{snapshot.clock.daylight ? '☀' : '☾'}</span><strong>{worldClockLabel(snapshot.clock.hour)}</strong><span>{WORLD_WEATHER_LABELS[snapshot.environment.weather]}</span><span>{snapshot.environment.outdoorTemperature.toFixed(1)}°<small>室外</small></span><span>{snapshot.environment.indoorTemperature.toFixed(1)}°<small>室内</small></span></> : <span>正在打开世界…</span>}</div><div className="companion-world-header-actions"><button aria-label="世界设置" className="companion-icon-button" disabled={!snapshot} onClick={() => { setSettings(snapshot!.settings); setSettingsOpen(true); }}><Icon name="sliders" /></button><button aria-label="关闭伙伴世界" className="companion-icon-button" onClick={onClose}><Icon name="close" /></button></div></header>
+  return <div className="companion-world-window">
+    <section className={'companion-world' + (inspectorOpen ? '' : ' is-inspector-collapsed')} role="region" aria-label="伙伴世界">
+      <header className="companion-world-header"><div className="companion-world-brand"><span><Icon name="globe" /></span><div><small>A LITTLE WORLD, TOGETHER</small><h2>日子，在这里发生</h2></div></div><div className="companion-world-environment" aria-label="世界环境">{snapshot ? <><span className="companion-world-sun" aria-hidden="true">{snapshot.clock.daylight ? '☀' : '☾'}</span><strong>{worldClockLabel(snapshot.clock.hour)}</strong><span>{WORLD_WEATHER_LABELS[snapshot.environment.weather]}</span><span>{snapshot.environment.outdoorTemperature.toFixed(1)}°<small>室外</small></span><span>{snapshot.environment.indoorTemperature.toFixed(1)}°<small>室内</small></span></> : <span>正在打开世界…</span>}</div><div className="companion-world-header-actions">{onOpenWindow && <button aria-label="另开一个世界窗口" title="同时观察其他小屋" className="companion-icon-button" onClick={() => onOpenWindow(currentScene?.id)}><Icon name="plus" /></button>}<button aria-label={inspectorOpen ? '收起生活面板' : '显示生活面板'} aria-expanded={inspectorOpen} className="companion-icon-button" onClick={() => setInspectorOpen(value => !value)}><Icon name="panel-right" /></button><button aria-label="世界设置" className="companion-icon-button" disabled={!snapshot} onClick={() => { setSettings(snapshot!.settings); setSettingsOpen(true); }}><Icon name="sliders" /></button><button aria-label="关闭伙伴世界" className="companion-icon-button" onClick={onClose}><Icon name="close" /></button></div></header>
       <div className="companion-world-body"><div className="companion-world-stage">
         <div className="companion-world-view" ref={viewport} data-world-scene={currentScene?.id} />
         {snapshot?.backlog && <div className="companion-world-continuing" role="status"><Icon name="loader" />正在接续离线期间的生活…</div>}
@@ -96,8 +111,8 @@ export function CompanionWorld({ api, companions, initialCompanionId, active = t
         {!snapshot && !error && <div className="companion-world-loading"><Icon name="loader" /><p>正在看一眼大家的生活…</p></div>}
         <div className="companion-world-camera" aria-label="世界视角控制"><button aria-label="放大世界" onClick={() => engine.current?.zoom(1.2)}><Icon name="plus" /></button><button aria-label="缩小世界" onClick={() => engine.current?.zoom(1 / 1.2)}>−</button><i /><button aria-label="向左旋转世界" onClick={() => engine.current?.rotate(-Math.PI / 8)}><Icon name="rotate-ccw" /></button><button aria-label="向右旋转世界" onClick={() => engine.current?.rotate(Math.PI / 8)}><Icon name="rotate-cw" /></button><i /><button aria-label="重置世界视角" onClick={() => engine.current?.reset()}><Icon name="fit-window" /></button></div>
         <footer className="companion-world-stage-footer"><span>拖动旋转 · 右键平移 · 滚轮缩放</span><span>{snapshot?.settings.mode === 'realtime' ? '跟随现实时间' : snapshot ? `现实 ${snapshot.settings.dayDurationMinutes} 分钟 · 世界一天` : ''}</span></footer>
-      </div><aside className="companion-world-inspector" aria-label="世界中的伙伴"><div className="companion-world-location"><label htmlFor="companion-world-location">去哪里看看</label><select id="companion-world-location" aria-label="观测地点" value={currentScene?.id ?? ''} onChange={event => { changeFollow(undefined); setSceneId(event.target.value); }}>{scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.kind === 'commons' ? scene.name : name(scene.ownerId) + '的小屋'}</option>)}</select></div>
-        <section className="companion-world-residents"><div className="companion-world-section-title"><h3>此刻的生活</h3><span>{visibleActors.length} 位在这里</span></div>{!visibleActors.length && <p className="companion-world-empty">这里暂时很安静。<br />可以去其他住户家或街区看看。</p>}{visibleActors.map(actor => { const companion = companions.find(item => item.id === actor.companionId), work = snapshot?.works.find(item => item.companionId === actor.companionId && item.status !== 'ended'); return <article className="companion-world-resident" key={actor.companionId} data-world-actor={actor.companionId} data-world-activity={actor.activity}><div><Avatar companion={companion} showPresence={false} /><span><strong>{companion?.name ?? '伙伴'}</strong><small>{actor.activityLabel ?? WORLD_ACTIVITY_LABELS[actor.activity]}</small></span><button aria-label={'在场景中找到' + name(actor.companionId)} onClick={() => engine.current?.focus(actor.companionId)}><Icon name="eye" /></button></div>{work && <p className="companion-world-work" data-world-work={work.status}><i />{WORLD_WORK_LABELS[work.status]}{work.reason && <small>{work.reason}</small>}</p>}<p className="companion-world-resident-state"><span>精力 {Math.round(actor.state.energy)}%</span><span>{({ calm: '平静', bright: '心情明亮', focused: '专注', tired: '有些疲惫', low: '情绪低落' } as const)[actor.state.mood]}</span><span>{actor.state.thermalComfort < .45 ? '温度不太舒适' : '体感舒适'}</span></p><footer><span>位置 {actor.position.x.toFixed(1)}, {actor.position.y.toFixed(1)}</span><span>{({ north: '朝北', east: '朝东', south: '朝南', west: '朝西' } as const)[actor.facing]}</span></footer></article>; })}</section>
+      </div><aside className="companion-world-inspector" aria-label="世界中的伙伴" hidden={!inspectorOpen}><div className="companion-world-location"><label htmlFor="companion-world-location">去哪里看看</label><select id="companion-world-location" aria-label="观测地点" value={currentScene?.id ?? ''} onChange={event => { changeFollow(undefined); setSceneId(event.target.value); }}>{scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.kind === 'commons' ? scene.name : name(scene.ownerId) + '的小屋'}</option>)}</select></div>
+        <section className="companion-world-residents"><div className="companion-world-section-title"><h3>此刻的生活</h3><span>{visibleActors.length} 位在这里</span></div>{!visibleActors.length && <p className="companion-world-empty">这里暂时很安静。<br />可以去其他住户家或街区看看。</p>}{visibleActors.map(actor => { const companion = companions.find(item => item.id === actor.companionId), work = snapshot?.works.find(item => item.companionId === actor.companionId && item.status !== 'ended'), behavior = worldActorStatus(actor, snapshot!, companions); return <article className="companion-world-resident" key={actor.companionId} data-world-actor={actor.companionId} data-world-activity={actor.activity}><div><Avatar companion={companion} showPresence={false} /><span><strong>{companion?.name ?? '伙伴'}</strong><small title={behavior.detail}>{behavior.label}</small></span><button aria-label={'在场景中找到' + name(actor.companionId)} onClick={() => engine.current?.focus(actor.companionId)}><Icon name="eye" /></button></div>{work && <p className="companion-world-work" data-world-work={work.status}><i />{WORLD_WORK_LABELS[work.status]}{work.reason && <small>{work.reason}</small>}</p>}<p className="companion-world-resident-state"><span>精力 {Math.round(actor.state.energy)}%</span><span>{({ calm: '平静', bright: '心情明亮', focused: '专注', tired: '有些疲惫', low: '情绪低落' } as const)[actor.state.mood]}</span><span>{actor.state.thermalComfort < .45 ? '温度不太舒适' : '体感舒适'}</span></p><footer><span>位置 {actor.position.x.toFixed(1)}, {actor.position.y.toFixed(1)}</span><span>{({ north: '朝北', east: '朝东', south: '朝南', west: '朝西' } as const)[actor.facing]}</span></footer></article>; })}</section>
         <section className="companion-world-visits"><div className="companion-world-section-title"><h3>来往的小消息</h3><Icon name="users" /></div>{visits.length ? visits.map(visit => <article key={visit.id} data-world-visit={visit.status}><div><strong>{name(visit.guestId)}<span> → </span>{name(visit.hostId)}</strong><small>{WORLD_VISIT_LABELS[visit.status]}</small></div><p>{visit.reason}</p>{visit.response && <p className="companion-world-visit-response">“{visit.response}”</p>}</article>) : <p className="companion-world-empty">敲门、等待回应，再一起坐坐。<br />伙伴会自己决定是否接待拜访。</p>}</section>
         <button className="companion-world-history-toggle" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(value => !value)}><Icon name="clock" />生活里的片刻<Icon name="chevron" /></button>{detailsOpen && <section className="companion-world-events" aria-label="世界生活记录">{events.length ? events.map(event => <article key={event.id}><time>{new Date(event.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: snapshot?.settings.timeZone })}</time><p>{eventText(event.text)}</p></article>) : <p className="companion-world-empty">还没有新的生活片段。</p>}</section>}
         <p className="companion-world-observer"><Icon name="eye" />你正在观察大家的生活。这里的互动不会代替你授权电脑任务。</p>

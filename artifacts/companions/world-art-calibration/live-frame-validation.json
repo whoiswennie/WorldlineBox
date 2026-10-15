@@ -1,0 +1,224 @@
+{
+  "samples": [
+    {
+      "companionId": "minimax",
+      "action": "rest",
+      "frame": 0,
+      "current": {
+        "companionId": "minimax",
+        "sceneId": "home_minimax",
+        "position": {
+          "x": 4,
+          "y": 8
+        },
+        "homeSceneId": "home_minimax",
+        "facing": "west",
+        "frame": 0,
+        "activity": "resting",
+        "activityStartedAtReal": "2026-10-15T00:59:24.423Z",
+        "artAction": "rest",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.62560049999999,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [],
+        "furnitureId": "minimax_sofa",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "minimax",
+      "action": "rest",
+      "frame": 1,
+      "current": {
+        "companionId": "minimax",
+        "sceneId": "home_minimax",
+        "position": {
+          "x": 4,
+          "y": 8
+        },
+        "homeSceneId": "home_minimax",
+        "facing": "west",
+        "frame": 2,
+        "activity": "resting",
+        "activityStartedAtReal": "2026-10-15T00:59:24.423Z",
+        "artAction": "rest",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.62899049999999,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [],
+        "furnitureId": "minimax_sofa",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "minimax",
+      "action": "rest",
+      "frame": 2,
+      "current": {
+        "companionId": "minimax",
+        "sceneId": "home_minimax",
+        "position": {
+          "x": 4,
+          "y": 8
+        },
+        "homeSceneId": "home_minimax",
+        "facing": "west",
+        "frame": 0,
+        "activity": "resting",
+        "activityStartedAtReal": "2026-10-15T00:59:24.423Z",
+        "artAction": "rest",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.63228299999999,
+          "mood": "calm",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [],
+        "furnitureId": "minimax_sofa",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":29.6},\"target\":{\"x\":4,\"y\":0,\"z\":8},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "kimi",
+      "action": "work",
+      "frame": 0,
+      "current": {
+        "companionId": "kimi",
+        "sceneId": "home_kimi",
+        "position": {
+          "x": 4,
+          "y": 4
+        },
+        "homeSceneId": "home_kimi",
+        "facing": "west",
+        "frame": 0,
+        "activity": "working",
+        "activityStartedAtReal": "2026-10-15T00:59:40.397Z",
+        "artAction": "work",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.590616,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [],
+        "destinationId": "kimi_computer",
+        "furnitureId": "kimi_computer",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":4,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "kimi",
+      "action": "work",
+      "frame": 1,
+      "current": {
+        "companionId": "kimi",
+        "sceneId": "home_kimi",
+        "position": {
+          "x": 4,
+          "y": 4
+        },
+        "homeSceneId": "home_kimi",
+        "facing": "west",
+        "frame": 1,
+        "activity": "working",
+        "activityStartedAtReal": "2026-10-15T00:59:40.397Z",
+        "artAction": "work",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.589676,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [],
+        "destinationId": "kimi_computer",
+        "furnitureId": "kimi_computer",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":4,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    },
+    {
+      "companionId": "kimi",
+      "action": "work",
+      "frame": 2,
+      "current": {
+        "companionId": "kimi",
+        "sceneId": "home_kimi",
+        "position": {
+          "x": 4,
+          "y": 4
+        },
+        "homeSceneId": "home_kimi",
+        "facing": "west",
+        "frame": 2,
+        "activity": "working",
+        "activityStartedAtReal": "2026-10-15T00:59:40.397Z",
+        "artAction": "work",
+        "locomotion": "walk",
+        "movementSpeed": 2.4,
+        "state": {
+          "energy": 99.58874933333333,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": 0,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [],
+        "destinationId": "kimi_computer",
+        "furnitureId": "kimi_computer",
+        "routinePhase": "awake"
+      },
+      "camera": "{\"position\":{\"x\":20.800000000000004,\"y\":21,\"z\":25.6},\"target\":{\"x\":4,\"y\":0,\"z\":4},\"zoom\":2.1}"
+    }
+  ],
+  "errors": []
+}

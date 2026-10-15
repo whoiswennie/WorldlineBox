@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 import { COMPANION_WORLD_ART_ACTIONS } from '../src/shared/companion-world-actions.ts';
+import { calibrateCompanionWorldSheet, companionWorldFramePose } from '../src/shared/companion-world-art-calibration.ts';
 
 const root = process.cwd();
 const manifestFile = path.join(root, 'src/shared/companion-world-art-data.json');
@@ -11,6 +12,27 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const command = process.argv[2];
 const point = (value, scale) => value ? { x: +(value.x * scale).toFixed(3), y: +(value.y * scale).toFixed(3) } : null;
 const bounds = (value, scale) => ({ x: +(value.x * scale).toFixed(3), y: +(value.y * scale).toFixed(3), width: +(value.width * scale).toFixed(3), height: +(value.height * scale).toFixed(3) });
+async function writeManifest(data) {
+  const temporary = manifestFile + '.' + process.pid + '.writing';
+  try { await fs.writeFile(temporary, JSON.stringify(data, null, 2) + '\n'); await fs.rename(temporary, manifestFile); }
+  finally { await fs.rm(temporary, { force: true }); }
+}
+function calibrateAsset(asset, action, pixels, info) {
+  const extracted = asset.frames.map((frame, index) => {
+    const rgba = new Uint8Array(asset.frameWidth * asset.frameHeight * 4);
+    let minX=asset.frameWidth,minY=asset.frameHeight,maxX=-1,maxY=-1;
+    for(let y=0;y<asset.frameHeight;y++)for(let x=0;x<asset.frameWidth;x++){
+      const source=(y*info.width+index*asset.frameWidth+x)*4,target=(y*asset.frameWidth+x)*4;
+      rgba.set(pixels.subarray(source,source+4),target);
+      if(pixels[source+3]>16){minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);}
+    }
+    frame.bounds={x:minX,y:minY,width:maxX-minX+1,height:maxY-minY+1};
+    return {rgba,width:asset.frameWidth,height:asset.frameHeight};
+  });
+  const result=calibrateCompanionWorldSheet(asset,action,extracted);
+  for(let index=0;index<3;index++)asset.frames[index].registration=result.registrations[index];
+  return {...result,extracted};
+}
 
 if (command === 'import') {
   const sourceRoot = path.resolve(process.argv[3] || '');
@@ -34,7 +56,7 @@ if (command === 'import') {
       await fs.mkdir(path.dirname(target), { recursive: true });
       await sharp(input).resize(1152, 384).webp({ quality: 92, alphaQuality: 100, effort: 6 }).toFile(target);
       const scale = 384 / asset.cell.height;
-      actions[asset.group] = {
+      const imported = {
         url: `companion-world/characters/${avatar}/actions/${asset.group}.webp`,
         frameCount: 3, frameWidth: 384, frameHeight: 384,
         durationMs: asset.durationMs, playback: asset.mode,
@@ -43,12 +65,14 @@ if (command === 'import') {
         frames: asset.frames.map(frame => ({ bounds: bounds(frame.bounds, scale),
           contacts: Object.fromEntries(Object.entries(frame.contacts).map(([key, value]) => [key, key === 'posture' ? value : point(value, scale)])) })),
       };
+      const decoded = await sharp(target).ensureAlpha().raw().toBuffer({resolveWithObject:true});
+      calibrateAsset(imported,asset.group,decoded.data,decoded.info); actions[asset.group]=imported;
     }
     const idle = actions.idle.frames[0].bounds;
     data[avatar] = { id: avatar, cell: { width: 384, height: 384 }, heightTiles: ['guga', 'gugugaga', 'doro'].includes(avatar) ? 1.35 : 1.8,
       neutralHeightPixels: idle.height, defaultOrigin: point(authoring.defaultOrigin, 384 / authoring.cell.height), actions };
   }
-  await fs.writeFile(manifestFile, JSON.stringify(data, null, 2) + '\n');
+  await writeManifest(data);
   console.log(`Imported ${Object.keys(data).length} character sets and ${Object.values(data).reduce((n, c) => n + Object.keys(c.actions).length, 0)} independent action sheets.`);
 } else if (command === 'register') {
   if (!process.argv[3]) throw new Error('Supply a JSON array of independently generated actions with input, avatar, action and prompt.');
@@ -92,14 +116,44 @@ if (command === 'import') {
       ...(standing.length ? { defaultOrigin: { x: 192, y: Math.max(...standing.map(frame => frame.contacts.foot.y)) } } : {}),
       ...(neutralActions.has(record.action) && frames[0].contacts.posture === 'standing' ? { neutralHeightPixels: frames[0].bounds.height } : {}),
       sha256: digest(buffer), source: { kind: 'builtin-imagegen', action: record.action, sha256: sourceHash, prompt: record.prompt }, frames };
+    calibrateAsset(asset,record.action,pixels,info);
     data[record.avatar].actions[record.action] = asset;
     if (record.action === 'idle') data[record.avatar].neutralHeightPixels = frames[0].bounds.height;
     prepared.push({ target: path.join(root, 'public', asset.url), buffer });
   }
   // Validate the entire batch before replacing any production image or its manifest.
   for (const { target, buffer } of prepared) { await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, buffer); }
-  await fs.writeFile(manifestFile, JSON.stringify(data, null, 2) + '\n');
+  await writeManifest(data);
   console.log(`Registered ${prepared.length} independent action sheets.`);
+} else if (command === 'calibrate') {
+  const data=JSON.parse(await fs.readFile(manifestFile,'utf8')), report=[], output=path.resolve(process.argv[3]||'.tools/world-art-calibration');
+  await fs.mkdir(output,{recursive:true});
+  for(const [avatar,character]of Object.entries(data)){
+    const panels=[];
+    for(const[action,asset]of Object.entries(character.actions)){
+      const image=await fs.readFile(path.join(root,'public',asset.url));
+      if(digest(image)!==asset.sha256)throw new Error(`Asset changed without declaration: ${avatar}/${action}`);
+      const decoded=await sharp(image).ensureAlpha().raw().toBuffer({resolveWithObject:true});
+      const result=calibrateAsset(asset,action,decoded.data,decoded.info);
+      const oldAnchor=frame=>companionWorldFramePose(frame)==='ground'?asset.defaultOrigin??character.defaultOrigin:companionWorldFramePose(frame)==='seat'?frame.contacts.seat:frame.contacts.bed;
+      const xs=result.matches.map((match,index)=>match.dx-(oldAnchor(asset.frames[index]).x-oldAnchor(asset.frames[0]).x));
+      const ys=result.matches.map((match,index)=>match.dy-(oldAnchor(asset.frames[index]).y-oldAnchor(asset.frames[0]).y));
+      const entry={avatar,action,bodyCoreRangeBefore:{x:Math.max(...xs)-Math.min(...xs),y:Math.max(...ys)-Math.min(...ys)},registrations:result.registrations,matches:result.matches};
+      report.push(entry);
+      const images=await Promise.all(result.extracted.map(frame=>sharp(frame.rgba,{raw:{width:frame.width,height:frame.height,channels:4}}).resize(96,96).png().toBuffer()));
+      let panel=`<text x="5" y="14" font-size="12" fill="#e6edf3">${action}</text>`;
+      for(let row=0;row<2;row++)for(let index=0;index<3;index++){
+        const anchor=row?asset.frames[index].registration.anchor:oldAnchor(asset.frames[index]), x=index*112+56-anchor.x/4,y=20+row*100+90-anchor.y/4;
+        panel+=`<clipPath id="c${panels.length}_${row}_${index}"><rect x="${index*112}" y="${20+row*100}" width="112" height="100"/></clipPath><g clip-path="url(#c${panels.length}_${row}_${index})"><path d="M${index*112+56} ${20+row*100}v100M${index*112} ${20+row*100+90}h112" stroke="${row?'#63d49b':'#e17d75'}" opacity=".45"/><image href="data:image/png;base64,${images[index].toString('base64')}" x="${x}" y="${y}" width="96" height="96"/></g>`;
+      }
+      panels.push(panel);
+    }
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1344" height="${Math.ceil(panels.length/4)*224}"><rect width="100%" height="100%" fill="#17212b"/>${panels.map((panel,index)=>`<g transform="translate(${index%4*336} ${Math.floor(index/4)*224})">${panel}</g>`).join('')}</svg>`;
+    await sharp(Buffer.from(svg)).png().toFile(path.join(output,avatar+'.png'));
+  }
+  await writeManifest(data);
+  await fs.writeFile(path.join(output,'report.json'),JSON.stringify(report,null,2)+'\n');
+  console.log(JSON.stringify({sheets:report.length,frames:report.length*3,maximumHorizontalDriftBefore:Math.max(...report.map(row=>row.bodyCoreRangeBefore.x)),over8px:report.filter(row=>row.bodyCoreRangeBefore.x>8).length,highResidual:report.filter(row=>row.matches.some(match=>match.score>40)).map(row=>row.avatar+'/'+row.action),output},null,2));
 } else if (command === 'verify' || command === 'inspect') {
   const data = JSON.parse(await fs.readFile(manifestFile, 'utf8'));
   let count = 0, bytes = 0;
@@ -127,6 +181,8 @@ if (command === 'import') {
         if (opaque < 100 || transparent < 100) throw new Error(`Empty frame or opaque backdrop: ${id}/${action}/${frame}`);
         if (edge > 8) throw new Error(`Clipped frame: ${id}/${action}/${frame}, edge pixels ${edge}`);
         const contacts = asset.frames[frame].contacts;
+        const registration=asset.frames[frame].registration;
+        if(!registration||!Number.isFinite(registration.anchor.x)||!Number.isFinite(registration.anchor.y))throw new Error(`Missing frame registration: ${id}/${action}/${frame}`);
         if (contacts.posture === 'standing' && !contacts.foot || contacts.posture === 'sitting' && !contacts.seat || contacts.posture === 'lying' && !contacts.bed) throw new Error(`Missing posture contact: ${id}/${action}/${frame}`);
       }
       count++; bytes += buffer.length;
@@ -136,5 +192,5 @@ if (command === 'import') {
   console.log(JSON.stringify({ characters: Object.keys(data).length, sheets: count, frames: count * 3, bytes, allIndependent: true, alpha: true, missing }, null, 2));
   if (command === 'verify' && missing.length) throw new Error(`${missing.length} required character/action sheets remain incomplete.`);
 } else {
-  throw new Error('Usage: node scripts/companion-world-art.mjs import <approved-source-project> | register <actions.json> | verify | inspect');
+  throw new Error('Usage: node scripts/companion-world-art.mjs import <approved-source-project> | register <actions.json> | calibrate [report-directory] | verify | inspect');
 }

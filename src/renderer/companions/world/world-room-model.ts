@@ -208,5 +208,7 @@ export function createWorldRoomModel(scene: CompanionWorldScene, neighborhood: C
     const shadow = new Mesh(geometry, material); shadow.position.set((scene.width - 1) / 2, -.86, (scene.depth - 1) / 2); group.add(shadow);
     resources.geometry.push(geometry); resources.materials.push(material); resources.textures.push(texture);
   }
-  return { group, setNight(night: boolean) { resources.materials.forEach(material => { if (material instanceof MeshStandardMaterial && material.userData.surface === 'light') material.emissiveIntensity = night ? 1.4 : .18; }); }, dispose() { resources.geometry.forEach(item => item.dispose()); resources.materials.forEach(item => item.dispose()); resources.textures.forEach(item => item.dispose()); group.clear(); } };
+  group.traverse(object => { object.updateMatrix(); object.matrixAutoUpdate = false; });
+  let previousNight: boolean | undefined;
+  return { group, setNight(night: boolean) { if (previousNight === night) return; previousNight = night; resources.materials.forEach(material => { if (material instanceof MeshStandardMaterial && material.userData.surface === 'light') material.emissiveIntensity = night ? 1.4 : .18; }); }, dispose() { resources.geometry.forEach(item => item.dispose()); resources.materials.forEach(item => item.dispose()); resources.textures.forEach(item => item.dispose()); group.clear(); } };
 }

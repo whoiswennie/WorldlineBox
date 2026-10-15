@@ -1,9 +1,9 @@
 {
-  "sourceId": "273db83f-599d-49f7-a97f-f8963c0b0698",
-  "cancelledSourceId": "0d531ce7-b068-42dc-964e-e4f760e1b3ce",
+  "sourceId": "c9fe008b-b53e-48cc-a2d5-23f704a175a6",
+  "cancelledSourceId": "179e19d0-d50d-43d8-9aec-708e1a827fe4",
   "samples": [
     {
-      "at": 1791994879194,
+      "at": 1792025279750,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -14,22 +14,22 @@
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
-        "frame": 0,
+        "frame": 1,
         "activity": "sitting",
-        "activityStartedAtReal": "2026-10-14T16:21:10.323Z",
+        "activityStartedAtReal": "2026-10-15T00:47:48.400Z",
         "artAction": "sit",
         "locomotion": "walk",
         "movementSpeed": 2.4,
         "state": {
-          "energy": 99.71579333333337,
+          "energy": 99.56417333333336,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.01869685835336909,
+            "arousal": 0.004449205635501776,
+            "dominance": -0.013480852836987649
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [],
         "furnitureId": "deepseek-flash_sofa",
@@ -38,7 +38,7 @@
       "works": []
     },
     {
-      "at": 1791994879428,
+      "at": 1792025279956,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -51,21 +51,21 @@
         "facing": "west",
         "frame": 0,
         "activity": "standingUp",
-        "activityStartedAtReal": "2026-10-14T16:21:19.183Z",
+        "activityStartedAtReal": "2026-10-15T00:47:59.737Z",
         "artAction": "standUp",
-        "transitionEndsAtReal": "2026-10-14T16:21:20.583Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:01.137Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71547333333336,
+          "energy": 99.56390400000002,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.01869649476603217,
+            "arousal": 0.004448859560752436,
+            "dominance": -0.013480721759051477
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -355,17 +355,17 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:19.863Z"
+          "nextCheckAt": "2026-10-15T00:48:00.407Z"
         }
       ]
     },
     {
-      "at": 1791994879748,
+      "at": 1792025280269,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -378,21 +378,21 @@
         "facing": "west",
         "frame": 1,
         "activity": "standingUp",
-        "activityStartedAtReal": "2026-10-14T16:21:19.183Z",
+        "activityStartedAtReal": "2026-10-15T00:47:59.737Z",
         "artAction": "standUp",
-        "transitionEndsAtReal": "2026-10-14T16:21:20.583Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:01.137Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71504133333336,
+          "energy": 99.56349066666668,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.018695936799216984,
+            "arousal": 0.004448328508293138,
+            "dominance": -0.013480520602321293
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -682,17 +682,17 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:20.187Z"
+          "nextCheckAt": "2026-10-15T00:48:00.717Z"
         }
       ]
     },
     {
-      "at": 1791994880090,
+      "at": 1792025280575,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -705,21 +705,21 @@
         "facing": "west",
         "frame": 1,
         "activity": "standingUp",
-        "activityStartedAtReal": "2026-10-14T16:21:19.183Z",
+        "activityStartedAtReal": "2026-10-15T00:47:59.737Z",
         "artAction": "standUp",
-        "transitionEndsAtReal": "2026-10-14T16:21:20.583Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:01.137Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71459333333335,
+          "energy": 99.56307600000001,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.018695377049241128,
+            "arousal": 0.004447795806459231,
+            "dominance": -0.013480318799714593
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -1009,17 +1009,17 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:20.523Z"
+          "nextCheckAt": "2026-10-15T00:48:01.028Z"
         }
       ]
     },
     {
-      "at": 1791994880435,
+      "at": 1792025280892,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -1032,21 +1032,21 @@
         "facing": "west",
         "frame": 2,
         "activity": "standingUp",
-        "activityStartedAtReal": "2026-10-14T16:21:19.183Z",
+        "activityStartedAtReal": "2026-10-15T00:47:59.737Z",
         "artAction": "standUp",
-        "transitionEndsAtReal": "2026-10-14T16:21:20.583Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:01.137Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71413333333335,
+          "energy": 99.56266133333334,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.018694817316023994,
+            "arousal": 0.004447263168418104,
+            "dominance": -0.013480117000128865
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -1336,43 +1336,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:20.868Z"
+          "nextCheckAt": "2026-10-15T00:48:01.339Z"
         }
       ]
     },
     {
-      "at": 1791994880757,
+      "at": 1792025281204,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
-          "x": 4.552,
+          "x": 4.0672,
           "y": 8
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "east",
         "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71369333333335,
+          "energy": 99.56224533333334,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.018694255799860733,
+            "arousal": 0.004446728881807574,
+            "dominance": -0.013479914554705385
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -1661,360 +1661,55 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:21.198Z"
+          "nextCheckAt": "2026-10-15T00:48:01.651Z"
         }
       ]
     },
     {
-      "at": 1791994881088,
+      "at": 1792025281514,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
-          "x": 6.121599999999999,
-          "y": 8
-        },
-        "homeSceneId": "home_deepseek-sister",
-        "facing": "east",
-        "frame": 2,
-        "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
-        "artAction": "run",
-        "locomotion": "run",
-        "movementSpeed": 4.8,
-        "state": {
-          "energy": 99.71325733333335,
-          "mood": "focused",
-          "expression": "gentle",
-          "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
-          },
-          "thermalComfort": 0.8666666666666667
-        },
-        "route": [
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 7,
-            "y": 8
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 8,
-            "y": 8
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 9,
-            "y": 8
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 8
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 9
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 10
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 11
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 12
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 13
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 14
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 15
-          },
-          {
-            "sceneId": "commons",
-            "x": 38,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 37,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 36,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 35,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 34,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 33,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 32,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 31,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 30,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 29,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 28,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 27,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 26,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 25,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 24,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 23,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 22,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 21,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 20,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 19,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 18,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 17,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 16,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 15,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 14,
-            "y": 20
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 15
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 14
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 13
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 12
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 11
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 10
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 9
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 8
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 7
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 6
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 5
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 9,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 8,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 7,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 6,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 5,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 4,
-            "y": 4
-          }
-        ],
-        "destinationId": "deepseek-sister_computer",
-        "routinePhase": "awake"
-      },
-      "works": [
-        {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
-          "companionId": "deepseek-sister",
-          "kind": "chat",
-          "status": "moving",
-          "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:21.525Z"
-        }
-      ]
-    },
-    {
-      "at": 1791994881411,
-      "label": "urgent_journey",
-      "actor": {
-        "companionId": "deepseek-sister",
-        "sceneId": "home_deepseek-flash",
-        "position": {
-          "x": 7.671999999999999,
+          "x": 5.5888,
           "y": 8
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "east",
         "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71282666666667,
+          "energy": 99.56182266666667,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.018693685302314255,
+            "arousal": 0.004446186098651089,
+            "dominance": -0.013479708868078037
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 6,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 7,
+            "y": 8
+          },
           {
             "sceneId": "home_deepseek-flash",
             "x": 8,
@@ -2286,45 +1981,55 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:21.848Z"
+          "nextCheckAt": "2026-10-15T00:48:01.968Z"
         }
       ]
     },
     {
-      "at": 1791994881741,
+      "at": 1792025281821,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
-          "x": 9.236799999999999,
+          "x": 7.0432000000000015,
           "y": 8
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "east",
         "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71239200000001,
+          "energy": 99.56141866666667,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.01869314001651668,
+            "arousal": 0.004445667348920127,
+            "dominance": -0.013479512268336354
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 8,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 9,
+            "y": 8
+          },
           {
             "sceneId": "home_deepseek-flash",
             "x": 10,
@@ -2586,43 +2291,348 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:22.174Z"
+          "nextCheckAt": "2026-10-15T00:48:02.271Z"
         }
       ]
     },
     {
-      "at": 1791994882067,
+      "at": 1792025282130,
+      "label": "urgent_journey",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 8.5264,
+          "y": 8
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "east",
+        "frame": 2,
+        "activity": "walking",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
+        "artAction": "run",
+        "locomotion": "run",
+        "movementSpeed": 4.8,
+        "state": {
+          "energy": 99.56100666666667,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": -0.018692583949361827,
+            "arousal": 0.004445138389250898,
+            "dominance": -0.01347931177848359
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 9,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 9
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 10
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 11
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 12
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "commons",
+            "x": 38,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 37,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 36,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 35,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 34,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 33,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 32,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 31,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 30,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 29,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 28,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 27,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 26,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 25,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 24,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 23,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 22,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 21,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 20,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 19,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 18,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 17,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 16,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 15,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 14,
+            "y": 20
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 12
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 11
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 10
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 9
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 7
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 6
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 5
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 9,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 8,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 7,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 6,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 5,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 4,
+            "y": 4
+          }
+        ],
+        "destinationId": "deepseek-sister_computer",
+        "routinePhase": "awake"
+      },
+      "works": [
+        {
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
+          "companionId": "deepseek-sister",
+          "kind": "chat",
+          "status": "moving",
+          "computerId": "deepseek-sister_computer",
+          "nextCheckAt": "2026-10-15T00:48:02.580Z"
+        }
+      ]
+    },
+    {
+      "at": 1792025282434,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
           "x": 10,
-          "y": 8.801599999999999
+          "y": 8.0048
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "south",
-        "frame": 1,
+        "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71195733333334,
+          "energy": 99.560596,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.018692029698238244,
+            "arousal": 0.004444611204057384,
+            "dominance": -0.013479111940432862
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -2881,45 +2891,50 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:22.500Z"
+          "nextCheckAt": "2026-10-15T00:48:02.888Z"
         }
       ]
     },
     {
-      "at": 1791994882386,
+      "at": 1792025282743,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
           "x": 10,
-          "y": 10.3616
+          "y": 9.4832
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "south",
-        "frame": 0,
+        "frame": 2,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71152400000001,
+          "energy": 99.56018533333334,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.018691475463548678,
+            "arousal": 0.004444084081387059,
+            "dominance": -0.013478912105344841
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 10
+          },
           {
             "sceneId": "home_deepseek-flash",
             "x": 10,
@@ -3166,45 +3181,50 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:22.825Z"
+          "nextCheckAt": "2026-10-15T00:48:03.196Z"
         }
       ]
     },
     {
-      "at": 1791994882721,
+      "at": 1792025283056,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
           "x": 10,
-          "y": 11.940800000000001
+          "y": 10.9808
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "south",
-        "frame": 2,
+        "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71108533333334,
+          "energy": 99.55976933333334,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.01869091404776105,
+            "arousal": 0.004443550176706621,
+            "dominance": -0.013478709678016563
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 11
+          },
           {
             "sceneId": "home_deepseek-flash",
             "x": 10,
@@ -3446,43 +3466,318 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:23.154Z"
+          "nextCheckAt": "2026-10-15T00:48:03.508Z"
         }
       ]
     },
     {
-      "at": 1791994883047,
+      "at": 1792025283371,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
           "x": 10,
-          "y": 13.505600000000001
+          "y": 12.468800000000002
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "south",
+        "frame": 0,
+        "activity": "walking",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
+        "artAction": "run",
+        "locomotion": "run",
+        "movementSpeed": 4.8,
+        "state": {
+          "energy": 99.55935600000001,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": -0.018690356247493427,
+            "arousal": 0.004443019758019062,
+            "dominance": -0.013478508551310261
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "commons",
+            "x": 38,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 37,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 36,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 35,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 34,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 33,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 32,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 31,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 30,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 29,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 28,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 27,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 26,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 25,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 24,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 23,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 22,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 21,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 20,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 19,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 18,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 17,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 16,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 15,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 14,
+            "y": 20
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 12
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 11
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 10
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 9
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 7
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 6
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 5
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 9,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 8,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 7,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 6,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 5,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 4,
+            "y": 4
+          }
+        ],
+        "destinationId": "deepseek-sister_computer",
+        "routinePhase": "awake"
+      },
+      "works": [
+        {
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
+          "companionId": "deepseek-sister",
+          "kind": "chat",
+          "status": "moving",
+          "computerId": "deepseek-sister_computer",
+          "nextCheckAt": "2026-10-15T00:48:03.818Z"
+        }
+      ]
+    },
+    {
+      "at": 1792025283680,
+      "label": "urgent_journey",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 10,
+          "y": 13.952000000000002
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "south",
         "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71065066666668,
+          "energy": 99.55894400000001,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.018689800263147694,
+            "arousal": 0.004442491113368637,
+            "dominance": -0.013478308076386458
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -3716,43 +4011,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:23.480Z"
+          "nextCheckAt": "2026-10-15T00:48:04.127Z"
         }
       ]
     },
     {
-      "at": 1791994883373,
+      "at": 1792025283987,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 37.9344,
+          "x": 37.56,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.71021733333335,
+          "energy": 99.55853066666668,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03708874188505246,
+            "arousal": 0.008921909198698818,
+            "dominance": -0.02679611887853988
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
           {
@@ -3971,43 +4266,453 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:23.805Z"
+          "nextCheckAt": "2026-10-15T00:48:04.437Z"
         }
       ]
     },
     {
-      "at": 1791994886040,
+      "at": 1792025285880,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 25.137599999999992,
+          "x": 28.464000000000006,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 2,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70666266666667,
+          "energy": 99.55600400000002,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03708197631077578,
+            "arousal": 0.00891540098926589,
+            "dominance": -0.02679367474870785
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
+        },
+        "route": [
+          {
+            "sceneId": "commons",
+            "x": 28,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 27,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 26,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 25,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 24,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 23,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 22,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 21,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 20,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 19,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 18,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 17,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 16,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 15,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 14,
+            "y": 20
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 12
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 11
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 10
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 9
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 7
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 6
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 5
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 9,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 8,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 7,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 6,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 5,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 4,
+            "y": 4
+          }
+        ],
+        "destinationId": "deepseek-sister_computer",
+        "routinePhase": "awake"
+      },
+      "works": [
+        {
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
+          "companionId": "deepseek-sister",
+          "kind": "chat",
+          "status": "moving",
+          "computerId": "deepseek-sister_computer",
+          "nextCheckAt": "2026-10-15T00:48:06.332Z"
+        }
+      ]
+    },
+    {
+      "at": 1792025286195,
+      "label": "urgent_journey",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "commons",
+        "position": {
+          "x": 26.952000000000012,
+          "y": 20
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "west",
+        "frame": 0,
+        "activity": "walking",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
+        "artAction": "run",
+        "locomotion": "run",
+        "movementSpeed": 4.8,
+        "state": {
+          "energy": 99.55558400000001,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": -0.037080851809880556,
+            "arousal": 0.008914319609967906,
+            "dominance": -0.026793268490160442
+          },
+          "thermalComfort": 0.45333333333333337
+        },
+        "route": [
+          {
+            "sceneId": "commons",
+            "x": 26,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 25,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 24,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 23,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 22,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 21,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 20,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 19,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 18,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 17,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 16,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 15,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 14,
+            "y": 20
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 12
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 11
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 10
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 9
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 7
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 6
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 5
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 9,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 8,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 7,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 6,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 5,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 4,
+            "y": 4
+          }
+        ],
+        "destinationId": "deepseek-sister_computer",
+        "routinePhase": "awake"
+      },
+      "works": [
+        {
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
+          "companionId": "deepseek-sister",
+          "kind": "chat",
+          "status": "moving",
+          "computerId": "deepseek-sister_computer",
+          "nextCheckAt": "2026-10-15T00:48:06.647Z"
+        }
+      ]
+    },
+    {
+      "at": 1792025286502,
+      "label": "urgent_journey",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "commons",
+        "position": {
+          "x": 25.468800000000016,
+          "y": 20
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "west",
+        "frame": 2,
+        "activity": "walking",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
+        "artAction": "run",
+        "locomotion": "run",
+        "movementSpeed": 4.8,
+        "state": {
+          "energy": 99.55517200000001,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": -0.037079748761182085,
+            "arousal": 0.008913258955811354,
+            "dominance": -0.026792869975856087
+          },
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
           {
@@ -4166,43 +4871,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:26.471Z"
+          "nextCheckAt": "2026-10-15T00:48:06.956Z"
         }
       ]
     },
     {
-      "at": 1791994886364,
+      "at": 1792025286829,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 23.57279999999999,
+          "x": 23.93280000000001,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70622800000001,
+          "energy": 99.55474533333334,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03707860647996328,
+            "arousal": 0.008912160676758468,
+            "dominance": -0.02679245728120601
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
           {
@@ -4351,43 +5056,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:26.797Z"
+          "nextCheckAt": "2026-10-15T00:48:07.276Z"
         }
       ]
     },
     {
-      "at": 1791994886689,
+      "at": 1792025287149,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 22.003199999999993,
+          "x": 22.37760000000001,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70579200000002,
+          "energy": 99.55431333333334,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03707744995608097,
+            "arousal": 0.008911048807093706,
+            "dominance": -0.02679203943434929
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
           {
@@ -4531,43 +5236,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:27.124Z"
+          "nextCheckAt": "2026-10-15T00:48:07.600Z"
         }
       ]
     },
     {
-      "at": 1791994887011,
+      "at": 1792025287454,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 20.44319999999999,
+          "x": 20.923200000000012,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
-        "frame": 2,
+        "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70535866666668,
+          "energy": 99.55390933333335,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03707636842472189,
+            "arousal": 0.008910009128576273,
+            "dominance": -0.026791648676055952
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
           {
@@ -4701,45 +5406,50 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:27.449Z"
+          "nextCheckAt": "2026-10-15T00:48:07.903Z"
         }
       ]
     },
     {
-      "at": 1791994887342,
+      "at": 1792025287763,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 18.878399999999992,
+          "x": 19.43040000000001,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
-        "frame": 1,
+        "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70492400000002,
+          "energy": 99.55349466666668,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03707525837088755,
+            "arousal": 0.00890894212594954,
+            "dominance": -0.02679124760663882
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
+          {
+            "sceneId": "commons",
+            "x": 19,
+            "y": 20
+          },
           {
             "sceneId": "commons",
             "x": 18,
@@ -4861,43 +5571,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:27.775Z"
+          "nextCheckAt": "2026-10-15T00:48:08.214Z"
         }
       ]
     },
     {
-      "at": 1791994887672,
+      "at": 1792025288081,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 17.30879999999999,
+          "x": 17.884800000000006,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 2,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70448800000003,
+          "energy": 99.55306533333335,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.0370741090897176,
+            "arousal": 0.008907837518316005,
+            "dominance": -0.026790832357812953
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
           {
@@ -5016,45 +5726,50 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:28.102Z"
+          "nextCheckAt": "2026-10-15T00:48:08.536Z"
         }
       ]
     },
     {
-      "at": 1791994887985,
+      "at": 1792025288377,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 15.734399999999994,
+          "x": 16.454400000000003,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
-        "frame": 1,
+        "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70405066666669,
+          "energy": 99.55266800000001,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03707304550099802,
+            "arousal": 0.008906815363713651,
+            "dominance": -0.026790448064944565
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
+          {
+            "sceneId": "commons",
+            "x": 16,
+            "y": 20
+          },
           {
             "sceneId": "commons",
             "x": 15,
@@ -5161,43 +5876,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:28.430Z"
+          "nextCheckAt": "2026-10-15T00:48:08.834Z"
         }
       ]
     },
     {
-      "at": 1791994888303,
+      "at": 1792025288705,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 14.251199999999992,
+          "x": 14.976000000000003,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
-        "frame": 0,
+        "frame": 2,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70363866666669,
+          "energy": 99.55225733333334,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03707194625344726,
+            "arousal": 0.008905759031880997,
+            "dominance": -0.026790050882135277
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
           {
@@ -5301,45 +6016,50 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:28.739Z"
+          "nextCheckAt": "2026-10-15T00:48:09.142Z"
         }
       ]
     },
     {
-      "at": 1791994888648,
+      "at": 1792025289025,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
           "x": 10,
-          "y": 13.628799999999995
+          "y": 14.411200000000003
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "north",
-        "frame": 2,
+        "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70318800000003,
+          "energy": 99.55182266666668,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03707078279966303,
+            "arousal": 0.008904641102844687,
+            "dominance": -0.026789630493758328
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 14
+          },
           {
             "sceneId": "home_deepseek-sister",
             "x": 10,
@@ -5426,43 +6146,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:29.077Z"
+          "nextCheckAt": "2026-10-15T00:48:09.468Z"
         }
       ]
     },
     {
-      "at": 1791994888958,
+      "at": 1792025289352,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
           "x": 10,
-          "y": 12.054399999999992
+          "y": 12.851200000000004
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "north",
-        "frame": 1,
+        "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70275066666669,
+          "energy": 99.55138933333335,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03706962295110105,
+            "arousal": 0.008903526742725792,
+            "dominance": -0.02678921140148267
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -5546,45 +6266,50 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:29.405Z"
+          "nextCheckAt": "2026-10-15T00:48:09.793Z"
         }
       ]
     },
     {
-      "at": 1791994889276,
+      "at": 1792025289681,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
           "x": 10,
-          "y": 10.566399999999991
+          "y": 11.262400000000005
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "north",
         "frame": 2,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70233733333336,
+          "energy": 99.55094800000002,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03706844172724998,
+            "arousal": 0.00890239195314539,
+            "dominance": -0.02678878457885773
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 11
+          },
           {
             "sceneId": "home_deepseek-sister",
             "x": 10,
@@ -5656,43 +6381,148 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:29.715Z"
+          "nextCheckAt": "2026-10-15T00:48:10.124Z"
         }
       ]
     },
     {
-      "at": 1791994889609,
+      "at": 1792025290008,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
           "x": 10,
-          "y": 8.996799999999991
+          "y": 9.649600000000003
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "north",
         "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70190133333337,
+          "energy": 99.55050000000001,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.037067242698635185,
+            "arousal": 0.00890124016965543,
+            "dominance": -0.026788351315716382
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 9
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 7
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 6
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 5
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 9,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 8,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 7,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 6,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 5,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 4,
+            "y": 4
+          }
+        ],
+        "destinationId": "deepseek-sister_computer",
+        "routinePhase": "awake"
+      },
+      "works": [
+        {
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
+          "companionId": "deepseek-sister",
+          "kind": "chat",
+          "status": "moving",
+          "computerId": "deepseek-sister_computer",
+          "nextCheckAt": "2026-10-15T00:48:10.460Z"
+        }
+      ]
+    },
+    {
+      "at": 1792025290318,
+      "label": "urgent_journey",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 10,
+          "y": 8.1712
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "north",
+        "frame": 2,
+        "activity": "walking",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
+        "artAction": "run",
+        "locomotion": "run",
+        "movementSpeed": 4.8,
+        "state": {
+          "energy": 99.55008933333336,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": -0.03706614362314249,
+            "arousal": 0.008900184499030482,
+            "dominance": -0.026787954163992527
+          },
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -5756,50 +6586,45 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:30.042Z"
+          "nextCheckAt": "2026-10-15T00:48:10.768Z"
         }
       ]
     },
     {
-      "at": 1791994889932,
+      "at": 1792025290627,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
           "x": 10,
-          "y": 7.441599999999992
+          "y": 6.683200000000001
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "north",
-        "frame": 0,
+        "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70146933333336,
+          "energy": 99.54967600000003,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03706503744370258,
+            "arousal": 0.008899122099824153,
+            "dominance": -0.02678755443930684
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 7
-          },
           {
             "sceneId": "home_deepseek-sister",
             "x": 10,
@@ -5851,43 +6676,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:30.366Z"
+          "nextCheckAt": "2026-10-15T00:48:11.078Z"
         }
       ]
     },
     {
-      "at": 1791994890258,
+      "at": 1792025290938,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
           "x": 10,
-          "y": 5.876799999999991
+          "y": 5.195200000000002
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "north",
-        "frame": 2,
+        "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.7010346666667,
+          "energy": 99.5492626666667,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03706393129727481,
+            "arousal": 0.00889805982743453,
+            "dominance": -0.026787154720585765
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -5936,50 +6761,45 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:30.692Z"
+          "nextCheckAt": "2026-10-15T00:48:11.388Z"
         }
       ]
     },
     {
-      "at": 1791994890583,
+      "at": 1792025291265,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
-          "x": 10,
-          "y": 4.316799999999992
+          "x": 9.649600000000001,
+          "y": 4
         },
         "homeSceneId": "home_deepseek-sister",
-        "facing": "north",
+        "facing": "west",
         "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70060133333337,
+          "energy": 99.54883333333336,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.037062782367228306,
+            "arousal": 0.008896956569082407,
+            "dominance": -0.026786739535197262
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 4
-          },
           {
             "sceneId": "home_deepseek-sister",
             "x": 9,
@@ -6016,43 +6836,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:31.017Z"
+          "nextCheckAt": "2026-10-15T00:48:11.710Z"
         }
       ]
     },
     {
-      "at": 1791994890928,
+      "at": 1792025291594,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
-          "x": 8.646399999999993,
+          "x": 8.132800000000001,
           "y": 4
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.70013733333337,
+          "energy": 99.54841200000003,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03706165488044216,
+            "arousal": 0.00889587400133132,
+            "dominance": -0.026786332092438844
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -6086,50 +6906,45 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:31.365Z"
+          "nextCheckAt": "2026-10-15T00:48:12.026Z"
         }
       ]
     },
     {
-      "at": 1791994891253,
+      "at": 1792025291909,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
-          "x": 7.119999999999993,
+          "x": 6.572800000000001,
           "y": 4
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
-        "frame": 1,
+        "frame": 2,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.69971333333338,
+          "energy": 99.5479786666667,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.037060495317469085,
+            "arousal": 0.008894760738360326,
+            "dominance": -0.0267859130517628
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 7,
-            "y": 4
-          },
           {
             "sceneId": "home_deepseek-sister",
             "x": 6,
@@ -6151,98 +6966,43 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:31.683Z"
+          "nextCheckAt": "2026-10-15T00:48:12.351Z"
         }
       ]
     },
     {
-      "at": 1791994891565,
+      "at": 1792025292252,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-sister",
         "position": {
-          "x": 5.555199999999993,
+          "x": 4.9552,
           "y": 4
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
-        "frame": 0,
+        "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
+        "activityStartedAtReal": "2026-10-15T00:48:01.137Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.69927866666671,
+          "energy": 99.54752933333336,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03705929297817692,
+            "arousal": 0.00889360651742372,
+            "dominance": -0.026785478545738574
           },
-          "thermalComfort": 0.8666666666666667
-        },
-        "route": [
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 5,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 4,
-            "y": 4
-          }
-        ],
-        "destinationId": "deepseek-sister_computer",
-        "routinePhase": "awake"
-      },
-      "works": [
-        {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
-          "companionId": "deepseek-sister",
-          "kind": "chat",
-          "status": "moving",
-          "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:32.009Z"
-        }
-      ]
-    },
-    {
-      "at": 1791994891878,
-      "label": "urgent_journey",
-      "actor": {
-        "companionId": "deepseek-sister",
-        "sceneId": "home_deepseek-sister",
-        "position": {
-          "x": 4.062399999999992,
-          "y": 4
-        },
-        "homeSceneId": "home_deepseek-sister",
-        "facing": "west",
-        "frame": 2,
-        "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:21:20.583Z",
-        "artAction": "run",
-        "locomotion": "run",
-        "movementSpeed": 4.8,
-        "state": {
-          "energy": 99.69886400000004,
-          "mood": "focused",
-          "expression": "gentle",
-          "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
-          },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -6256,17 +7016,17 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:32.320Z"
+          "nextCheckAt": "2026-10-15T00:48:12.688Z"
         }
       ]
     },
     {
-      "at": 1791994892213,
+      "at": 1792025292586,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -6279,21 +7039,21 @@
         "facing": "west",
         "frame": 0,
         "activity": "seating",
-        "activityStartedAtReal": "2026-10-14T16:21:31.833Z",
+        "activityStartedAtReal": "2026-10-15T00:48:12.387Z",
         "artAction": "sitDown",
-        "transitionEndsAtReal": "2026-10-14T16:21:33.233Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:13.787Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.69841733333338,
+          "energy": 99.54709200000002,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.037058122786294535,
+            "arousal": 0.00889248326520871,
+            "dominance": -0.026785055650501273
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [],
         "destinationId": "deepseek-sister_computer",
@@ -6302,17 +7062,63 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "seating",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:32.655Z"
+          "nextCheckAt": "2026-10-15T00:48:13.016Z"
         }
       ]
     },
     {
-      "at": 1791994892530,
+      "at": 1792025292900,
+      "label": "urgent_journey",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-sister",
+        "position": {
+          "x": 4,
+          "y": 4
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "west",
+        "frame": 0,
+        "activity": "seating",
+        "activityStartedAtReal": "2026-10-15T00:48:12.387Z",
+        "artAction": "sitDown",
+        "transitionEndsAtReal": "2026-10-15T00:48:13.787Z",
+        "locomotion": "run",
+        "movementSpeed": 4.8,
+        "state": {
+          "energy": 99.54666133333335,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": -0.03705697046881266,
+            "arousal": 0.008891377274379032,
+            "dominance": -0.026784639208362583
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [],
+        "destinationId": "deepseek-sister_computer",
+        "furnitureId": "deepseek-sister_computer",
+        "routinePhase": "awake"
+      },
+      "works": [
+        {
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
+          "companionId": "deepseek-sister",
+          "kind": "chat",
+          "status": "seating",
+          "computerId": "deepseek-sister_computer",
+          "nextCheckAt": "2026-10-15T00:48:13.339Z"
+        }
+      ]
+    },
+    {
+      "at": 1792025293243,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -6325,21 +7131,21 @@
         "facing": "west",
         "frame": 1,
         "activity": "seating",
-        "activityStartedAtReal": "2026-10-14T16:21:31.833Z",
+        "activityStartedAtReal": "2026-10-15T00:48:12.387Z",
         "artAction": "sitDown",
-        "transitionEndsAtReal": "2026-10-14T16:21:33.233Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:13.787Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.69799600000005,
+          "energy": 99.54621866666668,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03705578608075598,
+            "arousal": 0.008890240609826041,
+            "dominance": -0.026784211169320754
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [],
         "destinationId": "deepseek-sister_computer",
@@ -6348,17 +7154,17 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "seating",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:32.971Z"
+          "nextCheckAt": "2026-10-15T00:48:13.671Z"
         }
       ]
     },
     {
-      "at": 1791994892853,
+      "at": 1792025293566,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -6371,21 +7177,21 @@
         "facing": "west",
         "frame": 2,
         "activity": "seating",
-        "activityStartedAtReal": "2026-10-14T16:21:31.833Z",
+        "activityStartedAtReal": "2026-10-15T00:48:12.387Z",
         "artAction": "sitDown",
-        "transitionEndsAtReal": "2026-10-14T16:21:33.233Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:13.787Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.69756400000004,
+          "energy": 99.54577200000001,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03705459102876677,
+            "arousal": 0.008889093821493282,
+            "dominance": -0.026783779269389647
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [],
         "destinationId": "deepseek-sister_computer",
@@ -6394,63 +7200,17 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "seating",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:33.295Z"
+          "nextCheckAt": "2026-10-15T00:48:14.006Z"
         }
       ]
     },
     {
-      "at": 1791994893196,
-      "label": "urgent_journey",
-      "actor": {
-        "companionId": "deepseek-sister",
-        "sceneId": "home_deepseek-sister",
-        "position": {
-          "x": 4,
-          "y": 4
-        },
-        "homeSceneId": "home_deepseek-sister",
-        "facing": "west",
-        "frame": 2,
-        "activity": "seating",
-        "activityStartedAtReal": "2026-10-14T16:21:31.833Z",
-        "artAction": "sitDown",
-        "transitionEndsAtReal": "2026-10-14T16:21:33.233Z",
-        "locomotion": "run",
-        "movementSpeed": 4.8,
-        "state": {
-          "energy": 99.69712266666671,
-          "mood": "focused",
-          "expression": "gentle",
-          "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
-          },
-          "thermalComfort": 0.8666666666666667
-        },
-        "route": [],
-        "destinationId": "deepseek-sister_computer",
-        "furnitureId": "deepseek-sister_computer",
-        "routinePhase": "awake"
-      },
-      "works": [
-        {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
-          "companionId": "deepseek-sister",
-          "kind": "chat",
-          "status": "seating",
-          "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:33.626Z"
-        }
-      ]
-    },
-    {
-      "at": 1791994893531,
+      "at": 1792025293904,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -6463,20 +7223,20 @@
         "facing": "west",
         "frame": 0,
         "activity": "working",
-        "activityStartedAtReal": "2026-10-14T16:21:33.233Z",
+        "activityStartedAtReal": "2026-10-15T00:48:13.787Z",
         "artAction": "work",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.69667066666672,
+          "energy": 99.54533466666668,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03705342098535411,
+            "arousal": 0.008887971139226548,
+            "dominance": -0.02678335640098091
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [],
         "destinationId": "deepseek-sister_computer",
@@ -6485,17 +7245,17 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "ready",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:33.965Z"
+          "nextCheckAt": "2026-10-15T00:48:14.334Z"
         }
       ]
     },
     {
-      "at": 1791994893852,
+      "at": 1792025294214,
       "label": "urgent_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -6508,20 +7268,20 @@
         "facing": "west",
         "frame": 0,
         "activity": "working",
-        "activityStartedAtReal": "2026-10-14T16:21:33.233Z",
+        "activityStartedAtReal": "2026-10-15T00:48:13.787Z",
         "artAction": "work",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 99.69624133333339,
+          "energy": 99.54490133333334,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.03705226167999823,
+            "arousal": 0.008886858865249299,
+            "dominance": -0.02678293740685606
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [],
         "destinationId": "deepseek-sister_computer",
@@ -6530,17 +7290,17 @@
       },
       "works": [
         {
-          "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+          "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "ready",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:21:34.287Z"
+          "nextCheckAt": "2026-10-15T00:48:14.659Z"
         }
       ]
     },
     {
-      "at": 1791994927013,
+      "at": 1792025324526,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -6553,20 +7313,20 @@
         "facing": "west",
         "frame": 1,
         "activity": "sitting",
-        "activityStartedAtReal": "2026-10-14T16:22:06.198Z",
+        "activityStartedAtReal": "2026-10-15T00:48:43.735Z",
         "artAction": "sit",
         "locomotion": "walk",
         "movementSpeed": 2.4,
         "state": {
-          "energy": 97.65203333333345,
+          "energy": 97.504512,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.05496543988922547,
+            "arousal": 0.013209603236873115,
+            "dominance": -0.039869823228066335
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [],
         "furnitureId": "deepseek-flash_sofa",
@@ -6575,7 +7335,7 @@
       "works": []
     },
     {
-      "at": 1791994927257,
+      "at": 1792025324776,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -6588,21 +7348,21 @@
         "facing": "west",
         "frame": 0,
         "activity": "standingUp",
-        "activityStartedAtReal": "2026-10-14T16:22:06.997Z",
+        "activityStartedAtReal": "2026-10-15T00:48:44.514Z",
         "artAction": "standUp",
-        "transitionEndsAtReal": "2026-10-14T16:22:08.397Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:45.914Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.65168400000012,
+          "energy": 97.50415600000001,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.054964027064286575,
+            "arousal": 0.013208245137138142,
+            "dominance": -0.0398693108202456
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -6892,17 +7652,17 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:07.721Z"
+          "nextCheckAt": "2026-10-15T00:48:45.237Z"
         }
       ]
     },
     {
-      "at": 1791994927510,
+      "at": 1792025325021,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -6915,21 +7675,21 @@
         "facing": "west",
         "frame": 1,
         "activity": "standingUp",
-        "activityStartedAtReal": "2026-10-14T16:22:06.997Z",
+        "activityStartedAtReal": "2026-10-15T00:48:44.514Z",
         "artAction": "standUp",
-        "transitionEndsAtReal": "2026-10-14T16:22:08.397Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:45.914Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.65134933333346,
+          "energy": 97.50382400000001,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.05496270951869809,
+            "arousal": 0.013206978720514873,
+            "dominance": -0.039868832962706824
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -7219,17 +7979,17 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:07.972Z"
+          "nextCheckAt": "2026-10-15T00:48:45.486Z"
         }
       ]
     },
     {
-      "at": 1791994927759,
+      "at": 1792025325266,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -7242,21 +8002,21 @@
         "facing": "west",
         "frame": 1,
         "activity": "standingUp",
-        "activityStartedAtReal": "2026-10-14T16:22:06.997Z",
+        "activityStartedAtReal": "2026-10-15T00:48:44.514Z",
         "artAction": "standUp",
-        "transitionEndsAtReal": "2026-10-14T16:22:08.397Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:45.914Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.65102000000012,
+          "energy": 97.50349466666667,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.05496140258700855,
+            "arousal": 0.013205722595878664,
+            "dominance": -0.03986835894903979
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -7546,17 +8306,17 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:08.219Z"
+          "nextCheckAt": "2026-10-15T00:48:45.733Z"
         }
       ]
     },
     {
-      "at": 1791994928009,
+      "at": 1792025325503,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -7569,21 +8329,21 @@
         "facing": "west",
         "frame": 2,
         "activity": "standingUp",
-        "activityStartedAtReal": "2026-10-14T16:22:06.997Z",
+        "activityStartedAtReal": "2026-10-15T00:48:44.514Z",
         "artAction": "standUp",
-        "transitionEndsAtReal": "2026-10-14T16:22:08.397Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:45.914Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.65068800000012,
+          "energy": 97.50318133333333,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.054960159178824866,
+            "arousal": 0.013204527608446216,
+            "dominance": -0.039867907969608485
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -7873,17 +8633,17 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:08.468Z"
+          "nextCheckAt": "2026-10-15T00:48:45.968Z"
         }
       ]
     },
     {
-      "at": 1791994928254,
+      "at": 1792025325754,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
@@ -7896,21 +8656,21 @@
         "facing": "west",
         "frame": 2,
         "activity": "standingUp",
-        "activityStartedAtReal": "2026-10-14T16:22:06.997Z",
+        "activityStartedAtReal": "2026-10-15T00:48:44.514Z",
         "artAction": "standUp",
-        "transitionEndsAtReal": "2026-10-14T16:22:08.397Z",
+        "transitionEndsAtReal": "2026-10-15T00:48:45.914Z",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.65035733333345,
+          "energy": 97.50284933333333,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.05495884172595367,
+            "arousal": 0.013203261548262436,
+            "dominance": -0.03986743012888371
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -8200,43 +8960,43 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:08.716Z"
+          "nextCheckAt": "2026-10-15T00:48:46.217Z"
         }
       ]
     },
     {
-      "at": 1791994928505,
+      "at": 1792025326003,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
-          "x": 4.331200000000001,
+          "x": 4.2208,
           "y": 8
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "east",
         "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.65002400000012,
+          "energy": 97.50252533333332,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.05495755604938322,
+            "arousal": 0.013202026112591494,
+            "dominance": -0.039866963807915136
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -8525,43 +9285,43 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:08.966Z"
+          "nextCheckAt": "2026-10-15T00:48:46.460Z"
         }
       ]
     },
     {
-      "at": 1791994928756,
+      "at": 1792025326244,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
-          "x": 5.536000000000001,
+          "x": 5.4208,
           "y": 8
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "east",
         "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.64968933333346,
+          "energy": 97.502192,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.05495623336825065,
+            "arousal": 0.013200755208881925,
+            "dominance": -0.03986648405952464
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -8845,43 +9605,43 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:09.217Z"
+          "nextCheckAt": "2026-10-15T00:48:46.710Z"
         }
       ]
     },
     {
-      "at": 1791994929003,
+      "at": 1792025326489,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
-          "x": 6.731200000000002,
+          "x": 6.6064,
           "y": 8
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "east",
         "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.64935733333346,
+          "energy": 97.50186266666665,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.054954926590554364,
+            "arousal": 0.013199499676168097,
+            "dominance": -0.03986601007378449
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -9160,43 +9920,43 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:09.466Z"
+          "nextCheckAt": "2026-10-15T00:48:46.957Z"
         }
       ]
     },
     {
-      "at": 1791994929261,
+      "at": 1792025326736,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
-          "x": 7.936000000000002,
+          "x": 7.7871999999999995,
           "y": 8
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "east",
         "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.6490226666668,
+          "energy": 97.50153466666666,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.05495362513434082,
+            "arousal": 0.013198249345273031,
+            "dominance": -0.03986553801261615
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -9470,43 +10230,43 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:09.717Z"
+          "nextCheckAt": "2026-10-15T00:48:47.203Z"
         }
       ]
     },
     {
-      "at": 1791994929503,
+      "at": 1792025326993,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
-          "x": 9.1312,
+          "x": 9.011199999999999,
           "y": 8
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "east",
         "frame": 2,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.6486906666668,
+          "energy": 97.50119466666666,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.05495227609640901,
+            "arousal": 0.013196953395581896,
+            "dominance": -0.03986504868681752
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -9770,43 +10530,43 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:09.966Z"
+          "nextCheckAt": "2026-10-15T00:48:47.458Z"
         }
       ]
     },
     {
-      "at": 1791994929751,
+      "at": 1792025327241,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
           "x": 10,
-          "y": 8.3216
+          "y": 8.187199999999997
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "south",
         "frame": 1,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.64836000000012,
+          "energy": 97.500868,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.054950979993119986,
+            "arousal": 0.013195708387310582,
+            "dominance": -0.039864578555923395
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -10065,43 +10825,43 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:10.214Z"
+          "nextCheckAt": "2026-10-15T00:48:47.703Z"
         }
       ]
     },
     {
-      "at": 1791994930001,
+      "at": 1792025327484,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
           "x": 10,
-          "y": 9.5216
+          "y": 9.367999999999999
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "south",
         "frame": 2,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.6480266666668,
+          "energy": 97.50054,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.054949678630370744,
+            "arousal": 0.013194458415547733,
+            "dominance": -0.03986410651170594
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -10355,610 +11115,60 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:10.464Z"
+          "nextCheckAt": "2026-10-15T00:48:47.949Z"
         }
       ]
     },
     {
-      "at": 1791994930258,
+      "at": 1792025327735,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
           "x": 10,
-          "y": 10.759999999999998
-        },
-        "homeSceneId": "home_deepseek-sister",
-        "facing": "south",
-        "frame": 1,
-        "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
-        "artAction": "run",
-        "locomotion": "run",
-        "movementSpeed": 4.8,
-        "state": {
-          "energy": 97.6476826666668,
-          "mood": "focused",
-          "expression": "gentle",
-          "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
-          },
-          "thermalComfort": 0.8666666666666667
-        },
-        "route": [
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 11
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 12
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 13
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 14
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 15
-          },
-          {
-            "sceneId": "commons",
-            "x": 38,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 37,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 36,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 35,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 34,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 33,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 32,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 31,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 30,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 29,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 28,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 27,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 26,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 25,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 24,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 23,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 22,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 21,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 20,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 19,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 18,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 17,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 16,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 15,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 14,
-            "y": 20
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 15
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 14
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 13
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 12
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 11
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 10
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 9
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 8
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 7
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 6
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 5
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 9,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 8,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 7,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 6,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 5,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 4,
-            "y": 4
-          }
-        ],
-        "destinationId": "deepseek-sister_computer",
-        "routinePhase": "awake"
-      },
-      "works": [
-        {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
-          "companionId": "deepseek-sister",
-          "kind": "chat",
-          "status": "moving",
-          "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:10.722Z"
-        }
-      ]
-    },
-    {
-      "at": 1791994930499,
-      "label": "cancelled_journey",
-      "actor": {
-        "companionId": "deepseek-sister",
-        "sceneId": "home_deepseek-flash",
-        "position": {
-          "x": 10,
-          "y": 11.916799999999999
-        },
-        "homeSceneId": "home_deepseek-sister",
-        "facing": "south",
-        "frame": 2,
-        "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
-        "artAction": "run",
-        "locomotion": "run",
-        "movementSpeed": 4.8,
-        "state": {
-          "energy": 97.64736133333346,
-          "mood": "focused",
-          "expression": "gentle",
-          "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
-          },
-          "thermalComfort": 0.8666666666666667
-        },
-        "route": [
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 12
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 13
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 14
-          },
-          {
-            "sceneId": "home_deepseek-flash",
-            "x": 10,
-            "y": 15
-          },
-          {
-            "sceneId": "commons",
-            "x": 38,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 37,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 36,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 35,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 34,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 33,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 32,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 31,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 30,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 29,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 28,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 27,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 26,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 25,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 24,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 23,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 22,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 21,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 20,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 19,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 18,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 17,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 16,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 15,
-            "y": 20
-          },
-          {
-            "sceneId": "commons",
-            "x": 14,
-            "y": 20
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 15
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 14
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 13
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 12
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 11
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 10
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 9
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 8
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 7
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 6
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 5
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 10,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 9,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 8,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 7,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 6,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 5,
-            "y": 4
-          },
-          {
-            "sceneId": "home_deepseek-sister",
-            "x": 4,
-            "y": 4
-          }
-        ],
-        "destinationId": "deepseek-sister_computer",
-        "routinePhase": "awake"
-      },
-      "works": [
-        {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
-          "companionId": "deepseek-sister",
-          "kind": "chat",
-          "status": "moving",
-          "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:10.963Z"
-        }
-      ]
-    },
-    {
-      "at": 1791994930751,
-      "label": "cancelled_journey",
-      "actor": {
-        "companionId": "deepseek-sister",
-        "sceneId": "home_deepseek-flash",
-        "position": {
-          "x": 10,
-          "y": 13.107199999999999
+          "y": 10.563199999999998
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "south",
         "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.6470306666668,
+          "energy": 97.500208,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.054948361428729324,
+            "arousal": 0.013193193320805851,
+            "dominance": -0.03986362871654391
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 11
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 12
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 13
+          },
           {
             "sceneId": "home_deepseek-flash",
             "x": 10,
@@ -11190,43 +11400,598 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:11.211Z"
+          "nextCheckAt": "2026-10-15T00:48:48.198Z"
         }
       ]
     },
     {
-      "at": 1791994930999,
+      "at": 1792025327981,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "home_deepseek-flash",
         "position": {
           "x": 10,
-          "y": 14.297599999999997
+          "y": 11.763199999999998
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "south",
         "frame": 2,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.64670000000012,
+          "energy": 97.49987466666667,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.05494703896888664,
+            "arousal": 0.01319192326739212,
+            "dominance": -0.03986314900828702
           },
-          "thermalComfort": 0.8666666666666667
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 12
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "commons",
+            "x": 38,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 37,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 36,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 35,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 34,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 33,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 32,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 31,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 30,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 29,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 28,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 27,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 26,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 25,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 24,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 23,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 22,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 21,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 20,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 19,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 18,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 17,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 16,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 15,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 14,
+            "y": 20
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 12
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 11
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 10
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 9
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 7
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 6
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 5
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 9,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 8,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 7,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 6,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 5,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 4,
+            "y": 4
+          }
+        ],
+        "destinationId": "deepseek-sister_computer",
+        "routinePhase": "awake"
+      },
+      "works": [
+        {
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
+          "companionId": "deepseek-sister",
+          "kind": "chat",
+          "status": "moving",
+          "computerId": "deepseek-sister_computer",
+          "nextCheckAt": "2026-10-15T00:48:48.448Z"
+        }
+      ]
+    },
+    {
+      "at": 1792025328249,
+      "label": "cancelled_journey",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 10,
+          "y": 12.948799999999997
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "south",
+        "frame": 0,
+        "activity": "walking",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
+        "artAction": "run",
+        "locomotion": "run",
+        "movementSpeed": 4.8,
+        "state": {
+          "energy": 97.49954533333333,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": -0.05494573240981953,
+            "arousal": 0.013190668574690192,
+            "dominance": -0.03986267506219839
+          },
+          "thermalComfort": 0.8733333333333334
+        },
+        "route": [
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-flash",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "commons",
+            "x": 38,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 37,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 36,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 35,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 34,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 33,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 32,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 31,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 30,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 29,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 28,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 27,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 26,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 25,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 24,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 23,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 22,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 21,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 20,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 19,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 18,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 17,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 16,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 15,
+            "y": 20
+          },
+          {
+            "sceneId": "commons",
+            "x": 14,
+            "y": 20
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 15
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 14
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 13
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 12
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 11
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 10
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 9
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 8
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 7
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 6
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 5
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 10,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 9,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 8,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 7,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 6,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 5,
+            "y": 4
+          },
+          {
+            "sceneId": "home_deepseek-sister",
+            "x": 4,
+            "y": 4
+          }
+        ],
+        "destinationId": "deepseek-sister_computer",
+        "routinePhase": "awake"
+      },
+      "works": [
+        {
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
+          "companionId": "deepseek-sister",
+          "kind": "chat",
+          "status": "moving",
+          "computerId": "deepseek-sister_computer",
+          "nextCheckAt": "2026-10-15T00:48:48.695Z"
+        }
+      ]
+    },
+    {
+      "at": 1792025328491,
+      "label": "cancelled_journey",
+      "actor": {
+        "companionId": "deepseek-sister",
+        "sceneId": "home_deepseek-flash",
+        "position": {
+          "x": 10,
+          "y": 14.211199999999995
+        },
+        "homeSceneId": "home_deepseek-sister",
+        "facing": "south",
+        "frame": 2,
+        "activity": "walking",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
+        "artAction": "run",
+        "locomotion": "run",
+        "movementSpeed": 4.8,
+        "state": {
+          "energy": 97.49919466666667,
+          "mood": "focused",
+          "expression": "gentle",
+          "affect": {
+            "pleasure": -0.05494434124949922,
+            "arousal": 0.013189332737527693,
+            "dominance": -0.0398621704213428
+          },
+          "thermalComfort": 0.8733333333333334
         },
         "route": [
           {
@@ -11455,43 +12220,43 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:11.459Z"
+          "nextCheckAt": "2026-10-15T00:48:48.958Z"
         }
       ]
     },
     {
-      "at": 1791994931247,
+      "at": 1792025328741,
       "label": "cancelled_journey",
       "actor": {
         "companionId": "deepseek-sister",
         "sceneId": "commons",
         "position": {
-          "x": 37.5024,
+          "x": 37.5936,
           "y": 20
         },
         "homeSceneId": "home_deepseek-sister",
         "facing": "west",
         "frame": 0,
         "activity": "walking",
-        "activityStartedAtReal": "2026-10-14T16:22:08.397Z",
+        "activityStartedAtReal": "2026-10-15T00:48:45.914Z",
         "artAction": "run",
         "locomotion": "run",
         "movementSpeed": 4.8,
         "state": {
-          "energy": 97.6463666666668,
+          "energy": 97.49886266666667,
           "mood": "focused",
           "expression": "gentle",
           "affect": {
-            "pleasure": 0,
-            "arousal": 0,
-            "dominance": 0
+            "pleasure": -0.07266283394303255,
+            "arousal": 0.017628719690117704,
+            "dominance": -0.05282355355939739
           },
-          "thermalComfort": 0.4066666666666666
+          "thermalComfort": 0.45333333333333337
         },
         "route": [
           {
@@ -11710,19 +12475,19 @@
       },
       "works": [
         {
-          "workId": "chat_f47f118002dc76ac377e0c46f1845319acec2105d7e09e13b4b2021037bb0a6d",
+          "workId": "chat_cdb3c77233ced7bfda96aa18d92498318c403dc6904d8ca2b6e1d7e9b907c853",
           "companionId": "deepseek-sister",
           "kind": "chat",
           "status": "moving",
           "computerId": "deepseek-sister_computer",
-          "nextCheckAt": "2026-10-14T16:22:11.709Z"
+          "nextCheckAt": "2026-10-15T00:48:49.207Z"
         }
       ]
     }
   ],
   "requests": [
     {
-      "at": 1791994846867,
+      "at": 1792025249293,
       "purpose": "world_decision",
       "sourceText": "",
       "world": {
@@ -11733,18 +12498,18 @@
           "timeZone": "Etc/GMT-8"
         },
         "clock": {
-          "realNow": "2026-10-14T16:20:46.777Z",
-          "virtualNow": "2026-10-14T16:24:04.654Z",
+          "realNow": "2026-10-15T00:47:29.261Z",
+          "virtualNow": "2026-10-15T00:52:34.195Z",
           "speed": 1,
-          "day": 20740,
-          "hour": 0.4,
-          "daylight": false
+          "day": 20741,
+          "hour": 8.866666666666667,
+          "daylight": true
         },
         "environment": {
-          "weather": "clear",
-          "light": 0.08,
-          "outdoorTemperature": 13.1,
-          "indoorTemperature": 20
+          "weather": "rain",
+          "light": 0.4432989340406241,
+          "outdoorTemperature": 13.8,
+          "indoorTemperature": 20.1
         },
         "scenes": [
           {
@@ -12493,18 +13258,19 @@
             "sceneId": "home_deepseek-flash",
             "position": {
               "x": 10,
-              "y": 4.4632000000000005
+              "y": 13
             },
             "homeSceneId": "home_deepseek-flash",
-            "facing": "north",
-            "frame": 1,
-            "activity": "walking",
-            "activityStartedAtReal": "2026-10-14T16:20:43.204Z",
-            "artAction": "walk",
+            "facing": "south",
+            "frame": 0,
+            "activity": "idle",
+            "activityStartedAtReal": "2026-10-15T00:47:24.595Z",
+            "artAction": "surprised",
+            "artStartedAtReal": "2026-10-15T00:47:29.147Z",
             "locomotion": "walk",
             "movementSpeed": 2.4,
             "state": {
-              "energy": 99.75903199999999,
+              "energy": 99.60487466666666,
               "mood": "calm",
               "expression": "gentle",
               "affect": {
@@ -12512,49 +13278,22 @@
                 "arousal": 0,
                 "dominance": 0
               },
-              "thermalComfort": 0.8666666666666667
+              "thermalComfort": 0.8733333333333334
             },
-            "route": [
-              {
-                "sceneId": "home_deepseek-flash",
-                "x": 10,
-                "y": 4
-              },
-              {
-                "sceneId": "home_deepseek-flash",
-                "x": 11,
-                "y": 4
-              },
-              {
-                "sceneId": "home_deepseek-flash",
-                "x": 12,
-                "y": 4
-              },
-              {
-                "sceneId": "home_deepseek-flash",
-                "x": 13,
-                "y": 4
-              },
-              {
-                "sceneId": "home_deepseek-flash",
-                "x": 14,
-                "y": 4
-              }
-            ],
-            "destinationId": "deepseek-flash_bed",
+            "route": [],
             "routinePhase": "awake"
           }
         ],
         "visits": [
           {
-            "id": "d6249197-a68d-4245-acf7-503c8bf6b5f1",
+            "id": "76c33c3d-ae81-4e35-89a8-8d59b82d26f7",
             "guestId": "deepseek-sister",
             "hostId": "deepseek-flash",
             "status": "allowed",
             "reason": "空闲时来分享读书感受。",
             "response": "欢迎，有空时来坐坐。",
-            "createdAt": "2026-10-14T16:24:04.560Z",
-            "expiresAt": "2026-10-14T22:24:04.560Z",
+            "createdAt": "2026-10-15T00:52:34.092Z",
+            "expiresAt": "2026-10-15T06:52:34.092Z",
             "conversationId": "private-deepseek-sister"
           }
         ],
@@ -12637,66 +13376,57 @@
         ],
         "events": [
           {
-            "id": "62bfcf38-e515-457c-89a1-12a80eeb695e",
-            "sequence": 3,
-            "at": "2026-10-14T16:20:42.304Z",
-            "realAt": "2026-10-14T16:20:42.304Z",
-            "kind": "move",
-            "actorId": "deepseek-flash",
-            "sceneId": "home_deepseek-flash",
-            "text": "开始步行前往deepseek-flash_bed",
-            "simulation": true
-          },
-          {
-            "id": "77ffb4da-fff1-41ed-a59c-78e9b31bfb50",
-            "sequence": 4,
-            "at": "2026-10-14T16:20:42.304Z",
-            "realAt": "2026-10-14T16:20:42.304Z",
-            "kind": "routine",
-            "actorId": "deepseek-flash",
-            "text": "依照世界作息前往床",
-            "simulation": true
-          },
-          {
-            "id": "477b2389-2a72-4b00-8580-c651828f7905",
-            "sequence": 31,
-            "at": "2026-10-14T16:24:04.560Z",
-            "realAt": "2026-10-14T16:20:46.683Z",
+            "id": "6cf77183-8a0e-4bcf-870f-ec252fc88e07",
+            "sequence": 1,
+            "at": "2026-10-15T00:52:34.092Z",
+            "realAt": "2026-10-15T00:47:29.147Z",
             "kind": "visit_request",
             "actorId": "deepseek-sister",
             "targetId": "deepseek-flash",
             "text": "空闲时来分享读书感受。",
             "simulation": true,
             "conversationId": "private-deepseek-sister"
+          },
+          {
+            "id": "4d91685a-f9e3-493b-a848-752bfcf1c43b",
+            "sequence": 3,
+            "at": "2026-10-15T00:52:34.119Z",
+            "realAt": "2026-10-15T00:47:29.174Z",
+            "kind": "visit_response",
+            "actorId": "deepseek-flash",
+            "targetId": "deepseek-sister",
+            "text": "欢迎，有空时来坐坐。",
+            "simulation": true,
+            "conversationId": "private-deepseek-flash"
           }
         ],
         "relationships": [],
         "works": [],
-        "lastEventSequence": 33,
+        "lastEventSequence": 4,
         "backlog": true
       }
     },
     {
-      "at": 1791994874853,
+      "at": 1792025276936,
       "purpose": "memory_extraction",
       "sourceText": ""
     },
     {
-      "at": 1791994874880,
+      "at": 1792025276952,
       "purpose": "memory_extraction",
       "sourceText": ""
     },
     {
-      "at": 1791994879170,
+      "at": 1792025279726,
       "purpose": "world_attention",
       "sourceText": "两分钟后就截止了，快救我核对这句消息；只检查文字，不执行文件操作。",
-      "sourceId": "273db83f-599d-49f7-a97f-f8963c0b0698"
+      "sourceId": "c9fe008b-b53e-48cc-a2d5-23f704a175a6"
     },
     {
-      "at": 1791994893570,
+      "at": 1792025294035,
       "purpose": "task_reply",
       "sourceText": "两分钟后就截止了，快救我核对这句消息；只检查文字，不执行文件操作。",
-      "sourceId": "273db83f-599d-49f7-a97f-f8963c0b0698",
+      "sourceId": "c9fe008b-b53e-48cc-a2d5-23f704a175a6",
       "world": {
         "settings": {
           "revision": 2,
@@ -12705,18 +13435,18 @@
           "timeZone": "Etc/GMT-8"
         },
         "clock": {
-          "realNow": "2026-10-14T16:21:33.526Z",
-          "virtualNow": "2026-10-14T16:24:51.403Z",
+          "realNow": "2026-10-15T00:48:14.004Z",
+          "virtualNow": "2026-10-15T00:53:18.932Z",
           "speed": 1,
-          "day": 20740,
-          "hour": 0.4,
-          "daylight": false
+          "day": 20741,
+          "hour": 8.883333333333333,
+          "daylight": true
         },
         "environment": {
-          "weather": "clear",
-          "light": 0.08,
-          "outdoorTemperature": 13.1,
-          "indoorTemperature": 20
+          "weather": "rain",
+          "light": 0.4453689437121334,
+          "outdoorTemperature": 13.8,
+          "indoorTemperature": 20.1
         },
         "scenes": [
           {
@@ -13637,20 +14367,20 @@
             "facing": "west",
             "frame": 0,
             "activity": "working",
-            "activityStartedAtReal": "2026-10-14T16:21:33.233Z",
+            "activityStartedAtReal": "2026-10-15T00:48:13.787Z",
             "artAction": "work",
             "locomotion": "run",
             "movementSpeed": 4.8,
             "state": {
-              "energy": 99.69660933333338,
+              "energy": 99.54513066666668,
               "mood": "focused",
               "expression": "gentle",
               "affect": {
-                "pleasure": 0,
-                "arousal": 0,
-                "dominance": 0
+                "pleasure": -0.037052875215544956,
+                "arousal": 0.008887447497520969,
+                "dominance": -0.026783159150622515
               },
-              "thermalComfort": 0.8666666666666667
+              "thermalComfort": 0.8733333333333334
             },
             "route": [],
             "destinationId": "deepseek-sister_computer",
@@ -13666,14 +14396,14 @@
             },
             "homeSceneId": "home_deepseek-flash",
             "facing": "west",
-            "frame": 1,
+            "frame": 2,
             "activity": "sitting",
-            "activityStartedAtReal": "2026-10-14T16:21:17.758Z",
+            "activityStartedAtReal": "2026-10-15T00:47:57.838Z",
             "artAction": "sit",
             "locomotion": "walk",
             "movementSpeed": 2.4,
             "state": {
-              "energy": 99.69669866666672,
+              "energy": 99.54522533333332,
               "mood": "calm",
               "expression": "gentle",
               "affect": {
@@ -13681,7 +14411,7 @@
                 "arousal": 0,
                 "dominance": 0
               },
-              "thermalComfort": 0.8666666666666667
+              "thermalComfort": 0.8733333333333334
             },
             "route": [],
             "furnitureId": "deepseek-flash_computer",
@@ -13690,14 +14420,14 @@
         ],
         "visits": [
           {
-            "id": "d6249197-a68d-4245-acf7-503c8bf6b5f1",
+            "id": "76c33c3d-ae81-4e35-89a8-8d59b82d26f7",
             "guestId": "deepseek-sister",
             "hostId": "deepseek-flash",
             "status": "allowed",
             "reason": "空闲时来分享读书感受。",
             "response": "欢迎，有空时来坐坐。",
-            "createdAt": "2026-10-14T16:24:04.560Z",
-            "expiresAt": "2026-10-14T22:24:04.560Z",
+            "createdAt": "2026-10-15T00:52:34.092Z",
+            "expiresAt": "2026-10-15T06:52:34.092Z",
             "conversationId": "private-deepseek-sister"
           }
         ],
@@ -13780,42 +14510,10 @@
         ],
         "events": [
           {
-            "id": "e64c6496-8a7e-4f53-9d48-90474d186a68",
+            "id": "6cf77183-8a0e-4bcf-870f-ec252fc88e07",
             "sequence": 1,
-            "at": "2026-10-14T16:20:42.304Z",
-            "realAt": "2026-10-14T16:20:42.304Z",
-            "kind": "move",
-            "actorId": "deepseek-sister",
-            "sceneId": "home_deepseek-sister",
-            "text": "开始步行前往deepseek-sister_bed",
-            "simulation": true
-          },
-          {
-            "id": "5e20be44-00da-44e8-b06f-bbae74fc0f6a",
-            "sequence": 2,
-            "at": "2026-10-14T16:20:42.304Z",
-            "realAt": "2026-10-14T16:20:42.304Z",
-            "kind": "routine",
-            "actorId": "deepseek-sister",
-            "text": "依照世界作息前往床",
-            "simulation": true
-          },
-          {
-            "id": "62bfcf38-e515-457c-89a1-12a80eeb695e",
-            "sequence": 3,
-            "at": "2026-10-14T16:20:42.304Z",
-            "realAt": "2026-10-14T16:20:42.304Z",
-            "kind": "move",
-            "actorId": "deepseek-flash",
-            "sceneId": "home_deepseek-flash",
-            "text": "开始步行前往deepseek-flash_bed",
-            "simulation": true
-          },
-          {
-            "id": "477b2389-2a72-4b00-8580-c651828f7905",
-            "sequence": 31,
-            "at": "2026-10-14T16:24:04.560Z",
-            "realAt": "2026-10-14T16:20:46.683Z",
+            "at": "2026-10-15T00:52:34.092Z",
+            "realAt": "2026-10-15T00:47:29.147Z",
             "kind": "visit_request",
             "actorId": "deepseek-sister",
             "targetId": "deepseek-flash",
@@ -13824,10 +14522,10 @@
             "conversationId": "private-deepseek-sister"
           },
           {
-            "id": "27eb8a46-6617-4a9b-9f47-80b5c40cfc6d",
-            "sequence": 32,
-            "at": "2026-10-14T16:24:04.560Z",
-            "realAt": "2026-10-14T16:20:46.683Z",
+            "id": "85a30744-4f3e-487b-a8b7-76ffb4430c13",
+            "sequence": 2,
+            "at": "2026-10-15T00:52:34.092Z",
+            "realAt": "2026-10-15T00:47:29.147Z",
             "kind": "move",
             "actorId": "deepseek-sister",
             "sceneId": "home_deepseek-sister",
@@ -13835,10 +14533,10 @@
             "simulation": true
           },
           {
-            "id": "616d6188-6b3d-45fa-a068-cd1bbca7429c",
-            "sequence": 33,
-            "at": "2026-10-14T16:24:04.601Z",
-            "realAt": "2026-10-14T16:20:46.724Z",
+            "id": "4d91685a-f9e3-493b-a848-752bfcf1c43b",
+            "sequence": 3,
+            "at": "2026-10-15T00:52:34.119Z",
+            "realAt": "2026-10-15T00:47:29.174Z",
             "kind": "visit_response",
             "actorId": "deepseek-flash",
             "targetId": "deepseek-sister",
@@ -13847,10 +14545,10 @@
             "conversationId": "private-deepseek-flash"
           },
           {
-            "id": "50728554-289c-49a6-8edf-202f51026960",
-            "sequence": 34,
-            "at": "2026-10-14T16:24:05.460Z",
-            "realAt": "2026-10-14T16:20:47.583Z",
+            "id": "47d2b67a-be80-4588-a79a-2dd72b2c4ca3",
+            "sequence": 4,
+            "at": "2026-10-15T00:52:34.119Z",
+            "realAt": "2026-10-15T00:47:29.174Z",
             "kind": "move",
             "actorId": "deepseek-sister",
             "sceneId": "home_deepseek-sister",
@@ -13858,21 +14556,25 @@
             "simulation": true
           },
           {
-            "id": "2633983f-c665-4116-8f1e-08d8df4c7506",
-            "sequence": 35,
-            "at": "2026-10-14T16:24:06.497Z",
-            "realAt": "2026-10-14T16:20:48.620Z",
-            "kind": "arrive",
-            "actorId": "deepseek-flash",
-            "sceneId": "home_deepseek-flash",
-            "text": "步行到达deepseek-flash_bed",
-            "simulation": true
+            "id": "3a253575-be7c-4ff2-bd43-f038d8df238b",
+            "sequence": 5,
+            "at": "2026-10-15T00:52:35.165Z",
+            "realAt": "2026-10-15T00:47:30.220Z",
+            "kind": "environment",
+            "actorId": "deepseek-sister",
+            "sceneId": "commons",
+            "text": "感受到户外的降水或偏冷偏热天气",
+            "simulation": true,
+            "effect": {
+              "type": "stress",
+              "intensity": 0.15
+            }
           },
           {
-            "id": "437e577c-e483-4a67-bf3f-de7bf021dcf0",
-            "sequence": 62,
-            "at": "2026-10-14T16:24:21.023Z",
-            "realAt": "2026-10-14T16:21:03.146Z",
+            "id": "c3affda0-2f3f-460e-993a-c513fe1f019c",
+            "sequence": 6,
+            "at": "2026-10-15T00:52:46.176Z",
+            "realAt": "2026-10-15T00:47:41.231Z",
             "kind": "arrive",
             "actorId": "deepseek-sister",
             "sceneId": "home_deepseek-flash",
@@ -13880,10 +14582,10 @@
             "simulation": true
           },
           {
-            "id": "cf8a716e-c4e0-4b83-86b4-92712c66d8c7",
-            "sequence": 63,
-            "at": "2026-10-14T16:24:21.541Z",
-            "realAt": "2026-10-14T16:21:03.664Z",
+            "id": "5c45a6f9-fcd3-4459-aaf9-8c4f0a40dc0b",
+            "sequence": 7,
+            "at": "2026-10-15T00:52:46.728Z",
+            "realAt": "2026-10-15T00:47:41.783Z",
             "kind": "move",
             "actorId": "deepseek-sister",
             "sceneId": "home_deepseek-flash",
@@ -13891,10 +14593,10 @@
             "simulation": true
           },
           {
-            "id": "18d55ba1-c12a-4508-99e4-1bf797dd577f",
-            "sequence": 64,
-            "at": "2026-10-14T16:24:25.707Z",
-            "realAt": "2026-10-14T16:21:07.830Z",
+            "id": "02f3afe5-e248-4e93-a251-f97dea6b7810",
+            "sequence": 8,
+            "at": "2026-10-15T00:52:50.894Z",
+            "realAt": "2026-10-15T00:47:45.949Z",
             "kind": "arrive",
             "actorId": "deepseek-sister",
             "sceneId": "home_deepseek-flash",
@@ -13902,10 +14604,10 @@
             "simulation": true
           },
           {
-            "id": "0b954c9a-0feb-472c-96de-867ce8eaf4ce",
-            "sequence": 65,
-            "at": "2026-10-14T16:24:26.800Z",
-            "realAt": "2026-10-14T16:21:08.923Z",
+            "id": "ecb82afd-7a2c-4685-9456-2b95f1459d5f",
+            "sequence": 9,
+            "at": "2026-10-15T00:52:51.945Z",
+            "realAt": "2026-10-15T00:47:47.000Z",
             "kind": "interact",
             "actorId": "deepseek-sister",
             "sceneId": "home_deepseek-flash",
@@ -13914,10 +14616,10 @@
             "conversationId": "private-deepseek-sister"
           },
           {
-            "id": "3162d583-793d-4ed8-bccb-70f10650b159",
-            "sequence": 66,
-            "at": "2026-10-14T16:24:28.961Z",
-            "realAt": "2026-10-14T16:21:11.084Z",
+            "id": "bce177e6-2461-40d4-aa87-06e0329a98d3",
+            "sequence": 10,
+            "at": "2026-10-15T00:52:54.056Z",
+            "realAt": "2026-10-15T00:47:49.111Z",
             "kind": "move",
             "actorId": "deepseek-flash",
             "sceneId": "home_deepseek-flash",
@@ -13925,10 +14627,10 @@
             "simulation": true
           },
           {
-            "id": "401cf301-8bc4-4607-8f13-fc8205180beb",
-            "sequence": 67,
-            "at": "2026-10-14T16:24:34.027Z",
-            "realAt": "2026-10-14T16:21:16.150Z",
+            "id": "4612b0f5-f06e-402b-b206-5f625aee9825",
+            "sequence": 11,
+            "at": "2026-10-15T00:53:01.207Z",
+            "realAt": "2026-10-15T00:47:56.262Z",
             "kind": "arrive",
             "actorId": "deepseek-flash",
             "sceneId": "home_deepseek-flash",
@@ -13936,10 +14638,10 @@
             "simulation": true
           },
           {
-            "id": "b69b1324-3486-4b83-9a02-4ce0ac2a9ee3",
-            "sequence": 68,
-            "at": "2026-10-14T16:24:34.235Z",
-            "realAt": "2026-10-14T16:21:16.358Z",
+            "id": "95e2d45a-ad11-44ea-98df-9b93ddb88a9c",
+            "sequence": 12,
+            "at": "2026-10-15T00:53:01.383Z",
+            "realAt": "2026-10-15T00:47:56.438Z",
             "kind": "interact",
             "actorId": "deepseek-flash",
             "sceneId": "home_deepseek-flash",
@@ -13948,10 +14650,10 @@
             "conversationId": "private-deepseek-flash"
           },
           {
-            "id": "c0dc6466-9aaa-4a26-bd9a-47e124ddea03",
-            "sequence": 69,
-            "at": "2026-10-14T16:24:37.060Z",
-            "realAt": "2026-10-14T16:21:19.183Z",
+            "id": "d251d458-7261-48ed-be5b-68dba0d76a0d",
+            "sequence": 13,
+            "at": "2026-10-15T00:53:04.682Z",
+            "realAt": "2026-10-15T00:47:59.737Z",
             "kind": "move",
             "actorId": "deepseek-sister",
             "sceneId": "home_deepseek-flash",
@@ -13959,10 +14661,25 @@
             "simulation": true
           },
           {
-            "id": "3ce4e9e4-2590-4b7c-abc7-6b8afbfaba1a",
-            "sequence": 70,
-            "at": "2026-10-14T16:24:49.710Z",
-            "realAt": "2026-10-14T16:21:31.833Z",
+            "id": "786784d5-cdb4-4730-b41e-d15b7851cc44",
+            "sequence": 14,
+            "at": "2026-10-15T00:53:08.848Z",
+            "realAt": "2026-10-15T00:48:03.903Z",
+            "kind": "environment",
+            "actorId": "deepseek-sister",
+            "sceneId": "commons",
+            "text": "感受到户外的降水或偏冷偏热天气",
+            "simulation": true,
+            "effect": {
+              "type": "stress",
+              "intensity": 0.15
+            }
+          },
+          {
+            "id": "b217174e-700f-4730-9b45-0e057a005142",
+            "sequence": 15,
+            "at": "2026-10-15T00:53:17.332Z",
+            "realAt": "2026-10-15T00:48:12.387Z",
             "kind": "arrive",
             "actorId": "deepseek-sister",
             "sceneId": "home_deepseek-sister",
@@ -13973,66 +14690,66 @@
         "relationships": [],
         "works": [
           {
-            "workId": "chat_000b3f68ae19dd11a698830cd2b66c0879b48a0d601a49c3105890b7f37995e8",
+            "workId": "chat_8c22dcb08c9f9cb8c8074499526687b17774b073fc6f565b88736bb2b1b57110",
             "companionId": "deepseek-sister",
             "kind": "chat",
             "status": "ready",
             "computerId": "deepseek-sister_computer",
-            "nextCheckAt": "2026-10-14T16:21:34.011Z"
+            "nextCheckAt": "2026-10-15T00:48:14.487Z"
           }
         ],
-        "lastEventSequence": 70,
+        "lastEventSequence": 15,
         "backlog": true
       }
     },
     {
-      "at": 1791994906941,
+      "at": 1792025309049,
       "purpose": "memory_extraction",
       "sourceText": ""
     },
     {
-      "at": 1791994926987,
+      "at": 1792025324501,
       "purpose": "world_attention",
       "sourceText": "两分钟后又要截止了，请现在帮我核对这句话；先别动文件。",
-      "sourceId": "0d531ce7-b068-42dc-964e-e4f760e1b3ce"
+      "sourceId": "179e19d0-d50d-43d8-9aec-708e1a827fe4"
     }
   ],
   "streamEvents": [
     {
-      "at": 1791994893565,
+      "at": 1792025294028,
       "event": {
         "conversationId": "private-deepseek-sister",
         "companionId": "deepseek-sister",
-        "sourceMessageId": "273db83f-599d-49f7-a97f-f8963c0b0698",
-        "messageId": "94d35ac2-b6d5-4a6c-a915-4ed2d7b48489",
+        "sourceMessageId": "c9fe008b-b53e-48cc-a2d5-23f704a175a6",
+        "messageId": "aaea187c-bcfc-412e-beb3-c4c45d319be8",
         "step": 0,
-        "attemptId": "bbef4054-9ef9-494b-8a9b-ba8fdeb062cc",
+        "attemptId": "7d2e78ea-282e-4abe-95ed-1c832063ed37",
         "text": "",
         "phase": "streaming"
       }
     },
     {
-      "at": 1791994893573,
+      "at": 1792025294039,
       "event": {
         "conversationId": "private-deepseek-sister",
         "companionId": "deepseek-sister",
-        "sourceMessageId": "273db83f-599d-49f7-a97f-f8963c0b0698",
-        "messageId": "94d35ac2-b6d5-4a6c-a915-4ed2d7b48489",
+        "sourceMessageId": "c9fe008b-b53e-48cc-a2d5-23f704a175a6",
+        "messageId": "aaea187c-bcfc-412e-beb3-c4c45d319be8",
         "step": 0,
-        "attemptId": "bbef4054-9ef9-494b-8a9b-ba8fdeb062cc",
+        "attemptId": "7d2e78ea-282e-4abe-95ed-1c832063ed37",
         "text": "我已在自己的电脑前坐稳，开始核对你这条消息。",
         "phase": "streaming"
       }
     },
     {
-      "at": 1791994896985,
+      "at": 1792025295732,
       "event": {
         "conversationId": "private-deepseek-sister",
         "companionId": "deepseek-sister",
-        "sourceMessageId": "273db83f-599d-49f7-a97f-f8963c0b0698",
-        "messageId": "94d35ac2-b6d5-4a6c-a915-4ed2d7b48489",
+        "sourceMessageId": "c9fe008b-b53e-48cc-a2d5-23f704a175a6",
+        "messageId": "aaea187c-bcfc-412e-beb3-c4c45d319be8",
         "step": 0,
-        "attemptId": "bbef4054-9ef9-494b-8a9b-ba8fdeb062cc",
+        "attemptId": "7d2e78ea-282e-4abe-95ed-1c832063ed37",
         "text": "我已在自己的电脑前坐稳，开始核对你这条消息。\n文字核对已经完成。这是隔离验收，没有执行文件操作。",
         "phase": "committed"
       }

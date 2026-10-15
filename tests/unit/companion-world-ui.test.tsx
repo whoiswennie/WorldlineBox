@@ -9,9 +9,9 @@ import { createCompanionWorldHome } from '../../src/shared/companion-world-engin
 import { CompanionWorld } from '../../src/renderer/companions/world/CompanionWorld';
 import { createWorldViewport } from '../../src/renderer/companions/world/world-engine';
 import { WORLD_OBSERVER_PREFERENCES_KEY, readWorldObserverPreferences, saveWorldObserverPreferences } from '../../src/renderer/companions/world/world-observer-preferences';
-import { interpolateWorldPath, interpolateWorldPosition, worldActorAnimationFrame, worldAnimationFrame, worldArtAction, worldAssetUrl, worldClockLabel, worldFacingMirrored, worldInterpolationPath, worldPrecipitationHeight } from '../../src/renderer/companions/world/world-presentation';
+import { interpolateWorldPath, interpolateWorldPosition, worldActorAnimationFrame, worldActorStatus, worldAnimationFrame, worldArtAction, worldAssetUrl, worldClockLabel, worldFacingMirrored, worldInterpolationPath, worldPrecipitationHeight } from '../../src/renderer/companions/world/world-presentation';
 
-const view = vi.hoisted(() => ({ update: vi.fn(), dispose: vi.fn(), setActive: vi.fn(), focus: vi.fn(), reset: vi.fn(), zoom: vi.fn(), rotate: vi.fn(), getView: vi.fn(), restoreView: vi.fn() }));
+const view = vi.hoisted(() => ({ update: vi.fn(), dispose: vi.fn(), setActive: vi.fn(), setVisibleWindowCount: vi.fn(), focus: vi.fn(), reset: vi.fn(), zoom: vi.fn(), rotate: vi.fn(), getView: vi.fn(), restoreView: vi.fn() }));
 vi.mock('../../src/renderer/companions/world/world-engine', () => ({ createWorldViewport: vi.fn(() => view) }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined, container: HTMLDivElement | undefined;
@@ -34,7 +34,7 @@ it('shows actual host positions, movement, environment and visit outcomes withou
   expect([...container!.querySelectorAll('button')].some(item => /批准|拒绝拜访/.test(item.textContent ?? ''))).toBe(false);
   snapshot = { ...snapshot, backlog: false, actors: [{ ...snapshot.actors[0]!, position: { x: 4, y: 4 }, activity: 'working' }], works: [{ ...snapshot.works[0]!, status: 'ready' }], visits: [{ ...snapshot.visits[0]!, status: 'denied', response: '现在有一点忙，晚些再见。' }] };
   await act(async () => vi.advanceTimersByTimeAsync(1000));
-  expect(container!.textContent).toContain('已就座，可以处理'); expect(container!.textContent).toContain('在电脑前工作'); expect(container!.textContent).toContain('对方暂不方便'); expect(container!.textContent).toContain('现在有一点忙');
+  expect(container!.textContent).toContain('已就座，可以处理'); expect(container!.textContent).toContain('正在回复消息'); expect(container!.textContent).toContain('对方暂不方便'); expect(container!.textContent).toContain('现在有一点忙');
   expect(container!.querySelector('[role="status"]')).toBeNull();
   expect(api.request).toHaveBeenCalledTimes(2); expect(api.onChanged).not.toHaveBeenCalled();
   expect(view.update).toHaveBeenLastCalledWith(snapshot, snapshot.scenes[0], companions);
@@ -62,6 +62,50 @@ it('saves the inspected settings revision and keeps the previous world on confli
 it('stops polling and releases the renderer when the world closes', async () => {
   const api = apiFor(world); await mount(api); await act(async () => { root!.unmount(); root = undefined; });
   expect(view.dispose).toHaveBeenCalledOnce(); await act(async () => vi.advanceTimersByTimeAsync(10_000)); expect(api.request).toHaveBeenCalledTimes(1);
+});
+
+it('keeps world observation nonmodal, opens another scene window and collapses its inspector', async () => {
+  const open = vi.fn(); await mount(apiFor(world));
+  await act(async () => root!.render(<CompanionWorld api={apiFor(world)} companions={companions} visibleWindowCount={3} initialCompanionId={first.id} onClose={vi.fn()} onOpenWindow={open} />));
+  expect(container!.querySelector('[aria-modal="true"]')).toBeNull();
+  expect(view.setVisibleWindowCount).toHaveBeenLastCalledWith(3);
+  await click('另开一个世界窗口'); expect(open).toHaveBeenCalledWith('home_' + first.id);
+  await click('收起生活面板'); expect(container!.querySelector('aside')!.hidden).toBe(true);
+  await click('显示生活面板'); expect(container!.querySelector('aside')!.hidden).toBe(false);
+});
+
+it('describes actual physical behavior before work promises and distinguishes destinations, habits and execution', () => {
+  const snapshot = world(), actor = snapshot.actors[0]!;
+  const status = (patch: Partial<typeof actor>, works = snapshot.works) => worldActorStatus({ ...actor, ...patch }, { ...snapshot, works }, companions);
+  expect(status({ locomotion: 'run' }).label).toBe('跑向自己的电脑');
+  expect(status({ sceneId: 'commons', locomotion: 'run' }).label).toBe('赶回家里的电脑前');
+  expect(status({ activity: 'sleeping' }, [{ ...snapshot.works[0]!, status: 'waiting' }])).toMatchObject({ label: '正在睡觉', kind: 'sleep', detail: '有事项等醒来后处理' });
+  expect(status({ activity: 'eating' }, [{ ...snapshot.works[0]!, status: 'waiting' }]).label).toBe('正在用餐');
+  expect(status({ activity: 'seating' }, [{ ...snapshot.works[0]!, status: 'seating' }]).label).toBe('正在电脑前坐稳');
+  expect(status({ activity: 'working' }, [{ ...snapshot.works[0]!, status: 'ready' }]).label).toBe('正在回复消息');
+  expect(status({ activity: 'working' }, [{ ...snapshot.works[0]!, kind: 'action', status: 'ready' }]).label).toBe('正在处理任务');
+  expect(status({ activity: 'working' }, [{ ...snapshot.works[0]!, status: 'ready' }, { ...snapshot.works[0]!, workId: 'parallel', status: 'ready' }]).label).toBe('正在处理 2 件事');
+  expect(status({ activity: 'working' }, []).label).toBe('在电脑前工作');
+  expect(status({ activity: 'habit', artAction: 'cook' }, []).label).toBe('正在做饭');
+  expect(status({ activity: 'habit', artAction: 'read' }, []).label).toBe('正在读书');
+  expect(status({ activity: 'habit', artAction: 'exercise' }, []).label).toBe('正在锻炼');
+  expect(status({ activity: 'habit', artAction: 'communicate' }, [])).toMatchObject({ label: '正在交谈', kind: 'social' });
+  expect(status({ activity: 'walking' }, [{ ...snapshot.works[0]!, computerId: second.id + '_computer' }]).label).toBe('走向' + second.name + '家的电脑');
+});
+
+it('shows the actual phone correspondent while preserving physical activity and expired notification boundaries', () => {
+  const snapshot = world(), actor = snapshot.actors[0]!;
+  const communication = { channel: 'phone' as const, phase: 'typing' as const, conversationId: 'peer-room', recipientIds: [second.id], untilReal: '2026-10-14T08:00:05.000Z' };
+  const status = (patch: Partial<typeof actor>) => worldActorStatus({ ...actor, communication, activity: 'idle', ...patch }, { ...snapshot, works: [] }, companions);
+  expect(status({})).toMatchObject({ kind: 'social', label: '正在给' + second.name + '发消息' });
+  expect(status({ activity: 'sitting' }).label).toBe('正在给' + second.name + '发消息');
+  expect(status({ communication: { ...communication, recipientIds: [second.id, 'third'] } }).label).toBe('正在群聊里发消息');
+  expect(status({ communication: { ...communication, phase: 'notification' } }).label).toBe('收到' + second.name + '的消息');
+  expect(status({ activity: 'sleeping' }).label).toBe('正在睡觉');
+  expect(status({ activity: 'eating' }).label).toBe('正在用餐');
+  expect(status({ activity: 'working' }).label).toBe('在电脑前工作');
+  expect(status({ activity: 'walking' }).label).toBe('正在走动');
+  expect(status({ communication: { ...communication, untilReal: at } }).kind).toBe('idle');
 });
 
 it('remembers each scene camera on interaction, close and reopen while explicit home entry overrides the last scene', async () => {

@@ -28,6 +28,7 @@ import { CompanionScheduleStore } from './schedule-store';
 import { CompanionStateStore } from './state-store';
 import { CompanionRoutineStore } from './routine-store';
 import { CompanionWorldStore } from './world-store';
+import { CompanionSocialStore } from './social-store';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -58,6 +59,7 @@ export class CompanionsStore {
   readonly #runtimeState: CompanionStateStore;
   readonly #routine: CompanionRoutineStore;
   readonly #world: CompanionWorldStore;
+  readonly #social: CompanionSocialStore;
   readonly #seeds: readonly CompanionSeed[];
 
   constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS) {
@@ -75,8 +77,11 @@ export class CompanionsStore {
       id => { this.#runtimeState.energy(id); this.#world.changed(); }, { virtualAt: at => this.#world.virtualAt(at), realAt: at => this.#world.realAt(at),
         ensureThrough: at => this.#world.ensureThrough(at), actual: (id, at) => this.#world.actual(id, at), occupancy: (id, from, to) => this.#world.occupancy(id, from, to), urgent: (id, source, now) => this.#world.urgent(id, source, now) });
     this.#world = new CompanionWorldStore(this.#db, id => this.#routine.configuration(id), (scope, ids) => this.#memory.sourcesFilter(scope, ids),
-      (conversationId, authorId, content, clientId) => this.appendMessage({ conversationId, authorId, content, clientId }),
       id => this.#runtimeState.worldState(id), event => this.#runtimeState.worldEvent(event), (scope, candidate) => { this.#memory.record(scope, candidate); });
+    this.#social = new CompanionSocialStore(this.#db, input => this.appendMessage(input), id => this.getMessage(id),
+      (scope, ids) => this.#memory.sourcesFilter(scope, ids), () => this.#world.socialContext(),
+      (id, channel, recipients) => this.#world.socialAvailable(id, channel, recipients), (message, channel) => this.#world.recordSocialSpeech(message, channel));
+    this.#world.connectSocial(this.#social);
     this.#runtimeState = new CompanionStateStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids),
       (id, from, to, energy, busy) => {
         if (busy) this.#routine.observeWork(id, to);
@@ -112,6 +117,7 @@ export class CompanionsStore {
       this.#memory.initialize();
       this.#routine.initialize();
       this.#world.initialize();
+      this.#social.initialize();
       this.#runtimeState.initialize();
       this.#schedule.initialize();
       this.#memory.backfill();
@@ -440,6 +446,7 @@ export class CompanionsStore {
     return this.#db.transaction(() => {
       const existing = this.#requireConversation(id);
       if (existing.dissolved_at) throw new Error('这个群聊已经解散。');
+      if (this.#db.prepare('SELECT 1 FROM companion_social_conversations WHERE id=?').get(id)) throw new Error('伙伴社交会话的成员与身份由实际通信确定。');
       const keepAutomatic = existing.kind === 'group' && this.#automaticGroupTitle(existing) && input.title === this.#groupTitle(id);
       if (input.memberIds) {
         if (existing.kind !== 'group') throw new Error('私聊的伙伴不能替换。');
@@ -696,6 +703,7 @@ export class CompanionsStore {
         }
       }
       if (this.#requireConversation(message.conversationId).dissolved_at) throw new Error('这个群聊已经解散。');
+      if ((message.authorId === 'user' || message.authorId === 'system') && this.#db.prepare('SELECT 1 FROM companion_social_conversations WHERE id=?').get(message.conversationId)) throw new Error('伙伴社交会话只能记录实际伙伴的发言。');
       if (message.authorId !== 'user' && message.authorId !== 'system') this.#requireMember(message.conversationId, message.authorId);
       if (!message.content.trim() && !message.attachmentIds.length && !(message.loopStep !== undefined && message.authorId !== 'user' && message.authorId !== 'system')) throw new Error('消息不能为空。');
       if (message.replyToId) {
@@ -1013,6 +1021,8 @@ export class CompanionsStore {
       if (scheduleResponse.scheduleOccurrence && ['done', 'failed', 'cancelled'].includes(scheduleResponse.scheduleOccurrence.status)) this.#completeRoutineInterruptIfIdle(scheduleResponse.scheduleOccurrence.companionId);
       return scheduleResponse;
     }
+    const socialResponse = this.#social.execute(command);
+    if (socialResponse) return socialResponse;
     const worldResponse = this.#world.execute(command);
     if (worldResponse) return worldResponse;
     switch (command.type) {

@@ -6,6 +6,8 @@ import type { CompanionModelConfig } from './model';
 import { CompanionModelError } from './model';
 import { generateCompanionWorldDecision } from './world-model';
 import { generateCompanionMemoryDream } from './memory-model';
+import type { CompanionSocialJob } from '../../shared/companion-social';
+import { generateCompanionSocialReply } from './social-model';
 
 interface WorldServiceOptions {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
@@ -34,6 +36,15 @@ export class CompanionWorldService {
       await this.options.request({ type: 'world.tick' });
       this.options.wakeWaiting();
       if (this.closed || this.options.busy() || this.jobs.size >= 2) return;
+      const delivery = await this.options.request({ type: 'social.job.claim' });
+      if (delivery.socialMessage) this.options.changed();
+      const social = delivery.socialJob;
+      if (social?.leaseToken && !this.closed) {
+        const controller = new AbortController();
+        const promise = this.processSocial(social, controller.signal).catch(this.options.report)
+          .finally(() => { this.jobs.delete(social.id); this.options.changed(); });
+        this.jobs.set(social.id, { promise, controller });
+      }
       for (const kind of ['decision', 'dream'] as const) {
         if (this.closed || this.jobs.size >= 2) break;
         const job = (await this.options.request({ type: 'world.job.claim', kind })).worldJob;
@@ -67,6 +78,37 @@ export class CompanionWorldService {
   }
   async observe(scope: CompanionWorldScope): Promise<CompanionWorldSnapshot | undefined> {
     return (await this.options.request({ type: 'world.observe', ...scope })).world;
+  }
+  private async processSocial(job: CompanionSocialJob, signal: AbortSignal): Promise<void> {
+    if (!job.leaseToken) return;
+    const leaseToken = job.leaseToken;
+    try {
+      const state = (await this.options.request({ type: 'state', includeHidden: true })).state;
+      const companion = state?.companions.find(member => member.id === job.companionId);
+      const conversation = state?.conversations.find(room => room.id === job.conversationId && room.memberIds.includes(job.companionId));
+      if (!companion || !conversation) throw new Error('伙伴通信会话不存在。');
+      const scope = { companionId: companion.id, conversationId: conversation.id, beforeSequence: job.throughSequence };
+      const recent = (await this.options.request({ type: 'messages', conversationId: conversation.id, before: job.throughSequence + 1, limit: 50 })).messages ?? [];
+      const sources = (await this.options.request({ type: 'memory.sources.filter', ...scope, ids: [...new Set([...recent.map(message => message.id), job.sourceMessageId])] })).memorySources ?? [];
+      const source = sources.find(message => message.id === job.sourceMessageId);
+      if (!source || source.authorId === 'user') throw new Error('伙伴通信实际来信已不可访问。');
+      const world = await this.observe(scope);
+      if (!world) throw new Error('伙伴当前世界不可访问。');
+      const routine = (await this.options.request({ type: 'routine.get', ...scope })).routine;
+      const runtime = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
+      const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world, routine,
+        ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression, affect: runtime.affect } } : {}),
+        members: state!.companions.filter(member => conversation.memberIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) },
+      await this.options.configFor(companion), signal, { fetchFn: this.options.fetchFn });
+      const wait = Date.parse(job.typingNotBefore) - Date.now();
+      if (wait > 0) await delay(wait, signal);
+      if (signal.aborted || this.closed) throw cancelled();
+      await this.options.request({ type: 'social.job.complete', id: job.id, leaseToken, text: result.text,
+        ...(result.nextRecipientId ? { nextRecipientId: result.nextRecipientId } : {}) });
+    } catch (error) {
+      await this.options.request({ type: 'social.job.fail', id: job.id, leaseToken,
+        error: error instanceof CompanionModelError ? error.message : '伙伴通信稍后继续。' });
+    }
   }
   private async process(job: CompanionWorldJob, signal: AbortSignal): Promise<void> {
     const { id: jobId, leaseToken, kind, companionId } = job;

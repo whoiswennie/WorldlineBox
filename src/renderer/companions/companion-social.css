@@ -1,0 +1,60 @@
+.companions-social-monitor { display: flex; flex-direction: column; width: min(1260px, 100%); height: min(870px, 100%); min-height: 0; overflow: hidden; border: 1px solid var(--ui-border-subtle); border-radius: 18px; background: var(--ui-surface-pane); box-shadow: var(--ui-shadow-popover); color: var(--ui-content-primary); }
+.companions-social-monitor > header { display: flex; align-items: center; justify-content: space-between; padding: 21px 27px; border-bottom: 1px solid var(--ui-border-subtle); background: linear-gradient(110deg, color-mix(in srgb, #c8d4c0 16%, var(--ui-surface-pane)), var(--ui-surface-pane)); }
+.companions-social-monitor > header small { font-size: 8px; letter-spacing: .16em; color: #87987e; }
+.companions-social-monitor h2 { font-size: 19px; font-weight: 550; margin: 6px 0 7px; }
+.companions-social-monitor > header p { font-size: 10px; color: var(--ui-content-tertiary); }
+.companions-social-body { display: flex; flex: 1; min-height: 0; }
+.companions-social-conversations { display: flex; flex-direction: column; flex: 0 0 290px; min-width: 0; border-right: 1px solid var(--ui-border-subtle); background: var(--ui-surface-canvas); }
+.companions-social-filters { display: grid; gap: 10px; padding: 17px 17px 14px; border-bottom: 1px solid var(--ui-border-subtle); }
+.companions-social-day { display: flex; align-items: center; gap: 5px; }
+.companions-social-day button { display: grid; place-items: center; padding: 5px; border: 0; background: transparent; color: var(--ui-content-secondary); }
+.companions-social-day button svg { width: 13px; height: 13px; }
+.companions-social-day input { flex: 1; min-width: 0; font-size: 13px; border: 0; background: transparent; color: var(--ui-content-primary); font-variant-numeric: tabular-nums; }
+.companions-social-day-links { display: flex; justify-content: flex-end; gap: 11px; margin-top: -4px; }
+.companions-social-day-links button { padding: 0; background: transparent; border: 0; color: var(--ui-content-tertiary); font-size: 9px; }
+.companions-social-filters select { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--ui-border-subtle); border-radius: 7px; background: var(--ui-surface-pane); color: var(--ui-content-secondary); font-size: 11px; }
+.companions-social-search { display: flex; align-items: center; gap: 7px; border: 1px solid var(--ui-border-subtle); border-radius: 7px; padding: 7px 9px; background: var(--ui-surface-pane); }
+.companions-social-search svg { width: 13px; height: 13px; color: var(--ui-content-tertiary); flex-shrink: 0; }
+.companions-social-search input { border: 0; outline: 0; width: 100%; min-width: 0; background: transparent; color: var(--ui-content-primary); font-size: 10px; }
+.companions-social-search:focus-within { outline: 1px solid var(--companion-blue); }
+.companions-social-conversations nav { flex: 1; min-height: 0; overflow: auto; padding: 8px; scrollbar-width: thin; }
+.companions-social-conversations nav > button { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 13px 10px; background: transparent; border: 0; border-radius: 11px; text-align: left; color: inherit; margin: 0 0 4px; }
+.companions-social-conversations nav > button.is-selected { background: var(--companion-selected); }
+.companions-social-conversations nav > button > span:last-child { flex: 1; min-width: 0; }
+.companions-social-conversations nav strong { display: block; font-size: 12px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.companions-social-conversations nav small { display: block; font-size: 9px; color: var(--ui-content-tertiary); margin: 6px 0; }
+.companions-social-conversations nav p { font-size: 10px; color: var(--ui-content-secondary); line-height: 1.6; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.companions-social-avatars { display: flex; flex-wrap: wrap; align-content: center; gap: 2px; width: 35px; flex: 0 0 35px; padding: 1px; }
+.companions-social-avatars .companion-avatar { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 5px; }
+.companions-social-pagination { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 11px; border-top: 1px solid var(--ui-border-subtle); }
+.companions-social-pagination button, .companions-social-chat-footer button { border: 0; border-radius: 6px; padding: 6px; background: color-mix(in srgb, var(--companion-blue) 6%, transparent); color: var(--ui-content-secondary); font-size: 10px; }
+.companions-social-pagination span { font-size: 9px; color: var(--ui-content-tertiary); }
+.companions-social-monitor button:disabled { opacity: .35; cursor: default; }
+.companions-social-chat { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--ui-surface-pane) 98%, #d6e0db); }
+.companions-social-chat > header { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 18px 23px; border-bottom: 1px solid var(--ui-border-subtle); }
+.companions-social-chat > header > div { display: grid; gap: 6px; min-width: 0; }
+.companions-social-chat > header strong { font-size: 14px; font-weight: 550; }
+.companions-social-chat > header small { font-size: 10px; color: var(--ui-content-tertiary); }
+.companions-social-chat > header > label { display: grid; gap: 5px; font-size: 9px; color: var(--ui-content-tertiary); flex: 0 0 110px; }
+.companions-social-chat > header select { color: var(--ui-content-primary); background: var(--ui-surface-canvas); border: 1px solid var(--ui-border-subtle); border-radius: 6px; padding: 5px; font-size: 10px; }
+.companions-social-chat-toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 23px; }
+.companions-social-chat-toolbar .companions-social-search { flex: 1; max-width: 300px; }
+.companions-social-chat-toolbar > span { font-size: 9px; color: var(--ui-content-tertiary); }
+.companions-social-messages { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; padding: 13px 25px; }
+.companions-social-messages .companions-date-divider { margin: 5px 0 24px; }
+.companions-social-messages .companions-message-body { max-width: min(82%, 680px); }
+.companions-social-recipient { font-size: 9px; color: var(--ui-content-tertiary); margin-top: -3px; }
+.companions-social-chat-footer { display: flex; align-items: center; justify-content: center; gap: 19px; border-top: 1px solid var(--ui-border-subtle); padding: 10px 15px 3px; }
+.companions-social-chat-footer span { font-size: 9px; color: var(--ui-content-tertiary); }
+.companions-social-observation { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 15px 13px; font-size: 9px; color: var(--ui-content-tertiary); }
+.companions-social-observation svg { width: 12px; height: 12px; flex-shrink: 0; }
+.companions-social-notice { font-size: 10px; padding: 8px 23px; color: var(--ui-content-secondary); background: color-mix(in srgb, #d8ccab 12%, transparent); }
+.companions-social-new-messages { align-self: center; flex: 0 0 auto; display: inline-flex; justify-content: center; margin: 0 18px 9px; padding: 7px 13px; border: 1px solid color-mix(in srgb, var(--companion-blue) 22%, var(--ui-border-subtle)); border-radius: 20px; background: color-mix(in srgb, var(--companion-blue) 8%, var(--ui-surface-pane)); color: var(--ui-content-primary); box-shadow: 0 2px 8px rgb(25 43 34 / 5%); font-size: 11px; }
+.companions-social-new-messages:hover { background: color-mix(in srgb, var(--companion-blue) 13%, var(--ui-surface-pane)); }
+.companions-social-empty { padding: 24px 15px; color: var(--ui-content-tertiary); font-size: 11px; line-height: 1.9; }
+.companions-social-welcome { margin: auto; text-align: center; padding: 25px; color: var(--ui-content-tertiary); }
+.companions-social-welcome > svg { width: 34px; height: 34px; color: #97ab90; margin-bottom: 15px; }
+.companions-social-welcome h3 { color: var(--ui-content-primary); font-size: 16px; font-weight: 500; margin: 0 0 11px; }
+.companions-social-welcome p { font-size: 11px; line-height: 1.8; }
+.companions-social-monitor button:focus-visible, .companions-social-monitor select:focus-visible, .companions-social-monitor input:focus-visible { outline: 2px solid var(--companion-blue); outline-offset: 2px; }
+@media (max-width: 900px) { .companions-social-conversations { flex-basis: 240px; } .companions-social-monitor > header { padding: 17px; } .companions-social-messages { padding-inline: 15px; } .companions-social-observation { line-height: 1.6; text-align: center; } }

@@ -6,6 +6,7 @@ export type WorldArtAction = CompanionWorldArtAction;
 export interface WorldArtPoint { x: number; y: number }
 export interface WorldArtFrame {
   bounds: WorldArtPoint & { width: number; height: number };
+  registration?: { anchor: WorldArtPoint; method: 'body-core' | 'reviewed'; bodyOffset: WorldArtPoint; score: number };
   contacts: { posture: 'standing' | 'sitting' | 'lying' | 'transition'; origin: WorldArtPoint;
     foot: WorldArtPoint | null; seat: WorldArtPoint | null; pelvis: WorldArtPoint | null;
     back: WorldArtPoint | null; bed: WorldArtPoint | null; headwear?: WorldArtPoint | null };
