@@ -7,6 +7,7 @@ import { RuntimeCompatibility, compatibilityContract, readRuntimeCompatibility }
 import { supportsSharedDataRuntime } from '../../src/shared/dsh-runtime-compatibility';
 import { inventoryTree, removeManaged } from '../../src/main/dsh/files';
 import { canonicalRuntimeEntryPaths } from '../../src/main/dsh/runtime-paths';
+import { RuntimeIntegrity } from '../../src/main/dsh/runtime-integrity';
 import type { DshRuntime } from '../../src/shared/dsh-launcher';
 import type { RuntimeServiceLike } from '../../src/main/dsh/runtime-service';
 
@@ -27,18 +28,19 @@ it('never grants shared access by release name; failed integrity is persisted an
   expect(await readRuntimeCompatibility(root, { ...runtime, contentSha256: 'b'.repeat(64) })).toBeUndefined();
 });
 
-const fixtureFile = path.resolve('.tools/dsh-native-node/result.json');
-it.skipIf(!existsSync(fixtureFile))('uses real native SDKs in isolated temporary profiles, then checks both directions across different sealed artifacts', async () => {
-  const fixture = JSON.parse(await readFile(fixtureFile, 'utf8')) as { root: string; runtimes: DshRuntime[] };
+const fixtureRegistry = process.env.WORLDLINEBOX_DSH_COMPAT_RUNTIME_REGISTRY ?? path.resolve('.tools/dsh-native-node/manager/runtimes.json');
+it.skipIf(!existsSync(fixtureRegistry))('uses real native SDKs in isolated temporary profiles, then checks both directions across different sealed artifacts', async () => {
   // Use every locally installed official artifact, including newer releases added for regression checks.
-  fixture.runtimes = JSON.parse(await readFile(path.join(fixture.root, 'manager', 'runtimes.json'), 'utf8'));
+  // The supplied registry and artifacts are read-only; reports, profiles and credentials stay temporary.
+  const fixture = { runtimes: JSON.parse(await readFile(fixtureRegistry, 'utf8')) as DshRuntime[] };
+  const integrity = new RuntimeIntegrity();
   const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-compat-native-')); roots.push(root);
   const runtimes: RuntimeServiceLike = {
     list: () => fixture.runtimes,
     get: id => fixture.runtimes.find(runtime => runtime.id === id)!,
-    directory: id => path.join(fixture.root, 'manager', 'runtimes', id, 'program'),
+    directory: id => path.join(path.dirname(fixtureRegistry), 'runtimes', id, 'program'),
     plan: id => ({ ...canonicalRuntimeEntryPaths(runtimes.directory(id), 'node-cli-web-v1'), env: {} }),
-    verify: async id => { expect((await inventoryTree(runtimes.directory(id))).contentSha256).toBe(runtimes.get(id).contentSha256); },
+    verify: async id => integrity.verify(runtimes.directory(id), async () => { expect((await inventoryTree(runtimes.directory(id))).contentSha256).toBe(runtimes.get(id).contentSha256); }),
   };
   let lastProgress = '';
   const service = new RuntimeCompatibility({ rootPath: root, runtimes, onChanged() {
@@ -46,10 +48,12 @@ it.skipIf(!existsSync(fixtureFile))('uses real native SDKs in isolated temporary
     const progress = fixture.runtimes.map(runtime => { const report = service.report(runtime); return `${runtime.version}: ${report?.status ?? 'waiting'} ${report?.checks.filter(check => check.status !== 'pending').map(check => `${check.id}=${check.status}${check.status === 'failed' ? ':' + check.detail : ''}`).join(', ')}`; }).join('\n');
     if (progress !== lastProgress) { lastProgress = progress; console.log(progress); }
   } }); await service.init();
-  for (const runtime of fixture.runtimes) {
-    const report = await service.check(runtime);
-    expect(report.checks.filter(item => item.status !== 'passed'), JSON.stringify(report, null, 2)).toEqual([]);
-    expect(supportsSharedDataRuntime({ ...runtime, compatibility: report })).toBe(true);
-  }
-  expect(service.report(fixture.runtimes[1]!)?.peers).toHaveLength(1);
+  try {
+    for (const runtime of fixture.runtimes) {
+      const report = await service.check(runtime);
+      expect(report.checks.filter(item => item.status !== 'passed'), JSON.stringify(report, null, 2)).toEqual([]);
+      expect(supportsSharedDataRuntime({ ...runtime, compatibility: report })).toBe(true);
+    }
+    expect(service.report(fixture.runtimes[1]!)?.peers).toHaveLength(1);
+  } finally { integrity.close(); }
 }, 660_000);

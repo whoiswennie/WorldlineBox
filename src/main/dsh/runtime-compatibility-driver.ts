@@ -1,18 +1,17 @@
-/** Executed only with a fresh temporary HOME/profile and synthetic data. No model is invoked. */
+/** Native-profile plugin used only in a fresh temporary HOME with synthetic data. */
 export const COMPATIBILITY_DRIVER = String.raw`
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {readFile} from 'node:fs/promises';
 import readline from 'node:readline';
 import path from 'node:path';
-const [sdk,routing,cwd,,sessionRoot] = process.argv.slice(2);
+export const inject=['workspaceRegistry','sessionController','sessionPersistence','sessionQuery','credentials','sessions','agents'];
+export async function apply(owner,{sdk,cwd,sessionRoot}) {
+const ctx=owner.root;
+const exit=ctx.get('appExit');
 const load=createRequire(path.join(sdk,'@deepseek-ai/dsh/package.json'));
 const imported=async name=>import(pathToFileURL(load.resolve(name)));
-{
-  const {runProfile}=await imported('@deepseek-ai/dsh/profile-boot');
-  const {loadLayeredEnv}=await imported('@deepseek-ai/dsh-app-boot');
-  const running=await runProfile({profile:'web',environment:loadLayeredEnv('dsh'),patchFiles:[routing],args:['--no-open','--host','127.0.0.1','--port','0']});
-  const {ctx}=running;let lease;
+  let lease;
   const input=readline.createInterface({input:process.stdin});let turn=Promise.resolve();
   input.on('line',text=>{turn=turn.then(async()=>{
     const request=JSON.parse(text);try {let data;
@@ -54,9 +53,9 @@ const imported=async name=>import(pathToFileURL(load.resolve(name)));
         await withFileLock(file,async()=>{if(request.write)await writeFileAtomic(file,request.reverse?fake.replace('dummy-not-a-real-key','reverse-dummy-key'):fake,{mode:0o600});
           const text=await readFile(file,'utf8');const value=parseCredentialsDocument(renderFlatLayoutMigration(text)??text,file);
           data={valid:value.refs.has('WORLDLINE_COMPAT_DUMMY')&&value.records.has('deepseek-account/default'),reverse:text.includes('reverse-dummy-key')};});
-      } else if(request.type==='close'){await lease?.close();await running.shutdown.shutdown(0);input.close();data={closed:true}}
-      console.log('COMPAT_RESULT '+JSON.stringify({id:request.id,data}));if(request.type==='close')process.exit(0);
+      } else if(request.type==='close'){await lease?.close();input.close();data={closed:true}}
+      console.log('COMPAT_RESULT '+JSON.stringify({id:request.id,data}));if(request.type==='close')exit(0);
     } catch(error){console.log('COMPAT_RESULT '+JSON.stringify({id:request.id,error:{code:error.code??error.name,message:String(error.message).slice(0,1500)}}))}
-  })});console.log('COMPAT_READY');
+  })});ctx.effect(()=>()=>input.close());console.log('COMPAT_READY');
 }
 `;

@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { DshInstance, DshLauncherRequest, DshLauncherResponse, DshLauncherState, DshRuntime, DshOperation, WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import { DshLauncher } from '../../src/renderer/launcher/DshLauncher';
 import { LocaleProvider } from '../../src/renderer/i18n';
+import { dshCompatibilityCheckIds } from '../../src/shared/dsh-runtime-compatibility';
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
@@ -93,10 +94,14 @@ it('shows the selected instance immediately, coalesces preparation and keeps nav
   expect(container!.querySelector('.launcher-instance-details h1')!.textContent).toBe('环境 B');
   expect(itemA.disabled).toBe(false); expect(itemB.disabled).toBe(false);
   expect(button('启动实例').disabled).toBe(false);
+  expect(subject.request.mock.calls.filter(([request]) => request.type === 'cli.select')).toHaveLength(0);
+  const selectCli = button('设为当前 CLI');
+  await act(() => { selectCli.click(); selectCli.click(); });
   expect(subject.request.mock.calls.filter(([request]) => request.type === 'cli.select')).toHaveLength(1);
   expect(container!.querySelector('[data-dsh-notification]')!.textContent).toContain('正在准备 CLI 环境');
   await click('运行版本', container!.querySelector('.launcher-navigation')!);
-  expect(container!.querySelector('[data-dsh-official-versions]')).not.toBeNull();
+  expect(container!.querySelector('[data-dsh-official-versions]')).toBeNull();
+  expect(container!.querySelector('[data-dsh-notification]')).toBeNull();
   await act(() => finish());
   expect(container!.querySelector('[data-dsh-notification]')).toBeNull();
   expect(subject.state().cli?.selectedInstanceId).toBe('instance-b');
@@ -122,7 +127,7 @@ it('switches between same-runtime instances and uses independent instance identi
   await f.publish({ ...f.state(), instances: f.state().instances.map((item) => item.id === 'instance-b' ? { ...item, status: 'running', pid: 120, port: 4321 } : item) });
   expect(button('复制实例').disabled).toBe(true);
   expect(button('停止实例').disabled).toBe(false);
-  await click('打开 DSH 工作台');
+  await click('打开 / 返回工作台');
   expect(f.request).toHaveBeenCalledWith({ type: 'instance.open', instanceId: 'instance-b' });
 });
 
@@ -226,7 +231,9 @@ it('creates a named instance with an explicit pinned runtime', async () => {
 });
 
 it('allows an independent data mode for a verified release and prevents sharing for an unverified release', async () => {
-  const f = fixture([], { runtimes: [runtime('runtime-a', '0.2.0-rc.2'), runtime('runtime-b', '0.2.0-rc.1')] });
+  const verified = runtime('runtime-a', '0.2.0-rc.2');
+  verified.compatibility = { runtimeId: verified.id, contentSha256: verified.contentSha256, contract: 'fixture', status: 'passed', startedAt: '', peers: [], checks: dshCompatibilityCheckIds.map(id => ({ id, status: 'passed', detail: 'fixture' })) };
+  const f = fixture([], { runtimes: [verified, runtime('runtime-b', '0.2.0-rc.1')] });
   await mount(f.api); await click('创建实例');
   const selects = document.querySelectorAll<HTMLSelectElement>('[role="dialog"] select');
   const scope = selects[1]!;
@@ -243,9 +250,11 @@ it('allows an independent data mode for a verified release and prevents sharing 
 
 it('selects a new default CLI context immediately and requires an explicit Web workbench switch', async () => {
   const a = { ...instance('instance-a', '环境 A'), status: 'running' as const };
-  const f = fixture([], { instances: [a, instance('instance-b', '环境 B')] });
+  const f = fixture([], { instances: [a, instance('instance-b', '环境 B')], cli: cliFixture() });
   await mount(f.api);
   await act(() => container!.querySelector<HTMLButtonElement>('[data-dsh-instance="instance-b"]')!.click());
+  expect(f.request.mock.calls.some(([request]) => request.type === 'cli.select')).toBe(false);
+  await click('设为当前 CLI');
   expect(f.request).toHaveBeenCalledWith({ type: 'cli.select', instanceId: 'instance-b' });
   expect(f.request.mock.calls.some(([request]) => request.type === 'instance.stop' || request.type === 'instance.switch-start')).toBe(false);
   expect(button('切换并启动').disabled).toBe(false);
@@ -320,11 +329,11 @@ it('keeps startup failures in history and does not re-alert dismissed or retried
   await click('关闭', container!.querySelector('[role="alert"]')!);
   await click('刷新');
   expect(container!.querySelector('[role="alert"]')).toBeNull();
-  const retryFailure = { ...failure, id: 'retry-download', error: 'Current import error' };
+  const retryFailure = { ...failure, kind: 'runtime.verify', id: 'retry-verify', error: 'Current import error' };
   await f.publish({ ...f.state(), operations: [retryFailure, failure, old] });
   expect(container!.querySelector('[role="alert"]')!.textContent).toContain('Current import error');
   await click('运行版本', container!.querySelector('.launcher-navigation')!);
-  await click('下载官方最新版本');
+  await click('校验运行文件', container!.querySelector('[data-dsh-runtime="runtime-a"]')!);
   expect(container!.querySelector('[role="alert"]')).toBeNull();
   await click('刷新');
   expect(container!.querySelector('[role="alert"]')).toBeNull();

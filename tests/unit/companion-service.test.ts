@@ -973,12 +973,15 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
 
   it('finishes a failed preparation operation even when no task record was created, and never replays it on restart', async () => {
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true, operationId: 'dsh-task' });
-    const dsh = fakeDsh(() => ({ tasks: [], operations: [{ id: 'dsh-task', status: 'failed' }] }), requestTask);
+    const dsh = fakeDsh(() => ({ tasks: [], operations: [{ id: 'dsh-task', status: 'failed', error: 'DSH 0.2.1-alpha.4 兼容性检测尚未通过。失败检查：model-settings。' }] }), requestTask);
     const f = fixture(dsh);
     await f.service.handle({ type: 'action.run', conversationId: f.conversation.id, companionId: 'sister',
       sourceMessageId: f.source.id, title: '整理文件', prompt: '按类型整理文件。' });
     await vi.waitFor(() => expect(f.store.listAction()[0]).toMatchObject({ status: 'failed', taskId: 'dsh-task' }), { timeout: 5000 });
-    expect(f.store.listAction()[0]?.error).toContain('准备执行环境时失败');
+    expect(f.store.listAction()[0]?.error).toContain('失败检查：model-settings');
+    const options = requestTask.mock.calls.find(([request]) => request.type === 'task.run')?.[1];
+    expect(options).toMatchObject({ toolkit: true, interactive: true });
+    expect(options).not.toHaveProperty('connection');
     expect(transport.fetch).not.toHaveBeenCalled();
     await closeService(f.service);
 

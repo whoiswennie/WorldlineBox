@@ -16,7 +16,8 @@ async function state(page: Page): Promise<DshLauncherState> {
 async function complete(page: Page, input: DshLauncherRequest) {
   const response = await request(page, input); if (!response.ok) throw Error(response.error);
   if (response.operationId) {
-    await expect.poll(async () => (await state(page)).operations.find(value => value.id === response.operationId)?.status, { timeout: 300000 }).not.toBe('running');
+    try { await expect.poll(async () => (await state(page)).operations.find(value => value.id === response.operationId)?.status, { timeout: 600000 }).not.toBe('running'); }
+    catch { const operation = (await state(page)).operations.find(value => value.id === response.operationId); throw Error(`Native operation did not finish: ${JSON.stringify(operation)}`); }
     const operation = (await state(page)).operations.find(value => value.id === response.operationId)!; expect(operation.status, operation.error).toBe('succeeded');
   }
 }
@@ -27,15 +28,17 @@ async function rpc(page: Page, method: string, args: Record<string, unknown>): P
   }, { method, args });
 }
 
-test('official alpha.3 saves keys in initial and explicitly reopened dialogs, then uses the replacement key after restart', async () => {
-  test.setTimeout(600000); test.skip(process.platform !== 'win32');
-  const manager = path.resolve('.tools/dsh-native-node/manager'); test.skip(!existsSync(path.join(manager, 'runtimes.json')));
-  const source = (JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8')) as DshRuntime[]).find(runtime => runtime.version === '0.2.1-alpha.3');
-  test.skip(!source, 'Install the official alpha.3 fixture before native authentication acceptance.');
+test('official native workbench reopens without restarting its Host, saves keys and uses the replacement key after restart', async () => {
+  test.setTimeout(900000); test.skip(process.platform !== 'win32');
+  const manager = process.env.WORLDLINEBOX_DSH_AUTH_MANAGER ?? path.resolve('.tools/dsh-native-node/manager'); test.skip(!existsSync(path.join(manager, 'runtimes.json')));
+  const version = process.env.WORLDLINEBOX_DSH_AUTH_VERSION ?? '0.2.1-alpha.3';
+  const source = (JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8')) as DshRuntime[]).find(runtime => runtime.version === version);
+  test.skip(!source, 'Install the selected official fixture before native authentication acceptance.');
   const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-native-auth-'));
   const key = 'worldlinebox-synthetic-api-key'; const replacement = 'worldlinebox-replaced-synthetic-api-key'; let requests = 0; let credentialMatched = false;
+  const credentialsSeen: unknown[] = [];
   const server = createServer((incoming, response) => {
-    requests++; credentialMatched ||= incoming.headers['x-api-key'] === replacement;
+    requests++; credentialMatched ||= incoming.headers['x-api-key'] === replacement; credentialsSeen.push(incoming.headers['x-api-key']);
     incoming.resume(); response.writeHead(401, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'WorldlineBox synthetic local endpoint; no real account or inference.' } }));
   });
@@ -49,6 +52,15 @@ test('official alpha.3 saves keys in initial and explicitly reopened dialogs, th
     await complete(page, { type: 'instance.create', runtimeId: runtime.id, name: 'Native authentication acceptance', dataScope: 'shared' });
     const instance = (await state(page)).instances[0]!; await complete(page, { type: 'instance.start', instanceId: instance.id });
     let workbench = application.windows().find(window => window !== page)!;
+    const running = (await state(page)).instances.find(value => value.id === instance.id)!;
+    await workbench.close(); await expect.poll(() => application.windows().length).toBe(1);
+    expect((await state(page)).instances.find(value => value.id === instance.id)).toMatchObject({ status: 'running', pid: running.pid, port: running.port });
+    await expect(page.locator('[data-dsh-open-workbench]')).toHaveText('打开 / 返回工作台');
+    await page.locator('[data-dsh-open-workbench]').dblclick();
+    await expect.poll(() => application.windows().length).toBe(2);
+    workbench = application.windows().find(window => window !== page)!;
+    expect((await state(page)).instances.find(value => value.id === instance.id)).toMatchObject({ status: 'running', pid: running.pid, port: running.port });
+    await page.screenshot({ path: path.resolve('.tools/test-output/verified-reopen-native-workbench.png') });
     await workbench.getByRole('button', { name: '继续', exact: true }).click();
     await workbench.getByRole('button', { name: '添加 API Key', exact: true }).click();
     const save = workbench.getByRole('button', { name: '保存并继续', exact: true }); await expect(save).toBeDisabled();
@@ -74,6 +86,16 @@ test('official alpha.3 saves keys in initial and explicitly reopened dialogs, th
     await rpc(workbench, 'session/prompt', { request: { sessionId: conversation.sessionId, requestId: crypto.randomUUID(), mode: 'queue', content: [{ type: 'text', text: 'Synthetic authentication acceptance; use only the local fixture endpoint.' }] } });
     await expect.poll(() => requests, { timeout: 30000 }).toBeGreaterThan(0); expect(credentialMatched).toBe(true);
     await complete(page, { type: 'instance.stop', instanceId: instance.id });
+    const beforeCli = requests;
+    const task = await request(page, { type: 'task.run', prompt: 'Use the selected native profile with the local synthetic endpoint.', title: 'Native saved configuration acceptance', timeoutMs: 60000 });
+    expect(task.ok && task.operationId).toBeTruthy();
+    if (!task.ok || !task.operationId) throw Error('CLI task was not admitted');
+    await expect.poll(() => requests, { timeout: 45000 }).toBeGreaterThan(beforeCli);
+    expect(credentialsSeen.slice(beforeCli).every(value => value === replacement)).toBe(true);
+    expect((await state(page)).tasks?.find(value => value.id === task.operationId)?.instanceId).toBe(instance.id);
+    expect((await state(page)).instances.every(value => value.status === 'stopped')).toBe(true);
+    expect(application.windows()).toHaveLength(1);
+    await expect.poll(async () => (await state(page)).operations.find(value => value.id === task.operationId)?.status, { timeout: 30000 }).not.toBe('running');
   } finally {
     await application.close(); await new Promise<void>(resolve => server.close(() => resolve()));
     if (path.dirname(root) === path.resolve(tmpdir()) && path.basename(root).startsWith('worldlinebox-native-auth-')) await rm(root, { recursive: true, force: true });

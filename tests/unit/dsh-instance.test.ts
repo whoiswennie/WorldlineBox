@@ -71,6 +71,10 @@ describe('DSH isolated instance management', () => {
     const a = await service.create('A', 'first'); const b = await service.create('B', 'first');
     await request({ type: 'instance.start', instanceId: a.id });
     const oldPid = service.get(a.id).pid!;
+    const oldUrl = service.getUrl(a.id);
+    await request({ type: 'instance.open', instanceId: a.id });
+    expect(service.get(a.id).pid).toBe(oldPid); expect(service.getUrl(a.id)).toBe(oldUrl);
+    expect(openWorkbench).toHaveBeenLastCalledWith(expect.objectContaining({ id: a.id, pid: oldPid }), oldUrl);
     const blocked = await service.handle({ type: 'instance.start', instanceId: b.id });
     expect(blocked.ok).toBe(true); await operations.settle();
     expect(operations.list()[0]?.error).toContain('Only one DSH WebUI');
@@ -78,7 +82,7 @@ describe('DSH isolated instance management', () => {
     await request({ type: 'instance.switch-start', instanceId: b.id });
     expect(service.get(a.id).status).toBe('stopped'); expect(service.get(b.id).status).toBe('running');
     expect(await inspectProcess(oldPid)).toBeUndefined();
-    expect(a.browserPartition).not.toBe(b.browserPartition); expect(openWorkbench).toHaveBeenCalledTimes(2);
+    expect(a.browserPartition).not.toBe(b.browserPartition); expect(openWorkbench).toHaveBeenCalledTimes(3);
     const envA = JSON.parse(await readFile(path.join(a.homePath, 'environment.json'), 'utf8')) as Record<string, string>;
     const envB = JSON.parse(await readFile(path.join(b.homePath, 'environment.json'), 'utf8')) as Record<string, string>;
     for (const key of Object.keys(envA)) expect(envA[key]).not.toBe(envB[key]);

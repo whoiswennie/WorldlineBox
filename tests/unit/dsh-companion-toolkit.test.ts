@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { removeManaged } from '../../src/main/dsh/files';
 import { DSH_NATIVE_CLI_DISABLED_IDS } from '../../src/main/dsh/cli-profile-mode';
-import { dshCompanionTaskToolPatch } from '../../src/main/dsh/task-connection';
+import { dshCompanionTaskToolPatch } from '../../src/main/dsh/task-execution';
 
 const nativeRoot = path.resolve('.tools/dsh-native-node/manager/runtimes');
 const versions = [

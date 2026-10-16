@@ -128,7 +128,7 @@ export class InstanceService {
   getUrl(instanceId: string): string | undefined { return this.processes.get(instanceId)?.url; }
   get(instanceId: string): DshInstance { return { ...this.require(instanceId) }; }
   launchPlan(instanceId: string): RuntimeLaunchPlan { return this.options.runtimes.plan(this.require(instanceId).runtimeId); }
-  async prepareCli(instanceId: string, signal?: AbortSignal, runtimeId?: string): Promise<DshCliSelection> {
+  async prepareCli(instanceId: string, signal?: AbortSignal, runtimeId?: string, progress?: (summary: string) => void): Promise<DshCliSelection> {
     // Serialize only private profile preparation. The returned pinned CLI tasks
     // run concurrently; one prepare must not look like a conflicting mutation.
     const previous = this.cliPreparations.get(instanceId) ?? Promise.resolve();
@@ -146,7 +146,7 @@ export class InstanceService {
         removeAbort = () => signal.removeEventListener('abort', abort);
       })]);
       signal?.throwIfAborted();
-      return await this.prepareCliNow(instanceId, signal, runtimeId);
+      return await this.prepareCliNow(instanceId, signal, runtimeId, progress);
     } finally {
       removeAbort(); release();
       if (this.cliPreparations.get(instanceId) === turn) {
@@ -154,7 +154,7 @@ export class InstanceService {
       }
     }
   }
-  private async prepareCliNow(instanceId: string, signal?: AbortSignal, runtimeId?: string): Promise<DshCliSelection> {
+  private async prepareCliNow(instanceId: string, signal?: AbortSignal, runtimeId?: string, progress?: (summary: string) => void): Promise<DshCliSelection> {
     signal?.throwIfAborted();
     const original = this.ensureAvailable(instanceId);
     const instance = runtimeId ? { ...original, runtimeId } : original;
@@ -162,7 +162,9 @@ export class InstanceService {
     this.busy.add(instanceId);
     try {
       const runtime = this.options.runtimes.get(instance.runtimeId);
+      progress?.(`正在检查 DSH ${runtime.version} 的 CLI 运行文件；有效校验会复用`);
       await this.options.runtimes.verify(instance.runtimeId, signal); signal?.throwIfAborted();
+      progress?.('正在沿用当前实例的账号、API、模型和插件配置');
       const plan = this.options.runtimes.plan(instance.runtimeId);
       let routingPatch = '';
       const workspacePath = instance.dataScope === 'isolated' ? isolatedWorkspacePath(this.getRoot(instanceId)) : this.options.sharedData?.paths.workspacePath ?? instance.workspacePath;

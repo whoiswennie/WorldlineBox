@@ -17,6 +17,7 @@ import { prepareOfficialNodeRuntime, validateNodeRuntimeInventory, validateOffic
 import { RuntimeCompatibility, assertRuntimeCompatibility } from './runtime-compatibility';
 import type { DshCompatibilityReport } from '../../shared/dsh-runtime-compatibility';
 import { RuntimeIntegrity } from './runtime-integrity';
+import { DshTaskPreparationError } from './task-preparation';
 
 export interface RuntimeServiceLike {
   list(): DshRuntime[];
@@ -170,9 +171,9 @@ export class RuntimeService implements RuntimeServiceLike {
       }, signal, force);
     } catch (error) {
       if (signal?.aborted) throw error;
-      if (error instanceof Error && error.name === 'TimeoutError') throw new Error('运行文件完整性检查超时，请稍后重试；存档未修改。', { cause: error });
+      if (error instanceof Error && error.name === 'TimeoutError') throw new DshTaskPreparationError('integrity', '运行文件完整性检查超时，请稍后重试；存档未修改。');
       const message = 'DSH runtime files changed or are missing. Import a clean installer; existing instance data is preserved.';
-      await this.compatibility.invalidate(record, message); throw new Error(message, { cause: error });
+      await this.compatibility.invalidate(record, message); throw new DshTaskPreparationError('integrity', message);
     }
   }
   close(): void { this.integrity.close(); }

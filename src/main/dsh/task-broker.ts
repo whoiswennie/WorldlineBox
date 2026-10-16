@@ -8,12 +8,11 @@ import { lstat, mkdir, open, rm, realpath } from './disk';
 import { atomicJson, readJson } from './files';
 import { launchCli, sanitizeOutput, terminateOwnedProcess } from './instance-process';
 import type { OperationContext } from './operations';
-import { clearDshTaskConnectionEnvironment, containsDshTaskSecret, dshTaskConnectionEnvironment,
-  dshTaskExecutionPatch, redactDshTaskConnection, snapshotDshTaskExecution,
-  type DshTaskExecutionConnection, type DshTaskExecutionOptions } from './task-connection';
+import { dshTaskExecutionPatch, snapshotDshTaskExecution, type DshTaskExecutionOptions } from './task-execution';
 import { randomUUID } from 'node:crypto';
 import { companionRuntimeSource } from './companion-runtime-source';
 import { runtimeSdkRoot } from './runtime-sdk';
+import { DshTaskPreparationError } from './task-preparation';
 import { DshTaskInput as DshTaskInbox } from './task-input';
 
 const LINE_LIMIT = 1024 * 1024;
@@ -86,7 +85,8 @@ export function normalizeDshTaskProgress(value: Record<string, unknown>, pending
 }
 export interface DshTaskPin { contextFile: string; dispose(): Promise<void> | void }
 export interface DshTaskBrokerOptions {
-  rootPath: string; getSelection(instanceId?: string, signal?: AbortSignal, resume?: DshTaskRecord): Promise<DshCliSelection>; pin(selection: DshCliSelection): Promise<DshTaskPin>;
+  rootPath: string; getSelection(instanceId?: string, signal?: AbortSignal, resume?: DshTaskRecord,
+    preparation?: { requiresCompanionRuntime: boolean; progress(summary: string): void }): Promise<DshCliSelection>; pin(selection: DshCliSelection): Promise<DshTaskPin>;
   onChanged?: () => void; onEvent?: (event: DshTaskEvent) => void;
 }
 export class DshTaskError extends Error { constructor(message: string, readonly result: DshTaskResult) { super(message); this.name = 'DshTaskError'; } }
@@ -129,16 +129,16 @@ export class DshTaskBroker {
     })();
     return this.loadTask;
   }
-  async execute(inputValue: DshTaskInput, operation: OperationContext, executionValue?: DshTaskExecutionConnection | DshTaskExecutionOptions): Promise<DshTaskResult> {
+  async execute(inputValue: DshTaskInput, operation: OperationContext, executionValue?: DshTaskExecutionOptions): Promise<DshTaskResult> {
     const input = dshTaskInputSchema.parse(inputValue);
     const execution = snapshotDshTaskExecution(executionValue);
-    const connection = execution.connection;
+    let secrets: string[] = [];
     const resume = execution.resume;
     if (resume && (!resume.sessionId || resume.sessionId !== input.sessionId || resume.instanceId !== input.instanceId || !resume.accessMode || resume.accessMode !== execution.access?.mode || resume.status === 'running')) throw new Error('The resume checkpoint does not match its recorded task, session and access policy.');
     if (execution.access && input.sessionId && !resume) throw new Error('Existing DSH sessions retain their recorded access policy. Start a fresh task to apply this snapshot.');
     if (resume?.sessionId && (this.resumedSessions.has(resume.sessionId) || this.records.some(record => record.status === 'running' && record.sessionId === resume.sessionId))) throw new Error('This native task session already has a running owner.');
-    if (input.sessionId && containsDshTaskSecret(input.sessionId, connection)) throw new Error('The task session identity conflicts with its private connection.');
-    const sanitizeTaskOutput = (value: string) => sanitizeOutput(redactDshTaskConnection(value, connection));
+    const containsTaskSecret = (value: string) => secrets.some(secret => value.includes(secret));
+    const sanitizeTaskOutput = (value: string) => sanitizeOutput(secrets.reduce((text, secret) => text.replaceAll(secret, '[redacted]'), value));
     if (Buffer.byteLength(input.prompt) > 65536) throw new Error('The task prompt exceeds its UTF-8 size limit.');
     if (this.closed) throw new Error('The DSH task broker is closing.');
     if (this.reservations >= 20) throw new Error('Twenty DSH tasks are already running. Wait for one to finish.');
@@ -149,12 +149,12 @@ export class DshTaskBroker {
     const taskInput = execution.interactive ? new DshTaskInbox() : undefined;
     this.active.set(operation.id, { abort, finished, input: taskInput });
     let pin: DshTaskPin | undefined; let record: DshTaskRecord | undefined; let child: Awaited<ReturnType<typeof launchCli>> | undefined;
-    let connectionPatch: string | undefined;
+    let taskPatch: string | undefined;
     let runtimePlugin: string | undefined;
     let stopUnconfirmed = false;
     const releaseContext = async () => {
       try {
-        if (connectionPatch) await rm(connectionPatch, { force: true });
+        if (taskPatch) await rm(taskPatch, { force: true });
         if (runtimePlugin) await rm(runtimePlugin, { force: true });
         if (pin) await pin.dispose();
       } catch { await operation.log('The completed task context could not be removed; cleanup was deferred.').catch(() => undefined); }
@@ -176,25 +176,30 @@ export class DshTaskBroker {
     };
     try {
       await this.init(); signal.throwIfAborted();
-      preparation('preparing', '正在准备能力运行环境');
-      const selection = await this.options.getSelection(input.instanceId, signal, resume); signal.throwIfAborted();
+      preparation('preparing', '正在读取所选 DSH 实例的 CLI 配置');
+      const selection = await this.options.getSelection(input.instanceId, signal, resume, {
+        requiresCompanionRuntime: !!(execution.toolkit || execution.access || execution.interactive),
+        progress: summary => preparation('preparing', summary),
+      }); signal.throwIfAborted();
       const captured: DshCliSelection = { ...selection, instance: { ...selection.instance }, plan: { ...selection.plan, env: { ...selection.plan.env } }, env: { ...selection.env }, nativeArgs: selection.nativeArgs ? [...selection.nativeArgs] : undefined };
+      secrets = Object.entries(captured.env).filter(([name, value]) => /(?:key|token|secret|password|authorization)/i.test(name) && value && value.length >= 6).map(([, value]) => value!);
       if (input.instanceId && captured.instance.id !== input.instanceId) throw new Error('The task selection differs from its requested instance binding.');
       const version = captured.runtimeVersion ?? ''; if (!version) throw new Error('The selected CLI context has no recorded runtime version.');
       if (resume) {
         if (captured.instance.runtimeId !== resume.runtimeId || version !== resume.runtimeVersion) throw new Error('The original task runtime is unavailable; the existing session was preserved.');
         if (resume.workspacePath) captured.workspacePath = await realpathResumeWorkspace(resume.workspacePath);
       }
-      if ((connection || execution.toolkit || execution.access || execution.interactive)
-        && (captured.runtime?.id !== captured.instance.runtimeId || !supportsSharedDataRuntime(captured.runtime))) throw new Error('此 DSH 制品尚未通过原生兼容性检测，暂不注入伙伴专用凭据和能力。请在运行版本页查看检测结果。');
+      if ((execution.toolkit || execution.access || execution.interactive)
+        && (captured.runtime?.id !== captured.instance.runtimeId || !supportsSharedDataRuntime(captured.runtime))) throw new DshTaskPreparationError('compatibility', '所选 DSH 尚未通过原生兼容性检测。请在「运行版本」查看失败检查并重新检测；任务尚未启动。');
+      preparation('preparing', '正在绑定当前实例的 CLI 任务与权限');
       pin = await this.options.pin(captured); signal.throwIfAborted();
-      if (connection || execution.toolkit || execution.access || execution.interactive) {
+      if (execution.toolkit || execution.access || execution.interactive) {
         const directory = path.dirname(pin.contextFile);
         const info = await lstat(directory);
-        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('The task connection patch directory is not managed.');
-        const filename = path.join(directory, `${randomUUID()}-model.patch.json`);
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('The task-control patch directory is not managed.');
+        const filename = path.join(directory, `${randomUUID()}-task.patch.json`);
         const handle = await open(filename, 'wx', 0o600);
-        connectionPatch = filename;
+        taskPatch = filename;
         try {
           const patch: unknown[] = dshTaskExecutionPatch(execution, captured.workspacePath);
           if (execution.interactive) {
@@ -212,16 +217,15 @@ export class DshTaskBroker {
       }
       record = dshTaskRecordSchema.parse({ id: operation.id, operationId: operation.id, instanceId: captured.instance.id, runtimeId: captured.instance.runtimeId,
         runtimeVersion: version, title: sanitizeTaskOutput(input.title ?? 'DSH task').slice(0, 100), status: 'running', accessMode: execution.access?.mode,
-        workspacePath: captured.workspacePath, sessionId: input.sessionId && !containsDshTaskSecret(input.sessionId, connection) ? input.sessionId : undefined, startedAt: new Date().toISOString() });
+        workspacePath: captured.workspacePath, sessionId: input.sessionId && !containsTaskSecret(input.sessionId) ? input.sessionId : undefined, startedAt: new Date().toISOString() });
       this.records.unshift(record); this.prune(); await this.save(); this.changed();
       result = { taskId: record.id, instanceId: record.instanceId, runtimeId: record.runtimeId, runtimeVersion: version, sessionId: record.sessionId };
       await operation.update('Starting the task in its pinned DSH environment', 10);
       // The shim appends input after its shared model overlay. Keep this task's
       // last routing overlay before --json starts native app option parsing.
-      const args = [...(connectionPatch ? ['--patch', connectionPatch] : []), ...(execution.interactive ? [] : ['--json', ...(record.sessionId ? ['--session-id', record.sessionId] : []), '-'])];
-      const launchEnvironment = dshTaskConnectionEnvironment({ ...captured.env, ELECTRON_RUN_AS_NODE: '1', WORLDLINEBOX_DSH_CLI_CONTEXT: pin.contextFile }, connection);
-      try { child = await launchCli({ executable: process.execPath, cli: path.join(this.options.rootPath, 'cli', 'shim.cjs'), env: {} }, args, launchEnvironment, captured.workspacePath); }
-      finally { clearDshTaskConnectionEnvironment(launchEnvironment); }
+      const args = [...(taskPatch ? ['--patch', taskPatch] : []), ...(execution.interactive ? [] : ['--json', ...(record.sessionId ? ['--session-id', record.sessionId] : []), '-'])];
+      child = await launchCli({ executable: process.execPath, cli: path.join(this.options.rootPath, 'cli', 'shim.cjs'), env: {} }, args,
+        { ...captured.env, ELECTRON_RUN_AS_NODE: '1', WORLDLINEBOX_DSH_CLI_CONTEXT: pin.contextFile }, captured.workspacePath);
       preparation('starting', '能力进程已启动，正在加载任务环境');
       const selectedChild = child; const stop = () => {
         taskInput?.cancel();
@@ -233,15 +237,14 @@ export class DshTaskBroker {
       signal.addEventListener('abort', stop, { once: true }); if (signal.aborted) stop();
       const decoder = new StringDecoder('utf8'); let pending = ''; let received = 0; let hasFinal = false;
       const pendingTools = new Map<string, string>();
-      const privateProgressValues = [input.prompt, ...(connection ? [connection.apiKey] : []), ...Object.values(captured.env).filter((value): value is string => typeof value === 'string' && value.length >= 6)];
-      const secrets = Object.entries(captured.env).filter(([name, value]) => /(?:key|token|secret|password|authorization)/i.test(name) && value && value.length >= 6).map(([, value]) => value!);
+      const privateProgressValues = [input.prompt, ...Object.values(captured.env).filter((value): value is string => typeof value === 'string' && value.length >= 6)];
       const safeProgressText = (input: unknown, live = false): string => {
         const serialized = typeof input === 'string' ? input : JSON.stringify(input, (key, value) =>
           /^(?:env|environment|headers|authorization|api[_-]?key|password|secret|access[_-]?token|refresh[_-]?token|base64|bytes)$/i.test(key) ? '[redacted]' : value);
         let output = sanitizeTaskOutput(serialized ?? '');
         for (const secret of secrets) output = output.replaceAll(secret, '[redacted]');
         // Token snapshots must not publish a partial private key at their tail.
-        for (const secret of live ? [...secrets, ...(connection ? [connection.apiKey] : [])] : []) {
+        for (const secret of live ? secrets : []) {
           for (let length = Math.min(secret.length - 1, output.length); length > 0; length--) {
             if (output.endsWith(secret.slice(0, length))) { output = output.slice(0, -length); break; }
           }
@@ -254,7 +257,7 @@ export class DshTaskBroker {
         let payload: unknown; try { payload = JSON.parse(line); } catch { return; }
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return; const value = payload as Record<string, unknown>;
         taskInput?.receive(value);
-        const type = typeof value.type === 'string' && /^[A-Za-z0-9][A-Za-z0-9_./:-]{0,99}$/.test(value.type) && !containsDshTaskSecret(value.type, connection) ? value.type : 'unknown';
+        const type = typeof value.type === 'string' && /^[A-Za-z0-9][A-Za-z0-9_./:-]{0,99}$/.test(value.type) && !containsTaskSecret(value.type) ? value.type : 'unknown';
         const safe: DshTaskEvent = { taskId: record!.id, sequence: sequence++, type, receivedAt: new Date().toISOString(),
           ...normalizeDshTaskProgress(value, pendingTools, privateProgressValues) };
         if (['tool_call', 'tool_result', 'text', 'text_stream', 'tool_stream'].includes(type)) {
@@ -263,13 +266,13 @@ export class DshTaskBroker {
             safe.text = safeProgressText(content, type === 'text_stream' || type === 'tool_stream');
             safe.contentKind = type === 'tool_call' || type === 'tool_stream' ? 'input' : type === 'tool_result' ? 'output' : 'message';
           }
-          if (typeof value.callId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/.test(value.callId) && !containsDshTaskSecret(value.callId, connection)) safe.callId = value.callId;
+          if (typeof value.callId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/.test(value.callId) && !containsTaskSecret(value.callId)) safe.callId = value.callId;
           if (typeof value.streamId === 'string' && /^(?:stream|tool_stream)_[0-9]{1,8}(?:_[0-9]{1,8})?$/.test(value.streamId)) safe.streamId = value.streamId;
           if (['draft', 'committed', 'abandoned'].includes(String(value.outputState))) safe.outputState = value.outputState as DshTaskEvent['outputState'];
         }
         if (type === 'session') {
           const sessionId = dshTaskSessionIdSchema.safeParse(value.sessionId).data;
-          if (sessionId && !containsDshTaskSecret(sessionId, connection)) { safe.sessionId = sessionId; record!.sessionId = sessionId; result!.sessionId = sessionId;
+          if (sessionId && !containsTaskSecret(sessionId)) { safe.sessionId = sessionId; record!.sessionId = sessionId; result!.sessionId = sessionId;
             void this.save().catch(() => { saveError = true; }); this.changed(); }
         }
         if (type === 'final' && typeof value.text === 'string') {
@@ -278,7 +281,7 @@ export class DshTaskBroker {
         }
         if (type === 'error') {
           taskFailed = true;
-          if (typeof value.code === 'string' && /^[A-Za-z0-9_./:-]{1,100}$/.test(value.code) && !containsDshTaskSecret(value.code, connection)) safe.code = value.code;
+          if (typeof value.code === 'string' && /^[A-Za-z0-9_./:-]{1,100}$/.test(value.code) && !containsTaskSecret(value.code)) safe.code = value.code;
           if (value.code === 'task/startup' && typeof value.message === 'string') { safe.text = safeProgressText(value.message).slice(0, 1000); safe.contentKind = 'output'; }
         }
         // Only explicitly projected/redacted fields enter the stream; no raw stderr or reasoning.
@@ -316,7 +319,13 @@ export class DshTaskBroker {
           : signal.aborted ? 'The DSH task was cancelled or reached its time limit.' : outputError?.message ?? (error instanceof Error && /^(The pinned DSH task failed|The selected DSH runtime returned|The DSH task ended without|Task metadata could not)/.test(error.message) ? error.message : 'The DSH task could not complete in its selected environment.');
         this.results.set(record.id, { ...result }); await this.save().catch(() => undefined); this.changed(); throw new DshTaskError(record.error, { ...result });
       }
-      throw new Error(signal.aborted ? 'The DSH task was cancelled before its environment was ready.' : 'The DSH task could not prepare its selected environment.', { cause: error });
+      const detail = signal.aborted ? '任务在 CLI 启动前已取消或超时。'
+        : error instanceof DshTaskPreparationError ? sanitizeTaskOutput(error.message).slice(0, 1000)
+          : 'DSH CLI 启动前的配置读取或任务绑定失败，执行进程尚未启动。请检查所选实例的运行文件与访问权限。';
+      await operation.log(detail).catch(() => undefined);
+      if (execution.toolkit) publish({ taskId: operation.id, sequence: sequence++, type: 'error', stage: 'failed',
+        code: `task/preparation/${error instanceof DshTaskPreparationError ? error.code : 'unknown'}`, summary: detail, receivedAt: new Date().toISOString() });
+      throw new Error(detail, { cause: error });
     } finally {
       try { if (!stopUnconfirmed) await releaseContext(); }
       finally { taskInput?.close(); this.active.delete(operation.id); this.reservations--; if (resume?.sessionId) this.resumedSessions.delete(resume.sessionId); resolveFinished(); }

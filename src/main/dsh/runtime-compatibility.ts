@@ -12,11 +12,14 @@ import { COMPATIBILITY_DRIVER } from './runtime-compatibility-driver';
 import { SHARED_WORKSPACE_ADAPTER_SOURCE } from './shared-workspace-adapter';
 import { NATIVE_CREDENTIAL_MIGRATION_SOURCE } from './shared-credentials';
 import { probeRuntimeCompatibility } from './runtime-compatibility-probe';
+import { DshTaskPreparationError } from './task-preparation';
+import { DSH_NATIVE_CLI_DISABLED_IDS, DSH_NATIVE_CLI_ENABLED_IDS, prepareNativeCliMode } from './cli-profile-mode';
 
 /** Changing the executable native contract invalidates old evidence automatically. */
 export function compatibilityContract(): string {
   return createHash('sha256').update(COMPATIBILITY_DRIVER).update(SHARED_WORKSPACE_ADAPTER_SOURCE)
-    .update(NATIVE_CREDENTIAL_MIGRATION_SOURCE).update(probeRuntimeCompatibility.toString()).digest('hex');
+    .update(NATIVE_CREDENTIAL_MIGRATION_SOURCE).update(probeRuntimeCompatibility.toString())
+    .update(prepareNativeCliMode.toString()).update(JSON.stringify([DSH_NATIVE_CLI_DISABLED_IDS, DSH_NATIVE_CLI_ENABLED_IDS])).digest('hex');
 }
 export async function readRuntimeCompatibility(root: string, runtime: DshRuntime): Promise<DshCompatibilityReport | undefined> {
   const file = path.join(root, 'compatibility', `${runtime.id}.json`);
@@ -29,7 +32,15 @@ export async function readRuntimeCompatibility(root: string, runtime: DshRuntime
 }
 export async function assertRuntimeCompatibility(root: string, runtime: DshRuntime): Promise<void> {
   const compatibility = await readRuntimeCompatibility(root, runtime);
-  if (!supportsSharedDataRuntime({ ...runtime, compatibility })) throw new Error('共享存档兼容性检测尚未通过。请在「运行版本」查看检查项和失败原因，并重新检测。');
+  assertKnownRuntimeCompatibility({ ...runtime, compatibility });
+}
+export function assertKnownRuntimeCompatibility(runtime: DshRuntime): void {
+  if (supportsSharedDataRuntime(runtime)) return;
+  const report = runtime.compatibility;
+  const failed = report?.checks.find(check => check.status === 'failed');
+  const reason = failed ? `失败检查：${failed.id}。${failed.detail.slice(0, 600)}`
+    : report?.status === 'running' ? '隔离检测仍在进行。' : '当前运行文件尚无有效的隔离检测结果。';
+  throw new DshTaskPreparationError('compatibility', `DSH ${runtime.version} 兼容性检测尚未通过。${reason}请到「运行版本」查看详情或重新检测；任务尚未启动。`);
 }
 
 export class RuntimeCompatibility {

@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { DshCliSelection } from '../../src/main/dsh/cli-terminal';
 import { DshTaskBroker, normalizeDshTaskProgress } from '../../src/main/dsh/task-broker';
+import { DshTaskPreparationError } from '../../src/main/dsh/task-preparation';
 import { removeManaged } from '../../src/main/dsh/files';
 import type { OperationContext } from '../../src/main/dsh/operations';
-import { DSH_TASK_API_KEY_REF, type DshTaskExecutionConnection } from '../../src/main/dsh/task-connection';
 import * as processTools from '../../src/main/dsh/instance-process';
 import type { DshRuntime } from '../../src/shared/dsh-launcher';
 import { dshCompatibilityCheckIds } from '../../src/shared/dsh-runtime-compatibility';
@@ -67,6 +67,29 @@ process.stdin.setEncoding('utf8');process.stdin.on('data',text=>prompt+=text);pr
   return { rootPath, broker, pins, removed, captured, logs, operation, select: (id: string) => { selected = id; }, events: (hook: typeof eventHook) => { eventHook = hook; }, dispose: (hook: typeof disposeHook) => { disposeHook = hook; } };
 }
 describe('Pinned DSH task broker', () => {
+  it('preserves controlled preparation diagnostics and progress before any pin or process is created', async () => {
+    const test = await fixture(); const operation = test.operation(); let pinned = false;
+    const broker = new DshTaskBroker({ rootPath: test.rootPath,
+      getSelection: async (_id, _signal, _resume, preparation) => {
+        expect(preparation?.requiresCompanionRuntime).toBe(true);
+        preparation?.progress('正在读取实例账号配置');
+        throw new DshTaskPreparationError('compatibility', 'DSH 检测失败：model-settings；请重新检测。');
+      }, pin: async () => { pinned = true; throw new Error('must not pin'); } });
+    await expect(broker.execute({ prompt: 'fixture' }, operation, { toolkit: true })).rejects.toThrow('model-settings');
+    expect(pinned).toBe(false); expect(broker.state()).toEqual([]);
+    expect(broker.events(operation.id).at(-1)).toMatchObject({ stage: 'failed', code: 'task/preparation/compatibility', summary: expect.stringContaining('model-settings') });
+    expect(test.logs).toContain('DSH 检测失败：model-settings；请重新检测。');
+    await broker.shutdown(); await test.broker.shutdown();
+  });
+  it('does not publish arbitrary preparation exceptions that may contain native credentials', async () => {
+    const test = await fixture(); const operation = test.operation();
+    const broker = new DshTaskBroker({ rootPath: test.rootPath,
+      getSelection: async () => { throw new Error('private-native-credential-and-prompt'); },
+      pin: async () => { throw new Error('must not pin'); } });
+    await expect(broker.execute({ prompt: 'fixture' }, operation, { toolkit: true })).rejects.toThrow('执行进程尚未启动');
+    expect(JSON.stringify([test.logs, broker.events(operation.id)])).not.toContain('private-native-credential');
+    await broker.shutdown(); await test.broker.shutdown();
+  });
   it('pins and records the effective access policy without applying a changed preference mid-task', async () => {
     const test = await fixture();
     const access = { mode: 'read-only' as const };
@@ -100,77 +123,39 @@ describe('Pinned DSH task broker', () => {
     await expect(readFile(binding.patchPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await test.broker.shutdown();
   });
-  it('passes a Main-only key only through spawn memory and keeps its non-secret model patch private to each task', async () => {
+  it('runs concurrent native tasks without writing any provider, model or credential overlay', async () => {
     const test = await fixture();
-    const connection: DshTaskExecutionConnection = { provider: 'deepseek-official', model: 'deepseek-flash', baseURL: 'https://api.deepseek.com/anthropic', apiKey: 'opaque-fixture-key-without-known-prefix' };
-    const originalEnvironment = process.env[DSH_TASK_API_KEY_REF];
-    const firstOperation = test.operation();
-    const firstTask = test.broker.execute({ prompt: 'connection', title: `route ${connection.apiKey}` }, firstOperation, connection);
-    // The broker captures synchronously, before async profile/pin preparation.
-    connection.apiKey = 'another-private-binding'; connection.model = 'deepseek-v4-pro';
-    const secondTask = test.broker.execute({ prompt: 'connection' }, test.operation(), connection);
-    const [first, second] = await Promise.all([firstTask, secondTask]);
-    const bindings = await Promise.all(test.pins.map(pin => readFile(path.join(test.rootPath, `${path.basename(pin, '.json')}-binding.json`), 'utf8').then(text => JSON.parse(text) as {
-      args: string[]; patch: Array<{ id: string; config: Record<string, unknown> }>; patchPath: string;
-      context: unknown; keyPresent: boolean; keyHash: string;
-    })));
-    const flash = bindings.find(binding => binding.patch.some(entry => entry.config.model === 'deepseek-flash'))!;
-    const pro = bindings.find(binding => binding.patch.some(entry => entry.config.model === 'deepseek-v4-pro'))!;
-    expect(flash.keyHash).toBe(createHash('sha256').update('opaque-fixture-key-without-known-prefix').digest('hex'));
-    expect(pro.keyHash).toBe(createHash('sha256').update('another-private-binding').digest('hex'));
-    expect(bindings.every(binding => binding.keyPresent)).toBe(true);
-    expect(flash.patchPath).not.toBe(pro.patchPath);
-    for (const binding of bindings) {
-      expect(binding.args.indexOf('--patch')).toBeLessThan(binding.args.indexOf('--json'));
-      expect(path.dirname(binding.patchPath)).toBe(test.rootPath);
-      expect(JSON.stringify(binding.patch)).toContain(DSH_TASK_API_KEY_REF);
-      expect(binding.patch.every(entry => !Object.hasOwn(entry.config, 'apiKey') && !Object.hasOwn(entry.config, 'models'))).toBe(true);
+    const results = await Promise.all([test.broker.execute({ prompt: 'connection' }, test.operation(), { toolkit: true }), test.broker.execute({ prompt: 'connection' }, test.operation(), { toolkit: true })]);
+    for (const pin of test.pins) {
+      const binding = JSON.parse(await readFile(path.join(test.rootPath, path.basename(pin, '.json')+'-binding.json'), 'utf8'));
+      expect(binding.keyPresent).toBe(false);
+      expect(binding.patch.some((row: { id: string }) => /^(?:llm-|agent-default-model|web-search-deepseek)/.test(row.id))).toBe(false);
+      expect(binding.patchPath).toMatch(/-task\.patch\.json$/);
       await expect(readFile(binding.patchPath)).rejects.toMatchObject({ code: 'ENOENT' });
     }
-    const retained = JSON.stringify({ bindings, records: test.broker.state(), events: [...test.broker.events(first.taskId), ...test.broker.events(second.taskId)], first, second });
-    expect(retained).not.toContain('opaque-fixture-key-without-known-prefix');
-    expect(retained).not.toContain('another-private-binding');
-    expect(first.text).toContain('[redacted]');
-    expect(second.text).toContain('[redacted]');
-    expect(test.captured.map(selection => selection.env[DSH_TASK_API_KEY_REF])).toEqual(test.captured.map(() => undefined));
-    expect(await readFile(path.join(test.rootPath, 'tasks.json'), 'utf8')).not.toContain('opaque-fixture-key-without-known-prefix');
-    expect(process.env[DSH_TASK_API_KEY_REF]).toBe(originalEnvironment);
-    expect(test.removed).toEqual(expect.arrayContaining(test.pins));
-    // A later ordinary native task receives neither the override nor its key.
-    const native = await test.broker.execute({ prompt: 'connection' }, test.operation());
-    expect(native.text).toContain('native configuration');
-    const nativeBinding = JSON.parse(await readFile(path.join(test.rootPath, `${path.basename(test.pins.at(-1)!, '.json')}-binding.json`), 'utf8')) as { keyPresent: boolean; patch?: unknown; args: string[] };
-    expect(nativeBinding).toMatchObject({ keyPresent: false });
-    expect(nativeBinding.patch).toBeUndefined();
-    expect(nativeBinding.args).not.toContain('--patch');
+    expect(results.every(result => result.text?.includes('native configuration'))).toBe(true);
     await test.broker.shutdown();
   });
-
-  it('cleans a transient model patch on task failure and suppresses a private key in error event codes', async () => {
-    const test = await fixture();
-    const connection: DshTaskExecutionConnection = { provider: 'deepseek-official', model: 'deepseek-flash', baseURL: 'https://api.deepseek.com/anthropic', apiKey: 'opaque-error-fixture-key' };
-    const operation = test.operation();
-    await expect(test.broker.execute({ prompt: 'connection-error' }, operation, connection)).rejects.toThrow('failed');
-    expect(JSON.stringify({ records: test.broker.state(), events: test.broker.events(operation.id) })).not.toContain(connection.apiKey);
-    const binding = JSON.parse(await readFile(path.join(test.rootPath, `${path.basename(test.pins[0]!, '.json')}-binding.json`), 'utf8')) as { patchPath: string };
+  it('cleans its task-control patch when the native task fails', async () => {
+    const test = await fixture(); const operation = test.operation();
+    await expect(test.broker.execute({ prompt: 'connection-error' }, operation, { toolkit: true })).rejects.toThrow('failed');
+    const binding = JSON.parse(await readFile(path.join(test.rootPath, path.basename(test.pins[0]!, '.json')+'-binding.json'), 'utf8'));
     await expect(readFile(binding.patchPath)).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(test.removed).toHaveLength(1);
-    await test.broker.shutdown();
+    expect(test.removed).toHaveLength(1); await test.broker.shutdown();
   });
 
   it('removes a transient routing patch before releasing a cancelled task pin', async () => {
     const test = await fixture();
-    const connection: DshTaskExecutionConnection = { provider: 'deepseek-official', model: 'deepseek-flash', baseURL: 'https://api.deepseek.com/anthropic', apiKey: 'cancelled-transient-key-fixture' };
     const operation = test.operation();
     let ready!: () => void;
     const started = new Promise<void>(resolve => { ready = resolve; });
     test.events(type => { if (type === 'job_started') ready(); });
-    const task = test.broker.execute({ prompt: 'sleep' }, operation, connection);
+    const task = test.broker.execute({ prompt: 'sleep' }, operation, { toolkit: true });
     void task.catch(() => undefined);
     await started;
-    const patch = (await readdir(test.rootPath)).find(name => name.endsWith('-model.patch.json'))!;
+    const patch = (await readdir(test.rootPath)).find(name => name.endsWith('-task.patch.json'))!;
     expect(patch).toBeTruthy();
-    expect(await readFile(path.join(test.rootPath, patch), 'utf8')).not.toContain(connection.apiKey);
+    expect(await readFile(path.join(test.rootPath, patch), 'utf8')).not.toContain('llm-deepseek');
     test.broker.cancel(operation.id);
     await expect(task).rejects.toThrow('cancelled');
     await expect(readFile(path.join(test.rootPath, patch))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -178,15 +163,14 @@ describe('Pinned DSH task broker', () => {
     await test.broker.shutdown();
   });
 
-  it('keeps uninspected runtimes on native configuration rather than injecting a private connection', async () => {
+  it('refuses task capabilities on an uninspected runtime before creating a pin', async () => {
     const test = await fixture();
     await test.broker.execute({ prompt: 'fixture' }, test.operation());
     let pinned = false;
     const broker = new DshTaskBroker({ rootPath: test.rootPath,
       getSelection: async () => ({ ...test.captured[0]!, runtimeVersion: '0.1.0-unknown', runtime: undefined }),
-      pin: async () => { pinned = true; throw new Error('No private key may enter an uninspected runtime.'); } });
-    const connection: DshTaskExecutionConnection = { provider: 'deepseek-official', model: 'deepseek-flash', baseURL: 'https://api.deepseek.com/anthropic', apiKey: 'unknown-runtime-key-fixture' };
-    await expect(broker.execute({ prompt: 'fixture' }, test.operation(), connection)).rejects.toThrow('could not prepare');
+      pin: async () => { pinned = true; throw new Error('Capabilities must not enter an uninspected runtime.'); } });
+    await expect(broker.execute({ prompt: 'fixture' }, test.operation(), { toolkit: true })).rejects.toThrow('尚未通过原生兼容性检测');
     expect(pinned).toBe(false);
     await broker.shutdown();
     await test.broker.shutdown();
@@ -311,7 +295,7 @@ describe('Pinned DSH task broker', () => {
       await preparing; let finished = false;
       const stopped = broker.terminate(operation.id).then(() => { finished = true; });
       await new Promise(resolve => setTimeout(resolve, 25)); expect(finished).toBe(false);
-      release(); await stopped; await expect(task).rejects.toThrow('cancelled before'); expect(broker.state()).toEqual([]);
+      release(); await stopped; await expect(task).rejects.toThrow('启动前已取消'); expect(broker.state()).toEqual([]);
     } finally { release(); await broker.shutdown(); await test.broker.shutdown(); }
   });
   it('retains an unconfirmed owned cleanup and its pin until termination is retried successfully', async () => {
@@ -351,6 +335,6 @@ describe('Pinned DSH task broker', () => {
       entered(); return await new Promise<DshCliSelection>((_resolve, reject) => { signal!.addEventListener('abort', () => reject(new Error('Preparation interrupted')), { once: true }); });
     }, pin: async () => { pinned = true; throw new Error('An aborted context must not be pinned'); } });
     const task = broker.execute({ prompt: 'private fixture' }, test.operation(randomUUID(), controller)); void task.catch(() => undefined); await preparing; controller.abort();
-    await expect(task).rejects.toThrow('cancelled before'); expect(pinned).toBe(false); expect(broker.state()).toEqual([]); await broker.shutdown();
+    await expect(task).rejects.toThrow('启动前已取消'); expect(pinned).toBe(false); expect(broker.state()).toEqual([]); await broker.shutdown();
   });
 });

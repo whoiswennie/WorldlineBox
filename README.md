@@ -40,6 +40,8 @@ WorldlineBox 是一个本地优先的桌面应用，结合**虚拟伙伴、持�
 目前支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini 原生 API 和 DashScope 原生 API。
 角色配置与 API 密钥分开保存；密钥通过 Electron 的系统安全存储加密，不写入聊天正文或消息数据库。
 
+伙伴聊天与 DSH 任务执行使用两套独立的模型设置。DSH 直接使用当前所选实例保存的账号、API、默认模型、插件和技能；世界线盒子的全局模型不会覆盖 DSH，也不向任务注入全局 API Key。伙伴可以使用一种模型聊天，同时由配置了另一种模型的 DSH 执行任务。
+
 ### 自动收录与召回记忆，无需 Embedding 模型
 
 正式消息保存后会进入持久记忆处理队列，由伙伴已有的模型连接理解事实、偏好、约定、经历和任务状态。

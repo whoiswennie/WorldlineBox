@@ -44,6 +44,9 @@ export async function probeRuntimeCompatibility(options: {
     const routing = await writeTechnicalRoutingPatch({ instanceRoot: root, sharedRoot: paths.rootPath, runtimeVersion: record.version,
       programDirectory: runtimes.directory(record.id), workspacePath: paths.workspacePath, patches: sharedSessionRoutingPatches(paths.rootPath), signal });
     const plan = runtimes.plan(record.id);
+    const probePatch = path.join(root, 'launcher', 'probe.patch.json');
+    await writeFile(probePatch, JSON.stringify([{ insert: [{ id: 'worldlinebox-compatibility-probe', name: script,
+      config: { sdk: await runtimeSdkRoot(runtimes.directory(record.id)), cwd: paths.workspacePath, sessionRoot: paths.sessionsPath } }] }]));
     const isolated = await instanceEnvironment(root, instance, plan);
     // An allowlist of environment VARIABLE NAMES removes arbitrary inherited API keys and user plugins.
     const env = Object.fromEntries(Object.entries(isolated).filter(([key]) => /^(SystemRoot|WINDIR|COMSPEC|PATHEXT|OS|NUMBER_OF_PROCESSORS|PROCESSOR_ARCHITECTURE|DSH_HOME|DSH_AGENTS_HOME|HOME|USERPROFILE|HOMEDRIVE|HOMEPATH|APPDATA|LOCALAPPDATA|TEMP|TMP|TMPDIR|XDG_(CONFIG_HOME|DATA_HOME|CACHE_HOME|RUNTIME_DIR)|NO_COLOR|FORCE_COLOR|ELECTRON_RUN_AS_NODE)$/i.test(key)));
@@ -51,7 +54,10 @@ export async function probeRuntimeCompatibility(options: {
     Object.assign(env, { PATH: [path.dirname(plan.executable), path.join(system, 'System32'), path.join(system, 'System32', 'WindowsPowerShell', 'v1.0')].join(path.delimiter),
       DSH_TELEMETRY_DISABLED: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(root, 'user', '.gitconfig') });
     await coordinator.prepareStopped(id, instance.homePath);
-    const child = await launchCli({ ...plan, cli: script }, [await runtimeSdkRoot(runtimes.directory(record.id)), routing, paths.workspacePath, 'host', paths.sessionsPath], env, paths.workspacePath);
+    // Enter through the installed CLI so its module-resolution hooks own boot and
+    // plugins together. Importing runProfile first can split app-boot singletons
+    // from native config-editor, making healthy settings edits fail on alpha.4.
+    const child = await launchCli(plan, ['web', '--patch', routing, '--patch', probePatch, '--no-open', '--host', '127.0.0.1', '--port', '0'], env, paths.workspacePath);
     children.add(child);
     let output = ''; let diagnostics = ''; let readyUrl = ''; let nativeReady = false; let serial = 0;
     let readyResolve!: () => void; let readyReject!: (error: Error) => void;

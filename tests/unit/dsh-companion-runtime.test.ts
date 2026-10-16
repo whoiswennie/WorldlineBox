@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { companionRuntimeSource } from '../../src/main/dsh/companion-runtime-source';
-import { dshCompanionTaskToolPatch } from '../../src/main/dsh/task-connection';
+import { dshCompanionTaskToolPatch } from '../../src/main/dsh/task-execution';
 import { DSH_NATIVE_CLI_DISABLED_IDS } from '../../src/main/dsh/cli-profile-mode';
 import { removeManaged } from '../../src/main/dsh/files';
 const roots: string[] = [];

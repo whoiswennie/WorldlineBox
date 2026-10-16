@@ -137,7 +137,7 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
         setError(message); return { ok: false, error: message };
       }
     }
-    if (['market.search', 'skill.list', 'skill.inspect', 'pack.inspect-url', 'instance.plugins'].includes(request.type)) {
+    if (['market.search', 'skill.list', 'skill.inspect', 'pack.inspect-url', 'instance.plugins', 'instance.open'].includes(request.type)) {
       try {
         const result = await api.request(request);
         if (!result.ok) setError(result.error);

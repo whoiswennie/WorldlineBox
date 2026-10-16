@@ -5,6 +5,7 @@ import { readRuntimeSdkFile, runtimeSdkRoot } from './runtime-sdk';
 import { retryFileOperation } from './runtime-commit';
 
 export const DSH_NATIVE_CLI_DISABLED_IDS = ['web-startup', 'webserver', 'web-runtime', 'connection', 'modules'] as const;
+export const DSH_NATIVE_CLI_ENABLED_IDS = ['credentials', 'authorization', 'deepseek-account'] as const;
 
 /**
  * Boot the same private web profile and installed plugin tree through the
@@ -35,7 +36,11 @@ export async function prepareNativeCliMode(instanceRoot: string, programDirector
   const actual = await realpath(directory); const relative = path.relative(root, actual);
   if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('The CLI adapter directory resolves outside its private instance.');
   const modePath = path.join(actual, 'cli-mode.patch.yml'); const temporary = `${modePath}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(DSH_NATIVE_CLI_DISABLED_IDS.map(id => ({ id, disabled: true })), null, 2)}\n`, { flag: 'wx', mode: 0o600, signal });
+  // The standalone headless bundle disables interactive credential storage. Our
+  // CLI uses an existing Web profile, so retain its own saved keys and account
+  // grants while disabling only the browser carrier. No model fields are set.
+  await writeFile(temporary, `${JSON.stringify([...DSH_NATIVE_CLI_DISABLED_IDS.map(id => ({ id, disabled: true })),
+    ...DSH_NATIVE_CLI_ENABLED_IDS.map(id => ({ id, disabled: false }))], null, 2)}\n`, { flag: 'wx', mode: 0o600, signal });
   await retryFileOperation(() => rename(temporary, modePath), { signal });
   const sdk=await runtimeSdkRoot(program);
   return ['web',...headlessPatches.flatMap(patch=>['--patch',path.join(sdk,headlessPackage,patch.slice(2))]),'--patch',modePath];

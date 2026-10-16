@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { prepareNativeCliMode, DSH_NATIVE_CLI_DISABLED_IDS } from '../../src/main/dsh/cli-profile-mode';
+import { prepareNativeCliMode, DSH_NATIVE_CLI_DISABLED_IDS, DSH_NATIVE_CLI_ENABLED_IDS } from '../../src/main/dsh/cli-profile-mode';
 import { canonicalRuntimeEntryPaths } from '../../src/main/dsh/runtime-paths';
 import { instanceEnvironment, launchCli, terminateOwnedProcess } from '../../src/main/dsh/instance-process';
 import { removeManaged } from '../../src/main/dsh/files';
@@ -23,7 +23,7 @@ describe.skipIf(process.platform !== 'win32' || !process.env.WORLDLINEBOX_DSH_RE
     const env = await instanceEnvironment(root, instance, plan);
     const prefix = await prepareNativeCliMode(root, program.toUpperCase());
     const mode = parse(await readFile(prefix[4]!, 'utf8'));
-    expect(mode).toEqual(DSH_NATIVE_CLI_DISABLED_IDS.map(id => ({ id, disabled: true })));
+    expect(mode).toEqual([...DSH_NATIVE_CLI_DISABLED_IDS.map(id => ({ id, disabled: true })), ...DSH_NATIVE_CLI_ENABLED_IDS.map(id => ({ id, disabled: false }))]);
     const invoke = async (flag: string) => {
       const child = await launchCli(plan, [...prefix, flag], env, instance.workspacePath);
       try {

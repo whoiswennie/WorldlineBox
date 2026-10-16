@@ -23,13 +23,15 @@ import { isolatedWorkspacePath } from './isolated-routing';
 import { PluginControls } from './plugin-controls';
 import { DshTaskBroker } from './task-broker';
 import { DshTaskAccessStore } from './task-access';
-import { redactDshTaskConnection, snapshotDshTaskExecution, type DshTaskExecutionConnection, type DshTaskExecutionOptions } from './task-connection';
+import { snapshotDshTaskExecution, type DshTaskExecutionOptions } from './task-execution';
 import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import { configureWorkbenchBrowser } from './workbench-browser';
+import { assertKnownRuntimeCompatibility } from './runtime-compatibility';
 
 export class DshLauncher {
   private ready = false;
   private readonly windows = new Map<string, BrowserWindow>();
+  private readonly openingWindows = new Map<string, Promise<void>>();
   private readonly operations: OperationStore;
   private readonly runtimes: RuntimeService;
   private readonly instances: InstanceService;
@@ -116,10 +118,11 @@ export class DshLauncher {
       return this.instances.prepareCli(current.id);
     } });
     this.tasks = new DshTaskBroker({ rootPath: this.rootPath, onChanged, pin: selection => this.cliTerminal.pinContext(selection),
-      getSelection: async (id, signal, resume) => {
+      getSelection: async (id, signal, resume, preparation) => {
         const selected = id ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(value => value.isDefault)?.id;
         if (!selected) throw new Error('Create and select a DSH execution instance first.');
-        return this.instances.prepareCli(selected, signal, resume?.runtimeId);
+        if (preparation?.requiresCompanionRuntime) assertKnownRuntimeCompatibility(this.runtimes.get(resume?.runtimeId ?? this.instances.get(selected).runtimeId));
+        return this.instances.prepareCli(selected, signal, resume?.runtimeId, preparation?.progress);
       }, onEvent: event => { const main = getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_TASK_EVENT_CHANNEL, event); } });
     this.initialization = this.init();
     // Surface startup failures through state requests without an unhandled rejection.
@@ -134,10 +137,17 @@ export class DshLauncher {
     const publications = await readJson<unknown[]>(path.join(this.rootPath, 'pack-publications.json')) ?? [];
     this.publications = publications.slice(0, 100).map(value => dshPackPublicationRecordSchema.parse(value));
     this.ready = true;
+    const selectedId = this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
+    const selectedRuntime = this.instances.list().find(instance => instance.id === selectedId)?.runtimeId;
+    const unchecked = this.runtimes.unchecked().sort((a, b) => Number(b.id === selectedRuntime) - Number(a.id === selectedRuntime));
     // Existing installations acquire real evidence too; no release-name exemption.
-    for (const runtime of this.runtimes.unchecked()) {
+    for (const runtime of unchecked) {
       await this.operations.run('runtime.compatibility', `隔离检测 DSH ${runtime.version} 共享存档`, undefined,
         async op => { await this.runtimes.checkCompatibility(runtime.id, op); });
+    }
+    if (selectedRuntime && !unchecked.some(runtime => runtime.id === selectedRuntime)) {
+      await this.operations.run('runtime.verify', '预先校验当前 DSH 的 CLI 运行文件', selectedId,
+        async op => { await this.runtimes.verify(selectedRuntime, op.signal); });
     }
   }
   state(): DshLauncherState {
@@ -147,6 +157,11 @@ export class DshLauncher {
       network: this.network.state(), versions: this.versions.state(), marketplace: this.marketplace.state(), packPublications: structuredClone(this.publications), tasks: this.tasks.state(), taskAccess: this.taskAccess.state() };
   }
   private async openWorkbench(instance: DshInstance, value: string): Promise<void> {
+    const pending = this.openingWindows.get(instance.id); if (pending) return pending;
+    const task = this.openWorkbenchNow(instance, value); this.openingWindows.set(instance.id, task);
+    try { await task; } finally { if (this.openingWindows.get(instance.id) === task) this.openingWindows.delete(instance.id); }
+  }
+  private async openWorkbenchNow(instance: DshInstance, value: string): Promise<void> {
     const silentTesting = process.env.WORLDLINEBOX_E2E === '1' && process.env.WORLDLINEBOX_E2E_DSH_SILENT === '1';
     const url = new URL(value);
     if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port) throw new Error('Rejected non-local DSH workbench URL.');
@@ -161,7 +176,7 @@ export class DshLauncher {
       void appendFile(path.join(this.rootPath, 'instances', instance.id, 'logs', 'host.log'), `${message}\n`).catch(() => undefined);
     } });
     window.once('ready-to-show', () => { if (!window.isDestroyed() && !silentTesting) window.show(); });
-    window.on('closed', () => this.windows.delete(instance.id));
+    window.on('closed', () => { if (this.windows.get(instance.id) === window) this.windows.delete(instance.id); });
     this.windows.set(instance.id, window);
     await window.loadURL(url.href);
   }
@@ -195,7 +210,7 @@ export class DshLauncher {
     return result.canceled ? undefined : result.filePath;
   }
   /** The companion service uses the same pinned task route as the validated launcher IPC. */
-  async requestTask(request: Extract<DshLauncherRequest, { type: 'task.run' | 'task.cancel' | 'task.terminate' | 'task.result' | 'task.events' | 'task.message' }>, executionValue?: DshTaskExecutionConnection | DshTaskExecutionOptions): Promise<DshLauncherResponse> {
+  async requestTask(request: Extract<DshLauncherRequest, { type: 'task.run' | 'task.cancel' | 'task.terminate' | 'task.result' | 'task.events' | 'task.message' }>, executionValue?: DshTaskExecutionOptions): Promise<DshLauncherResponse> {
     if (executionValue && request.type !== 'task.run') throw new Error('Transient execution options can only be used to run a task.');
     const execution = snapshotDshTaskExecution(executionValue);
     await this.initialization;
@@ -214,7 +229,7 @@ export class DshLauncher {
       case 'task.run': {
         const instanceId = request.instanceId ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(value => value.isDefault)?.id;
         if (!instanceId) throw new Error('Create and select a DSH execution instance first.');
-        return { ok: true, operationId: await this.operations.run(request.type, redact(redactDshTaskConnection(request.title ?? 'DSH 执行任务', execution?.connection)), instanceId, async op => {
+        return { ok: true, operationId: await this.operations.run(request.type, redact(request.title ?? 'DSH 执行任务'), instanceId, async op => {
           await this.tasks.execute({ prompt: request.prompt, instanceId, sessionId: request.sessionId, title: request.title,
             timeoutMs: request.timeoutMs, maxOutputBytes: request.maxOutputBytes }, op, execution);
         }) };
