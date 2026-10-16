@@ -7,7 +7,7 @@ import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePat
 // The only fixture is the isolated profile; native startup, integrity checks,
 // renderer handoff and timestamp logging all execute their production paths.
 // eslint-disable-next-line no-empty-pattern
-test('opens branded loading surfaces without focus and records real startup stages', async ({}, testInfo) => {
+test('keeps one splash until the real application is painted and records actual stages', async ({}, testInfo) => {
   test.setTimeout(120_000);
   const qa = path.resolve('.tools/test-output/startup-qa'); mkdirSync(qa, { recursive: true });
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-startup-'));
@@ -15,6 +15,25 @@ test('opens branded loading surfaces without focus and records real startup stag
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_STARTUP_SCREEN: '1', WORLDLINEBOX_E2E_HIDE_WINDOW: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: root }, { gpu: 'software' }) });
   try {
     const first = await application.firstWindow();
+    // Exercise production window.show(), while keeping the test window fully
+    // transparent and non-focusable on the user's desktop. Only the already
+    // created native splash retains the original hidden fixture setting.
+    const observesShow = process.platform !== 'linux' && first.url().startsWith('data:');
+    if (observesShow) await application.evaluate(({ app, BrowserWindow }) => {
+      const state = globalThis as typeof globalThis & { startupShown?: { loaderCount: number; focused: boolean } };
+      const observe = (window: Electron.BrowserWindow) => {
+        if (window.webContents.getURL().startsWith('data:')) return;
+        window.setOpacity(0); window.setFocusable(false);
+        window.once('show', () => {
+          void window.webContents.executeJavaScript('document.querySelectorAll(".startup-screen").length').then((loaderCount: number) => {
+            state.startupShown = { loaderCount, focused: window.isFocused() };
+          });
+        });
+      };
+      app.on('browser-window-created', (_event, window) => observe(window));
+      BrowserWindow.getAllWindows().forEach(observe);
+      process.env.WORLDLINEBOX_E2E_HIDE_WINDOW = '0';
+    });
     if (first.url().startsWith('data:')) {
       // Integrity checks can finish before automation attaches on a fast disk.
       // Observe and capture the native surface when it is still present; never
@@ -32,11 +51,17 @@ test('opens branded loading surfaces without focus and records real startup stag
     const page = application.windows().find(page => page.url().includes('index.html'))!;
     await expect(page.locator('.application-navigation')).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('.startup-screen')).toHaveCount(0);
-    const visible = await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(window => window.isVisible()));
-    expect(visible).toBe(false);
+    if (observesShow) {
+      await expect.poll(() => application.evaluate(() => (globalThis as typeof globalThis & { startupShown?: { loaderCount: number; focused: boolean } }).startupShown)).toEqual({ loaderCount: 0, focused: false });
+      const native = await application.browserWindow(page);
+      expect(await native.evaluate(window => ({ visible: window.isVisible(), opacity: window.getOpacity(), focused: window.isFocused() }))).toEqual({ visible: true, opacity: 0, focused: false });
+    } else {
+      expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(window => window.isVisible()))).toBe(false);
+    }
     const logs = () => readdirSync(path.join(root, 'logs')).filter(name => name.endsWith('.log')).map(name => readFileSync(path.join(root, 'logs', name), 'utf8')).join('\n');
     await expect.poll(logs).toContain('startup.renderer.ready');
     const content = logs(); for (const phase of ['environment', 'services', 'storage', 'interface', 'main-ready']) expect(content).toContain(`"phase":"${phase}"`);
+    expect(content.indexOf('startup.renderer.ready')).toBeLessThan(content.indexOf('"phase":"main-ready"'));
     expect(content).toContain('durationMs'); expect(content).toContain('totalMs');
     const phaseLog = content.split('\n').filter(line => line.includes('startup.')).join('\n');
     await testInfo.attach('startup-phases', { body: phaseLog, contentType: 'text/plain' });
@@ -81,6 +106,20 @@ test('opens branded loading surfaces without focus and records real startup stag
       const screenshot = await page.screenshot({ path: testInfo.outputPath(`startup-${theme}.png`) });
       writeFileSync(path.join(qa, `startup-${theme}.png`), screenshot);
     }
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    // Observe compositor animations across several elapsed-time updates: their
+    // start times must not reset every 250 ms and the bar must not travel.
+    await page.locator('#startup-visual-check').evaluate(element => element.remove());
+    // A real React Suspense loader is covered by the unit DOM-identity check;
+    // this shipped-CSS check covers the actual Chromium animation behavior.
+    await page.evaluate(({ shell }) => { const element = document.createElement('div'); element.id='startup-motion-check'; element.innerHTML=shell!; document.body.append(element); }, { shell });
+    const track = page.locator('#startup-motion-check .startup-track > span');
+    await expect.poll(() => track.evaluate(element => element.getAnimations().length)).toBe(1);
+    await expect.poll(() => track.evaluate(element => element.getAnimations()[0]!.startTime)).not.toBeNull();
+    const motion = await track.evaluate(element => ({ start: element.getAnimations()[0]!.startTime, left: element.getBoundingClientRect().left, width: element.getBoundingClientRect().width }));
+    await expect.poll(() => track.evaluate(element => element.getAnimations()[0]!.currentTime as number)).toBeGreaterThan(1000);
+    const later = await track.evaluate(element => ({ start: element.getAnimations()[0]!.startTime, left: element.getBoundingClientRect().left, width: element.getBoundingClientRect().width }));
+    expect(later).toEqual(motion);
   } finally {
     await application.close(); cleanup(root);
   }

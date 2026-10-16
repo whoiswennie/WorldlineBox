@@ -1,4 +1,5 @@
-import { contextBridge } from 'electron';
+import { contextBridge, ipcRenderer } from 'electron';
+import { STARTUP_RENDERER_STATE_CHANNEL, type StartupRendererState } from '../shared/startup-lifecycle';
 
 import { appUpdate } from './bridge/app-update';
 import { dshLauncher } from './bridge/dsh-launcher';
@@ -20,6 +21,14 @@ import { getE2eRequestCount } from './transport';
 import type { RendererRequest } from '../shared/protocol/requests';
 
 const e2eEnabled = process.env.WORLDLINEBOX_E2E === '1';
+
+if (!process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT)) {
+  contextBridge.exposeInMainWorld('worldlineboxStartup', Object.freeze({
+    notify(state: StartupRendererState): void {
+      if (state === 'ready' || state === 'failed') ipcRenderer.send(STARTUP_RENDERER_STATE_CHANNEL, state);
+    },
+  }));
+}
 
 const e2eDiagnostics = Object.freeze({
   getRequestCount(type: RendererRequest['type']): number {

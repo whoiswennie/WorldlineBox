@@ -1,6 +1,7 @@
 // This small entry paints before React, fonts and the feature module graph load.
 import './startup.css';
 import { retryStartup, startupRetryCount } from './startup-retry';
+import { notifyStartupState } from './startup-lifecycle';
 const shell = document.getElementById('startup-shell');
 const started = performance.now();
 try {
@@ -23,4 +24,5 @@ void import('./main').catch(error => {
   console.error('startup.renderer.module', error);
   const button = document.createElement('button'); button.className = 'startup-retry'; button.textContent = startupRetryCount() >= 2 ? '已达重试上限，请查看诊断日志' : '重新加载'; button.disabled = startupRetryCount() >= 2;
   button.onclick = () => retryStartup(); shell.querySelector('.startup-card')?.append(button);
+  notifyStartupState('failed');
 });

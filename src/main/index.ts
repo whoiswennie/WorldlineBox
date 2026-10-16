@@ -1,4 +1,5 @@
 import { StartupWindow } from "./startup-window";
+import { bindStartupHandoff } from "./startup-handoff";
 import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
@@ -1284,12 +1285,14 @@ function saveEncryptedApiKey(apiKey: string): void {
 }
 
 function focusMainWindow(): boolean {
+  if (startupWindow?.focus()) return true;
   return focusWorldlineBoxWindow(
     mainWindow && !mainWindow.isDestroyed() ? mainWindow.id : undefined,
   );
 }
 
 function handleSecondInstance(): void {
+  if (startupWindow?.focus()) return;
   if (
     MAIN_WINDOW_VITE_DEV_SERVER_URL &&
     mainWindow &&
@@ -1510,16 +1513,21 @@ async function createMainWindow(): Promise<void> {
   // A blank window in a packaged build must leave the same evidence as one
   // started from Vite; idle windows produce no log entries.
   attachRendererDiagnostics(window);
-  window.on("ready-to-show", () => {
-    startupWindow?.complete(); startupWindow = undefined;
-    // E2E can keep its renderer fully loaded and automatable without putting
-    // a test window over the user's desktop session.
-    if (
-      process.env.WORLDLINEBOX_E2E !== "1"
-      || process.env.WORLDLINEBOX_E2E_HIDE_WINDOW !== "1"
-    ) {
-      window.show();
-    }
+  const splash = startupWindow;
+  bindStartupHandoff({
+    window, splash,
+    complete: () => { if (startupWindow === splash) startupWindow = undefined; },
+    reportFailure: reason => logger?.error('main.startup.handoff', new Error(reason)),
+    show: () => {
+      // E2E can keep its renderer fully loaded and automatable without putting
+      // a test window over the user's desktop session.
+      if (
+        process.env.WORLDLINEBOX_E2E !== "1"
+        || process.env.WORLDLINEBOX_E2E_HIDE_WINDOW !== "1"
+      ) {
+        window.show();
+      }
+    },
   });
   // Cleanup while webContents/HWND still exist (`closed` is too late).
   window.on("close", () => {
@@ -6124,7 +6132,7 @@ async function startApplication(): Promise<void> {
     logger?.error('mcp.server.initialize', error);
   }
   windowsTray = createWindowsTray({
-    getMainWindow: () => mainWindow,
+    getMainWindow: () => startupWindow?.isOpen() ? undefined : mainWindow,
     onQuit: () => app.quit(),
     locale: appLocale,
   });
