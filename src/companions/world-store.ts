@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { companionHomeAddressSchema, type CompanionHomeAddress } from '../shared/companion-world-address';
 import { COMPANION_WORLD_DEFAULT_SETTINGS, companionWorldSnapshotSchema, type CompanionWorldActor, type CompanionWorldEvent, type CompanionWorldJob, type CompanionWorldRelationship,
   type CompanionWorldScene, type CompanionWorldScope, type CompanionWorldSettings, type CompanionWorldSnapshot, type CompanionWorldVisit, type CompanionWorldWork } from '../shared/companion-world';
 import type { CompanionWorldOccupancy } from '../shared/companion-world';
@@ -27,6 +28,7 @@ import { COMPANION_WORLD_PERCEPTION_INTERVAL_MS, sampleCompanionWorldPerception,
 
 type Row = Record<string, string | number | null>;
 type StoredActor = Omit<CompanionWorldActor, 'parkWalk'> & { arrivalActivity?: CompanionWorldActor['activity']; lastDecisionAt: number; lastDreamDay?: number;
+  navigationTaskId?: string;
   parkWalk?: NonNullable<CompanionWorldActor['parkWalk']> & { waypointIndex: number; comfortTicks: number; occurrenceId?: string };
   meetingHold?: { jobId: string; memberIds: string[]; untilReal: number }; meetingResume?: CompanionWorldActor['activity'];
   phoneResume?: { activity: CompanionWorldActor['activity'] };
@@ -71,6 +73,56 @@ export class CompanionWorldStore {
   connectSocial(social: CompanionSocialStore): void { this.social = social; }
   connectWorkOrders(orders: CompanionWorkOrderStore): void { this.orders = orders; }
   connectLife(life: NonNullable<CompanionWorldStore['life']>): void { this.life = life; }
+  private ownAddress(owner: string, state = this.load()): CompanionHomeAddress {
+    const home = this.scenes(state).find(scene => scene.ownerId === owner);
+    if (!home) throw new Error('伙伴住宅不存在。');
+    const previous = this.db.prepare('SELECT data FROM companion_world_addresses WHERE companion_id=? AND target_id=?').get(owner, owner) as Row | undefined;
+    const known = previous ? companionHomeAddressSchema.parse(parse(previous.data)) : undefined;
+    if (known?.entrance.x === home.origin.x + 10 && known.entrance.y === home.origin.y + 16) return known;
+    const address: CompanionHomeAddress = { companionId: owner, homeSceneId: home.id, entrance: { sceneId: 'commons', x: home.origin.x + 10, y: home.origin.y + 16 },
+      learnedAt: iso(this.virtualFor(state, state.cursor)), source: 'own_home' };
+    this.db.prepare('INSERT INTO companion_world_addresses(companion_id,target_id,source_message_id,data) VALUES(?,?,NULL,?) ON CONFLICT(companion_id,target_id) DO UPDATE SET data=excluded.data').run(owner, owner, JSON.stringify(address));
+    return address;
+  }
+  homeKnowledge(owner: string, state = this.load()): CompanionHomeAddress[] {
+    return [this.ownAddress(owner, state), ...(this.db.prepare('SELECT data FROM companion_world_addresses WHERE companion_id=? AND target_id<>?').all(owner, owner) as Row[]).flatMap(found => {
+      const knowledge = companionHomeAddressSchema.parse(parse(found.data));
+      if (!knowledge.sourceMessageId || !knowledge.sourceConversationId) return [];
+      let source: CompanionMessage | undefined;
+      try { source = this.visibleSources({ companionId: owner, conversationId: knowledge.sourceConversationId }, [knowledge.sourceMessageId])[0]; } catch { return []; }
+      const actual = state.actors.some(actor => actor.companionId === knowledge.companionId) ? this.ownAddress(knowledge.companionId, state) : undefined;
+      return source?.authorId === knowledge.companionId && actual && actual.entrance.x === knowledge.entrance.x && actual.entrance.y === knowledge.entrance.y ? [knowledge] : [];
+    })];
+  }
+  addressText(owner: string): string {
+    const address = this.ownAddress(owner);
+    return `我的住宅地址：${address.homeSceneId}；门口在 ${address.entrance.sceneId}（${address.entrance.x}, ${address.entrance.y}）。这是地址分享，不代表允许进屋。`;
+  }
+  shareHome(owner: string, recipients: string[], source: CompanionMessage): void {
+    if (source.authorId !== owner || source.status !== 'sent') throw new Error('住址只能由房主本人的正式消息分享。');
+    const address = { ...this.ownAddress(owner), source: 'owner_shared' as const, sourceMessageId: source.id, sourceConversationId: source.conversationId };
+    for (const recipient of recipients) {
+      if (recipient === 'user' || recipient === owner) continue;
+      if (!this.visibleSources({ companionId: recipient, conversationId: source.conversationId }, [source.id]).length) throw new Error('接收者不在真实地址消息的范围内。');
+      this.db.prepare('INSERT INTO companion_world_addresses(companion_id,target_id,source_message_id,data) VALUES(?,?,?,?) ON CONFLICT(companion_id,target_id) DO UPDATE SET source_message_id=excluded.source_message_id,data=excluded.data').run(recipient, owner, source.id, JSON.stringify(address));
+    }
+  }
+  tagTaskMovement(companionId: string, taskId: string): void {
+    const state = this.load(), actor = state.actors.find(actor => actor.companionId === companionId);
+    if (actor?.route.length) { actor.navigationTaskId = taskId; this.save(state); }
+  }
+  stopTaskMovement(scope: CompanionWorldScope, destination: { sceneId?: string; x?: number; y?: number }, taskId: string): void {
+    this.atomic(() => {
+      const state = this.load(), actor = state.actors.find(actor => actor.companionId === scope.companionId), end = actor?.route.at(-1);
+      if (!actor || actor.navigationTaskId !== taskId || !end || end.sceneId !== destination.sceneId || end.x !== destination.x || end.y !== destination.y) return;
+      delete actor.navigationTaskId;
+      actor.route = []; delete actor.destinationId; delete actor.arrivalActivity; delete actor.manualActivityUntil;
+      if (actor.activity === 'walking') actor.activity = 'idle';
+      if (actor.phoneResume?.activity === 'walking') actor.phoneResume.activity = 'idle';
+      if (actor.transition?.after === 'walking') actor.transition.after = 'idle';
+      this.event(state, { kind: 'navigation_cancelled', actorId: actor.companionId, sceneId: actor.sceneId, conversationId: scope.conversationId, text: '所属行动任务停止，取消剩余路径并保留当前位置。' }); this.save(state);
+    });
+  }
   perception(companionId: string): CompanionWorldPerception | undefined {
     const found = this.db.prepare('SELECT data FROM companion_world_perceptions WHERE companion_id=?').get(companionId);
     return found ? parse<CompanionWorldPerception>(row(found).data) : undefined;
@@ -161,6 +213,7 @@ export class CompanionWorldStore {
   }
 
   initialize(): void {
+    this.db.exec('CREATE TABLE IF NOT EXISTS companion_world_addresses(companion_id TEXT NOT NULL REFERENCES companions(id),target_id TEXT NOT NULL REFERENCES companions(id),source_message_id TEXT REFERENCES messages(id),data TEXT NOT NULL,PRIMARY KEY(companion_id,target_id)); CREATE INDEX IF NOT EXISTS companion_address_target ON companion_world_addresses(target_id)');
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_world(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS companion_world_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS companion_world_jobs(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL REFERENCES companions(id),kind TEXT NOT NULL,status TEXT NOT NULL,lease_until TEXT,data TEXT NOT NULL);
@@ -391,11 +444,15 @@ export class CompanionWorldStore {
     return event;
   }
   private move(state: StoredWorld, actor: StoredActor, scene: CompanionWorldScene, destination: { x: number; y: number }, destinationId: string, activity: CompanionWorldActor['activity']): void {
+    delete actor.navigationTaskId;
     const route = routeCompanionWorldActor(this.scenes(state), actor, scene.id, destination, owner => this.permitted(state, actor.companionId, owner));
     if (!route) throw new Error('目的地不可达，或房主尚未同意进入。');
     const previous = actor.activity, transition = actor.transition;
     delete actor.manualActivityUntil; delete actor.manualArtAction;
     actor.route = route; actor.destinationId = destinationId; actor.arrivalActivity = activity; actor.activity = route.length ? 'walking' : activity;
+    // A phone lease predates this new movement. Releasing it must resume the
+    // accepted route, not restore the idle/sitting pose saved before navigation.
+    if (actor.phoneResume) actor.phoneResume.activity = route.length ? 'walking' : activity;
     const running = state.works.some(work => work.companionId === actor.companionId && work.urgent && work.status !== 'ended');
     actor.locomotion = running ? 'run' : 'walk'; actor.movementSpeed = running ? 4.8 : COMPANION_WORLD_WALK_TILES_PER_SECOND;
     actor.activityStartedAtReal = iso(state.cursor);
@@ -484,7 +541,8 @@ export class CompanionWorldStore {
     if (actor.pendingVisitId && phase.canRespond) {
       const visit = state.visits.find(visit => visit.id === actor.pendingVisitId && visit.status === 'allowed' && Date.parse(visit.expiresAt) > this.virtualFor(state, state.cursor));
       delete actor.pendingVisitId;
-      if (visit) { const home = this.scenes(state).find(scene => scene.ownerId === visit.hostId)!; this.move(state, actor, home, { x: 10, y: 12 }, home.id, 'idle'); return; }
+      // Legacy pendingVisitId is permission only; entering requires a new explicit action.
+      void visit;
     }
     const currentScene = this.scenes(state).find(scene => scene.id === actor.sceneId);
     if (currentScene?.ownerId && !this.permitted(state, actor.companionId, currentScene.ownerId)) {
@@ -514,7 +572,10 @@ export class CompanionWorldStore {
   }
   private releasePhone(actor: StoredActor, now: number): void {
     if (!actor.phoneResume) return;
-    if (!actor.transition || actor.transition.until <= now) { actor.activity = actor.phoneResume.activity; actor.activityStartedAtReal = iso(now); }
+    if (!actor.transition || actor.transition.until <= now) {
+      actor.activity = actor.phoneResume.activity === 'walking' && !actor.route.length ? actor.arrivalActivity ?? 'idle' : actor.phoneResume.activity;
+      actor.activityStartedAtReal = iso(now);
+    }
     delete actor.phoneResume;
   }
   private releaseMeeting(actor: StoredActor, clear = false): void {
@@ -798,6 +859,7 @@ export class CompanionWorldStore {
   private queueDecision(state: StoredWorld, actor: StoredActor): void {
     const now = this.virtualFor(state, state.cursor);
     if (now - actor.lastDecisionAt < 3 * 3600000 || actor.route.length) return;
+    if (this.db.prepare("SELECT 1 FROM companion_activity_tasks WHERE companion_id=? AND status IN('queued','running','waiting') LIMIT 1").get(actor.companionId)) return;
     actor.lastDecisionAt = now; this.queueJob(state, actor.companionId, 'decision');
   }
   private queueJob(state: StoredWorld, companionId: string, kind: CompanionWorldJob['kind'], encounterMemberIds?: string[]): CompanionWorldJob | undefined {
@@ -881,7 +943,9 @@ export class CompanionWorldStore {
     const sensedAt = perception ? Date.parse(perception.observedAtVirtual) : virtualAt;
     return companionWorldSnapshotSchema.parse({ settings: state.settings, clock: { realNow: iso(now), virtualNow: iso(scope ? sensedAt : virtualAt), speed: companionWorldSpeed(state.settings),
       ...(scope ? companionWorldEnvironment(sensedAt, state.settings.timeZone).clock : environment.clock) }, environment: scope ? sensedEnvironment : environment.environment,
-      residents: (this.db.prepare("SELECT id,json_extract(data,'$.name') AS name FROM companions WHERE deleted_at IS NULL ORDER BY rowid").all() as Row[]).map(companion => ({ companionId: String(companion.id), name: String(companion.name), homeSceneId: 'home_' + companion.id })),
+      residents: (this.db.prepare("SELECT id,json_extract(data,'$.name') AS name FROM companions WHERE deleted_at IS NULL ORDER BY rowid").all() as Row[]).map(companion => ({ companionId: String(companion.id), name: String(companion.name), ...(!scope || scope.companionId === companion.id ? { homeSceneId: 'home_' + companion.id } : {}) })),
+      knownAddresses: scope ? this.homeKnowledge(scope.companionId, state) : [],
+      ...(scope ? { homeMemory: (() => { const home = scenes.find(scene => scene.ownerId === scope.companionId)!; return { ...home, objects: home.objects.map(({ occupantId: _occupant, reservedBy: _reserved, ...object }) => { void _occupant; void _reserved; return object; }) }; })() } : {}),
       ...(perception ? { perception } : {}),
       scenes: allowedScenes, actors: state.actors.filter(actor => scope ? actor.companionId === scope.companionId : visibleIds.has(actor.sceneId)).map(actor => {
         const runtime = { ...this.runtime(actor.companionId), thermalComfort: Math.max(0, 1 - Math.abs((actor.sceneId === 'commons' ? environment.environment.outdoorTemperature : environment.environment.indoorTemperature) - 22) / 15) };
@@ -1032,16 +1096,39 @@ export class CompanionWorldStore {
     this.requireScope(scope); this.advance(); const state = this.load(), actor = state.actors.find(actor => actor.companionId === scope.companionId)!;
     if (sourceMessageId && !this.visibleSources(scope, [sourceMessageId]).length) throw new Error('世界行为的消息来源不可见。');
     if (args.action === 'inspect') return this.snapshotValue(state, Date.now(), scope);
-    if (['move', 'visit', 'interact', 'leave'].includes(args.action) && state.works.some(work => work.companionId === actor.companionId && work.status !== 'ended')) {
+    if (['move', 'navigate', 'enter', 'visit', 'interact', 'leave'].includes(args.action) && state.works.some(work => work.companionId === actor.companionId && work.kind !== 'chat' && work.status !== 'ended')) {
       actor.afterWork = { scope, args, sourceMessageId };
       this.event(state, { kind: 'deferred_movement', actorId: actor.companionId, text: '已记录意图，完成当前电脑工作后再行动', sourceMessageId, conversationId: scope.conversationId });
       this.save(state); return this.snapshotValue(state, Date.now(), scope);
     }
     const scenes = this.scenes(state);
-    if (actor.parkWalk && ['move', 'visit', 'interact', 'leave'].includes(args.action)) this.finishParkWalk(state, actor, '收到新的行动安排，结束这次散步', false);
+    if (actor.parkWalk && ['move', 'navigate', 'enter', 'visit', 'interact', 'leave'].includes(args.action)) this.finishParkWalk(state, actor, '收到新的行动安排，结束这次散步', false);
+    if (args.action === 'share_address') {
+      if (!this.social || args.recipientIds.includes(actor.companionId) || new Set(args.recipientIds).size !== args.recipientIds.length) throw new Error('地址接收伙伴无效。');
+      const room = this.social.ensure(actor.companionId, [actor.companionId, ...args.recipientIds]);
+      this.social.send({ companionId: actor.companionId, conversationId: room.id, content: this.addressText(actor.companionId), channel: 'phone', clientId: randomUUID(), shareAddress: true });
+      return this.snapshotValue(this.load(), Date.now(), scope);
+    }
+    if (args.action === 'navigate' || args.action === 'enter') {
+      const address = this.homeKnowledge(actor.companionId, state).find(item => item.companionId === args.targetCompanionId);
+      if (!address) throw new Error('尚不知道对方住址，请先联系房主询问并由房主分享地址。');
+      const home = scenes.find(scene => scene.id === address.homeSceneId);
+      if (!home) throw new Error('所记地址已不存在，请重新询问房主。');
+      if (args.action === 'navigate') this.move(state, actor, scenes.find(scene => scene.id === 'commons')!, address.entrance, args.targetCompanionId + '_entrance', 'idle');
+      else {
+        if (actor.sceneId !== 'commons' || actor.route.length || Math.hypot(actor.position.x - address.entrance.x, actor.position.y - address.entrance.y) > 1) throw new Error('需要先实际走到对方家门口；寻路不代表已经进屋。');
+        if (!this.permitted(state, actor.companionId, args.targetCompanionId)) throw new Error('尚未获得有效的房主许可，不能进入。');
+        this.move(state, actor, home, { x: 10, y: 12 }, home.id, 'idle');
+        this.event(state, { kind: 'visit_enter', actorId: actor.companionId, targetId: args.targetCompanionId, text: '收到许可后决定进屋，开始步行进入', sourceMessageId, conversationId: scope.conversationId });
+      }
+      actor.manualActivityUntil = this.virtualFor(state, state.cursor) + 30 * 60000;
+    } else
     if (args.action === 'move') {
       const scene = scenes.find(scene => scene.id === args.destinationId || scene.objects.some(object => object.id === args.destinationId));
       if (!scene) throw new Error('地点不存在。'); const object = scene.objects.find(object => object.id === args.destinationId);
+      if (object && ['door','building'].includes(object.kind) && scene.kind === 'commons' && !this.homeKnowledge(actor.companionId, state).some(address => args.destinationId === address.companionId + '_entrance' || args.destinationId === address.companionId + '_building')) throw new Error('尚未得知这个住户的地址，请先联系房主。');
+      if (scene.ownerId && scene.ownerId !== actor.companionId && actor.sceneId !== scene.id) throw new Error('进入他人房屋请使用enter；寻路到门口请使用navigate。');
+      if (object && object.kind !== 'door' && scene.ownerId && scene.ownerId !== actor.companionId && !this.perception(actor.companionId)?.objects.some(known => known.id === object.id)) throw new Error('还没有观察到这个家具。');
       if (object?.kind === 'bench' && object.reservedBy && object.reservedBy !== actor.companionId) throw new Error('这张长椅正在被其他伙伴使用或前往，请选择另一张。');
       this.move(state, actor, scene, object?.anchor ?? scene.door, args.destinationId, 'idle');
     } else if (args.action === 'interact') {
@@ -1062,14 +1149,13 @@ export class CompanionWorldStore {
       const pending = state.visits.find(visit => visit.guestId === actor.companionId && visit.hostId === args.targetCompanionId && ['requested', 'allowed'].includes(visit.status));
       if (!pending) { state.visits.push({ id: randomUUID(), guestId: actor.companionId, hostId: args.targetCompanionId, reason: args.reason, status: 'requested', createdAt: iso(this.virtualFor(state, state.cursor)), expiresAt: iso(this.virtualFor(state, state.cursor) + 6 * 3600000), sourceMessageId, conversationId: scope.conversationId });
         this.event(state, { kind: 'visit_request', actorId: actor.companionId, targetId: args.targetCompanionId, text: args.reason, sourceMessageId, conversationId: scope.conversationId }); this.queueJob(state, args.targetCompanionId, 'decision'); }
-      const home = scenes.find(scene => scene.ownerId === args.targetCompanionId)!, commons = scenes[0]!;
-      this.move(state, actor, commons, { x: home.origin.x + 10, y: home.origin.y + 16 }, args.targetCompanionId + '_entrance', 'idle');
+      // A request neither reveals an address nor moves the guest.
     } else if (args.action === 'respond') {
       const visit = state.visits.find(visit => visit.id === args.requestId && visit.hostId === actor.companionId && visit.status === 'requested'); if (!visit) throw new Error('只有房主可回应待处理的拜访。');
       visit.status = args.decision === 'allow' ? 'allowed' : 'denied'; visit.response = args.reason;
       visit.responseSourceMessageId = sourceMessageId; visit.responseConversationId = scope.conversationId;
       this.event(state, { kind: 'visit_response', actorId: actor.companionId, targetId: visit.guestId, text: args.reason, sourceMessageId, conversationId: scope.conversationId });
-      if (visit.status === 'allowed') { const guest = state.actors.find(item => item.companionId === visit.guestId)!; guest.pendingVisitId = visit.id; this.planRoutine(state, guest); }
+      // Permission is independent of navigation and the guest's decision to enter.
     } else if (args.action === 'leave') {
       for (const visit of state.visits) if (visit.guestId === actor.companionId && ['allowed', 'requested'].includes(visit.status)) visit.status = 'left';
       delete actor.pendingVisitId;

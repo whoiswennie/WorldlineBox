@@ -3,6 +3,7 @@ import { companionWorldArgumentsSchema } from './companion-world-tool';
 import { companionMemoryCandidateSchema } from './companion-memory';
 import { COMPANION_WORLD_ART_ACTIONS } from './companion-world-actions';
 import { companionWorldPerceptionSchema } from './companion-world-perception';
+import { companionHomeAddressSchema } from './companion-world-address';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const point = z.object({ x: z.number().finite(), y: z.number().finite() });
@@ -46,7 +47,9 @@ export const companionWorldSnapshotSchema = z.object({
   clock: z.object({ realNow: z.iso.datetime(), virtualNow: z.iso.datetime(), speed: z.number().positive(), day: z.number().int(), hour: z.number().min(0).max(24), daylight: z.boolean() }),
   environment: z.object({ weather: z.enum(['clear', 'cloudy', 'rain', 'snow']).optional(), light: z.number().min(0).max(1), outdoorTemperature: z.number().optional(), indoorTemperature: z.number().optional() }),
   scenes: z.array(companionWorldSceneSchema), actors: z.array(companionWorldActorSchema), visits: z.array(companionWorldVisitSchema),
-  residents: z.array(z.object({ companionId: id, name: z.string(), homeSceneId: id })),
+  residents: z.array(z.object({ companionId: id, name: z.string(), homeSceneId: id.optional() })),
+  knownAddresses: z.array(companionHomeAddressSchema).optional(),
+  homeMemory: companionWorldSceneSchema.optional(),
   events: z.array(companionWorldEventSchema), relationships: z.array(companionWorldRelationshipSchema), works: z.array(companionWorldWorkSchema),
   lastEventSequence: z.number().int().nonnegative(), backlog: z.boolean(),
   perception: companionWorldPerceptionSchema.optional(),

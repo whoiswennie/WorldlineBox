@@ -34,6 +34,7 @@ import { CompanionResetStore } from './reset-store';
 import { CompanionWorkOrderStore } from './work-order-store';
 import { CompanionLifeEventStore } from './life-event-store';
 import { companionDshReceipt } from '../shared/companion-dsh-receipt';
+import { CompanionActivityTaskStore } from './activity-task-store';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -69,6 +70,7 @@ export class CompanionsStore {
   readonly #reset: CompanionResetStore;
   readonly #workOrders: CompanionWorkOrderStore;
   readonly #life: CompanionLifeEventStore;
+  readonly #activity: CompanionActivityTaskStore;
 
   constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS) {
     mkdirSync(path.dirname(databasePath), { recursive: true });
@@ -90,7 +92,8 @@ export class CompanionsStore {
     this.#social = new CompanionSocialStore(this.#db, input => this.appendMessage(input), id => this.getMessage(id),
       (scope, ids) => this.#memory.sourcesFilter(scope, ids), () => this.#world.socialContext(),
       (id, channel, recipients) => this.#world.socialAvailable(id, channel, recipients), (message, channel) => this.#world.recordSocialSpeech(message, channel),
-      { elapsedVirtual: (from, to) => this.#world.elapsedVirtual(from, to) }, { createPeerWork: input => {
+      { elapsedVirtual: (from, to) => this.#world.elapsedVirtual(from, to) }, {
+        addressText: owner => this.#world.addressText(owner), shareHome: (owner, recipients, source) => this.#world.shareHome(owner, recipients, source), createPeerWork: input => {
         const source = this.getMessage(input.sourceMessageId);
         if (source.conversationId !== input.conversationId || ['user', 'system', input.companionId].includes(source.authorId)) throw new Error('伙伴工作必须来自这段交流中实际其它伙伴的正式发布。');
         const order = this.#workOrders.create(input, input.title, input.instruction, input.sourceMessageId, input.clientId);
@@ -115,6 +118,8 @@ export class CompanionsStore {
     this.#workOrders = new CompanionWorkOrderStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids), humanSource,
       (scope, content, clientId, replyToId) => this.appendMessage({ conversationId: scope.conversationId, authorId: scope.companionId, content, clientId, replyToId, replyDirective: 'none' }), () => this.#world.changed());
     this.#world.connectWorkOrders(this.#workOrders);
+    this.#activity = new CompanionActivityTaskStore(this.#db, this.#world, this.#social,
+      (scope, ids) => this.#memory.sourcesFilter(scope, ids), input => this.appendMessage(input));
     this.#life = new CompanionLifeEventStore(this.#db, { world: () => this.#world.snapshot(), perception: id => this.#world.perception(id), elapsed: (from, to) => this.#world.elapsedVirtual(from, to), perform: (occurrence, text) => {
       const owner = occurrence.companionId, target = occurrence.targetId;
       if (occurrence.rule.action === 'message') {
@@ -128,7 +133,9 @@ export class CompanionsStore {
       const scope = { companionId: owner, conversationId: 'world_' + owner };
       if (occurrence.rule.action === 'visit') {
         if (!target || target === 'user' || !text?.trim()) throw new Error('拜访需要实际伙伴和申请内容。');
-        this.#world.tool(scope, { action: 'visit', targetCompanionId: target, reason: text }); return '已发出拜访申请，尚未获得入门许可。';
+        const task = this.#activity.start({ type: 'activity.start', ...scope, clientId: 'life_activity_' + occurrence.id, title: occurrence.rule.title.slice(0, 120),
+          goal: `自主生活机会：想联系 ${target} 并询问是否方便做客。自己的想法：${text}。依据实际回复与空间记忆决定后续；不知道地址先询问，对方不方便则尊重拒绝。获准才可导航到门口，再自行决定申请、进入、当面交流或离开。不得虚构许可或玩家委托。` });
+        return '已创建持续行动任务 ' + task.id + '，由伙伴根据来信和实际世界状态继续规划。';
       }
       if (occurrence.rule.action === 'park_walk') {
         this.#world.startParkWalk(scope, occurrence.rule.durationMinutes ?? 35, occurrence.id);
@@ -181,6 +188,7 @@ export class CompanionsStore {
       this.#memory.initialize();
       this.#routine.initialize();
       this.#workOrders.initialize();
+      this.#activity.initialize();
       this.#world.initialize();
       this.#social.initialize();
       this.#runtimeState.initialize();
@@ -1172,6 +1180,8 @@ export class CompanionsStore {
     if (lifeResponse) return lifeResponse;
     const socialResponse = this.#social.execute(command);
     if (socialResponse) return socialResponse;
+    const activityResponse = this.#activity.execute(command);
+    if (activityResponse) return activityResponse;
     const worldResponse = this.#world.execute(command);
     if (worldResponse) return worldResponse;
     switch (command.type) {

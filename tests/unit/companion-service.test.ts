@@ -1301,7 +1301,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     expect(body.tools.map((item: { function: { name: string } }) => item.function.name)).toEqual([
       'dsh', 'dsh_record', 'memory_search', 'memory_read', 'memory_record', 'memory_revise', 'memory_organize', 'memory_forget',
       'schedule', 'state',
-      'routine', 'world', 'work', 'life_rule',
+      'routine', 'world', 'activity', 'work', 'life_rule',
       'read_file', 'read_image', 'send_file',
     ]);
   });

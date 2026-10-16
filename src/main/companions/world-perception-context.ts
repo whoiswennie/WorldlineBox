@@ -2,11 +2,13 @@ import { z } from 'zod';
 import { companionWorldActorSchema, companionWorldEventSchema, companionWorldRelationshipSchema,
   companionWorldSettingsSchema, companionWorldVisitSchema, companionWorldWorkSchema } from '../../shared/companion-world';
 import { companionWorldPerceptionSchema } from '../../shared/companion-world-perception';
+import { companionHomeAddressSchema } from '../../shared/companion-world-address';
+import { companionWorldSceneSchema } from '../../shared/companion-world';
 import type { CompanionLoopTurn } from '../../shared/companion-loop';
 
-export const COMPANION_WORLD_PERCEPTION_RULES = `world是你自己的有限感知与带时间戳的见闻，不是全图监控。perception.radius、awake、遮挡和光照限制现场可见范围；只有visible=true且列于visibleCompanionIds/visibleObjectIds的资料才表示本次看见。visible=false、lastObservedAt与weatherObservedAtVirtual表示过去某时看到的事实，不能当作现在仍在那里、仍空闲或天气未变。residents与场景地址只表示公开联系人和住址，不证明对方当前在家、屋内家具、忙闲、情绪或工作。其他人的内心PAD、精力、工作内容和移动计划不可知；只能依据实际外在活动和对方已经说出的内容理解。environment只表示本地实际感受；weather缺省就是未知，不能默认晴天，室内记得的旧天气不代表现在。先观察、走近或询问再确认未知事实，不能凭全局地图补造观察。时间认知使用worldClock及world.clock.virtualNow；记忆和远程来信不会自动更新对方的现场位置。`;
+export const COMPANION_WORLD_PERCEPTION_RULES = `world是你自己的有限感知与带时间戳的见闻，不是全图监控。perception.radius、awake、遮挡和光照限制现场可见范围；只有visible=true且列于visibleCompanionIds/visibleObjectIds的资料才表示本次看见。visible=false、lastObservedAt与weatherObservedAtVirtual表示过去某时看到的事实，不能当作现在仍在那里、仍空闲或天气未变。residents只表示联系人，不包含他人住址；knownAddresses是自己的空间记忆，own_home为本人住宅，owner_shared为房主通过真实消息分享的地址；地址并非进入许可。场景地址，不证明对方当前在家、屋内家具、忙闲、情绪或工作。其他人的内心PAD、精力、工作内容和移动计划不可知；只能依据实际外在活动和对方已经说出的内容理解。environment只表示本地实际感受；weather缺省就是未知，不能默认晴天，室内记得的旧天气不代表现在。先观察、走近或询问再确认未知事实，不能凭全局地图补造观察。时间认知使用worldClock及world.clock.virtualNow；记忆和远程来信不会自动更新对方的现场位置。`;
 
-const residentsSchema = z.array(z.object({ companionId: z.string(), name: z.string(), homeSceneId: z.string() }));
+const residentsSchema = z.array(z.object({ companionId: z.string(), name: z.string(), homeSceneId: z.string().optional() }));
 const record = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const rows = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
@@ -35,6 +37,7 @@ export function companionModelWorld(value: unknown, companionId: string) {
   const speed = typeof originalClock?.speed === 'number' && Number.isFinite(originalClock.speed) && originalClock.speed > 0 ? originalClock.speed : undefined;
   const self = companionWorldActorSchema.safeParse(rows(source.actors).find(actor => record(actor)?.companionId === companionId));
   const residents = residentsSchema.safeParse(source.residents);
+  const home = companionWorldSceneSchema.safeParse(source.homeMemory);
   const knownObjects = perception?.objects ?? [];
   const scenes: Array<{ id: string; name: string; kind?: 'home' | 'commons'; ownerId?: string; objects: typeof knownObjects }> = rows(source.scenes).flatMap(item => {
     const scene = record(item);
@@ -51,7 +54,9 @@ export function companionModelWorld(value: unknown, companionId: string) {
     clock: { ...(virtualNow ? { virtualNow } : {}), ...(speed ? { speed } : {}) },
     environment: perception?.environment ?? {},
     ...(perception ? { perception } : {}),
-    residents: residents.success ? residents.data : [],
+    residents: residents.success ? residents.data.map(({ companionId: owner, name }) => ({ companionId: owner, name })) : [],
+    knownAddresses: rows(source.knownAddresses).flatMap(value => { const parsed = companionHomeAddressSchema.safeParse(value); return parsed.success ? [parsed.data] : []; }),
+    ...(home.success && home.data.ownerId === companionId ? { homeMemory: { ...home.data, objects: home.data.objects.map(({ occupantId: _occupant, reservedBy: _reserved, ...object }) => { void _occupant; void _reserved; return object; }) } } : {}),
     scenes,
     actors: [
       ...(self.success ? [{ ...self.data, ...(perception ? { sceneId: perception.sceneId, position: perception.position,

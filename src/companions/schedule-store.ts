@@ -216,7 +216,7 @@ export class CompanionScheduleStore {
           const candidate = decode<CompanionSchedule>(item.data);
           if (!this.valid(candidate)) { candidate.status = 'cancelled'; candidate.nextRunAt = undefined; candidate.lastError = '授权来源或执行范围已经不可用。'; this.touch(candidate); continue; }
           const energy = this.energy(candidate.companionId, time);
-          const deferred = candidate.kind === 'task' && candidate.flexible ? this.deferredUntil(candidate.companionId, time, energy) : undefined;
+          const deferred = candidate.kind !== 'reminder' && candidate.flexible ? this.deferredUntil(candidate.companionId, time, energy) : undefined;
           if (deferred) {
             candidate.blockedReason = 'resting'; candidate.deferredUntil = deferred; this.touch(candidate); continue;
           }
@@ -231,7 +231,7 @@ export class CompanionScheduleStore {
       }
       if (!occurrence || !schedule) return;
       const energy = this.energy(schedule.companionId, time);
-      const deferred = schedule.kind === 'task' && schedule.flexible && !occurrence.forced ? this.deferredUntil(schedule.companionId, time, energy) : undefined;
+      const deferred = schedule.kind !== 'reminder' && schedule.flexible && !occurrence.forced ? this.deferredUntil(schedule.companionId, time, energy) : undefined;
       if (deferred) { schedule.blockedReason = 'resting'; schedule.deferredUntil = deferred; this.touch(schedule); return; }
       if (!schedule.flexible || occurrence.forced || schedule.kind === 'reminder') this.wakeForCommitment(schedule.companionId, time);
       occurrence.status = 'dispatching'; occurrence.attempts++; occurrence.leaseToken = randomUUID(); occurrence.leaseUntil = iso(time + leaseMs); occurrence.updatedAt = now;
@@ -276,7 +276,16 @@ export class CompanionScheduleStore {
         if (schedule.kind !== 'reminder') throw new Error('执行任务不能用提醒消息冒充完成。');
         occurrence.messageId = input.messageId; occurrence.result = String(row(message).content).slice(0, 4000);
       }
-      if (input.status === 'done' && !occurrence.actionId && !occurrence.messageId) throw new Error('完成状态需要实际行动或已发送提醒证据。');
+      if (input.activityTaskId) {
+        const found = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE id=?').get(input.activityTaskId);
+        const task = found ? decode<{ companionId: string; conversationId: string; clientId: string; status: string }>(row(found).data) : undefined;
+        if (schedule.kind !== 'activity' || !task || task.companionId !== schedule.companionId || task.conversationId !== schedule.conversationId || task.clientId !== 'schedule_activity_' + occurrence.id) throw new Error('行动任务不属于这个日程发生期。');
+        if (occurrence.activityTaskId && occurrence.activityTaskId !== input.activityTaskId) throw new Error('日程已绑定另一份行动任务。');
+        const expected = task.status === 'succeeded' ? 'done' : task.status === 'failed' ? 'failed' : task.status === 'cancelled' ? 'cancelled' : undefined;
+        if (['done','failed','cancelled'].includes(input.status) && input.status !== expected) throw new Error('行动实际结果还不支持完成日程。');
+        occurrence.activityTaskId = input.activityTaskId;
+      }
+      if (input.status === 'done' && !occurrence.actionId && !occurrence.messageId && !occurrence.activityTaskId) throw new Error('完成状态需要实际行动或已发送提醒证据。');
       occurrence.status = input.status; occurrence.updatedAt = iso(); occurrence.startedAt ??= ['running', 'done'].includes(input.status) ? iso() : undefined;
       if (input.result && !occurrence.result) occurrence.result = input.result;
       if (input.error) occurrence.error = input.error;
@@ -299,6 +308,9 @@ export class CompanionScheduleStore {
       case 'schedule.pause': return { ok: true, schedule: this.pause(command, command.id, command.expectedRevision, command.paused) };
       case 'schedule.cancel': return { ok: true, ...this.cancel(command, command.id, command.expectedRevision) };
       case 'schedule.run-now': return { ok: true, ...this.runNow(command, command.id, command.expectedRevision) };
+      case 'schedule.recover-activities': {
+        this.db.prepare("UPDATE companion_schedule_occurrences SET status='pending',lease_until=NULL,data=json_remove(json_set(data,'$.status','pending'),'$.leaseToken','$.leaseUntil') WHERE status='running' AND json_extract(data,'$.activityTaskId') IS NOT NULL").run(); return { ok: true };
+      }
       case 'schedule.due.claim': { const due = this.claim(command.now, command.leaseMs); return { ok: true, ...due }; }
       case 'schedule.occurrence.update': return { ok: true, scheduleOccurrence: this.updateOccurrence(command) };
       default: return undefined;

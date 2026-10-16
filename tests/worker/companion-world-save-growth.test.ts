@@ -53,7 +53,13 @@ it('retains the full visit audit but only active permission and recent settled v
   expect(world.visits.find(value => value.id === left.id)?.status).toBe('left');
   expect(world.visits.some(value => value.id === deniedIds[0])).toBe(false);
   // The retained permission must still authorize actual physical entry.
-  f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'move', destinationId: 'home_bob' } });
+  f.store.request({ type: 'world.tool', ...f.bob, arguments: { action: 'share_address', recipientIds: ['alice'] } });
+  f.store.request({ type: 'social.job.claim' }); vi.setSystemTime(Date.now() + 1600); f.store.request({ type: 'world.tick' }); const delivery = f.store.request({ type: 'social.job.claim' });
+  if (delivery.socialJob) { vi.setSystemTime(Date.now() + 1600); f.store.request({ type: 'world.tick' }); f.store.request({ type: 'social.job.complete', id: delivery.socialJob.id, leaseToken: delivery.socialJob.leaseToken!, text: null }); }
+  vi.setSystemTime(Date.now() + 6000); f.store.request({ type: 'world.tick' });
+  f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'navigate', targetCompanionId: 'bob' } });
+  vi.setSystemTime(Date.now() + 30000); f.store.request({ type: 'world.tick' });
+  f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'enter', targetCompanionId: 'bob' } });
   vi.setSystemTime(Date.now() + 30000); f.store.request({ type: 'world.tick' });
   expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(value => value.companionId === 'alice')!.sceneId).toBe('home_bob');
   close(f.store);

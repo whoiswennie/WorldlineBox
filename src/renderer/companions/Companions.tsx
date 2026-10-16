@@ -76,6 +76,10 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, ChatDraft>>({});
   const [sending, setSending] = useState(false);
+  const [addingFiles, setAddingFiles] = useState(false);
+  const [fileDrag, setFileDrag] = useState(false);
+  const fileJobs = useRef(0);
+  const dragDepth = useRef(0);
   const [guideMessageId, setGuideMessageId] = useState<string | null>(null);
   const [showTaskMonitor, setShowTaskMonitor] = useState(false);
   const [showSocialMonitor, setShowSocialMonitor] = useState(false);
@@ -349,7 +353,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   }
   async function send(guide = false, targetSourceMessageId?: string) {
     if (guide && !targetSourceMessageId && runningSources.length > 1) { setGuideMessageId('composer'); return; }
-    if (!selectedId || selectedReset || sendInFlight.current || (!draft.content.trim() && !draft.attachments.length)) return;
+    if (!selectedId || selectedReset || sendInFlight.current || fileJobs.current || (!draft.content.trim() && !draft.attachments.length)) return;
     const id = selectedId;
     const sentDraft = draft;
     sendInFlight.current = true; setSending(true); setError(''); stickyRef.current = true; setHighlightedId(null);
@@ -376,10 +380,32 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const response = await request({ type: 'attachment.pick', ...(kind ? { kind } : {}) });
     if (kind && response?.attachments?.some(item => !item.mime.startsWith('image/'))) setError('已忽略非图片文件，请选择图片。');
     const attachments = response?.attachments?.filter(item => !kind || item.mime.startsWith('image/'));
-    if (attachments) setDrafts(current => {
+    if (attachments) addDraftAttachments(id, attachments);
+  }
+  function addDraftAttachments(id: string, attachments: CompanionAttachment[]) {
+    if (!aliveRef.current || stateRef.current?.resetJobs?.some(job => job.status !== 'completed' && stateRef.current?.conversations.find(room => room.id === id)?.memberIds.includes(job.companionId))) return;
+    setDrafts(current => {
       const currentDraft = current[id] ?? EMPTY_DRAFT;
-      return { ...current, [id]: { ...currentDraft, attachments: [...currentDraft.attachments, ...attachments].slice(0, 10) } };
+      const key = (file: CompanionAttachment) => file.path?.replaceAll('\\', '/').toLocaleLowerCase() ?? file.id;
+      const seen = new Set(currentDraft.attachments.map(key));
+      const added = attachments.filter(file => { const value = key(file); if (seen.has(value)) return false; seen.add(value); return true; });
+      if (currentDraft.attachments.length + added.length > 10) { setError('一条消息最多 10 个附件，请先发送或移除部分附件。'); return current; }
+      return { ...current, [id]: { ...currentDraft, attachments: [...currentDraft.attachments, ...added] } };
     });
+  }
+  async function receiveFiles(files: File[], paste = false) {
+    const id = selectedRef.current;
+    if (!id || selectedReset || !api) return;
+    if (files.length > 10) { setError('一条消息最多添加 10 个附件。'); return; }
+    fileJobs.current++; setAddingFiles(true); setError('');
+    try {
+      let result = paste ? await api.request({ type: 'attachment.clipboard' }) : await api.importFiles?.(files);
+      if (paste && result?.ok && !result.attachments?.length && files.length) result = await api.importFiles?.(files);
+      if (!result?.ok) throw new Error(result?.error || '当前无法读取本机文件路径。');
+      if (!result.attachments?.length) throw new Error('剪贴板中没有可读取的文件或图片。');
+      addDraftAttachments(id, result.attachments);
+    } catch (error) { if (aliveRef.current) setError(error instanceof Error ? error.message : '添加文件失败。'); }
+    finally { fileJobs.current--; if (aliveRef.current) setAddingFiles(fileJobs.current > 0); }
   }
   async function openMessageLink(url: string) {
     const shell = (window as Window & { worldlinebox?: { shell?: Pick<WorldlineBoxShellApi, 'openExternalUrl'> } }).worldlinebox?.shell;
@@ -544,13 +570,20 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
                 <button disabled={!runningSources.length || runningSources.includes(item.sourceMessageId)} onClick={() => void guideQueued(item.sourceMessageId)}>立即引导</button>
               </div>)}
             </aside>}
-            <section className="companions-composer" aria-label="消息输入区">
+            <section className={`companions-composer${fileDrag ? ' is-file-drag' : ''}`} aria-label="消息输入区" aria-busy={addingFiles}
+              onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); dragDepth.current++; setFileDrag(true); } }}
+              onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = selectedReset ? 'none' : 'copy'; } }}
+              onDragLeave={event => { event.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setFileDrag(false); } }}
+              onDrop={event => { event.preventDefault(); event.stopPropagation(); dragDepth.current = 0; setFileDrag(false); void receiveFiles(Array.from(event.dataTransfer.files)); }}
+              onPaste={event => { if (event.clipboardData.files.length || event.clipboardData.types.includes('Files') || !event.clipboardData.getData('text/plain') && !event.clipboardData.getData('text/html')) { event.preventDefault(); event.stopPropagation(); void receiveFiles(Array.from(event.clipboardData.files), true); } }}>
+              {fileDrag && <div className="companions-file-drop-hint"><Icon name="plus" /><strong>松开以添加文件</strong><span>支持多个文件 · 原文件绝对路径交给伙伴</span></div>}
+              {addingFiles && <div className="companions-file-import-status" role="status">正在添加附件…</div>}
               {emojiOpen && <div className="companions-emoji-picker" aria-label="选择表情">{emojis.map(emoji => <button key={emoji} aria-label={`表情 ${emoji}`} onClick={() => { updateDraft({ content: draft.content + emoji }); setEmojiOpen(false); composerRef.current?.focus(); }}>{emoji}</button>)}</div>}
-              {composerMore && <div className="companions-composer-menu"><button onClick={() => { setComposerMore(false); setShowMemoryManager(true); }}><Icon name="heart" />查看共同记忆</button></div>}
+              {composerMore && <div className="companions-composer-menu"><button onClick={() => { setComposerMore(false); void receiveFiles([], true); }}><Icon name="clipboard" />粘贴文件或图片</button><button onClick={() => { setComposerMore(false); setShowMemoryManager(true); }}><Icon name="heart" />查看共同记忆</button></div>}
               {draft.reply && <div className="companions-draft-reply"><ChatGlyph name="reply" /><span>回复 {authorName(draft.reply.authorId)}：{draft.reply.content || '附件'}</span><button className="companion-icon-button" aria-label="取消引用" onClick={() => updateDraft({ reply: undefined })}>×</button></div>}
-              {!!draft.attachments.length && <div className="companions-draft-attachments">{draft.attachments.map(item => <span key={item.id}>{item.mime.startsWith('image/') ? <ChatGlyph name="image" /> : <Icon name="file" />}<span>{item.name}</span><small>{bytes(item.size)}</small><button aria-label={`移除附件 ${item.name}`} onClick={() => updateDraft({ attachments: draft.attachments.filter(attachment => attachment.id !== item.id) })}>×</button></span>)}</div>}
+              {!!draft.attachments.length && <div className="companions-draft-attachments">{draft.attachments.map(item => <span key={item.id} title={item.path ?? item.name}>{item.mime.startsWith('image/') && item.url ? <img className="companions-draft-image" src={item.url} alt="" /> : item.mime.startsWith('image/') ? <ChatGlyph name="image" /> : <Icon name="file" />}<span>{item.name}</span><small>{bytes(item.size)}</small><button aria-label={`移除附件 ${item.name}`} onClick={() => updateDraft({ attachments: draft.attachments.filter(attachment => attachment.id !== item.id) })}>×</button></span>)}</div>}
               <textarea ref={composerRef} rows={2} aria-label="输入消息" disabled={!!selectedReset} placeholder={selectedReset ? '伙伴正在重置，完成后可以重新聊天' : selected.kind === 'group' ? '和大家聊聊，@名字可以指定伙伴…' : `发消息给${selected.title}…`} value={draft.content} maxLength={16000} onChange={event => updateDraft({ content: event.target.value })} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !composingRef.current && event.keyCode !== 229) { event.preventDefault(); void send((event.ctrlKey || event.metaKey) && activities.length > 0); } }} />
-              <div className="companions-composer-toolbar"><div className="companions-composer-tools"><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{selectedReset ? '伙伴正在重置' : sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={!!selectedReset || sending || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
+              <div className="companions-composer-toolbar"><div className="companions-composer-tools"><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{selectedReset ? '伙伴正在重置' : sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={!!selectedReset || sending || addingFiles || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
             </section>
           </section>
           {showPanel && memoryOwner && <CompanionPlanner key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} members={members} conversationId={selected.id} conversationKind={selected.kind} actions={actions} request={request} api={api} onOwnerChange={id => { setMemoryOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setShowPanel(false)} onProfile={() => { setContactId(memoryOwner.id); setPage('contacts'); }} onMemory={() => setShowMemoryManager(true)} onTasks={(view = 'active', ownerId) => { setSelectedTaskActionId(undefined); setTaskView(view); setTaskOwnerId(ownerId); setShowTaskMonitor(true); }} onSchedules={() => setShowScheduleManager(true)} onWork={id => { setSelectedWorkOrderId(id); setShowWorkManager(true); }} onWorld={() => void openWorld(memoryOwner.id)} />}

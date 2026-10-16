@@ -7,6 +7,7 @@ import { companionWorldCellWalkable, createCompanionWorldHome, createCompanionWo
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
 import { CompanionWorldStore } from '../../src/companions/world-store';
+import { shareWorldAddress } from '../helpers/companion-world-address';
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '认真友好', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), roots: string[] = [];
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T10:00:00Z'); });
@@ -29,9 +30,12 @@ function tool(store: CompanionsStore, scope: { companionId: string; conversation
   return store.request({ type: 'world.tool', ...scope, ...(source ? { sourceMessageId: source.id } : {}), arguments: args }).world!;
 }
 function allowVisit(f: ReturnType<typeof fixture>) {
+  shareWorldAddress(f.store, f.bob, 'alice', ms => advance(f.store, ms));
   const requested = tool(f.store, f.alice, { action: 'visit', targetCompanionId: 'bob', reason: '一起看书' });
   const visit = requested.visits.find(visit => visit.guestId === 'alice')!;
   tool(f.store, f.bob, { action: 'respond', requestId: visit.id, decision: 'allow', reason: '欢迎来做客' });
+  tool(f.store, f.alice, { action: 'navigate', targetCompanionId: 'bob' }); advance(f.store, 40000);
+  tool(f.store, f.alice, { action: 'enter', targetCompanionId: 'bob' }); advance(f.store, 8000);
   return visit;
 }
 
@@ -72,13 +76,17 @@ describe('one authoritative companion world', () => {
   });
   it('requires explicit host consent and walks every exterior path before entering another house', () => {
     const f = fixture();
-    expect(() => tool(f.store, f.alice, { action: 'move', destinationId: 'home_bob' })).toThrow('同意');
+    expect(() => tool(f.store, f.alice, { action: 'move', destinationId: 'home_bob' })).toThrow('enter');
     const visit = tool(f.store, f.alice, { action: 'visit', targetCompanionId: 'bob', reason: '拜访' }).visits[0]!;
     expect(() => tool(f.store, f.alice, { action: 'respond', requestId: visit.id, decision: 'allow', reason: '自己批准' })).toThrow('房主');
-    advance(f.store, 40000); expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.sceneId).toBe('commons');
+    advance(f.store, 40000); expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.sceneId).toBe('home_alice');
     tool(f.store, f.bob, { action: 'respond', requestId: visit.id, decision: 'allow', reason: '欢迎' });
+    shareWorldAddress(f.store, f.bob, 'alice', ms => advance(f.store, ms));
+    tool(f.store, f.alice, { action: 'navigate', targetCompanionId: 'bob' });
     const moving = advance(f.store, 100); expect(moving.actors.find(actor => actor.companionId === 'alice')!.activity).toBe('walking');
-    const arrived = advance(f.store, 5000); expect(arrived.actors.find(actor => actor.companionId === 'alice')!.sceneId).toBe('home_bob');
+    advance(f.store, 40000); expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.sceneId).toBe('commons');
+    tool(f.store, f.alice, { action: 'enter', targetCompanionId: 'bob' });
+    const arrived = advance(f.store, 8000); expect(arrived.actors.find(actor => actor.companionId === 'alice')!.sceneId).toBe('home_bob');
   });
   it('persists partial physical movement and resumes it after a restart without teleporting or fake completed work', () => {
     const f = fixture(); tool(f.store, f.alice, { action: 'move', destinationId: 'alice_computer' }); const partial = advance(f.store, 500);

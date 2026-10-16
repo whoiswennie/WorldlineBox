@@ -73,7 +73,7 @@ export class CompanionResetStore {
     let owner = input.companionId, source = input.sourceMessageId;
     for (const value of [input.action, input.work, input.checkpoint, input.memory]) if (value?.companionId) { owner = value.companionId; source = value.sourceMessageId; }
     const table = input.type.startsWith('action.') || input.type.startsWith('checkpoint.') || input.type === 'state.action' ? 'actions'
-      : input.type.startsWith('memory.jobs.') ? 'memory_jobs' : input.type.startsWith('world.job.') ? 'companion_world_jobs'
+      : input.type.startsWith('activity.') ? 'companion_activity_tasks' : input.type.startsWith('memory.jobs.') ? 'memory_jobs' : input.type.startsWith('world.job.') ? 'companion_world_jobs'
         : input.type.startsWith('social.job.') ? 'companion_social_jobs' : input.type.startsWith('work-order.') ? 'companion_work_orders' : input.type === 'work.status' ? 'companion_work_queue'
           : input.type === 'memory.delete' ? 'memories' : input.type.startsWith('schedule.') && 'id' in input ? 'companion_schedules' : undefined;
     if (!owner && table && (input.id || input.actionId)) { const found = this.db.prepare(`SELECT companion_id FROM ${ident(table)} WHERE id=?`).get(input.id ?? input.actionId); if (found) owner = String(row(found).companion_id); }
@@ -160,6 +160,8 @@ export class CompanionResetStore {
       ['companion_world_peer_appraisals', 'companion_id=? OR target_id=?', [id, id]],
       ['companion_world_visit_records', 'guest_id=? OR host_id=?', [id, id]],
       ['companion_world_perceptions', 'companion_id=?', [id]],
+      ['companion_activity_tasks', 'companion_id=?', [id]],
+      ['companion_world_addresses', 'companion_id=? OR target_id=?', [id, id]],
       ...['actorId', 'targetId', 'privateOwner'].map(field => ['companion_world_events', `json_extract(data,'$.${field}')=?`, [id]] as [string, string, unknown[]]),
     ];
   }

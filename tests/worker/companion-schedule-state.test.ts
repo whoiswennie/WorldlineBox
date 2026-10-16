@@ -30,6 +30,22 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(time); });
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); vi.useRealTimers(); });
 
 describe('persistent companion schedules', () => {
+  it('recovers a natural-language activity occurrence and binds completion to its actual agent task without a DSH action', () => {
+    const f = fixture();
+    const schedule = f.store.request({ type: 'schedule.create', ...f.scope, clientId: 'activity_schedule_form',
+      entries: [entry({ kind: 'activity', title: '去花园坐坐', prompt: '到花园找长椅休息，再告诉我。' })] }).schedules![0]!;
+    const due = f.store.request({ type: 'schedule.due.claim' }).scheduleOccurrence!;
+    const input = { type: 'activity.start', ...f.scope, sourceMessageId: schedule.sourceMessageId, clientId: 'schedule_activity_' + due.id, title: schedule.title, goal: schedule.prompt } as const;
+    const task = f.store.request(input).activityTask!;
+    f.store.request({ type: 'schedule.occurrence.update', id: due.id, leaseToken: due.leaseToken, status: 'running', activityTaskId: task.id });
+    close(f.store); const reopened = open(f.filename); reopened.request({ type: 'activity.recover' }); reopened.request({ type: 'schedule.recover-activities' });
+    const recovered = reopened.request({ type: 'schedule.due.claim' }).scheduleOccurrence!;
+    expect(recovered.id).toBe(due.id); expect(recovered.activityTaskId).toBe(task.id); expect(reopened.request(input).activityTask!.id).toBe(task.id);
+    const leased = reopened.request({ type: 'activity.claim' }).activityTask!;
+    reopened.request({ type: 'activity.commit', id: task.id, leaseToken: leased.leaseToken!, decision: { status: 'complete', action: null, wait: null, summary: '协议验收：实际任务已结束。' } });
+    const done = reopened.request({ type: 'schedule.occurrence.update', id: due.id, leaseToken: recovered.leaseToken, status: 'done', activityTaskId: task.id }).scheduleOccurrence!;
+    expect(done.status).toBe('done'); expect(reopened.request({ type: 'actions', conversationId: f.scope.conversationId }).actions).toEqual([]);
+  });
   it('stores actual human form evidence atomically and deduplicates a create retry', () => {
     const { store, scope } = fixture(), content = '只读取文件，绝对不要修改。'.repeat(400);
     const request = { type: 'schedule.create' as const, ...scope, clientId: 'form_retry', entries: [entry({ kind: 'task', prompt: content })] };

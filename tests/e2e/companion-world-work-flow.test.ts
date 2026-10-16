@@ -11,6 +11,7 @@ import type { DshLauncherRequest, DshLauncherResponse, DshLauncherState } from '
 import type { DshTaskRecord } from '../../src/shared/dsh-tasks';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 import { openCompanionWorldWindow } from './companion-world-window-helpers';
+import { shareWorldHomeAddress, walkIntoWorldHome } from './companion-world-address-helpers';
 
 const guestId = 'deepseek-sister', hostId = 'deepseek-flash';
 const phoneText = '坐在朋友家休息时，帮我核对这句普通文字就好；不使用电脑或执行工具。';
@@ -139,6 +140,7 @@ test('phone chat streams from a friends sofa while only native DSH execution req
     const guestScope = { companionId: guestId, conversationId: guestRoom.id }, hostScope = { companionId: hostId, conversationId: hostRoom.id };
     const visit = (await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'visit', targetCompanionId: hostId, reason: '空闲时来分享读书感受。' } })).world!.visits.find(visit => visit.guestId === guestId)!;
     await request(page, { type: 'world.tool', ...hostScope, arguments: { action: 'respond', requestId: visit.id, decision: 'allow', reason: '欢迎，有空时来坐坐。' } });
+    await walkIntoWorldHome(page, guestScope, hostId);
     await expect.poll(async () => { const value = actor(await snapshot(page)); return value.sceneId === 'home_' + hostId && !value.route.length; }, { timeout: 40000 }).toBe(true);
     async function sitAtFriendsSofa() {
       const anchor = (await snapshot(page)).scenes.find(scene => scene.ownerId === hostId)!.objects.find(object => object.kind === 'sofa')!.anchor;
@@ -206,7 +208,7 @@ test('phone chat streams from a friends sofa while only native DSH execution req
     expect((await request(page, { type: 'actions', conversationId: guestRoom.id })).actions?.find(action => action.sourceMessageId === source.id)).toMatchObject({ status: 'succeeded', result: expect.stringContaining('[fixture execution]') });
     await page.screenshot({ path: path.join(artifacts, 'verified-world-urgent-feedback.png') });
     await expect.poll(async () => (await snapshot(page)).works.filter(work => work.companionId === guestId).length).toBe(0);
-    await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'move', destinationId: 'home_' + hostId } });
+    await walkIntoWorldHome(page, guestScope, hostId);
     await expect.poll(async () => { const value = actor(await snapshot(page)); return value.sceneId === 'home_' + hostId && !value.route.length && value.activity === 'idle'; }, { timeout: 40000 }).toBe(true);
     await sitAtFriendsSofa();
     const cancelled = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: cancelledUrgent, clientId: randomUUID() })).message!;
@@ -261,6 +263,7 @@ test('world save resumes an actual route, peer relationship and visit after proc
     await expect.poll(async () => (await snapshot(page)).works.length).toBe(0);
     // Meet at a real nearby street doorway, not the arbitrary centre of a
     // large expanding map. This leaves a real route back to the host's home.
+    await shareWorldHomeAddress(page, 'huan-white', [guestId, hostId]);
     for (const scope of [guestScope, hostScope]) await request(page, { type: 'world.tool', ...scope, arguments: { action: 'move', destinationId: 'huan-white_entrance' } });
     await expect.poll(async () => { const world = await snapshot(page); return [guestId, hostId].every(id => actor(world, id).sceneId === 'commons' && !actor(world, id).route.length); }, { timeout: 30000 }).toBe(true);
     const social = (await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'social', targetCompanionId: hostId, kind: 'greet', text: '这是存档验收中真实发生的伙伴问候。' } })).world!;
@@ -269,9 +272,12 @@ test('world save resumes an actual route, peer relationship and visit after proc
     expect(speech.authorId).toBe(guestId); expect(speech.authorId).not.toBe('user');
     const visit = (await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'visit', targetCompanionId: hostId, reason: '问候后得到许可再去做客。' } })).world!.visits.find(visit => visit.guestId === guestId)!;
     await request(page, { type: 'world.tool', ...hostScope, arguments: { action: 'respond', requestId: visit.id, decision: 'allow', reason: '欢迎有空时来。' } });
+    await shareWorldHomeAddress(page, hostId, [guestId]);
+    await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'navigate', targetCompanionId: hostId } });
     await expect.poll(async () => actor(await snapshot(page)).route.length, { timeout: 10000 }).toBeGreaterThan(10);
     const saved = await snapshot(page), savedActor = actor(saved), savedRelation = saved.relationships.find(relation => relation.companionId === guestId && relation.targetCompanionId === hostId)!;
-    expect(savedRelation.interactions).toBe(1); expect(savedRelation.affinity).toBe(50);
+    // One actual greeting and the owner's separately delivered address share.
+    expect(savedRelation.interactions).toBe(2); expect(savedRelation.affinity).toBe(50);
     expect(saved.visits.find(value => value.id === visit.id)?.status).toBe('allowed');
     const savedAt = Date.now();
     expect(Math.abs(Date.parse(saved.clock.virtualNow) - savedAt)).toBeLessThan(2000);
@@ -287,10 +293,11 @@ test('world save resumes an actual route, peer relationship and visit after proc
     expect(restored.relationships.find(relation => relation.companionId === guestId && relation.targetCompanionId === hostId)).toMatchObject({ affinity: savedRelation.affinity, trust: savedRelation.trust, interactions: savedRelation.interactions });
     expect(restoredActor.sceneId === savedActor.sceneId && restoredActor.position.x === savedActor.position.x && restoredActor.position.y === savedActor.position.y).toBe(false);
     expect(restoredActor.sceneId === 'home_' + guestId && restoredActor.position.x === 10 && restoredActor.position.y === 13).toBe(false);
-    // A route is persisted in scene segments: entering the host's doorway may
-    // legitimately replace the saved street segment with its indoor segment.
-    expect(restoredActor.destinationId ?? restoredActor.sceneId).toBe('home_' + hostId);
-    expect(restoredActor.route.every(point => [savedActor.sceneId, 'home_' + hostId].includes(point.sceneId))).toBe(true);
+    // Restoring a street route and an entry permit still cannot imply entering.
+    if (restoredActor.destinationId) expect(restoredActor.destinationId).toBe(hostId + '_entrance');
+    else expect(restoredActor.sceneId).toBe('commons');
+    expect(restoredActor.sceneId).not.toBe('home_' + hostId);
+    expect(restoredActor.route.every(point => point.sceneId === 'commons')).toBe(true);
     expect(restoredActor.activity).not.toBe('working');
     expect(restored.works).toHaveLength(0);
     await page.waitForTimeout(1500);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { activityPublicCommands, activityTaskSchema } from './companion-activity-task';
 import { dshRecordOverviewSchema, dshRecordQuerySchema, dshRecordPageSchema } from './dsh-task-record';
 import { dshExecutionAccessModeSchema } from './dsh-access';
 import { companionWorkSchema, companionLoopDraftSchema } from './companion-loop';
@@ -133,6 +134,7 @@ export const companionDraftSchema = companionSchema.pick({ name: true, descripti
   .extend({ llm: companionLlmSchema.omit({ hasKey: true }).optional() });
 export type CompanionDraft = z.infer<typeof companionDraftSchema>;
 export const companionsRequestSchema = z.discriminatedUnion('type', [
+  ...activityPublicCommands,
   z.strictObject({ type: z.literal('message.guide'), id: companionIdSchema, targetSourceMessageId: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('state') }),
   ...playerProfileCommands,
@@ -177,10 +179,13 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('action.resume'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('action.terminate'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('attachment.pick'), kind: z.literal('image').optional(), purpose: z.enum(['avatar', 'appearance']).optional() }),
+  z.strictObject({ type: z.literal('attachment.import'), paths: z.array(z.string().min(1).max(32768)).min(1).max(10) }),
+  z.strictObject({ type: z.literal('attachment.clipboard') }),
   z.strictObject({ type: z.literal('attachment.open'), id: companionIdSchema }),
 ]);
 export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
 export const companionsResponseSchema = z.object({
+  activityTask: activityTaskSchema.optional(), activityTasks: z.array(activityTaskSchema).max(50).optional(), activityMessages: z.array(messageSchema).max(20).optional(),
   ok: z.boolean(), error: z.string().optional(), state: companionStateSchema.optional(),
   playerProfile: playerProfileSchema.optional(),
   reset: companionResetSchema.optional(),
@@ -210,6 +215,7 @@ export const companionsResponseSchema = z.object({
 });
 export type CompanionsResponse = z.infer<typeof companionsResponseSchema>;
 export interface WorldlineBoxCompanionsApi {
+  importFiles?(files: File[]): Promise<CompanionsResponse>;
   request(input: CompanionsRequest): Promise<CompanionsResponse>;
   onChanged(listener: () => void): () => void;
   onReplyStream(listener: (event: CompanionReplyStreamEvent) => void): () => void;

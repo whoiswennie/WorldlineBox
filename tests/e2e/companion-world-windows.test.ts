@@ -9,6 +9,7 @@ import type { CompanionWorldWindowApi } from '../../src/shared/companion-world-w
 import type { WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { shareWorldHomeAddress } from './companion-world-address-helpers';
 type Bridge = Window & { worldlinebox: { companionWorld: CompanionWorldWindowApi; companions?: WorldlineBoxCompanionsApi; llm?: WorldlineBoxLlmApi } };
 const finalText = '世界窗口开着时，我们的聊天仍可以完整回复。';
 function cleanup(root: string) {
@@ -76,10 +77,11 @@ test('native observer windows share one world, preserve independent cameras and 
       const payload = JSON.parse(body), context = JSON.parse(payload.messages[1].content); let output: unknown;
       if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .98, evidence: [context.source.content], reason: '普通聊天无需打断休息。' };
       else if (context.purpose === 'world_decision') output = { action: null, reason: '保持当前生活计划。', appraisals: [] };
+      else if (context.purpose === 'world_social') output = { text: null, reason: '地址已经送达，本例不继续新的话题。' };
       else if (context.purpose === 'memory_query') output = {};
       else if (context.purpose === 'memory_dream') output = { candidates: [], dream: null };
       else if (context.purpose?.startsWith('memory_')) output = { candidates: [] };
-      else { primaryRequests++; output = { text: finalText, memories: [] }; }
+      else { if (context.taskRequest) primaryRequests++; output = { text: finalText, memories: [] }; }
       response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] }));
     });
   });
@@ -130,6 +132,7 @@ test('native observer windows share one world, preserve independent cameras and 
     expect(await a.locator('.world-map-bench').count()).toBe(2);
     expect(await a.locator('[data-world-map-home]').count()).toBeGreaterThanOrEqual(15);
     expect(await a.locator('.companion-world-view').evaluate(element => getComputedStyle(element).visibility)).toBe('hidden');
+    await shareWorldHomeAddress(main, 'deepseek-flash', ['deepseek-sister']);
     const moved = await main.evaluate(async () => {
       const api = (window as unknown as Bridge).worldlinebox.companions!;
       const current = (await api.request({ type: 'world.snapshot' })).world!;

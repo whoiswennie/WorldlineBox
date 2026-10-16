@@ -1,8 +1,11 @@
 import type { CompanionAction } from '../../shared/companions';
 import type { CompanionSchedule, CompanionScheduleOccurrence } from '../../shared/companion-schedule';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
+import type { CompanionActivityTask } from '../../shared/companion-activity-task';
 
 interface CompanionScheduleServiceOptions {
+  activity?: { start(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence): Promise<CompanionActivityTask>;
+    get(task: CompanionActivityTask): Promise<CompanionActivityTask>; cancel(task: CompanionActivityTask): Promise<unknown> };
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   launch(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence): Promise<CompanionAction>;
   resume(actionId: string): Promise<unknown>;
@@ -89,6 +92,20 @@ export class CompanionScheduleService {
           clientId: `schedule-${occurrence.id}`, replyToId: schedule.sourceMessageId } });
         await update({ status: 'done', messageId: response.message?.id, result: '已发送约定的提醒。' });
         this.options.changed(); return;
+      }
+      if (schedule.kind === 'activity') {
+        const runner = this.options.activity;
+        if (!runner) throw new Error('持续行动任务服务不可用。');
+        let task = await runner.start(schedule, occurrence);
+        await update({ status: 'running', activityTaskId: task.id });
+        while (['queued','running','waiting'].includes(task.status) && !this.closed && !signal.aborted) {
+          await new Promise<void>(resolve => { const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }; const timer = setTimeout(done, 1000); signal.addEventListener('abort', done, { once: true }); if (signal.aborted) done(); });
+          if (!signal.aborted && !this.closed) task = await runner.get(task);
+        }
+        if (signal.aborted && !this.closed) { await runner.cancel(task); return; }
+        if (this.closed) return;
+        await update({ status: task.status === 'succeeded' ? 'done' : task.status === 'cancelled' ? 'cancelled' : 'failed', activityTaskId: task.id,
+          result: task.stage, ...(task.status === 'failed' ? { error: task.stage.slice(0, 1000) } : {}) }); return;
       }
       // A crash after effect creation reuses the occurrence's action. Never start
       // a second external task merely because its acknowledgement was lost.

@@ -1,8 +1,14 @@
-import { ipcRenderer } from 'electron';
+import { ipcRenderer, webUtils } from 'electron';
 import { COMPANIONS_CHANNEL, COMPANIONS_CHANGED_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL, companionsRequestSchema, companionsResponseSchema, companionReplyStreamEventSchema,
   type CompanionReplyStreamEvent, type CompanionsRequest, type WorldlineBoxCompanionsApi } from '../../shared/companions';
 
 export const companions: WorldlineBoxCompanionsApi = Object.freeze({
+  async importFiles(files: File[]) {
+    if (!files.length || files.length > 10) return { ok: false, error: '一次可添加 1–10 个文件。' };
+    const paths = [...new Set(files.map(file => webUtils.getPathForFile(file)))];
+    if (paths.some(file => !file)) return { ok: false, error: '这个文件没有本机路径，请先保存到电脑再拖入。' };
+    return companions.request({ type: 'attachment.import', paths });
+  },
   async request(input: CompanionsRequest) {
     const parsed = companionsRequestSchema.safeParse(input);
     if (!parsed.success) return { ok: false, error: '伙伴请求格式不正确。' };

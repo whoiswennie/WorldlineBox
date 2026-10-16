@@ -51,7 +51,7 @@ function checkBoundary(world: ReturnType<typeof companionModelWorld>) {
   expect(world!.actors.map(actor => actor.companionId)).toEqual(['self', 'near']);
   expect(world!.actors[1]).toEqual({ companionId: 'near', sceneId: 'home_self', position: { x: 5, y: 4 }, activity: 'walking', lastObservedAt: now, visible: true });
   expect(world!.perception!.people[1]).toMatchObject({ companionId: 'remembered', position: { x: 7, y: 4 }, lastObservedAt: old, visible: false });
-  expect(world!.residents).toContainEqual({ companionId: 'far', name: 'far', homeSceneId: 'home_far' });
+  expect(world!.residents).toContainEqual({ companionId: 'far', name: 'far' });
   expect(world!.scenes.find(scene => scene.id === 'home_far')!.objects).toEqual([]);
   expect(world!.relationships).toEqual([{ companionId: 'self', targetCompanionId: 'near', affinity: 60, trust: 55, interactions: 2, updatedAt: old }]);
   expect(world!.environment).toMatchObject({ temperature: 21, light: .4, weather: 'rain', weatherObservedAtVirtual: old });

@@ -28,7 +28,7 @@ function fixture(fetchFn: typeof fetch, asleep = true) {
   }
   const request = vi.fn(async (command: Parameters<CompanionsStore['request']>[0]) => store.request(command));
   const service = new CompanionWorldService({ request, fetchFn, configFor: async () => ({ apiFormat: 'openai_chat', model: 'test-model', apiKey: 'private-key', baseUrl: 'https://provider.invalid' }),
-    changed: vi.fn(), wakeWaiting: vi.fn(), report: vi.fn(), busy: () => false }); services.add(service);
+    changed: vi.fn(), wakeWaiting: vi.fn(), report: vi.fn() }); services.add(service);
   return { store, service, alice, bob, request };
 }
 function advance(store: CompanionsStore, milliseconds: number) { vi.setSystemTime(Date.now() + milliseconds); return store.request({ type: 'world.tick' }).world!; }

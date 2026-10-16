@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile, lstat, mkdir, realpath } from 'node:fs/promises';
-import { type BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron';
+import { copyFile, lstat, mkdir, realpath, writeFile } from 'node:fs/promises';
+import { type BrowserWindow, clipboard, dialog, ipcMain, net, protocol, shell } from 'electron';
+import { createFileClipboardDeps, readFilePathsFromClipboard } from '../file-clipboard';
 import { COMPANIONS_CHANNEL, COMPANIONS_CHANGED_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL, companionIdSchema, companionsRequestSchema,
   type Companion, type CompanionAction, type CompanionActionEvent, type CompanionActivity, type CompanionsRequest,
   type CompanionsResponse, type CompanionReplyStreamEvent } from '../../shared/companions';
@@ -15,6 +16,8 @@ import { CompanionModelError, generateCompanionReply, type CompanionModelConfig 
 import { buildCompanionContext, refreshCompanionRuntimeStateContext } from './context';
 import { companionScheduleClock } from '../../shared/companion-schedule-time';
 import { CompanionAutonomyService } from './autonomy-service';
+import { CompanionActivityTaskService } from './activity-task-service';
+import { activityArgumentsSchema } from '../../shared/companion-activity-task';
 import { CompanionMemoryService } from './memory-service';
 import { CompanionScheduleService } from './schedule-service';
 import { CompanionReplyStream } from './reply-stream';
@@ -61,6 +64,7 @@ export class CompanionService {
   private readonly schedules: CompanionScheduleService;
   private readonly world: CompanionWorldService;
   private readonly autonomy: CompanionAutonomyService;
+  private readonly activityTasks: CompanionActivityTaskService;
   private readonly profiles: CompanionPublicProfiles;
   private readonly files: CompanionFileReader;
   private readonly root: string;
@@ -111,7 +115,7 @@ export class CompanionService {
       profiles: input => this.profiles.prepare(input),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), wakeWaiting: () => { void this.pumpQueue(); }, report: options.report,
-      busy: () => this.activities.size > 0, blocked: id => this.resettingCompanions.has(id), tickLife: () => this.autonomy.tick() });
+      blocked: id => this.resettingCompanions.has(id), tickLife: () => this.autonomy.tick() });
     this.autonomy = new CompanionAutonomyService({ request: command => this.call(command), configFor: companion => this.configFor(companion),
       profiles: input => this.profiles.prepare(input),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
@@ -130,6 +134,14 @@ export class CompanionService {
       }, resume: id => this.resumeAction(id), wait: id => this.actionJobs.get(id), blocked: id => this.resettingCompanions.has(id),
       changed: () => this.changed(), report: options.report });
     this.schedules = new CompanionScheduleService({ request: command => this.call(command),
+      activity: {
+        start: async (schedule, occurrence) => {
+          const result = await this.call({ type: 'activity.start', companionId: schedule.companionId, conversationId: schedule.conversationId,
+            sourceMessageId: schedule.sourceMessageId, clientId: 'schedule_activity_' + occurrence.id, title: schedule.title.slice(0, 120), goal: schedule.prompt });
+          return result.activityTask!;
+        }, get: async task => (await this.call({ type: 'activity.get', companionId: task.companionId, conversationId: task.conversationId, id: task.id })).activityTask!,
+        cancel: task => this.handle({ type: 'activity.cancel', companionId: task.companionId, conversationId: task.conversationId, id: task.id }),
+      },
       ready: (schedule, occurrence, signal) => this.world.ready({ companionId: schedule.companionId, conversationId: schedule.conversationId,
         sourceMessageId: schedule.sourceMessageId, workId: worldWorkId('schedule', occurrence.id), kind: 'schedule', fixed: !schedule.flexible }, signal),
       end: (schedule, occurrence) => this.world.end(schedule.companionId, worldWorkId('schedule', occurrence.id)),
@@ -143,16 +155,23 @@ export class CompanionService {
         return result.actions!.find(action => action.scheduleOccurrenceId === occurrence.id)!;
       }, resume: id => this.resumeAction(id), wait: id => this.actionJobs.get(id),
       changed: () => this.changed(), wakeWaiting: () => { void this.pumpQueue(); }, report: options.report, blocked: id => this.resettingCompanions.has(id) });
+    this.activityTasks = new CompanionActivityTaskService({ request: command => this.call(command), configFor: role => this.configFor(role),
+      profiles: input => this.profiles.prepare(input), fetchFn: (url, init) => net.fetch(url instanceof URL ? url.toString() : url, { ...init, credentials: 'omit' }),
+      excludedIds: () => [...new Set([...this.resettingCompanions, ...[...this.activities.values()].map(activity => activity.companionId)])],
+      changed: () => this.changed(), report: options.report });
     this.initialization = this.storage.start().then(async () => {
       await this.call({ type: 'action.interrupt-pending' });
       await this.call({ type: 'work-order.interrupt-pending' });
       await this.call({ type: 'work.interrupt-running' });
+      await this.call({ type: 'activity.recover' });
+      await this.call({ type: 'schedule.recover-activities' });
       await this.restoreResets();
     });
     void this.initialization.catch(options.report);
     void this.initialization.then(() => this.restoreQueue()).catch(options.report);
     void this.initialization.then(() => this.memory.schedule()).catch(options.report);
     void this.initialization.then(() => this.schedules.start()).catch(options.report);
+    void this.initialization.then(() => this.activityTasks.start()).catch(options.report);
     void this.initialization.then(() => this.world.start()).catch(options.report);
   }
   private async call(command: CompanionStorageCommand): Promise<CompanionStorageResponse> {
@@ -211,6 +230,9 @@ export class CompanionService {
     await this.initialization;
     if (this.closed) throw new Error('伙伴服务正在关闭。');
     switch (request.type) {
+      case 'activity.cancel': {
+        const result = await this.call(request); this.activityTasks.cancel(request.id); this.changed(); return result;
+      }
       case 'state': {
         const response = await this.call(request);
         if (response.state) {
@@ -416,6 +438,24 @@ export class CompanionService {
         await this.call({ type: 'action.update', id: action.id, patch: { status: 'cancelled' } }); this.changed(); return { ok: true };
       }
       case 'attachment.pick': return this.pickAttachments(request.kind, request.purpose);
+      case 'attachment.import': return this.importAttachments(request.paths);
+      case 'attachment.clipboard': {
+        const paths = readFilePathsFromClipboard(createFileClipboardDeps());
+        if (paths.length) return this.importAttachments(paths);
+        const image = clipboard.readImage();
+        if (image.isEmpty()) return { ok: true, attachments: [] };
+        const size = image.getSize();
+        if (size.width * size.height > 64 * 1024 * 1024) throw new Error('剪贴板图片尺寸过大，请先缩小后粘贴。');
+        const data = image.toPNG();
+        if (data.length > 20 * 1024 * 1024) throw new Error('剪贴板图片不能超过 20 MB。');
+        const id = randomUUID(), relativePath = `attachments/${id}.png`;
+        await mkdir(path.join(this.root, 'attachments'), { recursive: true });
+        const absolutePath = path.join(this.root, relativePath);
+        await writeFile(absolutePath, data, { flag: 'wx' });
+        const attachment = { id, name: '粘贴的图片.png', size: data.length, mime: 'image/png', path: absolutePath };
+        await this.call({ type: 'attachment.register', stored: { attachment, relativePath } });
+        return { ok: true, attachments: [{ ...attachment, url: `worldlinebox-companion://attachment/${id}` }] };
+      }
       case 'work-order.pause': case 'work-order.cancel': {
         const response = await this.call(request);
         if (request.type === 'work-order.cancel' || request.paused) {
@@ -491,7 +531,7 @@ export class CompanionService {
     for (const reply of replies) { this.resetReplyControllers.add(reply.controller); reply.controller.abort(); }
     for (const [key, controller] of this.attentionControllers) if (key.startsWith(companionId + ':')) controller.abort();
     for (const key of this.assessedAttention) if (key.startsWith(companionId + ':')) this.assessedAttention.delete(key);
-    this.memory.cancelCompanion(companionId); this.world.cancelCompanion(companionId); this.schedules.cancelCompanion(companionId); this.autonomy.cancelCompanion(companionId);
+    this.activityTasks.cancelCompanion(companionId); this.memory.cancelCompanion(companionId); this.world.cancelCompanion(companionId); this.schedules.cancelCompanion(companionId); this.autonomy.cancelCompanion(companionId);
     const ownerJobs = [...this.actionOwners.entries()].filter(([, owner]) => owner === companionId).map(([id]) => id);
     for (const id of ownerJobs) { this.cancelledActions.add(id); this.actionControllers.get(id)?.abort(); this.pendingInputs.delete(id); }
     const taskIds = new Set([...knownTaskIds, ...(this.untrackedTaskIds.get(companionId) ?? [])]);
@@ -517,7 +557,7 @@ export class CompanionService {
     // ID durably before stopping it; never infer process exit from UI status.
     await collect(); const failures = await terminate();
     await Promise.allSettled([...replies.map(reply => reply.promise), ...[...this.attentionJobs.entries()].filter(([key]) => key.startsWith(companionId + ':')).map(([, promise]) => promise),
-      ...[...(this.fileReadJobs.get(companionId) ?? [])], this.memory.drainCompanion(companionId), this.world.drainCompanion(companionId), this.schedules.drainCompanion(companionId), this.autonomy.drainCompanion(companionId)]);
+      ...[...(this.fileReadJobs.get(companionId) ?? [])], this.activityTasks.drainCompanion(companionId), this.memory.drainCompanion(companionId), this.world.drainCompanion(companionId), this.schedules.drainCompanion(companionId), this.autonomy.drainCompanion(companionId)]);
     if (failures.length) throw new Error('部分旧任务进程尚未确认停止，请重试。', { cause: failures[0] });
     for (const [key, activity] of this.activities) if (activity.companionId === companionId) this.activities.delete(key);
     this.unavailableCompanions.delete(companionId);
@@ -791,6 +831,9 @@ export class CompanionService {
                 if (call.name === 'world') {
                   companionWorldArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, world: true };
                 }
+                if (call.name === 'activity') {
+                  activityArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, activity: true };
+                }
                 if (call.name === 'routine') {
                   companionRoutineArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, routine: true };
                 }
@@ -860,7 +903,7 @@ export class CompanionService {
                 memoryChain = result.catch(() => undefined);
                 return { callId: plan.call.id, content: JSON.stringify(await result) };
               }
-              if (plan.schedule || plan.runtimeState || plan.routine || plan.world || plan.work || plan.lifeRule) {
+              if (plan.schedule || plan.runtimeState || plan.routine || plan.world || plan.work || plan.lifeRule || plan.activity) {
                 const result = memoryChain.then(async () => {
                   const beforeSequence = await this.memoryBoundary(checkpoint, userMessage.sequence);
                   this.assertReplyActive(controller.signal);
@@ -1065,6 +1108,24 @@ export class CompanionService {
           clientId: 'life_native_' + createHash('sha256').update(callIdentity).digest('hex') });
         if (life.action === 'update') return await this.handle({ type: 'life-rule.update', companionId: scope.companionId, id: life.id, expectedRevision: life.expectedRevision, rule: life.rule });
         return await this.handle({ type: 'life-rule.remove', companionId: scope.companionId, id: life.id, expectedRevision: life.expectedRevision });
+      }
+      if (name === 'activity') {
+        const args = activityArgumentsSchema.parse(input);
+        if (args.action === 'list') return this.call({ type: 'activity.list', ...scope, limit: 20 });
+        if (!currentPlayerRequest) throw new Error('主动闲聊不能沿旧玩家请求创建或取消行动任务。');
+        const source = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [...requestMessageIds] })).memorySources?.filter(message => message.authorId === 'user').at(-1);
+        if (!source) throw new Error('当前行动请求的来源已经不可访问。');
+        const owner = (await this.call({ type: 'state' })).state?.companions.find(member => member.id === scope.companionId);
+        if (!owner || !await authorizeCompanionManagement({ companionId: owner.id, source, tool: 'activity', action: args.action,
+          ...('id' in args ? { targetId: args.id } : {}), requested: args }, await this.configFor(owner), signal,
+        { fetchFn: (url, init) => net.fetch(url instanceof URL ? url.toString() : url, { ...init, credentials: 'omit' }) })) throw new Error('本次用户没有委托这项虚拟行动，或目标扩大了原请求。');
+        this.assertReplyActive(signal);
+        const current = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [source.id] })).memorySources?.find(message => message.id === source.id && message.content === source.content);
+        if (!current) throw new Error('行动授权来源已更新或撤回，请按新的请求处理。');
+        const result = args.action === 'start' ? await this.call({ type: 'activity.start', ...scope, sourceMessageId: source.id,
+          title: args.title, goal: args.goal, clientId: 'activity_' + createHash('sha256').update(callIdentity).digest('hex') })
+          : await this.handle({ type: 'activity.cancel', ...scope, id: args.id });
+        this.changed(); return result;
       }
       if (name === 'world') {
         const args = companionWorldArgumentsSchema.parse(input);
@@ -1576,10 +1637,17 @@ export class CompanionService {
     const selection = await dialog.showOpenDialog(window, { title: purpose === 'appearance' ? '选择公开正交三视图' : purpose === 'avatar' ? '选择头像' : kind === 'image' ? '选择图片' : '发送文件或图片', properties: portrait ? ['openFile'] : ['openFile', 'multiSelections'],
       ...(kind === 'image' || portrait ? { filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] } : {}) });
     if (selection.canceled) return { ok: true, attachments: [] };
-    if (selection.filePaths.length > 10) throw new Error('一次最多发送 10 个附件。');
+    return this.importAttachments(selection.filePaths, purpose);
+  }
+  private async importAttachments(paths: string[], purpose?: 'avatar' | 'appearance'): Promise<CompanionsResponse> {
+    const portrait = !!purpose;
+    if (paths.length > 10) throw new Error('一次最多发送 10 个附件。');
+    if (paths.some(source => !path.isAbsolute(source))) throw new Error('附件必须是本机绝对路径。');
+    // Validate the entire batch before registering anything; large files stay references.
+    for (const source of paths) if (!(await lstat(source)).isFile()) throw new Error('请添加普通文件，文件夹和快捷链接不支持直接发送。');
     const attachments = [];
     await mkdir(path.join(this.root, 'attachments'), { recursive: true });
-    for (const source of selection.filePaths) {
+    for (const source of [...new Set(paths.map(source => path.resolve(source)))]) {
       const info = await lstat(source);
       if (!info.isFile()) throw new Error('请选择普通文件。');
       let imageMime: string | undefined;
@@ -1623,6 +1691,7 @@ export class CompanionService {
     if (this.timer) clearInterval(this.timer);
     await this.schedules.close();
     await this.autonomy.close();
+    await this.activityTasks.close();
     await this.world.close();
     await this.memory.close();
     for (const controller of this.replyControllers.keys()) controller.abort();

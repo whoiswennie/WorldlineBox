@@ -18,7 +18,6 @@ interface WorldServiceOptions {
   changed(): void;
   wakeWaiting(): void;
   report(error: unknown): void;
-  busy(): boolean;
   blocked?(companionId: string): boolean;
   tickLife?(): void | Promise<void>;
   profiles?(input: { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>;
@@ -58,7 +57,9 @@ export class CompanionWorldService {
           .finally(() => { this.jobs.delete(continuation.id); this.options.changed(); });
         this.jobs.set(continuation.id, { promise, controller, companionId: continuation.companionId });
       }
-      if (this.options.busy() || this.jobs.size >= 2) return;
+      // Admission is checked for the actual actor by SQLite. An unrelated
+      // foreground chat must not freeze everyone else's social replies.
+      if (this.jobs.size >= 2) return;
       const delivery = await this.options.request({ type: 'social.job.claim' });
       if (delivery.socialMessage) this.options.changed();
       const social = delivery.socialJob;
@@ -128,6 +129,7 @@ export class CompanionWorldService {
       if (wait > 0) await delay(wait, signal);
       if (signal.aborted || this.closed) throw cancelled();
       await this.options.request({ type: 'social.job.complete', id: job.id, leaseToken, text: result.text,
+        ...(result.shareAddress ? { shareAddress: true } : {}),
         ...(result.nextRecipientId ? { nextRecipientId: result.nextRecipientId } : {}), ...(result.workOffer ? { workOffer: result.workOffer } : {}) });
     } catch (error) {
       await this.options.request({ type: 'social.job.fail', id: job.id, leaseToken,
@@ -177,6 +179,11 @@ export class CompanionWorldService {
             affect: runtime.affect, focus: runtime.focus, busy: world.works.some(work => work.companionId === companion.id && work.status !== 'ended') } } : {}),
           members: state!.companions.map(member => ({ id: member.id, name: member.name, description: member.description })) }, config, signal, { fetchFn: this.options.fetchFn });
         if (signal.aborted || this.closed) throw cancelled();
+        if (decision.task) {
+          if (decision.action) throw new Error('本轮只能创建持续行动目标或执行一个原子动作。');
+          await this.options.request({ type: 'activity.start', companionId: companion.id, conversationId: 'world_' + companion.id,
+            clientId: 'world_activity_' + job.id, title: decision.task.title, goal: decision.task.goal });
+        }
         await this.options.request({ type: 'world.job.complete', id: jobId, leaseToken, ...(decision.action ? { action: decision.action } : {}),
           appraisals: decision.appraisals.map(({ quote: _quote, ...appraisal }) => { void _quote; return appraisal; }), sourceMemoryIds: [] });
       } else await this.dream(job, leaseToken, companion, conversation, config, signal);

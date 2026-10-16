@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Companions } from '../../src/renderer/companions/Companions';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
-import type { Companion, CompanionAction, CompanionConversation, CompanionMemory, CompanionMessage, CompanionReplyStreamEvent, CompanionState, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
+import type { Companion, CompanionAction, CompanionAttachment, CompanionConversation, CompanionMemory, CompanionMessage, CompanionReplyStreamEvent, CompanionState, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
@@ -113,6 +113,33 @@ async function fill(selector: string, value: string) {
 }
 async function select(selector: string, value: string) { const element = container!.querySelector<HTMLSelectElement>(selector)!; await act(() => { element.value = value; element.dispatchEvent(new Event('change', { bubbles: true })); }); }
 async function submitDialog() { const form = container!.querySelector<HTMLFormElement>('[role="dialog"] form')!; await act(() => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); }
+
+it('drops several local files into the composer, keeps text and absolute-path references, and deduplicates repeated drops', async () => {
+  const f = fixture(), files = [new File(['alpha'], '资料.txt'), new File(['beta'], 'image.png')];
+  const attachments: CompanionAttachment[] = files.map((file, index) => ({ id: `drop-${index}`, name: file.name, mime: file.type || 'text/plain', size: file.size, path: `C:\\fixture\\${file.name}` }));
+  const importFiles = vi.fn(async () => ({ ok: true, attachments })); await mount({ ...f.api, importFiles });
+  await fill('textarea', '帮我处理这两个文件');
+  for (let repeat = 0; repeat < 2; repeat++) await act(async () => {
+    const drop = new Event('drop', { bubbles: true, cancelable: true }); Object.defineProperty(drop, 'dataTransfer', { value: { types: ['Files'], files } });
+    container!.querySelector('[aria-label="消息输入区"]')!.dispatchEvent(drop);
+  });
+  expect(importFiles).toHaveBeenCalledTimes(2); expect(container!.querySelectorAll('.companions-draft-attachments > span')).toHaveLength(2);
+  expect(container!.querySelector('.companions-draft-attachments > span')!.getAttribute('title')).toBe(attachments[0]!.path);
+  await click('发送'); expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', content: '帮我处理这两个文件', attachmentIds: ['drop-0', 'drop-1'] }));
+});
+
+it('pastes clipboard files through Main while leaving ordinary text paste untouched and blocking excess files', async () => {
+  const f = fixture(), original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(async input => input.type === 'attachment.clipboard' ? { ok: true, attachments: [{ id: 'paste', name: '粘贴.png', mime: 'image/png', path: 'C:\\fixture\\paste.png', size: 10 }] } : original(input));
+  const importFiles = vi.fn(async () => ({ ok: true, attachments: [] })); await mount({ ...f.api, importFiles });
+  const textarea = container!.querySelector('textarea')!;
+  const text = new Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(text, 'clipboardData', { value: { files: [], types: ['text/plain'], getData: () => '保留正常文本粘贴' } });
+  await act(() => textarea.dispatchEvent(text)); expect(text.defaultPrevented).toBe(false); expect(f.request).not.toHaveBeenCalledWith({ type: 'attachment.clipboard' });
+  const paste = new Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(paste, 'clipboardData', { value: { files: [], types: ['Files'], getData: () => '' } });
+  await act(async () => { textarea.dispatchEvent(paste); }); expect(paste.defaultPrevented).toBe(true); expect(container!.textContent).toContain('粘贴.png');
+  const drop = new Event('drop', { bubbles: true, cancelable: true }); Object.defineProperty(drop, 'dataTransfer', { value: { types: ['Files'], files: Array.from({ length: 11 }, () => new File(['x'], 'x')) } });
+  await act(() => textarea.dispatchEvent(drop)); expect(importFiles).not.toHaveBeenCalled(); expect(container!.textContent).toContain('最多添加 10');
+});
 
 it('searches and filters the full built-in catalogue and restores the selected role with its own template ID', async () => {
   const f = fixture({ companions: sisters.filter(item => item.id !== 'phoebe') });

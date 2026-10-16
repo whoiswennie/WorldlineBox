@@ -103,3 +103,6 @@ companion-runtime-source.ts 是已安装官方 SDK 的薄适配器。它在 crea
 新架构的真实两角色十章写作、下一步骤引导、下一轮排队、并发和自然时间查询结果见 [任务循环验收](companion-loop-acceptance.md)。自动化另用 125 条真实 SQLite 记录验证完整任务分页、角色隔离与重启，桌面测试用 45 条离线 fixture 验证布局、精确时间与翻页；这些 fixture 不冒充真实模型执行。
 
 2026-10-13 的真实桌面验收使用应用已保存的全局 DeepSeek 连接：小肥鱼生成委托，DSH 在 `danger-full-access` 下实际调用 PowerShell 和 `read_image`，检查桌面顶层 8 张图片及维护者提供的 3 张参考图，持久保存 42 条可见执行事件，并生成独立角色反馈。未修改原图片。详情只留在本机消息库和忽略目录，避免把私人桌面内容写入仓库。SDK 首次准备环境约三分钟，界面在此期间显示已接单、准备状态与计时；工具开始后逐步回传真实记录。
+
+
+聊天文件接入：`preload/bridge/companions.ts` 用 Electron `webUtils.getPathForFile` 解析真实DOM文件；`attachment.import` 在Main验证整批绝对路径和普通文件后复用原路径注册，不读取大文件正文。`attachment.clipboard` 复用系统文件剪贴板格式解析，或将有像素/大小上限的图片保存为PNG。输入区拦截文件拖放与文件/图片粘贴，普通文本/HTML粘贴不拦截；异步导入绑定原会话草稿，导入时禁止提前发送，附件去重且不静默截掉超限文件。Electron验收使用真实DOM文件和IPC；剪贴板源采用隔离fixture，不修改用户系统剪贴板。

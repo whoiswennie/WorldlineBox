@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { activityStorageCommands } from './companion-activity-task';
 
 import {
   actionSchema, attachmentSchema, companionDraftSchema, companionIdSchema,
@@ -77,6 +78,7 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
+  ...activityStorageCommands,
   ...playerProfileCommands,
   ...companionResetCommands,
   ...companionWorkOrderStorageCommands,

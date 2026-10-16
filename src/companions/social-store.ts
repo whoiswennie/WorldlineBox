@@ -10,7 +10,7 @@ import { CompanionSocialContinuityStore, companionPlayerPhoneBusy } from './soci
 
 type Row = Record<string, string | number | null>;
 type Calendar = { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean };
-type Send = { companionId: string; conversationId: string; content: string; channel: 'phone' | 'face_to_face'; sourceMessageId?: string; authorizationMessageId?: string; replyToId?: string; clientId: string };
+type Send = { companionId: string; conversationId: string; content: string; channel: 'phone' | 'face_to_face'; sourceMessageId?: string; authorizationMessageId?: string; replyToId?: string; clientId: string; shareAddress?: boolean };
 type PendingSend = Send & { fingerprint: string; authorizationChecksum?: string; sourceChecksum?: string; typingNotBefore?: string; originId?: string };
 type Read = { id: string; checksum: string };
 type StoredJob = CompanionSocialJob & { readSet?: Read[]; resultMessageId?: string };
@@ -33,7 +33,7 @@ export class CompanionSocialStore {
     private readonly available: (owner: string, channel: Send['channel'], recipients: string[]) => boolean,
     private readonly speech: (message: CompanionSocialMessage, channel: Send['channel']) => void,
     private readonly clock: { elapsedVirtual(from: number, to: number): number } = { elapsedVirtual: (from, to) => to - from },
-    private readonly options: { createPeerWork?(input: CompanionPeerWorkInput): void } = {}) {
+    private readonly options: { createPeerWork?(input: CompanionPeerWorkInput): void; addressText?(owner: string): string; shareHome?(owner: string, recipients: string[], source: CompanionMessage): void } = {}) {
     this.continuity = new CompanionSocialContinuityStore(db, append, message, visible,
       owner => available(owner, 'phone', []), () => calendar().backlog);
   }
@@ -233,6 +233,7 @@ export class CompanionSocialStore {
     if (send.typingNotBefore && Date.parse(send.typingNotBefore) > Date.now()) return undefined;
     const source = this.append({ conversationId: send.conversationId, authorId: send.companionId, content: send.content, clientId: send.clientId, replyToId: send.replyToId });
     this.index(source, context.virtualNow, recipients, send.channel); const message = this.wrap(source.id), chainId = randomUUID();
+    if (send.shareAddress) this.options.shareHome?.(send.companionId, recipients, source);
     this.db.prepare("INSERT INTO companion_social_chains(id,used,status) VALUES(?,1,'active')").run(chainId);
     this.continuity.bind(chainId, send.companionId, send.content, send.originId);
     this.db.prepare("INSERT INTO companion_social_budget VALUES(?,?,'initial',?,?)").run(source.id, send.companionId, context.virtualNow, iso());
@@ -347,8 +348,10 @@ export class CompanionSocialStore {
       job.status = 'done'; delete job.leaseToken;
       this.clearCommunication(job.companionId, 'job:' + job.id);
       if (!input.text?.trim()) { this.saveJob(job); this.db.prepare("UPDATE companion_social_chains SET status='done' WHERE id=?").run(job.chainId); if (job.channel === 'face_to_face') this.clearFace(job.conversationId); return { ok: true }; }
-      const source = this.append({ conversationId: job.conversationId, authorId: job.companionId, content: input.text, replyToId: job.sourceMessageId, clientId: 'social_' + job.id });
+      const content = input.text + (input.shareAddress ? '\n\n' + this.options.addressText?.(job.companionId) : '');
+      const source = this.append({ conversationId: job.conversationId, authorId: job.companionId, content, replyToId: job.sourceMessageId, clientId: 'social_' + job.id });
       const recipients = job.memberIds.filter(id => id !== job.companionId); this.index(source, context.virtualNow, recipients, job.channel); const message = this.wrap(source.id);
+      if (input.shareAddress) this.options.shareHome?.(job.companionId, recipients, source);
       this.db.prepare('UPDATE companion_social_chains SET used=used+1 WHERE id=?').run(job.chainId);
       this.db.prepare("INSERT INTO companion_social_budget VALUES(?,?,'reply',?,?)").run(source.id, job.companionId, context.virtualNow, iso());
       job.resultMessageId = source.id; this.saveJob(job); this.speech(message, job.channel);

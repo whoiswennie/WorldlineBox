@@ -13,6 +13,7 @@ import { COMPANION_SCHEDULE_TOOL } from '../../shared/companion-schedule-tool';
 import { COMPANION_STATE_TOOL } from '../../shared/companion-state-tool';
 import { COMPANION_ROUTINE_TOOL } from '../../shared/companion-routine-tool';
 import { COMPANION_WORLD_TOOL } from '../../shared/companion-world-tool';
+import { COMPANION_ACTIVITY_TOOL } from '../../shared/companion-activity-task';
 import { COMPANION_WORK_TOOL } from '../../shared/companion-work-tool';
 import { COMPANION_LIFE_TOOL } from '../../shared/companion-life-tool';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
@@ -218,7 +219,7 @@ function companionImagePart(format: AiApiFormat, image: Pick<ToolVisualInput, 'm
 }
 function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false, images: readonly CompanionVisualInput[] = []): Parameters<typeof fetch> {
   const deepseek = isDeepseekOfficialEndpoint(config.baseUrl ?? '');
-  const tools = [...(enableDsh ? [COMPANION_DSH_TOOL, COMPANION_DSH_RECORD_TOOL] : []), ...(enableMemory ? [...COMPANION_MEMORY_TOOLS, COMPANION_SCHEDULE_TOOL, COMPANION_STATE_TOOL, COMPANION_ROUTINE_TOOL, COMPANION_WORLD_TOOL, COMPANION_WORK_TOOL, COMPANION_LIFE_TOOL, ...COMPANION_FILE_TOOLS] : [])];
+  const tools = [...(enableDsh ? [COMPANION_DSH_TOOL, COMPANION_DSH_RECORD_TOOL] : []), ...(enableMemory ? [...COMPANION_MEMORY_TOOLS, COMPANION_SCHEDULE_TOOL, COMPANION_STATE_TOOL, COMPANION_ROUTINE_TOOL, COMPANION_WORLD_TOOL, COMPANION_ACTIVITY_TOOL, COMPANION_WORK_TOOL, COMPANION_LIFE_TOOL, ...COMPANION_FILE_TOOLS] : [])];
   const bearerHeaders = { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
   const imageMessage = images.length ? [{ role: 'user', content: companionImageParts(config.apiFormat, images) }] : [];
   const init = (headers: Record<string, string>, body: unknown): RequestInit => ({ method: 'POST', headers: { ...headers, ...(stream ? { Accept: 'text/event-stream' } : {}) },

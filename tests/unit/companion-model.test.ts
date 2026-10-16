@@ -237,7 +237,7 @@ describe('native memory tools across provider formats', () => {
     const registered = format === 'dashscope_native' ? request.parameters.tools : request.tools;
     const definitions = format === 'gemini_native' ? registered[0].function_declarations
       : registered.map((tool: { function?: unknown }) => tool.function ?? tool);
-    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', 'dsh_record', ...COMPANION_MEMORY_TOOLS.map(tool => tool.name), COMPANION_SCHEDULE_TOOL.name, COMPANION_STATE_TOOL.name, COMPANION_ROUTINE_TOOL.name, COMPANION_WORLD_TOOL.name, COMPANION_WORK_TOOL.name, COMPANION_LIFE_TOOL.name, ...COMPANION_FILE_TOOLS.map(tool => tool.name)]);
+    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', 'dsh_record', ...COMPANION_MEMORY_TOOLS.map(tool => tool.name), COMPANION_SCHEDULE_TOOL.name, COMPANION_STATE_TOOL.name, COMPANION_ROUTINE_TOOL.name, COMPANION_WORLD_TOOL.name, 'activity', COMPANION_WORK_TOOL.name, COMPANION_LIFE_TOOL.name, ...COMPANION_FILE_TOOLS.map(tool => tool.name)]);
     const workTool = definitions.find((tool: { name: string }) => tool.name === 'work');
     expect(workTool.description).toContain('accepted/running仅表示已经登记且尚未完成');
     expect(workTool.description).toContain('建单后不得再调用dsh重复执行');
