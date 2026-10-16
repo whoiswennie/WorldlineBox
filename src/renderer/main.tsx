@@ -5,6 +5,7 @@ import './harmonyos-sans-sc-windows.css';
 import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
 import { lazy, StrictMode, Suspense } from 'react';
+import { RendererReady, StartupBoundary, StartupScreen } from './StartupScreen';
 import { createRoot } from 'react-dom/client';
 
 import { ElevationProvider } from './ElevationProvider';
@@ -57,7 +58,7 @@ createRoot(root).render(
           <ElevationProvider>
             <MenuAcrylicProvider>
               <InspectorCardFeelProvider>
-                <Suspense fallback={<p role="status">正在打开…</p>}>{observer ? <WorldWindow /> : <App />}</Suspense>
+                <StartupBoundary><Suspense fallback={<StartupScreen title={observer ? "正在打开伙伴世界" : undefined} />}><RendererReady>{observer ? <WorldWindow /> : <App />}</RendererReady></Suspense></StartupBoundary>
               </InspectorCardFeelProvider>
             </MenuAcrylicProvider>
           </ElevationProvider>

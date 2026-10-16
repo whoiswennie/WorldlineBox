@@ -137,6 +137,9 @@ export function companionWorldEnvironment(virtualAt: number, timeZone: string): 
 }
 
 /** Only authoritative furniture participation earns recovery. Walking and gaps consume awake energy. */
+export function companionWorldEnergyRate(window?: Pick<CompanionWorldOccupancy, 'phase' | 'habitKind'>): number {
+  return !window ? -.08 : window.phase === 'sleeping' ? .3 : window.phase === 'eating' ? .5 : window.phase === 'resting' ? .15 : window.habitKind === 'rest' ? .15 : window.habitKind === 'exercise' ? -.12 : window.habitKind === 'study' ? -.06 : window.habitKind === 'leisure' ? .04 : -.04;
+}
 export function advanceCompanionWorldEnergy(windows: CompanionWorldOccupancy[], from: number, to: number, energy: number,
   virtualAt: (realAt: number, referenceRealAt?: number) => number, clockBoundaries: readonly number[] = []): number {
   let current = from, result = energy;
@@ -145,11 +148,10 @@ export function advanceCompanionWorldEnergy(windows: CompanionWorldOccupancy[], 
   };
   for (const window of windows) {
     const start = Math.max(current, window.start), end = Math.min(to, window.end); if (end <= start) continue;
-    if (start > current) apply(current, start, -.08);
-    const rate = window.phase === 'sleeping' ? .3 : window.phase === 'eating' ? .5 : window.phase === 'resting' ? .15 : window.habitKind === 'rest' ? .15 : window.habitKind === 'exercise' ? -.12 : window.habitKind === 'study' ? -.06 : window.habitKind === 'leisure' ? .04 : -.04;
-    apply(start, end, rate); current = end;
+    if (start > current) apply(current, start, companionWorldEnergyRate());
+    apply(start, end, companionWorldEnergyRate(window)); current = end;
   }
-  if (to > current) apply(current, to, -.08); return result;
+  if (to > current) apply(current, to, companionWorldEnergyRate()); return result;
 }
 
 /** Completion means accumulated real participation equal to one configured session; daily streaks require actual practice. */

@@ -18,6 +18,10 @@ export function logRendererConsoleMessage(
     logger.error("renderer.console.error", new Error(message), context);
     return;
   }
+  if (level === 1 && /^startup\.(?:renderer\.ready|world\.ready)\b/u.test(message)) {
+    logger.info('renderer.startup', message.slice(0, 1200), context);
+    return;
+  }
   if (level === 2) {
     logger.info("renderer.console.warning", message, context);
   }

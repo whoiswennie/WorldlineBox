@@ -25,7 +25,7 @@ export class CompanionRoutineStore {
     private readonly humanSource: (scope: Scope, content: string) => CompanionMessage,
     private readonly beforeConfigure: (companionId: string) => void,
     private readonly worldClock: { virtualAt: (realAt: number, referenceRealAt?: number) => number; realAt: (virtualAt: number, referenceRealAt?: number) => number; ensureThrough: (at: number) => number;
-      clockBoundaries: (from: number, to: number) => number[]; timeZone: () => string;
+      clockBoundaries: (from: number, to: number) => number[]; timeZone: () => string; canRespond: (id: string, allowWake: boolean) => boolean;
       actual: (id: string, at: number) => Pick<CompanionRoutineRuntime, 'phase' | 'activity' | 'activeHabitId'>; occupancy: (id: string, from: number, to: number) => CompanionWorldOccupancy[]; urgent: (id: string, source: string, now: number) => boolean }) {}
 
   configuration(companionId: string): CompanionRoutineConfig { return { ...structuredClone(this.load(companionId).config), timeZone: this.worldClock.timeZone() }; }
@@ -170,7 +170,7 @@ export class CompanionRoutineStore {
     now = this.worldClock.ensureThrough(now);
     const value = this.load(companionId), virtual = evaluateCompanionRoutine(this.configuration(companionId), iso(this.virtualTime(now)), value.interruptedUntil ? iso(this.virtualTime(value.interruptedUntil, now)) : undefined);
     const actual = this.worldClock.actual(companionId, now);
-    const result: CompanionRoutineRuntime = { ...virtual, ...actual, plannedPhase: virtual.phase, nextTransitionAt: iso(this.realTime(virtual.nextTransitionAt, now)),
+    const result: CompanionRoutineRuntime = { ...virtual, ...actual, plannedPhase: virtual.phase, canRespond: this.worldClock.canRespond(companionId, !!virtual.interruptedUntil), nextTransitionAt: iso(this.realTime(virtual.nextTransitionAt, now)),
       ...(value.interruptedUntil ? { interruptedUntil: value.interruptedUntil } : {}) };
     const previous = this.db.prepare('SELECT phase FROM companion_routine_audit WHERE companion_id=? ORDER BY id DESC LIMIT 1').get(companionId);
     if (!previous || row(previous).phase !== result.phase) {

@@ -192,3 +192,8 @@ npm run extension:build   # 构建 dist/extension
    详见 [本地 CICD](https://github.com/whoiswennie/WorldlineBox/blob/dev/docs/internal/development/local-cicd.md)。
 
 详见研究文档。
+
+
+### 启动阶段与首帧诊断
+
+启动会先显示应用 Logo 的本地加载窗口，依次报告内置工具校验、本地服务、本地数据、界面装载的真实完成步骤与用时；工具入口采用最多 3 路并发 SHA256 校验，不缓存或跳过校验结果。HTML 的轻量首屏先于 React、字体和功能模块绘制，主窗口随后交接同一加载样式；伙伴世界还会显示实际形象资源计数，等待材质编译和首帧绘制。形象资源等待上限 20 秒，超过后显示可用画面和诊断提示，场景切换/关闭会取消旧等待。日志中的 `main.startup.phase` 保存每阶段 `durationMs` / `totalMs`，`renderer.startup` 保存界面及世界首帧用时。`02-Start-Development.bat` 在 Electron 启动前仍需 Forge/Vite 编译源码；这段开发冷编译不冒充应用内进度。无窗口验收默认跳过额外启动窗口，专用验收用 `WORLDLINEBOX_E2E_STARTUP_SCREEN=1` 并继续遵守隐藏窗口设置。

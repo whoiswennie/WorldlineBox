@@ -85,7 +85,7 @@ export class CompanionsStore {
     };
     this.#routine = new CompanionRoutineStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids), humanSource,
       id => { this.#runtimeState.energy(id); this.#world.changed(); }, { virtualAt: (at, reference) => this.#world.virtualAt(at, reference), realAt: (at, reference) => this.#world.realAt(at, reference),
-        clockBoundaries: (from, to) => this.#world.clockBoundaries(from, to), timeZone: () => this.#world.timeZone(),
+        clockBoundaries: (from, to) => this.#world.clockBoundaries(from, to), timeZone: () => this.#world.timeZone(), canRespond: (id, allowWake) => this.#world.routineCanRespond(id, allowWake),
         ensureThrough: at => this.#world.ensureThrough(at), actual: (id, at) => this.#world.actual(id, at), occupancy: (id, from, to) => this.#world.occupancy(id, from, to), urgent: (id, source, now) => this.#world.urgent(id, source, now) });
     this.#world = new CompanionWorldStore(this.#db, id => this.#routine.configuration(id), (scope, ids) => this.#memory.sourcesFilter(scope, ids),
       id => this.#runtimeState.worldState(id), event => this.#runtimeState.worldEvent(event), (scope, candidate) => { this.#memory.record(scope, candidate); });

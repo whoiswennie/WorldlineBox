@@ -241,7 +241,10 @@ export class CompanionService {
           response.state.companions = response.state.companions.map(companion => {
             const activeCount = works.filter(work => work.companionId === companion.id && work.status === 'running').length;
             const queuedCount = works.filter(work => work.companionId === companion.id && work.status === 'queued').length;
-            return { ...companion, activeCount, queuedCount, availability: activeCount ? 'working' as const : queuedCount ? 'waiting' as const : 'ready' as const };
+            const activities = [...this.activities.values()].filter(item => item.companionId === companion.id);
+            const waiting = activities.length > 0 && activities.every(item => item.status === 'waiting');
+            return { ...companion, activeCount, queuedCount, availability: waiting || !activeCount && queuedCount ? 'waiting' as const : activeCount ? 'working' as const : 'ready' as const,
+              ...(waiting ? { availabilityReason: activities[0]?.stage } : {}) };
           });
           const actions = (await this.call({ type: 'actions' })).actions ?? [];
           response.state.activities = [...this.activities.entries()].map(([key, activity]) => {
@@ -264,7 +267,7 @@ export class CompanionService {
             const offline = !connected || !!unavailable && !companion.activeCount;
             return { ...companion, ...(companion.llm ? { llm: { ...companion.llm, hasKey: connected } } : {}),
               availability: reset ? 'waiting' as const : offline ? 'offline' as const : companion.availability,
-              availabilityReason: reset ? reset.status === 'failed' ? '伙伴重置已暂停，请查看进度' : '伙伴正在重置' : offline ? unavailable?.reason ?? (companion.llm ? '此伙伴尚未保存模型服务密钥' : '尚未配置全局模型服务') : undefined };
+              availabilityReason: reset ? reset.status === 'failed' ? '伙伴重置已暂停，请查看进度' : '伙伴正在重置' : offline ? unavailable?.reason ?? (companion.llm ? '此伙伴尚未保存模型服务密钥' : '尚未配置全局模型服务') : companion.availabilityReason };
           }));
         }
         return response;
@@ -704,12 +707,23 @@ export class CompanionService {
         await this.call({ type: 'loop.save', checkpoint });
       }
       this.activeLoops.set(loopKey, checkpoint);
-      this.changed();
+      const updateActivity = (status: CompanionActivity['status'], stage: string) => {
+        const previous = this.activities.get(key);
+        if (previous?.status === status && previous.stage === stage) return;
+        this.activities.set(key, { companionId: id, conversationId, sourceMessageId: userMessage.id, status, stage,
+          startedAt: previous?.startedAt ?? new Date().toISOString() });
+        this.changed();
+      };
+      const phoneReady = async () => {
+        await this.world.ready({ companionId: id, conversationId, workId: worldWork, kind: 'chat', sourceMessageId: userMessage.id }, controller.signal,
+          reason => updateActivity('waiting', reason));
+      };
+      updateActivity('waiting', '消息已收到，正在确认当前活动');
       let connection: string | undefined;
       try {
         if (!proactive) await this.assessAttention(id, userMessage.id);
-        await this.world.ready({ companionId: id, conversationId, workId: worldWork, kind: 'chat', sourceMessageId: userMessage.id }, controller.signal);
-        this.activities.set(key, { companionId: id, conversationId, sourceMessageId: userMessage.id, status: 'thinking', startedAt: new Date().toISOString() });
+        await phoneReady();
+        updateActivity('thinking', '正在读取相关记忆');
         const config = await this.configFor(companion);
         connection = connectionIdentity(config);
         const recalled = await this.memory.recall({ companion, conversation, messages, currentMessage: userMessage,
@@ -736,7 +750,8 @@ export class CompanionService {
             for (let retry = 0; retry < 3; retry++) {
               let stream: CompanionReplyStream | undefined;
               try {
-                await this.world.ready({ companionId: id, conversationId, workId: worldWork, kind: 'chat', sourceMessageId: userMessage.id }, controller.signal);
+                await phoneReady();
+                updateActivity('thinking', '正在整理上下文');
                 const revision = checkpoint.supplements.length;
                 const evidenceRevision = this.evidenceRevision;
                 const inference = await this.memoryInference(checkpoint, id, conversationId, userMessage.sequence);
@@ -751,6 +766,7 @@ export class CompanionService {
                 if (evidenceRevision !== this.evidenceRevision) { retry--; continue; }
                 stream = new CompanionReplyStream({ checkpoint, step,
                   publish: event => this.publishReplyStream(event), save: () => this.call({ type: 'loop.save', checkpoint }) });
+                updateActivity('thinking', retry ? '模型连接重试中' : '正在生成回复');
                 reply = await generateCompanionReply({ companion, conversation, messages, memories, proactive, ...profiles, fileInputs,
                   sourceMessage: userMessage, identityDirectory: state?.companions.map(role => ({ id: role.id, name: role.name })), addressedCompanionIds: speakers,
                   members: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name, description: role.description })) }, config, controller.signal,

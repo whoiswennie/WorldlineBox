@@ -1,10 +1,11 @@
+import { isCurrentDocumentReload } from '../renderer-navigation';
 import { COMPANION_WORLD_WINDOW_ARGUMENT, COMPANION_WORLD_WINDOW_CHANNEL, COMPANION_WORLD_WINDOW_CHANGED_CHANNEL,
   COMPANION_WORLD_WINDOW_VISIBILITY_CHANNEL, companionWorldContactSchema, companionWorldWindowCommandSchema,
   type CompanionWorldContact, type CompanionWorldWindowContext, type CompanionWorldWindowOpen, type CompanionWorldWindowResult } from '../../shared/companion-world-window';
 import type { CompanionsRequest, CompanionsResponse } from '../../shared/companions';
 
 export interface WorldObserverWindow {
-  readonly webContents: { readonly mainFrame: unknown; send(channel: string, value?: unknown): void;
+  readonly webContents: { readonly mainFrame: unknown; getURL(): string; send(channel: string, value?: unknown): void;
     setWindowOpenHandler(handler: () => { action: 'deny' }): unknown;
     on(event: 'will-navigate', listener: (event: { preventDefault(): void }, url: string) => void): unknown };
   isDestroyed(): boolean; isVisible(): boolean; isMinimized(): boolean; isMaximized(): boolean;
@@ -98,7 +99,7 @@ export class CompanionWorldWindowManager {
     const entry = { window, slot, input }; this.entries.add(entry);
     window.setMenu(null);
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    window.webContents.on('will-navigate', navigation => navigation.preventDefault());
+    window.webContents.on('will-navigate', (navigation, url) => { if (!isCurrentDocumentReload(window.webContents.getURL(), url)) navigation.preventDefault(); });
     window.on('closed', () => { this.entries.delete(entry); this.visibility(); });
     for (const name of ['show', 'hide', 'minimize', 'restore'] as const) window.on(name, () => this.visibility());
     try { await this.options.load(window); if (!window.isDestroyed() && !this.disposed) window.show(); return { ok: true }; }

@@ -313,6 +313,13 @@ button.companions-message-link:hover { text-decoration-color: currentColor; }
 .companions-message-bubble.is-action > .companions-reply-quote { max-width: 360px; margin: 0 0 8px 4px; }
 .companions-typing { flex-wrap: wrap; }
 .companions-typing-label { font-variant-numeric: tabular-nums; }
+.companions-reply-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin: 12px 52px; padding: 12px 14px; border: 1px solid var(--ui-border-subtle); border-radius: 14px; background: var(--ui-surface-pane); }
+.companions-reply-progress .companions-typing { margin: 0; flex: 1 1 220px; min-width: 0; font-size: 12px; }
+.companions-reply-progress .companions-typing-label { line-height: 1.5; overflow-wrap: anywhere; }
+.companions-typing-label small { display: block; color: var(--ui-content-secondary); font-size: 11px; }
+.companions-typing.is-waiting > svg { width: 16px; height: 16px; flex: 0 0 auto; }
+.companions-cancel-reply { border: 0; background: transparent; color: var(--ui-content-secondary); font: inherit; font-size: 11px; cursor: pointer; }
+.companions-cancel-reply:hover { color: var(--ui-content-primary); }
 .companions-memory { border-left: 2px solid color-mix(in srgb, var(--companion-blue) 35%, transparent); padding: 3px 0 3px 10px; margin: 17px 0; }
 .companions-memory > p { font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
 .companions-memory > div { display: flex; align-items: center; gap: 4px; margin-top: 7px; }

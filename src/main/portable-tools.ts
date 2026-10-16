@@ -34,6 +34,7 @@ export interface PortableToolOptions {
   appPath?: string;
   platform?: string;
   signal?: AbortSignal;
+  onProgress?: (progress: { completed: number; total: number; file: string }) => void;
 }
 
 function inside(root: string, relative: string): string {
@@ -99,12 +100,24 @@ export async function resolvePortableTools(options: PortableToolOptions = {}): P
     ffplayExecutable: 'ffmpeg/bin/ffplay.exe', ffprobeExecutable: 'ffmpeg/bin/ffprobe.exe',
   };
   // The complete payload is checked by the release gate; check executable entry points
-  // again at runtime without hashing hundreds of megabytes on each launch.
-  for (const location of Object.values(locations)) {
-    const entry = manifest.files.find((item) => item.path === location);
+  // again at runtime instead of rescanning the complete dependency tree.
+  const entries = Object.values(locations).map(location => {
+    const entry = manifest.files.find(item => item.path === location);
     if (!entry || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error('PORTABLE_TOOLS_INVALID_MANIFEST');
-    await verifyFile(root, entry, options.signal);
-  }
+    return entry;
+  });
+  let next = 0, completed = 0;
+  // Bounded I/O parallelism. Every executable still receives its full SHA256 check;
+  // no remembered success can bypass a changed or corrupted payload.
+  const verified = await Promise.allSettled(Array.from({ length: Math.min(3, entries.length) }, async () => {
+    while (next < entries.length) {
+      const entry = entries[next++]!;
+      await verifyFile(root!, entry, options.signal);
+      options.onProgress?.({ completed: ++completed, total: entries.length, file: entry.path.split('/').at(-1)! });
+    }
+  }));
+  const failure = verified.find((value): value is PromiseRejectedResult => value.status === 'rejected');
+  if (failure) throw failure.reason;
   return {
     rootPath: root,
     ...Object.fromEntries(Object.entries(locations).map(([key, value]) => [key, inside(root!, value)])) as typeof locations,

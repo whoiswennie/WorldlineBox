@@ -625,3 +625,15 @@ it('offers global settings when unconfigured, labels a preset greeting, and clea
   const settings = await mount(f.api); expect(container!.textContent).toContain('内置欢迎'); await click('查看伙伴状态'); await click('全局模型设置'); expect(settings).toHaveBeenCalledOnce();
   await act(() => root!.unmount()); root = undefined; expect(f.unsubscribe).toHaveBeenCalledOnce();
 });
+
+
+it('shows real waiting and generation stages before reply text exists and allows cancellation', async () => {
+  const f = fixture({ activities: [{ companionId: 'deepseek-sister', conversationId: 'private-sister', sourceMessageId: 'message-1', status: 'waiting', stage: '正在用手机处理先前消息，稍后依次回复', startedAt: date }] });
+  await mount(f.api);
+  const progress = container!.querySelector('[aria-label="伙伴回复进度"]')!;
+  expect(progress.textContent).toContain('等待回复');
+  expect(progress.textContent).toContain('正在用手机处理先前消息');
+  expect(progress.querySelector('.companions-typing.is-waiting')).not.toBeNull();
+  await click('取消回复');
+  expect(f.api.request).toHaveBeenCalledWith({ type: 'reply.cancel', conversationId: 'private-sister' });
+});

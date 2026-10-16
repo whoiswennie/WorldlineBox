@@ -1,3 +1,6 @@
+import logo from '../../../../assets/icons/startup-logo.png';
+import { startupMarkup } from '../../../shared/startup-presentation';
+import { prepareWorldResources } from './world-preparation';
 import { AmbientLight, BufferGeometry, Color, DirectionalLight, Float32BufferAttribute, Group, HemisphereLight, LinearFilter, LineBasicMaterial, LineSegments, Mesh, MeshBasicMaterial, OrthographicCamera, PCFSoftShadowMap, PlaneGeometry, PointLight, Points, PointsMaterial, Scene, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, Vector3, WebGLRenderer, type Texture } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { CompanionWorldContact } from '../../../shared/companion-world-window';
@@ -36,7 +39,9 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
   renderer.domElement.setAttribute('aria-label', '伙伴世界三维场景');
   renderer.domElement.setAttribute('role', 'img');
   container.appendChild(renderer.domElement);
-  const preparing = document.createElement('div'); preparing.className = 'companion-world-loading'; preparing.textContent = '正在打开这处生活…'; preparing.setAttribute('role', 'status'); container.appendChild(preparing);
+  const preparing = document.createElement('div'); preparing.className = 'companion-world-loading startup-world'; preparing.innerHTML = startupMarkup(logo, '正在准备三维场景', '搭建空间与伙伴形象', true); container.appendChild(preparing);
+  let preparingStarted = performance.now(), preparingController = new AbortController();
+  const preparingTimer = setInterval(() => { if (preparing.isConnected) preparing.querySelector('[data-startup-elapsed]')!.textContent = ((performance.now() - preparingStarted) / 1000).toFixed(1) + ' 秒'; }, 250);
   const preparation = worldScenePreparationGate();
   const scene = new Scene(); scene.background = new Color('#d9e1dc');
   const camera = new OrthographicCamera(-16, 16, 13, -13, .1, 600);
@@ -206,6 +211,7 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     const previousAt = latest?.clock.realNow;
     latest = snapshot; contacts = companions; currentScene = selectedScene;
     if (sceneChanged) {
+      preparingController.abort(); preparingController = new AbortController(); preparingStarted = performance.now();
       if (!preparing.isConnected) container.appendChild(preparing);
       container.setAttribute('aria-busy', 'true'); renderer.domElement.dataset.worldReady = 'false';
       actors.forEach(removeActor); actors.clear(); clearTextures();
@@ -280,10 +286,19 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     }
     for (const [url, texture] of textureCache) if (![...actors.values()].some(view => view.textureKey === url)) { texture.dispose(); textureCache.delete(url); }
     if (sceneChanged) {
-      // Wait for this scene's static shader programs before its first draw.
-      // A later sprite texture upload may still have its own driver cost.
-      const finish = () => { if (!disposed && preparation.complete(scenePreparation!)) { preparing.remove(); container.setAttribute('aria-busy', 'false'); invalidate(); } };
-      void renderer.compileAsync(scene, camera).then(finish, finish);
+      // Only the selected scene's initial assets enter the first-draw gate.
+      // Background animation variants never repeatedly hide an already drawn scene.
+      void prepareWorldResources({ compile: renderer.compileAsync(scene, camera), assets: [...pendingTextures.values()], signal: preparingController.signal,
+        onProgress: value => {
+          preparing.querySelector('[data-startup-detail]')!.textContent = value.compiled ? '画面已准备 · 装载伙伴形象' : '准备光照、材质与显卡绘制';
+          preparing.querySelector('[data-startup-stage]')!.textContent = `形象资源 ${value.completed} / ${value.total}${value.compiled ? ' · 材质已就绪' : ''}`;
+        },
+      }).then(result => {
+        if (disposed || result.cancelled || !preparation.complete(scenePreparation!)) return;
+        if (result.timedOut || result.compileFailed || result.failedAssets) onFailure(result.timedOut ? '场景资源载入较慢，已先显示可用画面。未完成的形象会继续载入。' : '部分场景资源未能装载，仍可查看伙伴的真实状态。');
+        preparing.querySelector('[data-startup-detail]')!.textContent = '资源已检查 · 正在绘制第一帧';
+        invalidate();
+      });
     }
     schedule();
   }
@@ -360,7 +375,9 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
       changed = true;
     }
     if (changed) {
-      renderer.render(scene, camera); lastFrame = worldAdvanceFrameClock(lastFrame, time, visibleWindowCount);
+      renderer.render(scene, camera);
+      if (preparing.isConnected) { preparing.remove(); container.setAttribute('aria-busy', 'false'); console.info('startup.world.ready', JSON.stringify({ sceneId: currentScene?.id, elapsedMs: Math.round(performance.now() - preparingStarted) })); }
+      lastFrame = worldAdvanceFrameClock(lastFrame, time, visibleWindowCount);
       drawTimes.push(performance.now() - drawStarted); if (drawTimes.length > 120) drawTimes.shift();
       renderer.domElement.dataset.worldReady = 'true'; renderer.domElement.dataset.worldLoadedActors = String([...actors.values()].filter(view => view.sprite.visible && view.texture).length);
       measuredFrames++; totalFrames++; renderer.domElement.dataset.worldFrames = String(totalFrames);
@@ -379,6 +396,7 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
   document.addEventListener('visibilitychange', onVisibility); renderer.domElement.addEventListener('webglcontextlost', contextLost); start();
   return { update, getView, restoreView, reset() { onFollowChange?.(undefined); reset(); onViewChange?.(); }, setActive(value) { if (active === value) return; active = value; if (!value) cancelFrame(); else start(); }, setVisibleWindowCount(count) { const next = Number.isFinite(count) ? Math.max(1, count) : 1; if (next !== visibleWindowCount) { visibleWindowCount = next; invalidate(); } }, zoom(amount) { camera.zoom = Math.max(controls.minZoom, Math.min(controls.maxZoom, camera.zoom * amount)); camera.updateProjectionMatrix(); invalidate(); onViewChange?.(); }, rotate(amount) { const offset = camera.position.clone().sub(controls.target); offset.applyAxisAngle(new Vector3(0, 1, 0), amount); camera.position.copy(controls.target).add(offset); controls.update(); invalidate(); onViewChange?.(); }, focus: focusActor, dispose() {
     disposed = true; cancelFrame(); observer.disconnect(); labelObserver.disconnect(); controls.dispose(); document.removeEventListener('visibilitychange', onVisibility); renderer.domElement.removeEventListener('webglcontextlost', contextLost);
+    preparingController.abort(); clearInterval(preparingTimer);
     actors.forEach(removeActor); actors.clear(); clearTextures(); room?.dispose(); weatherGeometry?.dispose(); weatherMaterial?.dispose(); sun.shadow.dispose(); renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove(); preparing.remove(); scene.clear();
   } };
 }

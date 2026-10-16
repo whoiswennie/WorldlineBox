@@ -82,7 +82,7 @@ export class CompanionWorldService {
     await this.ticking;
   }
   async ready(input: CompanionWorldScope & { workId: string; kind: 'chat' | 'action' | 'schedule'; sourceMessageId?: string;
-    urgent?: boolean; fixed?: boolean }, signal?: AbortSignal): Promise<void> {
+    urgent?: boolean; fixed?: boolean }, signal?: AbortSignal, onWaiting?: (reason: string) => void): Promise<void> {
     if (signal?.aborted || this.closed) throw cancelled();
     try {
       let work = (await this.options.request({ type: 'world.work.begin', ...input })).worldWork;
@@ -90,6 +90,7 @@ export class CompanionWorldService {
       while (work?.status !== 'ready') {
         if (signal?.aborted || this.closed) throw cancelled();
         if (!work || work.status === 'ended') throw new Error('伙伴当前无法使用电脑，任务仍需等待。');
+        onWaiting?.(work.reason ?? (input.kind === 'chat' ? '正在结束当前动作，准备查看消息' : '正在前往电脑，准备处理任务'));
         await delay(250, signal);
         await this.options.request({ type: 'world.tick' });
         work = (await this.options.request({ type: 'world.work.ready', companionId: input.companionId, workId: input.workId })).worldWork;

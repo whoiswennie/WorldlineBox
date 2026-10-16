@@ -49,6 +49,14 @@ describe("renderer diagnostics", () => {
     expect((logger.errors[0]?.error as Error).message).toBe("error");
   });
 
+  it("retains bounded explicit startup timings without forwarding ordinary info chatter", () => {
+    const logger = createLogger();
+    logRendererConsoleMessage(logger, { level: "info", message: 'startup.renderer.ready {"elapsedMs":412}', lineNumber: 1, sourceId: "startup.ts" });
+    logRendererConsoleMessage(logger, { level: "info", message: 'startup.world.ready {"elapsedMs":210}', lineNumber: 2, sourceId: "world.ts" });
+    logRendererConsoleMessage(logger, { level: "info", message: "ordinary UI chatter", lineNumber: 3, sourceId: "app.ts" });
+    expect(logger.infos).toHaveLength(2); expect(logger.infos.map(entry => entry.scope)).toEqual(["renderer.startup", "renderer.startup"]);
+  });
+
   it("records renderer lifecycle and child-process failures with window identity", () => {
     const logger = createLogger();
 

@@ -189,6 +189,9 @@ describe('CompanionService durable factory reset', () => {
     const pending = deferred<Response>(); transport.fetch.mockImplementation(() => pending.promise);
     await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '重置前的旧问题。', clientId: 'before-reset' });
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledOnce(), { timeout: 5000 });
+    expect((await f.service.handle({ type: 'state' })).state?.activities).toContainEqual(expect.objectContaining({
+      companionId: 'sister', sourceMessageId: expect.any(String), status: 'thinking', stage: '正在生成回复', startedAt: expect.any(String),
+    }));
     const started = await f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' });
     expect(started.reset?.phase).toBe('rooms'); expect('resetTaskIds' in started).toBe(false);
     pending.resolve(modelResponse('旧的迟到回复绝不能复活。')); await vi.advanceTimersByTimeAsync(100);

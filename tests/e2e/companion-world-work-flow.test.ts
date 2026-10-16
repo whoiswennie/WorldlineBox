@@ -66,14 +66,14 @@ function clock(hour: number) { return String((Math.floor(hour) + 24) % 24).padSt
 function cleanup(root: string) {
   const resolved = path.resolve(root);
   if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-world-flow-')) throw new Error('Unexpected isolated world flow cleanup target.');
-  rmSync(resolved, { recursive: true, force: true });
+  rmSync(resolved, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });
 }
 async function launch(profile: string) {
   const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(),
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
   const page = await application.firstWindow(), nativeWindow = await application.browserWindow(page);
   await nativeWindow.evaluate(win => { win.unmaximize(); win.setSize(1440, 900); win.setFocusable(false); win.setOpacity(0); win.webContents.setBackgroundThrottling(false); win.hide(); });
-  await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 60_000 });
   await page.locator('[data-application-module="companions"]').click(); return { application, page };
 }
 async function providerFixture() {

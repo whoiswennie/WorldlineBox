@@ -165,3 +165,5 @@
 .companion-world-actor-leader { position: absolute; top: 0; left: 0; height: 1px; background: rgb(81 111 91 / 50%); transform-origin: left center; pointer-events: none; z-index: 1; }
 .companion-world-actor-leader[hidden] { display: none; }
 .companion-world-actor-label[hidden] { display: none; }
+
+.companion-world-loading.startup-world { inset: 0; transform: none; display: block; z-index: 2; }

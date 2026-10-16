@@ -119,7 +119,7 @@ export const companionActionPageSchema = z.object({
 export type CompanionActionPage = z.infer<typeof companionActionPageSchema>;
 export const companionActivitySchema = z.object({ companionId: companionIdSchema, conversationId: companionIdSchema,
   sourceMessageId: companionIdSchema.optional(),
-  status: z.enum(['thinking', 'working']), startedAt: z.string().optional() });
+  status: z.enum(['waiting', 'thinking', 'working']), stage: z.string().max(500).optional(), startedAt: z.string().optional() });
 export type CompanionActivity = z.infer<typeof companionActivitySchema>;
 export const companionReplyRecoverySchema = z.object({ conversationId: companionIdSchema, sourceMessageId: companionIdSchema,
   dispatcher: z.literal('queue').default('queue'),

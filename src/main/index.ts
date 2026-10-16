@@ -1,3 +1,5 @@
+import { StartupWindow } from "./startup-window";
+import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
 import type { DshLauncher } from './dsh/launcher';
@@ -684,6 +686,7 @@ let quitAfterShutdown = false;
 let applicationClosing = false;
 let shutdownStarted = false;
 let startupComplete = false;
+let startupWindow: StartupWindow | undefined;
 let logger: AppLogger | undefined;
 const VIEWER_TIMING_LOG = process.env.WORLDLINEBOX_VIEWER_TIMING_LOG === "1";
 let appLogPath: string | undefined;
@@ -1508,6 +1511,7 @@ async function createMainWindow(): Promise<void> {
   // started from Vite; idle windows produce no log entries.
   attachRendererDiagnostics(window);
   window.on("ready-to-show", () => {
+    startupWindow?.complete(); startupWindow = undefined;
     // E2E can keep its renderer fully loaded and automatable without putting
     // a test window over the user's desktop session.
     if (
@@ -1528,7 +1532,7 @@ async function createMainWindow(): Promise<void> {
     }
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.webContents.on("will-navigate", (event, url) => { if (!isCurrentDocumentReload(window.webContents.getURL(), url)) event.preventDefault(); });
   window.webContents.session.on("will-download", (event, item) => {
     if (item.getURL().startsWith("worldlinebox-plugin:")) event.preventDefault();
   });
@@ -3663,15 +3667,18 @@ async function startApplication(): Promise<void> {
   logger.info("main.user-data", "Application data directory selected.", {
     path: app.getPath("userData"), mode: applicationUserData.mode,
   });
+  startupWindow = new StartupWindow((phase, durationMs, totalMs) => logger?.info("main.startup.phase", "Startup phase completed.", { phase, durationMs, totalMs }));
+  await startupWindow.open();
   if (process.platform === 'win32' && process.arch === 'x64') {
     try {
       const { loadApplicationPortableTools } = await import('./portable-tools');
-      const tools = await loadApplicationPortableTools();
+      const tools = await loadApplicationPortableTools({ onProgress: value => startupWindow?.set("environment", `已校验 ${value.completed} / ${value.total} 个工具入口 · ${value.file}`) });
       logger.info('main.portable-tools', 'Bundled tools loaded into the application environment.', { node: tools.nodeVersion, npm: tools.npmVersion });
     } catch (error) {
       logger.error('main.portable-tools', error);
     }
   }
+  startupWindow?.set("services", "连接 DSH、音乐和伙伴服务");
   if (applicationUserData.mode === "shared" || applicationUserData.mode === "override") {
     try {
       const { migrateLegacyDshStorage } = await import("./legacy-dsh-storage");
@@ -3715,7 +3722,7 @@ async function startApplication(): Promise<void> {
     companionService.registerIpc();
     companionWorldWindows = new CompanionWorldWindowManager({
       ipc: ipcMain, getMainWindow: () => mainWindow, preload: path.join(__dirname, 'index.js'),
-      createWindow: options => new BrowserWindow(withAppWindowIcon(options)),
+      createWindow: options => { const window = new BrowserWindow(withAppWindowIcon(options)); attachRendererDiagnostics(window); return window; },
       request: request => companionService!.handle(request), report: error => logger?.error('companions.world-window', error),
       load: async observer => {
         const window = observer as BrowserWindow;
@@ -3819,6 +3826,7 @@ async function startApplication(): Promise<void> {
       ),
     },
   );
+  startupWindow?.set("storage", "启动本地资源库数据服务");
   await workerClient.start();
   workerClient.publishShowMissingLinkedFiles(showMissingLinkedFiles);
   // WorldlineBox-65d837: remove any `.del-*` aside roots that could not be deleted
@@ -6108,6 +6116,7 @@ async function startApplication(): Promise<void> {
     logger,
   });
 
+  startupWindow?.set("interface", "装载应用界面，随后连接本地内容");
   await createMainWindow();
   try {
     await embeddedMcpServer?.initialize();

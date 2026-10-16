@@ -6,7 +6,7 @@ import type { CompanionsRequest, CompanionsResponse } from '../../src/shared/com
 class FakeWindow implements WorldObserverWindow {
   destroyed = false; visible = false; minimized = false; maximized = false;
   listeners = new Map<string, Set<() => void>>();
-  webContents = { mainFrame: {}, send: vi.fn(), setWindowOpenHandler: vi.fn(), on: vi.fn() };
+  webContents = { mainFrame: {}, getURL: vi.fn(() => 'file:///app/index.html?window=companion-world'), send: vi.fn(), setWindowOpenHandler: vi.fn(), on: vi.fn() };
   setMenu = vi.fn<(menu: null) => void>();
   isDestroyed() { return this.destroyed; } isVisible() { return this.visible; } isMinimized() { return this.minimized; } isMaximized() { return this.maximized; }
   on(name: string, callback: () => void) { const callbacks = this.listeners.get(name) ?? new Set(); callbacks.add(callback); this.listeners.set(name, callbacks); }
@@ -76,6 +76,15 @@ it('rejects foreign contents, subframes, invalid targets and every non-observer 
   expect((observer.webContents.setWindowOpenHandler.mock.calls[0]![0] as () => unknown)()).toEqual({ action: 'deny' });
   const preventDefault = vi.fn(); (observer.webContents.on.mock.calls[0]![1] as (event: { preventDefault(): void }) => void)({ preventDefault }); expect(preventDefault).toHaveBeenCalledOnce();
   f.manager.dispose();
+});
+
+it('permits exact observer document reloads and rejects every different destination', async () => {
+  const f = fixture(); await f.invoke(f.main, { type: 'open' }); const observer = f.created[0]!.window;
+  const navigate = observer.webContents.on.mock.calls.find(([event]) => event === 'will-navigate')![1] as (event: { preventDefault(): void }, url: string) => void;
+  const preventDefault = vi.fn(), current = observer.webContents.getURL();
+  navigate({ preventDefault }, current); expect(preventDefault).not.toHaveBeenCalled();
+  for (const url of ['https://example.com/', 'file:///app/index.html', current + '#other', current + '&scene=other', 'javascript:alert(1)']) navigate({ preventDefault }, url);
+  expect(preventDefault).toHaveBeenCalledTimes(5); f.manager.dispose();
 });
 
 it('shares concurrent snapshots, expires the short cache and invalidates after configure', async () => {

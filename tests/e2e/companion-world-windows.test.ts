@@ -14,7 +14,7 @@ type Bridge = Window & { worldlinebox: { companionWorld: CompanionWorldWindowApi
 const finalText = '世界窗口开着时，我们的聊天仍可以完整回复。';
 function cleanup(root: string) {
   const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-world-windows-')) throw new Error('Unexpected world observer fixture cleanup path.');
-  rmSync(resolved, { recursive: true, force: true });
+  rmSync(resolved, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });
 }
 async function observer(application: ElectronApplication, main: Page, sceneId?: string) {
   const opened = application.waitForEvent('window');
@@ -92,7 +92,7 @@ test('native observer windows share one world, preserve independent cameras and 
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'software' }) });
     const main = await application.firstWindow(), nativeMain = await application.browserWindow(main);
     await nativeMain.evaluate(window => { window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
-    await expect(main.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
+    await expect(main.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 60_000 });
     await main.evaluate(async baseUrl => {
       const bridge = (window as unknown as Bridge).worldlinebox;
       await bridge.llm!.setConfig({ apiFormat: 'openai_chat', baseUrl, model: 'window-fixture', apiKey: 'fixture-window-key' });

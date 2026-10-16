@@ -29,6 +29,7 @@ it.each(['resting', 'habit', 'walking'] as const)('sends peer phone messages whi
   if (activity === 'walking') { f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: 'commons' } }); advance(f.store, 2000); }
   else routine(f, activity === 'resting' ? 'rest' : 'study');
   const before = actor(f.store); expect(before.activity).toBe(activity);
+  expect(f.store.request({ type: 'routine.get', ...f.scope }).routine!.runtime.canRespond).toBe(true);
   const practice = f.store.request({ type: 'routine.get', ...f.scope }).routine!.habitProgress[0]?.practicedMinutes;
   const send = { type: 'social.send' as const, companionId: 'alice', conversationId: f.room.id, channel: 'phone' as const, content: '现在用手机和你打个招呼。', clientId: 'available_' + activity };
   expect(f.store.request(send).socialPending).toBe(true); advance(f.store, 20);
