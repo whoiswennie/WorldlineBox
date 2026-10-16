@@ -33,7 +33,6 @@ export const dshInstanceSchema = z.object({
   browserPartition: z.string(), pid: z.number().optional(), port: z.number().optional(),
   lastError: z.string().optional(), lastExitCode: z.number().nullable().optional(),
   parentInstanceId: id.optional(), isDefault: z.boolean(),
-  dataScope: z.enum(['shared', 'isolated']).optional(),
 });
 export type DshInstance = z.infer<typeof dshInstanceSchema>;
 export const dshSnapshotSchema = z.object({
@@ -139,7 +138,7 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('task.result'), taskId: id }),
   z.strictObject({ type: z.literal('task.events'), taskId: id, after: z.number().int().min(-1).optional() }),
   z.strictObject({ type: z.literal('task.message'), taskId: id, content: z.string().trim().min(1).max(16000), mode: z.enum(['steer', 'queue']), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional() }),
-  z.strictObject({ type: z.literal('instance.create'), name, runtimeId: id, dataScope: z.enum(['shared', 'isolated']).optional() }),
+  z.strictObject({ type: z.literal('instance.create'), name, runtimeId: id }),
   z.strictObject({ type: z.literal('instance.rename'), instanceId: id, name }),
   z.strictObject({ type: z.literal('instance.default'), instanceId: id }),
   z.strictObject({ type: z.literal('instance.clone'), instanceId: id, name, runtimeId: id.optional() }),

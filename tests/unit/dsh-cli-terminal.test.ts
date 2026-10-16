@@ -136,13 +136,12 @@ describe('managed CLI entrypoint', () => {
       await terminal.selectContext(selections[1]); expect((await runShim(root,['--version'])).stdout).toContain('fixture-version-b');
     } finally {await terminal.close();}
   },30_000);
-  it.skipIf(process.platform!=='win32')('uses only the exact private default workspace for an isolated version and refuses a foreign workspace override',async()=>{
+  it.skipIf(process.platform!=='win32')('uses only shared saves and rejects a stale private workspace route',async()=>{
     const {root,selections,terminal}=await setup('node-cli-web-v1');const selection=selections[0]!;
-    selection.instance.dataScope='isolated';selection.workspacePath=path.join(root,'instances',selection.instance.id,'user','Documents','deepseek-harness','default-workspace');await mkdir(selection.workspacePath,{recursive:true});
     try{
       await terminal.selectContext(selection);const result=await runShim(root,['--version']);expect(result.code,result.stderr).toBe(0);expect(result.stdout).toContain('fixture-version-a');
-      const file=path.join(root,'cli','context.json');const context=JSON.parse(await readFile(file,'utf8'));expect(context.dataScope).toBe('isolated');
-      context.workspacePath=path.join(root,'shared','documents','deepseek-harness','default-workspace');await writeFile(file,JSON.stringify(context));
+      const file=path.join(root,'cli','context.json');const context=JSON.parse(await readFile(file,'utf8'));expect(context).not.toHaveProperty('dataScope');
+      context.workspacePath=path.join(root,'instances',selection.instance.id,'user','Documents','deepseek-harness','default-workspace');await mkdir(context.workspacePath,{recursive:true});await writeFile(file,JSON.stringify(context));
       expect((await runShim(root,['--version'])).stderr).toContain('CLI context paths are not managed');
     }finally{await terminal.close();}
   },30_000);

@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
 import { StringDecoder } from 'node:string_decoder';
 import { dshTaskInputSchema, dshTaskRecordSchema, dshTaskSessionIdSchema, type DshTaskInput, type DshTaskRecord,
   type DshTaskResult, type DshTaskEvent } from '../../shared/dsh-tasks';
@@ -86,7 +85,7 @@ export function normalizeDshTaskProgress(value: Record<string, unknown>, pending
 export interface DshTaskPin { contextFile: string; dispose(): Promise<void> | void }
 export interface DshTaskBrokerOptions {
   rootPath: string; getSelection(instanceId?: string, signal?: AbortSignal, resume?: DshTaskRecord,
-    preparation?: { requiresCompanionRuntime: boolean; progress(summary: string): void }): Promise<DshCliSelection>; pin(selection: DshCliSelection): Promise<DshTaskPin>;
+    preparation?: { progress(summary: string): void }): Promise<DshCliSelection>; pin(selection: DshCliSelection): Promise<DshTaskPin>;
   onChanged?: () => void; onEvent?: (event: DshTaskEvent) => void;
 }
 export class DshTaskError extends Error { constructor(message: string, readonly result: DshTaskResult) { super(message); this.name = 'DshTaskError'; } }
@@ -178,7 +177,6 @@ export class DshTaskBroker {
       await this.init(); signal.throwIfAborted();
       preparation('preparing', '正在读取所选 DSH 实例的 CLI 配置');
       const selection = await this.options.getSelection(input.instanceId, signal, resume, {
-        requiresCompanionRuntime: !!(execution.toolkit || execution.access || execution.interactive),
         progress: summary => preparation('preparing', summary),
       }); signal.throwIfAborted();
       const captured: DshCliSelection = { ...selection, instance: { ...selection.instance }, plan: { ...selection.plan, env: { ...selection.plan.env } }, env: { ...selection.env }, nativeArgs: selection.nativeArgs ? [...selection.nativeArgs] : undefined };
@@ -190,7 +188,7 @@ export class DshTaskBroker {
         if (resume.workspacePath) captured.workspacePath = await realpathResumeWorkspace(resume.workspacePath);
       }
       if ((execution.toolkit || execution.access || execution.interactive)
-        && (captured.runtime?.id !== captured.instance.runtimeId || !supportsSharedDataRuntime(captured.runtime))) throw new DshTaskPreparationError('compatibility', '所选 DSH 尚未通过原生兼容性检测。请在「运行版本」查看失败检查并重新检测；任务尚未启动。');
+        && captured.runtime?.id !== captured.instance.runtimeId) throw new DshTaskPreparationError('selection', 'CLI 任务的运行版本与所选实例不一致，任务尚未启动。');
       preparation('preparing', '正在绑定当前实例的 CLI 任务与权限');
       pin = await this.options.pin(captured); signal.throwIfAborted();
       if (execution.toolkit || execution.access || execution.interactive) {

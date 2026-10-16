@@ -115,7 +115,6 @@ interface PersistedCliContext {
   format: typeof CONTEXT_FORMAT; instanceId: string; runtimeId: string; runtimeVersion: string;
   runtimeContentSha256: string; executable: string; nativeCli: string; nativeArgs: string[];
   routingPatch: string; workspacePath: string; env: Record<string, string>;
-  dataScope:'shared'|'isolated';
 }
 function powershellPath(): string {
   return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -220,7 +219,9 @@ export class DshCliTerminal {
     try {
       const raw: unknown = JSON.parse(await readFile(this.contextFile, 'utf8'));
       if (raw && typeof raw === 'object' && (raw as PersistedCliContext).format === CONTEXT_FORMAT
-        && /^[a-z0-9-]{1,80}$/.test((raw as PersistedCliContext).instanceId)) this.selected = raw as PersistedCliContext;
+        && /^[a-z0-9-]{1,80}$/.test((raw as PersistedCliContext).instanceId)
+        && typeof (raw as PersistedCliContext).workspacePath === 'string'
+        && within(path.join(this.root, 'shared'), (raw as PersistedCliContext).workspacePath)) this.selected = raw as PersistedCliContext;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.emit('system', 'The previous CLI selection was invalid; select an instance again.\n'); }
   }
   private async ensureOwnedDirectory(directory: string): Promise<void> {
@@ -254,26 +255,25 @@ export class DshCliTerminal {
     const instance = selection.instance;
     if (!/^[a-z0-9-]{1,80}$/.test(instance.id) || !/^[a-z0-9-]{1,80}$/.test(instance.runtimeId)) throw new Error('Invalid CLI instance/runtime identity.');
     const instanceRoot = path.join(this.root, 'instances', instance.id);
-    const dataScope=instance.dataScope??'shared';
     const program = path.join(this.root, 'runtimes', instance.runtimeId, 'program');
     const records: unknown = JSON.parse(await readFile(path.join(this.root, 'runtimes.json'), 'utf8'));
     const runtime = Array.isArray(records) ? records.find((record: DshRuntime) => record.id === instance.runtimeId) as DshRuntime | undefined : undefined;
     if (!runtime || !/^[a-f0-9]{64}$/.test(runtime.contentSha256)) throw new Error('Selected CLI runtime is not registered.');
     if(selection.runtimeVersion!==undefined&&selection.runtimeVersion!==runtime.version)throw new Error('Selected CLI runtime version does not match its registered identity.');
-    if(dataScope==='shared'&&!supportsSharedDataRuntime({...runtime,compatibility:await readRuntimeCompatibility(this.root,runtime)}))throw new Error('共享存档兼容性检测尚未通过，请先在运行版本页执行检测。');
+    if(!supportsSharedDataRuntime({...runtime,compatibility:await readRuntimeCompatibility(this.root,runtime)}))throw new Error('共享存档兼容性检测尚未通过，请先在运行版本页执行检测。');
     const executable = runtime.adapter === 'node-cli-web-v1' ? path.join(program, 'bin', 'node.exe')
       : runtime.adapter === 'desktop-cli-web-v1' ? path.join(program, 'DeepSeek Harness.exe') : undefined;
     if (!samePath(instance.homePath, path.join(instanceRoot, 'home')) || !samePath(instance.agentsPath, path.join(instanceRoot, 'agents'))
       || !executable || !samePath(selection.plan.executable, executable)
       || !within(program, selection.nativeCli ?? selection.plan.cli) || !within(instanceRoot, selection.routingPatch)
-      || !(dataScope==='isolated'?samePath(selection.workspacePath,path.join(instanceRoot,'user','Documents','deepseek-harness','default-workspace')):within(path.join(this.root, 'shared'), selection.workspacePath))) throw new Error('CLI selection contains an unmanaged path.');
+      || !within(path.join(this.root, 'shared'), selection.workspacePath)) throw new Error('CLI selection contains an unmanaged path.');
     const env = Object.fromEntries(Object.entries(selection.env).filter((entry): entry is [string, string] => ENV_KEYS.has(entry[0]) && typeof entry[1] === 'string'));
     env.DSH_HOME = instance.homePath; env.DSH_AGENTS_HOME = instance.agentsPath; env.DSH_DESKTOP_NODE_EXECUTABLE = selection.plan.executable;
     const next: PersistedCliContext = { format: CONTEXT_FORMAT, instanceId: instance.id, runtimeId: instance.runtimeId,
       runtimeVersion: selection.runtimeVersion ?? runtime.version, runtimeContentSha256: runtime.contentSha256,
       executable: selection.plan.executable, nativeCli: selection.nativeCli ?? selection.plan.cli,
       nativeArgs: selection.nativeArgs ?? ['web', '--patch', selection.routingPatch], routingPatch: selection.routingPatch,
-      workspacePath: selection.workspacePath, env,dataScope };
+      workspacePath: selection.workspacePath, env };
     if (next.nativeArgs.length > 128 || next.nativeArgs.some(argument => typeof argument !== 'string' || argument.length > 16_384 || argument.includes('\0'))) throw new Error('Invalid native CLI routing arguments.');
     return next;
   }
@@ -448,14 +448,13 @@ async function context(){
  if(override){const sessions=path.join(ROOT,'cli','sessions'),relative=path.relative(sessions,path.resolve(override)),parts=relative.split(path.sep);if(!inside(sessions,override)||parts.length!==2||!/^[a-f0-9-]{36}$/.test(parts[0])||parts[1]!=='context.json')throw Error('Invalid pinned terminal context');let current=ROOT;for(const part of path.relative(ROOT,path.resolve(override)).split(path.sep)){current=path.join(current,part);ordinary(current)}selectedContext=path.resolve(override)}
  const c=json(selectedContext);if(c.format!=='worldlinebox-dsh-cli-context-v1'||!/^[a-z0-9-]{1,80}$/.test(c.instanceId)||!/^[a-z0-9-]{1,80}$/.test(c.runtimeId))throw Error('Select a valid CLI instance in WorldlineBox first');
  const instance=path.join(ROOT,'instances',c.instanceId),artifact=path.join(ROOT,'runtimes',c.runtimeId),program=path.join(artifact,'program');
- const scope=c.dataScope??'shared';if(scope!=='shared'&&scope!=='isolated')throw Error('Invalid CLI save scope');
  ordinary(instance);ordinary(artifact);ordinary(program);
  const registry=json(path.join(ROOT,'runtimes.json')),record=registry.find(r=>r.id===c.runtimeId),seal=json(path.join(artifact,'seal.json'));
  const executable=record?.adapter==='node-cli-web-v1'?path.join(program,'bin','node.exe'):record?.adapter==='desktop-cli-web-v1'?path.join(program,'DeepSeek Harness.exe'):undefined;
- if(!executable||!same(c.executable,executable)||!inside(program,c.nativeCli)||!inside(instance,c.routingPatch)||!(scope==='isolated'?same(c.workspacePath,path.join(instance,'user','Documents','deepseek-harness','default-workspace')):inside(path.join(ROOT,'shared'),c.workspacePath))||!same(c.env.DSH_HOME,path.join(instance,'home'))||!same(c.env.DSH_AGENTS_HOME,path.join(instance,'agents')))throw Error('CLI context paths are not managed');
+ if(!executable||!same(c.executable,executable)||!inside(program,c.nativeCli)||!inside(instance,c.routingPatch)||!inside(path.join(ROOT,'shared'),c.workspacePath)||!same(c.env.DSH_HOME,path.join(instance,'home'))||!same(c.env.DSH_AGENTS_HOME,path.join(instance,'agents')))throw Error('CLI context paths are not managed');
  ordinary(c.routingPatch);if(!ordinary(c.workspacePath).isDirectory())throw Error('Shared workspace is missing');
  if(!record||record.version!==c.runtimeVersion||record.contentSha256!==c.runtimeContentSha256||seal.contentSha256!==c.runtimeContentSha256||c.runtimeId!=='runtime-'+c.runtimeContentSha256.slice(0,24)||!Array.isArray(seal.files)||seal.files.length>150000)throw Error('CLI runtime seal does not match its selected version');
- if(scope==='shared'&&!sharedCompatible(record))throw Error('This DSH version has no verified shared-data adapter');
+ if(!sharedCompatible(record))throw Error('This DSH version has no verified shared-data adapter');
  if(crypto.createHash('sha256').update(JSON.stringify(seal.files)).digest('hex')!==seal.contentSha256)throw Error('CLI runtime inventory identity changed');
  if(!await admission(c)){
  const expected=new Set();let bytes=0;
@@ -486,7 +485,7 @@ function createdAt(pid){const code="[Console]::OutputEncoding=[Text.UTF8Encoding
 function registration(c){const barrier=path.join(ROOT,'shared','.cli-exclusive.lock'),directory=path.join(ROOT,'shared','.cli-users'),file=path.join(directory,process.pid+'.json');if(fs.existsSync(barrier))throw Error('Shared saves are being backed up or migrated; retry after the operation finishes');fs.mkdirSync(directory,{recursive:true});ordinary(directory);const stamp=createdAt(process.pid);if(fs.existsSync(file)){const old=json(file);if(old.pid!==process.pid||old.createdAt!==stamp)fs.unlinkSync(file);else throw Error('This CLI process already owns a running task')}const temporary=file+'.'+crypto.randomUUID()+'.tmp';const record={format:'worldlinebox-dsh-cli-use-v1',instanceId:c.instanceId,pid:process.pid,executable:process.execPath,createdAt:stamp};const publish=()=>{fs.writeFileSync(temporary,JSON.stringify(record),{flag:'wx',mode:0o600});fs.renameSync(temporary,file)};publish();if(fs.existsSync(barrier)){fs.unlinkSync(file);throw Error('Shared saves are being backed up or migrated; retry after the operation finishes')}return{child(child){record.childPid=child.pid;record.childExecutable=c.executable;record.childCreatedAt=createdAt(child.pid);publish()},close(){if(fs.existsSync(file))fs.unlinkSync(file)}}}
 function modelPlan(c,input){
  const canonical=path.join(ROOT,'shared','model-settings.json');
- if((c.dataScope??'shared')!=='shared'||!sharedCompatible({id:c.runtimeId,contentSha256:c.runtimeContentSha256})||!fs.existsSync(canonical)||['plugin','--version','-V'].includes(input[0]))return;
+ if(!sharedCompatible({id:c.runtimeId,contentSha256:c.runtimeContentSha256})||!fs.existsSync(canonical)||['plugin','--version','-V'].includes(input[0]))return;
  const file=ordinary(canonical);if(!file.isFile()||file.size>8*1024*1024)throw Error('Shared CLI model settings are not readable');
  const explicit=input[0]==='web'||input[0]==='--profile',profile=explicit?(input[0]==='web'?'web':input[1]):'web';
  if(typeof profile!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(profile))throw Error('Invalid CLI profile name');

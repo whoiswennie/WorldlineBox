@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { ChildProcess } from 'node:child_process';
@@ -12,6 +12,22 @@ import type { DshInstance } from '../../src/shared/dsh-launcher';
 
 const roots: string[] = [];
 const coordinators: SharedSettingsCoordinator[] = [];
+
+it('migrates the active profile into common models and retains both conflict originals before adopting other instances', async () => {
+  const f = await fixture(); await f.coordinator.importSnapshot(model('https://older-shared.invalid'));
+  const home = path.join(f.root, 'active'); await mkdir(path.join(home, 'profiles/web'), { recursive: true });
+  await writeFile(path.join(home, 'profiles/web/cordis.patch.yml'), writeSharedModels('[]', model('https://active-instance.invalid')));
+  await f.coordinator.prepareStopped('active', home, 'prefer-source');
+  expect((await f.coordinator.exportSnapshot())['llm-pi-ai']).toEqual(model('https://active-instance.invalid')['llm-pi-ai']);
+  const backupDirectory = path.join(f.root, 'shared/migration-records/models');
+  const backup = JSON.parse(await readFile(path.join(backupDirectory, (await readdir(backupDirectory))[0]!), 'utf8'));
+  expect(backup.shared.values['llm-pi-ai']).toEqual(model('https://older-shared.invalid')['llm-pi-ai']);
+  const other = path.join(f.root, 'other'); await mkdir(path.join(other, 'profiles/web'), { recursive: true });
+  await writeFile(path.join(other, 'profiles/web/cordis.patch.yml'), writeSharedModels('[]', model('https://other-instance.invalid')));
+  await f.coordinator.prepareStopped('other', other, 'prefer-shared');
+  expect((await f.coordinator.exportSnapshot())['llm-pi-ai']).toEqual(model('https://active-instance.invalid')['llm-pi-ai']);
+  expect(await readdir(backupDirectory)).toHaveLength(2);
+});
 afterEach(async () => {
   for (const coordinator of coordinators.splice(0)) await coordinator.dispose();
   for (const root of roots.splice(0)) if (path.dirname(path.resolve(root)) === path.resolve(tmpdir()) && path.basename(root).startsWith('worldlinebox-model-sync-')) await rm(root, { force: true, recursive: true });

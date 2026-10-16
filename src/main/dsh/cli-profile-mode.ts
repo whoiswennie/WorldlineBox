@@ -8,7 +8,7 @@ export const DSH_NATIVE_CLI_DISABLED_IDS = ['web-startup', 'webserver', 'web-run
 export const DSH_NATIVE_CLI_ENABLED_IDS = ['credentials', 'authorization', 'deepseek-account'] as const;
 
 /**
- * Boot the same private web profile and installed plugin tree through the
+ * Boot the selected instance's Web profile and installed plugin tree through the
  * shipped one-shot CLI driver. Only the Web carrier is disabled; no profile,
  * dependency, model configuration or skill tree is copied or changed.
  * Append the technical storage --patch and then the user's task/CLI options.
@@ -24,12 +24,12 @@ export async function prepareNativeCliMode(instanceRoot: string, programDirector
   const headlessPatches=declared(manifest.dsh?.bundle?.patch);
   for(const patch of headlessPatches)await readRuntimeSdkFile(program,`${headlessPackage}/${patch.slice(2)}`);
   {
-    // Older releases may use private saves, but are admitted only when the
-    // shipped metadata still supplies this exact web/headless composition.
+    // Require matching Web/headless bundles so the CLI uses the same shared
+    // account and model services as the selected instance's workbench.
     const webManifest=JSON.parse((await readRuntimeSdkFile(program,'@deepseek-ai/dsh-web-app/package.json')).toString('utf8')) as {version?:string;dsh?:{bundle?:{patch?:string|string[]}}};
-    if(webManifest.version!==manifest.version)throw new Error('This version does not supply the supported private web CLI composition.');
+    if(webManifest.version!==manifest.version)throw new Error('This version does not supply the supported Web CLI composition.');
     const webPatch=(await Promise.all(declared(webManifest.dsh?.bundle?.patch).map(async patch=>(await readRuntimeSdkFile(program,`@deepseek-ai/dsh-web-app/${patch.slice(2)}`)).toString('utf8')))).join('\n');
-    for(const id of DSH_NATIVE_CLI_DISABLED_IDS)if(!new RegExp(`(?:^|\\n)\\s*-?\\s*id:\\s*['"]?${id}['"]?\\s*(?:\\r?\\n|$)`).test(webPatch))throw new Error('This version does not supply the supported private headless transport rows.');
+    for(const id of DSH_NATIVE_CLI_DISABLED_IDS)if(!new RegExp(`(?:^|\\n)\\s*-?\\s*id:\\s*['"]?${id}['"]?\\s*(?:\\r?\\n|$)`).test(webPatch))throw new Error('This version does not supply the supported headless transport rows.');
   }
   const root = await realpath(instanceRoot);
   const directory = path.join(root, 'launcher'); await mkdir(directory, { recursive: true, mode: 0o700 });

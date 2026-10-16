@@ -15,7 +15,7 @@ import { dshCompatibilityCheckIds } from '../../src/shared/dsh-runtime-compatibi
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await removeManaged(os.tmpdir(), root); });
-async function fixture() {
+async function fixture(sharedStatus: 'passed' | 'failed' | 'missing' = 'passed') {
   const rootPath = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-task-broker-')); roots.push(rootPath); await mkdir(path.join(rootPath, 'cli'));
   const descendantProgram = "const {spawn}=require('node:child_process');const leaf=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{windowsHide:true,stdio:'ignore'});console.log(leaf.pid);setInterval(()=>{},1000);";
   const shim = `const fs=require('node:fs');const path=require('node:path');const {spawn}=require('node:child_process');
@@ -51,9 +51,9 @@ process.stdin.setEncoding('utf8');process.stdin.on('data',text=>prompt+=text);pr
     homePath: path.join(rootPath, id, 'home'), agentsPath: path.join(rootPath, id, 'agents'), workspacePath: rootPath, browserPartition: `persist:${id}`, isDefault: false },
     plan: { executable: process.execPath, cli: 'selected-native-cli.js', env: {} }, env: { ...process.env }, workspacePath: rootPath, routingPatch: 'private.patch', runtimeVersion: id === 'instance-a' ? '0.2.0-rc.2' : '0.2.1-alpha.2',
     runtime: { id: `runtime-${id}`, version: 'synthetic', nodeVersion: process.versions.node, platform: 'win32-x64', adapter: 'node-cli-web-v1',
-      source: 'synthetic transport fixture', sourceSha256: 'a'.repeat(64), installedAt: '', fileCount: 0, byteLength: 0, contentSha256: 'a'.repeat(64), compatibility: {
-      runtimeId: `runtime-${id}`, contentSha256: 'a'.repeat(64), contract: 'synthetic transport fixture', status: 'passed', startedAt: '', peers: [],
-      checks: dshCompatibilityCheckIds.map(id => ({ id, status: 'passed', detail: 'synthetic transport fixture' })),
+      source: 'synthetic transport fixture', sourceSha256: 'a'.repeat(64), installedAt: '', fileCount: 0, byteLength: 0, contentSha256: 'a'.repeat(64), compatibility: sharedStatus === 'missing' ? undefined : {
+      runtimeId: `runtime-${id}`, contentSha256: 'a'.repeat(64), contract: 'synthetic transport fixture', status: sharedStatus, startedAt: '', peers: [],
+      checks: dshCompatibilityCheckIds.map(id => ({ id, status: sharedStatus === 'failed' && id === 'native-api' ? 'failed' : 'passed', detail: 'synthetic transport fixture' })),
     } } as DshRuntime });
   let selected = 'instance-a'; const pins: string[] = []; const removed: string[] = []; const captured: DshCliSelection[] = []; let eventHook: ((type: string, id: string) => void) | undefined;
   let disposeHook: (() => Promise<void>) | undefined;
@@ -67,11 +67,18 @@ process.stdin.setEncoding('utf8');process.stdin.on('data',text=>prompt+=text);pr
   return { rootPath, broker, pins, removed, captured, logs, operation, select: (id: string) => { selected = id; }, events: (hook: typeof eventHook) => { eventHook = hook; }, dispose: (hook: typeof disposeHook) => { disposeHook = hook; } };
 }
 describe('Pinned DSH task broker', () => {
+  it.each(['failed', 'missing'] as const)('executes a selection admitted by the launcher without duplicating its storage policy for a %s cached report', async status => {
+    const test = await fixture(status);
+    try {
+      const result = await test.broker.execute({ prompt: 'connection' }, test.operation(), { toolkit: true, access: { mode: 'read-only' } });
+      expect(result.text).toContain('native configuration');
+      expect(test.broker.state()[0]?.status).toBe('succeeded');
+    } finally { await test.broker.shutdown(); }
+  });
   it('preserves controlled preparation diagnostics and progress before any pin or process is created', async () => {
     const test = await fixture(); const operation = test.operation(); let pinned = false;
     const broker = new DshTaskBroker({ rootPath: test.rootPath,
       getSelection: async (_id, _signal, _resume, preparation) => {
-        expect(preparation?.requiresCompanionRuntime).toBe(true);
         preparation?.progress('正在读取实例账号配置');
         throw new DshTaskPreparationError('compatibility', 'DSH 检测失败：model-settings；请重新检测。');
       }, pin: async () => { pinned = true; throw new Error('must not pin'); } });
@@ -163,14 +170,14 @@ describe('Pinned DSH task broker', () => {
     await test.broker.shutdown();
   });
 
-  it('refuses task capabilities on an uninspected runtime before creating a pin', async () => {
+  it('refuses task capabilities when the selected runtime identity is missing before creating a pin', async () => {
     const test = await fixture();
     await test.broker.execute({ prompt: 'fixture' }, test.operation());
     let pinned = false;
     const broker = new DshTaskBroker({ rootPath: test.rootPath,
       getSelection: async () => ({ ...test.captured[0]!, runtimeVersion: '0.1.0-unknown', runtime: undefined }),
       pin: async () => { pinned = true; throw new Error('Capabilities must not enter an uninspected runtime.'); } });
-    await expect(broker.execute({ prompt: 'fixture' }, test.operation(), { toolkit: true })).rejects.toThrow('尚未通过原生兼容性检测');
+    await expect(broker.execute({ prompt: 'fixture' }, test.operation(), { toolkit: true })).rejects.toThrow('运行版本与所选实例不一致');
     expect(pinned).toBe(false);
     await broker.shutdown();
     await test.broker.shutdown();

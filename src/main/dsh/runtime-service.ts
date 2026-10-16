@@ -15,7 +15,7 @@ import { prepareNodeRuntimeLockInstall,validatePortableNodeRuntimeLock } from '.
 import { nodeRuntimePayloadShaFromInventory } from './node-runtime-payload';
 import { prepareOfficialNodeRuntime, validateNodeRuntimeInventory, validateOfficialNodeProgram, validateOfficialNodeRelease, type NodeInstallNetwork, type NodeInstallTools, type NodeRuntimeReceipt, type NodeRuntimeInstallPreparation, type OfficialNodeRelease } from './node-runtime-service';
 import { RuntimeCompatibility, assertRuntimeCompatibility } from './runtime-compatibility';
-import type { DshCompatibilityReport } from '../../shared/dsh-runtime-compatibility';
+import { supportsSharedDataRuntime, type DshCompatibilityReport } from '../../shared/dsh-runtime-compatibility';
 import { RuntimeIntegrity } from './runtime-integrity';
 import { DshTaskPreparationError } from './task-preparation';
 
@@ -90,6 +90,7 @@ export class RuntimeService implements RuntimeServiceLike {
   private readonly installingVersions = new Set<string>();
   private writes = Promise.resolve();
   private readonly compatibility: RuntimeCompatibility;
+  private readonly sharedAdmissions = new Map<string, Promise<DshCompatibilityReport>>();
   private maintaining = false;
   constructor(private readonly options: {
     rootPath: string; sevenZipPath: string; onChanged: () => void;
@@ -134,8 +135,28 @@ export class RuntimeService implements RuntimeServiceLike {
   }
   list(): DshRuntime[] { return this.records.map(record => ({ ...record, compatibility: this.compatibility.report(record) })); }
   get(id: string): DshRuntime { const record = this.records.find(record => record.id === id); if (!record) throw new Error('This DSH runtime is not installed.'); return { ...record, compatibility: this.compatibility.report(record) }; }
-  checkCompatibility(id: string, operation?: OperationContext): Promise<DshCompatibilityReport> { return this.compatibility.check(this.get(id), operation); }
-  async assertSharedCompatible(id: string): Promise<void> { await assertRuntimeCompatibility(this.options.rootPath, this.get(id)); }
+  checkCompatibility(id: string, operation?: OperationContext): Promise<DshCompatibilityReport> {
+    this.sharedAdmissions.delete(id); return this.compatibility.check(this.get(id), operation);
+  }
+  async assertSharedCompatible(id: string, signal?: AbortSignal): Promise<void> {
+    const runtime = this.get(id);
+    if (!supportsSharedDataRuntime(runtime)) {
+      let pending = this.sharedAdmissions.get(id);
+      if (!pending) { pending = this.compatibility.check(runtime); this.sharedAdmissions.set(id, pending); }
+      if (!signal) await pending;
+      else {
+        signal.throwIfAborted();
+        let removeAbort = () => {};
+        try { await Promise.race([pending, new Promise<never>((_resolve, reject) => {
+          const abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true });
+          removeAbort = () => signal.removeEventListener('abort', abort);
+          if (signal.aborted) abort();
+        })]); } finally { removeAbort(); }
+      }
+    }
+    // Re-read evidence even after a cached admission: invalidation must fail closed.
+    await assertRuntimeCompatibility(this.options.rootPath, this.get(id));
+  }
   unchecked(): DshRuntime[] { return this.list().filter(record => this.compatibility.needsCheck(record)); }
   directory(id: string): string { this.get(id); return contained(path.join(this.options.rootPath, 'runtimes'), `${id}/program`); }
   plan(id: string) {
@@ -176,7 +197,8 @@ export class RuntimeService implements RuntimeServiceLike {
       await this.compatibility.invalidate(record, message); throw new DshTaskPreparationError('integrity', message);
     }
   }
-  close(): void { this.integrity.close(); }
+  cancelChecks(): void { this.compatibility.cancel(); }
+  close(): void { this.cancelChecks(); this.integrity.close(); }
   async delete(id: string, referenced: boolean): Promise<void> {
     if (referenced) throw new Error('此运行版本仍被实例、快照、整合包或任务引用，请先处理页面列出的引用。');
     if (this.importing || this.installingVersions.size || this.maintaining) throw new Error('请等待版本安装或清理操作结束。');

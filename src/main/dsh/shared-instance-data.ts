@@ -71,11 +71,11 @@ export class SharedInstanceData {
         const migrated = await migrateInstanceData({ instanceId: instance.id, homePath: instance.homePath,
           workspacePath: instance.workspacePath, sharedRoot: this.paths.rootPath, runtimeVersion, signal: operation?.signal });
         const credentials = await migrateSharedCredentials({ instanceRoot: root, sourceInstanceId: instance.id,
-          sharedRoot: this.paths.rootPath, runtimeVersion, plan, env, signal: operation?.signal });
+          sharedRoot: this.paths.rootPath, runtimeVersion, plan, env, signal: operation?.signal, preferSource: instance.isDefault });
         await operation?.log(`Shared save migration: ${migrated.copiedSessions} sessions and ${migrated.copiedWorkspaceFiles} workspace files added. Conflicts retained: ${migrated.conflictingSessions + migrated.conflictingWorkspaceFiles + migrated.conflictingAttachments}; credential conflicts: ${credentials.conflicts.length}. Private originals retained.`);
       } else await assertSharedSessionCompatibility(this.paths.rootPath, runtimeVersion, operation?.signal);
       await this.settings.syncNow();
-      await this.settings.prepareStopped(instance.id, instance.homePath);
+      await this.settings.prepareStopped(instance.id, instance.homePath, !prepared ? instance.isDefault ? 'prefer-source' : 'prefer-shared' : undefined);
       const patch = await writeTechnicalRoutingPatch({ instanceRoot: root, sharedRoot: this.paths.rootPath,
         runtimeVersion, programDirectory: runtimeProgramDirectory(plan.executable), workspacePath: this.paths.workspacePath, patches: sharedSessionRoutingPatches(this.paths.rootPath), signal: operation?.signal });
       await atomicJson(path.join(root, 'launcher', 'shared-data-ready.json'), { format: 'worldlinebox-shared-data-v1', instanceId: instance.id, sharedRootPath: this.paths.rootPath, runtimeVersion });

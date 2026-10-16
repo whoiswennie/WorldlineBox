@@ -7,10 +7,26 @@ import { inventoryTree, removeManaged } from '../../src/main/dsh/files';
 import { instanceEnvironment } from '../../src/main/dsh/instance-process';
 import { credentialRoutingPatches, migrateSharedCredentials, writeTechnicalRoutingPatch } from '../../src/main/dsh/shared-credentials';
 import type { DshInstance } from '../../src/shared/dsh-launcher';
+import { canonicalRuntimeEntryPaths } from '../../src/main/dsh/runtime-paths';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await removeManaged(os.tmpdir(), root); });
 async function setup() { const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-shared-credentials-')); roots.push(root); return root; }
+
+it.skipIf(!process.env.WORLDLINEBOX_DSH_NATIVE_PROGRAM)('adopts the selected instance native credentials while backing up conflicting shared grants', async () => {
+  const root = await setup(), instanceRoot = path.join(root, 'instance'), sharedRoot = path.join(root, 'shared');
+  const plan = { ...canonicalRuntimeEntryPaths(process.env.WORLDLINEBOX_DSH_NATIVE_PROGRAM!, 'node-cli-web-v1'), env: {} };
+  const instance: DshInstance = { id: 'selected', name: 'Selected', runtimeId: 'native', profile: 'web', status: 'stopped', homePath: path.join(instanceRoot, 'home'), agentsPath: path.join(instanceRoot, 'agents'), workspacePath: path.join(instanceRoot, 'workspace'), browserPartition: 'test', isDefault: true, createdAt: '', updatedAt: '' };
+  const env = await instanceEnvironment(instanceRoot, instance, plan); await mkdir(sharedRoot);
+  const source = 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: selected-synthetic-key\nrecords: {}\n';
+  const original = 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: older-synthetic-key\n  CUSTOM_API_KEY: retained-synthetic-key\nrecords: {}\n';
+  await writeFile(path.join(instance.homePath, '.credentials.yaml'), source); await writeFile(path.join(sharedRoot, '.credentials.yaml'), original);
+  const receipt = await migrateSharedCredentials({ instanceRoot, sourceInstanceId: instance.id, sharedRoot, runtimeVersion: 'native-fixture', plan, env, preferSource: true });
+  const current = parse(await readFile(path.join(sharedRoot, '.credentials.yaml'), 'utf8'));
+  expect(current.refs).toEqual({ DEEPSEEK_API_KEY: 'selected-synthetic-key', CUSTOM_API_KEY: 'retained-synthetic-key' });
+  expect(await readFile(receipt.previousSharedPath!, 'utf8')).toBe(original);
+  expect(await readFile(path.join(instance.homePath, '.credentials.yaml'), 'utf8')).toBe(source);
+});
 
 describe('explicit shared storage routing', () => {
   it('routes only credentials and technical storage paths while preserving the writable private profile', async () => {

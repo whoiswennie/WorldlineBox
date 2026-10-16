@@ -1,10 +1,11 @@
 import path from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, writeFile } from './disk';
 import type { DshInstance, DshRuntime } from '../../shared/dsh-launcher';
 import type { DshCompatibilityCheckId } from '../../shared/dsh-runtime-compatibility';
 import { inventoryTree, redact } from './files';
-import { instanceEnvironment, launchCli, parseReadyUrl, terminateOwnedProcess } from './instance-process';
+import { instanceEnvironment, launchCli, parseReadyUrl, sanitizeOutput, terminateOwnedProcess } from './instance-process';
 import type { RuntimeServiceLike } from './runtime-service';
 import { runtimeSdkRoot } from './runtime-sdk';
 import { prepareSharedSessionData } from './shared-session-data';
@@ -59,17 +60,20 @@ export async function probeRuntimeCompatibility(options: {
     // from native config-editor, making healthy settings edits fail on alpha.4.
     const child = await launchCli(plan, ['web', '--patch', routing, '--patch', probePatch, '--no-open', '--host', '127.0.0.1', '--port', '0'], env, paths.workspacePath);
     children.add(child);
-    let output = ''; let diagnostics = ''; let readyUrl = ''; let nativeReady = false; let serial = 0;
+    let output = ''; let diagnostics = ''; let stdoutTail = ''; let readyUrl = ''; let nativeReady = false; let serial = 0;
     let readyResolve!: () => void; let readyReject!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
     const pending = new Map<number, { resolve(value: Reply): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
-    const timer = setTimeout(() => readyReject(new Error(`原生环境启动超时（60 秒）。${diagnostics.slice(-1200)}`)), 60_000);
-    child.stderr.on('data', chunk => { diagnostics = redact(diagnostics + String(chunk)).slice(-3000); });
+    const readinessDetail = () => `Host ${readyUrl ? '已监听' : '未监听'}；检测插件${nativeReady ? '已就绪' : '未就绪'}。${sanitizeOutput([stdoutTail, diagnostics].filter(Boolean).join('\n')).slice(-1800)}`;
+    const timer = setTimeout(() => readyReject(Object.assign(new Error(`原生环境启动超时（60 秒）。${readinessDetail()}`),
+      { name: 'DshProbeStartupTimeoutError' })), 60_000);
+    child.stderr.on('data', chunk => { diagnostics = sanitizeOutput(diagnostics + String(chunk)).slice(-3000); });
     child.stdout.on('data', chunk => {
       output += String(chunk);
+      stdoutTail = sanitizeOutput(stdoutTail + String(chunk)).slice(-3000);
       if (output.length > 1024 * 1024) { readyReject(new Error('检测子进程输出超限。')); abort(); return; }
       for (let at = output.indexOf('\n'); at >= 0; at = output.indexOf('\n')) {
-        const line = output.slice(0, at).trim(); output = output.slice(at + 1);
+        const line = stripVTControlCharacters(output.slice(0, at)).trim(); output = output.slice(at + 1);
         readyUrl = parseReadyUrl(line) ?? readyUrl; if (line === 'COMPAT_READY') nativeReady = true;
         if (nativeReady && readyUrl) { clearTimeout(timer); readyResolve(); }
         if (!line.startsWith('COMPAT_RESULT ')) continue;
@@ -85,7 +89,7 @@ export async function probeRuntimeCompatibility(options: {
       for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error(message)); } pending.clear();
     };
     child.once('error', error => exited(`原生环境启动失败：${error.message}`));
-    child.once('close', code => exited(`检测子进程已退出（${code}）。${diagnostics.slice(-1200)}`));
+    child.once('close', code => exited(`检测子进程已退出（${code}）。${readinessDetail()}`));
     const peer: Peer = { child, instance, env, url: '', request(type, values = {}) {
       signal.throwIfAborted(); const id = ++serial;
       return new Promise((resolve, reject) => {
@@ -98,9 +102,16 @@ export async function probeRuntimeCompatibility(options: {
       if (child.exitCode === null && !signal.aborted) await peer.request('close').catch(() => undefined);
       await terminateOwnedProcess(child); children.delete(child);
     } }; peers.push(peer);
-    await ready; signal.throwIfAborted(); peer.url = readyUrl;
-    await coordinator.attach(id, peer.url, instance.homePath); peer.transport = await connectNativeSettings(peer.url);
-    return peer;
+    try {
+      await ready; signal.throwIfAborted(); peer.url = readyUrl;
+      await coordinator.attach(id, peer.url, instance.homePath); peer.transport = await connectNativeSettings(peer.url);
+      return peer;
+    } catch (error) {
+      // A failed boot must be fully reaped before another isolated attempt.
+      clearTimeout(timer); coordinator.detach(id); peer.transport?.close();
+      await terminateOwnedProcess(child); children.delete(child);
+      throw error;
+    }
   };
   const waitVisible = async (peer: Peer, sessionId: unknown, title: string): Promise<Reply> => {
     const deadline = Date.now() + 12_000;
@@ -124,7 +135,17 @@ export async function probeRuntimeCompatibility(options: {
   };
   let failure: unknown;
   try {
-    await check('native-api', async () => { a = await start(runtime); return '使用临时 HOME 启动真实 DSH Web Host；原生会话与配置接口可用，未调用模型。'; });
+    await check('native-api', async () => {
+      let retried = false;
+      try { a = await start(runtime); }
+      catch (error) {
+        if (signal.aborted || !(error instanceof Error) || error.name !== 'DshProbeStartupTimeoutError') throw error;
+        // Cold startup can lose one deadline without proving a schema conflict.
+        // Exactly one fresh HOME retry, after the first child has been joined.
+        retried = true; a = await start(runtime);
+      }
+      return `使用临时 HOME 启动真实 DSH Web Host；原生会话与配置接口可用，未调用模型。${retried ? '首轮启动超时；终止首轮进程后，独立重试成功（最多一次）。' : ''}`;
+    });
     await check('session-roundtrip', async () => {
       const workspace = await a.request('workspace');
       sessionId = (await a.request('create', { workspaceId: workspace.workspaceId, title: 'WorldlineBox synthetic session A' })).sessionId;

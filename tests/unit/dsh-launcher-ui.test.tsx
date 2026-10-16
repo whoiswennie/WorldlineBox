@@ -220,32 +220,28 @@ it('creates a named instance with an explicit pinned runtime', async () => {
   const f = fixture();
   await mount(f.api);
   await click('创建实例');
-  const dataScope = document.querySelectorAll<HTMLSelectElement>('[role="dialog"] select')[1]!;
-  expect(dataScope.value).toBe('isolated');
-  expect(dataScope.querySelector<HTMLOptionElement>('option[value="shared"]')!.disabled).toBe(true);
-  await fill('新的独立环境');
+  expect(document.querySelectorAll('[role="dialog"] select')).toHaveLength(1);
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('共享会话');
+  await fill('新的共享实例');
   await click('保存', document.querySelector('[role="dialog"]')!);
-  expect(f.request).toHaveBeenCalledWith({ type: 'instance.create', name: '新的独立环境', runtimeId: 'runtime-a', dataScope: 'isolated' });
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.create', name: '新的共享实例', runtimeId: 'runtime-a' });
   expect(f.state().instances).toHaveLength(2);
   expect(document.querySelector('[role="dialog"]')).toBeNull();
 });
 
-it('allows an independent data mode for a verified release and prevents sharing for an unverified release', async () => {
+it('has no save-mode switch for either verified or unchecked versions', async () => {
   const verified = runtime('runtime-a', '0.2.0-rc.2');
   verified.compatibility = { runtimeId: verified.id, contentSha256: verified.contentSha256, contract: 'fixture', status: 'passed', startedAt: '', peers: [], checks: dshCompatibilityCheckIds.map(id => ({ id, status: 'passed', detail: 'fixture' })) };
   const f = fixture([], { runtimes: [verified, runtime('runtime-b', '0.2.0-rc.1')] });
   await mount(f.api); await click('创建实例');
-  const selects = document.querySelectorAll<HTMLSelectElement>('[role="dialog"] select');
-  const scope = selects[1]!;
-  expect(scope.value).toBe('shared'); expect(scope.querySelector<HTMLOptionElement>('option[value="shared"]')!.disabled).toBe(false);
-  await act(() => { scope.value = 'isolated'; scope.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(document.querySelectorAll('[role="dialog"] select')).toHaveLength(1);
   await click('保存', document.querySelector('[role="dialog"]')!);
-  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'instance.create', runtimeId: 'runtime-a', dataScope: 'isolated' }));
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'instance.create', runtimeId: 'runtime-a' }));
   await click('创建实例');
   const runtimeField = document.querySelector<HTMLSelectElement>('[role="dialog"] select')!;
   await act(() => { runtimeField.value = 'runtime-b'; runtimeField.dispatchEvent(new Event('change', { bubbles: true })); });
-  const unavailableScope = document.querySelectorAll<HTMLSelectElement>('[role="dialog"] select')[1]!;
-  expect(unavailableScope.value).toBe('isolated'); expect(unavailableScope.querySelector<HTMLOptionElement>('option[value="shared"]')!.disabled).toBe(true);
+  expect(document.querySelectorAll('[role="dialog"] select')).toHaveLength(1);
+  expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain('独立存档');
 });
 
 it('selects a new default CLI context immediately and requires an explicit Web workbench switch', async () => {

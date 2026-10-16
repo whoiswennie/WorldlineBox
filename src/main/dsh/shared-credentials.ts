@@ -16,6 +16,7 @@ export interface SharedCredentialsMigration {
   identicalRefs: string[]; identicalRecords: string[];
   conflicts: Array<{ section: 'refs' | 'records'; key: string }>;
   sourcePresent: boolean; dryRun: boolean; createdAt: string;
+  preferredSource?: boolean; previousSharedPath?: string;
 }
 
 export function credentialRoutingPatches(sharedRoot: string): TechnicalRoutingPatch[] {
@@ -69,7 +70,7 @@ export async function writeTechnicalRoutingPatch(options: {
  */
 export async function migrateSharedCredentials(options: {
   instanceRoot: string; sourceInstanceId: string; sharedRoot: string; runtimeVersion: string;
-  sourceRelativePath?: string; dryRun?: boolean; plan: RuntimeLaunchPlan; env: NodeJS.ProcessEnv; signal?: AbortSignal;
+  sourceRelativePath?: string; dryRun?: boolean; preferSource?: boolean; plan: RuntimeLaunchPlan; env: NodeJS.ProcessEnv; signal?: AbortSignal;
 }): Promise<SharedCredentialsMigration> {
   safeRelative(options.sourceInstanceId);
   const root = await realpath(options.instanceRoot);
@@ -98,7 +99,7 @@ export async function migrateSharedCredentials(options: {
   const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(65_000)]);
   signal.throwIfAborted();
   const child = await launchCli({ ...options.plan, cli: script },
-    [runtimeProgramDirectory(options.plan.executable), source, destination, receipt, options.sourceInstanceId, options.runtimeVersion, options.dryRun ? '1' : '0'],
+    [runtimeProgramDirectory(options.plan.executable), source, destination, receipt, options.sourceInstanceId, options.runtimeVersion, options.dryRun ? '1' : '0', options.preferSource ? '1' : '0'],
     options.env, root);
   const abort = () => { void terminateOwnedProcess(child).catch(() => undefined); };
   signal.addEventListener('abort', abort, { once: true });
@@ -128,8 +129,9 @@ import { pathToFileURL } from 'node:url';
 import { readFile, lstat, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-const [program,source,destination,receipt,instanceId,runtimeVersion,dryRunFlag]=process.argv.slice(2);
+const [program,source,destination,receipt,instanceId,runtimeVersion,dryRunFlag,preferSourceFlag]=process.argv.slice(2);
 const dryRun=dryRunFlag==='1';
+const preferSource=preferSourceFlag==='1';
 const sdk=existsSync(join(program,'node-runtime.json'))?join(program,'dsh/node_modules'):join(program,'resources/app.asar/dsh/node_modules');
 const load=createRequire(join(sdk,'@deepseek-ai/dsh/package.json'));
 const {withFileLock,writeFileAtomic}=await import(pathToFileURL(load.resolve('@deepseek-ai/dsh-atomic-write')));
@@ -160,7 +162,7 @@ try {
       for(const [key,value] of sourceEntries) {
         if(targetEntries.has(key)) {
           if(isDeepStrictEqual(targetEntries.get(key),value))report[section==='refs'?'identicalRefs':'identicalRecords'].push(key);
-          else report.conflicts.push({section,key});
+          else {report.conflicts.push({section,key});if(preferSource)document.setIn([section,key],document.createNode(value));}
         } else {
           if(!isMap(document.get(section,true)))document.set(section,document.createNode({}));
           document.setIn([section,key],document.createNode(value));
@@ -169,7 +171,10 @@ try {
       }
     }
     const next=String(document);parseCredentialsDocument(next,destination);
-    if(!dryRun&&next!==targetText)await writeFileAtomic(destination,next,{mode:0o600,dirMode:0o700});
+    if(!dryRun&&next!==targetText){
+      if(preferSource&&report.conflicts.length&&targetText!==undefined){report.preferredSource=true;report.previousSharedPath=receipt+'.previous.yaml';await writeFileAtomic(report.previousSharedPath,targetText,{mode:0o600,dirMode:0o700});}
+      await writeFileAtomic(destination,next,{mode:0o600,dirMode:0o700});
+    }
     await writeFileAtomic(receipt,JSON.stringify(report,null,2)+'\\n',{mode:0o600,dirMode:0o700});
   },{waitMs:30000});
 } catch {

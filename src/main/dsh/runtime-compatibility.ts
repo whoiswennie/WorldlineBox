@@ -47,6 +47,8 @@ export class RuntimeCompatibility {
   private readonly reports = new Map<string, DshCompatibilityReport>();
   private pending = Promise.resolve();
   private readonly running = new Map<string, Promise<DshCompatibilityReport>>();
+  private readonly lifetime = new AbortController();
+  cancel(): void { this.lifetime.abort(new Error('Launcher compatibility checks are closing.')); }
   constructor(private readonly options: { rootPath: string; runtimes: RuntimeServiceLike; onChanged(): void }) {}
   async init(): Promise<void> {
     const directory = path.join(this.options.rootPath, 'compatibility'); await mkdir(directory, { recursive: true });
@@ -90,7 +92,7 @@ export class RuntimeCompatibility {
     const file = path.join(this.options.rootPath, 'compatibility', `${runtime.id}.json`);
     const persist = async () => { await atomicJson(file, report); this.reports.set(runtime.id, structuredClone(report)); this.options.onChanged(); };
     await persist();
-    const signal = AbortSignal.any([...(operation ? [operation.signal] : []), AbortSignal.timeout(5 * 60_000)]);
+    const signal = AbortSignal.any([this.lifetime.signal, ...(operation ? [operation.signal] : []), AbortSignal.timeout(5 * 60_000)]);
     let failed = false; let cleanupSafe = true; let scope: string | undefined;
     const check = async (id: DshCompatibilityCheckId, work: () => Promise<string>) => {
       const item = report.checks.find(value => value.id === id)!;

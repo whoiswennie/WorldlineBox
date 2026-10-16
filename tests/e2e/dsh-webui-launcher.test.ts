@@ -51,7 +51,7 @@ test('real npm WebUI versions, one Host, live CLI selection, private packs and a
     for (const runtime of runtimes) await complete(page, { type: 'instance.create', runtimeId: runtime.id, name: `Web ${runtime.version}` });
     const a = (await state(page)).instances.find(value => value.name === 'Web 0.2.0-rc.2')!;
     const b = (await state(page)).instances.find(value => value.name === 'Web 0.2.1-alpha.2')!;
-    expect(a.dataScope).toBe('shared'); expect(b.dataScope).toBe('shared');
+    expect(a).not.toHaveProperty('dataScope'); expect(b).not.toHaveProperty('dataScope');
     await writeFile(path.join(a.homePath, '.credentials.yaml'), 'version: 1\nrefs: {WORLDLINE_FIXTURE_KEY: fixture-placeholder}\nrecords: {}\n');
     await complete(page, { type: 'cli.select', instanceId: a.id });
     await complete(page, { type: 'terminal.open' });

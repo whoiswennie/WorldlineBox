@@ -59,11 +59,11 @@ test('isolated compatibility evidence, failure reasons, reference protection and
       await panel.screenshot({ path: path.resolve(`.tools/test-output/verified-runtime-compatibility-${theme}.png`) });
       expect(await panel.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
     }
-    const created = await request(page, { type: 'instance.create', name: '引用保护实例', runtimeId: runtime.id, dataScope: 'isolated' }); expect(created.ok).toBe(true); await settled(page);
+    const created = await request(page, { type: 'instance.create', name: '引用保护实例', runtimeId: runtime.id }); expect(created.ok).toBe(true); await settled(page);
     await expect(card).toContainText('引用保护实例'); await expect(card.getByRole('button', { name: '删除运行版本', exact: true })).toBeDisabled();
     expect((await request(page, { type: 'runtime.delete', runtimeId: runtime.id })).ok).toBe(false);
     const selectionBefore = (await state(page)).cli?.selectedInstanceId;
-    const other = await request(page, { type: 'instance.create', name: '另一实例', runtimeId: runtime.id, dataScope: 'isolated' }); expect(other.ok).toBe(true); await settled(page);
+    const other = await request(page, { type: 'instance.create', name: '另一实例', runtimeId: runtime.id }); expect(other.ok).toBe(true); await settled(page);
     for (const item of (await state(page)).instances) {
       await page.locator(`[data-dsh-instance="${item.id}"]`).click();
       expect((await state(page)).cli?.selectedInstanceId).toBe(selectionBefore);

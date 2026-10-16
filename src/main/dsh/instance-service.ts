@@ -22,8 +22,6 @@ import type { SharedInstanceData } from './shared-instance-data';
 import type { DshCliSelection } from './cli-terminal';
 import { prepareNativeCliMode } from './cli-profile-mode';
 import { writeSharedModels } from './shared-settings';
-import { isolatedWorkspacePath, writeIsolatedRoutingPatch } from './isolated-routing';
-import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
 import { prepareManagedHostBootstrap, stopManagedHost, HOST_LIFECYCLE_TOKEN_ENV } from './host-lifecycle';
 
 export interface RuntimeServiceLike {
@@ -167,11 +165,8 @@ export class InstanceService {
       progress?.('正在沿用当前实例的账号、API、模型和插件配置');
       const plan = this.options.runtimes.plan(instance.runtimeId);
       let routingPatch = '';
-      const workspacePath = instance.dataScope === 'isolated' ? isolatedWorkspacePath(this.getRoot(instanceId)) : this.options.sharedData?.paths.workspacePath ?? instance.workspacePath;
-      if (instance.dataScope === 'isolated') {
-        await mkdir(workspacePath, { recursive: true });
-        routingPatch = await writeIsolatedRoutingPatch(this.getRoot(instanceId), this.options.runtimes.directory(instance.runtimeId), runtime.version);
-      } else if (this.options.sharedData) {
+      const workspacePath = this.options.sharedData?.paths.workspacePath ?? instance.workspacePath;
+      if (this.options.sharedData) {
         if (this.processes.has(instanceId)) routingPatch = await this.options.sharedData.routingForRunning(instance, runtime.version);
         else {
           const preparation: OperationContext | undefined = signal ? { id: randomUUID(), signal, update: async () => undefined, log: async () => undefined } : undefined;
@@ -234,7 +229,7 @@ export class InstanceService {
       switch (request.type) {
         case 'instance.create': {
           const operationId = await this.options.operations.run(request.type, `Create ${request.name}`, undefined,
-            async op => { await this.create(request.name, request.runtimeId, op, request.dataScope); });
+            async op => { await this.create(request.name, request.runtimeId, op); });
           return { ok: true, operationId };
         }
         case 'instance.rename': {
@@ -299,15 +294,13 @@ export class InstanceService {
     } catch (error) { this.busy.delete(id); throw error; }
   }
 
-  async create(name: string, runtimeId: string, op?: OperationContext, requestedScope?: 'shared' | 'isolated'): Promise<DshInstance> {
+  async create(name: string, runtimeId: string, op?: OperationContext): Promise<DshInstance> {
     if (this.closing) throw new Error('Harness launcher is closing.');
-    const runtime = this.options.runtimes.get(runtimeId);
-    if (requestedScope === 'shared' && this.options.sharedData && !supportsSharedDataRuntime(runtime)) throw new Error('此制品尚未通过共享存档兼容性检测，请使用独立存档或在运行版本页重新检测。');
+    this.options.runtimes.get(runtimeId);
     const id = randomUUID(); const now = new Date().toISOString();
     const instance: DshInstance = dshInstanceSchema.parse({
       id, name, runtimeId, createdAt: now, updatedAt: now, profile: 'web', status: 'stopped',
       ...this.paths(id), browserPartition: `persist:dsh-instance-${id}`, isDefault: this.instances.length === 0,
-      dataScope: requestedScope ?? (this.options.sharedData && !supportsSharedDataRuntime(runtime) ? 'isolated' : 'shared'),
     });
     op?.signal.throwIfAborted();
     try {
@@ -341,11 +334,7 @@ export class InstanceService {
     const plan = this.options.runtimes.plan(instance.runtimeId);
     await op.update('Verifying fixed runtime', 5); await this.options.runtimes.verify(instance.runtimeId, op.signal);
     const runtimeVersion = this.options.runtimes.get(instance.runtimeId).version;
-    const isolatedWorkspace = isolatedWorkspacePath(root);
-    if (instance.dataScope === 'isolated') await mkdir(isolatedWorkspace, { recursive: true });
-    const sharedLaunch = instance.dataScope === 'isolated'
-      ? { args: ['--patch', await writeIsolatedRoutingPatch(root, this.options.runtimes.directory(instance.runtimeId), runtimeVersion, op.signal)], workspacePath: isolatedWorkspace }
-      : await this.options.sharedData?.prepare(instance, runtimeVersion, op, this.processes.size === 0);
+    const sharedLaunch = await this.options.sharedData?.prepare(instance, runtimeVersion, op, this.processes.size === 0);
     await this.auditLinks(id, op.signal);
     const env = await this.environment(root, instance, plan);
     let selected = !this.options.onSelectedWebInstance;
@@ -396,7 +385,7 @@ export class InstanceService {
       await verifyReadyUrl(url, op.signal);
       if (child.exitCode !== null || child.signalCode !== null || this.processes.get(id) !== managed) throw new Error('Harness exited during readiness verification.');
       managed.url = url; instance.port = Number(new URL(url).port); instance.status = 'running';
-      if (instance.dataScope !== 'isolated') await this.options.sharedData?.attach(instance, url);
+      await this.options.sharedData?.attach(instance, url);
       instance.updatedAt = new Date().toISOString(); await this.changed();
       op.signal.throwIfAborted(); await this.options.openWorkbench({ ...instance }, url);
     } catch (error) {
@@ -557,7 +546,7 @@ export class InstanceService {
   private async copyData(id: string, destination: string, op?: OperationContext): Promise<TreeInventory> {
     const runtimeLinks = await this.auditLinks(id, op?.signal);
     const source = this.getRoot(id);
-    const commonMigrated = this.require(id).dataScope !== 'isolated' && Boolean(await this.options.sharedData?.isPrepared(this.require(id)));
+    const commonMigrated = Boolean(await this.options.sharedData?.isPrepared(this.require(id)));
     await mkdir(destination, { recursive: true });
     for (const part of ['home', 'agents', 'workspace', 'user']) {
       await mkdir(path.join(destination, part), { recursive: true });
@@ -585,7 +574,7 @@ export class InstanceService {
     let cloned: DshInstance | undefined;
     try {
       await this.copyData(id, stage, op); op.signal.throwIfAborted();
-      cloned = await this.create(name, selectedRuntime, op, selectedRuntime === original.runtimeId ? original.dataScope : undefined);
+      cloned = await this.create(name, selectedRuntime, op);
       this.busy.add(cloned.id);
       for (const part of ['home', 'agents', 'workspace', 'user']) {
         await removeManaged(this.options.rootPath, path.join(this.getRoot(cloned.id), part));
@@ -624,8 +613,8 @@ export class InstanceService {
       this.sharedBackupBusy = true;
       try {
         await this.exportData(id, destination, op);
-        if (this.require(id).dataScope !== 'isolated') await this.options.sharedData?.exportTo(path.join(destination, 'shared'), op?.signal);
-        if (this.options.sharedData && this.require(id).dataScope !== 'isolated') {
+        await this.options.sharedData?.exportTo(path.join(destination, 'shared'), op?.signal);
+        if (this.options.sharedData) {
           const manifest = backupManifestSchema.parse(await readJson(path.join(destination, 'manifest.json')));
           await atomicJson(path.join(destination, 'manifest.json'), { ...manifest, sharedData: this.options.sharedData.state(),
             sharedInventory: await inventoryTree(path.join(destination, 'shared'), op?.signal) });
@@ -675,7 +664,7 @@ export class InstanceService {
       if (this.sharedBackupBusy || this.processes.size || this.options.isCliInUse?.() || this.busy.size) throw new Error('Stop all DSH instances and CLI terminals before importing shared saves and accounts.');
       this.sharedBackupBusy = true;
     }
-    const restored = await this.create(name, runtime.id, op, manifest.instance.dataScope).catch(error => { if (sharedImport) this.sharedBackupBusy = false; throw error; });
+    const restored = await this.create(name, runtime.id, op).catch(error => { if (sharedImport) this.sharedBackupBusy = false; throw error; });
     this.busy.add(restored.id);
     try {
       await op?.update('Restoring into a new isolated instance', 45);

@@ -19,7 +19,6 @@ import { SharedInstanceData } from './shared-instance-data';
 import { DshCliTerminal } from './cli-terminal';
 import { PackService } from './packs';
 import { extractSealedArchive, writeSealedArchive } from './archive';
-import { isolatedWorkspacePath } from './isolated-routing';
 import { PluginControls } from './plugin-controls';
 import { DshTaskBroker } from './task-broker';
 import { DshTaskAccessStore } from './task-access';
@@ -27,6 +26,7 @@ import { snapshotDshTaskExecution, type DshTaskExecutionOptions } from './task-e
 import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import { configureWorkbenchBrowser } from './workbench-browser';
 import { assertKnownRuntimeCompatibility } from './runtime-compatibility';
+import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
 
 export class DshLauncher {
   private ready = false;
@@ -121,7 +121,10 @@ export class DshLauncher {
       getSelection: async (id, signal, resume, preparation) => {
         const selected = id ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(value => value.isDefault)?.id;
         if (!selected) throw new Error('Create and select a DSH execution instance first.');
-        if (preparation?.requiresCompanionRuntime) assertKnownRuntimeCompatibility(this.runtimes.get(resume?.runtimeId ?? this.instances.get(selected).runtimeId));
+        const instance = this.instances.get(selected);
+        const runtimeId = resume?.runtimeId ?? instance.runtimeId;
+        if (!supportsSharedDataRuntime(this.runtimes.get(runtimeId))) preparation?.progress('正在完成所选 DSH 的共享存档检测；同一版本的请求会共用检测结果');
+        await this.runtimes.assertSharedCompatible(runtimeId, signal);
         return this.instances.prepareCli(selected, signal, resume?.runtimeId, preparation?.progress);
       }, onEvent: event => { const main = getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_TASK_EVENT_CHANNEL, event); } });
     this.initialization = this.init();
@@ -143,7 +146,8 @@ export class DshLauncher {
     // Existing installations acquire real evidence too; no release-name exemption.
     for (const runtime of unchecked) {
       await this.operations.run('runtime.compatibility', `隔离检测 DSH ${runtime.version} 共享存档`, undefined,
-        async op => { await this.runtimes.checkCompatibility(runtime.id, op); });
+        async op => { const report = await this.runtimes.checkCompatibility(runtime.id, op);
+          assertKnownRuntimeCompatibility({ ...runtime, compatibility: report }); });
     }
     if (selectedRuntime && !unchecked.some(runtime => runtime.id === selectedRuntime)) {
       await this.operations.run('runtime.verify', '预先校验当前 DSH 的 CLI 运行文件', selectedId,
@@ -317,7 +321,7 @@ export class DshLauncher {
       }
       case 'instance.folder': {
         const root = this.instances.getRoot(request.instanceId);
-        const directory = request.scope === 'workspace' ? this.instances.get(request.instanceId).dataScope === 'isolated' ? isolatedWorkspacePath(root) : this.sharedData.paths.workspacePath : request.scope === 'root' ? root : path.join(root, request.scope);
+        const directory = request.scope === 'workspace' ? this.sharedData.paths.workspacePath : request.scope === 'root' ? root : path.join(root, request.scope);
         const error = await shell.openPath(directory); if (error) throw new Error(error);
         return { ok: true };
       }
@@ -397,6 +401,7 @@ export class DshLauncher {
   }
   async shutdown(): Promise<void> {
     this.closed = true;
+    this.runtimes.cancelChecks();
     await this.initialization.catch(() => undefined);
     await this.tasks.shutdown();
     await this.cliTerminal.shutdown();

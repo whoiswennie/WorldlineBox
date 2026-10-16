@@ -183,7 +183,7 @@ export class SharedSettingsCoordinator {
     await rename(temporary, this.options.storePath);
     this.savedText = text;
   }
-  async prepareStopped(instanceId: string, homePath: string): Promise<void> {
+  async prepareStopped(instanceId: string, homePath: string, migration?: 'prefer-source' | 'prefer-shared'): Promise<void> {
     if (this.disposed) throw new Error('Shared model settings coordination is closed.');
     await this.serial(async () => {
       await this.load();
@@ -200,7 +200,20 @@ export class SharedSettingsCoordinator {
       const folded = foldHomeModelOverrides(before, homeBefore);
       const observed = readSharedModels(folded.profile);
       const merged = mergeSharedModels(this.store.clients[instanceId] ?? {}, this.store.values, observed);
-      if (merged.conflicts.length) { this.issue(instanceId, 'settings/conflict', merged.conflicts); throw new Error('Shared model settings conflict; private settings were preserved.'); }
+      if (merged.conflicts.length && !migration) { this.issue(instanceId, 'settings/conflict', merged.conflicts); throw new Error('Shared model settings conflict; private settings were preserved.'); }
+      if (migration) {
+        let directory = path.dirname(this.options.storePath);
+        for (const part of ['migration-records', 'models']) {
+          directory = path.join(directory, part); await mkdir(directory, { recursive: true, mode: 0o700 });
+          const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Model migration backup directory is not managed.');
+        }
+        await writeFile(path.join(directory, `${randomUUID()}.json`), JSON.stringify({ instanceId, homePath, profile: before, home: homeBefore, shared: this.store }), { flag: 'wx', mode: 0o600 });
+        if (migration === 'prefer-source') {
+          const prefer = (shared: unknown, local: unknown): unknown => local === undefined ? shared
+            : record(shared) && record(local) ? Object.fromEntries([...new Set([...Object.keys(shared), ...Object.keys(local)])].map(key => [key, prefer(shared[key], local[key])])) : local;
+          merged.values = sanitizeSharedModels(prefer(this.store.values, observed));
+        }
+      }
       const after = writeSharedModels(folded.profile, merged.values);
       const current = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return '[]\n'; throw error; });
       if (current !== before) throw new Error('Private profile settings changed during preparation.');
