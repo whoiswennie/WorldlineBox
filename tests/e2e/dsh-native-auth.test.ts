@@ -55,6 +55,7 @@ test('official native workbench reopens without restarting its Host, saves keys 
     const running = (await state(page)).instances.find(value => value.id === instance.id)!;
     await workbench.close(); await expect.poll(() => application.windows().length).toBe(1);
     expect((await state(page)).instances.find(value => value.id === instance.id)).toMatchObject({ status: 'running', pid: running.pid, port: running.port });
+    await page.locator(`[data-dsh-instance="${instance.id}"]`).click();
     await expect(page.locator('[data-dsh-open-workbench]')).toHaveText('打开 / 返回工作台');
     await page.locator('[data-dsh-open-workbench]').dblclick();
     await expect.poll(() => application.windows().length).toBe(2);
