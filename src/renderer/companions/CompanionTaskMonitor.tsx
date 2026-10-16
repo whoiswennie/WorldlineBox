@@ -10,6 +10,7 @@ import type { WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 import { companionProgressEvent, mergeCompanionProgress } from '../../shared/companion-progress';
 import type { CompanionActionEvent } from '../../shared/companions';
 import { COMPANION_WORK_PHASE_LABELS, companionWorkOverview, companionWorkPhase } from './companion-work-overview';
+import { dshRecordQuerySchema } from '../../shared/dsh-task-record';
 
 type Cursor = NonNullable<CompanionActionPage['nextCursor']>;
 const PAGE_SIZE = 20;
@@ -103,6 +104,6 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
         </button>;
       })}</nav>
       <footer className="companions-task-pagination"><div><button type="button" disabled={loading || pageNumber === 0} onClick={() => { setLoading(view === 'history'); setPageNumber(value => value - 1); }}>上一页</button><span>第 {pageNumber + 1} 页</span><button type="button" disabled={loading || (view === 'active' ? (pageNumber + 1) * PAGE_SIZE >= overview.total : !page?.nextCursor)} onClick={() => { if (view === 'active') { setPageNumber(value => value + 1); return; } if (!page?.nextCursor) return; setLoading(true); setCursors(value => [...value.slice(0, pageNumber + 1), page.nextCursor]); setPageNumber(value => value + 1); }}>下一页</button></div><p>共 {view === 'active' ? overview.total : page?.total ?? 0} 条 · 每页 {PAGE_SIZE} 条</p></footer>
-    </aside><main aria-busy={!!selectedId && !selected}>{selected ? <CompanionActionCard key={selected.id} action={selected} now={now} defaultShowProgress onStop={() => onStop(selected.id)} onResume={onResume ? async () => { await onResume(selected.id); setRefresh(value => value + 1); } : undefined} onTerminate={onTerminate ? async () => { await onTerminate(selected.id); setRefresh(value => value + 1); } : undefined} onGuide={() => onGuide(selected.id)} onOpenUrl={onOpenUrl} /> : <p>{detailError || (selectedId ? '正在读取任务详情…' : '选择一条任务查看过程。')}{detailError && <button onClick={() => setRefresh(value => value + 1)}>重试</button>}</p>}</main></div>
+    </aside><main aria-busy={!!selectedId && !selected}>{selected ? <CompanionActionCard key={selected.id} action={selected} now={now} defaultShowProgress onReadRecord={async query => (await request({ type: 'action.record', id: selected.id, query: dshRecordQuerySchema.parse(query) }))?.taskRecord} onStop={() => onStop(selected.id)} onResume={onResume ? async () => { await onResume(selected.id); setRefresh(value => value + 1); } : undefined} onTerminate={onTerminate ? async () => { await onTerminate(selected.id); setRefresh(value => value + 1); } : undefined} onGuide={() => onGuide(selected.id)} onOpenUrl={onOpenUrl} /> : <p>{detailError || (selectedId ? '正在读取任务详情…' : '选择一条任务查看过程。')}{detailError && <button onClick={() => setRefresh(value => value + 1)}>重试</button>}</p>}</main></div>
   </section></div>;
 }

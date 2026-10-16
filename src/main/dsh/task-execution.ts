@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { dshExecutionAccessSettingsSchema, type DshExecutionAccessSettings } from '../../shared/dsh-access';
 import { dshTaskAccessPatch, snapshotDshTaskAccess } from './task-access';
 import { dshTaskRecordSchema, type DshTaskRecord } from '../../shared/dsh-tasks';
+import { dshRecordScopeSchema } from '../../shared/dsh-task-record';
 
 /** Task controls only. Account, provider and model belong exclusively to the selected DSH profile. */
 export interface DshTaskExecutionOptions {
@@ -10,12 +11,14 @@ export interface DshTaskExecutionOptions {
   access?: Readonly<DshExecutionAccessSettings>;
   /** Trusted Main checkpoint only; never accepted as renderer launch options. */
   resume?: DshTaskRecord;
+  recordScope?: z.infer<typeof dshRecordScopeSchema>;
   inputs?: Array<{ id: string; content: string; mode: 'steer' | 'queue' }>;
 }
 const executionSchema = z.strictObject({
   toolkit: z.boolean().optional(), interactive: z.boolean().optional(),
   access: dshExecutionAccessSettingsSchema.optional(),
   resume: dshTaskRecordSchema.optional(),
+  recordScope: dshRecordScopeSchema.optional(),
   inputs: z.array(z.strictObject({ id: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), content: z.string().min(1).max(16000), mode: z.enum(['steer', 'queue']) })).max(100).optional(),
 });
 export function snapshotDshTaskExecution(input?: DshTaskExecutionOptions): DshTaskExecutionOptions {

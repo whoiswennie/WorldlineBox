@@ -27,8 +27,12 @@ import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import { configureWorkbenchBrowser } from './workbench-browser';
 import { assertKnownRuntimeCompatibility } from './runtime-compatibility';
 import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
+import type { DshRecordQuery } from '../../shared/dsh-task-record';
 
 export class DshLauncher {
+  async taskRecordScope(recordId: string) { return (await this.tasks.recordMetadata(recordId)).scope; }
+  async readTaskRecord(query: DshRecordQuery) { return this.tasks.readRecord(query); }
+  async removeCompanionTaskRecords(owner: string) { await this.tasks.removeCompanionRecords(owner); }
   private ready = false;
   private readonly windows = new Map<string, BrowserWindow>();
   private readonly openingWindows = new Map<string, Promise<void>>();
@@ -214,7 +218,7 @@ export class DshLauncher {
     return result.canceled ? undefined : result.filePath;
   }
   /** The companion service uses the same pinned task route as the validated launcher IPC. */
-  async requestTask(request: Extract<DshLauncherRequest, { type: 'task.run' | 'task.cancel' | 'task.terminate' | 'task.result' | 'task.events' | 'task.message' }>, executionValue?: DshTaskExecutionOptions): Promise<DshLauncherResponse> {
+  async requestTask(request: Extract<DshLauncherRequest, { type: 'task.run' | 'task.cancel' | 'task.terminate' | 'task.result' | 'task.events' | 'task.message' | 'task.record' }>, executionValue?: DshTaskExecutionOptions): Promise<DshLauncherResponse> {
     if (executionValue && request.type !== 'task.run') throw new Error('Transient execution options can only be used to run a task.');
     const execution = snapshotDshTaskExecution(executionValue);
     await this.initialization;
@@ -244,6 +248,7 @@ export class DshLauncher {
         await this.tasks.terminate(request.taskId); return { ok: true };
       }
       case 'task.result': return { ok: true, taskResult: this.tasks.result(request.taskId) };
+      case 'task.record': return { ok: true, taskRecord: await this.tasks.readRecord(request.query) };
       case 'task.events': return { ok: true, taskEvents: this.tasks.events(request.taskId, request.after) };
       case 'task.message': await this.tasks.sendInput(request.taskId, request.content, request.mode, request.messageId); return { ok: true };
       case 'cli.select': case 'instance.default': {

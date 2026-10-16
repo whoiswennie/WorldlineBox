@@ -192,6 +192,9 @@ describe('Pinned DSH task broker', () => {
     expect(events.find(event => event.type === 'tool_result')).toMatchObject({ stage: 'tool_end', toolName: 'filesystem.read', summary: '工具执行完成' });
     expect(events.filter(event => event.type === 'status').map(event => event.stage)).toEqual(['turn_start', 'step_start', 'step_end', 'turn_end']);
     expect(events.find(event => event.type === 'thinking')).not.toHaveProperty('text');
+    const archived = await test.broker.readRecord({ recordId: result.taskId, start: 1, end: 20 });
+    expect(archived.overview).toMatchObject({ turns: 1, steps: 1, toolCalls: 1, complete: true });
+    expect(JSON.stringify(archived)).not.toMatch(/raw reasoning|sk-fixture-never-retain/);
     expect(events.find(event => event.type === 'text')).toMatchObject({ contentKind: 'message', text: 'raw intermediate progress [redacted]' });
     const retained = JSON.stringify(events);
     expect(retained).not.toMatch(/sk-fixture|raw reasoning|inputTokens|TOKEN|"env":/);
@@ -211,6 +214,10 @@ describe('Pinned DSH task broker', () => {
     const cursor = events.at(-2)!.sequence;
     expect(test.broker.events(result.taskId, cursor)).toEqual([events.at(-1)]);
     expect(events.at(-1)?.type).toBe('final');
+    const archived = await test.broker.readRecord({ recordId: result.taskId, start: 1, end: 5 });
+    expect(archived.overview.recordCount).toBeGreaterThan(1000);
+    expect(archived.overview.steps).toBe(1100);
+    expect(archived.entries[0]?.event.sequence).toBe(0);
     expect(JSON.stringify(events)).not.toContain('many-progress');
     await test.broker.shutdown();
   });

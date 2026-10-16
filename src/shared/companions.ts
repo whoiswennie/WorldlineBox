@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { dshRecordOverviewSchema, dshRecordQuerySchema, dshRecordPageSchema } from './dsh-task-record';
 import { dshExecutionAccessModeSchema } from './dsh-access';
 import { companionWorkSchema, companionLoopDraftSchema } from './companion-loop';
 import { COMPANION_AVATAR_IDS, COMPANION_TEMPLATE_IDS } from './companion-template-ids';
@@ -94,6 +95,7 @@ export const actionSchema = z.object({ id: companionIdSchema, conversationId: co
   status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']),
   taskId: companionIdSchema.optional(), sessionId: z.string().max(200).optional(),
   result: z.string().max(65536).optional(), error: z.string().max(1000).optional(),
+  executionSummary: dshRecordOverviewSchema.optional(),
   createdAt: z.string(), updatedAt: z.string(),
   startedAt: z.string().optional(), finishedAt: z.string().optional(),
   canResume: z.boolean().optional(), pid: z.number().int().positive().optional(), attempt: z.number().int().positive().optional(), attemptCreatedAt: z.string().optional(),
@@ -169,6 +171,7 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema }),
   companionActionPageQuerySchema.extend({ type: z.literal('actions.page') }).strict(),
   z.strictObject({ type: z.literal('action.get'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('action.record'), id: companionIdSchema, query: dshRecordQuerySchema }),
   z.strictObject({ type: z.literal('action.run'), conversationId: companionIdSchema, companionId: companionIdSchema, sourceMessageId: companionIdSchema, title: z.string().trim().min(1).max(120), prompt: z.string().trim().min(1).max(16000) }),
   z.strictObject({ type: z.literal('action.cancel'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('action.resume'), id: companionIdSchema }),
@@ -185,6 +188,7 @@ export const companionsResponseSchema = z.object({
   hasNewer: z.boolean().optional(), searchPage: companionSearchPageSchema.optional(),
   memories: z.array(memorySchema).optional(), actions: z.array(actionSchema).optional(), attachments: z.array(attachmentSchema).optional(),
   action: actionSchema.optional(), actionPage: companionActionPageSchema.optional(),
+  taskRecord: dshRecordPageSchema.optional(),
   message: messageSchema.optional(), companion: companionSchema.optional(),
   memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(),
   memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),

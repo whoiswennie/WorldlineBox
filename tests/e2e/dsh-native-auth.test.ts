@@ -163,6 +163,35 @@ test('native workbench, migrated companion CLI and a second instance use the sam
     const completed = (await companionRequest(page, { type: 'action.get', id: action.id })).action!;
     const companionTaskMs = Date.now() - actionStartedAt;
     expect(completed.result).toContain(finalText);
+    expect(completed.executionSummary).toMatchObject({ recordId: completed.taskId, status: 'succeeded', finalReply: finalText, complete: true });
+    expect(completed.executionSummary!.turns).toBeGreaterThanOrEqual(1);
+    expect(completed.executionSummary!.steps).toBeGreaterThanOrEqual(1);
+    const recordQuery = { recordId: completed.taskId!, entryChars: 2000, textOffset: 0 };
+    const overview = (await companionRequest(page, { type: 'action.record', id: completed.id, query: recordQuery })).taskRecord!;
+    expect(overview.entries).toEqual([]);
+    const recorded = (await companionRequest(page, { type: 'action.record', id: completed.id, query: { ...recordQuery, start: 1, end: Math.min(50, overview.overview.recordCount) } })).taskRecord!;
+    expect(recorded.entries.length).toBeGreaterThan(0);
+    expect(JSON.stringify(recorded)).not.toContain(replacement);
+    await page.locator('[data-application-module="companions"]').click();
+    await page.locator(`[data-companion-conversation="${conversationId}"]`).click();
+    await page.getByRole('button', { name: '查看伙伴任务', exact: true }).click();
+    const monitor = page.getByRole('dialog', { name: '伙伴实时任务' });
+    await monitor.getByRole('tab', { name: '全部记录', exact: true }).click();
+    await monitor.getByRole('navigation', { name: '选择伙伴任务' }).getByRole('button').filter({ hasText: '真实伙伴 CLI 验收' }).click();
+    await expect(monitor.locator('.companions-execution-summary')).toContainText(completed.taskId!);
+    await monitor.getByText('按段查看完整记录', { exact: true }).click();
+    await monitor.getByRole('button', { name: '读取 20 条', exact: true }).click();
+    await expect(monitor.locator('.companions-record-entries > article').first()).toBeVisible();
+    await monitor.getByRole('button', { name: '定位最终回复', exact: true }).click();
+    await expect(monitor.locator('.companions-record-entries > article')).toHaveCount(1);
+    await expect(monitor.locator('.companions-record-entries')).toContainText(finalText);
+    expect(await monitor.locator('.companions-record-entries .companions-message-content').evaluate(node => getComputedStyle(node).display)).toBe('block');
+    // Hidden Electron windows do not reliably provide compositor frames.
+    // Layout is still real Chromium layout; verify the content block itself.
+    const layout = await monitor.locator('.companions-record-entries .companions-message-content').evaluate(node => ({ display: getComputedStyle(node).display, width: node.getBoundingClientRect().width }));
+    expect(layout.width).toBeGreaterThan(300);
+    await test.info().attach('dsh-progressive-record-layout', { body: JSON.stringify(layout), contentType: 'application/json' });
+    await monitor.getByRole('button', { name: '关闭任务监视', exact: true }).click();
     expect(await readFile(path.join(workspacePath, 'legacy-note.txt'), 'utf8')).toBe('preserved legacy workspace');
     expect((await state(page)).runtimes[0]?.compatibility?.status).toBe('passed');
     expect((await state(page)).instances.every(value => value.status === 'stopped')).toBe(true);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { dshRecordQuerySchema, dshRecordPageSchema } from './dsh-task-record';
 import { dshCompatibilityReportSchema } from './dsh-runtime-compatibility';
 import { dshExecutionAccessModeSchema, dshExecutionAccessSettingsSchema } from './dsh-access';
 import { dshMarketplaceStateSchema, dshMarketPageSchema, dshSkillInspectionSchema, dshSkillTargetSchema, dshInstalledSkillSchema, dshRepositorySchema, dshSkillNameSchema } from './dsh-marketplace';
@@ -136,6 +137,7 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('task.cancel'), taskId: id }),
   z.strictObject({ type: z.literal('task.terminate'), taskId: id }),
   z.strictObject({ type: z.literal('task.result'), taskId: id }),
+  z.strictObject({ type: z.literal('task.record'), query: dshRecordQuerySchema }),
   z.strictObject({ type: z.literal('task.events'), taskId: id, after: z.number().int().min(-1).optional() }),
   z.strictObject({ type: z.literal('task.message'), taskId: id, content: z.string().trim().min(1).max(16000), mode: z.enum(['steer', 'queue']), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional() }),
   z.strictObject({ type: z.literal('instance.create'), name, runtimeId: id }),
@@ -196,7 +198,7 @@ export const dshLauncherResponseSchema = z.discriminatedUnion('ok', [
     marketPage: dshMarketPageSchema.optional(), skillInspection: dshSkillInspectionSchema.optional(), installedSkills: z.array(dshInstalledSkillSchema).optional(),
     packDistribution: dshPackDistributionSchema.optional(),
     installedPlugins: z.array(dshInstalledPluginSchema).optional(),
-    taskResult: dshTaskResultSchema.optional(), taskEvents: z.array(dshTaskEventSchema).optional(),
+    taskResult: dshTaskResultSchema.optional(), taskEvents: z.array(dshTaskEventSchema).optional(), taskRecord: dshRecordPageSchema.optional(),
     instanceId: id.optional(), operationId: id.optional(), text: z.string().optional(), cancelled: z.boolean().optional(), removedOperations: z.number().int().min(0).optional() }),
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);

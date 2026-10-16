@@ -65,7 +65,7 @@ export const companionTaskCheckpointSchema = z.strictObject({ prompt: z.string()
   waitForActionIds: z.array(companionIdSchema).max(100).default([]),
   execution: dshTaskRecordSchema.optional(), supplements: z.array(z.object({ id: companionIdSchema, content: z.string().max(16000), mode: z.enum(['steer', 'queue']) })).max(100).default([]) });
 export type CompanionTaskCheckpoint = z.infer<typeof companionTaskCheckpointSchema>;
-export const updateCompanionActionSchema = actionSchema.pick({ status: true, taskId: true, sessionId: true, result: true, error: true, stage: true, events: true, accessMode: true, startedAt: true, finishedAt: true, pid: true }).partial();
+export const updateCompanionActionSchema = actionSchema.pick({ status: true, taskId: true, sessionId: true, result: true, error: true, stage: true, events: true, accessMode: true, startedAt: true, finishedAt: true, pid: true, executionSummary: true }).partial();
 export type UpdateCompanionAction = z.infer<typeof updateCompanionActionSchema>;
 export const saveCompanionMemorySchema = memorySchema.omit({ id: true, createdAt: true, updatedAt: true, sourceConversationId: true }).extend({ id: companionIdSchema.optional(), conversationId: companionIdSchema.optional(), expectedVersion: z.number().int().positive().optional() });
 export type SaveCompanionMemory = z.infer<typeof saveCompanionMemorySchema>;

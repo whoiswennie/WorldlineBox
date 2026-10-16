@@ -11,7 +11,7 @@ export const createReadStream: typeof nodeFs.createReadStream = (file, options) 
 export const createWriteStream: typeof nodeFs.createWriteStream = (file, options) => physicalFs.createWriteStream(file, {
   ...(typeof options === 'string' ? { encoding: options } : options), fs: physicalFs,
 });
-export const { appendFile, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, writeFile } = physicalFs.promises;
+export const { appendFile, copyFile, lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, rm, rmdir, stat, writeFile } = physicalFs.promises;
 
 export async function* readChunks(file: nodeFs.PathLike, signal?: AbortSignal): AsyncGenerator<Buffer> {
   const handle = await physicalFs.promises.open(file, 'r');

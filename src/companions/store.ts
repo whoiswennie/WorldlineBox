@@ -33,6 +33,7 @@ import { playerProfileDraftSchema, playerProfileSchema, type PlayerProfile, type
 import { CompanionResetStore } from './reset-store';
 import { CompanionWorkOrderStore } from './work-order-store';
 import { CompanionLifeEventStore } from './life-event-store';
+import { companionDshReceipt } from '../shared/companion-dsh-receipt';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -969,7 +970,7 @@ export class CompanionsStore {
       this.#workOrders.assertActionResume(action);
       this.#setMetadata('task-attempt/' + id + '/' + (action.attempt ?? 1), action);
       const resumed: CompanionAction = { ...action, attempt: (action.attempt ?? 1) + 1, attemptCreatedAt: stamp(), status: 'queued', events: [], stage: '正在恢复原任务', updatedAt: stamp() };
-      delete resumed.finishedAt; delete resumed.startedAt; delete resumed.result; delete resumed.error; delete resumed.taskId; delete resumed.pid;
+      delete resumed.finishedAt; delete resumed.startedAt; delete resumed.result; delete resumed.error; delete resumed.taskId; delete resumed.pid; delete resumed.executionSummary;
       this.#db.prepare("UPDATE actions SET status='queued',data=? WHERE id=?").run(JSON.stringify(resumed), id);
       this.#workOrders.actionChanged(resumed);
       return resumed;
@@ -1055,7 +1056,7 @@ export class CompanionsStore {
       else this.#routine.endWork(value.companionId, 'action:' + value.id);
       if (['succeeded', 'failed', 'cancelled'].includes(value.status) && (value.result || value.error) && ((!previous.result && !previous.error) || previous.status !== value.status)) {
         const evidence = this.appendMessage({ conversationId: value.conversationId, authorId: value.companionId, kind: 'action',
-          actionId: value.id, content: JSON.stringify({ actionId: value.id, title: value.title, status: value.status, result: value.result, error: value.error }).slice(0, 65536),
+          actionId: value.id, content: JSON.stringify({ actionId: value.id, ...companionDshReceipt(value) }),
           clientId: `memory-action-${value.id}-${value.attempt ?? 1}`, replyToId: value.sourceMessageId });
         this.#setMetadata('message-memory-evidence/' + evidence.id, true);
       }

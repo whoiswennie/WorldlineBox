@@ -13,6 +13,8 @@ import { companionRuntimeSource } from './companion-runtime-source';
 import { runtimeSdkRoot } from './runtime-sdk';
 import { DshTaskPreparationError } from './task-preparation';
 import { DshTaskInput as DshTaskInbox } from './task-input';
+import { DshTaskRecordStore } from './task-record-store';
+import type { DshRecordQuery } from '../../shared/dsh-task-record';
 
 const LINE_LIMIT = 1024 * 1024;
 const EVENT_LIMIT = 1000;
@@ -91,10 +93,11 @@ export interface DshTaskBrokerOptions {
 export class DshTaskError extends Error { constructor(message: string, readonly result: DshTaskResult) { super(message); this.name = 'DshTaskError'; } }
 /** Every task pins one selected runtime and private profile before any child starts. Selection changes affect later tasks. */
 export class DshTaskBroker {
+  private readonly archive: DshTaskRecordStore;
   private records: DshTaskRecord[] = [];
   private readonly results = new Map<string, DshTaskResult>();
   private readonly histories = new Map<string, DshTaskEvent[]>();
-  private readonly active = new Map<string, { abort: AbortController; finished: Promise<void>; input?: DshTaskInbox; terminate?: () => Promise<void> }>();
+  private readonly active = new Map<string, { abort: AbortController; finished: Promise<void>; input?: DshTaskInbox; terminate?: () => Promise<void>; flow?: (paused: boolean) => void }>();
   private readonly unconfirmedStops = new Map<string, () => Promise<void>>();
   private readonly resumedSessions = new Set<string>();
   private reservations = 0;
@@ -102,7 +105,14 @@ export class DshTaskBroker {
   private loadTask?: Promise<void>;
   private writes = Promise.resolve();
   private closed = false;
-  constructor(private readonly options: DshTaskBrokerOptions) {}
+  constructor(private readonly options: DshTaskBrokerOptions) {
+    this.archive = new DshTaskRecordStore(path.join(options.rootPath, 'task-records'), (id, error) => this.active.get(id)?.abort.abort(error),
+      (id, paused) => this.active.get(id)?.flow?.(paused));
+  }
+  readRecord(query: DshRecordQuery) { return this.archive.read(query); }
+  recordMetadata(id: string) { return this.archive.metadata(id); }
+  removeRecord(id: string) { return this.archive.remove(id); }
+  removeCompanionRecords(owner: string) { return this.archive.removeOwner(owner); }
   state(): DshTaskRecord[] { return this.records.map(record => ({ ...record })); }
   result(taskId: string): DshTaskResult | undefined { const result = this.results.get(taskId); return result ? { ...result } : undefined; }
   events(taskId: string, after = -1): DshTaskEvent[] { return (this.histories.get(taskId) ?? []).filter(event => event.sequence > after).map(event => ({ ...event })); }
@@ -161,8 +171,14 @@ export class DshTaskBroker {
     const signal = AbortSignal.any([operation.signal, abort.signal, AbortSignal.timeout(input.timeoutMs ?? 30 * 60_000)]);
     let result: DshTaskResult | undefined; let taskFailed = false; let outputError: Error | undefined; let saveError = false;
     let sequence = 0; let retained = 0;
+    let archiveStarted = false;
     this.histories.set(operation.id, []);
     const publish = (event: DshTaskEvent) => {
+      if (archiveStarted) this.archive.append(operation.id, event);
+      const archiveError = this.archive.error(operation.id);
+      if (archiveError) { outputError = archiveError; abort.abort(archiveError); }
+      // The full redacted projection is durable; the live ring stays small.
+      if (event.text && event.type !== 'final') event = { ...event, text: event.text.slice(0, 16000) };
       const bytes = Buffer.byteLength(JSON.stringify(event));
       if (retained + bytes > RETAIN_LIMIT) return;
       retained += bytes;
@@ -175,6 +191,8 @@ export class DshTaskBroker {
     };
     try {
       await this.init(); signal.throwIfAborted();
+      await this.archive.begin(operation.id, sanitizeTaskOutput(input.title ?? 'DSH task').slice(0, 100), execution.recordScope);
+      archiveStarted = true;
       preparation('preparing', '正在读取所选 DSH 实例的 CLI 配置');
       const selection = await this.options.getSelection(input.instanceId, signal, resume, {
         progress: summary => preparation('preparing', summary),
@@ -226,11 +244,13 @@ export class DshTaskBroker {
         { ...captured.env, ELECTRON_RUN_AS_NODE: '1', WORLDLINEBOX_DSH_CLI_CONTEXT: pin.contextFile }, captured.workspacePath);
       preparation('starting', '能力进程已启动，正在加载任务环境');
       const selectedChild = child; const stop = () => {
+        selectedChild.stdout.resume();
         taskInput?.cancel();
         const terminate = () => { void terminateOwnedProcess(selectedChild).catch(() => undefined); };
         if (taskInput) setTimeout(terminate, 250); else terminate();
       };
       this.active.get(operation.id)!.terminate = () => terminateOwnedProcess(selectedChild);
+      this.active.get(operation.id)!.flow = paused => { if (paused) selectedChild.stdout.pause(); else selectedChild.stdout.resume(); };
       record.pid = child.pid; await this.save(); this.changed();
       signal.addEventListener('abort', stop, { once: true }); if (signal.aborted) stop();
       const decoder = new StringDecoder('utf8'); let pending = ''; let received = 0; let hasFinal = false;
@@ -247,7 +267,7 @@ export class DshTaskBroker {
             if (output.endsWith(secret.slice(0, length))) { output = output.slice(0, -length); break; }
           }
         }
-        return output.replace(/data:[^;\s]+;base64,[A-Za-z0-9+/=]+/g, '[image data]').slice(0, 16000);
+        return output.replace(/data:[^;\s]+;base64,[A-Za-z0-9+/=]+/g, '[image data]').slice(0, LINE_LIMIT);
       };
       const rejectOutput = (message: string) => { if (!outputError) outputError = new Error(message); stop(); };
       const event = (line: string) => {
@@ -301,6 +321,8 @@ export class DshTaskBroker {
         if (code !== 0 || taskFailed || !hasFinal) throw new Error(code !== 0 ? `The pinned DSH task failed (exit ${code ?? 'unknown'}).` : taskFailed ? 'The selected DSH runtime returned a task error.' : 'The DSH task ended without a final structured reply.');
       } finally { signal.removeEventListener('abort', stop); await terminateOwnedProcess(selectedChild); }
       if (saveError) throw new Error('Task metadata could not be saved.');
+      await this.archive.finish(operation.id, 'succeeded', record.startedAt).catch(error => { outputError = error; throw error; });
+      archiveStarted = false;
       record.status = 'succeeded'; record.finishedAt = new Date().toISOString(); this.results.set(record.id, { ...result }); await this.save(); this.changed(); return { ...result };
     } catch (error) {
       if (child) try { await terminateOwnedProcess(child); }
@@ -312,9 +334,11 @@ export class DshTaskBroker {
         this.unconfirmedStops.set(operation.id, async () => { await terminateOwnedProcess(owned); await releaseContext(); });
       }
       if (record && result) {
-        record.status = stopUnconfirmed ? 'failed' : signal.aborted ? 'cancelled' : 'failed'; record.finishedAt = new Date().toISOString();
+        outputError ??= this.archive.error(operation.id);
+        record.status = stopUnconfirmed || outputError ? 'failed' : signal.aborted ? 'cancelled' : 'failed'; record.finishedAt = new Date().toISOString();
         record.error = stopUnconfirmed ? 'The owned DSH task processes could not be confirmed stopped. Retry termination before releasing task data.'
-          : signal.aborted ? 'The DSH task was cancelled or reached its time limit.' : outputError?.message ?? (error instanceof Error && /^(The pinned DSH task failed|The selected DSH runtime returned|The DSH task ended without|Task metadata could not)/.test(error.message) ? error.message : 'The DSH task could not complete in its selected environment.');
+          : outputError?.message ?? (signal.aborted ? 'The DSH task was cancelled or reached its time limit.' : error instanceof Error && /^(The pinned DSH task failed|The selected DSH runtime returned|The DSH task ended without|Task metadata could not)/.test(error.message) ? error.message : 'The DSH task could not complete in its selected environment.');
+        if (archiveStarted) { await this.archive.finish(operation.id, record.status, record.startedAt, record.error).catch(() => undefined); archiveStarted = false; }
         this.results.set(record.id, { ...result }); await this.save().catch(() => undefined); this.changed(); throw new DshTaskError(record.error, { ...result });
       }
       const detail = signal.aborted ? '任务在 CLI 启动前已取消或超时。'
@@ -325,6 +349,7 @@ export class DshTaskBroker {
         code: `task/preparation/${error instanceof DshTaskPreparationError ? error.code : 'unknown'}`, summary: detail, receivedAt: new Date().toISOString() });
       throw new Error(detail, { cause: error });
     } finally {
+      if (archiveStarted) await this.archive.finish(operation.id, signal.aborted ? 'cancelled' : 'failed', record?.startedAt, outputError?.message ?? '任务在 CLI 启动前失败，请查看已保存的准备阶段记录。').catch(() => undefined);
       try { if (!stopUnconfirmed) await releaseContext(); }
       finally { taskInput?.close(); this.active.delete(operation.id); this.reservations--; if (resume?.sessionId) this.resumedSessions.delete(resume.sessionId); resolveFinished(); }
     }

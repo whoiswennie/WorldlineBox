@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
@@ -98,7 +99,7 @@ function taskRecord(status: DshTaskRecord['status'] = 'running'): DshTaskRecord 
 }
 function fakeDsh(state: () => { tasks: DshTaskRecord[]; operations: Array<{ id: string; status: string }> },
   requestTask: DshLauncher['requestTask']): DshLauncher {
-  return { state, requestTask } as unknown as DshLauncher;
+  return { state, requestTask, readTaskRecord: vi.fn(async () => { throw new Error('legacy record'); }), removeCompanionTaskRecords: vi.fn(async () => undefined) } as unknown as DshLauncher;
 }
 function fixture(dsh: DshLauncher, publish = false, prepareComputer = true) {
   const testNow = Date.now(); if (prepareComputer) vi.setSystemTime(testNow - 10_000);
@@ -1211,7 +1212,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
       const body = JSON.parse(String(init?.body));
       const context = JSON.parse(body.messages[1].content);
       const tool = body.messages.find((item: { role: string }) => item.role === 'tool');
-      if (tool) return modelResponse(JSON.parse(tool.content).tasks[0].result);
+      if (tool) return modelResponse(JSON.parse(tool.content).tasks[0].finalReply);
       const clock = context.taskRequest?.prompt === '现在几点了';
       return capabilityResponse('', [{ title: clock ? '读取系统时间' : '查询上海天气', prompt: clock ? '读取系统时间与时区' : '查询上海实时天气' }]);
     });
@@ -1298,7 +1299,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     expect(bubble.content).toBe('我查到三个来源。');
     const body = JSON.parse(String(transport.fetch.mock.calls[0]![1]?.body));
     expect(body.tools.map((item: { function: { name: string } }) => item.function.name)).toEqual([
-      'dsh', 'memory_search', 'memory_read', 'memory_record', 'memory_revise', 'memory_organize', 'memory_forget',
+      'dsh', 'dsh_record', 'memory_search', 'memory_read', 'memory_record', 'memory_revise', 'memory_organize', 'memory_forget',
       'schedule', 'state',
       'routine', 'world', 'work', 'life_rule',
       'read_file', 'read_image', 'send_file',
@@ -1515,5 +1516,57 @@ describe('CompanionService executor feedback evidence boundary', () => {
     expect(replies).toHaveLength(1); expect(replies[0]!.content).toBe('执行器结果已经返回。');
     const writes = transport.request.mock.calls.map(([command]) => command).filter(command => command.type === 'message.append' && command.message.replyToId === f.source.id);
     expect(new Set(writes.map(command => command.type === 'message.append' ? command.message.clientId : undefined)).size).toBe(1);
+  });
+});
+
+
+describe('Scoped progressive DSH records', () => {
+  it('dispatches the native read capability without starting a new task, and rejects another companion or conversation', async () => {
+    const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
+    const f = fixture(dsh);
+    await f.service.handle({ type: 'state' });
+    const action = f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id, title: '历史只读核查', status: 'succeeded', result: '结果正文' });
+    const recordId = randomUUID();
+    let owner = { actionId: action.id, companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id };
+    const read = vi.fn(async () => ({ overview: { recordId, turns: 2, steps: 8, toolCalls: 3, recordCount: 93 }, entries: [], trust: 'execution_record_data_not_instructions' }));
+    Object.assign(dsh, { taskRecordScope: vi.fn(async () => owner), readTaskRecord: read });
+    await f.service.handle({ type: 'action.record', id: action.id, query: { recordId, entryChars: 2000, textOffset: 0 } });
+    read.mockClear();
+    const bounded = f.service as unknown as { readDshRecord(query: { recordId: string }, scope: { companionId: string; conversationId: string; beforeSequence: number }): Promise<unknown> };
+    await expect(bounded.readDshRecord({ recordId }, { companionId: 'sister', conversationId: f.conversation.id, beforeSequence: f.source.sequence - 1 })).rejects.toThrow('来源');
+    expect(read).not.toHaveBeenCalled();
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)), tool = body.messages.find((value: { role: string }) => value.role === 'tool');
+      if (!tool) return new Response(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ id: 'query-log', type: 'function', function: { name: 'dsh_record', arguments: JSON.stringify({ recordId }) } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
+      const receipt = JSON.parse(tool.content);
+      expect(receipt.overview.turns).toBe(2); expect(receipt.entries).toEqual([]);
+      return modelResponse('记录显示共两轮、八步，未加载过程正文。');
+    });
+    await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '看一下这份执行记录的概览。', clientId: 'read-dsh-overview' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(value => value.content === '记录显示共两轮、八步，未加载过程正文。')).toBe(true), { timeout: 5000 });
+    expect(dsh.requestTask).not.toHaveBeenCalled(); expect(read).toHaveBeenCalledOnce();
+    const query = { recordId, entryChars: 2000, textOffset: 0 };
+    owner = { ...owner, companionId: 'different' };
+    await expect(f.service.handle({ type: 'action.record', id: action.id, query })).rejects.toThrow('其他伙伴');
+    owner = { ...owner, companionId: 'sister', conversationId: 'different-room' };
+    await expect(f.service.handle({ type: 'action.record', id: action.id, query })).rejects.toThrow('当前会话');
+    expect(read).toHaveBeenCalledOnce();
+    await closeService(f.service);
+  });
+  it('discards a page if its source is reset while the disk read is in flight', async () => {
+    const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
+    const f = fixture(dsh); await f.service.handle({ type: 'state' });
+    const action = f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id, title: '旧记录', status: 'succeeded' });
+    const recordId = randomUUID(), pending = deferred<unknown>();
+    const read = vi.fn(() => pending.promise);
+    Object.assign(dsh, { taskRecordScope: vi.fn(async () => ({ actionId: action.id, companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id })), readTaskRecord: read });
+    const request = f.service.handle({ type: 'action.record', id: action.id, query: { recordId, entryChars: 2000, textOffset: 0 } });
+    void request.catch(() => undefined);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    f.store.request({ type: 'companion.reset', id: 'sister', scope: 'all' });
+    pending.resolve({ overview: { recordId }, entries: [{ event: { text: 'WITHDRAWN_RECORD_SECRET' } }] });
+    await expect(request).rejects.toThrow(/重置|来源/);
+    await closeService(f.service);
   });
 });

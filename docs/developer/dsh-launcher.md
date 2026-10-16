@@ -165,3 +165,16 @@ node scripts/run-e2e.mjs tests/e2e/dsh-launcher.test.ts
 后续共享用户目录与安装提交修复验证：真实 Electron 使用已有官方安装包分别测试短时锁、持续可读锁与独占锁。三种原生 `CreateFileW` 占用均复现目录移动 `EPERM`；修复后重试、复制校验、失败保留与恢复通过，每例封存 9,769 个文件并在重新初始化后再次校验。未重新下载安装包。Vite watcher 开启前 / 开启时 / 关闭后同目录移动分别为成功 / `EPERM` / 成功，证明项目内存储会受开发监视器影响；历史失败的具体句柄持有者无法追溯。
 
 共享目录、浏览器存储持久化与 E2E 隔离、旧缓存校验迁移、历史通知清理、全局壁纸、设置导航及启动器故障隔离的 7 项桌面回归通过。主程序 / 扩展类型检查及修改文件 ESLint 通过；Forge 开发和生产配置共 18 次隔离构建不再出现 `inlineDynamicImports` 弃用警告，真实 Electron 日志事件验证不再出现 `console-message` 弃用警告。
+
+
+## 执行记录与伙伴摘要协议
+
+`DshTaskRecordStore` 为每次 operation UUID 创建 `dsh-launcher/task-records/<uuid>/`，按追加顺序从 1 编号。`events.jsonl` 仅存 broker 已脱敏的协议投影，`events.idx` 每项 12 字节（uint64 LE 字节偏移、uint32 LE 字节长度）。定向读取只访问目标索引和对应行，不扫描整份 JSONL；记录和结果不依赖 broker 最近 100 条任务或 1,000 条实时环缓存。保留完整的受管公开正文，实时 IPC 继续截短，并排除 reasoning/thinking/analysis。
+
+单任务两个文件句柄顺序写入，约 1 MiB 待写时暂停该任务 stdout，低于 256 KiB 恢复。待写 8 MiB 是最后故障保护；总存档上限 64 MiB/100,000 条。元数据每 32 条提交恢复点，终态先刷完队列并同步文件后原子提交元数据。异常退出只暴露最后提交范围并标为 interrupted/partial，不把未提交尾部当完整记录。统计分别数 turn_start、step_start、tool_start；耗时使用单调时钟，包括本次 CLI 绑定与执行，现实起止时间用于审计。
+
+`companionDshReceipt` 是主脑循环、独立结果反馈及记忆来源的统一投影：UUID、状态、轮数/步骤/工具次数、耗时、记录数、有限最终回复、截断与完整性标记。没有旧统计时返回 null。最终回复默认最多 6,000 字符，多任务进一步分摊预算；不在摘要里放事件数组。`dsh_record` 是无外部副作用的只读原生能力，各 provider 均注册，同一步最多四份读取。查询概览为默认行为，区间含两端；每页最多 50 条、单条最多 4,000 字符、条目 JSON 累计最多 12,000 字符，另有有限概览。续读使用 snapshot/nextStart 或单条 textOffset/nextTextOffset。编码转义也计入页预算。
+
+recordScope 仅接受可信 Main 的 actionId/companionId/conversationId/sourceMessageId，渲染端不能伪造执行归属。伙伴读取前后两次核验 action、原会话、原作者归属及 memory.sources.filter，发生重置或来源撤回就丢弃页。返回 sourceMessageId 进入循环来源校验。公开执行正文始终作为资料，不作为授权。人工 UI 走 action.record；任务记录不会改变 DSH 自身账号、模型和共享会话配置。
+
+by-owner/<companionId>/<uuid> 是精确归属标记，停止该伙伴全部作业之后流式枚举，逐份删除固定文件并移除标记；不一次加载多年 ID，不递归删除调用者路径。失败保留标记供重试。恢复执行会分配新的 UUID，旧记录保持可读，旧 action 本身仍是稳定工作入口。没有新存档的旧任务明确返回不可用，不从小型进度缓存构造“完整”日志。

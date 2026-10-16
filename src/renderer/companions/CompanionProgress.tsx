@@ -4,6 +4,8 @@ import { Icon } from '../Icons';
 import { DSH_EXECUTION_ACCESS_OPTIONS } from '../../shared/dsh-access';
 import { MessageContent } from './MessageContent';
 import { companionTimestamp, companionTimezone } from '../../shared/companion-time';
+import type { DshRecordPage, DshRecordQuery } from '../../shared/dsh-task-record';
+import { DshRecordViewer } from './DshRecordViewer';
 
 const statusLabels: Record<CompanionAction['status'], string> = { queued: '等待处理', running: '正在处理', succeeded: '已返回结果', failed: '处理失败', cancelled: '已停止', interrupted: '执行中断' };
 const stageLabels: Record<string, string> = { queued: '等待执行', starting: '正在启动', running: '正在执行', completed: '已完成', failed: '执行失败', cancelled: '已停止', waiting_approval: '等待操作确认', planning: '正在制定计划', executing: '正在执行操作', finishing: '正在整理结果' };
@@ -29,7 +31,7 @@ export function elapsedTime(startedAt: string, now: number): string {
   return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分`;
 }
 
-export function CompanionActionCard({ action, now, onStop, onGuide, onResume, onTerminate, compact = false, defaultShowProgress = false, onOpenUrl }: { action: CompanionAction; now: number; onStop: () => void; onGuide?: () => void; onResume?: () => void | Promise<unknown>; onTerminate?: () => void | Promise<unknown>; compact?: boolean; defaultShowProgress?: boolean; onOpenUrl?: (url: string) => void }) {
+export function CompanionActionCard({ action, now, onStop, onGuide, onResume, onTerminate, compact = false, defaultShowProgress = false, onOpenUrl, onReadRecord }: { action: CompanionAction; now: number; onStop: () => void; onGuide?: () => void; onResume?: () => void | Promise<unknown>; onTerminate?: () => void | Promise<unknown>; compact?: boolean; defaultShowProgress?: boolean; onOpenUrl?: (url: string) => void; onReadRecord?: (query: DshRecordQuery) => Promise<DshRecordPage | undefined> }) {
   const [showProgress, setShowProgress] = useState(defaultShowProgress);
   const [follow, setFollow] = useState(true);
   const [operationBusy, setOperationBusy] = useState(false);
@@ -50,9 +52,11 @@ export function CompanionActionCard({ action, now, onStop, onGuide, onResume, on
     {(action.canResume && onResume || running && action.pid && onTerminate) && <div className="companions-task-controls">{action.canResume && onResume && <button className="companion-secondary-button" disabled={operationBusy} onClick={() => { setOperationBusy(true); void Promise.resolve(onResume()).finally(() => setOperationBusy(false)); }}>{operationBusy ? '正在恢复…' : '从上次进度继续'}</button>}{running && action.pid && onTerminate && <button className="companions-terminate-task" disabled={operationBusy} title="结束这条任务拥有的 CLI 进程，可稍后恢复" onClick={() => { setOperationBusy(true); void Promise.resolve(onTerminate()).finally(() => setOperationBusy(false)); }}>结束执行进程{action.pid ? ` · PID ${action.pid}` : ''}</button>}{(action.attempt ?? 1) > 1 && <small>第 {action.attempt} 次运行 · 沿用原任务</small>}</div>}
     {showProgress && <section className="companions-live-progress" aria-label={`${action.title}的实时进度`}><header><strong>执行过程</strong><span>{running ? '实时更新' : '已保存'}</span>{!follow && <button onClick={() => setFollow(true)}>跟随最新</button>}</header><div ref={outputRef} className="companions-live-output" onScroll={event => { const node = event.currentTarget; setFollow(node.scrollHeight - node.clientHeight - node.scrollTop < 40); }}>
       {!events.length && <p className="companions-progress-empty">{running ? '正在准备能力环境，过程将在这里实时出现。' : '没有保留的过程记录。'}</p>}
-      {events.map(event => <article key={event.streamId ?? event.sequence} data-progress-kind={event.contentKind || 'status'}><div><time dateTime={event.receivedAt} title={companionTimezone(event.receivedAt)}>{companionTimestamp(event.receivedAt)}</time><strong>{event.toolName || (event.contentKind === 'message' ? '输出' : '状态')}</strong><span>{event.summary}</span>{event.outputState && <small>{event.outputState === 'draft' ? '生成中' : event.outputState === 'abandoned' ? '已放弃，未执行' : '已确认'}</small>}</div>{event.content && (event.contentKind === 'message' ? <MessageContent content={event.content} onOpenUrl={onOpenUrl} /> : <pre>{event.content}</pre>)}</article>)}
+      {events.map(event => <article key={event.streamId ?? event.sequence} data-progress-kind={event.contentKind || 'status'}><div className="companions-progress-event-heading"><time dateTime={event.receivedAt} title={companionTimezone(event.receivedAt)}>{companionTimestamp(event.receivedAt)}</time><strong>{event.toolName || (event.contentKind === 'message' ? '输出' : '状态')}</strong><span>{event.summary}</span>{event.outputState && <small>{event.outputState === 'draft' ? '生成中' : event.outputState === 'abandoned' ? '已放弃，未执行' : '已确认'}</small>}</div>{event.content && (event.contentKind === 'message' ? <MessageContent content={event.content} onOpenUrl={onOpenUrl} /> : <pre>{event.content}</pre>)}</article>)}
     </div></section>}
     {action.error && <p className="companions-action-error">{action.error}</p>}
+    {defaultShowProgress && action.executionSummary && <div className="companions-execution-summary"><div><span>{action.executionSummary.turns} 轮</span><span>{action.executionSummary.steps} 步</span><span>{action.executionSummary.toolCalls} 次工具调用</span><span>{action.executionSummary.recordCount} 条存档</span></div><small>记录 ID</small><code>{action.executionSummary.recordId}</code></div>}
+    {defaultShowProgress && action.taskId && onReadRecord && <details className="companions-record-details"><summary>按段查看完整记录</summary><DshRecordViewer recordId={action.executionSummary?.recordId ?? action.taskId} read={onReadRecord} onOpenUrl={onOpenUrl} /></details>}
     {action.result && <details className="companions-action-result"><summary>查看结果</summary><MessageContent content={action.result} onOpenUrl={onOpenUrl} /></details>}
   </article>;
 }

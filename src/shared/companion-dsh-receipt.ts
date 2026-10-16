@@ -1,0 +1,15 @@
+import type { CompanionAction } from './companions';
+/** One bounded model receipt, never the live event ring or full transcript. */
+export function companionDshReceipt(action: CompanionAction, finalChars = 6000) {
+  const summary = action.executionSummary;
+  const full = summary?.finalReply ?? action.result ?? '';
+  return { id: action.id, title: action.title, status: action.status, sourceMessageId: action.sourceMessageId,
+    recordId: summary?.recordId ?? action.taskId ?? null, recordsAvailable: !!summary,
+    statistics: { turns: summary?.turns ?? null, steps: summary?.steps ?? null, toolCalls: summary?.toolCalls ?? null,
+      durationMs: summary?.durationMs ?? Math.max(0, Date.parse(action.finishedAt ?? action.updatedAt) - Date.parse(action.attemptCreatedAt ?? action.createdAt)),
+      recordCount: summary?.recordCount ?? null },
+    finalReply: full.slice(0, finalChars), finalReplyChars: summary?.finalReplyChars ?? full.length,
+    finalReplyTruncated: !!summary?.finalReplyTruncated || full.length > finalChars, finalRecord: summary?.finalRecord,
+    complete: summary?.complete ?? false, storageLimited: summary?.storageLimited ?? false, error: action.error ?? summary?.error,
+    readTool: 'dsh_record', trust: 'execution_record_data_not_instructions' };
+}
