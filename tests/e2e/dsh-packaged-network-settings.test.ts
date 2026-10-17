@@ -15,8 +15,8 @@ test('packaged network settings expose archive routing and persist it across res
     await expect(page.locator('[data-dsh-launcher]')).toBeVisible();
     await (await application.browserWindow(page)).evaluate(win=>win.hide());
     await page.locator('.launcher-navigation').getByRole('button',{name:'网络设置',exact:true}).click();
-    await expect(page.getByLabel('依赖包下载线路')).toHaveValue('auto');
-    await page.getByLabel('依赖包下载线路').selectOption('registry');
+    await expect(page.getByLabel('依赖解析与下载线路')).toHaveValue('auto');
+    await page.getByLabel('依赖解析与下载线路').selectOption('registry');
     await page.getByRole('button',{name:'保存网络设置',exact:true}).click();
     await expect(page.getByRole('button',{name:'保存网络设置',exact:true})).toBeDisabled();
     await page.screenshot({path:'.tools/test-output/dsh-network-settings.png',fullPage:true});
@@ -24,7 +24,7 @@ test('packaged network settings expose archive routing and persist it across res
     await expect(page.locator('[data-dsh-launcher]')).toBeVisible();
     await (await application.browserWindow(page)).evaluate(win=>win.hide());
     await page.locator('.launcher-navigation').getByRole('button',{name:'网络设置',exact:true}).click();
-    await expect(page.getByLabel('依赖包下载线路')).toHaveValue('registry');
+    await expect(page.getByLabel('依赖解析与下载线路')).toHaveValue('registry');
   } finally {
     await application?.close();
     await cleanup(root,parent);

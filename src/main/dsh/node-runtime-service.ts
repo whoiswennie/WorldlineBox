@@ -7,7 +7,7 @@ import { copyFile, createWriteStream, lstat, mkdir, readFile, realpath, writeFil
 import { contained, hashFile, redact, safeRelative, type TreeInventory } from './files';
 import { fetchHttpsDownload, type HttpsDownloadFetch } from './https-download';
 import type { OperationContext } from './operations';
-import { attachProcessJob } from './windows-job';
+import { attachProcessJob, prepareWindowsProcessJob } from './windows-job';
 import { terminateOwnedProcess } from './instance-process';
 import { npmDownloadMonitorSource } from './npm-download-monitor';
 import { npmPrefetchSource } from './npm-prefetch';
@@ -36,6 +36,9 @@ export interface NodeInstallNetwork {
   registry: string;
   /** Optional archive route; every archive must still match the already resolved SRI. */
   tarballMirror?: string;
+  /** A mirror failure may retry metadata once, using the fallback destination's PAC route. */
+  fallback?: { registry: string; env: NodeJS.ProcessEnv };
+  metadataRoute?: {registry:string;elapsedMs:number;probed:boolean};
 }
 export interface NodeRuntimeInstallPreparationOptions {
   installationDirectory:string;release:OfficialNodeRelease;tarball:string;sourceSha256:string;
@@ -198,6 +201,7 @@ export async function runNodeInstall(tools: NodeInstallTools, args: string[], cw
   const monitor = path.join(cwd, `.worldline-download-${nonce}.cjs`);
   if (operation.download) await writeFile(monitor, npmDownloadMonitorSource(nonce), { flag: 'wx' });
   const installEnv = operation.download ? { ...env, NODE_OPTIONS: `--require=${JSON.stringify(monitor)}` } : env;
+  prepareWindowsProcessJob();
   const child = spawn(tools.nodeExecutable, [tools.npmCli, ...args], {
     cwd, env: installEnv, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
   }) as ChildProcessWithoutNullStreams;
@@ -332,13 +336,26 @@ export async function prepareOfficialNodeRuntime(options: {
   if(!options.prepareInstall)await writeFile(path.join(install, 'package.json'), JSON.stringify({
     name: 'worldlinebox-dsh-runtime', version: '1.0.0', private: true, type: 'module',
   }), { flag: 'wx' });
+  await operation.update('selecting npm metadata route', 12);
+  let network = await options.network();
+  let env = await nodeInstallEnvironment(options.staging, tools, network, options.contentCache);
+  if(network.metadataRoute)await operation.log(`Dependency metadata route: ${network.registry}; complete metadata probe ${network.metadataRoute.elapsedMs} ms; probe ${network.metadataRoute.probed?'succeeded':'unavailable'}; configured proxy retained.`);
   await operation.update('resolving official dependencies', 15);
-  const network = await options.network();
-  const env = await nodeInstallEnvironment(options.staging, tools, network, options.contentCache);
   await operation.log(`npm registry: ${network.registry}; proxy: ${env.HTTPS_PROXY || 'DIRECT'}; reusable content cache: ${env.npm_config_cache}`);
+  if (!options.prepareInstall) {
+    const resolveArgs = (registry:string) => ['install', '--package-lock-only', '--ignore-scripts', '--save-exact', '--omit=dev', '--no-audit', '--no-fund', '--engine-strict', '--install-strategy=hoisted', '--registry', registry, tarball];
+    try { await runNodeInstall(tools,resolveArgs(network.registry),install,env,operation); }
+    catch(error) {
+      operation.signal.throwIfAborted();
+      if(!network.fallback||!/\b(?:E404|E403|E429|E5\d\d|ECONN\w*|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ETARGET|FETCH_ERROR)\b/i.test(String(error)))throw error;
+      await operation.log(`Dependency metadata route unavailable; retrying once with ${network.fallback.registry}.`);
+      network = { ...network, ...network.fallback, fallback:undefined };
+      env = await nodeInstallEnvironment(path.join(options.staging,'fallback-network'),tools,network,env.npm_config_cache);
+      await runNodeInstall(tools,resolveArgs(network.registry),install,env,operation);
+    }
+  }
   const args=options.prepareInstall?await options.prepareInstall({installationDirectory:install,release,tarball,sourceSha256,tools,signal:operation.signal,registry:network.registry}):['ci', '--omit=dev', '--no-audit', '--no-fund',
     '--engine-strict', '--install-strategy=hoisted', '--registry', network.registry];
-  if (!options.prepareInstall) await runNodeInstall(tools, ['install', '--package-lock-only', '--ignore-scripts', '--save-exact', '--omit=dev', '--no-audit', '--no-fund', '--engine-strict', '--install-strategy=hoisted', '--registry', network.registry, tarball], install, env, operation);
   await operation.update('prefetching dependency archives', 25);
   const prefetch = path.join(options.staging, 'npm-prefetch.cjs');
   await writeFile(prefetch, npmPrefetchSource(npmCli, network.tarballMirror), { flag: 'wx' });

@@ -24,6 +24,27 @@ function release(version: string) { return { name: '@deepseek-ai/dsh', version, 
 const npm = { name: '@deepseek-ai/dsh', 'dist-tags': { latest: '0.2.0-rc.2' }, versions: Object.fromEntries(['0.2.0-rc.2', '0.2.1-alpha.2', '0.2.1-alpha.10'].map(version => [version, release(version)])) };
 
 describe('hot launcher networking', () => {
+  it('shares a metadata probe, keeps other installs alive on cancellation, and resolves PAC for the selected destination', async () => {
+    const proxySession=scope();
+    proxySession.resolveProxy.mockImplementation(async (url?:string)=>url?.includes('npmmirror')?'DIRECT':'PROXY 127.0.0.1:7897');
+    const service=new LauncherNetwork(await temporary(),()=>undefined,()=>proxySession as unknown as Session);await service.init();
+    let finish!:()=>void;
+    transport.mockImplementation(async (url:string,input:{signal:AbortSignal})=>{
+      if(url.includes('npmmirror'))return new Promise<Response>(resolve=>{finish=()=>resolve(new Response('{"name":"zod","versions":{"4.0.0":{}}}'));});
+      return new Promise<Response>((_resolve,reject)=>input.signal.addEventListener('abort',()=>reject(input.signal.reason),{once:true}));
+    });
+    const controller=new AbortController();const first=service.nodeInstallNetwork(controller.signal);const second=service.nodeInstallNetwork();
+    await vi.waitFor(()=>expect(transport).toHaveBeenCalledTimes(2));
+    controller.abort(Error('one install cancelled'));await expect(first).rejects.toThrow('one install cancelled');finish();
+    const selected=await second;
+    expect(selected.registry).toBe('https://registry.npmmirror.com');expect(selected.env.HTTPS_PROXY).toBeUndefined();
+    expect(selected.fallback?.env.HTTPS_PROXY).toBe('http://127.0.0.1:7897');
+    await service.nodeInstallNetwork();expect(transport).toHaveBeenCalledTimes(2);
+    await service.save({...DEFAULT_LAUNCHER_NETWORK,npmDownloadRoute:'registry'});
+    expect((await service.nodeInstallNetwork()).registry).toBe('https://registry.npmjs.org');expect(transport).toHaveBeenCalledTimes(2);
+    await service.save({...DEFAULT_LAUNCHER_NETWORK,npmRegistry:'https://custom.example'});
+    expect((await service.nodeInstallNetwork()).registry).toBe('https://custom.example');expect(transport).toHaveBeenCalledTimes(2);
+  });
   it('honors DIRECT as the first PAC choice and removes stale proxy variables from children', async () => {
     const proxySession = scope(); proxySession.resolveProxy.mockResolvedValue('DIRECT; PROXY 127.0.0.1:7897');
     const service = new LauncherNetwork(await temporary(), () => undefined, () => proxySession as unknown as Session); await service.init();

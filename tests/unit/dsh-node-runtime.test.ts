@@ -20,11 +20,13 @@ const release = (version: string): OfficialNodeRelease => ({ version,
   integrity: `sha512-${createHash('sha512').update(tarball(version)).digest('base64')}` });
 
 /** Owned package-manager fixture; no npm lifecycle or third-party package is executed. */
-async function fixture(root: string) {
+async function fixture(root: string, resolverFailure?:string) {
   const npmCli = path.join(root, 'fixture-npm.cjs');
   await writeFile(npmCli, `
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
-const args=process.argv.slice(2), archive=args[0]==='ci'?JSON.parse(fs.readFileSync('package.json','utf8')).dependencies['@deepseek-ai/dsh'].slice(5):args.at(-1), bytes=fs.readFileSync(archive);
+const args=process.argv.slice(2);
+if(args.includes('--package-lock-only')&&args.includes('https://registry.npmmirror.com')&&${JSON.stringify(resolverFailure??'')}) {console.error('npm error code '+${JSON.stringify(resolverFailure??'')});process.exit(1);}
+const archive=args[0]==='ci'?JSON.parse(fs.readFileSync('package.json','utf8')).dependencies['@deepseek-ai/dsh'].slice(5):args.at(-1), bytes=fs.readFileSync(archive);
 const version=JSON.parse(bytes).version, integrity='sha512-'+crypto.createHash('sha512').update(bytes).digest('base64');
 fs.writeFileSync(path.join(process.cwd(),'installer-env.json'),JSON.stringify({
   cache:process.env.npm_config_cache, registry:process.env.npm_config_registry,
@@ -48,6 +50,25 @@ console.log('fixture dependency closure installed');
 }
 
 describe('official Node DSH runtime adapter', () => {
+  it.each(['E404','EINTEGRITY'])('retries a metadata outage once, but never retries an integrity failure (%s)', async code => {
+    const root=await temporary(); const manager=path.join(root,'manager');const tools=await fixture(root,code);
+    const service=new RuntimeService({rootPath:manager,sevenZipPath:'unused',onChanged:()=>undefined,nodeTools:async()=>tools,
+      nodeInstallNetwork:async()=>({registry:'https://registry.npmmirror.com',env:{...process.env,HTTPS_PROXY:'http://mirror-proxy:18081'},fallback:{registry:'https://registry.npmjs.org',env:{...process.env,HTTPS_PROXY:'http://official-proxy:18082'}}}),
+      fetch:async()=>new Response(tarball('0.2.1-rc.2'))});await service.init();
+    const operations=new OperationStore(path.join(manager,'operations'),()=>undefined);await operations.init();
+    const id=await operations.run('runtime.install','fallback',undefined,async operation=>{await service.installNode(release('0.2.1-rc.2'),operation);});await operations.settle();
+    const log=await readFile(path.join(manager,'operations',`${id}.log`),'utf8');
+    if(code==='E404') {
+      expect(operations.list()[0]?.error).toBeUndefined();expect(operations.list()[0]?.status).toBe('succeeded');
+      expect(log.match(/retrying once/g)).toHaveLength(1);
+      const installed=JSON.parse(await readFile(path.join(service.directory(service.list()[0]!.id),'dsh','installer-env.json'),'utf8'));
+      expect(installed.registry).toBe('https://registry.npmjs.org/');expect(installed.proxy).toBe('http://official-proxy:18082');
+      expect(installed.args).toContain('https://registry.npmjs.org');expect(installed.cache).toBe(path.join(manager,'npm-cache'));
+    } else {
+      expect(operations.list()[0]?.status).toBe('failed');expect(operations.list()[0]?.error).toContain('EINTEGRITY');
+      expect(log).not.toContain('retrying once');expect(service.list()).toEqual([]);
+    }
+  },20_000);
   it.skipIf(process.platform !== 'win32' || process.arch !== 'x64')('registers two concurrent releases without losing either index record', async () => {
     const root = await temporary(); const tools = await fixture(root);
     const manager = path.join(root, 'manager');

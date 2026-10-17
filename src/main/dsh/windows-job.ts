@@ -90,6 +90,11 @@ function win32Error(api: JobApi, operation: string): Error {
   return new Error(`${operation} failed (Win32 error ${api.lastError()}). DSH instance processes are not safely supervised.`);
 }
 
+/** Load native bindings before spawning a short-lived helper, so it cannot exit during DLL loading. */
+export function prepareWindowsProcessJob(): void {
+  if (process.platform === 'win32') loadJobApi();
+}
+
 /**
  * Call synchronously immediately after spawn, before allowing a runtime to
  * start work. Windows 8+ allows an empty Job to become a nested Job even when

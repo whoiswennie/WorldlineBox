@@ -5,6 +5,8 @@ import { atomicJson, readJson } from './files';
 import { createElectronHttpsDownload, createElectronPublicationRequest } from './electron-https-download';
 import type { PackPublishRequest } from './pack-distribution';
 import type { HttpsDownloadFetch } from './https-download';
+import type { NodeInstallNetwork } from './node-runtime-service';
+import { AUTOMATIC_NPM_MIRROR, OFFICIAL_NPM_REGISTRY, selectNpmMetadataRoute, type NpmMetadataRoute } from './npm-registry-route';
 
 export const DEFAULT_LAUNCHER_NETWORK: DshNetworkSettings = {
   proxyMode: 'system', proxyUrl: 'http://127.0.0.1:7897',
@@ -37,6 +39,7 @@ export class LauncherNetwork {
   private transport?: HttpsDownloadFetch;
   private scope?: Session;
   private lifetime = new AbortController();
+  private metadataRoute?: { revision:number; expiresAt:number; result:Promise<NpmMetadataRoute> };
   constructor(private readonly rootPath: string, private readonly onChanged: () => void,
     private readonly createSession = () => session.fromPartition('persist:worldlinebox-dsh-network')) {}
   state() { return { settings: structuredClone(this.settings), revision: this.revision, ...(this.issue ? { error: this.issue } : {}) }; }
@@ -112,13 +115,13 @@ export class LauncherNetwork {
     if (!this.scope) throw new Error('Network service is not ready.');
     return createElectronPublicationRequest(this.scope)(url, { ...input, signal: AbortSignal.any([input.signal, this.lifetime.signal]) });
   }
-  async environment(base: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
+  async environment(base: NodeJS.ProcessEnv = process.env, destination = this.settings.npmRegistry): Promise<NodeJS.ProcessEnv> {
     await this.queue;
     const env = { ...base };
     for (const key of Object.keys(env)) if (/^(?:HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|PROXY|NO_PROXY|npm_config_(?:registry|proxy|https_proxy|noproxy)|PIP_INDEX_URL)$/i.test(key)) delete env[key];
     let proxy = this.settings.proxyMode === 'custom' ? this.settings.proxyUrl : '';
     if (this.settings.proxyMode === 'system') {
-      const rule = await this.scope!.resolveProxy(this.settings.npmRegistry);
+      const rule = await this.scope!.resolveProxy(destination);
       // Respect the first PAC route, including DIRECT; do not pick a later fallback proxy.
       const match = /^(PROXY|HTTPS|SOCKS5?)\s+([^;]+)/.exec(rule.trim());
       if (match) proxy = `${match[1] === 'HTTPS' ? 'https' : match[1]!.startsWith('SOCKS') ? 'socks5' : 'http'}://${match[2]}`;
@@ -128,8 +131,29 @@ export class LauncherNetwork {
       npm_config_fetch_timeout: '120000', npm_config_fetch_retries: '2', PIP_INDEX_URL: this.settings.pythonIndex });
     return env;
   }
-  async nodeInstallNetwork(signal?: AbortSignal) { signal?.throwIfAborted(); return { env: await this.environment(), registry: this.settings.npmRegistry,
-    ...(this.settings.npmDownloadRoute === 'auto' && this.settings.npmRegistry === 'https://registry.npmjs.org' ? { tarballMirror: 'https://registry.npmmirror.com' } : {}) }; }
+  async nodeInstallNetwork(signal: AbortSignal = new AbortController().signal): Promise<NodeInstallNetwork> {
+    await this.queue; signal.throwIfAborted();
+    const automatic = this.settings.npmDownloadRoute === 'auto' && this.settings.npmRegistry === OFFICIAL_NPM_REGISTRY;
+    if (!automatic) return { env:await this.environment(),registry:this.settings.npmRegistry };
+    const currentSignal = AbortSignal.any([signal,this.lifetime.signal]);
+    // Concurrent installs share one short probe; cancelling one install must not cancel another.
+    if(!this.metadataRoute||this.metadataRoute.revision!==this.revision||this.metadataRoute.expiresAt<Date.now()) {
+      this.metadataRoute = {revision:this.revision,expiresAt:Date.now()+5*60_000,result:selectNpmMetadataRoute(this.fetch,this.lifetime.signal)};
+    }
+    let removeAbort = () => {};
+    let route: NpmMetadataRoute;
+    try {
+      route = await Promise.race([this.metadataRoute.result, new Promise<never>((_resolve, reject) => {
+        const abort = () => reject(currentSignal.reason);
+        currentSignal.addEventListener('abort', abort, { once: true });
+        removeAbort = () => currentSignal.removeEventListener('abort', abort);
+        if (currentSignal.aborted) abort();
+      })]);
+    } finally { removeAbort(); }
+    currentSignal.throwIfAborted();
+    return {env:await this.environment(process.env,route.registry),registry:route.registry,tarballMirror:AUTOMATIC_NPM_MIRROR,
+      metadataRoute:route, ...(route.registry!==OFFICIAL_NPM_REGISTRY?{fallback:{registry:OFFICIAL_NPM_REGISTRY,env:await this.environment(process.env,OFFICIAL_NPM_REGISTRY)}}:{})};
+  }
   async test(signal?: AbortSignal): Promise<string> {
     const started = Date.now();
     await this.json(`${this.settings.npmRegistry}/-/ping`, signal);
