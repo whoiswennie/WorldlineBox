@@ -16,17 +16,10 @@ import {
 import { createPortal, flushSync } from "react-dom";
 
 import { Icon, type IconName } from "./Icons";
-import { ApplicationShell, type ApplicationShellState } from "./ApplicationShell";
-import { MusicProvider } from './music/MusicProvider';
-import type { WorldlineBoxMusicApi } from '../shared/music';
-import { DshLauncher } from './launcher/DshLauncher';
-import { Companions } from './companions/Companions';
+import type { ApplicationShellState } from "./ApplicationShell";
 import type { WorldlineBoxCompanionsApi } from '../shared/companions';
 import type { WorldlineBoxDshLauncherApi } from '../shared/dsh-launcher';
-import { ThemeBackground } from "./theme/AnimatedBackground";
 import { iconActionAttrs } from "./icon-action-attrs";
-import { EditTextContextMenuHost } from "./edit-text-context-menu";
-import { HoverTipHost } from "./hover-tip";
 import {
   corruptAssetAffordance,
   isCorruptAsset,
@@ -356,7 +349,6 @@ import { useScrollbarActivity } from "./use-scrollbar-activity";
 import { splitFilenameForDisplay } from "./filename-display";
 
 import {
-  ContextMenuProvider,
   useContextMenu,
 } from "./context-menu";
 import { resolveBrowseContextMenuIntent } from "./browse-selection-menu";
@@ -532,7 +524,6 @@ import type {
 } from "../shared/protocol/responses";
 import { AssetPreviewModal, type AssetPreviewModalHandle } from "./AssetPreviewModal";
 import { TextAssetPreviewTile } from "./TextAssetPreviewTile";
-import { WindowsWindowControls } from "./WindowsWindowControls";
 import { useViewerChromeIdle } from "./use-viewer-chrome-idle";
 import { useViewerVolume } from "./use-viewer-volume";
 import { useDialogFocusTrap } from "./use-dialog-focus-trap";
@@ -828,7 +819,7 @@ function ToolButton({
   );
 }
 
-interface AssetManagerHandle {
+export interface AssetManagerHandle {
   openSettings: () => void;
 }
 
@@ -836,7 +827,7 @@ function renderApplicationDialog(content: ReactNode) {
   return createPortal(<div className="application-global-dialogs">{content}</div>, document.body);
 }
 
-function AssetManager({
+export function AssetManager({
   settingsRef,
   onShellStateChange,
   isModuleActive,
@@ -15897,81 +15888,7 @@ function AssetManager({
   );
 }
 
-export function App() {
-  const t = useT();
-  const [activeModuleId, setActiveModuleId] = useState("dsh");
-  const assetManagerRef = useRef<AssetManagerHandle>(null);
-  const pendingSettings = useRef(false);
-  const [settingsController, setSettingsController] = useState<"idle" | "opening" | "open">("idle");
-  const attachAssetManager = useCallback((handle: AssetManagerHandle | null) => {
-    assetManagerRef.current = handle;
-    if (handle && pendingSettings.current) {
-      pendingSettings.current = false;
-      handle.openSettings();
-    }
-  }, []);
-  const [shellState, setShellState] = useState<ApplicationShellState>({
-    settingsOpen: false,
-    settingsDisabled: false,
-  });
-  const reportShellState = useCallback((state: ApplicationShellState) => {
-    setShellState(state);
-    // The first activation reports its initial closed state before the
-    // imperative open takes effect. Wait for a confirmed open before closing.
-    setSettingsController((current) => state.settingsOpen ? "open" : current === "open" ? "idle" : current);
-  }, []);
-  const openSettings = useCallback(() => {
-    pendingSettings.current = true;
-    setSettingsController((current) => current === "idle" ? "opening" : current);
-    if (assetManagerRef.current) {
-      pendingSettings.current = false;
-      assetManagerRef.current.openSettings();
-    }
-  }, []);
-
-  return (
-    <ContextMenuProvider>
-    <MusicProvider api={(window as Window & { worldlinebox?: { music?: WorldlineBoxMusicApi } }).worldlinebox?.music}>
-    <div className="application-root">
-    <ThemeBackground />
-    <HoverTipHost />
-    <EditTextContextMenuHost />
-    {IS_WINDOWS_PLATFORM ? <WindowsWindowControls shell={(window as RendererWindow).worldlinebox?.shell} /> : null}
-    <ApplicationShell
-      activeModuleId={activeModuleId}
-      modules={[
-        {
-          id: 'dsh',
-          label: t('appNavigation.launcher'),
-          icon: 'box',
-          content: <DshLauncher api={(window as RendererWindow).worldlinebox?.dshLauncher} />,
-        },
-        {
-          id: 'companions',
-          label: t('appNavigation.companions'),
-          icon: 'users',
-          content: <Companions api={(window as RendererWindow).worldlinebox?.companions} dshApi={(window as RendererWindow).worldlinebox?.dshLauncher} onOpenSettings={openSettings} isActive={activeModuleId === 'companions'} />,
-        },
-        {
-          id: "assets",
-          label: t("appNavigation.assets"),
-          icon: "grid",
-          keepEffectsActive: settingsController !== "idle",
-          content: (
-            <AssetManager settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === "assets"} />
-          ),
-        },
-      ]}
-      onSelectModule={setActiveModuleId}
-      onOpenSettings={openSettings}
-      settingsOpen={shellState.settingsOpen}
-      settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
-    />
-    </div>
-    </MusicProvider>
-    </ContextMenuProvider>
-  );
-}
+export { App } from './Application';
 
 function organizationNoun(kind: OrganizationKind, locale: AppLocale) {
   return translateForLocale(

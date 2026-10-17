@@ -25,6 +25,22 @@ async function mount(content: ReactNode) {
   await act(() => root!.render(<LocaleProvider>{content}</LocaleProvider>));
 }
 
+it('does not render or import a feature until it is first activated', async () => {
+  const renderHeavy = vi.fn();
+  function Heavy() { renderHeavy(); return <p>Heavy feature</p>; }
+  function Fixture() {
+    const [active, select] = useState('launcher');
+    return <ApplicationShell activeModuleId={active} onSelectModule={select} onOpenSettings={() => undefined} modules={[
+      { id: 'launcher', label: 'Launcher', icon: 'box', content: <p>Home</p> },
+      { id: 'world', label: 'World', icon: 'globe', content: <Heavy /> },
+    ]} />;
+  }
+  await mount(<Fixture />);
+  expect(renderHeavy).not.toHaveBeenCalled();
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-application-module="world"]')!.click());
+  expect(renderHeavy).toHaveBeenCalledTimes(1);
+});
+
 it("keeps module state while suspending inactive module effects", async () => {
   const started = vi.fn();
   const stopped = vi.fn();

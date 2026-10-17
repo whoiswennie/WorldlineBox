@@ -15,16 +15,16 @@ it('hands the pre-React shell off to the reusable observer loader', async () => 
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
   await act(() => root.render(<StartupScreen title="正在打开伙伴世界" detail="读取真实世界状态" stage="连接世界" compact />));
   expect(document.getElementById('startup-shell')).toBeNull(); expect(host.querySelector('h1')?.textContent).toBe('正在打开伙伴世界'); expect(host.querySelector('[role="status"]')?.textContent).toContain('连接世界');
-  expect(host.querySelector('.startup-screen')?.classList.contains('is-compact')).toBe(true); await act(() => root.unmount()); host.remove();
+  expect(host.querySelector('.startup-host')?.classList.contains('is-compact')).toBe(true); expect(host.querySelector('img')).toBeNull(); await act(() => root.unmount()); host.remove();
 });
 it('keeps animation elements and their phase while elapsed time updates', async () => {
   vi.useFakeTimers();
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
   try {
     await act(() => root.render(<StartupScreen />));
-    const track = host.querySelector('.startup-track > span'), orbit = host.querySelector('.startup-orbit');
+    const dot = host.querySelector('.startup-status-dot'), card = host.querySelector('.startup-status-card');
     await act(() => vi.advanceTimersByTime(1250));
-    expect(host.querySelector('.startup-track > span')).toBe(track); expect(host.querySelector('.startup-orbit')).toBe(orbit);
+    expect(host.querySelector('.startup-status-dot')).toBe(dot); expect(host.querySelector('.startup-status-card')).toBe(card);
     expect(host.querySelector('[role="status"]')?.textContent).toContain('1.3 秒');
   } finally { await act(() => root.unmount()); host.remove(); vi.useRealTimers(); }
 });

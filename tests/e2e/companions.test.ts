@@ -839,6 +839,10 @@ async function launch(profilePath: string, openDefaultChats = true): Promise<{ a
   const nativeWindow = await application.browserWindow(page);
   await nativeWindow.evaluate(win => { win.unmaximize(); win.setSize(1440, 900); win.setFocusable(false); win.setOpacity(0); win.webContents.setBackgroundThrottling(false); win.hide(); });
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
+  // Windows does not reliably composite fully hidden windows for screenshot /
+  // actionability checks. A transparent, non-focusable surface stays invisible
+  // to the user while exercising the real compositor.
+  await nativeWindow.evaluate(win => win.showInactive());
   if (openDefaultChats) await prepareReplyAuthors(page, ['deepseek-sister', 'deepseek-flash']);
   return { application, page };
 }

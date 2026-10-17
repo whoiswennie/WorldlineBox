@@ -199,8 +199,7 @@ export class CompanionService {
     this.changed();
     this.schedules.wake();
   }
-  registerIpc() {
-    ipcMain.handle(COMPANIONS_CHANNEL, async (event, input: unknown) => {
+  async handleRendererRequest(event: Electron.IpcMainInvokeEvent, input: unknown) {
       const window = this.options.window();
       if (!window || window.isDestroyed() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) {
         return { ok: false, error: '无权访问伙伴服务。' };
@@ -209,7 +208,9 @@ export class CompanionService {
       if (!request.success) return { ok: false, error: '伙伴请求格式不正确。' };
       try { return decorateAttachments(await this.handle(request.data)); }
       catch (error) { return { ok: false, error: publicError(error) }; }
-    });
+  }
+  registerIpc(options: { requests?: boolean } = {}) {
+    if (options.requests !== false) ipcMain.handle(COMPANIONS_CHANNEL, (event, input: unknown) => this.handleRendererRequest(event, input));
     protocol.handle('worldlinebox-companion', async request => {
       try {
         const url = new URL(request.url);

@@ -1,9 +1,9 @@
 /** Shared startup copy; counts represent completed stages, never estimated time. */
 export const STARTUP_PHASES = [
-  { id: 'environment', label: '校验内置工具' },
-  { id: 'services', label: '连接本地服务' },
-  { id: 'storage', label: '打开本地数据' },
-  { id: 'interface', label: '装载界面' },
+  { id: 'environment', label: '读取启动设置' },
+  { id: 'services', label: '注册服务入口' },
+  { id: 'storage', label: '准备数据入口' },
+  { id: 'interface', label: '打开首页' },
 ] as const;
 export type StartupPhase = typeof STARTUP_PHASES[number]['id'];
 export function escapeStartupText(value: string): string {

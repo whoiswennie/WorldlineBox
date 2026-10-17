@@ -1,0 +1,4 @@
+.feature-loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 160px; height: 100%; color: var(--ui-content-secondary); font-size: 13px; }
+.feature-loading-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .5; animation: feature-loading-pulse 1.6s ease-in-out infinite; }
+@keyframes feature-loading-pulse { 50% { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .feature-loading-dot { animation: none; } }

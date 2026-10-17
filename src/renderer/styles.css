@@ -12,7 +12,6 @@
     "Segoe UI",
     "Helvetica Neue",
     Arial,
-    "Noto Sans SC Variable",
     "PingFang SC",
     "Microsoft YaHei",
     sans-serif;
@@ -140,17 +139,13 @@
   --shell-chip-height: 22px;
 }
 
-/* Windows UI: bundled HarmonyOS Sans SC (Regular–Black). Vite injects
-   @font-face weight ranges + ascent/descent overrides so intermediate UI
-   weights (520–650) map onto static faces without browser-synthesized bold. */
+/* Use installed UI faces; startup does not fetch split CJK webfonts. */
 :root[data-platform="windows"] {
   --font-ui:
-    "HarmonyOS Sans SC",
     "Segoe UI Variable",
     "Segoe UI",
     "Microsoft YaHei UI",
     "Microsoft YaHei",
-    "Noto Sans SC Variable",
     Arial,
     sans-serif;
   --font-ui-unified: var(--font-ui);

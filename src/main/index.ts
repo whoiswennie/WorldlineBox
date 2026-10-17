@@ -1366,8 +1366,7 @@ function resolveE2eIsolatedPlacement(
 
 const DEV_SERVER_WAIT_MS = 60_000;
 const DEV_SERVER_POLL_MS = 250;
-const DEV_RENDERER_MOUNT_TIMEOUT_MS = 20_000;
-const DEV_RENDERER_LOAD_ATTEMPTS = 4;
+const DEV_RENDERER_LOAD_ATTEMPTS = 2;
 
 async function waitForDevServer(url: string): Promise<void> {
   const deadline = Date.now() + DEV_SERVER_WAIT_MS;
@@ -1385,63 +1384,19 @@ async function waitForDevServer(url: string): Promise<void> {
   );
 }
 
-async function isRendererMounted(
-  webContents: Electron.WebContents,
-): Promise<boolean> {
-  try {
-    return await webContents.executeJavaScript(
-      "Boolean(document.querySelector('#root .app-shell'))",
-    );
-  } catch {
-    return false;
-  }
-}
-
-async function waitForRendererMounted(
-  webContents: Electron.WebContents,
-  timeoutMs = DEV_RENDERER_MOUNT_TIMEOUT_MS,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await isRendererMounted(webContents)) return true;
-    await new Promise((resolve) => setTimeout(resolve, DEV_SERVER_POLL_MS));
-  }
-  return false;
-}
-
-async function loadRendererDevUrl(
-  window: BrowserWindow,
-  url: string,
-): Promise<void> {
+/** Retry only failed navigations. React/module readiness belongs to the startup handshake. */
+async function loadRendererDevUrl(window: BrowserWindow, url: string): Promise<void> {
+  let lastError: unknown;
   for (let attempt = 1; attempt <= DEV_RENDERER_LOAD_ATTEMPTS; attempt++) {
-    try {
-      await waitForDevServer(url);
-      await window.loadURL(url);
-    } catch (error) {
-      logger?.error("main.window.load-attempt", error, { attempt, url });
-      await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
-      continue;
+    try { await waitForDevServer(url); await window.loadURL(url); return; }
+    catch (error) {
+      if (applicationClosing || window.isDestroyed()) return;
+      lastError = error;
+      logger?.error('main.window.load-attempt', error, { attempt, url });
+      await new Promise(resolve => setTimeout(resolve, 400 * attempt));
     }
-    if (await waitForRendererMounted(window.webContents)) {
-      logger?.info("main.window.mount-verified", "Renderer shell visible.", {
-        attempt,
-        url,
-      });
-      return;
-    }
-    logger?.info(
-      "main.window.mount-retry",
-      "Renderer still blank after load; retrying.",
-      { attempt, url },
-    );
-    await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
   }
-  logger?.error(
-    "main.window.mount-failed",
-    new Error("Renderer remained blank after dev load retries."),
-    { url, attempts: DEV_RENDERER_LOAD_ATTEMPTS },
-  );
-  throw new Error(`Renderer remained blank after dev load retries: ${url}`);
+  throw lastError;
 }
 
 function attachRendererDiagnostics(window: BrowserWindow): void {
@@ -1501,6 +1456,9 @@ async function createMainWindow(): Promise<void> {
         : {}),
     webPreferences: {
       preload: path.join(__dirname, "index.js"),
+      // A hidden startup window must still finish module fetches and paint.
+      // Restore normal background throttling immediately after first readiness.
+      backgroundThrottling: false,
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -1516,7 +1474,15 @@ async function createMainWindow(): Promise<void> {
   const splash = startupWindow;
   bindStartupHandoff({
     window, splash,
-    complete: () => { if (startupWindow === splash) startupWindow = undefined; },
+    complete: ready => {
+      if (startupWindow === splash) startupWindow = undefined;
+      if (ready) {
+        if (!window.isDestroyed() && !(process.env.WORLDLINEBOX_E2E === '1' && process.env.WORLDLINEBOX_E2E_HIDE_WINDOW === '1')) {
+          window.webContents.setBackgroundThrottling(true);
+        }
+        if (MAIN_WINDOW_VITE_DEV_SERVER_URL) logger?.info('main.window.mount-verified', 'Application shell committed and painted.', { url: MAIN_WINDOW_VITE_DEV_SERVER_URL });
+      }
+    },
     reportFailure: reason => logger?.error('main.startup.handoff', new Error(reason)),
     show: () => {
       // E2E can keep its renderer fully loaded and automatable without putting
@@ -3677,16 +3643,8 @@ async function startApplication(): Promise<void> {
   });
   startupWindow = new StartupWindow((phase, durationMs, totalMs) => logger?.info("main.startup.phase", "Startup phase completed.", { phase, durationMs, totalMs }));
   await startupWindow.open();
-  if (process.platform === 'win32' && process.arch === 'x64') {
-    try {
-      const { loadApplicationPortableTools } = await import('./portable-tools');
-      const tools = await loadApplicationPortableTools({ onProgress: value => startupWindow?.set("environment", `已校验 ${value.completed} / ${value.total} 个工具入口 · ${value.file}`) });
-      logger.info('main.portable-tools', 'Bundled tools loaded into the application environment.', { node: tools.nodeVersion, npm: tools.npmVersion });
-    } catch (error) {
-      logger.error('main.portable-tools', error);
-    }
-  }
-  startupWindow?.set("services", "连接 DSH、音乐和伙伴服务");
+  logger.info('main.portable-tools.deferred', 'Bundled tools will be verified when an execution feature requests them.');
+  startupWindow?.set("services", "准备首页与按需服务入口");
   if (applicationUserData.mode === "shared" || applicationUserData.mode === "override") {
     try {
       const { migrateLegacyDshStorage } = await import("./legacy-dsh-storage");
@@ -3716,22 +3674,37 @@ async function startApplication(): Promise<void> {
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
+  let creatingCompanionService: Promise<CompanionService> | undefined;
+  const ensureCompanionService = (): Promise<CompanionService> => {
+    if (applicationClosing) return Promise.reject(new Error('应用正在关闭。'));
+    if (companionService) return Promise.resolve(companionService);
+    return creatingCompanionService ??= (async () => {
+      const { CompanionService } = await import('./companions/service');
+      if (applicationClosing) throw new Error('应用正在关闭。');
+      companionService = new CompanionService({
+        userData: app.getPath('userData'), workerPath: path.join(__dirname, 'companion_worker.js'), appPath: app.getAppPath(),
+        window: () => mainWindow, hasConfig: () => loadAiConfig().hasKey,
+        getConfig: () => {
+          const config = loadAiConfig();
+          return { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: getDecryptedApiKey() };
+        },
+        dsh: () => dshLauncher, report: error => logger?.error('companions.service', error), onChanged: () => companionWorldWindows?.changed(),
+      });
+      companionService.registerIpc({ requests: false });
+      logger?.info('companions.activated', 'Companion services activated by their first request.');
+      return companionService;
+    })().catch(error => { creatingCompanionService = undefined; throw error; });
+  };
+  ipcMain.handle(COMPANIONS_CHANNEL, async (event, input: unknown) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权访问伙伴服务。' };
+    try { return await (await ensureCompanionService()).handleRendererRequest(event, input); }
+    catch (error) { logger?.error('companions.initialization', error); return { ok: false, error: '伙伴服务无法初始化，请查看诊断日志。' }; }
+  });
   try {
-    const { CompanionService } = await import('./companions/service');
-    companionService = new CompanionService({
-      userData: app.getPath('userData'), workerPath: path.join(__dirname, 'companion_worker.js'), appPath: app.getAppPath(),
-      window: () => mainWindow, hasConfig: () => loadAiConfig().hasKey,
-      getConfig: () => {
-        const config = loadAiConfig();
-        return { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: getDecryptedApiKey() };
-      },
-      dsh: () => dshLauncher, report: error => logger?.error('companions.service', error), onChanged: () => companionWorldWindows?.changed(),
-    });
-    companionService.registerIpc();
     companionWorldWindows = new CompanionWorldWindowManager({
       ipc: ipcMain, getMainWindow: () => mainWindow, preload: path.join(__dirname, 'index.js'),
       createWindow: options => { const window = new BrowserWindow(withAppWindowIcon(options)); attachRendererDiagnostics(window); return window; },
-      request: request => companionService!.handle(request), report: error => logger?.error('companions.world-window', error),
+      request: async request => (await ensureCompanionService()).handle(request), report: error => logger?.error('companions.world-window', error),
       load: async observer => {
         const window = observer as BrowserWindow;
         if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -3742,10 +3715,8 @@ async function startApplication(): Promise<void> {
     companionWorldWindows.register();
   } catch (error) {
     logger.error('companions.initialization', error);
-    ipcMain.handle(COMPANIONS_CHANNEL, () => ({ ok: false, error: '伙伴服务无法初始化，请查看诊断日志。' }));
   }
   bindRendererKeyboardFocusLogger(logger);
-  void sweepOrphanExternalLibraryStagingOnStartup();
   appUpdateService = createAppUpdateService({
     currentVersion: app.getVersion(),
     isPackaged: app.isPackaged,
@@ -3834,12 +3805,10 @@ async function startApplication(): Promise<void> {
       ),
     },
   );
-  startupWindow?.set("storage", "启动本地资源库数据服务");
-  await workerClient.start();
+  startupWindow?.set("storage", "准备本地数据入口，按需打开资源库");
   workerClient.publishShowMissingLinkedFiles(showMissingLinkedFiles);
   // WorldlineBox-65d837: remove any `.del-*` aside roots that could not be deleted
   // during a previous session (deferred-cleanup store, backoff loop).
-  retryPendingLibraryCleanups();
   const activeWorkerClient = workerClient;
   // Slice E (WorldlineBox-hnmg): Main owns the shared offscreen window that renders
   // model thumbnails. The worker enqueues model jobs and asks Main to render;
@@ -5057,7 +5026,6 @@ async function startApplication(): Promise<void> {
     resolveCredentials: (serverId) => resolveSyncServerCredentials(serverId),
     logger,
   });
-  syncAutoScheduler.start();
 
   // WorldlineBox-85a9b0：生产启动自动打开上次使用的资源库（记住上次打开的库与
   // 文件夹——库打开后 renderer 的 browser-session 会恢复上次浏览的文件夹）。
@@ -5068,36 +5036,44 @@ async function startApplication(): Promise<void> {
         logger?.error("recent-library.read", error);
       })
     : null;
-  if (recentPath) {
-    const restored = await workerClient.request({
-      type: "library.open",
-      selectedLibraryPath: recentPath,
-    });
-    if (!restored.ok || restored.type !== "library.opened") {
-      logger.info(
-        "recent-library.unavailable",
-        "The recent library could not be reopened.",
-        {
-          code: restored.ok ? "UNEXPECTED_RESULT" : restored.error.code,
-          reason: restored.ok ? undefined : restored.error.reason,
-        },
-      );
-    } else {
-      // Startup restore bypasses handleLibraryRequest; still must activate plugins.
-      // Await so contributions exist before the renderer shell lists menus/settings.
-      await notifyLibraryOpenedSideEffects({
-        libraryId: restored.library.libraryId,
-        libraryDirectory: restored.library.libraryPath,
+  let recentRestore: Promise<void> | undefined;
+  const activateLibrary = () => recentRestore ??= (async () => {
+    if (applicationClosing) throw new Error('应用正在关闭。');
+    await activeWorkerClient.start();
+    retryPendingLibraryCleanups();
+    void sweepOrphanExternalLibraryStagingOnStartup();
+    syncAutoScheduler?.start();
+    if (recentPath) {
+      const restored = await activeWorkerClient.request({
+        type: "library.open",
+        selectedLibraryPath: recentPath,
       });
-      logger.info(
-        "recent-library.restored",
-        "Reopened the recent library and completed plugin activation request.",
-        {
+      if (!restored.ok || restored.type !== "library.opened") {
+        logger?.info(
+          "recent-library.unavailable",
+          "The recent library could not be reopened.",
+          {
+            code: restored.ok ? "UNEXPECTED_RESULT" : restored.error.code,
+            reason: restored.ok ? undefined : restored.error.reason,
+          },
+        );
+      } else {
+        // Startup restore bypasses handleLibraryRequest; still must activate plugins.
+        // Await so contributions exist before the renderer shell lists menus/settings.
+        await notifyLibraryOpenedSideEffects({
           libraryId: restored.library.libraryId,
-        },
-      );
+          libraryDirectory: restored.library.libraryPath,
+        });
+        logger?.info(
+          "recent-library.restored",
+          "Reopened the recent library and completed plugin activation request.",
+          {
+            libraryId: restored.library.libraryId,
+          },
+        );
+      }
     }
-  }
+  })().catch(error => { recentRestore = undefined; throw error; });
 
   // Forward thumbnail events to the renderer
   workerClient.onThumbnailEvent((event) => {
@@ -5598,13 +5574,14 @@ async function startApplication(): Promise<void> {
     }, 1_000);
     lagTimer.unref?.();
   }
-  ipcMain.handle(LIBRARY_REQUEST_CHANNEL, (event, input: unknown) => {
+  ipcMain.handle(LIBRARY_REQUEST_CHANNEL, async (event, input: unknown) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) {
       return {
         ok: false,
         error: createPublicError("INTERNAL_ERROR"),
       } satisfies RendererResult;
     }
+    await activateLibrary();
     return handleLibraryRequest(input, {
       consumerId: performanceConsumerIdForWindow(event.sender.id),
     });

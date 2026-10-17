@@ -186,6 +186,10 @@ export class LibraryWorkerClient {
   #requestBroker = new LibraryRequestBroker();
   #shutdownAck: (() => void) | undefined;
   #shuttingDown = false;
+  #closed = false;
+  #started = false;
+  #starting: Promise<void> | undefined;
+  #showMissingLinkedFiles: boolean | undefined;
   #assetChangeListeners = new Set<(event: AssetChangeEvent) => void>();
   #libraryChangedListeners = new Set<(event: LibraryChangedEvent) => void>();
   #progressListeners = new Set<(event: ProgressEvent) => void>();
@@ -214,7 +218,16 @@ export class LibraryWorkerClient {
   }
 
   async start(): Promise<void> {
-    if (this.#child) throw new Error('Library Worker has already been started.');
+    if (this.#closed) throw new Error('Library Worker is shutting down.');
+    if (this.#ready) return;
+    if (this.#starting) return this.#starting;
+    this.#started = true;
+    const starting = this.#startWithRetry();
+    this.#starting = starting;
+    try { await starting; } finally { if (this.#starting === starting) this.#starting = undefined; }
+  }
+
+  async #startWithRetry(): Promise<void> {
 
     // A cold UtilityProcess spawn can be transiently slow on loaded machines
     // (memory pressure, antivirus scanning the freshly built bundle): the
@@ -224,6 +237,7 @@ export class LibraryWorkerClient {
     // failing startup so a slow first boot survives.
     let lastError: unknown;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
+      if (this.#closed) throw new Error('Library Worker is shutting down.');
       try {
         await this.#startAttempt(attempt);
         return;
@@ -302,6 +316,7 @@ export class LibraryWorkerClient {
         clearTimeout(timer);
         child.off('message', onInitialMessage);
         this.#ready = true;
+        if (this.#showMissingLinkedFiles !== undefined) this.publishShowMissingLinkedFiles(this.#showMissingLinkedFiles);
         child.on('message', this.#onMessage);
         resolve();
       };
@@ -327,8 +342,12 @@ export class LibraryWorkerClient {
       minCatalogSequence?: number;
     } = {},
   ): Promise<WorkerResult> {
+    if (this.#closed) return Promise.reject(new Error('Library Worker is shutting down.'));
     const child = this.#child;
-    if (!child || !this.#ready) return Promise.reject(new Error('Library Worker is unavailable.'));
+    if (!child || !this.#ready) {
+      if (!this.#started || this.#starting) return this.start().then(() => this.request(command, options));
+      return Promise.reject(new Error('Library Worker is unavailable.'));
+    }
 
     const requestId = randomUUID();
     const sentAtEpochMs = Date.now();
@@ -429,6 +448,7 @@ export class LibraryWorkerClient {
   }
 
   publishShowMissingLinkedFiles(show: boolean): void {
+    this.#showMissingLinkedFiles = show;
     this.#child?.postMessage({
       type: 'linked-missing-visibility.set',
       show,
@@ -642,6 +662,7 @@ export class LibraryWorkerClient {
   }
 
   async shutdown(): Promise<void> {
+    this.#closed = true;
     const child = this.#child;
     if (!child) return;
 

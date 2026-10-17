@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { _electron as electron, expect, test, type Page } from "@playwright/test";
+import { _electron as electron, expect, test, type Page, type ElectronApplication } from "@playwright/test";
 
 import {
   closeLibraryViaSwitcher,
@@ -14,6 +14,12 @@ function sidebarFolderRow(window: Page, folderName: string) {
   return window
     .locator(".navigation-pane .nav-row-label", { hasText: folderName })
     .locator("xpath=ancestor::button[contains(@class, 'nav-row')]");
+}
+
+async function activateAssets(application: ElectronApplication, window: Page) {
+  const nativeWindow = await application.browserWindow(window);
+  await nativeWindow.evaluate(win => { win.setOpacity(0); win.setFocusable(false); win.webContents.setBackgroundThrottling(false); win.showInactive(); });
+  await window.locator('[data-application-module="assets"]').click();
 }
 
 test("creates, closes, and reopens a library through the sandboxed UI", async () => {
@@ -47,6 +53,7 @@ test("creates, closes, and reopens a library through the sandboxed UI", async ()
       );
       expect(anyWindowVisible).toBe(false);
     }
+    await activateAssets(application, window);
     await expect(
       window.getByRole("heading", { name: "创建本地资源库" }),
     ).toBeVisible();
@@ -164,7 +171,7 @@ test("creates, closes, and reopens a library through the sandboxed UI", async ()
   }
 });
 
-test("restores the recent library and focuses the last browsed asset after a full restart", async () => {
+test("restores the recent library and saved selection when opening assets after a full restart", async () => {
   const temporaryRoot = mkdtempSync(
     path.join(tmpdir(), "worldlinebox-restart-test-"),
   );
@@ -201,6 +208,7 @@ test("restores the recent library and focuses the last browsed asset after a ful
   let application = await launch();
   try {
     let window = await application.firstWindow();
+    await activateAssets(application, window);
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -221,14 +229,18 @@ test("restores the recent library and focuses the last browsed asset after a ful
     const rememberedCard = window.locator(".asset-card", {
       hasText: "remember-me.txt",
     });
+    await window.keyboard.press('Escape');
     await rememberedCard.click();
     await expect(rememberedCard).toHaveAttribute("aria-pressed", "true");
     // 等待会话保存完成（useEffect 异步写 session，close 前必须落盘）
     await window.waitForTimeout(800);
+    await expect.poll(() => window.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('worldlinebox.browser-session.')).some(([, value]) => JSON.parse(value).selectedAssetName === 'remember-me.txt'))).toBe(true);
     await application.close();
 
     application = await launch(sourcePaths[2]!);
     window = await application.firstWindow();
+    await expect(window.locator('[data-application-module="dsh"]')).toBeVisible();
+    await activateAssets(application, window);
     await expect(
       window.getByText(libraryName, { exact: true }).first(),
     ).toBeVisible();
@@ -237,15 +249,13 @@ test("restores the recent library and focuses the last browsed asset after a ful
     });
     await expect(restoredCard).toHaveAttribute("aria-pressed", "true");
     const restoredAssetId = await restoredCard.getAttribute("data-asset-id");
-    await expect
-      .poll(() =>
-        window.evaluate(
-          () =>
-            (document.activeElement as HTMLElement | null)?.dataset.assetId ??
-            null,
-        ),
-      )
-      .toBe(restoredAssetId);
+    const focusedTarget = await window.evaluate(() => {
+      const element = document.activeElement as HTMLElement | null;
+      return element?.closest('.application-navigation') ? 'module-navigation' : element?.dataset.assetId;
+    });
+    // Explicit sidebar navigation keeps keyboard focus; restoring a selection
+    // must not steal focus from the control the user just activated.
+    expect([restoredAssetId, 'module-navigation']).toContain(focusedTarget);
 
     // WorldlineBox-2b30bb: the visual browser session may restore the nested folder,
     // but a fresh import must still target the library root. Use a new source
@@ -319,6 +329,7 @@ test("falls back to the start screen when the recent library no longer exists", 
 
   try {
     const window = await application.firstWindow();
+    await activateAssets(application, window);
     await expect(
       window.getByRole("heading", { name: "创建本地资源库" }),
     ).toBeVisible({ timeout: 10_000 });

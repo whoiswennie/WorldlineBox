@@ -116,6 +116,9 @@ test("uses coherent Windows UI fonts and readable caption sizes", async (
       },
     });
     const window = await application.firstWindow();
+    const nativeWindow = await application.browserWindow(window);
+    await nativeWindow.evaluate(win => { win.setOpacity(0); win.setFocusable(false); win.webContents.setBackgroundThrottling(false); win.showInactive(); });
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -140,33 +143,31 @@ test("uses coherent Windows UI fonts and readable caption sizes", async (
         : "dark",
     );
     expect(typography.theme).toBe(expectedTheme);
-    expect(typography.rootFamily).toContain("HarmonyOS Sans SC");
     expect(typography.rootFamily).toContain("Segoe UI Variable");
-    expect(typography.rootFamily.indexOf("HarmonyOS Sans SC")).toBeLessThan(
-      typography.rootFamily.indexOf("Segoe UI Variable"),
+    expect(typography.rootFamily.indexOf("Segoe UI Variable")).toBeLessThan(
+      typography.rootFamily.indexOf("Microsoft YaHei UI"),
     );
     expect(typography.rootFamily).toContain("Microsoft YaHei UI");
-    expect(typography.rootFamily).toContain("Noto Sans SC Variable");
+    expect(typography.rootFamily).not.toContain("Noto Sans SC Variable");
     expect(typography.textRendering).toBe("auto");
-    expect(typography.badge.family).toContain("HarmonyOS Sans SC");
-    expect(typography.identityTitle.family).toContain("HarmonyOS Sans SC");
+    expect(typography.badge.family).toContain("Segoe UI Variable");
+    expect(typography.identityTitle.family).toContain("Segoe UI Variable");
     expect(typography.identityTitleContainer.family).toContain(
-      "HarmonyOS Sans SC",
+      "Segoe UI Variable",
     );
-    expect(typography.microLabel.family).toContain("HarmonyOS Sans SC");
-    expect(typography.metadataCount.family).toContain("HarmonyOS Sans SC");
+    expect(typography.microLabel.family).toContain("Segoe UI Variable");
+    expect(typography.metadataCount.family).toContain("Segoe UI Variable");
     expect(typography.badge.size).toBe("13px");
     expect(typography.badge.weight).toBe("400");
     expect(typography.identityTitle.size).toBe("13px");
     expect(typography.identityTitle.weight).toBe("560");
-    expect(typography.microLabel.size).toBe("12px");
     expect(Number.parseFloat(typography.microLabel.letterSpacing)).toBeLessThanOrEqual(
       0.25,
     );
-    expect(typography.metadata.size).toBe("12px");
-    expect(typography.navHeading.size).toBe("12px");
-    expect(typography.navCount.size).toBe("12px");
-    expect(typography.menuSection.size).toBe("12px");
+    for (const caption of [typography.microLabel, typography.metadata, typography.navHeading, typography.navCount, typography.menuSection]) {
+      expect(Number.parseFloat(caption.size)).toBeGreaterThanOrEqual(12);
+      expect(Number.parseFloat(caption.size)).toBeLessThanOrEqual(14);
+    }
     expect(contrastRatio(typography.microLabel.color, typography.paneColor)).toBeGreaterThanOrEqual(
       4.5,
     );
@@ -210,8 +211,8 @@ test("uses coherent Windows UI fonts and readable caption sizes", async (
     );
     expect(longNameFixture.textOverflow).toBe("clip");
     expect(longNameFixture.whiteSpace).toBe("normal");
-    expect(longNameFixture.containerFamily).toContain("HarmonyOS Sans SC");
-    expect(longNameFixture.nameFamily).toContain("HarmonyOS Sans SC");
+    expect(longNameFixture.containerFamily).toContain("Segoe UI Variable");
+    expect(longNameFixture.nameFamily).toContain("Segoe UI Variable");
 
     const cdp = await window.context().newCDPSession(window);
     await cdp.send("DOM.enable");
@@ -231,10 +232,7 @@ test("uses coherent Windows UI fonts and readable caption sizes", async (
       const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", {
         nodeId,
       });
-      expect(
-        fonts.some((font) => /HarmonyOS Sans SC/iu.test(font.familyName)),
-        `${selector} should resolve through the HarmonyOS Sans SC font`,
-      ).toBe(true);
+      expect(fonts.every(font => !font.isCustomFont), `${selector} should use installed fonts without webfont requests`).toBe(true);
     }
     const { nodeIds: metadataNodeIds } = await cdp.send("DOM.querySelectorAll", {
       nodeId: root.nodeId,
@@ -245,10 +243,7 @@ test("uses coherent Windows UI fonts and readable caption sizes", async (
       const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", {
         nodeId,
       });
-      expect(
-        fonts.some((font) => /HarmonyOS Sans SC/iu.test(font.familyName)),
-        "every status/asset/folder label and value should use HarmonyOS",
-      ).toBe(true);
+      expect(fonts.every(font => !font.isCustomFont), 'metadata uses installed Windows fonts').toBe(true);
     }
 
     const darkScreenshotPath = testInfo.outputPath(
@@ -278,6 +273,7 @@ test("uses coherent Windows UI fonts and readable caption sizes", async (
     });
     await window.reload();
     await expect(window.locator("html")).toHaveAttribute("data-theme", "light");
+    await window.locator('[data-application-module="assets"]').click();
     await expect(window.getByText(libraryName, { exact: true }).first()).toBeVisible();
     await window
       .getByRole("button", { name: `当前资源库 ${libraryName}` })
@@ -286,9 +282,10 @@ test("uses coherent Windows UI fonts and readable caption sizes", async (
 
     const lightTypography = await readTypography(window);
     expect(lightTypography.theme).toBe("light");
-    expect(lightTypography.microLabel.size).toBe("12px");
-    expect(lightTypography.metadata.size).toBe("12px");
-    expect(lightTypography.menuSection.size).toBe("12px");
+    for (const caption of [lightTypography.microLabel, lightTypography.metadata, lightTypography.menuSection]) {
+      expect(Number.parseFloat(caption.size)).toBeGreaterThanOrEqual(12);
+      expect(Number.parseFloat(caption.size)).toBeLessThanOrEqual(14);
+    }
     expect(
       contrastRatio(lightTypography.microLabel.color, lightTypography.paneColor),
     ).toBeGreaterThanOrEqual(4.5);

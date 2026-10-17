@@ -99,10 +99,16 @@ test('native observer windows share one world, preserve independent cameras and 
       await bridge.companions!.request({ type: 'conversation.open', companionId: 'deepseek-sister' });
       const world = (await bridge.companions!.request({ type: 'world.snapshot' })).world!;
       await bridge.companions!.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
-      const routine = (await bridge.companions!.request({ type: 'routine.get', companionId: 'deepseek-sister', conversationId: 'private-deepseek-sister' })).routine!;
       const clock = (delta: number) => String((Math.floor(world.clock.hour) + delta + 24) % 24).padStart(2, '0') + ':00';
-      await bridge.companions!.request({ type: 'routine.configure', companionId: 'deepseek-sister', conversationId: 'private-deepseek-sister', expectedRevision: routine.revision,
-        patch: { timeZone: world.settings.timeZone, wakeAt: clock(-8), sleepAt: clock(8), meals: [], habits: [] } });
+      // Both parties must be available: this navigation/window check must not
+      // accidentally test phone delivery during the host's real-world dinner.
+      for (const companionId of ['deepseek-sister', 'deepseek-flash']) {
+        const conversationId = 'private-' + companionId;
+        await bridge.companions!.request({ type: 'conversation.open', companionId });
+        const routine = (await bridge.companions!.request({ type: 'routine.get', companionId, conversationId })).routine!;
+        await bridge.companions!.request({ type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision,
+          patch: { timeZone: world.settings.timeZone, wakeAt: clock(-8), sleepAt: clock(8), meals: [], habits: [] } });
+      }
     }, 'http://127.0.0.1:' + address.port);
     await main.locator('[data-application-module="companions"]').click(); await main.locator('[data-companion-conversation="private-deepseek-sister"]').click();
     const a = await observer(application, main, 'home_deepseek-sister'), b = await observer(application, main, 'home_deepseek-flash');

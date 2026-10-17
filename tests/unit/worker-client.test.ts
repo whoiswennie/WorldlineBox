@@ -22,6 +22,45 @@ import {
 } from '../../src/main/worker-client';
 
 describe('requestTimeoutForCommand', () => {
+  it('keeps an unused worker cold and never starts it after shutdown', async () => {
+    utilityProcessFork.mockClear();
+    const logger = { worker: vi.fn(), error: vi.fn(), info: vi.fn() } as unknown as AppLogger;
+    const client = new LibraryWorkerClient('/tmp/library-worker.js', logger);
+    client.publishShowMissingLinkedFiles(true);
+    expect(utilityProcessFork).not.toHaveBeenCalled();
+    await client.shutdown();
+    await expect(client.start()).rejects.toThrow('shutting down');
+    await expect(client.request({ type: 'library.close', libraryId: 'library-1' })).rejects.toThrow('shutting down');
+    expect(utilityProcessFork).not.toHaveBeenCalled();
+  });
+
+  it('coalesces concurrent first requests and preserves their individual responses', async () => {
+    utilityProcessFork.mockClear();
+    const child = new FakeUtilityProcess();
+    utilityProcessFork.mockReturnValueOnce(child);
+    const logger = { worker: vi.fn(), error: vi.fn(), info: vi.fn() } as unknown as AppLogger;
+    const client = new LibraryWorkerClient('/tmp/library-worker.js', logger);
+    const previous = { ffmpeg: process.env.WORLDLINEBOX_FFMPEG_PATH, oiio: process.env.WORLDLINEBOX_OIIO_PATH };
+    process.env.WORLDLINEBOX_FFMPEG_PATH = '/tmp/ffmpeg';
+    process.env.WORLDLINEBOX_OIIO_PATH = '/tmp/oiio';
+    try {
+      const first = client.request({ type: 'library.close', libraryId: 'library-1' });
+      const second = client.request({ type: 'library.close', libraryId: 'library-2' });
+      expect(utilityProcessFork).toHaveBeenCalledTimes(1);
+      child.emit('message', { type: 'worker.ready' });
+      await vi.waitFor(() => expect(child.postMessage).toHaveBeenCalledTimes(2));
+      const messages = child.postMessage.mock.calls.map(([value]) => value as { requestId: string });
+      expect(messages[0]!.requestId).not.toBe(messages[1]!.requestId);
+      for (const message of messages) child.emit('message', { requestId: message.requestId, result: { ok: true, type: 'library.closed', libraryId: 'library-1' } });
+      await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+      const shutdown = client.shutdown(); child.emit('message', { type: 'worker.shutdown.ack' }); await shutdown;
+    } finally {
+      if (previous.ffmpeg === undefined) delete process.env.WORLDLINEBOX_FFMPEG_PATH;
+      else process.env.WORLDLINEBOX_FFMPEG_PATH = previous.ffmpeg;
+      if (previous.oiio === undefined) delete process.env.WORLDLINEBOX_OIIO_PATH;
+      else process.env.WORLDLINEBOX_OIIO_PATH = previous.oiio;
+    }
+  });
   it('allows browser capture to finish its bounded download before Main times out', () => {
     expect(requestTimeoutForCommand('extension.save-from-url')).toBe(5 * 60_000);
   });

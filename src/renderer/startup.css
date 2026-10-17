@@ -42,3 +42,29 @@
 .startup-host .startup-meta, .startup-host .startup-steps { visibility: hidden; }
 
 .startup-retry:disabled { opacity: .6; cursor: default; }
+
+/* A feature prepares within its own viewport; it is never another splash page. */
+.startup-feature { display: grid; place-items: center; background: var(--ui-surface-canvas, #f6f7fb); color: var(--ui-content-secondary, #7c879b); }
+.startup-status-card { display: flex; align-items: flex-start; gap: 12px; max-width: 320px; padding: 20px; font: 12px/1.5 system-ui, sans-serif; }
+.startup-status-card h1, .boot-status h1 { margin: 0 0 5px; font-size: 14px; font-weight: 500; }
+.startup-status-card p, .boot-status p { margin: 0 0 6px; font-size: 12px; }
+.startup-status-card small, .boot-status small { font-size: 11px; font-variant-numeric: tabular-nums; opacity: .75; }
+.startup-status-dot { flex: 0 0 6px; width: 6px; height: 6px; margin-top: 7px; border-radius: 50%; background: currentColor; opacity: .5; }
+.boot-shell { position: fixed; inset: 0; z-index: 20; display: grid; grid-template-columns: 72px 1fr; background: var(--ui-surface-canvas, #f6f7fb); color: var(--ui-content-secondary, #7c879b); font: 13px/1.5 system-ui, sans-serif; }
+.boot-navigation { display: flex; align-items: center; flex-direction: column; gap: 27px; padding: 22px 12px; border-right: 1px solid #7c879b15; }
+.boot-navigation img { width: 36px; height: 36px; border-radius: 10px; margin-bottom: 20px; }
+.boot-navigation span { width: 22px; height: 22px; border-radius: 6px; background: #7c879b13; }
+.boot-shell header { height: 60px; padding: 20px 28px; border-bottom: 1px solid #7c879b15; }
+.boot-status { display: flex; gap: 12px; padding: 28px; }
+#startup-shell.is-world .boot-navigation { display: none; }
+#startup-shell.is-world .boot-shell { grid-template-columns: 1fr; }
+[data-theme="dark"] .boot-shell { background: var(--ui-surface-canvas, #252729); color: var(--ui-content-secondary, #96a1b6); }
+[data-startup-native] .startup-screen { padding: 22px 28px; text-align: left; }
+[data-startup-native] .startup-brand { flex-direction: row; justify-content: flex-start; gap: 14px; margin-bottom: 18px; }
+[data-startup-native] .startup-logo-wrap { width: 50px; height: 50px; }
+[data-startup-native] .startup-logo { width: 42px; height: 42px; border-radius: 12px; box-shadow: none; }
+[data-startup-native] .startup-wordmark { font-size: 17px; }
+[data-startup-native] .startup-screen h1 { font-size: 14px; }
+[data-startup-native] .startup-steps, [data-startup-native] .startup-hint { display: none; }
+[data-startup-native] .startup-track { margin-top: 16px; height: 2px; }
+[data-startup-native] .startup-retry { margin-top: 10px; padding: 6px 12px; }

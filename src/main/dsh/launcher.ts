@@ -25,7 +25,6 @@ import { DshTaskAccessStore } from './task-access';
 import { snapshotDshTaskExecution, type DshTaskExecutionOptions } from './task-execution';
 import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import { configureWorkbenchBrowser } from './workbench-browser';
-import { assertKnownRuntimeCompatibility } from './runtime-compatibility';
 import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
 
@@ -144,19 +143,8 @@ export class DshLauncher {
     const publications = await readJson<unknown[]>(path.join(this.rootPath, 'pack-publications.json')) ?? [];
     this.publications = publications.slice(0, 100).map(value => dshPackPublicationRecordSchema.parse(value));
     this.ready = true;
-    const selectedId = this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
-    const selectedRuntime = this.instances.list().find(instance => instance.id === selectedId)?.runtimeId;
-    const unchecked = this.runtimes.unchecked().sort((a, b) => Number(b.id === selectedRuntime) - Number(a.id === selectedRuntime));
-    // Existing installations acquire real evidence too; no release-name exemption.
-    for (const runtime of unchecked) {
-      await this.operations.run('runtime.compatibility', `隔离检测 DSH ${runtime.version} 共享存档`, undefined,
-        async op => { const report = await this.runtimes.checkCompatibility(runtime.id, op);
-          assertKnownRuntimeCompatibility({ ...runtime, compatibility: report }); });
-    }
-    if (selectedRuntime && !unchecked.some(runtime => runtime.id === selectedRuntime)) {
-      await this.operations.run('runtime.verify', '预先校验当前 DSH 的 CLI 运行文件', selectedId,
-        async op => { await this.runtimes.verify(selectedRuntime, op.signal); });
-    }
+    // Installation and actual execution own compatibility/integrity checks.
+    // Listing the home page must never boot every installed runtime or CLI.
   }
   state(): DshLauncherState {
     return { supported: process.platform === 'win32' && process.arch === 'x64', rootPath: this.rootPath,

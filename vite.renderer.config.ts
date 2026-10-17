@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { DEV_GENERATED_WATCH_PATTERNS } from './scripts/dev-watch-paths.mjs';
 
 /**
  * Pin the renderer dev server to WORLDLINEBOX_VITE_PORT (set by scripts/dev-start.mjs)
@@ -165,6 +166,7 @@ export default defineConfig({
     preserveSymlinks: true,
   },
   server: {
+    watch: { ignored: DEV_GENERATED_WATCH_PATTERNS },
     // Must match @electron-forge/plugin-vite, which hardcodes
     // MAIN_WINDOW_VITE_DEV_SERVER_URL as http://localhost:<port>. Binding only
     // 127.0.0.1 breaks Vite 8's WebSocket module runner under the renderer CSP

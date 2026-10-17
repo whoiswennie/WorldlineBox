@@ -1,9 +1,5 @@
-import '@fontsource-variable/noto-sans-sc/index.css';
-// Windows-only HarmonyOS face; vite aliases this to an empty stub on macOS/Linux
-// so darwin npm start does not require harmonyos-sans-sc-webfont-splitted.
-import './harmonyos-sans-sc-windows.css';
-import '@fontsource/ibm-plex-mono/400.css';
-import '@fontsource/ibm-plex-mono/500.css';
+// System UI fonts keep startup independent of hundreds of webfont shards.
+// Font assets opened by the asset viewer continue to load on demand.
 import { lazy, StrictMode, Suspense } from 'react';
 import { RendererReady, StartupBoundary, StartupScreen } from './StartupScreen';
 import { createRoot } from 'react-dom/client';
@@ -42,7 +38,7 @@ applyMenuAcrylicPreferences(loadMenuAcrylicPreferences());
 applyFontSizePreferences(loadFontSizePreferences());
 
 const root = document.getElementById('root');
-const App = lazy(() => import('./App').then(module => ({ default: module.App })));
+const App = lazy(() => import('./Application').then(module => ({ default: module.App })));
 const WorldWindow = lazy(() => import('./companions/world/CompanionWorldWindow').then(module => ({ default: module.CompanionWorldWindow })));
 const observer = new URLSearchParams(window.location.search).get('window') === 'companion-world';
 
@@ -58,7 +54,7 @@ createRoot(root).render(
           <ElevationProvider>
             <MenuAcrylicProvider>
               <InspectorCardFeelProvider>
-                <StartupBoundary><Suspense fallback={<StartupScreen title={observer ? "正在打开伙伴世界" : undefined} />}><RendererReady>{observer ? <WorldWindow /> : <App />}</RendererReady></Suspense></StartupBoundary>
+                <StartupBoundary><Suspense fallback={observer ? <StartupScreen title="正在打开伙伴世界" compact /> : null}><RendererReady>{observer ? <WorldWindow /> : <App />}</RendererReady></Suspense></StartupBoundary>
               </InspectorCardFeelProvider>
             </MenuAcrylicProvider>
           </ElevationProvider>

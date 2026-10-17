@@ -20,7 +20,7 @@ export class StartupWindow {
     // The dedicated startup check opts in to this additional native surface.
     if (process.env.WORLDLINEBOX_E2E === '1' && process.env.WORLDLINEBOX_E2E_STARTUP_SCREEN !== '1') return;
     const hidden = process.env.WORLDLINEBOX_E2E === '1' && process.env.WORLDLINEBOX_E2E_HIDE_WINDOW === '1';
-    this.window = new BrowserWindow(withAppWindowIcon({ width: 540, height: 490, show: false, resizable: false, maximizable: false, minimizable: true, autoHideMenuBar: true, title: 'WorldlineBox', backgroundColor: nativeTheme.shouldUseDarkColors ? '#171b25' : '#f6f7fb', webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } }));
+    this.window = new BrowserWindow(withAppWindowIcon({ width: 440, height: 300, show: false, resizable: false, maximizable: false, minimizable: true, autoHideMenuBar: true, title: 'WorldlineBox', backgroundColor: nativeTheme.shouldUseDarkColors ? '#171b25' : '#f6f7fb', webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } }));
     this.window.on('close', () => { if (!this.finished) app.quit(); });
     this.window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     this.window.webContents.on('will-navigate', (event, url) => {
@@ -31,7 +31,7 @@ export class StartupWindow {
     });
     this.window.once('ready-to-show', () => { if (!hidden && !this.window?.isDestroyed()) this.window?.show(); });
     // Bundle the small PNG into Main: source assets do not exist beside app.asar.
-    await this.window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><html lang="zh-CN" data-theme="${nativeTheme.shouldUseDarkColors ? 'dark' : 'light'}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><title>WorldlineBox</title><style>body{margin:0}${styles}</style></head><body>${startupMarkup(logo)}</body></html>`));
+    await this.window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><html lang="zh-CN" data-theme="${nativeTheme.shouldUseDarkColors ? 'dark' : 'light'}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><title>WorldlineBox</title><style>body{margin:0}${styles}</style></head><body data-startup-native>${startupMarkup(logo, '正在打开…', '准备应用界面')}</body></html>`));
     this.timer = setInterval(() => this.publish(), 250); this.publish();
   }
   set(phase: StartupPhase, detail?: string): void {
@@ -61,7 +61,7 @@ export class StartupWindow {
       ${retry ? "const button=document.createElement('a'); button.className='startup-retry'; button.href='worldlinebox-startup:retry'; button.textContent='重新加载界面'; document.querySelector('.startup-card').append(button);" : ''}
     })()`).catch(() => undefined);
   }
-  private detail = '核对 Node.js、Git 与媒体工具的完整性';
+  private detail = '读取启动偏好与窗口设置';
   private publish(detail?: string): void {
     if (detail !== undefined) this.detail = detail;
     if (!this.window || this.window.isDestroyed()) return;
@@ -69,10 +69,10 @@ export class StartupWindow {
     const payload = { phase: this.phase, failed: this.failed, detail: this.detail, stage: `已完成 ${index} / ${STARTUP_PHASES.length} 个步骤 · ${STARTUP_PHASES[index]!.label}`, progress: index / STARTUP_PHASES.length * 100, elapsed: ((performance.now() - this.started) / 1000).toFixed(1) + ' 秒' };
     void this.window.webContents.executeJavaScript(`(() => { const p=${JSON.stringify(payload)}; const screen=document.querySelector('.startup-screen'); screen.dataset.progress='steps'; if(!p.failed && screen.classList.contains('is-error')) { screen.classList.remove('is-error'); document.querySelector('[data-startup-title]').textContent='正在打开世界线盒子'; document.querySelector('[data-startup-hint]').textContent='进度随实际完成的步骤更新'; document.querySelector('.startup-retry')?.remove(); } document.querySelector('.startup-track > span').style.width=p.progress+'%'; document.querySelector('[data-startup-detail]').textContent=p.detail; document.querySelector('[data-startup-stage]').textContent=p.stage; document.querySelector('[data-startup-elapsed]').textContent=p.elapsed; const steps=[...document.querySelectorAll('[data-phase]')]; const index=steps.findIndex(e=>e.dataset.phase===p.phase); steps.forEach((e,i)=>{e.classList.toggle('is-done',i<index); if(i===index)e.setAttribute('aria-current','step');else e.removeAttribute('aria-current');}); })()`).catch(() => undefined);
   }
-  complete(): void {
+  complete(ready = true): void {
     if (this.finished) return;
     this.finished = true; this.retry = undefined; clearInterval(this.timer);
-    const now = performance.now(); this.report(this.phase, Math.round(now - this.phaseStarted), Math.round(now - this.started)); this.report('main-ready', 0, Math.round(now - this.started));
+    const now = performance.now(); this.report(this.phase, Math.round(now - this.phaseStarted), Math.round(now - this.started)); this.report(ready ? 'main-ready' : 'cancelled', 0, Math.round(now - this.started));
     if (this.window && !this.window.isDestroyed()) this.window.destroy(); this.window = undefined;
   }
 }

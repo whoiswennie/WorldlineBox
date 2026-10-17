@@ -10,7 +10,7 @@ export function bindStartupHandoff(options: {
   window: BrowserWindow;
   splash?: StartupWindow;
   show: () => void;
-  complete: () => void;
+  complete: (ready: boolean) => void;
   reportFailure: (reason: string) => void;
 }): void {
   const { window, splash } = options;
@@ -28,7 +28,7 @@ export function bindStartupHandoff(options: {
     // Show the complete app before closing the splash, without a blank interval.
     options.show();
     splash?.complete();
-    options.complete();
+    options.complete(true);
   };
   const fail = (reason: string) => {
     if (finished || window.isDestroyed()) return;
@@ -61,7 +61,7 @@ export function bindStartupHandoff(options: {
     window.removeListener('closed', onClosed);
     contents.removeListener('render-process-gone', onGone);
   };
-  const onClosed = () => { finished = true; dispose(); splash?.complete(); options.complete(); };
+  const onClosed = () => { finished = true; dispose(); splash?.complete(false); options.complete(false); };
   ipcMain.on(STARTUP_RENDERER_STATE_CHANNEL, onState);
   window.on('ready-to-show', onNativeReady);
   window.once('closed', onClosed);

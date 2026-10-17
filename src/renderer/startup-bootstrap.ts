@@ -3,6 +3,7 @@ import './startup.css';
 import { retryStartup, startupRetryCount } from './startup-retry';
 import { notifyStartupState } from './startup-lifecycle';
 const shell = document.getElementById('startup-shell');
+if (new URLSearchParams(location.search).get('window') === 'companion-world') shell?.classList.add('is-world');
 const started = performance.now();
 try {
   const preference = JSON.parse(localStorage.getItem('worldlinebox.theme-prefs.v1') ?? 'null');
@@ -16,7 +17,7 @@ const tick = setInterval(() => {
 void import('./main').catch(error => {
   clearInterval(tick);
   if (!shell) return;
-  shell.querySelector('.startup-screen')?.classList.add('is-error');
+  shell.querySelector('.boot-shell')?.classList.add('is-error');
   shell.querySelector('[data-startup-title]')!.textContent = '界面未能打开';
   shell.querySelector('[data-startup-detail]')!.textContent = '请重试，或查看本次启动的诊断日志。';
   const detail = document.createElement('p'); detail.className = 'startup-error'; detail.textContent = String(error instanceof Error ? error.message : error).slice(0, 600);

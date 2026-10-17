@@ -76,6 +76,12 @@ function button(text: string, scope: ParentNode = document): HTMLButtonElement {
 
 async function click(text: string, scope?: ParentNode) { await act(() => button(text, scope).click()); }
 
+async function openTerminal() {
+  await click('实时终端', container!.querySelector('.launcher-navigation')!);
+  await act(async () => { await import('../../src/renderer/launcher/LauncherTerminal'); });
+  expect(container!.querySelector('.launcher-cli-context')).not.toBeNull();
+}
+
 it('shows the selected instance immediately, coalesces preparation and keeps navigation responsive', async () => {
   const subject = fixture([], { cli: { selectedInstanceId: 'instance-a', commandPath: '', binPath: '', pathEnabled: false, output: '', terminals: [] } });
   const original = subject.request.getMockImplementation()!;
@@ -148,7 +154,7 @@ async function terminalInput(value: string) {
 
 it('selects a CLI context without starting its workbench and locks selection while the terminal runs', async () => {
   const f = fixture([], { cli: cliFixture() });
-  await mount(f.api); await click('实时终端', container!.querySelector('.launcher-navigation')!);
+  await mount(f.api); await openTerminal();
   const select = container!.querySelector<HTMLSelectElement>('.launcher-cli-context select')!;
   expect(select.disabled).toBe(false);
   await act(() => { select.value = 'instance-b'; select.dispatchEvent(new Event('change', { bubbles: true })); });
@@ -166,7 +172,7 @@ it('selects a CLI context without starting its workbench and locks selection whi
 
 it('preserves scrolled terminal output until the user returns to its bottom', async () => {
   const f = fixture([], { cli: cliFixture(true) });
-  await mount(f.api); await click('实时终端', container!.querySelector('.launcher-navigation')!);
+  await mount(f.api); await openTerminal();
   const output = container!.querySelector<HTMLPreElement>('[data-dsh-terminal-output]')!;
   Object.defineProperties(output, { scrollHeight: { configurable: true, value: 1_000 }, clientHeight: { configurable: true, value: 200 } });
   await act(() => { output.scrollTop = 200; output.dispatchEvent(new Event('scroll')); });
@@ -182,7 +188,7 @@ it('preserves scrolled terminal output until the user returns to its bottom', as
 
 it('sends line input and reuses history without creating success notifications or replacing the workspace', async () => {
   const f = fixture([], { cli: cliFixture(true) });
-  await mount(f.api); await click('实时终端', container!.querySelector('.launcher-navigation')!);
+  await mount(f.api); await openTerminal();
   const main = container!.querySelector<HTMLElement>('.launcher-main')!;
   const heading = main.querySelector('.launcher-page-heading');
   const card = main.querySelector('.launcher-terminal-card');
@@ -204,7 +210,7 @@ it('sends line input and reuses history without creating success notifications o
 
 it('does not replace a composing terminal prompt with command history', async () => {
   const f = fixture([], { cli: cliFixture(true) });
-  await mount(f.api); await click('实时终端', container!.querySelector('.launcher-navigation')!);
+  await mount(f.api); await openTerminal();
   await terminalInput('dsh --help');
   await click('发送', container!.querySelector('.launcher-terminal-input')!);
   const field = await terminalInput('中文待选');

@@ -260,7 +260,12 @@ const playwrightPath = require.resolve('@playwright/test/cli');
 // for the Playwright child and every Electron process it launches.
 const playwrightEnv = { ...process.env };
 delete playwrightEnv.ELECTRON_RUN_AS_NODE;
-if (isolatedBuild) playwrightEnv.WORLDLINEBOX_E2E_APP_PATH = applicationRoot;
+if (isolatedBuild) {
+  playwrightEnv.WORLDLINEBOX_E2E_APP_PATH = applicationRoot;
+  // Older acceptance suites use this alias; they must never fall back to a
+  // concurrently running development or packaging checkout.
+  playwrightEnv.WORLDLINEBOX_E2E_APP_DIRECTORY = applicationRoot;
+}
 const child = spawn(process.execPath, [playwrightPath, 'test', ...process.argv.slice(2)], {
   cwd: projectRoot,
   env: playwrightEnv,

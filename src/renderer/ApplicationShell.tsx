@@ -1,4 +1,4 @@
-import { Activity, useEffect, type ReactNode } from "react";
+import { Activity, useEffect, useState, type ReactNode } from "react";
 
 import startupLogo from "../../assets/icons/startup-logo.png";
 import { Icon, type IconName } from "./Icons";
@@ -41,6 +41,9 @@ export function ApplicationShell({
   const selectedId = modules.some((module) => module.id === activeModuleId)
     ? activeModuleId
     : modules[0]?.id;
+  const [activated, setActivated] = useState(() => new Set(selectedId ? [selectedId] : []));
+  const newlyActivated = modules.filter(module => (module.id === selectedId || module.keepEffectsActive) && !activated.has(module.id));
+  if (newlyActivated.length) setActivated(new Set([...activated, ...newlyActivated.map(module => module.id)]));
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -95,7 +98,7 @@ export function ApplicationShell({
         {modules.map((module) => (
           <Activity key={module.id} mode={selectedId === module.id || module.keepEffectsActive ? "visible" : "hidden"}>
             <div className="application-module-view" data-application-view={module.id} hidden={selectedId !== module.id}>
-              {module.content}
+              {activated.has(module.id) ? module.content : null}
             </div>
           </Activity>
         ))}

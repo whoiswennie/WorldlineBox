@@ -46,6 +46,8 @@ test('the packaged application starts and completes a real Worker import', async
     );
 
     const window = await application.firstWindow();
+    const nativeWindow = await application.browserWindow(window);
+    await nativeWindow.evaluate(win => { win.setOpacity(0); win.setFocusable(false); win.webContents.setBackgroundThrottling(false); win.showInactive(); });
     await window.locator('[data-application-module="assets"]').click();
     await expect(window.getByRole('heading', { name: '创建本地资源库' })).toBeVisible();
     expect(

@@ -2,6 +2,7 @@
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
+declare module '*dev-watch-paths.mjs' { export const DEV_GENERATED_WATCH_PATTERNS: string[]; }
 
 declare module "*free-port.mjs" {
   export function findFreeTcpPort(
