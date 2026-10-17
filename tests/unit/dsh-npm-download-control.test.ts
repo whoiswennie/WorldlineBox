@@ -7,6 +7,17 @@ import { OperationStore } from '../../src/main/dsh/operations';
 import { runNodeInstall } from '../../src/main/dsh/node-runtime-service';
 import { removeManaged } from '../../src/main/dsh/files';
 
+it.skipIf(process.platform !== 'win32')('observes a cached helper exiting before the asynchronous progress journal finishes', async () => {
+  const root=await mkdtemp(path.join(tmpdir(),'worldlinebox-fast-npm-'));
+  const installer=path.join(root,'installer.cjs');await writeFile(installer,"console.log('cached helper finished');");
+  try{
+    await runNodeInstall({nodeExecutable:process.execPath,npmCli:installer,nodeVersion:process.versions.node,npmVersion:'fixture'},[],root,process.env,{
+      id:'cached-helper',signal:AbortSignal.timeout(3000),log:async()=>undefined,update:async()=>undefined,
+      download:{begin:async()=>{await new Promise(resolve=>setTimeout(resolve,350));},report:()=>undefined,wait:async()=>undefined,end:async()=>undefined},
+    });
+  }finally{await removeManaged(tmpdir(),root);}
+},5000);
+
 it.skipIf(process.platform !== 'win32')('cooperatively pauses real package-manager HTTP streams and cancellation closes the owned child', async () => {
   const root = await mkdtemp(path.join(tmpdir(),'worldlinebox-npm-control-'));
   const timers = new Set<ReturnType<typeof setInterval>>();

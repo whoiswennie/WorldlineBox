@@ -94,29 +94,45 @@ export async function inventoryTree(root: string, signal?: AbortSignal, progress
 
 /** Flatten only links whose targets stay inside explicitly owned roots. Never copy external links. */
 export async function copyTree(source: string, destination: string, options: {
-  signal?: AbortSignal; skip?: (relative: string) => boolean; allowedLinkRoots?: string[];
+  signal?: AbortSignal; skip?: (relative: string) => boolean; allowedLinkRoots?: string[]; concurrency?: number;
 } = {}): Promise<void> {
+  const concurrency = Math.max(1, Math.min(32, Math.floor(options.concurrency ?? 1)));
+  if (!Number.isFinite(concurrency)) throw new Error('Invalid copy concurrency.');
+  let active = 0; const queue: Array<() => void> = [];
+  const limit = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (active >= concurrency) await new Promise<void>(resolve => queue.push(resolve)); else active++;
+    try { options.signal?.throwIfAborted(); return await work(); }
+    finally { const waiting = queue.shift(); if (waiting) waiting(); else active--; }
+  };
   const roots = await Promise.all([source, ...(options.allowedLinkRoots ?? [])].map(p => realpath(p)));
   let count = 0;
   const walk = async (from: string, to: string, relative: string, ancestors: Set<string>) => {
     options.signal?.throwIfAborted();
     if (options.skip?.(relative)) return;
-    const actual = await realpath(from);
+    const actual = await limit(() => realpath(from));
     if (!roots.some(root => { const rel = path.relative(root, actual); return !rel.startsWith('..') && !path.isAbsolute(rel); })) throw new Error(`Link points outside managed data: ${relative}`);
-    const stat = await lstat(actual);
+    const stat = await limit(() => lstat(actual));
     if (stat.isDirectory()) {
       if (ancestors.has(actual.toLowerCase())) throw new Error(`Recursive directory link: ${relative}`);
       const next = new Set(ancestors).add(actual.toLowerCase());
-      await mkdir(to, { recursive: true });
-      for (const entry of await readdir(actual)) {
+      await limit(() => mkdir(to, { recursive: true }));
+      const visit = async (entry: string) => {
         const child = relative ? `${relative}/${entry}` : entry;
         safeRelative(child);
         await walk(path.join(actual, entry), path.join(to, entry), child, next);
+      };
+      const entries = await limit(() => readdir(actual));
+      if (concurrency === 1) { for (const entry of entries) await visit(entry); }
+      else {
+        const results = await Promise.allSettled(entries.map(visit));
+        const failure = results.find(result => result.status === 'rejected');
+        if (failure?.status === 'rejected') throw failure.reason;
       }
     } else if (stat.isFile()) {
       if (++count > 150_000) throw new Error('Too many files to copy.');
-      await mkdir(path.dirname(to), { recursive: true });
-      await copyFile(actual, to);
+      // A visited parent directory already exists; only a file used as the root needs mkdir.
+      if (!relative) await limit(() => mkdir(path.dirname(to), { recursive: true }));
+      await limit(() => copyFile(actual, to));
     } else throw new Error(`Unsupported data file: ${relative}`);
   };
   await walk(source, destination, '', new Set());

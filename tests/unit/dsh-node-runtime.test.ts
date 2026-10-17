@@ -24,7 +24,7 @@ async function fixture(root: string) {
   const npmCli = path.join(root, 'fixture-npm.cjs');
   await writeFile(npmCli, `
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
-const args=process.argv.slice(2), archive=args.at(-1), bytes=fs.readFileSync(archive);
+const args=process.argv.slice(2), archive=args[0]==='ci'?JSON.parse(fs.readFileSync('package.json','utf8')).dependencies['@deepseek-ai/dsh'].slice(5):args.at(-1), bytes=fs.readFileSync(archive);
 const version=JSON.parse(bytes).version, integrity='sha512-'+crypto.createHash('sha512').update(bytes).digest('base64');
 fs.writeFileSync(path.join(process.cwd(),'installer-env.json'),JSON.stringify({
   cache:process.env.npm_config_cache, registry:process.env.npm_config_registry,
@@ -59,6 +59,7 @@ describe('official Node DSH runtime adapter', () => {
     await Promise.all(['0.2.0-rc.2','0.2.1-alpha.2'].map(version => operations.run('runtime.install',version,undefined,
       async operation => { await service.installNode(release(version),operation); }, {type:'runtime.install',version})));
     await operations.settle();
+    for (const operation of operations.list()) expect(operation.error).toBeUndefined();
     expect(operations.list().map(value=>value.status)).toEqual(['succeeded','succeeded']);
     expect(service.list().map(value=>value.version).sort()).toEqual(['0.2.0-rc.2','0.2.1-alpha.2']);
     const indexed = JSON.parse(await readFile(path.join(manager,'runtimes.json'),'utf8'));
@@ -88,6 +89,8 @@ describe('official Node DSH runtime adapter', () => {
     expect(Object.keys(env).filter(key=>/^npm_config_cache$/i.test(key))).toEqual(['npm_config_cache']);
     for (const key of ['OPENAI_API_KEY','NODE_OPTIONS','PNPM_CONFIG_STORE_DIR','ELECTRON_RUN_AS_NODE']) expect(env[key]).toBeUndefined();
     expect(env.HTTPS_PROXY).toBe('http://127.0.0.1:18080');
+    expect(env.npm_config_https_proxy).toBe(env.HTTPS_PROXY);
+    expect(env.npm_config_fetch_timeout).toBe('120000');
     expect(env.PYTHONUSERBASE).toBe(path.join(root,'user','python-userbase'));expect(env.PIP_USER).toBe('1');
     for(const key of ['PYTHONHOME','PYTHONPATH','PYTHONNOUSERSITE'])expect(env[key]).toBeUndefined();
     expect(await readFile(env.npm_config_userconfig!,'utf8')).toBe('');
@@ -128,6 +131,7 @@ describe('official Node DSH runtime adapter', () => {
       const saved=JSON.parse(await readFile(path.join(service.directory(runtime.id),'dsh','installer-env.json'),'utf8'));
       expect(saved.auth).toBeUndefined(); expect(saved.inherited).toBe(saved.cache);
       expect(saved.cacheKeyCount).toBe(1);expect(saved.cache).not.toBe('bad-cache');
+      expect(saved.cache).toBe(path.join(manager,'npm-cache'));
       expect(saved.proxy).toBe(index===0?'http://127.0.0.1:18081':'http://127.0.0.1:18082');
       const manifest=JSON.parse(await readFile(path.join(service.directory(runtime.id),'dsh','package.json'),'utf8'));
       expect(manifest.dependencies['@deepseek-ai/dsh']).toBe(runtime.version);
@@ -155,7 +159,7 @@ describe('official Node DSH runtime adapter', () => {
     const first=service.list()[0]!; await writeFile(service.plan(first.id).cli,'changed');
     await expect(service.verify(first.id)).rejects.toThrow('changed');
     await service.verify(service.list()[1]!.id);
-    await expect(service.delete(first.id,true)).rejects.toThrow('used');
+    await expect(service.delete(first.id,true)).rejects.toThrow('引用');
   },45_000);
   it('identifies the same normalized lock graph across mirror URLs and refuses changed package integrities',async()=>{
     const root=await temporary();const location='node_modules/@deepseek-ai/dsh';

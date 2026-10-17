@@ -24,6 +24,14 @@ function release(version: string) { return { name: '@deepseek-ai/dsh', version, 
 const npm = { name: '@deepseek-ai/dsh', 'dist-tags': { latest: '0.2.0-rc.2' }, versions: Object.fromEntries(['0.2.0-rc.2', '0.2.1-alpha.2', '0.2.1-alpha.10'].map(version => [version, release(version)])) };
 
 describe('hot launcher networking', () => {
+  it('honors DIRECT as the first PAC choice and removes stale proxy variables from children', async () => {
+    const proxySession = scope(); proxySession.resolveProxy.mockResolvedValue('DIRECT; PROXY 127.0.0.1:7897');
+    const service = new LauncherNetwork(await temporary(), () => undefined, () => proxySession as unknown as Session); await service.init();
+    const env = await service.environment({ proxy:'http://stale:8', npm_config_noproxy:'*', HTTPS_PROXY:'http://stale:8' });
+    expect(env.HTTPS_PROXY).toBeUndefined(); expect(env.proxy).toBeUndefined(); expect(env.npm_config_noproxy).toBeUndefined();
+    transport.mockResolvedValue(new Response('{}'));
+    expect(await service.test()).toContain('DIRECT');
+  });
   it('applies and persists changes, aborts old requests, reloads after restart, and derives private command environments', async () => {
     const root = await temporary(); const session = scope(); const changed = vi.fn();
     const service = new LauncherNetwork(root, changed, () => session as unknown as Session); await service.init();

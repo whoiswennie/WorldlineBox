@@ -61,5 +61,5 @@ export async function prepareNodeRuntimeLockInstall(options: { lock: DshNodePack
   const manifest = { name: lock.name ?? 'worldlinebox-dsh-runtime', version: lock.packages['']!.version ?? '1.0.0', private: true, type: 'module', dependencies: lock.packages['']!.dependencies };
   options.signal?.throwIfAborted(); await writeFile(path.join(destination, 'package.json'), JSON.stringify(manifest, null, 2), { flag: 'wx', signal: options.signal });
   await writeFile(path.join(destination, 'package-lock.json'), JSON.stringify(lock, null, 2), { flag: 'wx', signal: options.signal });
-  return ['ci', '--omit=dev', '--no-audit', '--no-fund', '--engine-strict', '--install-strategy=hoisted', '--fetch-timeout=600000', '--fetch-retries=2', '--registry', registry.href];
+  return ['ci', '--omit=dev', '--no-audit', '--no-fund', '--engine-strict', '--install-strategy=hoisted', '--registry', registry.href];
 }

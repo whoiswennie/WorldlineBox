@@ -90,6 +90,7 @@ export const dshNetworkSettingsSchema = z.object({
   proxyMode: z.enum(['system', 'direct', 'custom']), proxyUrl: z.string().trim().max(2048),
   proxyProfiles: z.array(z.object({ id, name, url: z.string().trim().max(2048) })).max(30),
   npmRegistry: z.string().trim().max(2048), pythonIndex: z.string().trim().max(2048),
+  npmDownloadRoute: z.enum(['auto', 'registry']).default('auto'),
   githubMirror: z.enum(['auto', 'direct', 'gh-proxy', 'ghfast', 'ghproxy', 'custom']), githubMirrorUrl: z.string().trim().max(2048),
 });
 export type DshNetworkSettings = z.infer<typeof dshNetworkSettingsSchema>;

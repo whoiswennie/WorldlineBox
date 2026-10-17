@@ -16,9 +16,10 @@ export class OperationDownloadControl implements DownloadControl {
   private sampleBytes = 0;
   private sampleTime = Date.now();
   private lastPublish = 0;
+  private ticker?: ReturnType<typeof setInterval>;
   constructor(private readonly record: DshOperation, private readonly signal: AbortSignal,
     private readonly publish: () => Promise<void>) {
-    signal.addEventListener('abort', () => { for (const resolve of this.waiters) resolve(); this.waiters.clear(); }, { once: true });
+    signal.addEventListener('abort', () => { clearInterval(this.ticker); for (const resolve of this.waiters) resolve(); this.waiters.clear(); }, { once: true });
   }
   async begin(totalBytes?: number, transport?: { pause(): void; resume(): void }): Promise<void> {
     this.signal.throwIfAborted();
@@ -26,6 +27,9 @@ export class OperationDownloadControl implements DownloadControl {
     this.received = this.base; this.sampleBytes = this.base; this.sampleTime = Date.now(); this.transport = transport;
     this.record.download = { transferredBytes: this.base, speedBytesPerSecond: 0, paused: false, canPause: true,
       ...(totalBytes && Number.isSafeInteger(totalBytes) ? { totalBytes: this.base + totalBytes } : {}) };
+    clearInterval(this.ticker);
+    this.ticker = setInterval(() => this.report(this.received - this.base), 1000);
+    this.ticker.unref?.();
     await this.publish();
   }
   async wait(): Promise<void> {
@@ -58,6 +62,7 @@ export class OperationDownloadControl implements DownloadControl {
     for (const resolve of this.waiters) resolve(); this.waiters.clear(); await this.publish();
   }
   async end(): Promise<void> {
+    clearInterval(this.ticker); this.ticker = undefined;
     if (this.record.download) { this.record.download.canPause = false; this.record.download.paused = false; this.record.download.speedBytesPerSecond = 0; }
     this.transport = undefined;
     for (const resolve of this.waiters) resolve(); this.waiters.clear(); await this.publish();

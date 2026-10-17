@@ -57,7 +57,7 @@ test('installs a real pinned community plugin, verifies private copies and nativ
       await application.evaluate((_electron, directory) => { process.env.WORLDLINEBOX_E2E_DSH_DIRECTORY = directory; }, path.join(fixture.root, 'manager/runtimes', item.id, 'program'));
       await complete(page, { type: 'runtime.import', sourceKind: 'directory' });
     }
-    await complete(page, { type: 'network.save', settings: { proxyMode: 'direct', proxyUrl: '', proxyProfiles: [], npmRegistry: 'https://registry.npmjs.org', pythonIndex: 'https://pypi.org/simple', githubMirror: 'direct', githubMirrorUrl: '' } });
+    await complete(page, { type: 'network.save', settings: { proxyMode: 'direct', proxyUrl: '', proxyProfiles: [], npmRegistry: 'https://registry.npmjs.org', npmDownloadRoute:'registry', pythonIndex: 'https://pypi.org/simple', githubMirror: 'direct', githubMirrorUrl: '' } });
     const runtimes = (await state(page)).runtimes;
     const rc = runtimes.find(item => item.version === '0.2.0-rc.2')!;
     const alpha = runtimes.find(item => item.version === '0.2.1-alpha.2')!;

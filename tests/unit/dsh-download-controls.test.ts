@@ -4,8 +4,21 @@ import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import { OperationStore } from '../../src/main/dsh/operations';
 import { removeManaged } from '../../src/main/dsh/files';
+import { OperationDownloadControl } from '../../src/main/dsh/download-control';
+import type { DshOperation } from '../../src/shared/dsh-launcher';
 
 describe('independent operation downloads', () => {
+  it('decays speed to zero during network inactivity and releases its sampler', async () => {
+    vi.useFakeTimers();
+    try {
+      const record = { id:'sample',kind:'runtime.install',label:'sample',phase:'downloading',status:'running',startedAt:new Date().toISOString() } as DshOperation;
+      const meter = new OperationDownloadControl(record, new AbortController().signal, async () => undefined);
+      await meter.begin(); await vi.advanceTimersByTimeAsync(300); meter.report(3000);
+      expect(record.download?.speedBytesPerSecond).toBeGreaterThan(0);
+      await vi.advanceTimersByTimeAsync(2100); expect(record.download?.speedBytesPerSecond).toBe(0);
+      await meter.end(); expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
   it('pauses one stream while a second advances, resumes then cancels a paused task, and retains restart retry intents', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-download-controls-'));
     try {

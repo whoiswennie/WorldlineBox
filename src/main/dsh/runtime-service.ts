@@ -380,6 +380,7 @@ export class RuntimeService implements RuntimeServiceLike {
       const artifact = path.join(staging, 'artifact'); const program = path.join(artifact, 'program');
       const tools = await this.options.nodeTools(operation.signal);
       const receipt = await prepareOfficialNodeRuntime({ release, staging, program, tools,
+        contentCache: path.join(this.options.rootPath, 'npm-cache'),
         network: () => this.options.nodeInstallNetwork!(operation.signal),
         fetch: this.options.fetch ?? globalThis.fetch, operation,prepareInstall });
       if(expectedLock&&(receipt.dependencyLockSha256!==expectedLock.dependencyLockSha256||receipt.nodeExecutableSha256!==expectedLock.nodeExecutableSha256

@@ -4,12 +4,14 @@ import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { copyFile, createWriteStream, lstat, mkdir, readFile, realpath, writeFile, rm } from './disk';
-import { contained, copyTree, hashFile, redact, safeRelative, type TreeInventory } from './files';
+import { contained, hashFile, redact, safeRelative, type TreeInventory } from './files';
 import { fetchHttpsDownload, type HttpsDownloadFetch } from './https-download';
 import type { OperationContext } from './operations';
 import { attachProcessJob } from './windows-job';
 import { terminateOwnedProcess } from './instance-process';
 import { npmDownloadMonitorSource } from './npm-download-monitor';
+import { npmPrefetchSource } from './npm-prefetch';
+import { promoteNodeInstallation } from './node-runtime-stage';
 
 export const OFFICIAL_DSH_NPM_PACKAGE = '@deepseek-ai/dsh';
 export const OFFICIAL_DSH_REPOSITORY = 'https://github.com/deepseek-ai/deepseek-harness';
@@ -32,6 +34,8 @@ export interface NodeInstallNetwork {
   /** The current proxy is captured when npm starts, rather than when the manager starts. */
   env: NodeJS.ProcessEnv;
   registry: string;
+  /** Optional archive route; every archive must still match the already resolved SRI. */
+  tarballMirror?: string;
 }
 export interface NodeRuntimeInstallPreparationOptions {
   installationDirectory:string;release:OfficialNodeRelease;tarball:string;sourceSha256:string;
@@ -141,9 +145,9 @@ export function supportsDshNode(version: string): boolean {
   return major >= 24 || major === 22 && minor >= 19;
 }
 
-/** Child-only installation environment: no user npmrc, package cache or API credentials. */
+/** Child-only installation environment; only the application content cache is reusable. */
 export async function nodeInstallEnvironment(staging: string, tools: NodeInstallTools,
-  network: NodeInstallNetwork): Promise<NodeJS.ProcessEnv> {
+  network: NodeInstallNetwork, contentCache?: string): Promise<NodeJS.ProcessEnv> {
   const registry = new URL(network.registry);
   if (registry.protocol !== 'https:' || registry.username || registry.password || registry.hash || registry.search) {
     throw new Error('The npm registry must be an HTTPS registry URL.');
@@ -154,18 +158,25 @@ export async function nodeInstallEnvironment(staging: string, tools: NodeInstall
     if (key.toUpperCase() === 'PATH') { inheritedPath = env[key] ?? ''; delete env[key]; }
     else if (/^(DSH_|NODE_OPTIONS$|NODE_PATH$|ELECTRON_|DEEPSEEK_|OPENAI_|ANTHROPIC_|GEMINI_|GOOGLE_API_KEY$|AZURE_OPENAI_|AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)$|NPM_TOKEN$|NPM_CONFIG_|PNPM_|PYTHONHOME$|PYTHONPATH$|PYTHONUSERBASE$|PYTHONNOUSERSITE$|PIP_USER$|PSModulePath$)/i.test(key)) delete env[key];
   }
-  const user = path.join(staging, 'user'); const cache = path.join(staging, 'cache');
-  await Promise.all([user, cache, path.join(cache, 'tmp'), path.join(user, 'AppData', 'Roaming'),
+  const user = path.join(staging, 'user'); const cache = contentCache ?? path.join(staging, 'cache');
+  const temporary = path.join(staging, 'tmp');
+  await Promise.all([user, cache, temporary, path.join(user, 'AppData', 'Roaming'),
     path.join(user, 'AppData', 'Local')].map(dir => mkdir(dir, { recursive: true })));
+  if ((await lstat(cache)).isSymbolicLink()) throw new Error('The npm content cache cannot be linked.');
   const emptyConfig = path.join(staging, 'empty-user.npmrc');
   const emptyGlobalConfig = path.join(staging, 'empty-global.npmrc');
   await Promise.all([emptyConfig, emptyGlobalConfig].map(file => writeFile(file, '', { flag: 'wx' })));
   return { ...env, PATH: `${path.dirname(tools.nodeExecutable)}${path.delimiter}${inheritedPath}`,
     HOME: user, USERPROFILE: user, APPDATA: path.join(user, 'AppData', 'Roaming'),
     LOCALAPPDATA: path.join(user, 'AppData', 'Local'),
-    TEMP: path.join(cache, 'tmp'), TMP: path.join(cache, 'tmp'), TMPDIR: path.join(cache, 'tmp'),
+    TEMP: temporary, TMP: temporary, TMPDIR: temporary,
     npm_config_cache: cache, npm_config_userconfig: emptyConfig, npm_config_globalconfig: emptyGlobalConfig,
     npm_config_registry: registry.href, PYTHONUSERBASE:path.join(user,'python-userbase'),PIP_USER:'1',
+    npm_config_proxy: env.HTTPS_PROXY ?? '', npm_config_https_proxy: env.HTTPS_PROXY ?? '',
+    npm_config_noproxy: env.NO_PROXY ?? '', npm_config_fetch_timeout: '120000', npm_config_fetch_retries: '2',
+    npm_config_fetch_retry_mintimeout: '1000', npm_config_fetch_retry_maxtimeout: '10000',
+    npm_config_maxsockets: '8', npm_config_prefer_offline: 'true', npm_config_loglevel: 'http',
+    npm_config_update_notifier: 'false', npm_config_progress: 'false',
     PSModulePath:path.join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','Modules'),
     NO_COLOR: '1', FORCE_COLOR: '0' };
 }
@@ -190,13 +201,20 @@ export async function runNodeInstall(tools: NodeInstallTools, args: string[], cw
   const child = spawn(tools.nodeExecutable, [tools.npmCli, ...args], {
     cwd, env: installEnv, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
   }) as ChildProcessWithoutNullStreams;
+  // A cached helper can exit while begin() is persisting the journal. Observe close immediately.
+  const completion = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+  void completion.catch(() => undefined);
   child.once('error', () => undefined);
   let job: ReturnType<typeof attachProcessJob>;
   try { job = attachProcessJob(child); }
   catch (error) { await terminateOwnedProcess(child); if (operation.download) await rm(monitor, { force: true }); throw error; }
   child.stdin.end();
+  let receivedBytes = 0;
   child.on('message', message => {
-    if (message && typeof message === 'object' && 'nonce' in message && message.nonce === nonce && 'bytes' in message && typeof message.bytes === 'number') operation.download?.report(message.bytes);
+    if (message && typeof message === 'object' && 'nonce' in message && message.nonce === nonce && 'bytes' in message
+      && typeof message.bytes === 'number' && Number.isSafeInteger(message.bytes) && message.bytes >= 0) {
+      receivedBytes = Math.max(receivedBytes, message.bytes); operation.download?.report(receivedBytes);
+    }
   });
   let output = ''; let diagnostics = ''; let queued = Promise.resolve();
   const flush = (final = false) => {
@@ -204,7 +222,16 @@ export async function runNodeInstall(tools: NodeInstallTools, args: string[], cw
     if (!split) return;
     const lines = redact(output.slice(0, split).replace(/(https?:\/\/)[^/@\s]+@/gi, '$1[redacted]@')); output = output.slice(split);
     diagnostics = (diagnostics + lines).slice(-4096);
-    queued = queued.then(() => operation.log(lines)).catch(() => undefined);
+    queued = queued.then(async () => {
+      await operation.log(lines);
+      for (const line of lines.split('\n')) if (line.startsWith('WORLDLINE_PREFETCH ')) {
+        try {
+          const { completed, total } = JSON.parse(line.slice(19)) as { completed: number; total: number };
+          if (Number.isSafeInteger(completed) && Number.isSafeInteger(total) && completed >= 0 && total >= completed && total <= 100_000)
+            await operation.update(`prefetching dependency archives:${completed}/${total}`, 25 + (total ? completed / total : 1) * 25);
+        } catch { /* Non-protocol output remains in the operation log. */ }
+      }
+    }).catch(() => undefined);
   };
   const append = (buffer: Buffer) => { output += buffer.toString('utf8'); if (output.length > 64 * 1024) output = output.slice(-64 * 1024); flush(); };
   child.stdout.on('data', append); child.stderr.on('data', append);
@@ -213,9 +240,8 @@ export async function runNodeInstall(tools: NodeInstallTools, args: string[], cw
   if (operation.signal.aborted) stop();
   try {
     await operation.download?.begin(undefined, { pause: () => { if (child.connected) child.send({ type: 'pause', nonce }, () => undefined); }, resume: () => { if (child.connected) child.send({ type: 'resume', nonce }, () => undefined); } });
-    const code = await new Promise<number | null>((resolve, reject) => {
-      child.once('error', reject); child.once('close', resolve);
-    });
+    operation.download?.report(receivedBytes);
+    const code = await completion;
     flush(true); await queued; operation.signal.throwIfAborted(); await operation.download?.wait();
     if (code !== 0) throw new Error(`Official DSH npm installation failed (exit ${code}). ${diagnostics}`);
   } finally {
@@ -288,6 +314,7 @@ async function retainRegistryCoordinates(directory: string, release: OfficialNod
 export async function prepareOfficialNodeRuntime(options: {
   release: OfficialNodeRelease; staging: string; program: string; tools: NodeInstallTools;
   network: () => Promise<NodeInstallNetwork>; fetch: HttpsDownloadFetch; operation: OperationContext;
+  contentCache?: string;
   prepareInstall?:NodeRuntimeInstallPreparation;
 }): Promise<NodeRuntimeReceipt> {
   const release = validateOfficialNodeRelease(options.release);
@@ -305,12 +332,18 @@ export async function prepareOfficialNodeRuntime(options: {
   if(!options.prepareInstall)await writeFile(path.join(install, 'package.json'), JSON.stringify({
     name: 'worldlinebox-dsh-runtime', version: '1.0.0', private: true, type: 'module',
   }), { flag: 'wx' });
-  await operation.update('installing official dependencies', 20);
+  await operation.update('resolving official dependencies', 15);
   const network = await options.network();
-  const env = await nodeInstallEnvironment(options.staging, tools, network);
-  const args=options.prepareInstall?await options.prepareInstall({installationDirectory:install,release,tarball,sourceSha256,tools,signal:operation.signal,registry:network.registry}):['install', '--save-exact', '--omit=dev', '--no-audit', '--no-fund',
-    '--engine-strict', '--install-strategy=hoisted', '--fetch-timeout=600000', '--fetch-retries=2',
-    '--registry', network.registry, tarball];
+  const env = await nodeInstallEnvironment(options.staging, tools, network, options.contentCache);
+  await operation.log(`npm registry: ${network.registry}; proxy: ${env.HTTPS_PROXY || 'DIRECT'}; reusable content cache: ${env.npm_config_cache}`);
+  const args=options.prepareInstall?await options.prepareInstall({installationDirectory:install,release,tarball,sourceSha256,tools,signal:operation.signal,registry:network.registry}):['ci', '--omit=dev', '--no-audit', '--no-fund',
+    '--engine-strict', '--install-strategy=hoisted', '--registry', network.registry];
+  if (!options.prepareInstall) await runNodeInstall(tools, ['install', '--package-lock-only', '--ignore-scripts', '--save-exact', '--omit=dev', '--no-audit', '--no-fund', '--engine-strict', '--install-strategy=hoisted', '--registry', network.registry, tarball], install, env, operation);
+  await operation.update('prefetching dependency archives', 25);
+  const prefetch = path.join(options.staging, 'npm-prefetch.cjs');
+  await writeFile(prefetch, npmPrefetchSource(npmCli, network.tarballMirror), { flag: 'wx' });
+  await runNodeInstall({ ...tools, npmCli: prefetch }, [], install, env, operation);
+  await operation.update('installing official dependencies', 55);
   await runNodeInstall(tools,args,install,env,operation);
   await operation.update('validating exact DSH package', 70);
   await retainRegistryCoordinates(install, release);
@@ -318,9 +351,8 @@ export async function prepareOfficialNodeRuntime(options: {
   operation.signal.throwIfAborted();
   await mkdir(path.join(options.program, 'bin'), { recursive: true });
   await copyFile(nodeExecutable, path.join(options.program, 'bin', 'node.exe'));
-  // npm owns all links in this scratch tree; flatten only links confined to that tree.
-  // The published program has no live relation to npm caches, tools or other releases.
-  await copyTree(install, path.join(options.program, 'dsh'), { signal: operation.signal });
+  // Ordinary, exclusively owned files move in place; linked trees are copied and flattened.
+  await promoteNodeInstallation(options.staging, install, path.join(options.program, 'dsh'), operation);
   await verifyInstalledPackage(path.join(options.program, 'dsh'), release.version);
   const receipt: NodeRuntimeReceipt = {
     format: 'worldlinebox-dsh-node-runtime-v1', version: release.version,

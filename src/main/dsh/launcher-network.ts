@@ -10,6 +10,7 @@ export const DEFAULT_LAUNCHER_NETWORK: DshNetworkSettings = {
   proxyMode: 'system', proxyUrl: 'http://127.0.0.1:7897',
   proxyProfiles: [{ id: 'clash-7897', name: 'Clash Verge · 7897', url: 'http://127.0.0.1:7897' }, { id: 'clash-7890', name: 'Clash · 7890', url: 'http://127.0.0.1:7890' }],
   npmRegistry: 'https://registry.npmjs.org', pythonIndex: 'https://pypi.org/simple', githubMirror: 'auto', githubMirrorUrl: '',
+  npmDownloadRoute: 'auto',
 };
 const MIRRORS = { 'gh-proxy': 'https://gh-proxy.com/', ghfast: 'https://ghfast.top/', ghproxy: 'https://ghproxy.net/' } as const;
 function endpoint(value: string, protocols: string[]): string {
@@ -114,21 +115,25 @@ export class LauncherNetwork {
   async environment(base: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
     await this.queue;
     const env = { ...base };
-    for (const key of Object.keys(env)) if (/^(?:HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|npm_config_(?:registry|proxy|https_proxy)|PIP_INDEX_URL)$/i.test(key)) delete env[key];
+    for (const key of Object.keys(env)) if (/^(?:HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|PROXY|NO_PROXY|npm_config_(?:registry|proxy|https_proxy|noproxy)|PIP_INDEX_URL)$/i.test(key)) delete env[key];
     let proxy = this.settings.proxyMode === 'custom' ? this.settings.proxyUrl : '';
     if (this.settings.proxyMode === 'system') {
       const rule = await this.scope!.resolveProxy(this.settings.npmRegistry);
-      const match = /(?:^|;\s*)(PROXY|HTTPS|SOCKS5?)\s+([^;]+)/.exec(rule);
+      // Respect the first PAC route, including DIRECT; do not pick a later fallback proxy.
+      const match = /^(PROXY|HTTPS|SOCKS5?)\s+([^;]+)/.exec(rule.trim());
       if (match) proxy = `${match[1] === 'HTTPS' ? 'https' : match[1]!.startsWith('SOCKS') ? 'socks5' : 'http'}://${match[2]}`;
     }
     if (proxy) Object.assign(env, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, ALL_PROXY: proxy, npm_config_proxy: proxy, npm_config_https_proxy: proxy });
     Object.assign(env, { NO_PROXY: 'localhost,127.0.0.1,::1', npm_config_registry: this.settings.npmRegistry,
-      npm_config_fetch_timeout: '600000', npm_config_fetch_retries: '3', PIP_INDEX_URL: this.settings.pythonIndex });
+      npm_config_fetch_timeout: '120000', npm_config_fetch_retries: '2', PIP_INDEX_URL: this.settings.pythonIndex });
     return env;
   }
-  async nodeInstallNetwork(signal?: AbortSignal) { signal?.throwIfAborted(); return { env: await this.environment(), registry: this.settings.npmRegistry }; }
+  async nodeInstallNetwork(signal?: AbortSignal) { signal?.throwIfAborted(); return { env: await this.environment(), registry: this.settings.npmRegistry,
+    ...(this.settings.npmDownloadRoute === 'auto' && this.settings.npmRegistry === 'https://registry.npmjs.org' ? { tarballMirror: 'https://registry.npmmirror.com' } : {}) }; }
   async test(signal?: AbortSignal): Promise<string> {
+    const started = Date.now();
     await this.json(`${this.settings.npmRegistry}/-/ping`, signal);
-    return 'npm 网络连通，当前代理与镜像设置已应用。';
+    const env = await this.environment();
+    return `npm 注册表：${this.settings.npmRegistry}\n连接方式：${this.settings.proxyMode}\nnpm 子进程代理：${env.HTTPS_PROXY || 'DIRECT（直连）'}\n注册表响应：${Date.now() - started} ms\n依赖包使用 8 路并发、完整性校验及跨版本内容缓存；实际速度取决于线路和上游服务。`;
   }
 }

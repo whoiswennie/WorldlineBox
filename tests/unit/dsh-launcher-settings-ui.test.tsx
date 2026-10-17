@@ -11,7 +11,7 @@ import type { LauncherRunRequest } from '../../src/renderer/launcher/DshLauncher
 let root: Root | undefined; let container: HTMLDivElement | undefined;
 afterEach(async () => { await act(() => root?.unmount()); container?.remove(); root = undefined; container = undefined; });
 const base = (): DshLauncherState => ({ supported: true, rootPath: 'C:\\managed', runtimes: [], instances: [], snapshots: [], packs: [], operations: [] });
-const network = (): DshNetworkSettings => ({ proxyMode: 'system', proxyUrl: '', proxyProfiles: [], npmRegistry: 'https://registry.npmjs.org', pythonIndex: 'https://pypi.org/simple', githubMirror: 'auto', githubMirrorUrl: '' });
+const network = (): DshNetworkSettings => ({ proxyMode: 'system', proxyUrl: '', proxyProfiles: [], npmRegistry: 'https://registry.npmjs.org', npmDownloadRoute:'auto', pythonIndex: 'https://pypi.org/simple', githubMirror: 'auto', githubMirrorUrl: '' });
 const runtime = (adapter: DshRuntime['adapter'], version: string): DshRuntime => ({ id: 'runtime-one', version, adapter, nodeVersion: '24.15.0', platform: 'win32-x64', source: 'official', sourceSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), installedAt: '', fileCount: 2, byteLength: 10 });
 
 async function mount(element: React.ReactNode) {

@@ -16,6 +16,11 @@ export function OperationControls({ operation, run }: { operation: DshOperation;
   const phaseKey = `launcher.phases.${operation.phase.split(':', 1)[0]}`;
   const phase = t(phaseKey) === phaseKey ? operation.phase : t(phaseKey);
   const label = stats?.paused ? t('launcher.downloadPaused') : phase;
+  const packageCount = operation.phase.startsWith('prefetching dependency archives:') ? operation.phase.split(':')[1] : undefined;
+  const [completedPackages, totalPackages] = (packageCount ?? '').split('/').map(Number);
+  const packagePercent = packageCount && Number.isFinite(completedPackages) && Number.isFinite(totalPackages)
+    ? totalPackages! > 0 ? Math.min(100, completedPackages! / totalPackages! * 100) : 100 : undefined;
+  const unknownTotal = stats?.canPause && !stats.totalBytes && !packageCount;
   const downloadPercent = stats?.canPause && stats.totalBytes ? Math.min(100, stats.transferredBytes / stats.totalBytes * 100) : undefined;
   return <>
     <div className="launcher-operation-tools">
@@ -23,7 +28,7 @@ export function OperationControls({ operation, run }: { operation: DshOperation;
       {running ? <Button disabled={pending || operation.phase === 'cancelling'} onClick={() => void control('operation.cancel')} size="sm" variant="quiet">{t(operation.phase === 'cancelling' ? 'launcher.cancellingOperation' : 'launcher.cancelOperation')}</Button>
         : operation.retryRequest && operation.status !== 'succeeded' ? <Button disabled={pending} iconName="refresh" onClick={() => void control('operation.retry')} size="sm">{t('launcher.retryOperation')}</Button> : null}
     </div>
-    {running ? <Progress label={label} showValue value={downloadPercent ?? operation.progress} /> : <p className="launcher-help">{label}</p>}
-    {stats ? <div className="launcher-download-stats"><span>{formatBytes(stats.transferredBytes)}{stats.totalBytes ? ` / ${formatBytes(stats.totalBytes)}` : ''}</span><span>{stats.paused ? t('launcher.downloadPaused') : `${formatBytes(stats.speedBytesPerSecond)}/s`}</span></div> : null}
+    {running ? <Progress label={label} message={packageCount ? t('launcher.dependencyPackageCount', { count: packageCount }) : undefined} showValue={!unknownTotal} indeterminate={!!unknownTotal} value={packagePercent ?? downloadPercent ?? operation.progress} /> : <p className="launcher-help">{label}</p>}
+    {stats ? <div className="launcher-download-stats"><span>{t('launcher.receivedBytes', { size: formatBytes(stats.transferredBytes) })}{stats.totalBytes ? ` / ${formatBytes(stats.totalBytes)}` : ''}</span><span>{stats.paused ? t('launcher.downloadPaused') : stats.canPause ? `${formatBytes(stats.speedBytesPerSecond)}/s` : t('launcher.downloadFinished')}</span></div> : null}
   </>;
 }
