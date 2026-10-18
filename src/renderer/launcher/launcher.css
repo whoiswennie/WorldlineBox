@@ -235,6 +235,8 @@
 .launcher-active-proxy strong { font-size: var(--ui-font-size-body); }
 .launcher-active-proxy p { margin: 4px 0 0; color: var(--ui-content-secondary); overflow-wrap: anywhere; }
 .launcher-active-dot { width: 10px; height: 10px; flex: 0 0 10px; border-radius: 50%; background: var(--ui-status-success); box-shadow: 0 0 0 5px color-mix(in srgb, var(--ui-status-success) 10%, transparent); }
+.launcher-active-proxy[data-proxy-enabled="false"] .launcher-active-dot { background: var(--ui-content-tertiary); box-shadow: none; }
+.launcher-proxy-toggle { margin-left: auto; flex-shrink: 0; }
 .launcher-active-sources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ui-space-3); }
 .launcher-active-source { min-width: 0; padding: var(--ui-space-4); border-radius: var(--ui-radius-control); background: var(--ui-surface-field); border: 1px solid var(--ui-border-subtle); }
 .launcher-active-source h3 { margin: 0 0 var(--ui-space-2); font-size: var(--ui-font-size-caption); color: var(--ui-content-secondary); }
@@ -269,6 +271,10 @@
 .launcher-market-target .launcher-help { margin: 0; }
 .launcher-market-search { display: flex; align-items: center; gap: var(--ui-space-4); margin: var(--ui-space-4) 0 var(--ui-space-5); }
 .launcher-market-search .ui-text-field { flex: 1; }
+.launcher-operations-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ui-space-3); }
+.launcher-operations-toolbar .ui-text-field { flex: 1 1 280px; }
+.launcher-operations-toolbar .ui-select { min-width: 160px; }
+.launcher-operations-meta { margin: var(--ui-space-3) 0; color: var(--ui-content-tertiary); font-size: var(--ui-font-size-caption); }
 .launcher-market-search > span { color: var(--ui-content-tertiary); font-size: var(--ui-font-size-caption); white-space: nowrap; }
 .launcher-market-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-space-4); }
 .launcher-market-card { display: flex; flex-direction: column; gap: var(--ui-space-3); min-width: 0; margin: 0; padding: var(--ui-space-4); }

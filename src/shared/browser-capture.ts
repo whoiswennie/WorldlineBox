@@ -92,6 +92,23 @@ export const browserCaptureContentRequestSchema = z.discriminatedUnion('type', [
     values: z.partialRecord(storageKey, z.union([z.boolean(), z.array(folderId).max(20)])) }),
 ]);
 export type BrowserCaptureContentRequest = z.infer<typeof browserCaptureContentRequestSchema>;
+// Expected denials and document teardown are normal browser lifecycles. Reply
+// explicitly instead of rejecting ipcMain.handle (which Electron logs as a Main
+// process handler error, even when the isolated content script handles it).
+export const browserCaptureContentResponseSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), value: z.unknown() }),
+  z.strictObject({ ok: z.literal(false), code: z.enum([
+    'unavailable', 'forbidden', 'invalid-request', 'document-gone', 'capture-failed',
+  ]), error: z.string().min(1).max(1000) }),
+]);
+export type BrowserCaptureContentResponse = z.infer<typeof browserCaptureContentResponseSchema>;
+
+export function readBrowserCaptureContentResponse(value: unknown): unknown {
+  const parsed = browserCaptureContentResponseSchema.safeParse(value);
+  if (!parsed.success) throw new Error('资产采集返回了无效响应。');
+  if (!parsed.data.ok) throw new Error(parsed.data.error);
+  return parsed.data.value;
+}
 export type BrowserCaptureContentEvent =
   | { type: 'runtime.message'; message: unknown }
   | { type: 'storage.changed'; area: 'local' | 'sync'; changes: Record<string, { oldValue?: unknown; newValue?: unknown }> };

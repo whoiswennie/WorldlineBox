@@ -25,7 +25,10 @@ const STORAGE_KEYS = [
 const storageKeys = new Set<string>(STORAGE_KEYS);
 
 export function supportsBuiltinContentUrl(url: string): boolean {
-  try { return ['http:', 'https:', 'file:'].includes(new URL(url).protocol); }
+  // Native browser tabs accept web URLs only. Blank/srcdoc/data/error documents
+  // and file previews must not initialize the privileged capture transport.
+  // The standalone Chrome extension retains its separate opt-in file access.
+  try { return ['http:', 'https:'].includes(new URL(url).protocol); }
   catch { return false; }
 }
 

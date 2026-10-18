@@ -5,8 +5,9 @@ import { app, clipboard, dialog, ipcMain, Menu, session, shell, WebContentsView,
 import { BROWSER_CHANGED, BROWSER_FOCUS, BROWSER_REQUEST, BROWSER_HOME, browserRequestSchema, type BrowserDownload, type BrowserRequest, type BrowserResponse, type BrowserState, type BrowserTab } from '../../shared/browser';
 import { getApplicationNetwork } from '../application-network';
 import { BrowserStore, browserAddress, isBrowserUrl, newBrowserTab } from './store';
-import { BROWSER_CAPTURE_CONTENT_REQUEST, BROWSER_CAPTURE_REQUEST, browserCaptureContentRequestSchema, browserCaptureRequestSchema, type BrowserCaptureRequest, type BrowserCaptureResponse } from '../../shared/browser-capture';
+import { BROWSER_CAPTURE_CONTENT_REQUEST, BROWSER_CAPTURE_REQUEST, browserCaptureContentRequestSchema, browserCaptureRequestSchema, type BrowserCaptureRequest, type BrowserCaptureResponse, type BrowserCaptureContentResponse } from '../../shared/browser-capture';
 import { BrowserCaptureHost, type BrowserCaptureHooks, type BrowserCaptureSource } from './capture-host';
+import { formatBrowserLoadError, shouldIgnoreBrowserLoadError } from '../../shared/browser-load-error';
 
 const MAX_LIVE_PAGES = 8;
 export class BrowserService {
@@ -29,6 +30,7 @@ export class BrowserService {
   private owner?: BrowserWindow;
   private capture?: BrowserCaptureHost;
   private preloadRegistration?: string;
+  private readonly navigationVersions = new Map<string, number>();
   constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks) {
     this.store = new BrowserStore(root, error => { this.error = '浏览器配置保存失败：' + String(error).slice(0, 600); this.changed(false); });
   }
@@ -74,12 +76,24 @@ export class BrowserService {
   async captureRequest(request: BrowserCaptureRequest): Promise<BrowserCaptureResponse> {
     await this.init(); if (!this.capture) return { ok: false, error: '资产采集服务不可用。' }; return this.capture.handle(request);
   }
-  async captureContent(event: Electron.IpcMainInvokeEvent, input: unknown): Promise<unknown> {
-    // Only frames belonging to this browser's sandboxed views can invoke the shim.
-    const source = this.captureSources().find(item => item.contents === event.sender && item.frame === event.senderFrame);
-    const parsed = browserCaptureContentRequestSchema.safeParse(input);
-    if (!source || !parsed.success || !this.capture || !/^https?:\/\//.test(source.frame.url)) throw Error('无权访问资产采集。');
-    return this.capture.content(parsed.data, source);
+  async captureContent(event: Electron.IpcMainInvokeEvent, input: unknown): Promise<BrowserCaptureContentResponse> {
+    try {
+      if (!this.capture) return { ok: false, code: 'unavailable', error: '资产采集服务不可用。' };
+      if (event.sender.isDestroyed() || !event.senderFrame || event.senderFrame.isDestroyed()) return { ok: false, code: 'document-gone', error: '页面已关闭或正在跳转，请在加载完成后重试。' };
+      // Only live frames belonging to this browser's sandboxed views can invoke
+      // the shim. A denied/transient frame gets a typed refusal, never an IPC
+      // exception in Electron's main process.
+      const source = this.captureSources().find(item => item.contents === event.sender && item.frame === event.senderFrame);
+      if (!source || !/^https?:\/\//.test(source.frame.url)) return { ok: false, code: 'forbidden', error: '当前页面无权访问资产采集。' };
+      const parsed = browserCaptureContentRequestSchema.safeParse(input);
+      if (!parsed.success) return { ok: false, code: 'invalid-request', error: '无效的采集请求。' };
+      const url = source.frame.url;
+      const value = await this.capture.content(parsed.data, source);
+      if (source.frame.isDestroyed() || source.contents.isDestroyed() || source.frame.url !== url || !this.owns(source.contents.id)) return { ok: false, code: 'document-gone', error: '页面已关闭或正在跳转，请在加载完成后重试。' };
+      return { ok: true, value };
+    } catch (error) {
+      return { ok: false, code: 'capture-failed', error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) || '资产采集暂不可用。' };
+    }
   }
   closeLibrary(libraryId: string): void { this.capture?.closeLibrary(libraryId); }
   state(): BrowserState {
@@ -105,23 +119,52 @@ export class BrowserService {
     }
     return owner;
   }
-  private ensureView(tab: BrowserTab, navigate = true): WebContentsView {
+  private pagePreferences(): Electron.WebPreferences {
+    // Apply these before Electron creates a popup's native WebContents too;
+    // adopting an existing WebContents cannot change its security preferences.
+    return { session: this.scope!, nodeIntegration: false, nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: !!this.capture, contextIsolation: true, sandbox: true, webSecurity: true,
+      webviewTag: false, allowRunningInsecureContent: false, preload: undefined,
+      backgroundThrottling: true, spellcheck: true, safeDialogs: true };
+  }
+  private evictionCandidate(protectedTab?: string) {
+    return [...this.views].filter(([id, entry]) => id !== protectedTab && id !== this.store.data.activeTabId
+      && !entry.view.webContents.isDestroyed() && !entry.view.webContents.isCurrentlyAudible()).sort((a, b) => a[1].used - b[1].used)[0];
+  }
+  private pageAction(action: () => void): void {
+    try { action(); }
+    catch (error) { this.reportPageError(error); }
+  }
+  private reportPageError(error: unknown): void {
+    this.error = (error instanceof Error ? error.message : String(error)).slice(0, 1000); this.changed(false);
+  }
+  private ensureView(tab: BrowserTab, navigate = true, options?: Electron.WebContentsViewConstructorOptions, protectedTab?: string): WebContentsView {
     const previous = this.views.get(tab.id);
     if (previous && !previous.view.webContents.isDestroyed()) { previous.used = Date.now(); tab.discarded = false; return previous.view; }
+    if (previous) this.destroyView(tab.id);
     const owner = this.attachOwner();
     if (this.views.size >= MAX_LIVE_PAGES) {
-      const victim = [...this.views].filter(([id, entry]) => id !== this.store.data.activeTabId && !entry.view.webContents.isCurrentlyAudible()).sort((a, b) => a[1].used - b[1].used)[0];
+      const victim = this.evictionCandidate(protectedTab);
       if (!victim) throw Error('活动页面较多，请先关闭或暂停部分播放页面。');
       this.destroyView(victim[0]);
     }
     // Electron otherwise omits registered frame preloads from child frames.
     // The hard sandbox and isolated world remain mandatory: the capture E2E
     // asserts no Node or privileged bridge is visible to any page or iframe.
-    const view = new WebContentsView({ webPreferences: { session: this.scope!, nodeIntegration: false, nodeIntegrationInSubFrames: !!this.capture, contextIsolation: true, sandbox: true, webSecurity: true,
-      backgroundThrottling: true, spellcheck: true, safeDialogs: true } });
+    const view = new WebContentsView({ ...(options?.webContents ? { webContents: options.webContents } : {}),
+      webPreferences: { ...options?.webPreferences, ...this.pagePreferences() } });
     owner.contentView.addChildView(view); view.setVisible(false);
     this.views.set(tab.id, { view, used: Date.now() }); tab.discarded = false;
     const contents = view.webContents; contents.setAudioMuted(tab.muted); contents.setZoomFactor(tab.zoom);
+    contents.once('destroyed', () => {
+      // window.close() must remove its tab as well. Explicit closes/evictions
+      // remove the map entry first and must not recursively open another page.
+      if (this.views.get(tab.id)?.view !== view) return;
+      this.views.delete(tab.id); this.navigationVersions.delete(tab.id); this.capture?.cancelTab(tab.id);
+      if (owner.isDestroyed()) return;
+      owner.contentView.removeChildView(view);
+      this.pageAction(() => this.closeTab(tab.id));
+    });
     // A normal browser user agent avoids desktop-wrapper notices; TLS and web security stay enabled.
     contents.setUserAgent(contents.getUserAgent().replace(/\s(?:WorldlineBox|Electron)\/[\w.-]+/g, ''));
     const refresh = () => {
@@ -133,6 +176,12 @@ export class BrowserService {
       tab.audible = contents.isCurrentlyAudible(); tab.zoom = contents.getZoomFactor(); this.layout(); this.changed();
     };
     contents.on('did-start-loading', () => { tab.error = undefined; refresh(); });
+    contents.on('did-start-navigation', (_event, url, inPlace, mainFrame) => {
+      if (!mainFrame || inPlace) return;
+      this.navigationVersions.set(tab.id, (this.navigationVersions.get(tab.id) ?? 0) + 1);
+      if (isBrowserUrl(url)) tab.url = url.slice(0, 8192);
+    });
+    contents.on('did-redirect-navigation', (_event, url, _inPlace, mainFrame) => { if (mainFrame && isBrowserUrl(url)) tab.url = url.slice(0, 8192); });
     contents.on('did-stop-loading', refresh);
     contents.on('page-title-updated', (_event, title) => { tab.title = (title.trim() || (tab.url === BROWSER_HOME ? '新标签页' : tab.url)).slice(0, 500); const visited = this.store.data.history.find(item => item.url === tab.url); if (visited) visited.title = tab.title; refresh(); });
     const navigated = (url: string) => { if (!isBrowserUrl(url)) return; tab.url = url.slice(0, 8192); tab.error = undefined; this.store.visit(tab.url, tab.title); refresh(); };
@@ -140,24 +189,55 @@ export class BrowserService {
     contents.on('did-navigate-in-page', (_event, url, mainFrame) => { if (mainFrame) navigated(url); });
     contents.on('media-started-playing', refresh); contents.on('media-paused', refresh);
     contents.on('found-in-page', (_event, result) => { if (tab.id === this.store.data.activeTabId) { this.find = { matches: result.matches, activeMatchOrdinal: result.activeMatchOrdinal }; this.changed(false); } });
-    contents.on('did-fail-load', (_event, code, description, _url, mainFrame) => { if (mainFrame && code !== -3) { tab.error = description.slice(0, 1000); tab.loading = false; this.layout(); this.changed(); } });
+    contents.on('did-fail-load', (_event, code, description, url, mainFrame) => {
+      if (mainFrame && !shouldIgnoreBrowserLoadError(code, description) && url === tab.url) {
+        tab.error = formatBrowserLoadError(code, description); tab.loading = false; this.layout(); this.changed();
+      }
+    });
     contents.on('render-process-gone', () => { tab.error = '页面进程已退出，请重新加载。'; tab.loading = false; tab.discarded = true; this.layout(); this.changed(); });
     contents.on('will-navigate', (event, url) => { if (!isBrowserUrl(url)) event.preventDefault(); });
     contents.on('will-redirect', (event, url) => { if (!isBrowserUrl(url)) event.preventDefault(); });
     contents.setWindowOpenHandler(details => {
-      if (!isBrowserUrl(details.url)) return { action: 'deny' };
-      return { action: 'allow', outlivesOpener: true, createWindow: () => {
-        const child = this.addTab(details.url, false, false); const childView = this.ensureView(child, false); this.layout(); this.changed(); return childView.webContents;
+      if (details.url.length > 8192 || !isBrowserUrl(details.url)) return { action: 'deny' };
+      try {
+        this.attachOwner();
+        if (this.store.data.tabs.length >= 50) throw Error('最多保留 50 个标签页，请先关闭部分页面。');
+        if (this.views.size >= MAX_LIVE_PAGES && !this.evictionCandidate(tab.id)) throw Error('活动页面较多，请先关闭或暂停部分播放页面。');
+      } catch (error) { this.reportPageError(error); return { action: 'deny' }; }
+      return { action: 'allow', outlivesOpener: true, overrideBrowserWindowOptions: { webPreferences: this.pagePreferences() }, createWindow: options => {
+        // Electron supplies the native guest through this runtime option. It
+        // must be adopted verbatim to preserve opener, POST and navigation.
+        const supplied = options as Electron.WebContentsViewConstructorOptions;
+        try {
+          const child = this.addTab(details.url, details.disposition === 'background-tab', false, supplied, tab.id);
+          const childContents = this.views.get(child.id)!.view.webContents;
+          // OpenURLFromTab can omit a native guest. In that path a custom
+          // createWindow callback also owns the initial navigation.
+          if (!supplied.webContents) {
+            const post = details.postBody;
+            void this.load(child, details.url, { httpReferrer: details.referrer, ...(post ? {
+              postData: post.data, extraHeaders: 'content-type: ' + post.contentType + (post.boundary ? '; boundary=' + post.boundary : '') } : {}) });
+          }
+          this.layout(); this.changed(); return childContents;
+        } catch (error) {
+          // Capacity or owner lifetime can change between admission and native
+          // creation. Complete Electron's identity contract, then close the
+          // rejected guest without an uncaught main-process exception.
+          this.reportPageError(error);
+          const rejected = supplied.webContents ?? new WebContentsView({ webPreferences: this.pagePreferences() }).webContents;
+          queueMicrotask(() => { if (!rejected.isDestroyed()) rejected.close(); });
+          return rejected;
+        }
       } };
     });
     contents.on('enter-html-full-screen', () => {
       this.previousFullscreen = owner.isFullScreen(); this.fullscreen = true; owner.setFullScreen(true); this.layout(); this.changed(false);
     });
     contents.on('leave-html-full-screen', () => { this.fullscreen = false; owner.setFullScreen(this.previousFullscreen); this.layout(); this.changed(false); });
-    contents.on('before-input-event', (event, input) => { if (input.type === 'keyDown' && this.shortcut(input.key, input.control || input.meta, input.shift, input.alt)) event.preventDefault(); });
+    contents.on('before-input-event', (event, input) => { if (input.type === 'keyDown') this.pageAction(() => { if (this.shortcut(input.key, input.control || input.meta, input.shift, input.alt)) event.preventDefault(); }); });
     contents.on('context-menu', (_event, params) => {
       const items: Electron.MenuItemConstructorOptions[] = [];
-      if (params.linkURL && isBrowserUrl(params.linkURL)) items.push({ label: '在新标签页打开链接', click: () => { this.addTab(params.linkURL, true); this.changed(); } }, { label: '复制链接地址', click: () => clipboard.writeText(params.linkURL) }, { type: 'separator' });
+      if (params.linkURL && isBrowserUrl(params.linkURL)) items.push({ label: '在新标签页打开链接', click: () => this.pageAction(() => { this.addTab(params.linkURL, true); this.changed(); }) }, { label: '复制链接地址', click: () => clipboard.writeText(params.linkURL) }, { type: 'separator' });
       if (params.srcURL && (isBrowserUrl(params.srcURL) || params.srcURL.startsWith('blob:'))) items.push({ label: '下载此内容', click: () => contents.downloadURL(params.srcURL) });
       if (params.isEditable) items.push({ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' });
       else if (params.selectionText) items.push({ label: '复制', click: () => contents.copy() });
@@ -179,28 +259,38 @@ export class BrowserService {
     const saved = this.store.data.navigation[tab.id];
     const load = saved && saved.entries.length && saved.index < saved.entries.length && saved.entries.every(entry => isBrowserUrl(entry.url))
       ? contents.navigationHistory.restore({ entries: saved.entries, index: saved.index }) : this.load(tab, tab.url);
-    void load.catch(error => { tab.error = String(error).slice(0, 1000); this.layout(); this.changed(); });
+    const version = this.navigationVersions.get(tab.id);
+    void load.catch(error => {
+      if (!contents.isDestroyed() && this.views.get(tab.id)?.view.webContents === contents
+        && this.navigationVersions.get(tab.id) === version && !shouldIgnoreBrowserLoadError(error)) {
+        tab.error = formatBrowserLoadError(error); this.layout(); this.changed();
+      }
+    });
   }
-  private async load(tab: BrowserTab, url: string): Promise<void> {
+  private async load(tab: BrowserTab, url: string, options?: Electron.LoadURLOptions): Promise<void> {
     if (!isBrowserUrl(url)) throw Error('拒绝打开不受支持的网页地址。');
     tab.url = url; tab.error = undefined; const view = this.ensureView(tab, false); this.layout();
-    try { await view.webContents.loadURL(url); }
-    catch (error) { if (!view.webContents.isDestroyed()) { tab.loading = false; tab.error = String(error).slice(0, 1000); this.layout(); this.changed(); } }
+    let version = this.navigationVersions.get(tab.id);
+    try { const loading = view.webContents.loadURL(url, options); version = this.navigationVersions.get(tab.id); await loading; }
+    catch (error) { if (!view.webContents.isDestroyed() && this.views.get(tab.id)?.view === view
+      && this.navigationVersions.get(tab.id) === version && !shouldIgnoreBrowserLoadError(error)) {
+      tab.loading = false; tab.error = formatBrowserLoadError(error); this.layout(); this.changed();
+    } }
   }
   private destroyView(id: string): void {
     const entry = this.views.get(id); if (!entry) return;
-    this.capture?.cancelTab(id); this.owner?.contentView.removeChildView(entry.view); this.views.delete(id);
+    this.capture?.cancelTab(id); this.owner?.contentView.removeChildView(entry.view); this.views.delete(id); this.navigationVersions.delete(id);
     if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
     const tab = this.store.data.tabs.find(item => item.id === id); if (tab) { tab.discarded = true; tab.loading = false; }
   }
-  private addTab(url = BROWSER_HOME, background = false, navigate = true): BrowserTab {
+  private addTab(url = BROWSER_HOME, background = false, navigate = true, popupOptions?: Electron.WebContentsViewConstructorOptions, protectedTab?: string): BrowserTab {
     if (this.store.data.tabs.length >= 50) throw Error('最多保留 50 个标签页，请先关闭部分页面。');
     if (!isBrowserUrl(url)) throw Error('无效的网页地址。');
     const previous = this.store.data.activeTabId;
     const tab = newBrowserTab(url); this.store.data.tabs.push(tab);
-    if (!background) {
-      this.store.data.activeTabId = tab.id;
-      try { this.ensureView(tab, navigate); } catch (error) { this.store.data.tabs = this.store.data.tabs.filter(item => item.id !== tab.id); this.store.data.activeTabId = previous; this.layout(); throw error; }
+    if (!background || popupOptions) {
+      if (!background) this.store.data.activeTabId = tab.id;
+      try { this.ensureView(tab, navigate, popupOptions, protectedTab); } catch (error) { this.destroyView(tab.id); this.store.data.tabs = this.store.data.tabs.filter(item => item.id !== tab.id); this.store.data.activeTabId = previous; this.layout(); throw error; }
       this.layout();
     }
     this.changed(); return tab;
@@ -380,8 +470,8 @@ export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undef
     try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks)).captureRequest(parsed.data); }
     catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
   });
-  ipcMain.handle(BROWSER_CAPTURE_CONTENT_REQUEST, (event, input: unknown) => {
-    if (!browser) throw Error('浏览器尚未启动。'); return browser.captureContent(event, input);
+  ipcMain.handle(BROWSER_CAPTURE_CONTENT_REQUEST, (event, input: unknown): Promise<BrowserCaptureContentResponse> | BrowserCaptureContentResponse => {
+    if (!browser) return { ok: false, code: 'unavailable', error: '浏览器尚未启动。' }; return browser.captureContent(event, input);
   });
   return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId) };
 }

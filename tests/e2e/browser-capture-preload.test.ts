@@ -32,10 +32,11 @@ test('capture preload reuses the extension in all sandboxed frames without expos
     return http.createServer((request, response) => {
       if (request.url === '/pixel.png') { response.writeHead(200, { 'content-type': 'image/png' }); response.end(pixel); return; }
       response.writeHead(200, { 'content-type': 'text/html',
-        'content-security-policy': "default-src 'self'; script-src 'none'; style-src 'none'; img-src 'self'; frame-src http://127.0.0.1:*" });
+        'content-security-policy': "default-src 'self'; script-src 'none'; style-src 'none'; img-src 'self'; frame-src 'self' http://127.0.0.1:* data:" });
       // No inline page styling: the fixture itself must respect the same CSP.
       response.end('<!doctype html><html><body><div><img id="media" draggable="true" width="80" height="80" src="/pixel.png"></div>'
-        + (withFrame ? '<div>' + '<br>'.repeat(20) + '</div><iframe width="900" height="500" src="' + childOrigin + '/child"></iframe>' : '') + '</body></html>');
+        + (withFrame ? '<div>' + '<br>'.repeat(20) + '</div><iframe width="900" height="500" src="' + childOrigin + '/child"></iframe>'
+          + '<iframe src="about:blank"></iframe><iframe srcdoc="Blank document"></iframe><iframe src="data:text/html,Data document"></iframe>' : '') + '</body></html>');
     });
   }
   const childServer = server(false); const mainServer = server(true);
@@ -103,6 +104,7 @@ test('capture preload reuses the extension in all sandboxed frames without expos
       await driver;
       await test.info().attach('browser-capture-preload', { body: log, contentType: 'text/plain' });
       expect(code, log + '\nEvidence: ' + root).toBe(0); expect(log).toContain('BROWSER_CAPTURE_PRELOAD_RESULT');
+      expect(log).not.toContain('Error occurred in handler'); expect(log).not.toContain('CAPTURE_PRELOAD_ERROR');
       console.log(log.split(/\r?\n/u).find(line => line.startsWith('BROWSER_CAPTURE_PRELOAD_RESULT ')));
     } finally { clearTimeout(timer); await application.close().catch(() => undefined); }
   } finally {

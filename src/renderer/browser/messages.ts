@@ -1,4 +1,14 @@
 export const browserZh = {
+  failureDetails: '技术详情',
+  loadFailure: {
+    dns: '无法解析网站地址。请检查网址、网络连接或当前代理的 DNS 设置后重试。',
+    connection: '连接被中断或网站暂时无法连接。请稍后重试；若持续发生，可检查当前网络或代理。',
+    offline: '网络连接已断开。恢复连接后可重新加载此网页。',
+    timeout: '连接网站超时。请稍后重试，或检查网络和代理是否可用。',
+    secure: '无法建立安全连接。请检查系统时间、网站证书或当前网络代理后重试。',
+    proxy: '无法通过当前代理连接网站。请检查全局网络设置中的代理地址和运行状态。',
+    generic: '此网页加载失败。可重新加载，或打开全局网络设置检查连接。',
+  },
   capture: '保存到资产库', captureTitle: '网页资源采集', captureBuiltIn: '已内置 · 无需安装扩展', captureReady: '已连接资产库', captureNoLibrary: '请先打开资源库', captureLoading: '正在连接资产库…', captureLocalImage: '采集本地图片',
   captureLibrary: '目标资源库', captureDestination: '默认保存位置', captureRoot: '根目录', captureRecent: '最近使用', captureFolders: '文件夹', captureNoFolders: '资源库中还没有文件夹，可先保存到根目录。', captureRefresh: '刷新资源库与文件夹', captureOpenAssets: '打开资产管理', captureReadOnly: '此资源库为只读，请选择可写入的资源库。', captureRecentSaves: '最近采集', captureCancelled: '已取消保存', captureDeduplicated: '已识别重复内容，保留资源库中的原资产。',
   captureHowTitle: '采集图片和视频', captureHowContext: '右键网页图片或视频，选择“保存到 WorldlineBox”，再选择目标文件夹。', captureHowDrag: '拖拽图片或视频会展开文件夹树，松开放入目标文件夹；按 Esc 或在菜单外松开可取消。', captureTargetHint: '默认位置供快捷保存使用；右键菜单和拖拽树仍可选择其他文件夹。',
@@ -8,6 +18,7 @@ export const browserZh = {
   favorite: '收藏当前页面', bookmarkTitle: '收藏名称', folder: '收藏文件夹', save: '保存', remove: '移除', close: '关闭', pin: '固定/取消固定标签页', mute: '静音/取消静音',
   find: '在页面中查找', previous: '上一项', next: '下一项', zoom: '页面缩放', fullscreen: '全屏', devtools: '开发者工具', loading: '正在打开网页…', unavailable: '浏览器尚未就绪',
   emptyBookmarks: '还没有收藏，在地址栏旁点击星标即可添加。', emptyHistory: '没有符合条件的历史记录。', emptyDownloads: '暂无下载记录。', searchHistory: '搜索历史记录', open: '打开', reveal: '所在文件夹',
+  searchDownloads: '搜索文件名、网址或错误', noMatchingDownloads: '没有符合条件的下载记录。', downloadStatus: '下载状态', allDownloads: '全部状态', downloadResultCount: '匹配记录', downloadPage: '下载页码', previousPage: '上一页', nextPage: '下一页',
   pause: '暂停', resume: '继续', cancel: '取消', retry: '重新下载', progressing: '下载中', paused: '已暂停', completed: '已完成', cancelled: '已取消', interrupted: '已中断',
   homepage: '默认主页', searchEngine: '默认搜索引擎', restoreSession: '重启后恢复标签页', askDownloadLocation: '每次下载询问保存位置', preferencesSaved: '浏览器设置已保存',
   clearData: '清理浏览数据', cache: '网页缓存（保留登录状态）', siteData: 'Cookie 和站点数据（可能退出登录）', clearHistory: '历史记录', clearDownloads: '下载记录（保留文件）',
@@ -18,6 +29,16 @@ export const browserZh = {
   permission: { media: '摄像头或麦克风', geolocation: '位置', notifications: '通知', 'clipboard-read': '读取剪贴板', pointerLock: '锁定鼠标', keyboardLock: '锁定键盘', 'storage-access': '站点存储' },
 };
 export const browserEn = {
+  failureDetails: 'Technical details',
+  loadFailure: {
+    dns: 'The website address could not be resolved. Check the address, connection, or DNS settings for your current proxy, then try again.',
+    connection: 'The connection was interrupted or the website is unavailable. Try again later; if it persists, check your connection or proxy.',
+    offline: 'Your network connection is offline. Reload this page after reconnecting.',
+    timeout: 'The website took too long to respond. Try again later, or check your connection and proxy.',
+    secure: 'A secure connection could not be established. Check your system clock, the website certificate, or your current network proxy.',
+    proxy: 'The website could not be reached through the current proxy. Check the proxy address and status in global network settings.',
+    generic: 'The page could not be loaded. Reload it, or check the connection in global network settings.',
+  },
   capture: 'Save to asset library', captureTitle: 'Web capture', captureBuiltIn: 'Built in · No extension installation needed', captureReady: 'Connected to library', captureNoLibrary: 'Open an asset library first', captureLoading: 'Connecting to the library…', captureLocalImage: 'Capture a local image',
   captureLibrary: 'Destination library', captureDestination: 'Default save folder', captureRoot: 'Library root', captureRecent: 'Recently used', captureFolders: 'Folders', captureNoFolders: 'No folders yet. You can save to the library root.', captureRefresh: 'Refresh library and folders', captureOpenAssets: 'Open asset manager', captureReadOnly: 'This library is read-only. Choose a writable library.', captureRecentSaves: 'Recent captures', captureCancelled: 'Save cancelled', captureDeduplicated: 'Duplicate content detected. The original library asset was kept.',
   captureHowTitle: 'Capture images and videos', captureHowContext: 'Right-click an image or video, choose “Save to WorldlineBox”, then choose a destination folder.', captureHowDrag: 'Drag an image or video to open the folder tree, then release on a folder to save. Press Esc or release outside the menu to cancel.', captureTargetHint: 'The default folder is used by quick save. The context menu and drag tree can still select another folder.',
@@ -27,6 +48,7 @@ export const browserEn = {
   favorite: 'Bookmark this page', bookmarkTitle: 'Bookmark title', folder: 'Bookmark folder', save: 'Save', remove: 'Remove', close: 'Close', pin: 'Pin/unpin tab', mute: 'Mute/unmute tab',
   find: 'Find in page', previous: 'Previous', next: 'Next', zoom: 'Page zoom', fullscreen: 'Fullscreen', devtools: 'Developer tools', loading: 'Opening page…', unavailable: 'Browser unavailable',
   emptyBookmarks: 'No bookmarks yet. Use the star next to the address bar.', emptyHistory: 'No matching history.', emptyDownloads: 'No downloads yet.', searchHistory: 'Search history', open: 'Open', reveal: 'Show in folder',
+  searchDownloads: 'Search filename, URL, or error', noMatchingDownloads: 'No matching downloads.', downloadStatus: 'Download status', allDownloads: 'All statuses', downloadResultCount: 'Matching records', downloadPage: 'Download page', previousPage: 'Previous page', nextPage: 'Next page',
   pause: 'Pause', resume: 'Resume', cancel: 'Cancel', retry: 'Download again', progressing: 'Downloading', paused: 'Paused', completed: 'Completed', cancelled: 'Cancelled', interrupted: 'Interrupted',
   homepage: 'Homepage', searchEngine: 'Default search engine', restoreSession: 'Restore tabs after restart', askDownloadLocation: 'Ask where to save each download', preferencesSaved: 'Browser settings saved',
   clearData: 'Clear browsing data', cache: 'Web cache (keep sign-ins)', siteData: 'Cookies and site data (may sign you out)', clearHistory: 'Browsing history', clearDownloads: 'Download history (keep files)',

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createBuiltinContentChrome, supportsBuiltinContentUrl } from '../../extension/builtin-content';
-import type { BrowserCaptureContentRequest } from '../../src/shared/browser-capture';
+import { readBrowserCaptureContentResponse, type BrowserCaptureContentRequest } from '../../src/shared/browser-capture';
 
 function fixture(url = 'https://example.test/gallery') {
   let receive: (event: unknown) => void = () => undefined;
@@ -81,6 +81,32 @@ describe('built-in browser content Chrome shim', () => {
     expect(chrome.runtime.lastError).toBeUndefined();
   });
 
+  it('turns structured host refusals into normal Chrome callback errors', async () => {
+    const { chrome, request } = fixture();
+    request.mockImplementation(async () => readBrowserCaptureContentResponse({ ok: false, code: 'document-gone', error: '页面已关闭或正在跳转。' }));
+    const result = await new Promise(resolve => chrome.storage.sync.get('worldlineboxDragRadialMenuEnabled', value => {
+      resolve({ value, error: chrome.runtime.lastError?.message });
+    }));
+    expect(result).toEqual({ value: {}, error: '页面已关闭或正在跳转。' });
+    expect(chrome.runtime.lastError).toBeUndefined();
+    expect(readBrowserCaptureContentResponse({ ok: true, value: { kind: 'connected' } })).toEqual({ kind: 'connected' });
+    expect(() => readBrowserCaptureContentResponse({ ok: true, code: 'forbidden', error: 'bad' })).toThrow('无效响应');
+  });
+
+  it('does not invoke callbacks after a document unload while a host request is pending', async () => {
+    const { chrome, request, dispose, unsubscribe } = fixture();
+    let finish: ((value: unknown) => void) | undefined;
+    request.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const callback = vi.fn();
+    chrome.storage.sync.get('worldlineboxDragRadialMenuEnabled', callback);
+    await Promise.resolve();
+    expect(request).toHaveBeenCalledOnce();
+    dispose();
+    finish?.({ worldlineboxDragRadialMenuEnabled: true });
+    await Promise.resolve(); await Promise.resolve();
+    expect(callback).not.toHaveBeenCalled(); expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
   it('dispatches native save feedback and preference changes to the original listeners', () => {
     const { chrome, event } = fixture();
     const runtime = vi.fn(); const changed = vi.fn();
@@ -101,7 +127,7 @@ describe('built-in browser content Chrome shim', () => {
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['about:blank', 'data:text/html,hi', 'javascript:void(0)', 'not a URL'])('does not grant capture transport to %s', async url => {
+  it.each(['about:blank', 'about:srcdoc', 'chrome-error://chromewebdata/', 'file:///C:/Pictures/gallery.html', 'data:text/html,hi', 'javascript:void(0)', 'not a URL'])('does not grant capture transport to %s', async url => {
     const { chrome, request, event } = fixture(url); const listener = vi.fn();
     chrome.runtime.onMessage.addListener(listener);
     const response = await new Promise(resolve => chrome.runtime.sendMessage({ type: 'worldlinebox-connection-status' }, value => resolve({ value, error: chrome.runtime.lastError?.message })));
@@ -110,8 +136,8 @@ describe('built-in browser content Chrome shim', () => {
     expect(listener).not.toHaveBeenCalled(); expect(request).not.toHaveBeenCalled();
   });
 
-  it('supports HTTP, HTTPS and local file contexts and removes IPC subscriptions when disposed', () => {
-    for (const url of ['http://example.test/', 'https://example.test/', 'file:///C:/Pictures/gallery.html']) expect(supportsBuiltinContentUrl(url)).toBe(true);
+  it('supports HTTP and HTTPS contexts and removes IPC subscriptions when disposed', () => {
+    for (const url of ['http://example.test/', 'https://example.test/']) expect(supportsBuiltinContentUrl(url)).toBe(true);
     const { chrome, event, dispose, unsubscribe } = fixture(); const listener = vi.fn();
     chrome.runtime.onMessage.addListener(listener); dispose();
     event({ type: 'runtime.message', message: { type: 'worldlinebox-save-feedback', state: 'saving' } });

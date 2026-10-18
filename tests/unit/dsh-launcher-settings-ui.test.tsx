@@ -97,9 +97,12 @@ async function mountNetwork(initial = network(), rejectSave = false) {
   function Harness() {
     const [value, setValue] = useState(applied);
     request.mockImplementation(async input => {
-      if (input.type === 'network.save') {
+      if (input.type === 'network.save' || input.type === 'network.patch' || input.type === 'network.proxy.toggle') {
         if (rejectSave) return { ok: false, error: 'Invalid proxy URL' };
-        applied = { ...applied, network: { settings: input.settings, revision: applied.network!.revision + 1 } };
+        const previous = applied.network!.settings;
+        const settings = input.type === 'network.save' ? input.settings : input.type === 'network.patch' ? { ...previous, ...input.patch }
+          : { ...previous, proxyMode: input.enabled ? previous.proxyResumeMode ?? 'system' : 'direct', proxyResumeMode: previous.proxyMode === 'direct' ? previous.proxyResumeMode : previous.proxyMode } as DshNetworkSettings;
+        applied = { ...applied, network: { settings, revision: applied.network!.revision + 1 } };
         setValue(applied); return { ok: true, state: applied };
       }
       if (input.type === 'network.test') return { ok: true, text: 'GitHub: OK\nnpm: OK' };
@@ -138,7 +141,7 @@ it('shows only the enabled proxy and saves switching without a second save actio
   const second = container!.querySelectorAll('.launcher-proxy-profile-list li')[1]!;
   expect(second.textContent).toContain('已保存 · 未启用');
   await act(() => button('保存并启用', second).click());
-  expect(request.mock.calls.filter(([input]) => input.type === 'network.save')).toHaveLength(1);
+  expect(request.mock.calls.filter(([input]) => input.type === 'network.patch')).toHaveLength(1);
   expect(container!.querySelector('[data-network-active]')!.textContent).toContain('B');
   expect(container!.querySelector('[data-profile-active="true"] strong')!.textContent).toBe('B');
 });
@@ -201,3 +204,30 @@ it('shows actual per-source proxy routes and bounded diagnostic failures without
   expect(container!.querySelector('[data-check-ok="false"]')!.textContent).toContain('HTTP 403');
 });
 const officialNpmForTest = 'https://registry.npmjs.org';
+
+it('switches the applied proxy off and on without applying or discarding unrelated unsaved edits', async () => {
+  const request = await mountNetwork({ ...network(), proxyMode: 'custom', proxyUrl: 'http://127.0.0.1:7896' });
+  await fill(control('npm 注册表'), 'https://unsaved.example/npm');
+  const toggle = container!.querySelector<HTMLButtonElement>('[role="switch"]')!;
+  expect(toggle.getAttribute('aria-checked')).toBe('true');
+  await act(() => toggle.click());
+  expect(request.mock.calls.some(([input]) => input.type === 'network.save')).toBe(false);
+  expect(request.mock.calls.find(([input]) => input.type === 'network.proxy.toggle')?.[0]).toEqual({ type: 'network.proxy.toggle', enabled: false });
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('直接连接');
+  expect(control<HTMLInputElement>('npm 注册表').value).toBe('https://unsaved.example/npm');
+  await act(() => container!.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('http://127.0.0.1:7896');
+  expect(container!.querySelector('[data-active-source="npm"]')!.textContent).not.toContain('unsaved.example');
+});
+
+it('activates port 7896 and mirror presets immediately while preserving a separate proxy draft', async () => {
+  const request = await mountNetwork();
+  await select('快速启用本机代理端口', 'http://127.0.0.1:7896');
+  expect(request.mock.calls.find(([input]) => input.type === 'network.patch')?.[0]).toEqual({ type: 'network.patch', patch: { proxyMode: 'custom', proxyUrl: 'http://127.0.0.1:7896' } });
+  await fill(control('代理地址'), 'http://127.0.0.1:8088');
+  await select('npm 来源方案', 'https://mirrors.huaweicloud.com/npm');
+  expect(container!.querySelector('[data-active-source="npm"]')!.textContent).toContain('https://mirrors.huaweicloud.com/npm');
+  expect(control<HTMLInputElement>('代理地址').value).toBe('http://127.0.0.1:8088');
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('http://127.0.0.1:7896');
+  expect(request.mock.calls.filter(([input]) => input.type === 'network.patch').at(-1)?.[0]).toEqual({ type: 'network.patch', patch: { npmRegistry: 'https://mirrors.huaweicloud.com/npm', npmDownloadRoute: 'registry' } });
+});

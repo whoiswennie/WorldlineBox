@@ -24,6 +24,48 @@ function release(version: string) { return { name: '@deepseek-ai/dsh', version, 
 const npm = { name: '@deepseek-ai/dsh', 'dist-tags': { latest: '0.2.0-rc.2' }, versions: Object.fromEntries(['0.2.0-rc.2', '0.2.1-alpha.2', '0.2.1-alpha.10'].map(version => [version, release(version)])) };
 
 describe('hot launcher networking', () => {
+  it('disables to direct even when the OS has a proxy, and restores the same custom address after restart', async () => {
+    const root = await temporary(); const current = scope();
+    const service = new LauncherNetwork(root, () => undefined, () => current as unknown as Session); await service.init();
+    await service.patch({ proxyMode: 'custom', proxyUrl: 'http://127.0.0.1:7896' });
+    await service.setProxyEnabled(false);
+    expect(current.setProxy).toHaveBeenLastCalledWith({ mode: 'direct' });
+    expect(service.state().settings).toMatchObject({ proxyMode: 'direct', proxyUrl: 'http://127.0.0.1:7896', proxyResumeMode: 'custom' });
+    const environment = await service.environment({ HTTP_PROXY: 'http://stale.example:9', https_proxy: 'http://stale.example:9', ALL_PROXY: 'http://stale.example:9' });
+    expect(environment.HTTP_PROXY).toBeUndefined(); expect(environment.https_proxy).toBeUndefined(); expect(environment.ALL_PROXY).toBeUndefined();
+    const reopened = new LauncherNetwork(root, () => undefined, () => scope() as unknown as Session); await reopened.init();
+    await reopened.setProxyEnabled(true);
+    expect(reopened.state().settings).toMatchObject({ proxyMode: 'custom', proxyUrl: 'http://127.0.0.1:7896' });
+    expect((await reopened.environment()).HTTPS_PROXY).toBe('http://127.0.0.1:7896');
+  });
+  it('merges immediate policy changes inside its queue and rolls back a failed switch without losing the previous route', async () => {
+    const current = scope(); const service = new LauncherNetwork(await temporary(), () => undefined, () => current as unknown as Session); await service.init();
+    await Promise.all([service.patch({ npmRegistry: 'https://mirrors.huaweicloud.com/npm', npmDownloadRoute: 'registry' }), service.patch({ proxyMode: 'custom', proxyUrl: 'http://127.0.0.1:7896' })]);
+    expect(service.state().settings).toMatchObject({ npmRegistry: 'https://mirrors.huaweicloud.com/npm', npmDownloadRoute: 'registry', proxyUrl: 'http://127.0.0.1:7896' });
+    current.setProxy.mockRejectedValueOnce(Error('cannot change route'));
+    await expect(service.setProxyEnabled(false)).rejects.toThrow('cannot change route');
+    expect(service.state().settings).toMatchObject({ proxyMode: 'custom', proxyUrl: 'http://127.0.0.1:7896' });
+    expect(current.closeAllConnections).toHaveBeenCalled();
+    await service.patch({ proxyMode: 'system' }); await service.setProxyEnabled(false); await service.setProxyEnabled(true);
+    expect(service.state().settings.proxyMode).toBe('system');
+  });
+  it('adds newly offered proxy ports to an old configuration once and keeps user names and later removals', async () => {
+    const root = await temporary();
+    const settings = { ...DEFAULT_LAUNCHER_NETWORK, proxyPresetsVersion: undefined, proxyProfiles: [
+      { id: 'personal', name: 'My personal proxy', url: 'http://127.0.0.1:7896' },
+      { id: 'clash-7897', name: 'Existing custom name', url: 'http://127.0.0.1:7897' },
+    ] };
+    await writeFile(path.join(root, 'network.json'), JSON.stringify(settings));
+    const service = new LauncherNetwork(root, () => undefined, () => scope() as unknown as Session); await service.init();
+    const migrated = service.state().settings;
+    expect(migrated.proxyProfiles.find(profile => profile.id === 'personal')?.name).toBe('My personal proxy');
+    expect(migrated.proxyProfiles.find(profile => profile.id === 'clash-7897')?.name).toBe('Existing custom name');
+    expect(migrated.proxyProfiles.filter(profile => profile.url === 'http://127.0.0.1:7896')).toHaveLength(1);
+    expect(migrated.proxyProfiles.some(profile => profile.url === 'http://127.0.0.1:7898')).toBe(true);
+    await service.save({ ...migrated, proxyProfiles: migrated.proxyProfiles.filter(profile => profile.url !== 'http://127.0.0.1:7898') });
+    const reopened = new LauncherNetwork(root, () => undefined, () => scope() as unknown as Session); await reopened.init();
+    expect(reopened.state().settings.proxyProfiles.some(profile => profile.url === 'http://127.0.0.1:7898')).toBe(false);
+  });
   it('updates existing and newly attached sessions and rolls every consumer back if application fails', async () => {
     const first = scope(); const second = scope(); const third = scope();
     const root = await temporary();

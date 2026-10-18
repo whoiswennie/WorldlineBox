@@ -271,6 +271,8 @@ export class DshLauncher {
         await writeFile(target.filePath, this.cliTerminal.export(request.terminalId), { mode: 0o600 }); return { ok: true };
       }
       case 'network.save': await this.network.save(request.settings); await this.network.inspect(); return { ok: true, state: this.state() };
+      case 'network.patch': await this.network.patch(request.patch); await this.network.inspect(); return { ok: true, state: this.state() };
+      case 'network.proxy.toggle': await this.network.setProxyEnabled(request.enabled); await this.network.inspect(); return { ok: true, state: this.state() };
       case 'network.inspect': await this.network.inspect(); return { ok: true, state: this.state() };
       case 'network.test': { const text = await this.network.test(); return { ok: true, text, state: this.state() }; }
       case 'versions.refresh': return { ok: true, operationId: await this.operations.run(request.type, '同步官方 DSH 发行版', undefined, op => this.versions.refresh(op.signal)) };

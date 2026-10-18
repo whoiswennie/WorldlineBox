@@ -1,4 +1,6 @@
 export const launcherZh = {
+  searchOperations: "搜索操作记录", searchOperationsPlaceholder: "搜索名称、类型、实例或错误…", filterOperationStatus: "操作状态", allOperationStatuses: "所有状态", clearOperationFilters: "清除筛选", noMatchingOperations: "没有匹配的操作记录", operationResultRange: "第 {start}–{end} 条 / 匹配 {count} 条 · 共 {total} 条记录", operationPages: "操作记录分页", operationPageNumber: "第 {page} / {pages} 页",
+  proxyEnabled: "启用代理", enableProxy: "开启代理", disableProxy: "关闭代理", proxyToggleNote: "开关立即保存并生效。关闭后本项目直接连接，不再跟随系统代理；再次开启会恢复上次的代理方式与地址。其他未保存的修改不会一并应用。", quickProxyPort: "快速启用本机代理端口", chooseProxyPort: "选择 HTTP / 混合端口", proxyPortNote: "请选择代理软件实际配置的 HTTP 或混合端口。端口预设不会启动代理，也不代表该端口已有服务；SOCKS 专用端口请勿按 HTTP 使用。",
   networkActive: '当前生效', networkActiveNote: '这里显示已经应用的配置；修改表单不会提前改变它。', appliedConfig: '已应用',
   networkPendingNote: '有未应用的修改。当前仍使用下方配置，保存后才会切换。',
   systemProxyPerTarget: '由系统按请求目标决定，实际代理见各来源卡片。', directProxyNote: '后续请求直接连接，不经过代理。',
@@ -84,6 +86,8 @@ export const launcherZh = {
 } as const;
 
 export const launcherEn = {
+  searchOperations: "Search operations", searchOperationsPlaceholder: "Search name, type, instance or error…", filterOperationStatus: "Operation status", allOperationStatuses: "All statuses", clearOperationFilters: "Clear filters", noMatchingOperations: "No matching operations", operationResultRange: "{start}–{end} of {count} matches · {total} records", operationPages: "Operation pages", operationPageNumber: "Page {page} of {pages}",
+  proxyEnabled: "Enable proxy", enableProxy: "Enable proxy", disableProxy: "Disable proxy", proxyToggleNote: "The switch saves and applies immediately. Turning it off uses a direct connection in this project, independently of the system proxy. Turning it on restores the previous proxy mode and address. Other unsaved edits are preserved.", quickProxyPort: "Activate a local proxy port", chooseProxyPort: "Choose an HTTP / mixed port", proxyPortNote: "Choose the HTTP or mixed port configured in your proxy app. A preset does not start a proxy or verify a listener. Do not use a SOCKS-only port as HTTP.",
   networkActive: 'Currently applied', networkActiveNote: 'These settings are applied. Editing the form does not change them yet.', appliedConfig: 'Applied',
   networkPendingNote: 'There are unapplied changes. The configuration below remains active until you save.',
   systemProxyPerTarget: 'The system chooses a route for each destination. See the proxy on each source card.', directProxyNote: 'Subsequent requests connect directly without a proxy.',

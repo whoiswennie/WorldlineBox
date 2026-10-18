@@ -88,6 +88,8 @@ export const dshCliStateSchema = z.object({
 export type DshCliState = z.infer<typeof dshCliStateSchema>;
 export const dshNetworkSettingsSchema = z.object({
   proxyMode: z.enum(['system', 'direct', 'custom']), proxyUrl: z.string().trim().max(2048),
+  proxyResumeMode: z.enum(['system', 'custom']).optional(),
+  proxyPresetsVersion: z.number().int().min(0).optional(),
   proxyProfiles: z.array(z.object({ id, name, url: z.string().trim().max(2048) })).max(30),
   npmRegistry: z.string().trim().max(2048), pythonIndex: z.string().trim().max(2048),
   npmDownloadRoute: z.enum(['auto', 'registry']).default('auto'),
@@ -95,6 +97,11 @@ export const dshNetworkSettingsSchema = z.object({
   sourceProfiles: z.array(z.object({ id, name, kind: z.enum(['npm', 'python', 'github']), url: z.string().trim().max(2048) })).max(30).optional(),
 });
 export type DshNetworkSettings = z.infer<typeof dshNetworkSettingsSchema>;
+export const dshNetworkPatchSchema = dshNetworkSettingsSchema.pick({ proxyMode: true, proxyUrl: true, npmRegistry: true,
+  npmDownloadRoute: true, pythonIndex: true, githubMirror: true, githubMirrorUrl: true }).partial()
+  // Zod defaults still run inside optional fields: a proxy-only patch must not reset this policy.
+  .extend({ npmDownloadRoute: z.enum(['auto', 'registry']).optional() }).strict();
+export type DshNetworkPatch = z.infer<typeof dshNetworkPatchSchema>;
 export const dshNetworkSourceKindSchema = z.enum(['npm', 'python', 'github']);
 export type DshNetworkSourceKind = z.infer<typeof dshNetworkSourceKindSchema>;
 const networkRouteSchema = z.object({ kind: dshNetworkSourceKindSchema, url: z.string(), proxy: z.string(), error: z.string().optional() });
@@ -141,6 +148,8 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('versions.refresh') }),
   z.strictObject({ type: z.literal('runtime.install'), version: z.string().regex(/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/) }),
   z.strictObject({ type: z.literal('network.save'), settings: dshNetworkSettingsSchema }),
+  z.strictObject({ type: z.literal('network.patch'), patch: dshNetworkPatchSchema }),
+  z.strictObject({ type: z.literal('network.proxy.toggle'), enabled: z.boolean() }),
   z.strictObject({ type: z.literal('network.test') }),
   z.strictObject({ type: z.literal('network.inspect') }),
   z.strictObject({ type: z.literal('runtime.import'), sourceKind: z.enum(['directory', 'installer']) }),

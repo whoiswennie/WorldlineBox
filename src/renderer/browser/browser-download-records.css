@@ -1,0 +1,5 @@
+.browser-download-records { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.browser-download-summary { color: var(--ui-content-secondary); font-size: 11px; }
+.browser-download-source { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-content-tertiary); font-size: 11px; }
+.browser-download-pages { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.browser-download-pages > span { color: var(--ui-content-secondary); font-size: 11px; }

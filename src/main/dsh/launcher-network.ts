@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { session, type Session } from 'electron';
-import { dshNetworkSettingsSchema, type DshNetworkSettings, type DshNetworkState } from '../../shared/dsh-launcher';
+import { dshNetworkSettingsSchema, dshNetworkPatchSchema, type DshNetworkSettings, type DshNetworkPatch, type DshNetworkState } from '../../shared/dsh-launcher';
+import { LOCAL_HTTP_PROXY_PORTS } from '../../shared/network-presets';
 import { atomicJson, readJson } from './files';
 import { createElectronHttpsDownload, createElectronPublicationRequest } from './electron-https-download';
 import type { PackPublishRequest } from './pack-distribution';
@@ -11,7 +12,8 @@ import { checkNetworkSource } from './network-diagnostics';
 
 export const DEFAULT_LAUNCHER_NETWORK: DshNetworkSettings = {
   proxyMode: 'system', proxyUrl: 'http://127.0.0.1:7897',
-  proxyProfiles: [{ id: 'clash-7897', name: 'Clash Verge · 7897', url: 'http://127.0.0.1:7897' }, { id: 'clash-7890', name: 'Clash · 7890', url: 'http://127.0.0.1:7890' }],
+  proxyPresetsVersion: 1,
+  proxyProfiles: LOCAL_HTTP_PROXY_PORTS.map(port => ({ id: 'clash-' + port, name: 'localhost · ' + port, url: 'http://127.0.0.1:' + port })),
   npmRegistry: 'https://registry.npmjs.org', pythonIndex: 'https://pypi.org/simple', githubMirror: 'auto', githubMirrorUrl: '',
   npmDownloadRoute: 'auto',
 };
@@ -60,6 +62,15 @@ export class LauncherNetwork {
   async init(): Promise<void> {
     try { const stored = await readJson<unknown>(path.join(this.rootPath, 'network.json')); if (stored) this.settings = validateLauncherNetwork(stored); }
     catch { this.issue = '网络配置读取失败，已采用默认设置；原文件保留。'; }
+    if (!this.settings.proxyPresetsVersion) {
+      // Older installations already had 7897/7890. Seed only the new suggestions once;
+      // a user's own names/addresses and later removals remain authoritative.
+      for (const profile of DEFAULT_LAUNCHER_NETWORK.proxyProfiles.slice(2)) {
+        if (this.settings.proxyProfiles.length < 30 && !this.settings.proxyProfiles.some(item => item.id === profile.id || item.url === profile.url))
+          this.settings.proxyProfiles.push(structuredClone(profile));
+      }
+      this.settings.proxyPresetsVersion = 1;
+    }
     this.scope = this.createSession(); this.sessions.add(this.scope); this.transport = createElectronHttpsDownload(this.scope); await this.apply();
   }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -84,10 +95,26 @@ export class LauncherNetwork {
   }
   save(value: DshNetworkSettings): Promise<void> {
     const settings = validateLauncherNetwork(value);
+    return this.update(() => settings);
+  }
+  patch(value: DshNetworkPatch): Promise<void> {
+    const patch = dshNetworkPatchSchema.parse(value);
+    return this.update(previous => ({ ...previous, ...patch }));
+  }
+  setProxyEnabled(enabled: boolean): Promise<void> {
+    return this.update(previous => ({ ...previous, proxyMode: enabled
+      ? previous.proxyMode === 'direct' ? previous.proxyResumeMode ?? 'system' : previous.proxyMode
+      : 'direct' }));
+  }
+  private update(next: (previous: DshNetworkSettings) => DshNetworkSettings): Promise<void> {
     const work = this.queue.then(async () => {
-      const previous = this.settings; this.settings = settings;
+      const previous = this.settings;
+      const candidate = next(previous);
+      const settings = validateLauncherNetwork({ ...candidate, proxyResumeMode: candidate.proxyMode !== 'direct' ? candidate.proxyMode
+        : previous.proxyMode !== 'direct' ? previous.proxyMode : candidate.proxyResumeMode ?? previous.proxyResumeMode ?? 'system' });
+      this.settings = settings;
       try { await this.apply(); await Promise.all([...this.sessions].map(scope => scope.closeAllConnections())); await atomicJson(path.join(this.rootPath, 'network.json'), settings); }
-      catch (error) { this.settings = previous; await this.apply(); throw error; }
+      catch (error) { this.settings = previous; await this.apply(); await Promise.all([...this.sessions].map(scope => scope.closeAllConnections())); throw error; }
       this.issue = undefined; this.revision++; this.lifetime.abort(new Error('Network settings changed.')); this.lifetime = new AbortController();
       this.inspection = undefined; this.checks = undefined; this.npmSelection = undefined; this.githubSelection = undefined;
       this.metadataRoute = undefined; this.changed();

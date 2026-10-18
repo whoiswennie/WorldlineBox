@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, session, WebContentsView, type WebFrameMain } from 'electron';
-import { BROWSER_CAPTURE_CONTENT_EVENT, BROWSER_CAPTURE_CONTENT_REQUEST, browserCaptureContentRequestSchema } from '../../../src/shared/browser-capture';
+import { BROWSER_CAPTURE_CONTENT_EVENT, BROWSER_CAPTURE_CONTENT_REQUEST, browserCaptureContentRequestSchema, type BrowserCaptureContentResponse } from '../../../src/shared/browser-capture';
 
 const root = process.env.WORLDLINEBOX_CAPTURE_PRELOAD_ROOT!;
 const origin = process.env.WORLDLINEBOX_CAPTURE_PRELOAD_ORIGIN!;
@@ -55,8 +55,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('worldlinebox:fixture:capture-preload-probe', (event, probe: unknown) => {
     if (event.sender === content && event.senderFrame) sandboxProbes.set(event.senderFrame.url, probe);
   });
-  ipcMain.handle(BROWSER_CAPTURE_CONTENT_REQUEST, (event, raw: unknown) => {
-    if (event.sender !== content) { badSenderRejected++; throw new Error('Only the owned native browser can use the capture host'); }
+  ipcMain.handle(BROWSER_CAPTURE_CONTENT_REQUEST, (event, raw: unknown): BrowserCaptureContentResponse => {
+    if (event.sender !== content) { badSenderRejected++; return { ok: false, code: 'forbidden', error: 'Only the owned native browser can use the capture host' }; }
+    const value = (() => {
     const frame = event.senderFrame; assert(frame && !frame.isDestroyed());
     const request = browserCaptureContentRequestSchema.parse(raw);
     if (request.type === 'storage.get') {
@@ -81,16 +82,20 @@ app.whenReady().then(async () => {
       remoteSaves++;
     }
     return { notification: { title: '已保存到 WorldlineBox', message: 'Fixture saved' } };
+    })();
+    return { ok: true, value };
   });
-  async function isolation(frame: WebFrameMain): Promise<void> {
+  async function isolation(frame: WebFrameMain, probeExpected = true): Promise<void> {
     assert.deepEqual(await frame.executeJavaScript(`({
       require:typeof require,process:typeof process,Buffer:typeof Buffer,module:typeof module,ipcRenderer:typeof globalThis.ipcRenderer,
       appBridge:typeof globalThis.worldlinebox,
       captureRuntime:typeof globalThis.chrome?.runtime?.sendMessage,
       captureStorage:typeof globalThis.chrome?.storage?.sync?.get
     })`), { require: 'undefined', process: 'undefined', Buffer: 'undefined', module: 'undefined', ipcRenderer: 'undefined', appBridge: 'undefined', captureRuntime: 'undefined', captureStorage: 'undefined' });
-    await until(() => sandboxProbes.has(frame.url), 'sandbox probe in ' + frame.url);
-    assert.deepEqual(sandboxProbes.get(frame.url), { sandboxed: true, contextIsolated: true, nodeBuiltinsAvailable: false });
+    if (probeExpected) {
+      await until(() => sandboxProbes.has(frame.url), 'sandbox probe in ' + frame.url);
+      assert.deepEqual(sandboxProbes.get(frame.url), { sandboxed: true, contextIsolated: true, nodeBuiltinsAvailable: false });
+    }
   }
   async function drag(frame: WebFrameMain): Promise<void> {
     await frame.executeJavaScript(`document.getElementById('media').dispatchEvent(new DragEvent('dragstart', {
@@ -107,6 +112,15 @@ app.whenReady().then(async () => {
     const main = content.mainFrame;
     const child = main.frames.find(frame => frame.url === childOrigin + '/child'); assert(child, 'Cross-origin iframe must exist');
     await isolation(main); await isolation(child);
+    const inertFrames = main.frames.filter(frame => ['about:blank', 'about:srcdoc'].includes(frame.url) || frame.url.startsWith('data:'));
+    assert.equal(inertFrames.length, 3, 'Blank, srcdoc and data documents should exist');
+    for (const frame of inertFrames) {
+      // Electron can omit preloads from inherited blank documents altogether.
+      // Either way, their page world must remain unprivileged and IPC-free.
+      await isolation(frame, false);
+      assert.equal(initialized.has(frame.url), false, 'Ineligible document must never request capture preferences');
+      assert.equal(await frame.executeJavaScript(`document.querySelector('[data-worldlinebox-radial-menu]')===null`), true);
+    }
     assert.equal(await main.executeJavaScript(`(()=>{try{document.querySelector('iframe').contentWindow.document;return false}catch(error){return error.name==='SecurityError'}})()`), true);
     // A malicious website can dispatch drag events, but cannot grant trusted
     // gesture authority or discover a library's private folder names.
@@ -136,19 +150,24 @@ app.whenReady().then(async () => {
 
     const fileUrl = pathToFileURL(path.join(root, 'gallery.html')).href;
     await content.loadURL(fileUrl);
-    await until(() => initialized.has(fileUrl), 'file content preload');
     await isolation(content.mainFrame);
-    await realDrag(content.mainFrame); await until(() => localUploads.length === 1, 'real drag local-image save');
-    content.mainFrame.send(BROWSER_CAPTURE_CONTENT_EVENT, { type: 'runtime.message', message: {
-      type: 'worldlinebox-local-context-save-request', mediaUrl: pathToFileURL(path.join(root, 'pixel.png')).href, targetFolderId: 'folder-one',
-    } });
-    await until(() => localUploads.length === 2, 'original extension local-image canvas upload');
+    await drag(content.mainFrame); await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(initialized.has(fileUrl), false, 'File documents must never request capture preferences');
+    assert.equal(await menuVisible(content.mainFrame), false); assert.equal(localUploads.length, 0);
+    // Replacing a document with a web page installs a fresh shim; the old
+    // document cannot keep listeners or gesture authority across navigation.
+    await content.loadURL(origin + '/after-navigation');
+    await until(() => initialized.has(origin + '/after-navigation'), 'new document after navigation');
+    await isolation(content.mainFrame);
+    await realDrag(content.mainFrame); assert.equal(remoteSaves, 3);
+    await content.loadURL('about:blank'); await isolation(content.mainFrame, false);
+    assert.equal(initialized.has('about:blank'), false);
     const unowned = new BrowserWindow({ show: false, webPreferences: { session: browserSession, sandbox: true, contextIsolation: true, nodeIntegration: false } });
     await unowned.loadURL(origin + '/unowned');
     await until(() => badSenderRejected > 0, 'unowned web contents rejected by capture host'); unowned.destroy();
     console.log('BROWSER_CAPTURE_PRELOAD_RESULT ' + JSON.stringify({ allFrames: true, crossOriginFrame: true, sandbox: true,
-      noMainWorldBridge: true, originalDragMenu: true, originalFeedback: true, storageBroadcast: true, fileImageUpload: true,
-      syntheticFolderReadRejected: true, syntheticSaveRejected: true, realMouseSaves: remoteSaves + 1,
+      noMainWorldBridge: true, originalDragMenu: true, originalFeedback: true, storageBroadcast: true, ineligibleDocumentsSkipped: true,
+      documentNavigation: true, syntheticFolderReadRejected: true, syntheticSaveRejected: true, realMouseSaves: remoteSaves,
       unownedSenderRejected: badSenderRejected > 0, probes: [...sandboxProbes.entries()] }));
     owner.destroy(); app.exit(0);
   } catch (error) { console.error(error); owner.destroy(); app.exit(1); }
