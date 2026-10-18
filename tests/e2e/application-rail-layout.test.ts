@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
@@ -96,6 +96,12 @@ test('the application rail keeps capture, recording and settings aligned across 
     await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 30000 });
     const native = await application.browserWindow(page);
     await native.evaluate(window => { window.unmaximize(); window.setMinimumSize(400, 300); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.showInactive(); });
+    // CDP screenshots apply page zoom twice on this Electron/Windows driver.
+    // Native capturePage preserves the complete compositor bitmap at every zoom.
+    const snapshot = async (filename: string) => {
+      const encoded = await native.evaluate(async window => (await window.webContents.capturePage()).toPNG().toString('base64'));
+      writeFileSync(filename, Buffer.from(encoded, 'base64'));
+    };
     const settings = page.locator('.application-navigation-settings');
     const more = page.locator('.application-capture-more');
     for (const size of sizes) for (const zoom of zooms) {
@@ -108,9 +114,9 @@ test('the application rail keeps capture, recording and settings aligned across 
         { width: physical[0], height: physical[1], zoom }), { message: label + ' viewport settled' }).toBe(true);
       await settled(page);
       const geometry = await railGeometry(page); assertRail(geometry, label); measurements.push({ label, ...geometry });
-      if (size.width === 1280 && zoom === 1) await page.screenshot({ path: '.tools/test-output/application-rail-normal.png', scale: 'css' });
-      if (size.width === 960 && zoom === 1) await page.screenshot({ path: '.tools/test-output/application-rail-short.png', scale: 'css' });
-      if (size.width === 960 && zoom === 2) await page.screenshot({ path: '.tools/test-output/application-rail-zoom.png', scale: 'css' });
+      if (size.width === 1280 && zoom === 1) await snapshot('.tools/test-output/application-rail-normal.png');
+      if (size.width === 960 && zoom === 1) await snapshot('.tools/test-output/application-rail-short.png');
+      if (size.width === 960 && zoom === 2) await snapshot('.tools/test-output/application-rail-zoom.png');
 
       // Overflow belongs to the module list; scrolling it must not move any of
       // the three global controls or scroll the application document.
@@ -125,16 +131,16 @@ test('the application rail keeps capture, recording and settings aligned across 
       await settled(page);
       const settingsGeometry = await railGeometry(page); assertRail(settingsGeometry, label + ' settings open');
       expect(settingsGeometry.buttons).toEqual(geometry.buttons);
-      if (size.width === 1280 && zoom === 1) await page.screenshot({ path: '.tools/test-output/application-rail-settings-open.png', scale: 'css' });
+      if (size.width === 1280 && zoom === 1) await snapshot('.tools/test-output/application-rail-settings-open.png');
       await more.click(); const settingsMenu = await assertMenuInteraction(page, geometry.viewport, label + ' settings overlay');
-      if (size.width === 1280 && zoom === 1) await page.screenshot({ path: '.tools/test-output/application-rail-expanded-settings.png', scale: 'css' });
+      if (size.width === 1280 && zoom === 1) await snapshot('.tools/test-output/application-rail-expanded-settings.png');
       await page.keyboard.press('Escape'); await expect(settingsMenu).toHaveCount(0);
       await expect(dialog).toBeVisible(); await expect(settings).toHaveAttribute('aria-expanded', 'true');
       await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(settings).toHaveAttribute('aria-expanded', 'false');
 
       await more.click(); const menu = await assertMenuInteraction(page, geometry.viewport, label + ' normal overlay');
-      if (size.width === 1280 && zoom === 1) await page.screenshot({ path: '.tools/test-output/application-rail-expanded-normal.png', scale: 'css' });
-      if (size.width === 960 && zoom === 2) await page.screenshot({ path: '.tools/test-output/application-rail-expanded-zoom.png', scale: 'css' });
+      if (size.width === 1280 && zoom === 1) await snapshot('.tools/test-output/application-rail-expanded-normal.png');
+      if (size.width === 960 && zoom === 2) await snapshot('.tools/test-output/application-rail-expanded-zoom.png');
       await page.keyboard.press('Escape'); await expect(menu).toHaveCount(0);
     }
 
@@ -154,7 +160,7 @@ test('the application rail keeps capture, recording and settings aligned across 
     await more.click();
     await expect.poll(async () => { const view = await browserViewState(); return !view.attached || !view.visible; }).toBe(true);
     const browserMenu = await assertMenuInteraction(page, (await railGeometry(page)).viewport, 'native browser overlay');
-    await page.screenshot({ path: '.tools/test-output/application-rail-expanded-browser.png', scale: 'css' });
+    await snapshot('.tools/test-output/application-rail-expanded-browser.png');
     await page.keyboard.press('Escape'); await expect(browserMenu).toHaveCount(0);
     await expect.poll(browserViewState).toEqual({ attached: true, visible: true });
     await expect(browser.getByRole('heading', { name: 'Real native browser view' })).toBeVisible();
