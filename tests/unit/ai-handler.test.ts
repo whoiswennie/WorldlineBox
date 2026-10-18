@@ -166,8 +166,8 @@ test('ai.process-queue nested-analyzes claimed jobs through the extracted handle
     )),
     getAiJobState: vi.fn(() => 'running'),
     resolveAssetFilePath: vi.fn(() => ({
-      filePath: 'notes.txt',
-      mime: 'text/plain',
+      filePath: 'sound.mp3',
+      mime: 'audio/mpeg',
       isVideo: false,
     })),
     failAiJob: vi.fn(() => ({ status: 'failed' })),
@@ -206,7 +206,7 @@ test('ai.process-queue nested-analyzes claimed jobs through the extracted handle
     'lib-1',
     'job-1',
     expect.objectContaining({
-      errorCode: 'unsupported mime type: text/plain',
+      errorCode: 'AI_INPUT_UNSUPPORTED',
       retryable: false,
     }),
   );

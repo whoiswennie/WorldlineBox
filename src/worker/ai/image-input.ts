@@ -124,6 +124,14 @@ async function loadReadyThumbnail(
   };
 }
 
+/** Documents reuse the owned first-page renderer; never upload the PDF itself. */
+export async function loadAiDocumentPreviewInput(service: AiImageArtifactService, libraryId: string, assetId: string,
+  options: { maxEdgePx?: number; signal?: AbortSignal } = {}): Promise<{ imageBase64: string; mime: string }> {
+  const thumbnail = await loadReadyThumbnail(service, libraryId, assetId, options.signal);
+  const encoded = await encodeAiAnalysisImage(Buffer.from(thumbnail.imageBase64, 'base64'), options.maxEdgePx ?? DEFAULT_AI_ANALYSIS_IMAGE_EDGE_PX);
+  throwIfAborted(options.signal); return encoded;
+}
+
 /**
  * Builds a bounded upload for cloud analysis from the source file when sharp
  * can decode it; otherwise falls back to WorldlineBox's thumbnail derivative and

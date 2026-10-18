@@ -3,7 +3,8 @@ import {
   buildAiAnalysisSystemPrompt,
 } from '../../shared/ai-analysis-settings';
 import { resolveGeminiGenerateContentUrl } from '../../shared/ai-endpoints';
-import { buildAiAnalysisUserTextLines, parseAiAnalysisResult, resolveAiAnalysisSettings } from './protocol';
+import { buildAiAnalysisUserTextLines, parseAiAnalysisResultFromModelText, resolveAiAnalysisSettings } from './protocol';
+import { isUnsupportedVisionResponse } from '../../shared/model-vision-capability';
 import type { AiAnalysisRequest, AiAnalysisResult } from './protocol';
 import { isAiAbortOrTimeoutError, VendorAdapterError } from './vendor-adapter';
 import type { VendorAdapter, VendorId } from './vendor-adapter';
@@ -211,6 +212,7 @@ export class GeminiVendorAdapter implements VendorAdapter {
       settings: resolveAiAnalysisSettings(request),
       enabledFields: request.enabledFields,
       existingTagNames: request.existingTagNames,
+      mediaType: request.mediaType,
     });
   }
 
@@ -277,7 +279,7 @@ export class GeminiVendorAdapter implements VendorAdapter {
     const message = `AI service returned HTTP ${response.status}`;
 
     return new VendorAdapterError(kind, message, {
-      details: { httpStatus: response.status },
+      details: { httpStatus: response.status, modalityRejected: [400, 415, 422].includes(response.status) && isUnsupportedVisionResponse(bodyText) },
     });
   }
 
@@ -318,24 +320,12 @@ export class GeminiVendorAdapter implements VendorAdapter {
       );
     }
 
-    const text =
-      typeof parts[0]?.text === 'string' ? (parts[0].text as string) : '';
+    const text = parts.filter(part => !part.thought && typeof part.text === 'string').map(part => part.text as string).join('');
     if (!text) {
       throw new VendorAdapterError(
         'invalid_response',
         'The AI response contained no text.',
         { retryable: true },
-      );
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch (error: unknown) {
-      throw new VendorAdapterError(
-        'invalid_response',
-        'The AI response contained invalid JSON.',
-        { cause: error, retryable: true },
       );
     }
 
@@ -345,10 +335,7 @@ export class GeminiVendorAdapter implements VendorAdapter {
         : this.model;
 
     try {
-      return parseAiAnalysisResult({
-        ...(parsed as Record<string, unknown>),
-        modelVersion,
-      });
+      return parseAiAnalysisResultFromModelText(text, modelVersion);
     } catch (error: unknown) {
       throw new VendorAdapterError(
         'invalid_response',

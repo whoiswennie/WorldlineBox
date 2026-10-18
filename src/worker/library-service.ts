@@ -898,6 +898,7 @@ import {
   textMimeForExtension,
 } from '../shared/text-media';
 import { decodeTextBytes } from '../shared/text-encoding';
+import { aiAssetInputKind } from '../shared/ai-asset-input';
 import { canOverrideImageColorSpace } from '../shared/image-color-space';
 import { inferRelinkBatchRoot } from '../shared/infer-relink-batch-root';
 import {
@@ -22194,12 +22195,10 @@ export class LibraryService {
         WHERE job_id = ? AND status = 'paused'`,
     );
 
-    // Product format registry, shared with thumbnail dispatch. Importing a
-    // file is intentionally broader than this set; this gate only decides
-    // whether AI can obtain a decoded visual derivative.
-    const imageExts = new Set<string>(IMAGE_EXTENSIONS);
+    // Input eligibility is shared with execution. The historical image-analysis
+    // queue kind also carries decoded text/documents; no job schema migration
+    // or thumbnail is required for textual inputs.
     const videoExts = new Set<string>(VIDEO_EXTENSIONS);
-    const modelExts = new Set<string>(MODEL_EXTENSIONS);
 
     let enqueued = 0;
     const jobIds: string[] = [];
@@ -22237,10 +22236,8 @@ export class LibraryService {
         }
 
         const ext = path.extname(row.relative_file_path).toLowerCase();
-        const isImage = imageExts.has(ext);
         const isVideo = videoExts.has(ext);
-        const isModel = modelExts.has(ext);
-        if (!isImage && !isVideo && !isModel) {
+        if (aiAssetInputKind(row.relative_file_path) === 'unsupported') {
           skippedAssetIds.push(assetId);
           continue;
         }

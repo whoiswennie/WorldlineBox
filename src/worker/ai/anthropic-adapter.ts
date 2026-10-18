@@ -3,7 +3,8 @@ import {
   buildAiAnalysisSystemPrompt,
 } from '../../shared/ai-analysis-settings';
 import { resolveAnthropicMessagesUrl } from '../../shared/ai-endpoints';
-import { buildAiAnalysisUserTextLines, parseAiAnalysisResult, resolveAiAnalysisSettings } from './protocol';
+import { buildAiAnalysisUserTextLines, parseAiAnalysisResult, parseAiAnalysisResultFromModelText, resolveAiAnalysisSettings } from './protocol';
+import { isUnsupportedVisionResponse } from '../../shared/model-vision-capability';
 import type { AiAnalysisRequest, AiAnalysisResult } from './protocol';
 import { isAiAbortOrTimeoutError, VendorAdapterError } from './vendor-adapter';
 import type { VendorAdapter, VendorId } from './vendor-adapter';
@@ -217,6 +218,7 @@ export class AnthropicVendorAdapter implements VendorAdapter {
         settings: resolveAiAnalysisSettings(request),
         enabledFields: request.enabledFields,
         existingTagNames: request.existingTagNames,
+        mediaType: request.mediaType,
       }) +
       '\n通过调用 `worldlinebox_classify_asset` 工具返回结果。\n'
     );
@@ -294,7 +296,7 @@ export class AnthropicVendorAdapter implements VendorAdapter {
     const message = `AI service returned HTTP ${response.status}`;
 
     return new VendorAdapterError(kind, message, {
-      details: { httpStatus: response.status },
+      details: { httpStatus: response.status, modalityRejected: [400, 415, 422].includes(response.status) && isUnsupportedVisionResponse(bodyText) },
     });
   }
 
@@ -402,26 +404,13 @@ export class AnthropicVendorAdapter implements VendorAdapter {
       typeof body.model === 'string' && body.model.length > 0
         ? body.model
         : this.model;
-    for (const b of body.content as Array<Record<string, unknown>>) {
-      if (b.type !== 'text' || typeof b.text !== 'string') continue;
-      const raw = b.text.trim();
-      if (!raw) continue;
-      const fenced = raw
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-      try {
-        const parsed = JSON.parse(fenced) as unknown;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          return parseAiAnalysisResult({
-            ...(parsed as Record<string, unknown>),
-            modelVersion,
-          });
-        }
-      } catch {
-        // keep looking
-      }
-    }
-    return undefined;
+    // Text blocks can split JSON even inside a quoted string. Concatenate
+    // without inserting bytes, then apply the same bounded parser as other
+    // transports (prose/fences, structural validation and ambiguity rejection).
+    const text = body.content.filter((block): block is { type: 'text'; text: string } =>
+      Boolean(block) && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string',
+    ).map(block => block.text).join('');
+    try { return parseAiAnalysisResultFromModelText(text, modelVersion); }
+    catch { return undefined; }
   }
 }

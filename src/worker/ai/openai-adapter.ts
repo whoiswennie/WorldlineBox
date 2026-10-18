@@ -616,6 +616,7 @@ export class OpenAIVendorAdapter implements VendorAdapter {
         settings: resolveAiAnalysisSettings(request),
         enabledFields: request.enabledFields,
         existingTagNames: request.existingTagNames,
+        mediaType: request.mediaType,
       }) + buildJsonOnlySuffix(request.language)
     );
   }

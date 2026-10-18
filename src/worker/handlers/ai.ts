@@ -24,7 +24,7 @@ import {
   vendorFailure,
 } from '../ai/error-mapping';
 import type { AiJobAbortRegistry } from '../ai/job-abort-registry';
-import { loadAiImageInput } from '../ai/image-input';
+import { loadAiImageInput, loadAiDocumentPreviewInput } from '../ai/image-input';
 import { loadVideoAiInput } from '../ai/video-input';
 import {
   DEFAULT_AI_ANALYSIS_IMAGE_EDGE_PX,
@@ -34,6 +34,8 @@ import type { ProviderConcurrencyLimiter } from '../ai/provider-concurrency-limi
 import { runLimitedAiRequest } from '../ai/limited-request';
 import { DEFAULT_AI_RELIABILITY_SETTINGS } from '../../shared/ai-reliability';
 import { LibraryServiceError, type LibraryService } from '../library-service';
+import { aiAssetInputKind, AI_ASSET_TEXT_MAX_BYTES } from '../../shared/ai-asset-input';
+import { modelVisionCapability } from '../../shared/model-vision-capability';
 
 export type AiAnalysisControls = {
   jobId: string;
@@ -177,8 +179,29 @@ export async function executeAiWorkerCommand(
       let contactSheetMime: string | undefined;
       let contactSheetDescription: string | undefined;
       let requestMime: string;
+      let textContent: string | undefined;
+      let textTruncated = false;
+      const inputKind = aiAssetInputKind(filePath);
+      if (inputKind === 'unsupported') return { ok: true, type: 'asset.analyze-unsupported' as const, assetId, reason: 'AI_INPUT_UNSUPPORTED' };
+      if (inputKind !== 'text' && modelVisionCapability({ model, baseUrl: resolvedBaseUrl }) === 'unsupported') {
+        throw new LibraryServiceError('AI_ANALYSIS_FAILED', { reason: 'AI_MODEL_NO_VISION', retryable: false });
+      }
 
-      if (isVideo) {
+      if (inputKind === 'text') {
+        controls?.signal.throwIfAborted();
+        try {
+          const input = libraryService.readTextAsset({ libraryId, assetId, maxBytes: AI_ASSET_TEXT_MAX_BYTES });
+          const bytes = Buffer.from(input.content, 'utf8');
+          textContent = bytes.subarray(0, AI_ASSET_TEXT_MAX_BYTES).toString('utf8').replace(/\uFFFD$/u, '');
+          textTruncated = input.truncated || bytes.length > AI_ASSET_TEXT_MAX_BYTES;
+          requestMime = input.mimeType;
+          if (!textContent.trim()) throw new LibraryServiceError('AI_ANALYSIS_FAILED', { reason: 'AI_TEXT_UNREADABLE', retryable: false });
+        } catch (error) {
+          if (error instanceof LibraryServiceError && error.code === 'ASSET_CONTENT_INVALID') throw new LibraryServiceError('AI_ANALYSIS_FAILED', { reason: 'AI_TEXT_UNREADABLE', retryable: false });
+          throw error;
+        }
+        controls?.signal.throwIfAborted();
+      } else if (isVideo) {
         // WorldlineBox-140fe2: contact sheets are generated lazily at analysis time
         // (never proactively scheduled), so materialize it for this video now.
         try {
@@ -212,11 +235,13 @@ export async function executeAiWorkerCommand(
             reason: 'CONTACT_SHEET_REQUIRED',
           };
         }
-      } else if (mime.startsWith('image/')) {
+      } else if (mime.startsWith('image/') || inputKind === 'document') {
         // Resize source to the configured longest-edge cap (default 2K).
         // Unreadable originals (e.g. some EXR) fall back to the thumbnail.
         try {
-          const imageInput = await runExternal(() => loadAiImageInput(
+          const imageInput = await runExternal(() => inputKind === 'document'
+            ? loadAiDocumentPreviewInput(libraryService, libraryId, assetId, { maxEdgePx: maxAnalysisImageEdgePx, signal: controls?.signal })
+            : loadAiImageInput(
               libraryService,
               libraryId,
               assetId,
@@ -261,7 +286,7 @@ export async function executeAiWorkerCommand(
           ok: true,
           type: 'asset.analyze-unsupported' as const,
           assetId,
-          reason: `unsupported mime type: ${mime}`,
+          reason: 'AI_INPUT_UNSUPPORTED',
         };
       }
 
@@ -301,7 +326,9 @@ export async function executeAiWorkerCommand(
         displayName,
         filename,
         mime: requestMime,
-        mediaType: isModelFileFormat(filePath) ? 'model' : (isVideo ? 'video' : 'image'),
+        mediaType: inputKind,
+        textContent,
+        textTruncated,
         imageBase64,
         contactSheetBase64,
         contactSheetMime,

@@ -33,6 +33,7 @@ export function vendorFailure(error: VendorAdapterError): {
   reason: PublicErrorReason;
   retryable: boolean;
 } {
+  if (error.details?.modalityRejected) return { errorCode: 'AI_MODEL_NO_VISION', reason: 'AI_MODEL_NO_VISION', retryable: false };
   if (isAiRequestRejected(error)) {
     return {
       errorCode: 'AI_REQUEST_REJECTED',

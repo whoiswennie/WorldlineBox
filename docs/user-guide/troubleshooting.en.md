@@ -12,9 +12,11 @@ Different formats may use different preview methods; for example, video may use 
 
 ## AI analysis fails or never starts
 
-In **Settings → AI**, verify the API format, model, and key, test the connection, and enable **Analyze new assets automatically** if you want import-time analysis. The switch is off by default; audio, text, and formats outside the image/video/model registry are not supported.
+In **Settings → Global model**, verify the API format, model, and key, and test the connection. Enable **Analyze new assets automatically** only for import-time analysis; it is off by default and is not required for manual analysis. Readable TXT, Markdown, JSON, code, and similar text work with text-only models. Only the first 64 KiB of UTF-8 is sent, marked as a truncated excerpt when necessary. Images, video frames, and 3D views require vision. PDF/AI analysis sees only the existing first-page preview, not the full document. Audio, Office documents, HTML, and formats without an input extractor are currently unsupported.
 
 Video AI needs a contact sheet and 3D AI needs a four-view sheet. Retry media generation in Background jobs before retrying AI. Failure notices include a short reason. Network, rate-limit, and timeout failures are usually retryable; authentication, permission, quota, and unsupported-format errors need a configuration or file fix. To re-analyze an asset that already has AI content, use **AI analysis**, not **Analyze unanalyzed assets**.
+
+Check the source file when text is empty, binary, or damaged. A model without image input needs to be replaced by a vision model for visual assets; text still works with the original model. Invalid analysis output means the provider response failed structural validation, rather than a rate limit or timeout. Queue retries are bounded by settings; unsupported files are not treated as temporary network failures.
 
 ## Searches miss imported assets
 

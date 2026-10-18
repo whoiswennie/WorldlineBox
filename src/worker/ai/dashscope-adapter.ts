@@ -1,5 +1,6 @@
 import { buildAiAnalysisSystemPrompt } from '../../shared/ai-analysis-settings';
-import { resolveDashScopeMultimodalGenerationUrl } from '../../shared/ai-endpoints';
+import { isUnsupportedVisionResponse } from '../../shared/model-vision-capability';
+import { resolveDashScopeMultimodalGenerationUrl, resolveDashScopeTextGenerationUrl } from '../../shared/ai-endpoints';
 import {
   buildAiAnalysisUserTextLines,
   parseAiAnalysisResultFromModelText,
@@ -60,6 +61,8 @@ export class DashScopeVendorAdapter implements VendorAdapter {
     request: AiAnalysisRequest,
     signal?: AbortSignal,
   ): Promise<AiAnalysisResult> {
+    const textOnlyEndpoint = request.mediaType === 'text' && !request.imageBase64 && !request.contactSheetBase64
+      && !/(?:vl|omni|qvq|vision)/iu.test(this.#model);
     const body = {
       model: this.#model,
       input: {
@@ -70,7 +73,7 @@ export class DashScopeVendorAdapter implements VendorAdapter {
           },
           {
             role: 'user',
-            content: this.#buildUserContent(request),
+            content: textOnlyEndpoint ? buildAiAnalysisUserTextLines(request).join('\n') : this.#buildUserContent(request),
           },
         ],
       },
@@ -84,7 +87,7 @@ export class DashScopeVendorAdapter implements VendorAdapter {
     let response: Response;
     try {
       response = await this.#fetch(
-        resolveDashScopeMultimodalGenerationUrl(this.#baseUrl),
+        (textOnlyEndpoint ? resolveDashScopeTextGenerationUrl : resolveDashScopeMultimodalGenerationUrl)(this.#baseUrl),
         {
           method: 'POST',
           headers: {
@@ -158,6 +161,7 @@ export class DashScopeVendorAdapter implements VendorAdapter {
       settings: resolveAiAnalysisSettings(request),
       enabledFields: request.enabledFields,
       existingTagNames: request.existingTagNames,
+      mediaType: request.mediaType,
     }) + '\nReturn only one JSON object with no Markdown fences.\n';
   }
 
@@ -201,7 +205,7 @@ export class DashScopeVendorAdapter implements VendorAdapter {
     return new VendorAdapterError(
       httpStatusToErrorKind(response.status, bodyText),
       `AI service returned HTTP ${response.status}`,
-      { details: { httpStatus: response.status } },
+      { details: { httpStatus: response.status, modalityRejected: [400, 415, 422].includes(response.status) && isUnsupportedVisionResponse(bodyText) } },
     );
   }
 

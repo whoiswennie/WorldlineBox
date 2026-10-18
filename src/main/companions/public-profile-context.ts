@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { CompanionProfileInput, CompanionPublicProfile, CompanionVisualInput } from '../../shared/companion-public-profile';
 import type { CompanionModelConfig } from './model';
-import { isDeepseekOfficialEndpoint } from '../../shared/llm';
+import { modelVisionCapability } from '../../shared/model-vision-capability';
 
 export const COMPANION_VISUAL_IMAGE_LIMIT = 4;
 export const COMPANION_VISUAL_IMAGE_BYTES = 1024 * 1024;
@@ -40,14 +40,7 @@ export function refreshCompanionPublicProfileContext(context: Context, scope: Sc
 
 /** Wire protocols do not prove that an arbitrary custom model has visual ability. */
 export function companionModelVisionCapability(config: Pick<CompanionModelConfig, 'apiFormat' | 'baseUrl' | 'model'>): 'supported' | 'unsupported' | 'unknown' {
-  const name = config.model.trim().toLowerCase();
-  if (isDeepseekOfficialEndpoint(config.baseUrl ?? '')) return name === 'deepseek-flash' ? 'supported' : name === 'deepseek-v4-pro' ? 'unsupported' : 'unknown';
-  if (name === 'deepseek-flash') return 'supported';
-  if (name === 'deepseek-v4-pro') return 'unsupported';
-  if (/^gemini-/u.test(name) || /^claude-(?:[3-9](?:[.-]|$)|(?:opus|sonnet|haiku|fable)-[4-9](?:[.-]|$))/u.test(name) || /^qwen[^/]*(?:vl|omni)/u.test(name) || /^qvq(?:-|$)/u.test(name)
-    || /^gpt-(?:4o(?:-|$)|4\.1(?:-|$)|4\.5(?:-|$)|5(?:[.-]|$)|6(?:[.-]|$))/u.test(name)
-    || /^(?:o1(?:-(?!mini|preview)|$)|o3(?:-(?!mini)|$)|o4-mini(?:-|$))/u.test(name)) return 'supported';
-  return 'unknown';
+  return modelVisionCapability(config);
 }
 export function companionVisualImageBytes(image: Pick<CompanionVisualInput, 'mime' | 'base64' | 'sha256'>): Buffer | undefined {
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(image.mime) || image.base64.length > Math.ceil(COMPANION_VISUAL_IMAGE_BYTES / 3) * 4

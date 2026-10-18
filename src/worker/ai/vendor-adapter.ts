@@ -29,6 +29,7 @@ export interface VendorAdapterErrorDetails {
   responseKind?: string;
   canRetryWithoutStructuredOutput?: boolean;
   formatRejected?: boolean;
+  modalityRejected?: boolean;
 }
 
 /**

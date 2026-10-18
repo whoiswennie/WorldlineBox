@@ -90,6 +90,21 @@ test("asset.analyze falls through when enqueue does not create a job", async () 
   )).resolves.toBeUndefined();
 });
 
+test.each(["ignored", "missing-id", "unsupported"])("an empty %s batch gives a neutral eligibility reason without inventing a provider or format failure", async assetId => {
+  const processAiQueue = vi.fn();
+  await expect(tryHandleAiOwnedRequest({ type: "assets.analyze.request", libraryId: "lib-1", assetIds: [assetId] }, runtime({
+    requestWorker: vi.fn(async () => ({ ok: true as const, type: "ai.jobs.enqueued" as const, libraryId: "lib-1", enqueued: 0, jobIds: [], alreadyPendingJobIds: [], skippedAssetIds: [assetId] })), processAiQueue,
+  }))).resolves.toMatchObject({ ok: false, error: { code: "AI_ANALYSIS_FAILED", reason: "AI_NO_ELIGIBLE_ASSETS" } });
+  expect(processAiQueue).not.toHaveBeenCalled();
+});
+
+test("a missing global model is rejected before starting an asset job", async () => {
+  const requestWorker = vi.fn();
+  await expect(tryHandleAiOwnedRequest({ type: "assets.analyze.request", libraryId: "lib-1", assetIds: ["text"] }, runtime({ loadAiConfig: () => config({ model: " " }), requestWorker })))
+    .resolves.toMatchObject({ ok: false, error: { reason: "AI_NOT_CONFIGURED" } });
+  expect(requestWorker).not.toHaveBeenCalled();
+});
+
 test("ai.config.get maps the stored config onto the renderer payload", async () => {
   await expect(tryHandleAiOwnedRequest(
     { type: "ai.config.get.request" },

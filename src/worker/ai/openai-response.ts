@@ -1,6 +1,7 @@
 import {
   aiTagsSchemaDescription,
 } from '../../shared/ai-analysis-settings';
+import { isUnsupportedVisionResponse } from '../../shared/model-vision-capability';
 import {
   parseAiAnalysisResult,
   parseAiAnalysisResultFromModelText,
@@ -292,6 +293,7 @@ export async function mapOpenAiHttpError(
       details: providerDetails(classification.providerError, {
         httpStatus: response.status,
         formatRejected: classification.formatRejected,
+        modalityRejected: [400, 415, 422].includes(response.status) && isUnsupportedVisionResponse(bodyText),
       }),
     },
   );

@@ -12,6 +12,14 @@ import { PUBLIC_ERROR_MESSAGES_ZH } from '../../src/renderer/error-utils';
  * the AI-failure dialog showed the bare identifier `UNSUPPORTED_MEDIA_TYPE`.
  */
 describe('AI job failure messages (WorldlineBox-50c466 review F9)', () => {
+  it('explains input capability, model capability and unreadable text separately', () => {
+    expect(messageForAiErrorCode('AI_INPUT_UNSUPPORTED', 'zh-CN')).toContain('提取能力');
+    expect(messageForAiErrorCode('AI_MODEL_NO_VISION', 'zh-CN')).toContain('文本资产仍可分析');
+    expect(messageForAiErrorCode('AI_TEXT_UNREADABLE', 'zh-CN')).toContain('二进制');
+    expect(messageForAiErrorCode('AI_TEXT_UNREADABLE', 'en')).toContain('binary');
+    expect(messageForAiErrorCode('AI_NO_ELIGIBLE_ASSETS', 'zh-CN')).toContain('被忽略');
+    expect(messageForAiErrorCode('AI_NO_ELIGIBLE_ASSETS', 'zh-CN')).toContain('尚未调用');
+  });
   it('renders a public error code through its code copy instead of the raw id', () => {
     const zh = messageForAiErrorCode('UNSUPPORTED_MEDIA_TYPE', 'zh-CN');
     expect(zh).toBe(PUBLIC_ERROR_MESSAGES_ZH.UNSUPPORTED_MEDIA_TYPE);

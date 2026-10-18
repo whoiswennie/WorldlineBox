@@ -61,14 +61,14 @@ export async function tryHandleAiOwnedRequest(
   switch (request.type) {
     case "assets.analyze.request": {
       const config = runtime.loadAiConfig();
-      if (!config.hasKey || !config.apiFormat) {
+      if (!config.hasKey || !config.apiFormat || !config.model.trim()) {
         return {
           ok: false,
           error: createPublicError("AI_ANALYSIS_FAILED", "AI_NOT_CONFIGURED"),
         } satisfies RendererResult;
       }
       try {
-        runtime.getDecryptedApiKey();
+        if (!runtime.getDecryptedApiKey().trim()) throw Error('AI_NOT_CONFIGURED');
       } catch {
         return {
           ok: false,
@@ -101,6 +101,7 @@ export async function tryHandleAiOwnedRequest(
               enqueued: enqueueResult.enqueued,
             } satisfies RendererResult;
           }
+          return { ok: false, error: createPublicError("AI_ANALYSIS_FAILED", "AI_NO_ELIGIBLE_ASSETS") } satisfies RendererResult;
         }
       } catch (error) {
         runtime.logError("ai.analyze.batch-enqueue", error);
@@ -112,14 +113,14 @@ export async function tryHandleAiOwnedRequest(
     }
     case "asset.analyze.request": {
       const config = runtime.loadAiConfig();
-      if (!config.hasKey || !config.apiFormat) {
+      if (!config.hasKey || !config.apiFormat || !config.model.trim()) {
         return {
           ok: false,
           error: createPublicError("AI_ANALYSIS_FAILED", "AI_NOT_CONFIGURED"),
         } satisfies RendererResult;
       }
       try {
-        runtime.getDecryptedApiKey();
+        if (!runtime.getDecryptedApiKey().trim()) throw Error('AI_NOT_CONFIGURED');
       } catch {
         return {
           ok: false,
