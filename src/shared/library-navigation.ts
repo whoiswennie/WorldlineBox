@@ -15,6 +15,27 @@ import {
  * cannot mix folder rows from one mutation with collection counts from
  * another.
  */
+/** Custom folder cover for sidebar and breadcrumb chrome. */
+export const folderNavigationCoverSchema = z.strictObject({
+  folderId: z.string().min(1).max(4096),
+  /** Cache token for a cover file stored under the library. */
+  fileToken: z.string().min(1).max(64).optional(),
+  /** Library asset used as the cover. */
+  assetId: z.string().min(1).max(255).optional(),
+  artifactId: z.string().min(1).max(255).optional(),
+  revisionId: z.string().min(1).max(255).optional(),
+});
+
+export type FolderNavigationCover = z.infer<typeof folderNavigationCoverSchema>;
+
+/** Payload cap for sidebar covers. Extra rows are dropped instead of failing the summary. */
+export const FOLDER_NAVIGATION_COVER_CAP = 20_000;
+
+const folderNavigationCoversSchema = z.union([
+  z.array(folderNavigationCoverSchema).max(FOLDER_NAVIGATION_COVER_CAP),
+  z.array(folderNavigationCoverSchema).transform((covers) => covers.slice(0, FOLDER_NAVIGATION_COVER_CAP)),
+]).optional();
+
 export const libraryNavigationSummarySchema = z.strictObject({
   libraryId: z.string().min(1),
   changeSequence: z.number().int().nonnegative(),
@@ -27,6 +48,7 @@ export const libraryNavigationSummarySchema = z.strictObject({
   collections: z.array(collectionSummarySchema),
   smartCollections: z.array(smartCollectionSummarySchema),
   trashedFolders: z.array(trashedFolderSummarySchema),
+  folderCovers: folderNavigationCoversSchema,
 });
 
 export type LibraryNavigationSummary = z.infer<typeof libraryNavigationSummarySchema>;

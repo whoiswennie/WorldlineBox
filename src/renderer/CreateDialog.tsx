@@ -218,7 +218,7 @@ export function CreateDialog({
                     className="create-dialog-recent-open"
                     disabled={busy}
                     onClick={() => onOpenRecent(entry.path)}
-                    title={entry.path}
+                    data-hover-tip={entry.path}
                     type="button"
                   >
                     <span className="create-dialog-recent-texts">
@@ -239,7 +239,7 @@ export function CreateDialog({
                         }}
                         role="button"
                         tabIndex={-1}
-                        title={t("shell.forgetRecentLibrary")}
+                        data-hover-tip={t("shell.forgetRecentLibrary")}
                       >
                         <Icon name="close" size={12} />
                       </span>

@@ -64,6 +64,15 @@ describe('asset metadata and content revisions', () => {
     expect(updated.entityVersion).toBe(before.entityVersion + 1);
     expect(after.currentRevisionId).toBe(importedAsset.currentRevisionId);
     expect(after.favorite).toBe(true);
+
+    const repeated = service.setAssetMetadata({
+      libraryId: library.libraryId,
+      assetId: importedAsset.assetId,
+      expectedVersion: updated.entityVersion,
+      description: 'metadata only',
+      favorite: true,
+    });
+    expect(repeated.entityVersion).toBe(updated.entityVersion);
   });
 
   it('replaces managed asset bytes with a new revision and queues thumbnail refresh', () => {

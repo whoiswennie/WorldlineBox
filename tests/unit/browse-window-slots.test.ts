@@ -8,6 +8,7 @@ import {
   compactBrowseLayoutIsComplete,
   contiguousBrowsePageRuns,
   mergeLoadedBrowsePage,
+  mergeRankedBrowseLayoutPage,
   nextUnfilledBrowsePageOffset,
   resolveBrowseCanvasLayout,
   assetSummaryFromLayoutEntry,
@@ -102,6 +103,25 @@ describe("browse window virtualization (WorldlineBox-sa65)", () => {
       ],
     });
     expect(jumped.map((item) => item.assetId)).toEqual(["a", "middle", "tail"]);
+  });
+
+  it("appends later semantic batches to the visible ranked layout", () => {
+    const rankedAssetIds = ["rank-1", "rank-2", "rank-3", "rank-4"];
+    const firstBatch = mergeRankedBrowseLayoutPage({
+      current: [],
+      items: [asset("rank-1"), asset("rank-2")],
+      rankedAssetIds,
+    });
+    const nextBatch = mergeRankedBrowseLayoutPage({
+      current: firstBatch,
+      items: [asset("rank-4"), asset("rank-3")],
+      rankedAssetIds,
+    });
+
+    expect(nextBatch.map((entry) => entry.assetId)).toEqual(rankedAssetIds);
+    expect(resolveBrowseCanvasLayout(nextBatch, [
+      asset("rank-1"), asset("rank-2"), asset("rank-3"), asset("rank-4"),
+    ]).map((entry) => entry.assetId)).toEqual(rankedAssetIds);
   });
 
   it("builds a first-paint AssetSummary from layout caption fields (WorldlineBox-l2at)", () => {

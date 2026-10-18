@@ -107,6 +107,22 @@ describe('WorldlineBox app update release contract', () => {
       name: 'WorldlineBox-win-x86-64-0.1.3-portable.zip',
       assetKind: 'portable',
     });
+    const linuxAppImage = resolveAppUpdateTarget({
+      platform: 'linux',
+      arch: 'x64',
+      distribution: 'portable',
+    });
+    expect(linuxAppImage).toEqual({ platform: 'linux', arch: 'x64', distribution: 'portable' });
+    expect(updateAssetName('0.1.3', linuxAppImage!)).toEqual({
+      name: 'WorldlineBox-linux-x86-64-0.1.3.AppImage',
+      assetKind: 'portable',
+    });
+    // Linux only ships AppImage today; installed distribution still maps to portable.
+    expect(resolveAppUpdateTarget({
+      platform: 'linux',
+      arch: 'x64',
+      distribution: 'installed',
+    })).toEqual({ platform: 'linux', arch: 'x64', distribution: 'portable' });
     expect(resolveAppUpdateTarget({
       platform: 'darwin',
       arch: 'x64',
@@ -486,6 +502,45 @@ describe('WorldlineBox app update release contract', () => {
     }
   });
 
+  it('keeps a macOS disk image after the installer has been opened', async () => {
+    const installerBytes = Buffer.from('macOS installer bytes');
+    const checksum = createHash('sha256').update(installerBytes).digest('hex');
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-dmg-retain-test-'));
+    try {
+      const payload = releasePayload({
+        assets: [{
+          name: 'WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+          browser_download_url: 'https://github.com/dolag233/WorldlineBox/releases/download/v0.1.3/WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+          size: installerBytes.byteLength,
+          digest: `sha256:${checksum}`,
+        }],
+      });
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'darwin',
+        arch: 'arm64',
+        executablePath: path.join(root, 'WorldlineBox.app', 'Contents', 'MacOS', 'WorldlineBox'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        environment: { WORLDLINEBOX_DISTRIBUTION: 'installed' },
+        fetchImpl: async (url) => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+          return new Response(installerBytes as unknown as BodyInit);
+        },
+        openPath: async () => '',
+      });
+
+      const result = await service.downloadAndInstall();
+      expect(result).toMatchObject({ ok: true, action: 'installer-opened' });
+      expect(await readdir(path.join(root, 'Downloads'))).toEqual([
+        'WorldlineBox-darwin-arm64-0.1.3-package.dmg',
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('cleans the archive and extraction directory when the Windows archive is invalid', async () => {
     const archive = new AdmZip();
     archive.addFile('not-an-installer.txt', Buffer.from('wrong entry'));
@@ -579,8 +634,7 @@ describe('WorldlineBox app update release contract', () => {
       expect(path.basename(launched[0]!)).toBe('WorldlineBoxSetup.exe');
       expect(launchedBytes).toEqual(installerBytes);
       expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
-      expect((await readdir(root)).filter((entry) => entry.startsWith('worldlinebox-installer-')))
-        .toEqual([]);
+      expect(await readFile(launched[0]!)).toEqual(installerBytes);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -640,8 +694,7 @@ describe('WorldlineBox app update release contract', () => {
       expect(path.basename(opened[0]!)).toBe('WorldlineBoxSetup.exe');
       expect(openedBytes).toEqual(installerBytes);
       expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
-      expect((await readdir(root)).filter((entry) => entry.startsWith('worldlinebox-installer-')))
-        .toEqual([]);
+      expect(await readFile(opened[0]!)).toEqual(installerBytes);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createCaptionBandResolver } from "../../src/renderer/asset-caption-band";
+import { ASSET_GRID_GAP_PX } from "../../src/renderer/asset-grid-layout";
 import {
   MASONRY_CAPTION_BAND_PX,
   MASONRY_DIMENSIONS_CAPTION_BAND_PX,
@@ -53,15 +54,19 @@ describe("virtual browse canvas geometry", () => {
     if (!firstColumn || !secondColumn) throw new Error("expected two columns");
     const firstHeight = firstColumn.heights[0] ?? 0;
     expect(firstHeight).toBeGreaterThan(secondColumn.heights[0] ?? 0);
-    expect(firstColumn.offsets[1]).toBe(firstHeight + 14);
+    expect(firstColumn.offsets[1]).toBe(firstHeight + ASSET_GRID_GAP_PX);
     expect(firstColumn.totalHeight).toBeGreaterThan(secondColumn.totalHeight);
   });
 
   it("returns a bounded variable-height window with exact spacers", () => {
+    const gap = ASSET_GRID_GAP_PX;
+    const heights = [100, 200, 50] as const;
+    const offsets = [0, heights[0] + gap, heights[0] + gap + heights[1] + gap] as const;
+    const totalHeight = offsets[2] + heights[2];
     const window = variableWindow({
-      heights: [100, 200, 50],
-      offsets: [0, 114, 328],
-      totalHeight: 378,
+      heights: [...heights],
+      offsets: [...offsets],
+      totalHeight,
       viewStart: 120,
       viewEnd: 200,
     });
@@ -69,9 +74,9 @@ describe("virtual browse canvas geometry", () => {
     expect(window).toEqual({
       start: 1,
       end: 2,
-      spacerBefore: 114,
-      spacerAfter: 50,
-      totalHeight: 378,
+      spacerBefore: offsets[1],
+      spacerAfter: heights[2],
+      totalHeight,
     });
   });
 
@@ -91,10 +96,10 @@ describe("virtual browse canvas geometry", () => {
     const firstRow = geometry[0];
     const lastRow = geometry[1];
     if (!firstRow || !lastRow) throw new Error("expected two rows");
-    expect(firstRow.widths.reduce((sum, width) => sum + width, 0)).toBe(786);
+    expect(firstRow.widths.reduce((sum, width) => sum + width, 0)).toBe(800 - ASSET_GRID_GAP_PX);
     expect(firstRow.previewHeight).toBeLessThan(200);
     expect(firstRow.bodyHeight).toBe(firstRow.previewHeight + 40);
-    expect(lastRow.offset).toBe(firstRow.bodyHeight + 14);
+    expect(lastRow.offset).toBe(firstRow.bodyHeight + ASSET_GRID_GAP_PX);
   });
 
   it("keeps 100k masonry geometry sparse while preserving distant overrides", () => {
@@ -148,7 +153,7 @@ describe("virtual browse canvas geometry", () => {
     expect(style.height).toBe(258);
     expect(style.flexShrink).toBe(0);
     expect(style.overflow).toBe("visible");
-    expect(style.marginBottom).toBe(14);
+    expect(style.marginBottom).toBe(ASSET_GRID_GAP_PX);
     expect(virtualJustifiedRowStyle({ bodyHeightPx: 258, isLast: true }).marginBottom)
       .toBeUndefined();
   });

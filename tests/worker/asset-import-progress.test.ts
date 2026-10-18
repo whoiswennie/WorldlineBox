@@ -86,16 +86,18 @@ describe('managed asset import progress', () => {
         if (event.phase !== 'copy' || !event.importId || stopArmed) return;
         stopArmed = true;
         const importId = event.importId;
+        // Transfer checkpoints are setTimeout(0), which runs after setImmediate.
+        // Waiting on the same timer queue lets a few files stage before stop.
         let remaining = 8;
         const waitThenStop = (): void => {
           remaining -= 1;
           if (remaining > 0) {
-            setImmediate(waitThenStop);
+            setTimeout(waitThenStop, 0);
             return;
           }
           service.cancelImport(importId, 'stop');
         };
-        setImmediate(waitThenStop);
+        setTimeout(waitThenStop, 0);
       },
     });
     const library = service.createLibrary({

@@ -20,12 +20,26 @@ process.env.VcpkgEnabled = 'false';
 function nativeMediaPlatform(platform: string, arch: string): string {
   const expectedHost = `${process.platform}-${process.arch}`;
   const target = `${platform}-${arch}`;
-  if (target !== expectedHost || !['darwin-arm64', 'win32-x64'].includes(target)) {
+  if (target !== expectedHost || !['darwin-arm64', 'win32-x64', 'linux-x64'].includes(target)) {
     throw new Error(
       `WorldlineBox release packages must be built and media-verified natively; host=${expectedHost}, target=${target}.`,
     );
   }
   return target;
+}
+
+/**
+ * linux-arm64 has no pinned media bundle. x64 Linux uses the same ensure/verify
+ * gate as macOS and Windows. Every Linux package must still be built natively.
+ */
+function skipsPinnedMediaBundle(platform: string, arch: string): boolean {
+  if (platform !== 'linux' || arch === 'x64') return false;
+  if (platform !== process.platform || arch !== process.arch) {
+    throw new Error(
+      `WorldlineBox Linux packages must be built natively; host=${process.platform}-${process.arch}, target=${platform}-${arch}.`,
+    );
+  }
+  return true;
 }
 
 function runNodeGate(script: string, args: string[], extraEnv?: NodeJS.ProcessEnv): void {
@@ -55,6 +69,10 @@ const config: ForgeConfig = {
       // rebuild 之前强制 VcpkgEnabled=false（与 scripts/rebuild-native.mjs
       // 一致）。
       process.env.VcpkgEnabled = 'false';
+      if (skipsPinnedMediaBundle(platform, arch)) {
+        runNodeGate('scripts/build-extension.mjs', []);
+        return;
+      }
       const mediaPlatform = nativeMediaPlatform(platform, arch);
       runNodeGate('scripts/generate-automation-declarations.mjs', []);
       // Recover ignored media executables from the pinned WorldlineBox-Build
@@ -67,10 +85,12 @@ const config: ForgeConfig = {
       runNodeGate('scripts/build-extension.mjs', []);
     },
     postPackage: async (_forgeConfig, packageResult) => {
+      if (skipsPinnedMediaBundle(packageResult.platform, packageResult.arch)) return;
       nativeMediaPlatform(packageResult.platform, packageResult.arch);
       for (const outputPath of packageResult.outputPaths) {
         runNodeGate('scripts/verify-package.mjs', [], {
           WORLDLINEBOX_PACKAGE_ROOT: outputPath,
+          WORLDLINEBOX_PACKAGE_PLATFORM: `${packageResult.platform}-${packageResult.arch}`,
         });
       }
     },
@@ -78,11 +98,13 @@ const config: ForgeConfig = {
     // input again so that shortcut cannot feed stale or modified bytes to a
     // maker without passing the package gate.
     preMake: async () => {
+      if (skipsPinnedMediaBundle(process.platform, process.arch)) return;
       const mediaPlatform = nativeMediaPlatform(process.platform, process.arch);
       runNodeGate('scripts/media-binaries.mjs', ['ensure', '--platform', mediaPlatform]);
       if (mediaPlatform === 'win32-x64') runNodeGate('scripts/portable-tools.mjs', ['release', '--release-root', packagedResourcesRoot]);
       runNodeGate('scripts/verify-package.mjs', [], {
         WORLDLINEBOX_PACKAGE_ROOT: path.join(projectRoot, 'out', `WorldlineBox-${mediaPlatform}`),
+        WORLDLINEBOX_PACKAGE_PLATFORM: mediaPlatform,
       });
     },
   },
@@ -98,6 +120,9 @@ const config: ForgeConfig = {
         // 2026-09-15：链接删除改为永久删除源文件后，产品不再调用系统回收站，
         // `trash` 依赖与其本地 helper 已移除，这里不再需要解包它。
         '**/node_modules/libarchive-wasm/dist/libarchive.wasm,' +
+        // sqlite-vec loads its pinned platform extension through SQLite's
+        // loadExtension API; dynamic libraries cannot be loaded from app.asar.
+        '**/node_modules/sqlite-vec-*/vec0.*,' +
         // Sharp 0.35 ships prebuilt natives under @img/* (e.g.
         // @img/sharp-darwin-arm64/lib/*.node); native modules cannot load
         // from inside app.asar, so they must stay unpacked.
@@ -119,9 +144,12 @@ const config: ForgeConfig = {
         optionsForFile: () => ({
           entitlements: path.join(projectRoot, 'assets/mac/entitlements.plist'),
         }),
-        // ffmpeg / ffprobe / oiiotool 的字节被清单锁定。再签一次会改写 Mach-O，
-        // 打包校验的 SHA-256 就对不上。它们保持随包带入的链接器签名，外层封印仍覆盖这些字节。
-        ignore: (file: string) => /[/\\]resources[/\\](?:ffmpeg|oiio)[/\\]/.test(file),
+        // ffmpeg / ffprobe / oiiotool and sqlite-vec's dylib bytes are locked
+        // by integrity manifests. Re-signing rewrites Mach-O bytes. Keep their
+        // valid linker ad-hoc signatures; the outer app seal still covers them.
+        ignore: (file: string) =>
+          /[/\\]resources[/\\](?:ffmpeg|oiio)[/\\]/.test(file) ||
+          /[/\\]app\.asar\.unpacked[/\\]node_modules[/\\]sqlite-vec-darwin-arm64[/\\]vec0\.dylib$/i.test(file),
       },
       { continueOnError: false },
     ),
@@ -190,6 +218,13 @@ const config: ForgeConfig = {
           // bridge; they must not inherit the full application preload.
           entry: 'src/preload/critical-confirmation.ts',
           config: 'vite.critical-confirmation-preload.config.ts',
+          target: 'preload',
+        },
+        {
+          // The native browser reuses the extension content script through an
+          // isolated, sandboxed preload, separate from the application bridge.
+          entry: 'src/preload/browser-capture.ts',
+          config: 'vite.browser-capture-preload.config.ts',
           target: 'preload',
         },
         {

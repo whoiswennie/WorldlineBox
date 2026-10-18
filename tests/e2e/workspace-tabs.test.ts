@@ -215,14 +215,14 @@ async function createLibrary(window: Page, name: string) {
 function folderRow(window: Page, name: string) {
   const escapedName = name.replace(/["\\]/gu, "\\$&");
   return window.locator(
-    `.navigation-pane button.nav-row[data-nav-folder-kind="managed"][title="${escapedName}"]`,
+    `.navigation-pane button.nav-row[data-nav-folder-kind="managed"][data-hover-tip="${escapedName}"]`,
   );
 }
 
 function collectionRow(window: Page, name: string) {
   const escapedName = name.replace(/["\\]/gu, "\\$&");
   return window.locator(
-    `.navigation-pane button.nav-row[data-nav-collection-id][title="${escapedName}"]`,
+    `.navigation-pane button.nav-row[data-nav-collection-id][data-hover-tip="${escapedName}"]`,
   );
 }
 

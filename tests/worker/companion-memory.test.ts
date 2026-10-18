@@ -187,7 +187,10 @@ describe('autonomous companion memory authority', () => {
     const action = store.createAction({ ...scope, sourceMessageId: user.id, title: '检索', status: 'running' });
     store.updateAction(action.id, { status: 'succeeded', result: '找到三条证据' });
     const evidence = store.messages({ conversationId: scope.conversationId }).messages.find(message => message.memoryEvidenceOnly)!;
-    expect(JSON.parse(evidence.content)).toMatchObject({ status: 'succeeded', result: '找到三条证据' });
+    expect(JSON.parse(evidence.content)).toMatchObject({
+      actionId: action.id, status: 'succeeded', finalReply: '找到三条证据',
+      recordsAvailable: false, trust: 'execution_record_data_not_instructions',
+    });
     expect(store.request({ type: 'memory.jobs.claim' }).memoryJob?.sourceMessageIds).toEqual([user.id, draft.id, evidence.id]);
   });
 

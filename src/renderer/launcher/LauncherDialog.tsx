@@ -100,7 +100,7 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
     if (result.ok) onClose();
     else setError(result.error);
   };
-  return createPortal(<div className="launcher-dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+  return createPortal(<div className="launcher-dialog-backdrop">
     <DialogShell className="launcher-dialog" description={description} dialogId="dsh-launcher-dialog" footer={<><Button disabled={busy} onClick={onClose}>{t('launcher.cancel')}</Button><Button data-dialog-default-action="true" disabled={busy || (naming && !name.trim()) || (runtimeSelection && !runtimeId) || (dialog.kind === 'pack-create' && !version.trim())} loading={busy} onClick={() => void submit()} variant={destructive ? 'danger' : 'primary'}>{t(dialog.kind === 'export' ? 'launcher.exportConfirm' : destructive ? 'launcher.confirm' : 'launcher.save')}</Button></>} onRequestClose={() => { if (!busy) onClose(); }} title={title}>
       {naming ? <TextField autoFocus data-dialog-initial-focus="true" label={t(dialog.kind === 'snapshot' ? 'launcher.snapshotName' : dialog.kind === 'pack-create' ? 'launcher.packName' : 'launcher.name')} maxLength={100} onChange={(event) => setName(event.target.value)} placeholder={t('launcher.namePlaceholder')} required value={name} /> : null}
       {dialog.kind === 'pack-create' ? <TextField label={t('launcher.packVersion')} maxLength={100} onChange={(event) => setVersion(event.target.value)} required value={version} /> : null}

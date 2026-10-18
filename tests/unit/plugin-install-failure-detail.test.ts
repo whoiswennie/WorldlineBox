@@ -36,12 +36,16 @@ afterEach(() => {
 });
 
 describe('plugin install failure detail', () => {
-  it('returns failureCode and message when a non-.bin symlink blocks install', async () => {
+  it('returns failureCode and message when a non-.bin symlink blocks install', async ({ skip }) => {
     const source = temporaryRoot('worldlinebox-plugin-symlink-');
     const userData = temporaryRoot('worldlinebox-plugin-symlink-user-');
     writePlugin(source);
     writeFileSync(path.join(source, 'real.js'), 'export {};\n');
-    symlinkSync('real.js', path.join(source, 'alias.js'));
+    try { symlinkSync('real.js', path.join(source, 'alias.js'), 'file'); }
+    catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'EPERM') return skip();
+      throw error;
+    }
     const handler = createPluginPackageRequestHandler({
       manager: new PluginPackageManager({
         userDataDirectory: userData,
@@ -64,14 +68,18 @@ describe('plugin install failure detail', () => {
     });
   });
 
-  it('ignores npm node_modules/.bin shims so packaged deps can install', async () => {
+  it('ignores npm node_modules/.bin shims so packaged deps can install', async ({ skip }) => {
     const source = temporaryRoot('worldlinebox-plugin-npmbin-');
     const userData = temporaryRoot('worldlinebox-plugin-npmbin-user-');
     writePlugin(source);
     mkdirSync(path.join(source, 'node_modules', 'semver'), { recursive: true });
     mkdirSync(path.join(source, 'node_modules', '.bin'), { recursive: true });
     writeFileSync(path.join(source, 'node_modules', 'semver', 'index.js'), 'module.exports = {};\n');
-    symlinkSync('../semver/index.js', path.join(source, 'node_modules', '.bin', 'semver'));
+    try { symlinkSync('../semver/index.js', path.join(source, 'node_modules', '.bin', 'semver'), 'file'); }
+    catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'EPERM') return skip();
+      throw error;
+    }
     const handler = createPluginPackageRequestHandler({
       manager: new PluginPackageManager({
         userDataDirectory: userData,

@@ -5,7 +5,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { createPortal } from 'react-dom';
+import { createShellPortal } from './ui/ShellStyleScope';
 import {
   isPluginUiWidgetDialogRequest,
   pluginDialogContributionMatches,
@@ -110,7 +110,7 @@ function PluginDialogOverlay({
   // the shell. A second full-window layer at `--ui-layer-modal` covered the
   // caption and left Chromium without keyboard until the window was
   // deactivated and reactivated.
-  return createPortal(
+  return createShellPortal(
     <div
       className="dialog-backdrop plugin-ui-dialog-stage"
       onClick={onCancel}

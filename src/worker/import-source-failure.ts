@@ -31,8 +31,11 @@ function errorReason(error: unknown): PublicErrorReason | undefined {
 }
 
 export function importSourceDisplayName(sourcePath: string): string {
-  const base = path.basename(sourcePath).replace(/[/\\]/g, '').trim();
-  if (base.length === 0) return 'file';
+  // Import sources can be Windows paths even when this process is POSIX.
+  // path.basename would keep the whole string and then strip separators.
+  const normalized = sourcePath.replaceAll('\\', '/');
+  const base = path.posix.basename(normalized).trim();
+  if (base.length === 0 || base === '.' || base === '..') return 'file';
   return base.length > 255 ? base.slice(0, 255) : base;
 }
 

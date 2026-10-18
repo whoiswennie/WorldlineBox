@@ -5,7 +5,7 @@ import type { FolderBrowseEntry } from "../shared/asset-types";
 import type { WorldlineBoxLibraryApi } from "../shared/library-api";
 import { coverSrc } from "./asset-card-hover-preview";
 import { AppearanceGlyph } from "./AppearanceGlyph";
-import { folderCoverImageSrc } from "./folder-cover";
+import { folderAutomaticCoverSrc, folderCoverImageSrc } from "./folder-cover";
 import { splitFilenameForDisplay } from "./filename-display";
 import { formatBytes } from "./format-file-meta";
 import { Icon } from "./Icons";
@@ -111,10 +111,29 @@ export function FolderInspectorBody({
   const assetCount = entries.reduce((sum, entry) => sum + entry.recursiveAssetCount, 0);
   const childFolderCount = entries.reduce((sum, entry) => sum + entry.childFolderCount, 0);
   const customCover = single?.hasCustomCover ? folderCoverImageSrc(libraryId, single) : null;
-  const covers = customCover ? [] : entries.flatMap((entry) => entry.coverArtifactIds).slice(0, 4);
+  const folderKey = entries.map((entry) => entry.folderId).join("\n");
+  const [failedSrcs, setFailedSrcs] = useState<ReadonlySet<string>>(() => new Set());
+  const [failedFor, setFailedFor] = useState(folderKey);
+  if (failedFor !== folderKey) {
+    setFailedFor(folderKey);
+    setFailedSrcs(new Set());
+  }
+  const markFailed = (src: string) => {
+    setFailedSrcs((current) => {
+      if (current.has(src)) return current;
+      const next = new Set(current);
+      next.add(src);
+      return next;
+    });
+  };
+  const customSrc = customCover && !failedSrcs.has(customCover) ? customCover : null;
+  const covers = customSrc ? [] : entries.flatMap((entry) => entry.coverArtifactIds).slice(0, 4);
   const sequenceCover = covers.length === 0 && single
-    ? folderCoverImageSrc(libraryId, single)
+    ? folderAutomaticCoverSrc(libraryId, single)
     : null;
+  const sequenceSrc = sequenceCover && !failedSrcs.has(sequenceCover) ? sequenceCover : null;
+  const singleAutoSrc = covers.length === 1 ? coverSrc(libraryId, covers[0]!) : null;
+  const visibleAutoSrc = singleAutoSrc && !failedSrcs.has(singleAutoSrc) ? singleAutoSrc : null;
   const title = single
     ? single.name
     : t("inspector.folderSelection", { count: entries.length });
@@ -131,18 +150,37 @@ export function FolderInspectorBody({
     <div className="inspector-content">
       <div className={`inspector-hero-compact${single ? "" : " is-multi"}`}>
         <div className="inspector-hero-preview inspector-folder-hero">
-          {customCover ? (
-            <img alt="" className="inspector-hero-image" src={customCover} />
+          {customSrc ? (
+            <img
+              alt=""
+              className="inspector-hero-image"
+              onError={() => markFailed(customSrc)}
+              src={customSrc}
+            />
           ) : covers.length === 0 ? (
-            sequenceCover ? (
-              <img alt="" className="inspector-hero-image" src={sequenceCover} />
+            sequenceSrc ? (
+              <img
+                alt=""
+                className="inspector-hero-image"
+                onError={() => markFailed(sequenceSrc)}
+                src={sequenceSrc}
+              />
             ) : (
               <div className="inspector-hero-preview-fallback">
                 <Icon name="folder" size={28} />
               </div>
             )
+          ) : covers.length === 1 && visibleAutoSrc ? (
+            <img
+              alt=""
+              className="inspector-hero-image"
+              onError={() => markFailed(visibleAutoSrc)}
+              src={visibleAutoSrc}
+            />
           ) : covers.length === 1 ? (
-            <img alt="" className="inspector-hero-image" src={coverSrc(libraryId, covers[0]!)} />
+            <div className="inspector-hero-preview-fallback">
+              <Icon name="folder" size={28} />
+            </div>
           ) : (
             <div className="folder-card-collage" aria-hidden="true">
               {Array.from({ length: 4 }).map((_, index) => {
@@ -150,7 +188,14 @@ export function FolderInspectorBody({
                 return (
                   <div className="folder-card-collage-cell" key={index}>
                     {artifactId ? (
-                      <img alt="" className="folder-card-collage-image" src={coverSrc(libraryId, artifactId)} />
+                      <img
+                        alt=""
+                        className="folder-card-collage-image"
+                        onError={(event) => {
+                          event.currentTarget.hidden = true;
+                        }}
+                        src={coverSrc(libraryId, artifactId)}
+                      />
                     ) : null}
                   </div>
                 );
@@ -160,7 +205,7 @@ export function FolderInspectorBody({
         </div>
         <div className="inspector-folder-heading">
           <AppearanceGlyph appearance={single ? appearance : null} fallback="folder" size={15} />
-          <strong className="inspector-hero-title" title={title}>
+          <strong className="inspector-hero-title" data-hover-tip={title}>
             {filenameParts ? (
               <>
                 <span className="asset-filename-prefix">{filenameParts.prefix}</span>

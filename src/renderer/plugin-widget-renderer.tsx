@@ -161,7 +161,7 @@ export function PluginWidgetRenderer({
                 {tree.columns.map((_, columnIndex) => {
                   const value = row[columnIndex] ?? '';
                   return (
-                    <div className="plugin-widget-list__cell" key={`cell-${columnIndex}`} role="cell" title={listCellText(value)}>
+                    <div className="plugin-widget-list__cell" key={`cell-${columnIndex}`} role="cell" data-hover-tip={listCellText(value)}>
                       {renderListCell(value)}
                     </div>
                   );

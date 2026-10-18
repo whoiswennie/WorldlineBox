@@ -162,5 +162,12 @@ function presentLocation(
         entity: null,
       };
     }
+    case "similar":
+      return {
+        id: tab.id,
+        title: input.t("settings.semanticSearch.similarBanner"),
+        icon: "scan-qr-code",
+        entity: null,
+      };
   }
 }

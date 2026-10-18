@@ -12,7 +12,9 @@ export type WorkspaceNavLocation =
    */
   | { kind: "preview"; assetId: string }
   | { kind: "tag-management" }
-  | { kind: "plugin-sidebar"; viewId: string };
+  | { kind: "plugin-sidebar"; viewId: string }
+  /** Image similarity results. The history entry stores the source asset id. */
+  | { kind: "similar"; assetId: string };
 
 export interface WorkspaceNavViewport {
   /** Exact scroll offset, used when the restored extent is unchanged. */
@@ -106,6 +108,8 @@ export function workspaceNavLocationsEqual(
       return true;
     case "plugin-sidebar":
       return a.viewId === (b as Extract<WorkspaceNavLocation, { kind: "plugin-sidebar" }>).viewId;
+    case "similar":
+      return a.assetId === (b as Extract<WorkspaceNavLocation, { kind: "similar" }>).assetId;
   }
 }
 

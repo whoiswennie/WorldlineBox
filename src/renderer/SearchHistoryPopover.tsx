@@ -43,7 +43,7 @@ export function SearchHistoryPopover({
             role="option"
             aria-selected={index === activeIndex}
             type="button"
-            title={query}
+            data-hover-tip={query}
             onMouseEnter={() => onHighlight(index)}
             onClick={() => onPick(query)}
           >

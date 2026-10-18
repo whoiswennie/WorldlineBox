@@ -11,7 +11,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { createPortal } from "react-dom";
+import { createShellPortal } from "./ui/ShellStyleScope";
 
 import { layerCssVar, type UiLayerName } from "./ui/foundation";
 import { PopoverSurface, type PopoverSurfaceProps } from "./ui/patterns";
@@ -22,6 +22,7 @@ type AnchorRect = {
   top: number;
   left: number;
   width: number;
+  inModal: boolean;
 };
 
 function readAnchorRect(anchor: HTMLElement | null): AnchorRect | null {
@@ -31,6 +32,7 @@ function readAnchorRect(anchor: HTMLElement | null): AnchorRect | null {
     top: rect.bottom + 6,
     left: rect.left,
     width: rect.width,
+    inModal: Boolean(anchor.closest?.('[role="dialog"]')),
   };
 }
 
@@ -41,8 +43,8 @@ export type PortaledPopoverProps = PopoverSurfaceProps & {
   readonly preferRight?: boolean;
   /**
    * Named stacking layer. Defaults to popover (filters/toolbars).
-   * Callers inside a modal must pass `tooltip` so the menu paints above
-   * `--ui-layer-modal` instead of disappearing under the dialog.
+   * Anchors inside a dialog automatically use its overlay layer, retaining
+   * DOM order above the dialog while leaving the window caption above both.
    */
   readonly layer?: PortaledPopoverLayer;
 };
@@ -87,11 +89,12 @@ export function PortaledPopover({
 
   if (!coords || typeof document === "undefined") return null;
 
-  return createPortal(
+  return createShellPortal(
     <PopoverSurface
       {...rest}
       className={className}
       data-dimension-filter-popover=""
+      data-modal-popover={coords.inModal || undefined}
       ref={surfaceRef}
       style={{
         ...style,
@@ -99,7 +102,7 @@ export function PortaledPopover({
         top: coords.top,
         left: coords.left,
         right: "auto",
-        zIndex: layerCssVar(layer),
+        zIndex: coords.inModal ? 'var(--ui-layer-modal-backdrop)' : layerCssVar(layer),
       }}
     >
       {children}

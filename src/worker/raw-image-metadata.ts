@@ -299,6 +299,10 @@ async function parseWithCancellation(
   });
 }
 
+function isUnsupportedFormatError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'Unknown file format';
+}
+
 export async function extractRawImageMetadataDetailed(
   absoluteFilePath: string,
   parser: RawImageMetadataParser = requireExifr(),
@@ -312,6 +316,10 @@ export async function extractRawImageMetadataDetailed(
       : { status: 'empty' };
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    // exifr only parses JPEG/TIFF/HEIC/AVIF/PNG containers. A valid file in a
+    // format it does not understand (e.g. GIF, WebP) simply carries no
+    // embedded metadata it can read, which is not a failure to retry.
+    if (isUnsupportedFormatError(error)) return { status: 'empty' };
     return { status: 'failed', error };
   }
 }

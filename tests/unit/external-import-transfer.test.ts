@@ -4,6 +4,7 @@ import { MANAGED_ASSETS_DRAG_TYPE } from "../../src/renderer/asset-drag-drop";
 import {
   reduceInternalDragPhase,
   shouldActivateExternalImportOverlay,
+  shouldConsumeManagedAssetDrop,
   supportsExternalImportTypes,
 } from "../../src/renderer/external-import-transfer";
 
@@ -26,6 +27,13 @@ test("an in-app asset drag does not open the import overlay", () => {
   expect(
     shouldActivateExternalImportOverlay([MANAGED_ASSETS_DRAG_TYPE, "Files"], false),
   ).toBe(false);
+});
+
+test("only a complete WorldlineBox initiated file drop is consumed as a managed drag", () => {
+  expect(shouldConsumeManagedAssetDrop(false, 1, ["asset-1"])).toBe(false);
+  expect(shouldConsumeManagedAssetDrop(true, 1, ["asset-1"])).toBe(true);
+  expect(shouldConsumeManagedAssetDrop(true, 2, ["asset-1"])).toBe(false);
+  expect(shouldConsumeManagedAssetDrop(true, 1, [])).toBe(false);
 });
 
 test("the cancelled HTML5 dragend does not end an in-app OS drag", () => {

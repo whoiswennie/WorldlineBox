@@ -43,7 +43,7 @@ function CredentialLabel({
         if (event.key === "Enter") event.currentTarget.blur();
         if (event.key === "Escape") setDraft(label);
       }}
-      title="点击重命名"
+      data-hover-tip="点击重命名"
       type="text"
       value={draft}
     />
@@ -314,7 +314,7 @@ export function McpSettingsPage({
                       className="mcp-client-action"
                       disabled={busy}
                       onClick={() => void request({ type: "copy-agent-connection", credentialId: credential.credentialId, format })}
-                      title={t("settings.mcpCopyCredential")}
+                      data-hover-tip={t("settings.mcpCopyCredential")}
                       type="button"
                     >
                       <Icon name="copy" size={15} />
@@ -324,7 +324,7 @@ export function McpSettingsPage({
                       className="mcp-client-action"
                       disabled={busy}
                       onClick={() => void request({ type: "revoke-credential", credentialId: credential.credentialId })}
-                      title={t("settings.mcpDeleteCredential")}
+                      data-hover-tip={t("settings.mcpDeleteCredential")}
                       type="button"
                     >
                       <Icon name="trash" size={15} />

@@ -49,7 +49,7 @@ if(process.argv.includes('plugin')) {
 }
 
 describe('DSH runtime and pack coexistence matrix', () => {
-  it('runs two distinct packs on each of two pinned runtimes concurrently, preserving every original and isolating plugin edits and process stops', async () => {
+  it('keeps two distinct packs on each pinned runtime isolated across single-WebUI switches and plugin edits', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-dsh-coexistence-'));
     let instances: InstanceService | undefined; let operations: OperationStore | undefined;
     try {
@@ -94,7 +94,7 @@ describe('DSH runtime and pack coexistence matrix', () => {
         await writeFile(path.join(pluginDirectory, 'index.json'), JSON.stringify({ packName, version: pluginVersion, runtimeVersion: runtime.version }));
         await writeFile(path.join(instance.homePath, 'profiles', 'web', 'package.json'), JSON.stringify({ name: 'matrix-profile', private: true, dependencies: { '@matrix/plugin': pluginVersion } }));
         await writeFile(path.join(instance.homePath, 'profiles', 'web', 'pnpm-lock.yaml'), `lockfileVersion: '9.0'\npluginVersion: '${pluginVersion}'\n`);
-        await writeFile(path.join(instance.homePath, 'cordis.patch.yml'), `matrix:\n  packName: '${packName}'\n`);
+        await writeFile(path.join(instance.homePath, 'cordis.patch.yml'), `- id: matrix\n  name: '@matrix/plugin'\n  config:\n    packName: '${packName}'\n`);
         await mkdir(path.join(instance.homePath, 'skills', 'matrix'), { recursive: true });
         await writeFile(path.join(instance.homePath, 'skills', 'matrix', 'SKILL.md'), `Home skill ${packName}`);
         await mkdir(path.join(instance.agentsPath, 'skills', 'matrix'), { recursive: true });
@@ -119,14 +119,26 @@ describe('DSH runtime and pack coexistence matrix', () => {
         await expect(readFile(path.join(instance.homePath, 'sessions', 'private.jsonl'))).rejects.toMatchObject({ code: 'ENOENT' });
         await expect(readFile(path.join(instance.workspacePath, 'private.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
       }
-      await finish(await Promise.all(installed.map(instance => launcher.handle({ type: 'instance.start', instanceId: instance.id }))));
-      const running = installed.map(instance => launcher.get(instance.id));
-      expect(running.every(instance => instance.status === 'running')).toBe(true);
-      expect(new Set(running.map(instance => instance.pid)).size).toBe(4);
-      expect(new Set(running.map(instance => instance.port)).size).toBe(4);
-      expect(new Set(running.map(instance => instance.browserPartition)).size).toBe(4);
-      expect(openWorkbench).toHaveBeenCalledTimes(4);
-      for (const instance of running) {
+      const started: DshInstance[] = [];
+      for (const [index, installedInstance] of installed.entries()) {
+        await finish([await launcher.handle({ type: index === 0 ? 'instance.start' : 'instance.switch-start', instanceId: installedInstance.id })]);
+        const instance = launcher.get(installedInstance.id);
+        expect(instance.status).toBe('running');
+        expect(instance.pid).toBeGreaterThan(0); expect(instance.port).toBeGreaterThan(0);
+        for (const previous of started) {
+          expect(launcher.get(previous.id).status).toBe('stopped');
+          expect(() => process.kill(previous.pid!, 0)).toThrow();
+        }
+        started.push(instance);
+        if (index === 0) {
+          const rejected = await launcher.handle({ type: 'instance.start', instanceId: installed[1]!.id });
+          expect(rejected.ok).toBe(true);
+          if (!rejected.ok || !rejected.operationId) throw new Error('Expected a tracked start attempt.');
+          await operationStore.settle();
+          expect(operationStore.list().find(operation => operation.id === rejected.operationId))
+            .toMatchObject({ status: 'failed', error: expect.stringContaining('Only one DSH WebUI can run at a time.') });
+          expect(launcher.get(instance.id)).toMatchObject({ status: 'running', pid: instance.pid });
+        }
         const source = originals.find(original => instance.name === `Installed ${original.packName}`)!;
         const state = JSON.parse(await readFile(path.join(instance.homePath, 'storages', 'matrix.json'), 'utf8'));
         expect(state.runtimeVersion).toBe(source.runtimeVersion); expect(state.plugin.version).toBe(source.pluginVersion);
@@ -134,15 +146,18 @@ describe('DSH runtime and pack coexistence matrix', () => {
         expect(state.homeSkill).toBe(`Home skill ${source.packName}`); expect(state.agentsSkill).toBe(`Agents skill ${source.packName}`);
         expect(state.home).toBe(instance.homePath); expect(state.agents).toBe(instance.agentsPath); expect(state.workspace).toBe(instance.workspacePath);
       }
-      // Stopping and editing one pack leaves the other pack on this runtime and both packs on the other runtime live.
-      const edited = running.find(instance => instance.runtimeId === records[0]!.id)!;
-      await finish([await launcher.handle({ type: 'instance.stop', instanceId: edited.id })]);
+      expect(new Set(started.map(instance => instance.browserPartition)).size).toBe(4);
+      expect(openWorkbench).toHaveBeenCalledTimes(4);
+      const active = started.at(-1)!;
+      // Editing a stopped pack preserves every other pack and the active WebUI.
+      const edited = started.find(instance => instance.runtimeId === records[0]!.id && instance.id !== active.id)!;
+      expect(launcher.get(edited.id).status).toBe('stopped');
       await finish([await launcher.handle({ type: 'instance.plugin', instanceId: edited.id, action: 'add', spec: '@matrix/plugin@3.0.0' })]);
       await writeFile(path.join(edited.agentsPath, 'skills', 'matrix', 'SKILL.md'), 'Edited private skill');
-      for (const instance of running.filter(value => value.id !== edited.id)) {
-        expect(launcher.get(instance.id).status).toBe('running');
-        const state = await (await fetch(`http://127.0.0.1:${instance.port}/state`)).json() as { plugin: { version: string; edited?: boolean } };
-        expect(state.plugin.version).not.toBe('3.0.0'); expect(state.plugin.edited).toBeUndefined();
+      expect(launcher.get(active.id)).toMatchObject({ status: 'running', pid: active.pid });
+      const activeState = await (await fetch(`http://127.0.0.1:${active.port}/state`)).json() as { plugin: { version: string; edited?: boolean } };
+      expect(activeState.plugin.version).not.toBe('3.0.0'); expect(activeState.plugin.edited).toBeUndefined();
+      for (const instance of started.filter(value => value.id !== edited.id)) {
         expect(await readFile(path.join(instance.agentsPath, 'skills', 'matrix', 'SKILL.md'), 'utf8')).not.toBe('Edited private skill');
         expect(JSON.parse(await readFile(path.join(instance.homePath, 'profiles', 'web', 'node_modules', '@matrix', 'plugin', 'index.json'), 'utf8')).edited).toBeUndefined();
       }

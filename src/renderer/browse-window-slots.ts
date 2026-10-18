@@ -124,6 +124,22 @@ export function mergeLoadedBrowsePage(input: {
   });
 }
 
+/** Merge loaded semantic summaries into the visible layout in model rank order. */
+export function mergeRankedBrowseLayoutPage(input: {
+  current: readonly BrowseLayoutEntry[];
+  items: readonly AssetSummary[];
+  rankedAssetIds: readonly string[];
+}): BrowseLayoutEntry[] {
+  const entriesById = new Map(input.current.map((entry) => [entry.assetId, entry] as const));
+  for (const asset of input.items) {
+    entriesById.set(asset.assetId, layoutEntryFromLoadedAsset(asset));
+  }
+  const rankById = new Map(input.rankedAssetIds.map((assetId, index) => [assetId, index] as const));
+  return [...entriesById.values()].sort((left, right) =>
+    (rankById.get(left.assetId) ?? Number.MAX_SAFE_INTEGER)
+    - (rankById.get(right.assetId) ?? Number.MAX_SAFE_INTEGER));
+}
+
 /**
  * First-paint card copy from the compact layout index (WorldlineBox-l2at / WorldlineBox-joz6).
  *
@@ -190,6 +206,8 @@ function layoutEntryFromLoadedAsset(
     | "width"
     | "height"
     | "thumbnailArtifactId"
+    | "previewKind"
+    | "previewRevisionId"
     | "displayName"
     | "relativeFilePath"
     | "byteSize"
@@ -203,6 +221,8 @@ function layoutEntryFromLoadedAsset(
     width: asset.width,
     height: asset.height,
     previewArtifactId: asset.thumbnailArtifactId,
+    ...(asset.previewKind ? { previewKind: asset.previewKind } : {}),
+    ...(asset.previewRevisionId ? { previewRevisionId: asset.previewRevisionId } : {}),
     displayName: asset.displayName,
     relativeFilePath: asset.relativeFilePath,
     byteSize: asset.byteSize,

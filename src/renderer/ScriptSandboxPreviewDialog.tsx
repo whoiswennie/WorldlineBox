@@ -405,7 +405,7 @@ export function ScriptSandboxPreviewDialog({
         {capabilities.length > 0 ? (
           <p
             className="field-help script-sandbox-preview-capabilities"
-            title={capabilities.join(', ')}
+            data-hover-tip={capabilities.join(', ')}
           >
             {t('automation.preview.capabilities')}{capabilities.length}
           </p>

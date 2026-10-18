@@ -80,6 +80,10 @@ export function parseStoredWorkspaceNavLocation(
       const viewId = nonBlank(input.viewId);
       return viewId ? { kind: "plugin-sidebar", viewId } : null;
     }
+    case "similar": {
+      const assetId = nonBlank(input.assetId);
+      return assetId ? { kind: "similar", assetId } : null;
+    }
     default:
       return null;
   }

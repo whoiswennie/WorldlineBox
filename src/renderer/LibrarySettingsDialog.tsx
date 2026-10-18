@@ -10,8 +10,10 @@ import { Switch } from "./ui/primitives";
 import { formatBytes } from "./format-file-meta";
 import { GitignorePreviewPanel } from "./GitignorePreviewPanel";
 import type { SyncServerSummary } from "./sync-settings-types";
+import { LibraryEmbeddingSettings, type LibraryEmbeddingCallbacks } from "./LibraryEmbeddingSettings";
+import type { EmbeddingIndexSnapshot } from "../shared/embedding/profile";
 
-type LibrarySettingsCategory = "general" | "ignore" | "sync";
+type LibrarySettingsCategory = "general" | "ignore" | "sync" | "semantic";
 
 export interface SyncSettingsCallbacks {
   syncListServers(): Promise<{ ok: true; value: SyncServerSummary[] } | { ok: false; message: string }>;
@@ -341,6 +343,8 @@ export function LibrarySettingsDialog({
   onPreviewGitignore,
   syncCallbacks,
   syncProgress,
+  embeddingCallbacks,
+  embeddingIndex,
 }: {
   library: RendererLibrarySummary | null;
   gitignoreContent: string;
@@ -352,6 +356,8 @@ export function LibrarySettingsDialog({
   onPreviewGitignore: (content: string) => Promise<GitignorePreview | null>;
   syncCallbacks: SyncSettingsCallbacks;
   syncProgress: SyncProgressEvent | null;
+  embeddingCallbacks: LibraryEmbeddingCallbacks;
+  embeddingIndex: EmbeddingIndexSnapshot | null;
 }): ReactNode {
   const t = useT();
   const [category, setCategory] = useState<LibrarySettingsCategory>("general");
@@ -418,8 +424,16 @@ export function LibrarySettingsDialog({
         <div className="app-settings-frame library-settings-frame">
           <nav aria-label={t("settings.librarySettingsCategories")} className="app-settings-nav">
             <div className="app-settings-nav-list" role="tablist">
-              {(["general", "ignore", "sync"] as const).map((item) => {
+              {(["general", "ignore", "sync", "semantic"] as const).map((item) => {
                 const selected = category === item;
+                const label = item === "general"
+                  ? "settings.libraryGeneral"
+                  : item === "ignore"
+                    ? "settings.libraryIgnore"
+                    : item === "sync"
+                      ? "settings.sync.title"
+                      : "settings.librarySemantic.title";
+                const icon = item === "general" ? "settings" : item === "ignore" ? "eye-off" : item === "sync" ? "refresh" : "smart";
                 return (
                   <button
                     aria-selected={selected}
@@ -430,8 +444,8 @@ export function LibrarySettingsDialog({
                     role="tab"
                     type="button"
                   >
-                    <Icon name={item === "general" ? "settings" : item === "ignore" ? "eye-off" : "refresh"} size={16} />
-                    <span>{t(item === "general" ? "settings.libraryGeneral" : item === "ignore" ? "settings.libraryIgnore" : "settings.sync.title")}</span>
+                    <Icon name={icon} size={16} />
+                    <span>{t(label)}</span>
                   </button>
                 );
               })}
@@ -491,7 +505,7 @@ export function LibrarySettingsDialog({
                       aria-expanded={helpOpen}
                       className="library-settings-help-button"
                       onClick={() => setHelpOpen((current) => !current)}
-                      title={t("settings.gitignoreSyntax")}
+                      data-hover-tip={t("settings.gitignoreSyntax")}
                       type="button"
                     >
                       ?
@@ -519,8 +533,14 @@ export function LibrarySettingsDialog({
                   <GitignorePreviewPanel draft={gitignoreDraft} onPreview={onPreviewGitignore} />
                 </section>
               </>
-            ) : (
+            ) : category === "sync" ? (
               <SyncSettingsSection library={library} callbacks={syncCallbacks} syncProgress={syncProgress} />
+            ) : (
+              <LibraryEmbeddingSettings
+                callbacks={embeddingCallbacks}
+                index={embeddingIndex}
+                libraryId={library.libraryId}
+              />
             )}
           </main>
         </div>

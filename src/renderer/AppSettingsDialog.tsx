@@ -1,6 +1,7 @@
 import { type ReactNode, useMemo, useState } from "react";
 
 import { AppSettingsNavigation } from "./AppSettingsNavigation";
+import { useAppearanceAdjusting } from "./use-appearance-adjusting";
 import {
   AiSettingsPage,
   AssetsSettingsPage,
@@ -11,6 +12,8 @@ import {
 import { McpSettingsPage } from "./McpSettingsPage";
 import { PluginSettingsPage } from "./PluginSettingsPage";
 import { PluginCommunityPage } from "./PluginCommunityPage";
+import { SemanticSearchSettings } from "./SemanticSearchSettings";
+import type { EmbeddingCatalogApi } from "./SemanticSearchSettings";
 import { SyncSettingsPage, type SyncServerSettingsCallbacks } from "./SyncSettingsPage";
 import {
   PluginSettingsDetailPage,
@@ -60,6 +63,7 @@ export interface AppSettingsDialogProps {
   libraryId?: string;
   mcpApi?: WorldlineBoxMcpSettingsApi;
   syncServerCallbacks: SyncServerSettingsCallbacks;
+  embeddingServicesApi?: EmbeddingCatalogApi;
   showCardSyncStatus: boolean;
   onShowCardSyncStatusChange: (checked: boolean) => void;
   showMissingLinkedFiles: boolean;
@@ -102,6 +106,7 @@ export function AppSettingsDialog({
   pluginApi,
   pluginContributionRefreshKey,
   libraryId,
+  embeddingServicesApi,
   mcpApi,
   syncServerCallbacks,
   showCardSyncStatus,
@@ -133,6 +138,10 @@ export function AppSettingsDialog({
     (category) => category.id === activeCategory,
   )!;
   const showingPluginSettings = pluginSettingsPluginId !== null;
+  // Appearance-type pages preview live on the app (theme, radius, shadow, background).
+  const [appearanceAdjusting, appearanceAdjustHandlers] = useAppearanceAdjusting(
+    open && !showingPluginSettings && activeCategory === "appearance",
+  );
 
   function handleClose() {
     onClose();
@@ -165,8 +174,11 @@ export function AppSettingsDialog({
 
   return (
     <div
-      className="dialog-backdrop"
+      // While an appearance control is being adjusted, the backdrop fades
+      // its dim + blur out so the live result on the app is visible (a93).
+      className={`dialog-backdrop app-settings-backdrop${appearanceAdjusting ? " is-adjusting" : ""}`}
       role="presentation"
+      {...appearanceAdjustHandlers}
     >
       <DialogShell
         className="create-dialog app-settings-dialog"
@@ -291,6 +303,12 @@ export function AppSettingsDialog({
                 aiUiPrefs={aiUiPrefs}
                 aiConfigPanel={aiConfigPanel}
                 onToggleShowAiBadges={onToggleShowAiBadges}
+              />
+            ) : null}
+            {!showingPluginSettings && activeCategory === "semantic-search" ? (
+              <SemanticSearchSettings
+                libraryId={libraryId}
+                servicesApi={embeddingServicesApi}
               />
             ) : null}
             {!showingPluginSettings && activeCategory === "mcp" ? <McpSettingsPage api={mcpApi} onOpenAppLog={onOpenAppLog} /> : null}

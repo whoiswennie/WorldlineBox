@@ -66,7 +66,7 @@ export function ImportSourceFailureDialog({
           </label>
         ) : null}
         {preview ? (
-          <p className="conflict-examples-line" title={plan.examples.map((item) => item.displayName).join(", ")}>
+          <p className="conflict-examples-line" data-hover-tip={plan.examples.map((item) => item.displayName).join(", ")}>
             {preview}
           </p>
         ) : null}

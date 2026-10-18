@@ -9,11 +9,15 @@ const css = readFileSync(
 );
 
 describe("workspace tab chrome", () => {
-  it("paints the active tab with the global elevation token and skips level 0", () => {
-    expect(css).toContain(
-      ':root:not([data-elevation="0"]) .workspace-tab.is-active',
+  it("uses a single SVG path for active-tab fill (no CSS scoop feet)", () => {
+    expect(css).toContain(".workspace-tab-outline-path");
+    expect(css).toContain("fill: var(--island-tab-fill, var(--canvas))");
+    expect(css).toContain(".workspace-tab.is-active::before");
+    expect(css).toContain("content: none");
+    // No radial scoop fills competing with the SVG silhouette.
+    expect(css).not.toMatch(
+      /\.workspace-tab\.is-active::before\s*\{[^}]*radial-gradient/s,
     );
-    expect(css).toContain("box-shadow: var(--shadow-workspace-tab)");
   });
 
   it("does not paint a hairline between adjacent tabs", () => {
@@ -22,7 +26,7 @@ describe("workspace tab chrome", () => {
 
   it("keeps the add button a space-1 from the last tab", () => {
     expect(css).toContain(
-      "margin-inline-start: calc(-1 * var(--workspace-tab-curve) + var(--ui-space-1))",
+      "margin-inline-start: calc(-1 * var(--workspace-tab-scoop) + var(--ui-space-1))",
     );
   });
 

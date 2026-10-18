@@ -19,6 +19,13 @@
       "promotedAt": "2026-08-25T12:45:00.000Z",
       "upstreamManifestSha256": "8464bca777de24a9646046f13926632177140d10a83ad89ff545223f0409ecea",
       "brandingTransform": "worldlinebox-v2"
+    },
+    "linux-x64": {
+      "status": "ready",
+      "url": "https://github.com/dolag233/Serpent-Build/releases/download/media-v0.1.2/serpent-media-linux-x64.zip",
+      "sha256": "a04bc5e7fd8413cebf79acad6d4f33231c877b7e21a2655cea07ef3af4d5cc0c",
+      "size": 42906702,
+      "manifestSha256": "b0044b68eb30ea2873c331875a43cb5f4ec93eb724d99458c08ba34344319d13"
     }
   }
 }

@@ -88,7 +88,7 @@ export function ImportConflictDialogShell({
           examplesContent ? (
             <div className="conflict-examples-block">{examplesContent}</div>
           ) : (
-            <p className="conflict-examples-line" title={examples.join(", ")}>
+            <p className="conflict-examples-line" data-hover-tip={examples.join(", ")}>
               {preview}
             </p>
           )

@@ -82,18 +82,25 @@ export function parseWindowMaximizedStateEvent(
   return parsed.success ? parsed.data : null;
 }
 
-/** Windows hides the menu bar for frameless shell unity (WorldlineBox-znex). */
+/**
+ * Windows hides the menu bar for frameless shell unity (WorldlineBox-znex).
+ * Linux has no macOS-style global menu bar, so it follows the Windows shell:
+ * the in-app main menu replaces the native GTK menu bar.
+ */
 export function shouldHideApplicationMenuBar(
   platform: NodeJS.Platform,
 ): boolean {
-  return platform === "win32";
+  return platform === "win32" || platform === "linux";
 }
 
-/** Windows uses a hidden title bar with in-app caption buttons. */
+/**
+ * Windows and Linux use a hidden (frameless) title bar with the app's own
+ * custom title bar and caption buttons; macOS keeps hiddenInset traffic lights.
+ */
 export function shouldUseFramelessTitleBar(
   platform: NodeJS.Platform,
 ): boolean {
-  return platform === "win32";
+  return platform === "win32" || platform === "linux";
 }
 
 /** Windows' custom close caption hides the window and leaves the app in the tray. */

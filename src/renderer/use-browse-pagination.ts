@@ -23,8 +23,12 @@ import type {
   SearchScope,
   SortDefinition,
 } from "../shared/asset-types";
-import type { WorldlineBoxLibraryApi } from "../shared/library-api";
+import type { LibraryApiResult, WorldlineBoxLibraryApi } from "../shared/library-api";
 import type { VirtualBrowseLayout } from "./browse/virtual-browse-layout";
+import {
+  DEFAULT_SEMANTIC_SEARCH_PAGE_SIZE,
+  type SemanticSearchPageSize,
+} from "./semantic-search-preferences";
 import {
   browseLoadMoreObserverRoot,
   excludeLocallyDeletedAssets,
@@ -35,6 +39,7 @@ import {
   browsePageOffsetsForIndices,
   contiguousBrowsePageRuns,
   mergeLoadedBrowsePage,
+  mergeRankedBrowseLayoutPage,
   nextUnfilledBrowsePageOffset,
 } from "./browse-window-slots";
 import {
@@ -51,6 +56,8 @@ const browseDiagnosticsEnabled = Boolean(
 
 /** Page size for browse/search first load and window fetches. */
 export const BROWSE_PAGE_SIZE = 100;
+/** Default semantic batch size; each ranked query can carry its own preference. */
+export const SEMANTIC_SEARCH_PAGE_SIZE = DEFAULT_SEMANTIC_SEARCH_PAGE_SIZE;
 /** Scattered shuffle viewports must not enqueue the whole corpus. */
 const SHUFFLE_VISIBLE_PAGE_FETCH_CAP = 6;
 
@@ -87,6 +94,14 @@ export type BrowsePageDefinition =
       showIgnored: boolean;
       sessionId?: string;
       target: "assets" | "trash";
+      /** Keep the supplied item order. Do not replace it with a keyword layout. */
+      pinnedOrder?: boolean;
+      /** Stable semantic ranking snapshot; pages must never fall back to keyword search. */
+      rankedAssetIds?: readonly string[];
+      /** Batch size captured when this semantic query started. */
+      rankedPageSize?: SemanticSearchPageSize;
+      /** Image whose vector is the query. Absent for text semantic search. */
+      similaritySourceAssetId?: string;
     }
   | {
       kind: "smart-collection";
@@ -104,6 +119,114 @@ export type BrowseFirstPage = {
   snippets?: Array<{ assetId: string; text: string }>;
 };
 
+export type BrowseAssetPage = {
+  items: AssetSummary[];
+  total: number;
+  offset: number;
+};
+
+export function browsePageSize(definition: BrowsePageDefinition | null): number {
+  return definition?.kind === "search" && definition.rankedAssetIds
+    ? definition.rankedPageSize ?? SEMANTIC_SEARCH_PAGE_SIZE
+    : BROWSE_PAGE_SIZE;
+}
+
+/** A ranked ID slice is consumed even when some or all summaries have vanished. */
+export function browsePageFilledOffsets(options: {
+  definition: BrowsePageDefinition;
+  offset: number;
+  limit: number;
+  itemCount: number;
+  pageSize: number;
+}): number[] {
+  const { definition, offset, limit, itemCount, pageSize } = options;
+  if (definition.kind === "search" && definition.rankedAssetIds !== undefined) {
+    return definition.rankedAssetIds.slice(offset, offset + limit).length > 0
+      ? [browsePageOffset(offset, pageSize)]
+      : [];
+  }
+  const filled: number[] = [];
+  for (let index = 0; index < itemCount; index += pageSize) {
+    filled.push(offset + index);
+  }
+  return filled;
+}
+
+/** Fetch one ordered summary batch from a semantic ID snapshot without keyword search. */
+export async function fetchRankedBrowsePage(options: {
+  api: WorldlineBoxLibraryApi;
+  definition: BrowsePageDefinition;
+  offset: number;
+  limit: number;
+}): Promise<LibraryApiResult<BrowseAssetPage> | null> {
+  const { api, definition } = options;
+  if (definition.kind !== "search" || !definition.rankedAssetIds) return null;
+  const offset = Math.max(0, Math.trunc(options.offset));
+  const limit = Math.max(0, Math.trunc(options.limit));
+  const assetIds = definition.rankedAssetIds.slice(offset, offset + limit);
+  if (assetIds.length === 0) {
+    return {
+      ok: true,
+      value: { items: [], total: definition.rankedAssetIds.length, offset },
+    };
+  }
+  const listed = await api.listAssets({
+    libraryId: definition.libraryId,
+    recursive: true,
+    assetIds,
+  });
+  if (!listed.ok) return listed;
+  const rank = new Map(assetIds.map((assetId, index) => [assetId, index] as const));
+  return {
+    ok: true,
+    value: {
+      items: [...listed.value].sort((left, right) =>
+        (rank.get(left.assetId) ?? assetIds.length) - (rank.get(right.assetId) ?? assetIds.length)),
+      total: definition.rankedAssetIds.length,
+      offset,
+    },
+  };
+}
+
+export async function fetchFirstRankedBrowsePage(options: {
+  api: WorldlineBoxLibraryApi;
+  libraryId: string;
+  rankedAssetIds: readonly string[];
+  pageSize: SemanticSearchPageSize;
+  shouldContinue?: () => boolean;
+}): Promise<LibraryApiResult<{ items: AssetSummary[]; rankedAssetIds: readonly string[] }> | null> {
+  const definition: BrowsePageDefinition = {
+    kind: "search",
+    libraryId: options.libraryId,
+    query: null,
+    showIgnored: false,
+    target: "assets",
+    rankedAssetIds: options.rankedAssetIds,
+  };
+  for (let offset = 0; offset < options.rankedAssetIds.length; offset += options.pageSize) {
+    if (options.shouldContinue?.() === false) return null;
+    const page = await fetchRankedBrowsePage({
+      api: options.api,
+      definition,
+      offset,
+      limit: options.pageSize,
+    });
+    if (!page) return null;
+    if (!page.ok) return page;
+    if (options.shouldContinue?.() === false) return null;
+    if (page.value.items.length > 0) {
+      return {
+        ok: true,
+        value: {
+          items: page.value.items,
+          rankedAssetIds: options.rankedAssetIds.slice(offset),
+        },
+      };
+    }
+  }
+  return { ok: true, value: { items: [], rankedAssetIds: [] } };
+}
+
 export type BeginBrowsePage = (
   definition: BrowsePageDefinition,
   firstPage: BrowseFirstPage,
@@ -118,6 +241,9 @@ export async function fetchBrowseScopeIds(options: {
   definition: BrowsePageDefinition;
 }): Promise<string[] | null> {
   const { api, definition } = options;
+  if (definition.kind === "search" && definition.rankedAssetIds) {
+    return [...definition.rankedAssetIds];
+  }
   if (definition.sessionId) {
     const result = await api.fetchBrowseSessionAssetIds({
       libraryId: definition.libraryId,
@@ -153,6 +279,7 @@ export async function fetchBrowseLayout(options: {
   definition: BrowsePageDefinition;
 }): Promise<BrowseLayoutEntry[] | null> {
   const { api, definition } = options;
+  if (definition.kind === "search" && definition.rankedAssetIds) return null;
   const result = definition.kind === "smart-collection"
     ? await api.executeSmartCollection({
         libraryId: definition.libraryId,
@@ -217,6 +344,10 @@ export type BrowseSearchPageRegistration = {
   total: number;
   offset: number;
   snippets?: Array<{ assetId: string; text: string }>;
+  pinnedOrder?: boolean;
+  rankedAssetIds?: readonly string[];
+  rankedPageSize?: SemanticSearchPageSize;
+  similaritySourceAssetId?: string;
 };
 
 /** Shared registration for every search-shaped first page (WorldlineBox-ws4k). */
@@ -234,6 +365,10 @@ export function registerBrowseSearchPage(
       sort: input.sort ?? null,
       showIgnored: input.showIgnored,
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.pinnedOrder ? { pinnedOrder: true } : {}),
+      ...(input.rankedAssetIds ? { rankedAssetIds: input.rankedAssetIds } : {}),
+      ...(input.rankedPageSize ? { rankedPageSize: input.rankedPageSize } : {}),
+      ...(input.similaritySourceAssetId ? { similaritySourceAssetId: input.similaritySourceAssetId } : {}),
       target: input.target ?? "assets",
     },
     {
@@ -421,8 +556,12 @@ export function useBrowsePagination(
     [setAssets, setTrashedAssets],
   );
 
-  const refreshHasMore = useCallback((total: number, filled: ReadonlySet<number>) => {
-    for (let offset = 0; offset < total; offset += BROWSE_PAGE_SIZE) {
+  const refreshHasMore = useCallback((
+    total: number,
+    filled: ReadonlySet<number>,
+    pageSize = BROWSE_PAGE_SIZE,
+  ) => {
+    for (let offset = 0; offset < total; offset += pageSize) {
       if (!filled.has(offset)) {
         setHasMorePages(true);
         return;
@@ -430,6 +569,18 @@ export function useBrowsePagination(
     }
     setHasMorePages(false);
   }, []);
+
+  const refreshUnrankedLayoutFromSession = useCallback(() => {
+    const definition = definitionRef.current;
+    // Ranked searches own an ordered compact layout in this hook. The virtual
+    // session intentionally has no complete layout for them, so copying its
+    // empty/partial cache here would discard already loaded ranked batches.
+    if (
+      definition?.kind === "search"
+      && definition.rankedAssetIds !== undefined
+    ) return;
+    layoutRef.current = getLoadedBrowseLayout();
+  }, [getLoadedBrowseLayout]);
 
   const beginPage = useCallback(
     (definition: BrowsePageDefinition, firstPage: BrowseFirstPage) => {
@@ -439,6 +590,7 @@ export function useBrowsePagination(
       deletedIdsRef.current = new Set();
       totalRef.current = firstPage.total;
       const generation = generationRef.current;
+      const pageSize = browsePageSize(definition);
       const virtualized = beginVirtualBrowseSession({
         libraryId: definition.libraryId,
         sessionId: definition.sessionId,
@@ -455,7 +607,7 @@ export function useBrowsePagination(
       layoutHydrationCompleteRef.current = true;
       setLayoutHydrationVersion((version) => version + 1);
       const filled = new Set<number>();
-      filled.add(browsePageOffset(firstPage.offset, BROWSE_PAGE_SIZE));
+      filled.add(browsePageOffset(firstPage.offset, pageSize));
       filledOffsetsRef.current = filled;
       setLoadingMore(false);
       setSearchOffset(firstPage.offset + firstPage.items.length);
@@ -465,8 +617,32 @@ export function useBrowsePagination(
           (firstPage.snippets ?? []).map((snippet) => [snippet.assetId, snippet.text]),
         ),
       );
-      refreshHasMore(firstPage.total, filled);
+      refreshHasMore(firstPage.total, filled, pageSize);
       applyTarget(definition)([...firstPage.items]);
+      if (definition.kind === "search" && (definition.pinnedOrder || definition.rankedAssetIds)) {
+        setVirtualBrowseLayout(null);
+        layoutRef.current = definition.rankedAssetIds
+          ? mergeRankedBrowseLayoutPage({
+              current: [],
+              items: firstPage.items,
+              rankedAssetIds: definition.rankedAssetIds,
+            })
+          : firstPage.items.map((asset) => ({
+              assetId: asset.assetId,
+              width: asset.width,
+              height: asset.height,
+              displayName: asset.displayName,
+              relativeFilePath: asset.relativeFilePath,
+              byteSize: asset.byteSize,
+              modifiedAt: asset.modifiedAt,
+              rating: asset.rating,
+              previewArtifactId: asset.thumbnailArtifactId,
+              ...(asset.previewKind ? { previewKind: asset.previewKind } : {}),
+              ...(asset.previewRevisionId ? { previewRevisionId: asset.previewRevisionId } : {}),
+            }));
+        setBrowseLayout(layoutRef.current);
+        return;
+      }
       if (api) {
         // CANVAS-038: a scope within the one-shot bound loads its complete compact
         // index exactly once, so geometry never changes again while scrolling.
@@ -513,18 +689,21 @@ export function useBrowsePagination(
       noteVirtualVisibleRange,
       getLoadedBrowseLayout,
       setBrowseLayout,
+      setVirtualBrowseLayout,
     ],
   );
 
   const fetchPageAt = useCallback(
-    async (offset: number, generation: number, limit = BROWSE_PAGE_SIZE) => {
+    async (offset: number, generation: number, requestedLimit?: number) => {
       const definition = definitionRef.current;
       if (!definition || !api) return;
+      const pageSize = browsePageSize(definition);
+      const limit = requestedLimit ?? pageSize;
       const coveredOffsets: number[] = [];
       for (
         let covered = offset;
         covered < Math.min(totalRef.current, offset + limit);
-        covered += BROWSE_PAGE_SIZE
+        covered += pageSize
       ) {
         coveredOffsets.push(covered);
       }
@@ -563,16 +742,18 @@ export function useBrowsePagination(
                 limit,
                 offset,
               });
-        let result =
-          browseWindowQueryMode({ sessionId: definition.sessionId }) === "session"
-            && definition.sessionId
-            ? await api.fetchBrowseSessionPage({
-                libraryId: definition.libraryId,
-                sessionId: definition.sessionId,
-                limit,
-                offset,
-              })
-            : await fetchLivePage();
+        let result = await fetchRankedBrowsePage({ api, definition, offset, limit })
+          ?? (
+            browseWindowQueryMode({ sessionId: definition.sessionId }) === "session"
+              && definition.sessionId
+              ? await api.fetchBrowseSessionPage({
+                  libraryId: definition.libraryId,
+                  sessionId: definition.sessionId,
+                  limit,
+                  offset,
+                })
+              : await fetchLivePage()
+          );
         if (isBrowseSessionPageUnusable(result)) {
           // Background catalog writes (sequence frames, ignore paths, AI rows)
           // bump browse_change_sequence and mark the snapshot stale. Stopping
@@ -622,7 +803,9 @@ export function useBrowsePagination(
             },
           }));
         }
-        if (isDiscardedBrowseWindowPage(page, offset, totalRef.current)) return;
+        const hasRankedSnapshot = definition.kind === "search"
+          && definition.rankedAssetIds !== undefined;
+        if (!hasRankedSnapshot && isDiscardedBrowseWindowPage(page, offset, totalRef.current)) return;
         const liveItems = excludeLocallyDeletedAssets(
           page.items,
           deletedIdsRef.current,
@@ -631,18 +814,34 @@ export function useBrowsePagination(
         for (const evictedOffset of evictedSummaryPages) {
           filledOffsetsRef.current.delete(evictedOffset);
         }
-        layoutRef.current = getLoadedBrowseLayout();
+        const rankedOrder = definition.kind === "search" && definition.rankedAssetIds
+          ? new Map(definition.rankedAssetIds.map((assetId, index) => [assetId, index] as const))
+          : null;
+        if (rankedOrder && definition.kind === "search" && definition.rankedAssetIds) {
+          layoutRef.current = mergeRankedBrowseLayoutPage({
+            current: layoutRef.current,
+            items: liveItems,
+            rankedAssetIds: definition.rankedAssetIds,
+          });
+          setBrowseLayout(layoutRef.current);
+        } else {
+          layoutRef.current = getLoadedBrowseLayout();
+        }
         if (offset === 0 && page.total > 0) {
           totalRef.current = page.total;
         } else if (page.total > totalRef.current) {
           totalRef.current = page.total;
         }
-        for (let index = 0; index < page.items.length; index += BROWSE_PAGE_SIZE) {
-          filledOffsetsRef.current.add(offset + index);
-        }
+        for (const filledOffset of browsePageFilledOffsets({
+          definition,
+          offset,
+          limit,
+          itemCount: page.items.length,
+          pageSize,
+        })) filledOffsetsRef.current.add(filledOffset);
         setSearchTotal(totalRef.current);
         setSearchOffset(offset + page.items.length);
-        refreshHasMore(totalRef.current, filledOffsetsRef.current);
+        refreshHasMore(totalRef.current, filledOffsetsRef.current, pageSize);
         const snippets = page.snippets ?? [];
         if (snippets.length > 0) {
           setSearchSnippets((current) => {
@@ -654,13 +853,20 @@ export function useBrowsePagination(
           });
         }
         const loadedSummaryIds = getLoadedSummaryAssetIds();
-        applyTarget(definition)((current) => mergeLoadedBrowsePage({
-          current: loadedSummaryIds === null
-            ? current
-            : current.filter((asset) => loadedSummaryIds.has(asset.assetId)),
-          items: liveItems,
-          layout: layoutRef.current,
-        }));
+        applyTarget(definition)((current) => {
+          const merged = mergeLoadedBrowsePage({
+            current: loadedSummaryIds === null
+              ? current
+              : current.filter((asset) => loadedSummaryIds.has(asset.assetId)),
+            items: liveItems,
+            layout: layoutRef.current,
+          });
+          return rankedOrder
+            ? merged.sort((left, right) =>
+                (rankedOrder.get(left.assetId) ?? Number.MAX_SAFE_INTEGER)
+                - (rankedOrder.get(right.assetId) ?? Number.MAX_SAFE_INTEGER))
+            : merged;
+        });
       } finally {
         for (const covered of coveredOffsets) {
           inFlightOffsetsRef.current.delete(covered);
@@ -679,6 +885,7 @@ export function useBrowsePagination(
       applyVirtualSummaryPage,
       getLoadedBrowseLayout,
       getLoadedSummaryAssetIds,
+      setBrowseLayout,
     ],
   );
 
@@ -687,6 +894,7 @@ export function useBrowsePagination(
       const definition = definitionRef.current;
       if (!definition || !api) return;
       const generation = generationRef.current;
+      const pageSize = browsePageSize(definition);
       // Geometry is already committed for the whole scope, so a viewport change
       // only needs to keep the visible summary pages hot in the LRU.
       noteVirtualVisibleRange(
@@ -695,21 +903,21 @@ export function useBrowsePagination(
       );
       const firstOffset = browsePageOffset(
         Math.max(0, Math.min(startIndex, endIndex)),
-        BROWSE_PAGE_SIZE,
+        pageSize,
       );
       const lastOffset = browsePageOffset(
         Math.min(totalRef.current - 1, Math.max(startIndex, endIndex)),
-        BROWSE_PAGE_SIZE,
+        pageSize,
       );
       const offsets: number[] = [];
-      for (let offset = firstOffset; offset <= lastOffset; offset += BROWSE_PAGE_SIZE) {
+      for (let offset = firstOffset; offset <= lastOffset; offset += pageSize) {
         if (
           !filledOffsetsRef.current.has(offset)
           && !inFlightOffsetsRef.current.has(offset)
         ) offsets.push(offset);
       }
       if (offsets.length === 0) {
-        layoutRef.current = getLoadedBrowseLayout();
+        refreshUnrankedLayoutFromSession();
         return;
       }
       // Do not let an older in-flight page block a new destination. Split the
@@ -717,7 +925,7 @@ export function useBrowsePagination(
       // nearest the viewport center. This keeps the latest search lane
       // serialized while still allowing a jump from page A to page B to make
       // progress when A is already being fetched.
-      const runs = contiguousBrowsePageRuns(offsets, BROWSE_PAGE_SIZE);
+      const runs = contiguousBrowsePageRuns(offsets, pageSize);
       const center = (startIndex + endIndex) / 2;
       runs.sort((left, right) => {
         const leftCenter = ((left[0] ?? center) + (left.at(-1) ?? center)) / 2;
@@ -727,13 +935,13 @@ export function useBrowsePagination(
       const selectedRun = runs[0]!;
       const requestOffset = selectedRun[0]!;
       const requestLimit = Math.min(
-        500,
-        selectedRun.at(-1)! - requestOffset + BROWSE_PAGE_SIZE,
+        definition.kind === "search" && definition.rankedAssetIds ? pageSize : 500,
+        selectedRun.at(-1)! - requestOffset + pageSize,
       );
       await fetchPageAt(requestOffset, generation, requestLimit);
-      layoutRef.current = getLoadedBrowseLayout();
+      refreshUnrankedLayoutFromSession();
     },
-    [api, noteVirtualVisibleRange, fetchPageAt, getLoadedBrowseLayout],
+    [api, noteVirtualVisibleRange, fetchPageAt, refreshUnrankedLayoutFromSession],
   );
 
   const ensureVisibleIndices = useCallback(
@@ -741,6 +949,7 @@ export function useBrowsePagination(
       const definition = definitionRef.current;
       if (!definition || !api || indices.length === 0) return;
       const generation = generationRef.current;
+      const pageSize = browsePageSize(definition);
       const total = totalRef.current;
       const ranks = [
         ...new Set(
@@ -756,19 +965,19 @@ export function useBrowsePagination(
       const offsets = browsePageOffsetsForIndices({
         indices: ranks,
         total,
-        pageSize: BROWSE_PAGE_SIZE,
+        pageSize,
       }).filter(
         (offset) =>
           !filledOffsetsRef.current.has(offset)
           && !inFlightOffsetsRef.current.has(offset),
       );
       if (offsets.length === 0) {
-        layoutRef.current = getLoadedBrowseLayout();
+        refreshUnrankedLayoutFromSession();
         return;
       }
       const hits = new Map<number, number>();
       for (const rank of ranks) {
-        const offset = browsePageOffset(rank, BROWSE_PAGE_SIZE);
+        const offset = browsePageOffset(rank, pageSize);
         hits.set(offset, (hits.get(offset) ?? 0) + 1);
       }
       offsets.sort(
@@ -777,24 +986,25 @@ export function useBrowsePagination(
       const selected = offsets.slice(0, SHUFFLE_VISIBLE_PAGE_FETCH_CAP);
       const runs = contiguousBrowsePageRuns(
         [...selected].sort((left, right) => left - right),
-        BROWSE_PAGE_SIZE,
+        pageSize,
       );
       for (const run of runs) {
         if (generation !== generationRef.current) return;
         const requestOffset = run[0]!;
         const requestLimit = Math.min(
-          500,
-          run.at(-1)! - requestOffset + BROWSE_PAGE_SIZE,
+          definition.kind === "search" && definition.rankedAssetIds ? pageSize : 500,
+          run.at(-1)! - requestOffset + pageSize,
         );
         await fetchPageAt(requestOffset, generation, requestLimit);
       }
-      layoutRef.current = getLoadedBrowseLayout();
+      refreshUnrankedLayoutFromSession();
     },
-    [api, noteVirtualVisibleRange, fetchPageAt, getLoadedBrowseLayout],
+    [api, noteVirtualVisibleRange, fetchPageAt, refreshUnrankedLayoutFromSession],
   );
 
   const appendNextPage = useCallback(async () => {
     const total = totalRef.current;
+    const definition = definitionRef.current;
     if (total <= 0) return;
     // Full geometry (virtual placeholders or a complete compact index) can
     // jump to the tail. An incomplete first-page layout must append the next
@@ -810,7 +1020,7 @@ export function useBrowsePagination(
     const nextOffset = nextUnfilledBrowsePageOffset(
       filledOffsetsRef.current,
       total,
-      BROWSE_PAGE_SIZE,
+      browsePageSize(definition),
     );
     if (nextOffset === null) return;
     await fetchPageAt(nextOffset, generationRef.current);
@@ -828,14 +1038,20 @@ export function useBrowsePagination(
 
   const removeLocally = useCallback(
     (assetIds: string[], removedCount: number): (() => void) => {
+      const currentDefinition = definitionRef.current;
+      const isRankedSnapshot = currentDefinition?.kind === "search"
+        && currentDefinition.rankedAssetIds !== undefined;
+      if (isRankedSnapshot) generationRef.current += 1;
       const generation = generationRef.current;
       const previous = {
+        definition: currentDefinition,
         deletedIds: new Set(deletedIdsRef.current),
         filledOffsets: new Set(filledOffsetsRef.current),
         layout: layoutRef.current,
         total: totalRef.current,
         virtual: snapshotVirtualBrowseLocalState(),
       } satisfies {
+        definition: BrowsePageDefinition | null;
         deletedIds: Set<string>;
         filledOffsets: Set<number>;
         layout: BrowseLayoutEntry[];
@@ -845,8 +1061,15 @@ export function useBrowsePagination(
       for (const assetId of assetIds) {
         deletedIdsRef.current.add(assetId);
       }
-      totalRef.current = Math.max(0, totalRef.current - removedCount);
       const removed = new Set(assetIds);
+      if (isRankedSnapshot && currentDefinition?.kind === "search") {
+        const rankedAssetIds = currentDefinition.rankedAssetIds!.filter((assetId) => !removed.has(assetId));
+        definitionRef.current = { ...currentDefinition, rankedAssetIds };
+        totalRef.current = rankedAssetIds.length;
+        filledOffsetsRef.current = new Set();
+      } else {
+        totalRef.current = Math.max(0, totalRef.current - removedCount);
+      }
       layoutRef.current = layoutRef.current.filter(
         (entry) => !removed.has(entry.assetId),
       );
@@ -855,9 +1078,10 @@ export function useBrowsePagination(
         layoutRef.current = getLoadedBrowseLayout();
       }
       setBrowseLayout(layoutRef.current);
-      refreshHasMore(totalRef.current, filledOffsetsRef.current);
+      refreshHasMore(totalRef.current, filledOffsetsRef.current, browsePageSize(definitionRef.current));
       return () => {
         if (generation !== generationRef.current) return;
+        definitionRef.current = previous.definition;
         deletedIdsRef.current = previous.deletedIds;
         filledOffsetsRef.current = previous.filledOffsets;
         totalRef.current = previous.total;
@@ -865,7 +1089,7 @@ export function useBrowsePagination(
         restoreVirtualBrowseLocalState(previous.virtual);
         setBrowseLayout(previous.layout);
         setSearchTotal(previous.total);
-        refreshHasMore(previous.total, previous.filledOffsets);
+        refreshHasMore(previous.total, previous.filledOffsets, browsePageSize(previous.definition));
       };
     },
     [

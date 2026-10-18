@@ -10,6 +10,7 @@ import {
   PREF_KEY,
   saveCanvasPreferences,
   shouldShowGridDimensions,
+  nextCanvasCaptionAlign,
   type CanvasPreferences,
 } from '../../src/renderer/canvas-preferences';
 
@@ -384,6 +385,12 @@ describe('DEFAULT_CANVAS_PREFERENCES', () => {
       hoverAudioPlay: DEFAULT_CANVAS_PREFERENCES.hoverAudioPlay,
       hoverVideoSound: DEFAULT_CANVAS_PREFERENCES.hoverVideoSound,
     });
+  });
+
+  it('nextCanvasCaptionAlign cycles left → center → right → left', () => {
+    expect(nextCanvasCaptionAlign('left')).toBe('center');
+    expect(nextCanvasCaptionAlign('center')).toBe('right');
+    expect(nextCanvasCaptionAlign('right')).toBe('left');
   });
 
   it('defaults captionAlign to left when loading older v1 prefs', () => {

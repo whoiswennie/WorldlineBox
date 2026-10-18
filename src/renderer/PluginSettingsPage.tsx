@@ -1,7 +1,10 @@
+import { requestConfirmation } from "./local-confirmation";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -153,6 +156,8 @@ export function PluginSettingsPage({
 }: PluginSettingsPageProps): ReactNode {
   const t = useT();
   const { locale } = useLocale();
+  const currentLibraryId = useRef(libraryId);
+  useLayoutEffect(() => { currentLibraryId.current = libraryId; }, [libraryId]);
   const [snapshot, setSnapshot] = useState<PluginSnapshot | undefined>();
   const [catalog, setCatalog] = useState<PluginCommunityCatalogSnapshot | undefined>();
   const [installOpen, setInstallOpen] = useState(false);
@@ -276,7 +281,7 @@ export function PluginSettingsPage({
     ?? (githubPackages.length > 0 && githubPackages.every((item) => item.autoUpdate === true));
 
   const setGlobalAutoUpdate = useCallback(async (enabled: boolean): Promise<void> => {
-    if (enabled && !globalThis.confirm(t('settings.pluginAutoUpdateRisk'))) return;
+    if (enabled && !await requestConfirmation(t('settings.pluginAutoUpdateRisk'))) return;
     await execute({
       type: 'plugin-manager.set-global-auto-update',
       enabled,
@@ -299,7 +304,8 @@ export function PluginSettingsPage({
       return;
     }
     if (pluginPackage.scope === 'library' && pluginPackage.trust !== 'trusted') {
-      if (!globalThis.confirm(pluginEnableRiskMessage(pluginPackage, t))) return;
+      if (!(await requestConfirmation(pluginEnableRiskMessage(pluginPackage, t)))
+        || currentLibraryId.current !== libraryId) return;
       const trustSaved = await execute({
         type: 'plugin-manager.trust',
         scope: 'library',
@@ -919,15 +925,14 @@ export function PluginSettingsPage({
                 className="text-field"
                 disabled={busy}
                 onChange={(event) => setInstallScope(event.target.value as InstallScope)}
-                title={scopeHoverTip(installScope)}
+                data-hover-tip={canUseLibraryScope ? scopeHoverTip(installScope) : t('settings.pluginLibraryClosedHint')}
                 value={installScope}
               >
-                <option title={scopeHoverTip('user')} value="user">
+                <option value="user">
                   {t('settings.pluginScopeUser')}
                 </option>
                 <option
                   disabled={!canUseLibraryScope}
-                  title={canUseLibraryScope ? scopeHoverTip('library') : t('settings.pluginLibraryClosedHint')}
                   value="library"
                 >
                   {t('settings.pluginScopeLibrary')}
@@ -935,7 +940,7 @@ export function PluginSettingsPage({
               </select>
             </label>
             {scopeHoverTip(installScope) ? <p className="app-settings-hint">{scopeHoverTip(installScope)}</p> : null}
-            {libraryInstallDisabled ? <p className="app-settings-hint">{t('settings.pluginLibraryClosedHint')}</p> : null}
+            {!canUseLibraryScope ? <p className="app-settings-hint">{t('settings.pluginLibraryClosedHint')}</p> : null}
 
             {githubInstallOpen ? (
               <div className="plugin-install-github-view">

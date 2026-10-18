@@ -38,3 +38,17 @@ export function elementContentBoxWidthPx(element: HTMLElement): number {
   const paddingRight = Number.parseFloat(style.paddingRight) || 0;
   return Math.max(0, element.clientWidth - paddingLeft - paddingRight);
 }
+
+/**
+ * Width discrete card stops must pack into. Masonry columns and justified
+ * rows measure their own clientWidth, which is the canvas content box minus
+ * any grid padding — not `canvas.clientWidth` (that includes the canvas
+ * padding the children do not fill).
+ */
+export function browseCardLayoutWidthPx(canvas: HTMLElement): number {
+  const packed = canvas.querySelector<HTMLElement>(".masonry-columns, .justified-rows");
+  if (packed && packed.clientWidth > 0) return packed.clientWidth;
+  const grid = canvas.querySelector<HTMLElement>(".asset-grid");
+  if (grid && grid.clientWidth > 0) return elementContentBoxWidthPx(grid);
+  return elementContentBoxWidthPx(canvas);
+}

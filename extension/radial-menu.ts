@@ -33,6 +33,7 @@ import {
 } from './radial-menu-model';
 import type { SaveIntent } from './save-client';
 import { showSaveBubble } from './save-bubble';
+import { installContentStyle } from './content-style';
 
 /**
  * WorldlineBox-c0ml / REQ-EXT-005 思维导图树状拖放保存菜单。
@@ -454,9 +455,7 @@ function ensureShadowRoot(): ShadowRoot {
     pointerEvents: 'none',
   });
   const root = host.attachShadow({ mode: 'open' });
-  const style = document.createElement('style');
-  style.textContent = STYLE_TEXT;
-  root.appendChild(style);
+  installContentStyle(root, STYLE_TEXT);
   scrimEl = document.createElement('div');
   scrimEl.className = 'scrim';
   root.appendChild(scrimEl);

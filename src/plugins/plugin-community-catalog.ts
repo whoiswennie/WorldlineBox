@@ -6,7 +6,7 @@ import { PLUGIN_PLATFORM_TOKENS } from './plugin-release-asset';
 export const PLUGIN_COMMUNITY_CATALOG_SCHEMA_VERSION = 1 as const;
 
 export const DEFAULT_PLUGIN_COMMUNITY_CATALOG_URL =
-  'https://raw.githubusercontent.com/dolag233/WorldlineBox-Plugin-Pool/main/catalog.v1.json';
+  'https://raw.githubusercontent.com/dolag233/Serpent-Plugin-Pool/main/catalog.v1.json';
 
 export const pluginCommunityLocalizedTextSchema = z.strictObject({
   'zh-CN': z.string().min(1).max(2_000),
@@ -29,6 +29,8 @@ export const pluginCommunityEntrySchema = z.strictObject({
   version: semverSchema,
   runtimeMode: z.enum(['restricted', 'unrestricted']),
   minWorldlineBox: z.string().min(1).max(64).optional(),
+  // This is the upstream feed's external field name, independent of app branding.
+  minSerpent: z.string().min(1).max(64).optional(),
   author: z.string().min(1).max(160).optional(),
   name: z.strictObject({
     'zh-CN': z.string().min(1).max(160),
@@ -36,7 +38,12 @@ export const pluginCommunityEntrySchema = z.strictObject({
   }),
   description: pluginCommunityLocalizedTextSchema,
   assets: z.array(pluginCommunityAssetSchema).min(1).max(16),
-});
+}).transform(({ minSerpent, ...entry }) => ({
+  ...entry,
+  ...(entry.minWorldlineBox === undefined && minSerpent !== undefined
+    ? { minWorldlineBox: minSerpent }
+    : {}),
+}));
 export type PluginCommunityEntry = z.infer<typeof pluginCommunityEntrySchema>;
 
 export const pluginCommunityRemovedSchema = z.strictObject({

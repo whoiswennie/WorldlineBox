@@ -7,6 +7,12 @@ import type {
   WindowControlAction,
   WindowControlResult,
 } from './window-controls';
+import type {
+  WindowEdgeResizeResult,
+  WindowGetBoundsResult,
+  WindowResizeEdge,
+  WindowSetBoundsResult,
+} from './window-edge-resize';
 import type { AppLogAutomationCorrelationId, ReadAppLogResult } from './app-log';
 import type {
   PluginInputCapturePublishPayload,
@@ -139,6 +145,22 @@ export interface WorldlineBoxShellApi {
    * steal-focus.
    */
   windowControl(action: WindowControlAction): Promise<WindowControlResult>;
+  /**
+   * Linux frameless: begin WM edge resize (`_NET_WM_MOVERESIZE`) or signal
+   * that the renderer should drive setBounds as a fallback.
+   */
+  beginWindowEdgeResize(edge: WindowResizeEdge): Promise<WindowEdgeResizeResult>;
+  /** Linux frameless: read BrowserWindow bounds for edge-resize fallback. */
+  getWindowBounds(): Promise<WindowGetBoundsResult>;
+  /** Linux frameless: apply edge-resize delta via setBounds. */
+  setWindowBoundsFromEdgeDelta(input: {
+    edge: WindowResizeEdge;
+    startBounds: { x: number; y: number; width: number; height: number };
+    dx: number;
+    dy: number;
+  }): Promise<WindowSetBoundsResult>;
+  /** True when the shell needs client-drawn window edge resize hit targets. */
+  needsClientWindowEdgeResize(): boolean;
   /** Windows maximize/restore state pushes (WorldlineBox-znex). */
   onWindowMaximizedChanged(
     listener: (maximized: boolean) => void,

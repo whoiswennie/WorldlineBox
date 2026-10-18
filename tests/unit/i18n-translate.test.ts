@@ -38,8 +38,8 @@ describe('i18n translate', () => {
   it('creates locale-aware translators from catalogs', () => {
     const zh = createTranslator(catalogs['zh-CN']);
     const en = createTranslator(catalogs.en, catalogs['zh-CN']);
-    expect(zh('settings.categoryAi')).toBe('AI分析');
-    expect(en('settings.categoryAi')).toBe('AI Analysis');
+    expect(zh('settings.categoryAi')).toBe('全局模型');
+    expect(en('settings.categoryAi')).toBe('Global model');
     expect(zh('shell.libraryMenu')).toBe('资源库菜单');
     expect(zh('shell.networkStorageNotice')).toContain('网络共享');
     expect(en('shell.libraryMenu')).toBe('Library menu');
@@ -82,5 +82,22 @@ describe('locale preferences', () => {
     expect(resolveEffectiveLocale('system', 'zh-CN')).toBe('zh-CN');
     expect(readSystemLocale(['en-US', 'en'])).toBe('en');
     expect(readSystemLocale(['zh-Hans-CN', 'en'])).toBe('zh-CN');
+  });
+
+  it('prefers the E2E locale pin over navigator languages', () => {
+    const host = globalThis as { __WORLDLINEBOX_E2E_LOCALE__?: string };
+    const previous = host.__WORLDLINEBOX_E2E_LOCALE__;
+    try {
+      host.__WORLDLINEBOX_E2E_LOCALE__ = 'zh-CN';
+      expect(readSystemLocale(['en-US', 'en'])).toBe('zh-CN');
+      host.__WORLDLINEBOX_E2E_LOCALE__ = 'en';
+      expect(readSystemLocale(['zh-CN', 'zh'])).toBe('en');
+    } finally {
+      if (previous === undefined) {
+        delete host.__WORLDLINEBOX_E2E_LOCALE__;
+      } else {
+        host.__WORLDLINEBOX_E2E_LOCALE__ = previous;
+      }
+    }
   });
 });

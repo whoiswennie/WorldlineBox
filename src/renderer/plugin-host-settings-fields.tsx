@@ -196,7 +196,7 @@ export function PluginHostSettingsFields({
                   id={controlId}
                   loading={fieldLoading}
                   onChange={(event) => void save(section, event.target.checked)}
-                  title={section.description}
+
                 />
               ))}
             </Field>
@@ -221,7 +221,7 @@ export function PluginHostSettingsFields({
                   loading={fieldLoading}
                   onValueChange={(value) => void save(section, value)}
                   options={options}
-                  title={section.description}
+
                   value={selectValue}
                 />
               ))}
@@ -253,7 +253,7 @@ export function PluginHostSettingsFields({
                     if (!Number.isFinite(parsed)) return;
                     void save(section, parsed);
                   }}
-                  title={section.description}
+
                   type="number"
                   value={numericValue}
                 />
@@ -286,7 +286,6 @@ export function PluginHostSettingsFields({
                   value={numericValue}
                   valueText={String(numericValue)}
                   showValue
-                  title={section.description}
                 />
               ))}
             </Field>
@@ -318,7 +317,7 @@ export function PluginHostSettingsFields({
                   if (event.key !== 'Enter') return;
                   event.currentTarget.blur();
                 }}
-                title={section.description}
+
                 type="text"
                 value={textValue}
               />

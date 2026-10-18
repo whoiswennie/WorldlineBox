@@ -56,6 +56,7 @@ export function PluginCommunityPage({
   const t = useT();
   const { locale } = useLocale();
   const [catalog, setCatalog] = useState<PluginCommunityCatalogSnapshot | undefined>();
+  const [catalogLoading, setCatalogLoading] = useState(true);
   const [packages, setPackages] = useState<readonly PluginManagerPackageSummary[]>([]);
   const [error, setError] = useState<string | undefined>();
   const [query, setQuery] = useState('');
@@ -69,8 +70,11 @@ export function PluginCommunityPage({
   const load = useCallback(async () => {
     if (api === undefined) {
       setError(t('settings.pluginUnavailable'));
+      setCatalogLoading(false);
       return;
     }
+    setCatalogLoading(true);
+    setError(undefined);
     try {
       const [catalogResponse, listResponse] = await Promise.all([
         api.request({ type: 'plugin-manager.community-catalog', refresh: true }),
@@ -94,6 +98,8 @@ export function PluginCommunityPage({
       setError(undefined);
     } catch {
       setError(t('settings.pluginOperationFailed', { code: 'bridge-unavailable' }));
+    } finally {
+      setCatalogLoading(false);
     }
   }, [api, libraryId, t]);
 
@@ -387,7 +393,10 @@ export function PluginCommunityPage({
           value={query}
         />
       </label>
-      {filtered.length === 0 && error === undefined ? (
+      {catalogLoading ? (
+        <p className="app-settings-hint" role="status">{t('settings.pluginCommunityLoading')}</p>
+      ) : null}
+      {!catalogLoading && catalog !== undefined && filtered.length === 0 && error === undefined ? (
         <p className="app-settings-hint">{t('settings.pluginCommunityEmpty')}</p>
       ) : null}
       <div className="plugin-community-list">

@@ -1,19 +1,30 @@
 import { z } from "zod";
 
 /**
- * Hierarchical elevation (WorldlineBox-zcyg).
+ * Hierarchical elevation (WorldlineBox-zcyg, a87).
  *
- * Four stepped levels (0–3). Level 0 disables the experimental shell/card
- * elevation shadows entirely (no box-shadow paint). Levels 1–3 map to size /
- * intensity presets written as CSS `--elev-*` multipliers.
+ * v4: two continuous axes picked on a 2D pad in Settings —
+ *   size      0–100 (X)  → CSS `--elev-size`      = size / 50
+ *   intensity 0–100 (Y)  → CSS `--elev-intensity` = intensity / 50
+ * Either axis below SHADOW_OFF_THRESHOLD turns elevation off
+ * (`data-elevation="0"`, no box-shadow paint).
+ *
+ * Older records migrate: v3 stepped level (0–3) and v2 amount map through
+ * SHADOW_LEVEL_PRESETS; v1 already stored size/intensity.
  */
 
 export type ShadowLevel = 0 | 1 | 2 | 3;
 
 export interface ShadowPreferences {
-  readonly version: 3;
-  readonly level: ShadowLevel;
+  readonly version: 4;
+  readonly size: number;
+  readonly intensity: number;
 }
+
+export const SHADOW_VALUE_MIN = 0;
+export const SHADOW_VALUE_MAX = 100;
+/** Below this on either axis, elevation shadows are off. */
+export const SHADOW_OFF_THRESHOLD = 3;
 
 export interface ShadowPreferencesStorage {
   getItem(key: string): string | null;
@@ -38,8 +49,9 @@ export const SHADOW_LEVEL_PRESETS: Readonly<
 
 /** Default matches the soft hierarchy users liked (former “more”). */
 export const DEFAULT_SHADOW_PREFERENCES: ShadowPreferences = {
-  version: 3,
-  level: 2,
+  version: 4,
+  size: SHADOW_LEVEL_PRESETS[2].size,
+  intensity: SHADOW_LEVEL_PRESETS[2].intensity,
 };
 
 const shadowLevelSchema = z.union([
@@ -48,6 +60,12 @@ const shadowLevelSchema = z.union([
   z.literal(2),
   z.literal(3),
 ]);
+
+const shadowPreferencesV4Schema = z.object({
+  version: z.literal(4),
+  size: z.number().min(0).max(100),
+  intensity: z.number().min(0).max(100),
+});
 
 const shadowPreferencesV3Schema = z.object({
   version: z.literal(3),
@@ -83,19 +101,40 @@ export function isShadowElevationEnabled(level: ShadowLevel): boolean {
   return level > 0;
 }
 
+export function clampShadowValue(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(SHADOW_VALUE_MAX, Math.max(SHADOW_VALUE_MIN, Math.round(value)));
+}
+
+/** Off when either axis is ~0. */
+export function isShadowPreferenceEnabled(preferences: ShadowPreferences): boolean {
+  return (
+    preferences.size >= SHADOW_OFF_THRESHOLD &&
+    preferences.intensity >= SHADOW_OFF_THRESHOLD
+  );
+}
+
+export function shadowPreferencesFromLevel(level: ShadowLevel): ShadowPreferences {
+  const preset = SHADOW_LEVEL_PRESETS[level];
+  return { version: 4, size: preset.size, intensity: preset.intensity };
+}
+
+export function makeShadowPreferences(
+  size: number,
+  intensity: number,
+): ShadowPreferences {
+  return {
+    version: 4,
+    size: clampShadowValue(size),
+    intensity: clampShadowValue(intensity),
+  };
+}
+
 export function shadowLevelToPreset(level: ShadowLevel): {
   readonly size: number;
   readonly intensity: number;
 } {
   return SHADOW_LEVEL_PRESETS[level];
-}
-
-function migrateV1ToLevel(size: number, intensity: number): ShadowLevel {
-  const score = size * 0.6 + intensity * 0.4;
-  if (score < 8) return 0;
-  if (score < 30) return 1;
-  if (score < 55) return 2;
-  return 3;
 }
 
 function migrateV2ToLevel(amount: "more" | "less"): ShadowLevel {
@@ -110,18 +149,17 @@ export function loadShadowPreferences(
   if (!raw) return DEFAULT_SHADOW_PREFERENCES;
   try {
     const json: unknown = JSON.parse(raw);
+    const v4 = shadowPreferencesV4Schema.safeParse(json);
+    if (v4.success) return makeShadowPreferences(v4.data.size, v4.data.intensity);
     const v3 = shadowPreferencesV3Schema.safeParse(json);
-    if (v3.success) return v3.data;
+    if (v3.success) return shadowPreferencesFromLevel(v3.data.level);
     const v2 = shadowPreferencesV2Schema.safeParse(json);
     if (v2.success) {
-      return { version: 3, level: migrateV2ToLevel(v2.data.amount) };
+      return shadowPreferencesFromLevel(migrateV2ToLevel(v2.data.amount));
     }
     const v1 = shadowPreferencesV1Schema.safeParse(json);
     if (v1.success) {
-      return {
-        version: 3,
-        level: migrateV1ToLevel(v1.data.size, v1.data.intensity),
-      };
+      return makeShadowPreferences(v1.data.size, v1.data.intensity);
     }
     return DEFAULT_SHADOW_PREFERENCES;
   } catch {
@@ -134,18 +172,26 @@ export function saveShadowPreferences(
   storage?: ShadowPreferencesStorage,
 ): void {
   const store = resolveStorage(storage);
-  const cleaned: ShadowPreferences = {
-    version: 3,
-    level: shadowLevelSchema.parse(preferences.level),
-  };
+  const cleaned = makeShadowPreferences(preferences.size, preferences.intensity);
   store.setItem(SHADOW_PREF_KEY, JSON.stringify(cleaned));
 }
 
+export function setStoredShadowValues(
+  size: number,
+  intensity: number,
+  storage?: ShadowPreferencesStorage,
+): ShadowPreferences {
+  const next = makeShadowPreferences(size, intensity);
+  saveShadowPreferences(next, storage);
+  return next;
+}
+
+/** Back-compat: store a stepped level as its preset size/intensity. */
 export function setStoredShadowLevel(
   level: ShadowLevel,
   storage?: ShadowPreferencesStorage,
 ): ShadowPreferences {
-  const next: ShadowPreferences = { version: 3, level };
+  const next = shadowPreferencesFromLevel(level);
   saveShadowPreferences(next, storage);
   return next;
 }
@@ -169,28 +215,26 @@ export function shadowPreferenceToMultiplier(value: number): number {
 }
 
 /**
- * Write elevation state onto :root.
- * Level 0 sets `data-elevation="0"` so CSS omits elev box-shadows entirely.
+ * Write elevation state onto :root (continuous).
+ * Off sets `data-elevation="0"` so CSS omits elev box-shadows entirely;
+ * otherwise `data-elevation="on"` and `--elev-*` carry the multipliers.
  */
 export function applyShadowPreferences(preferences: ShadowPreferences): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  const { level } = preferences;
-  root.dataset.elevation = String(level);
-
-  if (!isShadowElevationEnabled(level)) {
+  if (!isShadowPreferenceEnabled(preferences)) {
+    root.dataset.elevation = "0";
     root.style.removeProperty("--elev-size");
     root.style.removeProperty("--elev-intensity");
     return;
   }
-
-  const preset = shadowLevelToPreset(level);
+  root.dataset.elevation = "on";
   root.style.setProperty(
     "--elev-size",
-    String(shadowPreferenceToMultiplier(preset.size)),
+    String(shadowPreferenceToMultiplier(preferences.size)),
   );
   root.style.setProperty(
     "--elev-intensity",
-    String(shadowPreferenceToMultiplier(preset.intensity)),
+    String(shadowPreferenceToMultiplier(preferences.intensity)),
   );
 }

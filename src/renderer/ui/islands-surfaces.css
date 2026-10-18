@@ -1,0 +1,242 @@
+/* Shared Islands chrome, including overlays mounted outside the main shell.
+ * Palette and geometry come from the existing shell and UI foundation tokens. */
+.app-shell.ui-shell-style-scope {
+  display: contents;
+}
+body.worldlinebox-modal-open .ui-shell-style-scope > :is(.dialog-backdrop, [data-modal-popover="true"]) {
+  /* Only dialogs and menus owned by a dialog bypass the background lock. */
+  pointer-events: auto;
+}
+body.worldlinebox-modal-open .ui-shell-style-scope > [data-modal-popover="true"] {
+  /* Later body portal order places the menu over its modal, below caption. */
+  z-index: var(--ui-layer-modal-backdrop);
+}
+
+.app-shell[data-shell-layout="islands"] .ui-button:not(.ui-button--danger):not(.ui-button--primary) {
+  background: transparent;
+  border: var(--island-hairline-w) solid var(--island-border);
+  color: var(--ui-content-primary);
+  box-shadow: var(--ui-shadow-none);
+}
+.app-shell[data-shell-layout="islands"] .ui-button--primary {
+  background: var(--ui-content-primary);
+  border-color: transparent;
+  color: var(--ui-content-inverse);
+  box-shadow: var(--ui-shadow-none);
+}
+.app-shell[data-shell-layout="islands"] .ui-button--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-content-primary) 82%, var(--ui-content-inverse));
+  color: var(--ui-content-inverse);
+}
+.app-shell[data-shell-layout="islands"] .ui-button:not(.ui-button--primary):not(.ui-button--danger):hover:not(:disabled) {
+  background: var(--island-hover-wash);
+  border-color: var(--island-border);
+}
+.app-shell[data-shell-layout="islands"] :is(.create-dialog, .theme-mini-dialog) .ui-button {
+  border-radius: var(--ui-radius-surface);
+}
+
+.app-shell[data-shell-layout="islands"] .folder-card {
+  border: var(--island-hairline-w) solid var(--island-hairline);
+  border-radius: var(--island-card-radius);
+  background: var(--island-canvas);
+  box-shadow: var(--card-shadow);
+}
+.app-shell[data-shell-layout="islands"] .folder-card:hover {
+  background: var(--island-canvas);
+  border-color: var(--island-border);
+  box-shadow: var(--card-shadow-hover);
+}
+.app-shell[data-shell-layout="islands"] .folder-card.is-selected {
+  border: var(--ui-border-width-hairline) solid var(--ui-border-selection);
+  background: var(--island-canvas);
+  box-shadow: var(--card-shadow);
+}
+.app-shell[data-shell-layout="islands"] .folder-card.is-selected:hover {
+  box-shadow: var(--card-shadow-hover);
+}
+.app-shell[data-shell-layout="islands"] :is(.asset-card, .folder-card).is-selected {
+  outline: var(--ui-border-width-selection) solid var(--island-accent-loud);
+  outline-offset: 0;
+}
+
+/* Sorting criteria are choices within the picker, rather than applied filters. */
+:root .app-shell[data-shell-layout="islands"] .tag-management-sort .dimension-filter-btn.is-active:not(:disabled) {
+  background: var(--island-pressed-wash);
+  color: var(--ui-content-primary);
+  font-weight: var(--ui-font-weight-medium);
+  box-shadow: var(--ui-shadow-none);
+}
+:root .app-shell[data-shell-layout="islands"] .tag-management-sort .dimension-filter-btn.is-active .icon {
+  color: var(--ui-content-secondary);
+}
+
+.app-shell[data-shell-layout="islands"] :is(.app-settings-nav, .app-settings-content, .app-settings-card, .plugin-community-card, .plugin-community-readme, .plugin-workspace-view-frame, .plugin-inspector-view-frame, .plugin-inspector-section, .plugin-viewer-overlay-panel, .app-log-list, .app-log-entry),
+.app-shell[data-shell-layout="islands"] .plugin-community-readme table {
+  border-color: var(--island-hairline);
+  border-width: var(--island-hairline-w);
+}
+.app-shell[data-shell-layout="islands"] :is(.app-settings-nav, .app-settings-card) {
+  border-color: var(--ui-border-control);
+  border-width: var(--ui-border-width-hairline);
+}
+.app-shell[data-shell-layout="islands"] .app-settings-card-divider {
+  height: var(--ui-border-width-hairline);
+  background: var(--ui-border-divider);
+}
+.app-shell[data-shell-layout="islands"] :is(.app-settings-card, .plugin-community-card, .plugin-trust-prompt-list li, .app-log-list, .app-log-entry, .plugin-inspector-section) {
+  background: transparent;
+  border-radius: var(--ui-radius-surface);
+  box-shadow: var(--ui-shadow-none);
+}
+.app-shell[data-shell-layout="islands"] .workspace-toolstrip .dimension-filter-dims {
+  width: fit-content;
+  max-width: 100%;
+  background: color-mix(in srgb, var(--island-side) 55%, var(--ui-surface-raised));
+}
+.app-shell[data-shell-layout="islands"] .dimension-filter-popover[data-dimension] {
+  background: color-mix(in srgb, var(--island-side) 70%, var(--ui-surface-overlay));
+}
+.app-shell[data-shell-layout="islands"] .app-settings-nav-item.is-active {
+  background: var(--island-select);
+  color: var(--ui-content-primary);
+  border-color: transparent;
+}
+.app-shell[data-shell-layout="islands"] .app-settings-nav-item.is-active .icon {
+  color: var(--ui-content-secondary);
+}
+.app-shell[data-shell-layout="islands"] .app-settings-nav-item:hover:not(.is-active) {
+  background: var(--island-hover-wash);
+}
+.app-shell[data-shell-layout="islands"] :is(.plugin-workspace-view-frame, .plugin-inspector-view-frame, .plugin-community-readme pre) {
+  background: var(--island-surface-recess);
+  border-radius: var(--ui-radius-surface);
+}
+.app-shell[data-shell-layout="islands"] .plugin-viewer-overlay-panel {
+  background: var(--ui-surface-overlay);
+  border-radius: var(--ui-radius-overlay);
+  box-shadow: var(--ui-shadow-popover);
+}
+.app-shell[data-shell-layout="islands"] :is(.plugin-inspector-section-action, .plugin-widget-toggle) {
+  border: var(--island-hairline-w) solid var(--island-border);
+  border-radius: var(--ui-radius-control);
+  background: transparent;
+  color: var(--ui-content-secondary);
+}
+.app-shell[data-shell-layout="islands"] :is(.plugin-inspector-section-action, .plugin-widget-toggle):hover {
+  background: var(--island-hover-wash);
+  color: var(--ui-content-primary);
+}
+.app-shell[data-shell-layout="islands"] .plugin-widget-tabs__list {
+  border-bottom: var(--island-hairline-w) solid var(--island-hairline);
+}
+.app-shell[data-shell-layout="islands"] .plugin-widget-tabs__tab {
+  border: 0;
+  border-radius: var(--ui-radius-control);
+}
+.app-shell[data-shell-layout="islands"] :is(.plugin-widget-tabs__tab.is-active, .plugin-widget-toggle[aria-pressed="true"]) {
+  background: var(--island-pressed-wash);
+  color: var(--ui-content-primary);
+  border-color: var(--island-border);
+}
+.app-shell[data-shell-layout="islands"] .tag-management-chip {
+  border: var(--island-hairline-w) solid var(--island-hairline);
+  border-radius: var(--ui-radius-control);
+  background: var(--island-surface-soft);
+  box-shadow: var(--ui-shadow-none);
+}
+.app-shell[data-shell-layout="islands"] .tag-management-chip:hover {
+  background: var(--island-hover-wash);
+}
+.app-shell[data-shell-layout="islands"] .tag-management-chip.is-selected {
+  border-color: var(--ui-border-selection);
+  background: var(--ui-action-accent-soft);
+}
+.app-shell[data-shell-layout="islands"] .tag-management-chip:focus-visible {
+  outline: var(--ui-border-width-focus) solid var(--ui-border-focus);
+  outline-offset: var(--ui-space-1);
+}
+.app-shell[data-shell-layout="islands"] #batch-relink-dialog :is(.conflict-summary, .conflict-examples) {
+  border: var(--island-hairline-w) solid var(--island-hairline);
+  border-radius: var(--ui-radius-surface);
+  background: transparent;
+}
+
+.app-shell[data-shell-layout="islands"] .ui-dialog-shell > [data-dialog-content="true"]:empty {
+  display: none;
+}
+.app-shell[data-shell-layout="islands"] .ui-dialog-shell > [data-dialog-footer="true"] > .dialog-actions {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.app-shell[data-shell-layout="islands"] .confirmation-dialog > [data-dialog-header="true"] {
+  padding: var(--ui-space-5) var(--ui-space-6) var(--ui-space-3);
+  gap: var(--ui-space-3);
+  border: 0;
+}
+.app-shell[data-shell-layout="islands"] .confirmation-dialog > [data-dialog-header="true"] p {
+  font-size: var(--ui-font-size-body);
+}
+.app-shell[data-shell-layout="islands"] .confirmation-dialog > [data-dialog-footer="true"] {
+  padding: var(--ui-space-3) var(--ui-space-6) var(--ui-space-5);
+  border: 0;
+}
+.app-shell[data-shell-layout="islands"] .media-jobs-list,
+.app-shell[data-shell-layout="islands"] .media-jobs-section {
+  border-top: var(--island-hairline-w) solid var(--island-hairline);
+}
+.app-shell[data-shell-layout="islands"] .media-jobs-row {
+  border-bottom: var(--island-hairline-w) solid var(--island-hairline);
+}
+
+.theme-mini-dialog-backdrop.dialog-backdrop {
+  /* A nested modal shares the backdrop layer; later DOM order puts it on top.
+   * Window controls, notices and tooltips retain their named layers. */
+  z-index: var(--ui-layer-modal-backdrop);
+  animation: none;
+}
+.theme-mini-dialog-backdrop > .theme-mini-dialog {
+  border-radius: var(--ui-radius-dialog);
+  border: var(--ui-border-width-hairline) solid var(--ui-border-subtle);
+  box-shadow: var(--ui-shadow-modal);
+}
+.theme-mini-dialog h2 {
+  font-size: var(--ui-font-size-title);
+  font-weight: var(--ui-font-weight-semibold);
+}
+.theme-mini-dialog-body {
+  font-size: var(--ui-font-size-body);
+}
+
+.app-shell[data-shell-layout="islands"] .filter-tag-chip-label {
+  position: relative;
+  z-index: 1;
+}
+
+/* Appearance controls use the same row in both layouts. */
+.app-settings-theme-actions,
+.app-settings-layout-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+}
+.app-settings-theme-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.app-settings-layout-toggle {
+  color: var(--ui-content-secondary);
+  font-size: var(--ui-font-size-body);
+}
+
+/* Center the filename and summary beneath the preview in the Islands Inspector. */
+.app-shell[data-shell-layout="islands"]
+  .inspector-hero-compact:not(.is-multi) .inspector-hero-title {
+  justify-content: center;
+  text-align: center;
+}
+.app-shell[data-shell-layout="islands"] .inspector-compact-meta {
+  justify-content: center;
+  text-align: center;
+}

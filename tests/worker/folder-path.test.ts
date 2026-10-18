@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { directorySymlink } from './symlink-fixture';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -175,7 +176,7 @@ describe('resolveFolderPath (REQ-MENU-006)', () => {
     // no refresh ran, so the rejection exercises the symlink path specifically.
     service.closeAll();
     rmSync(sourceRoot, { recursive: true, force: true });
-    symlinkSync(elsewhere, sourceRoot, 'dir');
+    directorySymlink(elsewhere, sourceRoot);
     service.openLibrary(library.libraryPath);
 
     expectCode(

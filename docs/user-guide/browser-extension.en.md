@@ -1,5 +1,7 @@
 # Browser extension
 
+**No extension installation is needed in WorldlineBox's built-in browser.** Open **Save to asset library** beside the address bar to choose a library/folder and save preferences. Right-click or drag web images/videos to save them, or use the side panel's native picker for a local image. See the [built-in browser guide](browser.en.md#save-to-an-asset-library) for steps and media limits. The installation instructions below apply to external browsers.
+
 Save web images or videos into a WorldlineBox library with **context-menu saving** and **drag-and-drop saving**. Supports Chrome / Edge (Chromium) and Firefox.
 
 Media is downloaded by the **browser** (with cookies and the page Referer) and uploaded to the local WorldlineBox app, bypassing most hotlink protections. Keep WorldlineBox running with a library open — the extension connects to `127.0.0.1` only; there is no remote server.

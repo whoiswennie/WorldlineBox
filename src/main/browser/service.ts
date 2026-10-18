@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { closeSync, existsSync, mkdirSync, openSync, statSync, unlinkSync } from 'node:fs';
-import { app, clipboard, ipcMain, Menu, session, shell, WebContentsView, type BrowserWindow, type DownloadItem, type Session } from 'electron';
+import { app, clipboard, dialog, ipcMain, Menu, session, shell, WebContentsView, type BrowserWindow, type DownloadItem, type Session } from 'electron';
 import { BROWSER_CHANGED, BROWSER_FOCUS, BROWSER_REQUEST, BROWSER_HOME, browserRequestSchema, type BrowserDownload, type BrowserRequest, type BrowserResponse, type BrowserState, type BrowserTab } from '../../shared/browser';
 import { getApplicationNetwork } from '../application-network';
 import { BrowserStore, browserAddress, isBrowserUrl, newBrowserTab } from './store';
+import { BROWSER_CAPTURE_CONTENT_REQUEST, BROWSER_CAPTURE_REQUEST, browserCaptureContentRequestSchema, browserCaptureRequestSchema, type BrowserCaptureRequest, type BrowserCaptureResponse } from '../../shared/browser-capture';
+import { BrowserCaptureHost, type BrowserCaptureHooks, type BrowserCaptureSource } from './capture-host';
 
 const MAX_LIVE_PAGES = 8;
 export class BrowserService {
@@ -25,7 +27,9 @@ export class BrowserService {
   private find?: BrowserState['find'];
   private progressTimer?: ReturnType<typeof setTimeout>;
   private owner?: BrowserWindow;
-  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, root = path.join(app.getPath('userData'), 'browser')) {
+  private capture?: BrowserCaptureHost;
+  private preloadRegistration?: string;
+  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks) {
     this.store = new BrowserStore(root, error => { this.error = '浏览器配置保存失败：' + String(error).slice(0, 600); this.changed(false); });
   }
   private init(): Promise<void> { return this.initialization ??= this.initialize(); }
@@ -33,6 +37,14 @@ export class BrowserService {
     await this.store.init();
     this.scope = session.fromPartition('persist:worldlinebox-browser');
     await (await getApplicationNetwork()).attachSession(this.scope);
+    if (this.captureHooks) {
+      this.preloadRegistration = this.scope.registerPreloadScript({ type: 'frame', filePath: path.join(__dirname, 'browser-capture.js') });
+      this.capture = new BrowserCaptureHost(this.root, this.captureHooks, { tempRoot: app.getPath('temp'), fetch: (url, init) => this.scope!.fetch(url, init),
+        chooseLocalImage: async () => { const owner = this.getWindow(); if (!owner || owner.isDestroyed()) return undefined;
+          const selected = await dialog.showOpenDialog(owner, { title: '采集本地图片', properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }] });
+          return selected.canceled ? undefined : selected.filePaths[0]; },
+        changed: () => this.changed(false), sources: () => this.captureSources(), source: tabId => this.captureSource(tabId) });
+    }
     this.scope.setPermissionCheckHandler((contents, permission, origin) => !!contents && this.owns(contents.id) && this.permissionAllowed(origin, permission));
     this.scope.setPermissionRequestHandler((contents, permission, callback, details) => {
       const origin = this.origin(details.requestingUrl || contents.getURL());
@@ -51,11 +63,30 @@ export class BrowserService {
     return ['fullscreen', 'clipboard-sanitized-write'].includes(permission) || this.store.data.sitePermissions[this.origin(origin) ?? '']?.[permission] === true;
   }
   private owns(contentsId: number): boolean { return [...this.views.values()].some(item => !item.view.webContents.isDestroyed() && item.view.webContents.id === contentsId); }
+  private captureSources(): BrowserCaptureSource[] {
+    return [...this.views].flatMap(([tabId, entry]) => entry.view.webContents.isDestroyed() ? [] : entry.view.webContents.mainFrame.framesInSubtree
+      .filter(frame => !frame.isDestroyed()).map(frame => ({ tabId, contents: entry.view.webContents, frame })));
+  }
+  private captureSource(tabId = this.store.data.activeTabId): BrowserCaptureSource | undefined {
+    const entry = tabId ? this.views.get(tabId) : undefined;
+    return entry && !entry.view.webContents.isDestroyed() ? { tabId: tabId!, contents: entry.view.webContents, frame: entry.view.webContents.mainFrame } : undefined;
+  }
+  async captureRequest(request: BrowserCaptureRequest): Promise<BrowserCaptureResponse> {
+    await this.init(); if (!this.capture) return { ok: false, error: '资产采集服务不可用。' }; return this.capture.handle(request);
+  }
+  async captureContent(event: Electron.IpcMainInvokeEvent, input: unknown): Promise<unknown> {
+    // Only frames belonging to this browser's sandboxed views can invoke the shim.
+    const source = this.captureSources().find(item => item.contents === event.sender && item.frame === event.senderFrame);
+    const parsed = browserCaptureContentRequestSchema.safeParse(input);
+    if (!source || !parsed.success || !this.capture || !/^https?:\/\//.test(source.frame.url)) throw Error('无权访问资产采集。');
+    return this.capture.content(parsed.data, source);
+  }
+  closeLibrary(libraryId: string): void { this.capture?.closeLibrary(libraryId); }
   state(): BrowserState {
     return { tabs: structuredClone(this.store.data.tabs), activeTabId: this.store.data.activeTabId, bookmarks: structuredClone(this.store.data.bookmarks),
       downloads: structuredClone(this.store.data.downloads), historyCount: this.store.data.history.length, preferences: { ...this.store.data.preferences },
       permissions: [...this.pendingPermissions].map(([id, value]) => ({ id, origin: value.origin, permission: value.permission })),
-      fullscreen: this.fullscreen, revision: this.revision, find: this.find, cacheBytes: this.cacheBytes, error: this.error };
+      fullscreen: this.fullscreen, revision: this.revision, find: this.find, cacheBytes: this.cacheBytes, error: this.error, capture: this.capture?.state() };
   }
   private changed(persist = true): void {
     this.revision++;
@@ -70,7 +101,7 @@ export class BrowserService {
       owner.on('resize', () => this.layout());
       owner.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => { if (mainFrame) { this.visible = false; this.layout(); } });
       owner.webContents.on('render-process-gone', () => { this.visible = false; this.layout(); });
-      owner.once('closed', () => { this.visible = false; for (const item of this.views.values()) if (!item.view.webContents.isDestroyed()) item.view.webContents.close(); this.views.clear(); });
+      owner.once('closed', () => { this.visible = false; for (const [tabId, item] of this.views) { this.capture?.cancelTab(tabId); if (!item.view.webContents.isDestroyed()) item.view.webContents.close(); } this.views.clear(); });
     }
     return owner;
   }
@@ -83,7 +114,10 @@ export class BrowserService {
       if (!victim) throw Error('活动页面较多，请先关闭或暂停部分播放页面。');
       this.destroyView(victim[0]);
     }
-    const view = new WebContentsView({ webPreferences: { session: this.scope!, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
+    // Electron otherwise omits registered frame preloads from child frames.
+    // The hard sandbox and isolated world remain mandatory: the capture E2E
+    // asserts no Node or privileged bridge is visible to any page or iframe.
+    const view = new WebContentsView({ webPreferences: { session: this.scope!, nodeIntegration: false, nodeIntegrationInSubFrames: !!this.capture, contextIsolation: true, sandbox: true, webSecurity: true,
       backgroundThrottling: true, spellcheck: true, safeDialogs: true } });
     owner.contentView.addChildView(view); view.setVisible(false);
     this.views.set(tab.id, { view, used: Date.now() }); tab.discarded = false;
@@ -128,7 +162,16 @@ export class BrowserService {
       if (params.isEditable) items.push({ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' });
       else if (params.selectionText) items.push({ label: '复制', click: () => contents.copy() });
       items.push({ type: 'separator' }, { label: '后退', enabled: contents.navigationHistory.canGoBack(), click: () => contents.navigationHistory.goBack() }, { label: '前进', enabled: contents.navigationHistory.canGoForward(), click: () => contents.navigationHistory.goForward() }, { label: '重新加载', click: () => contents.reload() }, { label: '检查页面', click: () => contents.inspectElement(params.x, params.y) });
-      Menu.buildFromTemplate(items).popup({ window: owner });
+      const popup = async () => {
+        const frame = params.frame ?? contents.mainFrame;
+        if (this.capture && params.srcURL && ['image', 'video'].includes(params.mediaType) && /^https?:\/\//.test(params.srcURL)) {
+          try { const captureItems = await this.capture.contextMenu({ tabId: tab.id, contents, frame, sourcePageUrl: /^https?:\/\//.test(frame.url) ? frame.url : contents.getURL() }, params.mediaType as 'image' | 'video', params.srcURL);
+            items.unshift(...captureItems, { type: 'separator' }); }
+          catch { items.unshift({ label: '资产采集暂不可用', enabled: false }); }
+        }
+        if (!contents.isDestroyed() && !owner.isDestroyed() && !frame.isDestroyed()) Menu.buildFromTemplate(items).popup({ window: owner });
+      };
+      void popup();
     });
     if (navigate) this.restoreNavigation(tab, contents); return view;
   }
@@ -146,7 +189,7 @@ export class BrowserService {
   }
   private destroyView(id: string): void {
     const entry = this.views.get(id); if (!entry) return;
-    this.owner?.contentView.removeChildView(entry.view); this.views.delete(id);
+    this.capture?.cancelTab(id); this.owner?.contentView.removeChildView(entry.view); this.views.delete(id);
     if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
     const tab = this.store.data.tabs.find(item => item.id === id); if (tab) { tab.discarded = true; tab.loading = false; }
   }
@@ -314,6 +357,8 @@ export class BrowserService {
   }
   async shutdown(): Promise<void> {
     await this.initialization?.catch(() => undefined);
+    await this.capture?.shutdown();
+    if (this.preloadRegistration) { this.scope?.unregisterPreloadScript(this.preloadRegistration); this.preloadRegistration = undefined; }
     clearTimeout(this.progressTimer);
     for (const id of this.pendingPermissions.keys()) this.resolvePermission(id, false, false);
     if (this.scope) { await this.scope.cookies.flushStore(); this.scope.flushStorageData(); }
@@ -321,13 +366,22 @@ export class BrowserService {
   }
 }
 
-export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined): { shutdown(): Promise<void> } {
+export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks): { shutdown(): Promise<void>; closeLibrary(libraryId: string): void } {
   let browser: BrowserService | undefined;
   ipcMain.handle(BROWSER_REQUEST, async (event, input: unknown): Promise<BrowserResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问浏览器。' };
     const request = browserRequestSchema.safeParse(input); if (!request.success) return { ok: false, error: '无效的浏览器请求。' };
-    try { return await (browser ??= new BrowserService(getWindow)).handle(request.data); }
+    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks)).handle(request.data); }
     catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
   });
-  return { shutdown: async () => { await browser?.shutdown(); } };
+  ipcMain.handle(BROWSER_CAPTURE_REQUEST, async (event, input: unknown): Promise<BrowserCaptureResponse> => {
+    const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问资产采集。' };
+    const parsed = browserCaptureRequestSchema.safeParse(input); if (!parsed.success) return { ok: false, error: '无效的采集请求。' };
+    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks)).captureRequest(parsed.data); }
+    catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
+  });
+  ipcMain.handle(BROWSER_CAPTURE_CONTENT_REQUEST, (event, input: unknown) => {
+    if (!browser) throw Error('浏览器尚未启动。'); return browser.captureContent(event, input);
+  });
+  return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId) };
 }

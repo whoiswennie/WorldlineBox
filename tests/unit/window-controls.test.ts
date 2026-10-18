@@ -57,13 +57,14 @@ describe("window-controls protocol (WorldlineBox-znex)", () => {
     expect(parseWindowMaximizedStateEvent({ maximized: true })).toBeNull();
   });
 
-  it("enables frameless title bar and hidden menu only on Windows", () => {
+  it("enables frameless title bar and hidden menu on Windows and Linux", () => {
     expect(shouldUseFramelessTitleBar("win32")).toBe(true);
     expect(shouldHideApplicationMenuBar("win32")).toBe(true);
     expect(shouldUseFramelessTitleBar("darwin")).toBe(false);
     expect(shouldHideApplicationMenuBar("darwin")).toBe(false);
-    expect(shouldUseFramelessTitleBar("linux")).toBe(false);
-    expect(shouldHideApplicationMenuBar("linux")).toBe(false);
+    // Linux has no global menu bar: it follows the Windows-style shell.
+    expect(shouldUseFramelessTitleBar("linux")).toBe(true);
+    expect(shouldHideApplicationMenuBar("linux")).toBe(true);
   });
 
   it("hides the Windows window for the tray instead of quitting", () => {

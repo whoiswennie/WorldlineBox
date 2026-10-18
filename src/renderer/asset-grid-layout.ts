@@ -127,6 +127,12 @@ export type JustifiedRow = {
 const DEFAULT_ASPECT = 1;
 /** Single leftover card: do not stretch to full width (looks like a banner). */
 const LAST_ROW_MAX_STRETCH = 1.18;
+/**
+ * Narrowest slot aspect (w/h) a justified cell may take. Very tall images
+ * letterbox inside the (object-fit: contain) preview instead of becoming
+ * ~70px slivers with unreadable captions.
+ */
+export const JUSTIFIED_MIN_SLOT_ASPECT = 0.66;
 
 /**
  * Pack aspect-ratio widths into integer CSS pixels that sum exactly to
@@ -255,7 +261,7 @@ export function layoutJustifiedRows(
   for (const item of items) {
     const aspect =
       Number.isFinite(item.aspectRatio) && item.aspectRatio > 0
-        ? item.aspectRatio
+        ? Math.max(JUSTIFIED_MIN_SLOT_ASPECT, item.aspectRatio)
         : DEFAULT_ASPECT;
     const next = { id: item.id, aspectRatio: aspect };
     const nextAspectSum = aspectSum + aspect;
@@ -263,6 +269,22 @@ export function layoutJustifiedRows(
     const nextNatural = nextAspectSum * targetH + nextGaps;
 
     if (pending.length > 0 && nextNatural > width) {
+      // Break where the row height lands closest to the target (in ratio
+      // terms): either close the row before this item (row grows taller) or
+      // include it (row shrinks). Greedy "always before" produced rows far
+      // taller/shorter than target and very narrow portrait slots.
+      const usableWithout = Math.max(1, width - (pending.length - 1) * gapPx);
+      const scaleWithout = usableWithout / (aspectSum * targetH);
+      const usableWith = Math.max(1, width - pending.length * gapPx);
+      const scaleWith = usableWith / (nextAspectSum * targetH);
+      const includeNext =
+        Math.abs(Math.log(scaleWith)) < Math.abs(Math.log(scaleWithout));
+      if (includeNext) {
+        pending.push(next);
+        aspectSum += aspect;
+        flush(false);
+        continue;
+      }
       flush(false);
     }
     pending.push(next);

@@ -36,7 +36,9 @@
   max-width: 100%;
   gap: 0;
   height: auto;
-  --workspace-tab-curve: calc(var(--ui-space-4) - 2px);
+  --workspace-tab-curve: calc((var(--ui-space-4) - 2px) * var(--ui-radius-scale, 1));
+  /* Bottom scoop feet — between original ~14px curve and prior 24px. */
+  --workspace-tab-scoop: max(2px, calc(18px * var(--ui-radius-scale, 1)));
   --workspace-tab-font-size: calc(12.5px * var(--ui-font-scale));
   /* Chrome around a title (82px = 2px borders, 12+8px select padding, 16px
      icon, 8px gap, 22px close chip, 8px tab padding, 6px rounding slack). */
@@ -55,7 +57,7 @@
   align-items: stretch;
   min-width: 0;
   height: auto;
-  padding-inline: var(--workspace-tab-curve);
+  padding-inline: var(--workspace-tab-scoop);
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -96,44 +98,46 @@
 
 .workspace-tab.is-active {
   z-index: 1;
-  background: var(--canvas);
-  border-color: var(--divider-soft);
+  /* Face joins --canvas browse chrome. Silhouette fill+stroke come from the
+     single SVG chrome (.workspace-tab-outline); keep a transparent face so the
+     path is the only geometry. Bottom tongue covers the toolstrip seam. */
+  margin-bottom: -1px;
+  padding-bottom: 1px;
+  background: transparent;
+  border-color: transparent;
+  border-radius: var(--workspace-tab-curve) var(--workspace-tab-curve) 0 0;
   color: var(--text);
+  box-shadow: 0 2px 0 0 var(--canvas);
 }
 
-/* Halo on the toolbar around the folder tab. The list clips overflow-y, so
-   the downward component never lands on the canvas (that would reopen the
-   seam). Size/alpha come from --elev-*; level 0 omits paint. */
-:root:not([data-elevation="0"]) .workspace-tab.is-active {
-  box-shadow: var(--shadow-workspace-tab);
-}
-
+/* No CSS scoop feet — WorkspaceTabOutline path is the only silhouette. */
 .workspace-tab.is-active::before,
 .workspace-tab.is-active::after {
-  content: "";
+  content: none;
+}
+
+/* Single SVG chrome: fill (+ optional stroke) from one path. Under content. */
+.workspace-tab-outline {
   position: absolute;
-  bottom: 0;
-  width: var(--workspace-tab-curve);
-  height: var(--workspace-tab-curve);
+  left: calc(-1 * var(--workspace-tab-scoop));
+  top: 0;
+  overflow: visible;
   pointer-events: none;
+  z-index: 0;
 }
 
-.workspace-tab.is-active::before {
-  right: 100%;
-  background: radial-gradient(
-    circle at 0 0,
-    transparent var(--workspace-tab-curve),
-    var(--canvas) calc(var(--workspace-tab-curve) + 1px)
-  );
+.workspace-tab-outline-path {
+  fill: var(--island-tab-fill, var(--canvas));
+  stroke: none;
+  stroke-linecap: butt;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
-.workspace-tab.is-active::after {
-  left: 100%;
-  background: radial-gradient(
-    circle at 100% 0,
-    transparent var(--workspace-tab-curve),
-    var(--canvas) calc(var(--workspace-tab-curve) + 1px)
-  );
+.workspace-tab-select,
+.workspace-tab-close {
+  position: relative;
+  z-index: 1;
 }
 
 .workspace-tab-select,
@@ -192,13 +196,16 @@
 }
 
 .workspace-tab-add {
+  position: relative;
+  z-index: 2;
   flex: 0 0 auto;
   align-self: center;
   width: var(--shell-control-height);
   height: var(--shell-control-height);
-  /* List padding-inline keeps the last tab's right scoop unclipped; pull
-     the plus back into that gutter so it sits a space-1 from the tab. */
-  margin-inline-start: calc(-1 * var(--workspace-tab-curve) + var(--ui-space-1));
+  /* List padding-inline reserves scoop width; pull plus back into that gutter.
+     The list is position:relative, so it paints above this in-flow button
+     where they overlap — keep the plus above that hit target. */
+  margin-inline-start: calc(-1 * var(--workspace-tab-scoop) + var(--ui-space-1));
   border-radius: var(--ui-radius-surface);
   color: var(--secondary);
 }

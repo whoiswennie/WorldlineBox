@@ -4,10 +4,11 @@ import {
   loadAccentPreferences,
 } from './accent-preferences';
 import {
-  CUSTOM_THEME_COLOR_TOKENS,
+  CUSTOM_THEME_OVERRIDE_TOKENS,
   saveCustomTheme,
   type CustomTheme,
   type CustomThemeColorToken,
+  type CustomThemeOverrideToken,
 } from './custom-theme';
 import {
   resolveThemeProfile,
@@ -18,12 +19,12 @@ import type { ResolvedTheme } from './theme-preferences';
 import type { ThemePreferencesStorage } from './theme-preferences';
 
 export type EffectiveThemeTokenResult = {
-  readonly tokens: Partial<Record<CustomThemeColorToken, string>>;
+  readonly tokens: Partial<Record<CustomThemeOverrideToken, string>>;
   readonly accentHex: string;
 };
 
 function recomputeDerivedColorTokens(
-  tokens: Partial<Record<CustomThemeColorToken, string>>,
+  tokens: Partial<Record<CustomThemeOverrideToken, string>>,
   custom: CustomTheme['dark'],
   resolved: ResolvedTheme,
   shouldRecomputeAccentDerived: boolean,
@@ -67,8 +68,8 @@ function recomputeDerivedColorTokens(
     setDerived(
       '--ui-action-accent-soft',
       isDark
-        ? 'color-mix(in srgb, var(--ui-action-accent) 14%, transparent)'
-        : 'color-mix(in srgb, var(--ui-action-accent) 18%, #ffffff)',
+        ? 'color-mix(in srgb, var(--ui-action-accent) 8%, transparent)'
+        : 'color-mix(in srgb, var(--ui-action-accent) 10%, #ffffff)',
     );
   }
 
@@ -115,10 +116,10 @@ export function resolveEffectiveThemeTokens(input: {
   readonly themeAccentHex?: string | null;
 }): EffectiveThemeTokenResult {
   const profile = resolveThemeProfile(input.themeProfile, input.resolved);
-  const tokens: Partial<Record<CustomThemeColorToken, string>> = {};
+  const tokens: Partial<Record<CustomThemeOverrideToken, string>> = {};
   const setToken = (token: string, value: string) => {
-    if (CUSTOM_THEME_COLOR_TOKENS.includes(token as CustomThemeColorToken)) {
-      tokens[token as CustomThemeColorToken] = value;
+    if (CUSTOM_THEME_OVERRIDE_TOKENS.includes(token as CustomThemeOverrideToken)) {
+      tokens[token as CustomThemeOverrideToken] = value;
     }
   };
 

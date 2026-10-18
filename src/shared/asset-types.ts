@@ -67,6 +67,15 @@ export const folderBrowseEntrySchema = z.strictObject({
   hasCustomCover: z.boolean().optional(),
   /** Changes when the stored cover file is replaced, so the card does not keep the previous image. */
   customCoverToken: z.string().min(1).max(64).optional(),
+  /** Library asset chosen as the cover. The asset id is the durable reference. */
+  customCoverAssetId: nonBlankString.max(255).optional(),
+  /** Ready thumbnail for customCoverAssetId, when one exists. */
+  customCoverArtifactId: nonBlankString.max(255).optional(),
+  /** Original image for customCoverAssetId when no thumbnail is ready yet. */
+  customCoverSourcePreview: z.strictObject({
+    assetId: nonBlankString,
+    revisionId: nonBlankString,
+  }).optional(),
   /**
    * Sequence frames that are shown from the original file have no thumbnail
    * artifact. One of these still paints the folder cover.

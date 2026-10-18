@@ -268,7 +268,7 @@ export function TagManagementWorkspace({
               className={`dimension-filter-btn${sortKey === key ? " is-active" : ""}`}
               key={key}
               onClick={() => handleSortClick(key)}
-              title={
+              data-hover-tip={
                 sortKey === key
                   ? t(
                       sortDirection === "asc"
@@ -389,7 +389,7 @@ export function TagManagementWorkspace({
                 }}
                 role="option"
                 tabIndex={0}
-                title={t("tagMgmt.openHint")}
+                data-hover-tip={t("tagMgmt.openHint")}
               >
                 <Icon name="tag" size={13} />
                 {renaming ? (

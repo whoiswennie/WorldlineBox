@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AnimatedBackground, ThemeBackground } from '../../src/renderer/theme/AnimatedBackground';
 import { ApplicationShell } from '../../src/renderer/ApplicationShell';
 import { LocaleProvider } from '../../src/renderer/i18n';
-import { ThemeProvider } from '../../src/renderer/theme/ThemeProvider';
+import { ThemeProvider, useTheme } from '../../src/renderer/theme/ThemeProvider';
 import { BACKGROUND_PREFERENCES_KEY } from '../../src/renderer/theme/background-preferences';
 import { THEME_PROFILE_PREF_KEY } from '../../src/renderer/theme/theme-profiles';
 import { loadBackgroundMotion, saveBackgroundMotion } from '../../src/renderer/theme/animated-background-preferences';
@@ -137,6 +137,37 @@ describe('animated wallpaper lifecycle', () => {
     expect(container.querySelector('video')).toBeNull();
     expect(container.querySelector('.app-theme-background')?.getAttribute('data-wallpaper')).toBe('image');
     expect(document.documentElement.dataset.animatedBackground).toBeUndefined();
+  });
+
+  it('hides and restores the animated wallpaper through the shared background switch', async () => {
+    localStorage.setItem(THEME_PROFILE_PREF_KEY, JSON.stringify({ version: 3, preset: 'whale-fantasy', overrides: {} }));
+    function Fixture() {
+      const { backgroundPreferences, setBackgroundPreferences } = useTheme();
+      return <>
+        <ThemeBackground />
+        <button onClick={() => setBackgroundPreferences({ ...backgroundPreferences, enabled: !backgroundPreferences.enabled })}>Toggle wallpaper</button>
+      </>;
+    }
+    await act(async () => root.render(<ThemeProvider><Fixture /></ThemeProvider>));
+    expect(container.querySelector('video')).not.toBeNull();
+    await act(async () => container.querySelector('button')!.click());
+    expect(container.querySelector('video')).toBeNull();
+    expect(container.querySelector('.app-theme-background')?.hasAttribute('data-wallpaper')).toBe(false);
+    expect(document.documentElement.dataset.animatedBackground).toBeUndefined();
+    await act(async () => container.querySelector('button')!.click());
+    expect(container.querySelector('video')).not.toBeNull();
+    expect(document.documentElement.dataset.animatedBackground).toBe('whale-fantasy');
+  });
+
+  it('keeps a disabled personal wallpaper stored without exposing the theme video', async () => {
+    localStorage.setItem(THEME_PROFILE_PREF_KEY, JSON.stringify({ version: 3, preset: 'whale-fantasy', overrides: {} }));
+    const imageDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    localStorage.setItem(BACKGROUND_PREFERENCES_KEY, JSON.stringify({ version: 3, imageDataUrl, imageSource: null, mode: 'cover', imageOpacity: 0.8, enabled: false }));
+    await act(async () => root.render(<ThemeProvider><ThemeBackground /></ThemeProvider>));
+    expect(container.querySelector('video')).toBeNull();
+    expect(container.querySelector('.app-theme-background')?.hasAttribute('data-wallpaper')).toBe(false);
+    expect(JSON.parse(localStorage.getItem(BACKGROUND_PREFERENCES_KEY)!).imageDataUrl).toBe(imageDataUrl);
+    expect(document.documentElement.getAttribute('data-bg-image')).toBeNull();
   });
 
   it('keeps one global video and its playback position through module switching', async () => {

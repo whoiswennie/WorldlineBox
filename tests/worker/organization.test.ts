@@ -1302,7 +1302,7 @@ describe('asset metadata', () => {
       palette: null,
       effectivePalette: [],
       paletteSource: null,
-      entityVersion: 2,
+      entityVersion: 1,
     });
 
     service.closeAll();

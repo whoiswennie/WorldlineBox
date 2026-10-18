@@ -125,6 +125,7 @@ test("restores canvas preferences after a full restart", async () => {
   let application = await launch();
   try {
     let window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -196,6 +197,7 @@ test("restores canvas preferences after a full restart", async () => {
     // Re-launch with the same stable profile
     application = await launch();
     window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Wait for library to restore
     await expect(
@@ -280,6 +282,7 @@ test("uses a middle ellipsis for long filenames in cards and Inspector", async (
       },
     });
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -365,6 +368,7 @@ test("lays out a sparse masonry folder from left to right", async () => {
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.setViewportSize({ width: 1440, height: 720 });
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
@@ -450,6 +454,7 @@ test("maintains consistent preferences, accessible names, zoom behavior, and avo
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -625,6 +630,9 @@ test("maintains consistent preferences, accessible names, zoom behavior, and avo
       expect(Math.abs(fill.gridRight - fill.lastRight)).toBeLessThanOrEqual(1.5);
     }
     await window.setViewportSize({ width: 1280, height: 720 });
+    await canvas.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
 
     // Normal wheel (no Ctrl) should NOT change card size — only scrolls
     const normalWheelSliderIndex = await sizeSlider.inputValue();
@@ -680,6 +688,11 @@ test("maintains consistent preferences, accessible names, zoom behavior, and avo
       const safeIndex = Math.min(index, liveMaxIndex);
       await sizeSlider.fill(String(safeIndex));
       await expect(sizeSlider).toHaveValue(String(safeIndex));
+      // Slider state commits before the canvas ResizeObserver/reflow. Measure
+      // the completed layout rather than the previous card width.
+      await canvas.evaluate(() => new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }));
       await expect
         .poll(async () => (await cardById.boundingBox())?.width ?? 0)
         .toBeGreaterThan(0);
@@ -688,11 +701,16 @@ test("maintains consistent preferences, accessible names, zoom behavior, and avo
 
     for (const viewportWidth of [1054, 1440]) {
       await window.setViewportSize({ width: viewportWidth, height: 720 });
+      await canvas.evaluate(() => new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }));
       const masonryWidths = [];
       const viewportMaxIndex = Number(await sizeSlider.getAttribute("max"));
       const viewportSizeIndexes = [
         0,
-        Math.floor(viewportMaxIndex / 2),
+        // The minimum endpoint and first flush-width stop may share a column
+        // count. Use the upper midpoint to exercise a larger visible layout.
+        Math.ceil(viewportMaxIndex / 2),
         viewportMaxIndex,
       ];
       for (const index of viewportSizeIndexes) {
@@ -746,6 +764,9 @@ test("maintains consistent preferences, accessible names, zoom behavior, and avo
       expect(masonryWidths[1]).toBeLessThan(masonryWidths[2]!);
     }
     await window.setViewportSize({ width: 1280, height: 720 });
+    await canvas.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
 
     await sizeSlider.fill("3");
     await expect(sizeSlider).toHaveValue("3");
@@ -874,6 +895,9 @@ test("maintains consistent preferences, accessible names, zoom behavior, and avo
       barBox!.x + barBox!.width + 1,
     );
     await window.setViewportSize({ width: 1280, height: 720 });
+    await canvas.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
 
     // -------------------------------------------------------------------
     // 2f. All-scope consistency (criterion #2)
@@ -920,7 +944,7 @@ test("maintains consistent preferences, accessible names, zoom behavior, and avo
       );
       await expect(scopedCard).toBeVisible({ timeout: 10_000 });
       await expect(scopedCard).toHaveAttribute("aria-label", targetName);
-      await expect(scopedCard).toHaveAttribute("title", targetName);
+      await expect(scopedCard).toHaveAttribute("data-hover-tip", targetName);
       if (expectNameHidden) {
         await expect(scopedCard).not.toContainText(targetName);
       }

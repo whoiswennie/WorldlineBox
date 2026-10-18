@@ -5,7 +5,13 @@ import {
   SHADOW_LEVEL_PRESETS,
   SHADOW_PREF_KEY,
   applyShadowPreferences,
+  SHADOW_OFF_THRESHOLD,
   clampShadowLevel,
+  clampShadowValue,
+  isShadowPreferenceEnabled,
+  makeShadowPreferences,
+  setStoredShadowValues,
+  shadowPreferencesFromLevel,
   isShadowElevationEnabled,
   loadShadowPreferences,
   saveShadowPreferences,
@@ -27,49 +33,64 @@ function memoryStorage(
   };
 }
 
-describe("shadow-preferences (WorldlineBox-zcyg)", () => {
-  it("defaults to level 2 (former more)", () => {
+describe("shadow-preferences (WorldlineBox-zcyg, a87 v4 2D)", () => {
+  it("defaults to the former level-2 preset as continuous values", () => {
     expect(loadShadowPreferences(memoryStorage())).toEqual(
       DEFAULT_SHADOW_PREFERENCES,
     );
-    expect(DEFAULT_SHADOW_PREFERENCES.level).toBe(2);
+    expect(DEFAULT_SHADOW_PREFERENCES).toEqual({
+      version: 4,
+      size: SHADOW_LEVEL_PRESETS[2].size,
+      intensity: SHADOW_LEVEL_PRESETS[2].intensity,
+    });
     expect(isShadowElevationEnabled(0)).toBe(false);
     expect(isShadowElevationEnabled(2)).toBe(true);
     expect(shadowLevelToPreset(2)).toEqual(SHADOW_LEVEL_PRESETS[2]);
   });
 
-  it("round-trips levels 0–3", () => {
+  it("round-trips continuous size/intensity (v4)", () => {
     const storage = memoryStorage();
-    saveShadowPreferences({ version: 3, level: 0 }, storage);
-    expect(loadShadowPreferences(storage).level).toBe(0);
-    expect(setStoredShadowLevel(3, storage).level).toBe(3);
-    expect(storage.data.get(SHADOW_PREF_KEY)).toContain('"level":3');
+    saveShadowPreferences({ version: 4, size: 63, intensity: 17 }, storage);
+    expect(loadShadowPreferences(storage)).toEqual({ version: 4, size: 63, intensity: 17 });
+    expect(setStoredShadowValues(120, -4, storage)).toEqual({ version: 4, size: 100, intensity: 0 });
+    expect(storage.data.get(SHADOW_PREF_KEY)).toContain('"version":4');
+    expect(setStoredShadowLevel(3, storage)).toEqual(shadowPreferencesFromLevel(3));
   });
 
-  it("migrates v2 more/less and v1 sliders", () => {
+  it("migrates v3 levels, v2 more/less and v1 sliders", () => {
     const storage = memoryStorage({
-      [SHADOW_PREF_KEY]: JSON.stringify({ version: 2, amount: "less" }),
+      [SHADOW_PREF_KEY]: JSON.stringify({ version: 3, level: 3 }),
     });
-    expect(loadShadowPreferences(storage).level).toBe(1);
+    expect(loadShadowPreferences(storage)).toEqual(shadowPreferencesFromLevel(3));
+    storage.setItem(SHADOW_PREF_KEY, JSON.stringify({ version: 3, level: 0 }));
+    expect(isShadowPreferenceEnabled(loadShadowPreferences(storage))).toBe(false);
 
-    storage.setItem(
-      SHADOW_PREF_KEY,
-      JSON.stringify({ version: 2, amount: "more" }),
-    );
-    expect(loadShadowPreferences(storage).level).toBe(2);
+    storage.setItem(SHADOW_PREF_KEY, JSON.stringify({ version: 2, amount: "less" }));
+    expect(loadShadowPreferences(storage)).toEqual(shadowPreferencesFromLevel(1));
+    storage.setItem(SHADOW_PREF_KEY, JSON.stringify({ version: 2, amount: "more" }));
+    expect(loadShadowPreferences(storage)).toEqual(shadowPreferencesFromLevel(2));
 
-    storage.setItem(
-      SHADOW_PREF_KEY,
-      JSON.stringify({ version: 1, size: 5, intensity: 0 }),
-    );
-    expect(loadShadowPreferences(storage).level).toBe(0);
+    storage.setItem(SHADOW_PREF_KEY, JSON.stringify({ version: 1, size: 5, intensity: 0 }));
+    const v1 = loadShadowPreferences(storage);
+    expect(v1).toEqual({ version: 4, size: 5, intensity: 0 });
+    expect(isShadowPreferenceEnabled(v1)).toBe(false);
+  });
+
+  it("treats either axis near 0 as off", () => {
+    expect(isShadowPreferenceEnabled(makeShadowPreferences(50, SHADOW_OFF_THRESHOLD - 1))).toBe(false);
+    expect(isShadowPreferenceEnabled(makeShadowPreferences(SHADOW_OFF_THRESHOLD - 1, 50))).toBe(false);
+    expect(isShadowPreferenceEnabled(makeShadowPreferences(SHADOW_OFF_THRESHOLD, SHADOW_OFF_THRESHOLD))).toBe(true);
   });
 
   it("clamps and falls back on corrupt JSON", () => {
     expect(clampShadowLevel(-1)).toBe(0);
     expect(clampShadowLevel(1.6)).toBe(2);
     expect(clampShadowLevel(99)).toBe(3);
+    expect(clampShadowValue(Number.NaN)).toBe(0);
+    expect(clampShadowValue(42.6)).toBe(43);
     const storage = memoryStorage({ [SHADOW_PREF_KEY]: "{not-json" });
+    expect(loadShadowPreferences(storage)).toEqual(DEFAULT_SHADOW_PREFERENCES);
+    storage.setItem(SHADOW_PREF_KEY, JSON.stringify({ version: 4, size: 400, intensity: 1 }));
     expect(loadShadowPreferences(storage)).toEqual(DEFAULT_SHADOW_PREFERENCES);
   });
 
@@ -81,7 +102,7 @@ describe("shadow-preferences (WorldlineBox-zcyg)", () => {
 
   it("no-ops applyShadowPreferences when document is unavailable", () => {
     expect(() =>
-      applyShadowPreferences({ version: 3, level: 0 }),
+      applyShadowPreferences({ version: 4, size: 0, intensity: 0 }),
     ).not.toThrow();
   });
 });

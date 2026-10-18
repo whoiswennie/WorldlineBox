@@ -190,8 +190,9 @@ describe('library availability baseline', () => {
     service.closeAll();
 
     const db = new Database(databaseFile(created.libraryPath));
-    // Roll back to the v38 divergence point; v39+ are additive migrations
-    // appended after it (WorldlineBox-4bdd26) and must not survive the rewind.
+    // Rewind the migration history to the v38 divergence point while leaving
+    // newer schema objects in place. Replaying later additive migrations must
+    // tolerate columns that were already created by the newer schema.
     db.prepare('DELETE FROM schema_migrations WHERE version >= 39').run();
     db.pragma('user_version = 38');
     db.prepare('UPDATE schema_migrations SET checksum = ? WHERE version = 37').run(syncChecksum);

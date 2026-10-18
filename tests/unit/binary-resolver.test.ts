@@ -19,6 +19,7 @@ function platformName(name: string): string {
 
 function platformDirectory(): string {
   if (process.platform === 'win32') return 'win32-x64';
+  if (process.platform === 'linux') return process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64';
   return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
 }
 

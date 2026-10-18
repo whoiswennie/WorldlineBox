@@ -69,7 +69,9 @@ function main() {
   if (!platform || !version || !zip) {
     fail('Usage: --platform win32-x64 --version v0.1.1 --zip <bundle.zip>');
   }
-  if (!['win32-x64', 'darwin-arm64'].includes(platform)) fail(`Unsupported platform ${platform}.`);
+  if (!['win32-x64', 'darwin-arm64', 'linux-x64'].includes(platform)) {
+    fail(`Unsupported platform ${platform}.`);
+  }
 
   const zipPath = path.resolve(repoRoot, zip);
   const zipSha = createHash('sha256').update(readFileSync(zipPath)).digest('hex');

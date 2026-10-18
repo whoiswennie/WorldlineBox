@@ -36,6 +36,7 @@ describe("app-settings-sections (WorldlineBox-97l / WorldlineBox-9es / Worldline
       "appearance",
       "browse",
       "ai",
+      "semantic-search",
       "mcp",
       "music",
       "plugins",

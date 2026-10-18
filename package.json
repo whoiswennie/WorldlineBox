@@ -65,16 +65,18 @@
     "test:watch": "node scripts/run-vitest-with-electron.mjs --config vitest.config.ts",
     "icons:generate": "node scripts/generate-app-icons.mjs",
     "ticket": "node scripts/ticket.mjs",
-    "install:git-hooks": "node scripts/install-git-hooks.mjs"
+    "install:git-hooks": "node scripts/install-git-hooks.mjs",
+    "make:appimage": "node scripts/make-appimage.mjs",
+    "make:appimage:docker": "bash scripts/appimage-docker.sh"
   },
   "dependencies": {
+    "7zip-bin": "5.2.0",
     "@fontsource-variable/noto-sans-sc": "5.2.10",
     "@fontsource/ibm-plex-mono": "5.2.7",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@napi-rs/canvas": "^1.0.7",
     "@types/adm-zip": "^0.5.8",
     "@types/archiver": "^8.0.0",
-    "7zip-bin": "5.2.0",
     "adm-zip": "^0.6.0",
     "archiver": "^8.0.0",
     "better-sqlite3": "12.11.1",
@@ -98,6 +100,7 @@
     "remark-gfm": "4.0.1",
     "remark-math": "6.0.0",
     "sharp": "^0.35.3",
+    "sqlite-vec": "0.1.9",
     "three": "^0.185.1",
     "yaml": "2.8.2",
     "yauzl": "3.4.0",

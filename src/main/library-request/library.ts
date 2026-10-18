@@ -6,6 +6,15 @@ import { createPublicError } from "../../shared/protocol/errors";
 import type { RecentLibraryEntry } from "../../shared/recent-libraries";
 import type { LibraryCommandBuildOutcome } from "./command-outcome";
 
+/**
+ * Recent entries are opaque stored paths. `path.isAbsolute` follows the host
+ * platform, so a Windows library path recorded in the recent store is rejected
+ * on macOS/Linux before the store comparison can succeed.
+ */
+function isStoredLibraryPathAbsolute(libraryPath: string): boolean {
+  return path.win32.isAbsolute(libraryPath) || path.posix.isAbsolute(libraryPath);
+}
+
 export type LibraryOwnedRequestRuntime = {
   getActiveLibraryOpenCancellation: () => { cancelled: boolean } | undefined;
   logInfo: (scope: string, message: string) => void;
@@ -125,7 +134,7 @@ export function tryBuildOpenRecentCommand(
     },
   );
   if (
-    !path.isAbsolute(request.libraryPath) ||
+    !isStoredLibraryPathAbsolute(request.libraryPath) ||
     !recentEntries.some((entry) => entry.path === request.libraryPath)
   ) {
     return {

@@ -627,7 +627,7 @@ export function ContextMenuItem({
           ? t("common.unavailableSuffix", { label, disabledReason })
           : label
       }
-      title={disabled && disabledReason ? disabledReason : undefined}
+      data-hover-tip={disabled && disabledReason ? disabledReason : undefined}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseOver={handleMouseOver}

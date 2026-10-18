@@ -8,6 +8,7 @@ import type {
   AssetSummary,
   ManagedFolderSummary,
 } from "../shared/asset-types";
+import { assetParentFolderCoverTarget } from "../shared/folder-cover-target";
 
 type RendererWindow = Window & {
   worldlinebox?: {
@@ -18,6 +19,7 @@ type RendererWindow = Window & {
 import type { EntityAppearance, EntityAppearanceTarget } from "../shared/entity-appearance";
 import { EntityAppearancePicker } from "./EntityAppearancePicker";
 import { planFolderBatch } from "./folder-batch-actions";
+import { folderCoverClearTargets } from "./folder-cover";
 import {
   ContextMenu,
   ContextMenuBackdrop,
@@ -27,6 +29,14 @@ import {
   useContextMenu,
   type ContextMenuDescriptor,
 } from "./context-menu";
+import { canFindSimilarForAsset } from "./find-similar";
+import { isSemanticSearchModelId } from "../shared/embedding/profile";
+import {
+  embeddingInputModalitiesForAdapter,
+  LOCAL_SEMANTIC_ENCODE_MODALITIES,
+  type EmbeddingModality,
+} from "../shared/embedding/modalities";
+import type { EmbeddingHttpAdapter } from "../shared/embedding/http-service";
 import { Icon, type IconName } from "./Icons";
 import { TagPickerEntry, TagPickerMenu } from "./TagPickerMenu";
 import { CollectionPickerMenu } from "./CollectionPickerMenu";
@@ -284,6 +294,48 @@ function descriptorKey(descriptor: ContextMenuDescriptor): string {
   }
 }
 
+function FolderCoverMenuItems({
+  folderIds,
+  customFolderCoverIds,
+  onChooseFromLibrary,
+  onChooseFromFile,
+  onClear,
+}: {
+  folderIds: readonly string[];
+  customFolderCoverIds: ReadonlySet<string>;
+  onChooseFromLibrary: (folderIds: readonly string[]) => void;
+  onChooseFromFile: (folderIds: readonly string[]) => void;
+  onClear: (folderIds: readonly string[]) => void;
+}) {
+  const t = useT();
+  if (folderIds.length === 0) return null;
+  const clearFolderIds = folderCoverClearTargets(folderIds, customFolderCoverIds);
+  return (
+    <>
+      <ContextMenuSubmenu
+        icon={<Icon name="file" size={14} />}
+        label={t("command.folder.chooseCover")}
+      >
+        <ContextMenuItem
+          label={t("command.folder.chooseCoverFromLibrary")}
+          onAction={() => onChooseFromLibrary(folderIds)}
+        />
+        <ContextMenuItem
+          label={t("command.folder.chooseCoverFromFile")}
+          onAction={() => onChooseFromFile(folderIds)}
+        />
+      </ContextMenuSubmenu>
+      {clearFolderIds.length > 0 ? (
+        <ContextMenuItem
+          icon={<Icon name="eye-off" size={14} />}
+          label={t("command.folder.clearCover")}
+          onAction={() => onClear(clearFolderIds)}
+        />
+      ) : null}
+    </>
+  );
+}
+
 interface AssetContextMenuProps {
   libraryId?: string;
   busy?: boolean;
@@ -341,7 +393,11 @@ interface AssetContextMenuProps {
     appearance: EntityAppearance | null,
   ) => void;
   onChooseFolderCover: (folderIds: readonly string[]) => void;
+  onChooseFolderCoverFromLibrary: (folderIds: readonly string[]) => void;
   onClearFolderCover: (folderIds: readonly string[]) => void;
+  customFolderCoverIds: ReadonlySet<string>;
+  /** Single image asset: set its parent folder cover to this asset. */
+  onUseAssetAsFolderCover: (assetId: string, folderId: string) => void;
   onBatchAssignTag: (tagId: string, assetIds: string[]) => void;
   onBatchRemoveTag: (tagId: string, assetIds: string[]) => void;
   onBatchAddToCollection: (collectionId: string, assetIds: string[]) => void;
@@ -372,6 +428,11 @@ interface AssetContextMenuProps {
   onDissolveImageSequences: (sequenceIds: string[]) => void;
   onRevealInFolder: (assetId: string) => void;
   onShowInLibraryFolder: (assetId: string) => void;
+  semanticSearchEnabled: boolean;
+  embeddingSelectionId?: string | null;
+  embeddingAdapter?: EmbeddingHttpAdapter | null;
+  embeddingModalities?: readonly EmbeddingModality[] | null;
+  onFindSimilar: (assetId: string) => void;
   onCopyFilePath: (assetId: string) => void;
   /** OS file clipboard copy (Finder/Explorer interoperable). */
   onCopyAssetFiles: (assetIds: string[]) => void;
@@ -438,7 +499,9 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
     onRemoveLinkedFolder,
     onSetEntityAppearance,
     onChooseFolderCover,
+    onChooseFolderCoverFromLibrary,
     onClearFolderCover,
+    customFolderCoverIds,
     onBatchAssignTag,
     onBatchRemoveTag,
     onBatchAddToCollection,
@@ -458,6 +521,11 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
     onViewAsset,
     onRevealInFolder,
     onShowInLibraryFolder,
+    semanticSearchEnabled,
+    embeddingSelectionId = null,
+    embeddingAdapter = null,
+    embeddingModalities = null,
+    onFindSimilar,
     onCopyFilePath,
     onCopyAssetFiles,
     pasteTargetFolderId,
@@ -1288,18 +1356,13 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
                       </ContextMenuSubmenu>
                     )}
                     {!desc.isLibraryRoot ? (
-                      <>
-                        <ContextMenuItem
-                          icon={<Icon name="file" size={14} />}
-                          label={t("command.folder.chooseCover")}
-                          onAction={() => onChooseFolderCover([commandSubjectId])}
-                        />
-                        <ContextMenuItem
-                          icon={<Icon name="eye-off" size={14} />}
-                          label={t("command.folder.clearCover")}
-                          onAction={() => onClearFolderCover([commandSubjectId])}
-                        />
-                      </>
+                      <FolderCoverMenuItems
+                        folderIds={[commandSubjectId]}
+                        customFolderCoverIds={customFolderCoverIds}
+                        onChooseFromFile={onChooseFolderCover}
+                        onChooseFromLibrary={onChooseFolderCoverFromLibrary}
+                        onClear={onClearFolderCover}
+                      />
                     ) : null}
                     <PluginMenuItems
                       items={pluginItemsAtHostAnchor(pluginFolderMenuPlacement, "folder.rename", "after")}
@@ -1906,22 +1969,13 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
                 </ContextMenuSubmenu>
               )}
               {coverPlan.targets.length > 0 ? (
-                <>
-                  <ContextMenuItem
-                    icon={<Icon name="file" size={14} />}
-                    label={t("command.folder.chooseCover")}
-                    onAction={() =>
-                      onChooseFolderCover(coverPlan.targets.map((target) => target.folderId))
-                    }
-                  />
-                  <ContextMenuItem
-                    icon={<Icon name="eye-off" size={14} />}
-                    label={t("command.folder.clearCover")}
-                    onAction={() =>
-                      onClearFolderCover(coverPlan.targets.map((target) => target.folderId))
-                    }
-                  />
-                </>
+                <FolderCoverMenuItems
+                  folderIds={coverPlan.targets.map((target) => target.folderId)}
+                  customFolderCoverIds={customFolderCoverIds}
+                  onChooseFromFile={onChooseFolderCover}
+                  onChooseFromLibrary={onChooseFolderCoverFromLibrary}
+                  onClear={onClearFolderCover}
+                />
               ) : null}
               <PluginMenuItems
                 items={multiAssetPluginPlacement.organizeAfter}
@@ -2003,12 +2057,24 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
             } = activeContextMenu.descriptor;
             const singleManaged = locationKind === "managed";
             const singleAsset = assets.find((asset) => asset.assetId === assetId);
+            const parentFolderCoverId = !isDeleted && singleAsset
+              ? assetParentFolderCoverTarget(singleAsset)
+              : null;
             const resolvedPasteTarget =
               pasteTargetFolderId ??
               (singleManaged ? singleAsset?.managedFolderId ?? null : null);
             // 0015-B: 静态项的标题/快捷键/可见性/禁用原因由注册表 resolveMenu
             // 求值；此处把 descriptor 与 props 组装成 AssetCommandContext。
             // 动态行（外部目录、合集、标签）与汇总/提示块保持内联不变。
+            const sourceModalities = !embeddingSelectionId
+              ? []
+              : isSemanticSearchModelId(embeddingSelectionId)
+                ? LOCAL_SEMANTIC_ENCODE_MODALITIES
+                : embeddingAdapter
+                  ? embeddingInputModalitiesForAdapter(embeddingAdapter, embeddingModalities ?? ["text"])
+                  : [];
+            const sourceSupported = Boolean(singleAsset && semanticSearchEnabled
+              && canFindSimilarForAsset(singleAsset, sourceModalities));
             const commandContext: AssetCommandContext = {
               surface: "asset-single",
               locale,
@@ -2023,11 +2089,14 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
               activeCollectionId,
               aiCanAnalyze: canAnalyze,
               pasteTargetFolderId: resolvedPasteTarget,
+              semanticSearchEnabled,
+              similarSourceSupported: sourceSupported,
               actions: {
                 view: onViewAsset,
                 openExternal: onOpenExternal,
                 revealInFolder: onRevealInFolder,
                 showInLibraryFolder: onShowInLibraryFolder,
+                findSimilar: onFindSimilar,
                 copyFiles: onCopyAssetFiles,
                 pasteIntoFolder: onPasteIntoFolder,
                 copyFilePath: onCopyFilePath,
@@ -2065,6 +2134,7 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
             const showInLibraryFolderItem = resolvedById.get(
               "asset.show-in-library-folder",
             );
+            const findSimilarItem = resolvedById.get("asset.find-similar");
             const removeFromCurrentCollectionItem = resolvedById.get(
               "asset.remove-from-current-collection",
             );
@@ -2202,6 +2272,15 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
                       }
                     />
                   )}
+                  {findSimilarItem && (
+                    <ContextMenuItem
+                      icon={<Icon name="scan-qr-code" size={14} />}
+                      label={findSimilarItem.label}
+                      disabled={findSimilarItem.disabled}
+                      disabledReason={findSimilarItem.disabledReason ?? undefined}
+                      onAction={() => runAssetCommand("asset.find-similar")}
+                    />
+                  )}
                   <PluginMenuItems
                     items={pluginItemsForHostGroup(pluginAssetMenuPlacement, "open", "after")}
                     onRun={(item) => runPluginCommand(item, { assetIds: [assetId] })}
@@ -2219,6 +2298,13 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
                     items={pluginItemsForHostGroup(pluginAssetMenuPlacement, "organize", "before")}
                     onRun={(item) => runPluginCommand(item, { assetIds: [assetId] })}
                   />
+                  {parentFolderCoverId ? (
+                    <ContextMenuItem
+                      icon={<Icon name="file" size={14} />}
+                      label={t("command.asset.useAsFolderCover")}
+                      onAction={() => props.onUseAssetAsFolderCover(assetId, parentFolderCoverId)}
+                    />
+                  ) : null}
                   {singleAsset?.sequence ? (
                     <ContextMenuItem
                       icon={<Icon name="sliders" size={14} />}

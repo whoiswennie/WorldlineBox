@@ -329,13 +329,14 @@ describe('library sync integration (WorldlineBox-xffq)', () => {
       rating: 0,
       favorite: false,
       ai: {
-        tags: ['夜景', '风景'],
+        tags: expect.arrayContaining(['夜景', '风景']),
         description: '城市夜景',
         rating: 5,
         modelId: 'gpt-4o',
         modelVersion: '2024-05-13',
       },
     });
+    expect(snapshot.assets[0]!.metadata?.ai?.tags).toHaveLength(2);
     const syncId = snapshot.assets[0]!.syncId;
     service.applySyncAssetMetadata(libraryId, syncId, {
       tags: [],

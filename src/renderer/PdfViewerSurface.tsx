@@ -595,7 +595,8 @@ export function PdfViewerSurface({
             disabled={zoom <= PDF_ZOOM_MIN}
             onClick={() => zoomAtViewportCenter(1 / PDF_ZOOM_STEP)}
             type="button"
-            title={t("viewer.zoomOut")}
+            data-hover-tip={t("viewer.zoomOut")}
+            aria-label={t("viewer.zoomOut")}
           >
             −
           </button>
@@ -605,7 +606,8 @@ export function PdfViewerSurface({
             disabled={zoom >= PDF_ZOOM_MAX}
             onClick={() => zoomAtViewportCenter(PDF_ZOOM_STEP)}
             type="button"
-            title={t("viewer.zoomIn")}
+            data-hover-tip={t("viewer.zoomIn")}
+            aria-label={t("viewer.zoomIn")}
           >
             +
           </button>
@@ -613,7 +615,8 @@ export function PdfViewerSurface({
             className="pdf-viewer-tool"
             onClick={() => setZoom(1)}
             type="button"
-            title={t("viewer.zoomFit")}
+            data-hover-tip={t("viewer.zoomFit")}
+            aria-label={t("viewer.zoomFit")}
           >
             {t("viewer.zoomFit")}
           </button>

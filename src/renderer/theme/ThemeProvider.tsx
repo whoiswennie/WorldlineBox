@@ -18,19 +18,28 @@ import {
 import { loadBackgroundMotion, saveBackgroundMotion } from './animated-background-preferences';
 import { isAnimatedTheme } from './dsh-background-media';
 import {
-  clearCustomTheme,
   loadCustomTheme,
-  saveCustomTheme,
   type CustomTheme,
 } from './custom-theme';
-import { CUSTOM_THEME_COLOR_TOKENS } from './custom-theme';
+import { CUSTOM_THEME_OVERRIDE_TOKENS, DEFAULT_CUSTOM_THEME } from './custom-theme';
+import { normalizeAccentHex } from './accent-preferences';
+import { captureThemeColors, loadThemeColorDrafts, saveThemeColorDrafts, themeColorKey, type ThemeColorDraft, type ThemeColorDrafts } from './theme-color-drafts';
+import {
+  activeUserTheme as findActiveUserTheme,
+  addUserTheme,
+  loadUserThemes,
+  removeUserTheme,
+  saveUserThemes,
+  updateUserTheme,
+  type UserTheme,
+  type UserThemesState,
+} from './user-themes';
 import {
   migrateLegacyAccentIntoCustomTheme,
   resolveEffectiveThemeTokens,
 } from './theme-composition';
 import {
   loadThemeAccent,
-  saveThemeAccent,
 } from './theme-accent-preferences';
 import {
   loadThemeProfile,
@@ -66,6 +75,17 @@ type ThemeContextValue = {
   readonly setThemeProfile: (profile: ThemeProfileId) => void;
   readonly setThemeAccent: (accentHex: string) => void;
   readonly setBackgroundPreferences: (preferences: BackgroundPreferences) => boolean;
+  /** Saved user themes and which one (if any) is active. */
+  readonly userThemes: UserThemesState;
+  readonly activeUserTheme: UserTheme | null;
+  readonly selectUserTheme: (id: string) => void;
+  /** Duplicate the current look (profile + overrides) into a new active user theme. */
+  readonly createUserTheme: (name: string) => string;
+  readonly renameUserTheme: (id: string, name: string) => void;
+  readonly deleteUserTheme: (id: string) => void;
+  /** Unsaved colour edits belonging to the current theme only. */
+  readonly customOverlay: CustomTheme;
+  readonly saveOverlayToActiveUserTheme: () => void;
 };
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
@@ -84,15 +104,33 @@ export function ThemeProvider({
   const [preference, setPreferenceState] = useState<ThemePreference>(
     () => initialPreference ?? loadThemePreferences(storage).theme,
   );
-  const [customTheme, setCustomThemeState] = useState<CustomTheme>(() =>
+  const [initial] = useState(() => {
     // The legacy standalone accent preference migrates into a custom-theme
-    // override here, once, before anything else reads the theme.
-    migrateLegacyAccentIntoCustomTheme(loadCustomTheme(storage), storage),
-  );
-  const [themeAccentHex, setThemeAccentState] = useState<string | null>(() =>
-    loadThemeAccent(storage),
-  );
-  const [themeProfile, setThemeProfileState] = useState<ThemeProfile>(() => loadThemeProfile(storage));
+    // override here, once, before anything else reads the theme. Legacy
+    // "advanced colour" overrides then migrate into a user theme.
+    const savedDrafts = loadThemeColorDrafts(storage);
+    const legacy = savedDrafts ? DEFAULT_CUSTOM_THEME
+      : migrateLegacyAccentIntoCustomTheme(loadCustomTheme(storage), storage);
+    const profile = loadThemeProfile(storage);
+    const loaded = loadUserThemes({
+      storage,
+      legacyCustomTheme: legacy,
+      currentPreset: profile.preset,
+    });
+    return {
+      drafts: savedDrafts ?? {
+        [themeColorKey(profile.preset, findActiveUserTheme(loaded.state)?.id)]: {
+          customTheme: loaded.migrated ? DEFAULT_CUSTOM_THEME : legacy,
+          accentHex: loadThemeAccent(storage),
+        },
+      },
+      profile,
+      userThemes: loaded.state,
+    };
+  });
+  const [colorDrafts, setColorDrafts] = useState<ThemeColorDrafts>(initial.drafts);
+  const [userThemes, setUserThemesState] = useState<UserThemesState>(initial.userThemes);
+  const [baseThemeProfile, setThemeProfileState] = useState<ThemeProfile>(initial.profile);
   const [backgroundPreferences, setBackgroundPreferencesState] = useState<BackgroundPreferences>(() => loadBackgroundPreferences(storage));
   const [backgroundMotion, setBackgroundMotionState] = useState(() => loadBackgroundMotion(storage));
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() =>
@@ -100,6 +138,44 @@ export function ThemeProvider({
   );
   const [themeRevision, setThemeRevision] = useState(0);
   const themeSignatureRef = useRef('');
+
+  const activeUserTheme = useMemo(() => findActiveUserTheme(userThemes), [userThemes]);
+  const colorKey = themeColorKey(baseThemeProfile.preset, activeUserTheme?.id);
+  const baseCustomTheme = colorDrafts[colorKey]?.customTheme ?? DEFAULT_CUSTOM_THEME;
+  const themeAccentHex = colorDrafts[colorKey]?.accentHex ?? null;
+  useEffect(() => { saveThemeColorDrafts(colorDrafts, storage); }, [colorDrafts, storage]);
+  const commitColorDraft = useCallback((patch: Partial<ThemeColorDraft>) => {
+    setColorDrafts((current) => ({
+      ...current,
+      [colorKey]: {
+        customTheme: current[colorKey]?.customTheme ?? DEFAULT_CUSTOM_THEME,
+        accentHex: current[colorKey]?.accentHex ?? null,
+        ...patch,
+      },
+    }));
+  }, [colorKey]);
+  // The theme that is actually rendered: a user theme's base profile and
+  // overrides replace the built-in selection while it is active.
+  const themeProfile = useMemo<ThemeProfile>(
+    () => (activeUserTheme ? { ...baseThemeProfile, preset: activeUserTheme.base } : baseThemeProfile),
+    [activeUserTheme, baseThemeProfile],
+  );
+  // Effective overrides combine the selected named theme with its own draft.
+  // Built-in profiles have independent drafts under their preset identities.
+  const customTheme = useMemo<CustomTheme>(
+    () => (activeUserTheme
+      ? {
+          ...baseCustomTheme,
+          light: { ...activeUserTheme.light, ...baseCustomTheme.light },
+          dark: { ...activeUserTheme.dark, ...baseCustomTheme.dark },
+        }
+      : baseCustomTheme),
+    [activeUserTheme, baseCustomTheme],
+  );
+  const commitUserThemes = useCallback((next: UserThemesState) => {
+    saveUserThemes(next, storage);
+    setUserThemesState(next);
+  }, [storage]);
 
   const resolved = useMemo(
     () => resolveEffectiveTheme(preference, systemTheme),
@@ -113,7 +189,7 @@ export function ThemeProvider({
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const root = document.documentElement;
-    for (const token of CUSTOM_THEME_COLOR_TOKENS) {
+    for (const token of CUSTOM_THEME_OVERRIDE_TOKENS) {
       root.style.removeProperty(token);
     }
     const composition = resolveEffectiveThemeTokens({
@@ -131,10 +207,11 @@ export function ThemeProvider({
   useEffect(() => {
     applyBackgroundPreferences(backgroundPreferences);
     const root = document.documentElement;
-    if (isAnimatedTheme(themeProfile.preset) && backgroundPreferences.imageDataUrl === null) {
+    if (backgroundPreferences.enabled && isAnimatedTheme(themeProfile.preset) && backgroundPreferences.imageDataUrl === null) {
       root.dataset.animatedBackground = themeProfile.preset;
       root.style.setProperty('--ui-background-surface-opacity', '0%');
       root.style.setProperty('--ui-backdrop-image', 'none');
+      if (backgroundPreferences.showInMainPanel) root.setAttribute('data-bg-main-panel', 'on');
     } else {
       delete root.dataset.animatedBackground;
       root.style.removeProperty('--ui-backdrop-image');
@@ -165,40 +242,96 @@ export function ThemeProvider({
     [storage],
   );
 
+  /** Replace the anonymous overlay (live, unsaved edits). */
   const setCustomTheme = useCallback((next: CustomTheme) => {
-    saveCustomTheme(next, storage);
-    setCustomThemeState(next);
-  }, [storage]);
+    commitColorDraft({ customTheme: next });
+  }, [commitColorDraft]);
 
+  /** Drop the anonymous overlay; the current (named or built-in) theme shows as saved. */
   const resetCustomTheme = useCallback(() => {
-    clearCustomTheme(storage);
-    setCustomThemeState(loadCustomTheme(storage));
-  }, [storage]);
+    commitColorDraft({ customTheme: DEFAULT_CUSTOM_THEME });
+  }, [commitColorDraft]);
+
+  /** Fold the overlay into the active named theme. */
+  const saveOverlayToActiveUserTheme = useCallback(() => {
+    if (!activeUserTheme) return;
+    commitUserThemes(updateUserTheme(userThemes, activeUserTheme.id, {
+      ...captureThemeColors(customTheme, themeAccentHex),
+    }));
+    commitColorDraft({ customTheme: DEFAULT_CUSTOM_THEME });
+  }, [activeUserTheme, commitColorDraft, commitUserThemes, customTheme, themeAccentHex, userThemes]);
+
+  const selectUserTheme = useCallback((id: string) => {
+    if (!userThemes.themes.some((theme) => theme.id === id)) return;
+    commitUserThemes({ ...userThemes, activeId: id });
+  }, [commitUserThemes, userThemes]);
+
+  const createUserTheme = useCallback((name: string) => {
+    const { state, theme } = addUserTheme(userThemes, {
+      name,
+      base: themeProfile.preset,
+      ...captureThemeColors(customTheme, themeAccentHex),
+    });
+    commitUserThemes(state);
+    // The new theme captures the current appearance; the source keeps its draft.
+    setColorDrafts((current) => ({
+      ...current,
+      [themeColorKey(theme.base, theme.id)]: { customTheme: DEFAULT_CUSTOM_THEME, accentHex: themeAccentHex },
+    }));
+    return theme.id;
+  }, [commitUserThemes, customTheme, themeAccentHex, themeProfile.preset, userThemes]);
+
+  const renameUserTheme = useCallback((id: string, name: string) => {
+    commitUserThemes(updateUserTheme(userThemes, id, { name }));
+  }, [commitUserThemes, userThemes]);
+
+  const deleteUserTheme = useCallback((id: string) => {
+    const deleted = userThemes.themes.find((theme) => theme.id === id);
+    setColorDrafts((current) => {
+      const next = { ...current };
+      delete next[themeColorKey(deleted?.base ?? baseThemeProfile.preset, id)];
+      return next;
+    });
+    commitUserThemes(removeUserTheme(userThemes, id));
+    // Deleting the active theme falls back to the profile it was built on.
+    if (deleted && userThemes.activeId === id) {
+      const profile: ThemeProfile = { version: THEME_PROFILE_VERSION, preset: deleted.base, overrides: {} };
+      saveThemeProfile(profile, storage);
+      setThemeProfileState(profile);
+    }
+  }, [baseThemeProfile.preset, commitUserThemes, storage, userThemes]);
 
   const setThemeProfile = useCallback((preset: ThemeProfileId) => {
     const next: ThemeProfile = { version: THEME_PROFILE_VERSION, preset, overrides: {} };
     saveThemeProfile(next, storage);
     setThemeProfileState(next);
+    if (userThemes.activeId !== null) commitUserThemes({ ...userThemes, activeId: null });
     // Light/dark is orthogonal to the theme: picking a profile must not flip
     // the global light/dark preference.
-  }, [storage]);
+  }, [commitUserThemes, storage, userThemes]);
 
   const setThemeAccent = useCallback((accentHex: string) => {
-    const nextHex = saveThemeAccent(accentHex, storage);
-    setThemeAccentState(nextHex);
+    const nextHex = normalizeAccentHex(accentHex);
+    if (!nextHex) throw new Error('Invalid theme accent color');
     // A quick color is an intentional shortcut for the accent only. Remove
     // the advanced accent override so clicking a swatch always takes effect;
     // every other advanced color remains untouched.
-    const nextCustomTheme: CustomTheme = {
-      ...customTheme,
-      light: { ...customTheme.light },
-      dark: { ...customTheme.dark },
+    const nextOverlay: CustomTheme = {
+      ...baseCustomTheme,
+      light: { ...baseCustomTheme.light },
+      dark: { ...baseCustomTheme.dark },
     };
-    delete nextCustomTheme.light['--ui-action-accent'];
-    delete nextCustomTheme.dark['--ui-action-accent'];
-    saveCustomTheme(nextCustomTheme, storage);
-    setCustomThemeState(nextCustomTheme);
-  }, [customTheme, storage]);
+    delete nextOverlay.light['--ui-action-accent'];
+    delete nextOverlay.dark['--ui-action-accent'];
+    commitColorDraft({ customTheme: nextOverlay, accentHex: nextHex });
+    if (activeUserTheme && (activeUserTheme.light['--ui-action-accent'] || activeUserTheme.dark['--ui-action-accent'])) {
+      const light = { ...activeUserTheme.light };
+      const dark = { ...activeUserTheme.dark };
+      delete light['--ui-action-accent'];
+      delete dark['--ui-action-accent'];
+      commitUserThemes(updateUserTheme(userThemes, activeUserTheme.id, { light, dark }));
+    }
+  }, [activeUserTheme, baseCustomTheme, commitColorDraft, commitUserThemes, userThemes]);
 
   const setBackgroundPreferences = useCallback((next: BackgroundPreferences) => {
     const saved = saveBackgroundPreferences(next, storage);
@@ -229,8 +362,16 @@ export function ThemeProvider({
       setThemeProfile,
       setThemeAccent,
       setBackgroundPreferences,
+      userThemes,
+      activeUserTheme,
+      selectUserTheme,
+      createUserTheme,
+      renameUserTheme,
+      deleteUserTheme,
+      customOverlay: baseCustomTheme,
+      saveOverlayToActiveUserTheme,
     }),
-    [backgroundMotion, backgroundPreferences, customTheme, preference, resetCustomTheme, resolved, setBackgroundMotion, setBackgroundPreferences, setCustomTheme, setTheme, setThemeAccent, setThemeProfile, themeAccentHex, themeProfile, themeRevision],
+    [backgroundMotion, setBackgroundMotion, baseCustomTheme, saveOverlayToActiveUserTheme, activeUserTheme, createUserTheme, deleteUserTheme, renameUserTheme, selectUserTheme, userThemes, backgroundPreferences, customTheme, preference, resetCustomTheme, resolved, setBackgroundPreferences, setCustomTheme, setTheme, setThemeAccent, setThemeProfile, themeAccentHex, themeProfile, themeRevision],
   );
 
   return (

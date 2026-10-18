@@ -17,6 +17,11 @@ import {
   type RectLike,
 } from "./canvas-scroll-anchor";
 import { canvasHasPreviewScrollHold } from "./browse-scroll-debug";
+import {
+  readPublishedCanvasAssetLayout,
+  readPublishedCanvasAssetLayoutIndex,
+  type CanvasAssetLayoutRect,
+} from "./canvas-asset-layout";
 
 export type { AnchorCard, CanvasAnchor, RectLike };
 
@@ -83,6 +88,78 @@ export function captureReflowAnchorFromCards(
   return captureAnchor(topmost, anchorX, anchorY);
 }
 
+function findMountedAnchor(
+  canvas: HTMLElement,
+  assetId: string,
+): HTMLElement | undefined {
+  for (const card of canvas.querySelectorAll<HTMLElement>("[data-asset-id]")) {
+    if (card.dataset.assetId === assetId) return card;
+  }
+  for (const slot of canvas.querySelectorAll<HTMLElement>("[data-layout-asset-id]")) {
+    if (slot.dataset.layoutAssetId === assetId) return slot;
+  }
+  return undefined;
+}
+
+function publishedAnchorRect(
+  host: HTMLElement,
+  assetId: string,
+): CanvasAssetLayoutRect | null {
+  const dense = readPublishedCanvasAssetLayout(host);
+  if (dense) {
+    return dense.find((item) => item.id === assetId) ?? null;
+  }
+  const index = readPublishedCanvasAssetLayoutIndex(host);
+  if (!index) return null;
+  let match: CanvasAssetLayoutRect | null = null;
+  index.forEachAll((item) => {
+    if (!match && item.id === assetId) match = item;
+  });
+  return match;
+}
+
+/**
+ * Virtual windows unmount cards outside the overscan. Scroll toward the
+ * published content rect so the slot can mount, then the DOM pass can
+ * finish the client-point alignment.
+ */
+function scrollTowardPublishedAnchor(
+  canvas: HTMLElement,
+  anchor: CanvasAnchor,
+): boolean {
+  const hosts = canvas.querySelectorAll<HTMLElement>(
+    ".justified-rows, .masonry-columns",
+  );
+  for (const host of hosts) {
+    const rect = publishedAnchorRect(host, anchor.assetId);
+    if (!rect) continue;
+    const hostRect = host.getBoundingClientRect();
+    const delta = computeAnchorScrollDelta(anchor, {
+      left: hostRect.left + rect.x,
+      top: hostRect.top + rect.y,
+      width: rect.width,
+      height: rect.height,
+    });
+    const nextLeft = clampScrollOffset(
+      canvas.scrollLeft + delta.deltaX,
+      canvas.scrollWidth,
+      canvas.clientWidth,
+    );
+    const nextTop = clampScrollOffset(
+      canvas.scrollTop + delta.deltaY,
+      canvas.scrollHeight,
+      canvas.clientHeight,
+    );
+    if (nextLeft === canvas.scrollLeft && nextTop === canvas.scrollTop) {
+      return false;
+    }
+    canvas.scrollLeft = nextLeft;
+    canvas.scrollTop = nextTop;
+    return true;
+  }
+  return false;
+}
+
 /** Keep the first anchor throughout one continuous resize/reflow burst. */
 export function retainReflowAnchor(
   current: CanvasAnchor | null,
@@ -132,10 +209,18 @@ export function scheduleAnchorRestore(
         );
       }
       const settle = (passesRemaining: number, stableFrames = 0): void => {
-        const restored = Array.from(
-          canvas.querySelectorAll<HTMLElement>("[data-asset-id]"),
-        ).find((card) => card.dataset.assetId === anchor.assetId);
+        const restored = findMountedAnchor(canvas, anchor.assetId);
         if (!restored) {
+          // A zoom reflow can drop the anchor card out of the virtual
+          // window before this settle runs. Keep scrolling toward its
+          // published geometry instead of leaving the pre-zoom offset.
+          const nudged = scrollTowardPublishedAnchor(canvas, anchor);
+          if (nudged && passesRemaining > 0) {
+            frameRef.current = globalThis.requestAnimationFrame(() =>
+              settle(passesRemaining - 1, 0),
+            );
+            return;
+          }
           frameRef.current = null;
           onRestored?.();
           return;
@@ -176,7 +261,9 @@ export function scheduleAnchorRestore(
       // Apply the raw snapshot once, then converge on the captured client
       // point. Re-applying the snapshot on every pass undid the previous
       // compensation just before the old "stable rect" early exit.
-      settle(6);
+      // Extra passes cover a virtual window that mounts the card only
+      // after the published-geometry scroll.
+      settle(12);
       return;
     }
     frameRef.current = globalThis.requestAnimationFrame(() => {

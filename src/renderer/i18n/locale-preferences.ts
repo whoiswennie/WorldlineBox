@@ -6,8 +6,9 @@ import type { AppLocale } from './types';
  * Locale preference persistence (REQ-I18N-001).
  *
  * Default preference is `system` (follow OS language). Effective locale is
- * resolved to `zh-CN` or `en`. E2E injects `__WORLDLINEBOX_E2E_LOCALE__` via preload
- * so Chinese selectors stay stable when preference is still `system`.
+ * resolved to `zh-CN` or `en`. E2E copies `__WORLDLINEBOX_E2E_LOCALE__` into the
+ * renderer main world from preload so Chinese selectors stay stable when
+ * preference is still `system` on a non-Chinese host.
  */
 
 export type LocalePreference = 'system' | AppLocale;

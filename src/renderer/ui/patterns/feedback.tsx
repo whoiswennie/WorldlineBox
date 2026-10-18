@@ -237,7 +237,7 @@ export function StatusBadge({
       className={cx('ui-feedback', 'ui-status-badge', `ui-feedback--${tone}`, className)}
       data-ui-pattern="status-badge"
       data-ui-tone={tone}
-      title={title === undefined ? undefined : String(title)}
+      data-hover-tip={title === undefined ? undefined : String(title)}
     >
       {label ?? children}
     </span>

@@ -108,10 +108,10 @@ export function ThemeBackground() {
   const { themeProfile, backgroundPreferences, backgroundMotion } = useTheme();
   // Personal wallpaper is also drawn here, rather than independently per module.
   // Module selection never changes this layer or the current media source.
-  const media = backgroundPreferences.imageDataUrl === null && isAnimatedTheme(themeProfile.preset)
+  const media = backgroundPreferences.enabled && backgroundPreferences.imageDataUrl === null && isAnimatedTheme(themeProfile.preset)
     ? DSH_BACKGROUND_MEDIA[themeProfile.preset]
     : null;
-  const wallpaper = media ? 'animated' : backgroundPreferences.imageDataUrl !== null ? 'image' : undefined;
+  const wallpaper = media ? 'animated' : backgroundPreferences.enabled && backgroundPreferences.imageDataUrl !== null ? 'image' : undefined;
   return (
     <div aria-hidden="true" className="app-theme-background" data-wallpaper={wallpaper}>
       {media && (

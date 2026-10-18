@@ -22,6 +22,7 @@ test-results/
 .env
 .env.*
 !.env.example
+embedding-gemma.local.json
 
 # Large platform media bundles are produced by the trusted build pipeline or
 # acquired from a checksum-pinned release. Never commit local/system binaries.

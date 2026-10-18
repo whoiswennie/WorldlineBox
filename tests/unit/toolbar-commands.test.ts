@@ -32,6 +32,7 @@ function makeActions(calls: RecordedCall[]): ToolbarCommandActions {
     refresh: record('refresh'),
     setViewMode: record('setViewMode'),
     toggleField: record('toggleField'),
+    cycleCaptionAlign: record('cycleCaptionAlign'),
     openAiSettings: record('openAiSettings'),
     openAppSettings: record('openAppSettings'),
   };
@@ -96,6 +97,7 @@ describe('工具栏命令可见性', () => {
       'canvas.field.size',
       'canvas.field.date',
       'canvas.field.dimensions',
+      'canvas.captionAlign.cycle',
     ]);
   });
 
@@ -110,6 +112,7 @@ describe('工具栏命令可见性', () => {
       'canvas.field.size',
       'canvas.field.date',
       'canvas.field.dimensions',
+      'canvas.captionAlign.cycle',
     ]);
   });
 
@@ -123,7 +126,7 @@ describe('工具栏命令可见性', () => {
     expect(registry.get('toolbar.importFiles')).toBeUndefined();
   });
 
-  it('常驻画布 id 列表覆盖刷新/视图/四字段', () => {
+  it('常驻画布 id 列表覆盖刷新/视图/四字段/对齐循环', () => {
     expect([...TOOLBAR_CANVAS_COMMAND_IDS]).toEqual([
       'canvas.refresh',
       'canvas.view.grid',
@@ -132,6 +135,7 @@ describe('工具栏命令可见性', () => {
       'canvas.field.size',
       'canvas.field.date',
       'canvas.field.dimensions',
+      'canvas.captionAlign.cycle',
     ]);
   });
 });
@@ -183,6 +187,9 @@ describe('标题与 locale', () => {
     expect(findItem(menu, 'canvas.view.grid').label).toBe('平铺视图');
     expect(findItem(menu, 'canvas.view.masonry').label).toBe('瀑布流视图');
     expect(findItem(menu, 'canvas.field.name').label).toBe('文件名');
+    expect(findItem(menu, 'canvas.captionAlign.cycle').label).toBe(
+      '切换卡片文字对齐',
+    );
     expect(findItem(menu, 'workspace.ai-settings').label).toBe('AI 设置');
   });
 
@@ -208,6 +215,12 @@ describe('run 委托 actions', () => {
       { action: 'toggleField', args: ['size'] },
       { action: 'refresh', args: [] },
     ]);
+  });
+
+  it('对齐循环委托 cycleCaptionAlign', () => {
+    const { ctx, calls } = makeCtx();
+    registry.get('canvas.captionAlign.cycle')!.run(ctx);
+    expect(calls).toEqual([{ action: 'cycleCaptionAlign', args: [] }]);
   });
 
   it('设置命令仍可通过注册表委托', () => {

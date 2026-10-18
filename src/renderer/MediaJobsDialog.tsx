@@ -11,6 +11,20 @@ import {
   getPluginJobDisplayProgress,
 } from "./plugin-job-display";
 import type { MediaJobStatus, AiJobStatus, PluginJobStatus } from "../shared/library-api";
+import type { EmbeddingIndexSnapshot } from "../shared/embedding/profile";
+import { isEmbeddingServiceSelectionId } from "../shared/embedding/http-service";
+import { embeddingServiceTextOnly, type EmbeddingModality } from "../shared/embedding/modalities";
+import { embeddingIndexCopyKey, embeddingIndexJobsVisible } from "./semantic-index-copy";
+
+function embeddingModelLabel(
+  modelId: string,
+  t: ReturnType<typeof useT>,
+): string {
+  if (modelId === "embeddinggemma-2-compact") return t("settings.semanticSearch.modelCompact");
+  if (modelId === "embeddinggemma-2-quality") return t("settings.semanticSearch.modelQuality");
+  if (modelId === "embeddinggemma-2-balanced") return t("settings.semanticSearch.modelBalanced");
+  return t("settings.semanticSearch.customModel");
+}
 
 function MediaJobAssetLabel({
   assetName,
@@ -34,6 +48,7 @@ export interface MediaJobsDialogProps {
   mediaJobs: MediaJobStatus | null;
   mediaJobsLoading: boolean;
   aiJobs: AiJobStatus | null;
+  embeddingIndex?: { modelId: string; snapshot: EmbeddingIndexSnapshot; modalities?: readonly EmbeddingModality[] } | null;
   pluginJobs: PluginJobStatus | null;
   onClose: () => void;
   onControlMediaJobs: (
@@ -56,6 +71,7 @@ export function MediaJobsDialog({
   mediaJobs,
   mediaJobsLoading,
   aiJobs,
+  embeddingIndex,
   pluginJobs,
   onClose,
   onControlMediaJobs,
@@ -147,18 +163,20 @@ export function MediaJobsDialog({
               </button>
             </div>
             <div
+              className="media-jobs-list"
               style={{
                 maxHeight: 330,
                 overflow: "auto",
-                borderTop: "1px solid var(--border)",
+
               }}
             >
               {mediaJobs.jobs.length ? (
                 mediaJobs.jobs.map((job) => (
                   <div
+                    className="media-jobs-row"
                     key={job.jobId}
                     style={{
-                      borderBottom: "1px solid var(--border)",
+
                       padding: "6px 2px",
                     }}
                   >
@@ -183,7 +201,7 @@ export function MediaJobsDialog({
                       <strong className="media-jobs-grid-cell">{job.status}</strong>
                       <span
                         className="media-jobs-grid-cell"
-                        title={job.errorCode ?? undefined}
+                        data-hover-tip={job.errorCode ?? undefined}
                       >
                         {job.errorDetail ??
                           job.errorCode ??
@@ -217,10 +235,48 @@ export function MediaJobsDialog({
                 </div>
               ) : null}
             </div>
+            {embeddingIndex && embeddingIndexJobsVisible(embeddingIndex.snapshot) ? (
+              <section className="media-jobs-embedding-section">
+                <h3 className="media-jobs-section-title">
+                  {t("dialog.mediaJobs.embeddingSection")}
+                </h3>
+                <p className="field-help">
+                  {embeddingModelLabel(embeddingIndex.modelId, t)}
+                  {" · "}
+                  {t(embeddingIndexCopyKey(embeddingIndex.snapshot, {
+                    textOnly: isEmbeddingServiceSelectionId(embeddingIndex.modelId)
+                      && embeddingServiceTextOnly(embeddingIndex.modalities),
+                  }), {
+                    done: embeddingIndex.snapshot.done,
+                    total: embeddingIndex.snapshot.total,
+                    failed: embeddingIndex.snapshot.failedCount,
+                  })}
+                </p>
+                <div className="task-progress-track">
+                  {embeddingIndex.snapshot.phase === "starting" || embeddingIndex.snapshot.total <= 0 ? (
+                    <div className="task-progress-indeterminate" />
+                  ) : (
+                    <div
+                      className="task-progress-fill"
+                      style={{
+                        width: `${Math.max(
+                          0,
+                          Math.min(
+                            1,
+                            embeddingIndex.snapshot.done / embeddingIndex.snapshot.total,
+                          ),
+                        ) * 100}%`,
+                      }}
+                    />
+                  )}
+                </div>
+              </section>
+            ) : null}
             {aiJobs && (
               <section
+                className="media-jobs-section"
                 style={{
-                  borderTop: "1px solid var(--border)",
+
                   marginTop: 16,
                   paddingTop: 12,
                 }}
@@ -321,7 +377,7 @@ export function MediaJobsDialog({
                         <strong className="media-jobs-grid-cell">{job.status}</strong>
                         <span
                           className="media-jobs-grid-cell"
-                          title={job.errorCode ?? undefined}
+                          data-hover-tip={job.errorCode ?? undefined}
                         >
                           {displayAiJobFailure(job.errorCode, job.errorDetail, locale) || "—"}
                         </span>
@@ -338,8 +394,9 @@ export function MediaJobsDialog({
             )}
             {pluginJobs && (
               <section
+                className="media-jobs-section"
                 style={{
-                  borderTop: "1px solid var(--border)",
+
                   marginTop: 16,
                   paddingTop: 12,
                 }}
@@ -377,16 +434,16 @@ export function MediaJobsDialog({
                                 "minmax(160px, 1.4fr) minmax(90px, 0.8fr) 90px minmax(140px, 1.4fr)",
                             }}
                           >
-                            <span title={job.ownerPluginId}>
+                            <span data-hover-tip={job.ownerPluginId}>
                               {job.ownerPluginId}
                             </span>
-                            <span title={job.pluginHandlerId}>
+                            <span data-hover-tip={job.pluginHandlerId}>
                               {job.pluginHandlerId}
                             </span>
                             <strong>
                               {t(`dialog.mediaJobs.pluginJobStatus.${job.status}`)}
                             </strong>
-                            <span title={job.errorCode ?? undefined}>
+                            <span data-hover-tip={job.errorCode ?? undefined}>
                               {formatPluginJobError(job.errorDetail, job.errorCode) ||
                                 progressSummary}
                             </span>
@@ -394,7 +451,7 @@ export function MediaJobsDialog({
                           {progressMessage && (
                             <div
                               className="plugin-job-progress-message"
-                              title={progressMessage}
+                              data-hover-tip={progressMessage}
                             >
                               {progressMessage}
                             </div>

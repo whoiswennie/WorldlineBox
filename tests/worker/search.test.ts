@@ -455,6 +455,49 @@ describe('CJK tokenization', () => {
 // ── Contextual substring search ─────────────────────────────────────
 
 describe('contextual substring search', () => {
+  it('paginates internal ids-only pages without changing whole-scope idsOnly behavior', () => {
+    const { service, libraryId, libraryPath, assetId } = createLibraryWithAssetAndTags();
+    const db = new TestDatabase(path.join(libraryPath, '.worldlinebox', 'library.db'));
+    const now = new Date().toISOString();
+    let folderId: string;
+    let directory: string;
+    try {
+      const original = db.prepare(
+        'SELECT managed_folder_id, relative_file_path FROM assets WHERE asset_id = ?',
+      ).get(assetId) as { managed_folder_id: string; relative_file_path: string };
+      folderId = original.managed_folder_id;
+      directory = path.dirname(original.relative_file_path);
+      for (let index = 0; index < 2; index += 1) {
+        const id = randomUUID();
+        const revision = randomUUID();
+        const relativePath = path.posix.join(directory, `page-${index}.txt`);
+        writeFileSync(path.join(libraryPath, 'Assets', relativePath), 'page content');
+        db.prepare(
+          `INSERT INTO assets (asset_id, location_kind, managed_folder_id, linked_folder_id,
+            relative_file_path, current_revision_id, availability, path_identity, created_at, updated_at)
+           VALUES (?, 'managed', ?, NULL, ?, NULL, 'available', ?, ?, ?)`,
+        ).run(id, folderId, relativePath, relativePath, now, now);
+        db.prepare(
+          `INSERT INTO revisions (revision_id, asset_id, parent_revision_id, byte_size,
+            modified_at, original_filename, origin, accepted_at)
+           VALUES (?, ?, NULL, 12, ?, ?, 'import', ?)`,
+        ).run(revision, id, now, path.basename(relativePath), now);
+        db.prepare('UPDATE assets SET current_revision_id = ? WHERE asset_id = ?').run(revision, id);
+      }
+    } finally {
+      db.close();
+    }
+
+    const whole = service.searchAssets({ libraryId, idsOnly: true, limit: 1 });
+    const pageOne = service.searchAssets({ libraryId, idsOnly: true, idsPage: true, limit: 2, offset: 0 });
+    const pageTwo = service.searchAssets({ libraryId, idsOnly: true, idsPage: true, limit: 2, offset: 2 });
+    expect(whole.total).toBe(3);
+    expect(whole.assetIds).toHaveLength(3);
+    expect(pageOne.total).toBe(3);
+    expect(pageTwo.total).toBe(3);
+    expect([...pageOne.assetIds ?? [], ...pageTwo.assetIds ?? []].sort()).toEqual([...whole.assetIds ?? []].sort());
+  });
+
   it('finds a one-character query inside both filename and tag text', () => {
     const { service, libraryId, libraryPath, assetId } = createLibraryWithAssetAndTags();
     const db = new TestDatabase(path.join(libraryPath, '.worldlinebox', 'library.db'));
@@ -1295,6 +1338,35 @@ describe('search filters', () => {
     // Excluding assets with source_url should NOT include assetId.
     expect(withoutUrl.items.some((a) => a.assetId === assetId)).toBe(false);
 
+    service.closeAll();
+  });
+
+  it('selects the same preferred thumbnail for semantic revisions and catalog summaries', () => {
+    const { service, libraryId, assetId, libraryPath } = createLibraryWithAssetAndTags();
+    const db = new TestDatabase(path.join(libraryPath, '.worldlinebox', 'library.db'));
+    const revision = db.prepare('SELECT current_revision_id FROM assets WHERE asset_id = ?')
+      .get(assetId) as { current_revision_id: string };
+    const insert = db.prepare(`
+      INSERT INTO revision_artifacts
+        (artifact_id, revision_id, kind, mime_type, byte_size, file_path,
+         width, height, duration_ms, generator_version, artifact_role, generator_id,
+         settings_hash, artifact_key, status, generated_at)
+      VALUES (?, ?, 'thumbnail', ?, 1, ?, 1, 1, NULL, ?, 'card-thumbnail', ?, 'test', ?, 'ready', ?)
+    `);
+    const now = new Date().toISOString();
+    const pngId = randomUUID();
+    const webpId = randomUUID();
+    const jpegId = randomUUID();
+    insert.run(pngId, revision.current_revision_id, 'image/png', 'preview.png', 'test-png', 'gen-png', `key-${pngId}`, now);
+    insert.run(webpId, revision.current_revision_id, 'image/webp', 'preview.webp', 'test-webp', 'gen-webp', `key-${webpId}`, now);
+    insert.run(jpegId, revision.current_revision_id, 'image/jpeg', 'preview.jpg', 'test-jpeg', 'gen-jpeg', `key-${jpegId}`, now);
+    db.close();
+
+    const source = service.getSemanticAssetSources(libraryId, [assetId])[0];
+    const summary = service.searchAssets({ libraryId, query: null, limit: 50 }).items
+      .find((asset) => asset.assetId === assetId);
+    expect(source?.thumbnailArtifactId).toBe(jpegId);
+    expect(summary?.thumbnailArtifactId).toBe(source?.thumbnailArtifactId);
     service.closeAll();
   });
 

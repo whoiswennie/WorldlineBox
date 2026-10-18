@@ -9,6 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -86,10 +87,10 @@ async function expectRejectReasonAsync(
   expect((thrown as LibraryServiceError).reason).toBe(reason);
 }
 
-afterEach(() => {
-  for (const service of services.splice(0)) service.closeAll();
+afterEach(async () => {
+  await Promise.all(services.splice(0).map((service) => service.closeAllAsync()));
   for (const root of temporaryRoots.splice(0)) {
-    rmSync(root, { force: true, recursive: true });
+    await rm(root, { force: true, recursive: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 

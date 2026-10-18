@@ -61,9 +61,12 @@ import {
   videoPosterSeekSeconds,
 } from './video-poster-seek';
 import {
+  commitReplacingFolderCoverFiles,
   folderCoverAbsolutePath,
   folderCoverMimeType,
+  folderCoverStoredExtension,
   installFolderCoverFile,
+  listStaleFolderCoverFiles,
   removeFolderCoverFile,
 } from './folder-custom-cover';
 import { hasPdfCompatibleIllustratorHeader } from './illustrator-ai-format';
@@ -204,7 +207,10 @@ import {
   type EntityAppearance,
   type EntityAppearanceTarget,
 } from '../shared/entity-appearance';
-import type { LibraryNavigationSummary } from '../shared/library-navigation';
+import {
+  FOLDER_NAVIGATION_COVER_CAP,
+  type LibraryNavigationSummary,
+} from '../shared/library-navigation';
 import { isLibraryRootFolderId } from '../shared/library-root-folder';
 import { BROWSE_SCOPE_MAX_ASSETS } from '../shared/browse-scope';
 import {
@@ -508,6 +514,17 @@ function pngBitDepth(filePath: string): number | null {
 }
 
 function singleDisplayArtifactJoin(alias: string, statusSql: string): string {
+  // Prefer a ready display artifact over a later failed/pending row so a
+  // terminal model-thumbnail failure stays visible without hiding a good card.
+  const statusRank = statusSql.includes('chosen.status')
+    ? `CASE chosen.status
+                WHEN 'ready' THEN 0
+                WHEN 'pending' THEN 1
+                WHEN 'generating' THEN 1
+                WHEN 'failed' THEN 2
+                ELSE 3
+              END,`
+    : '';
   return `LEFT JOIN revision_artifacts ${alias}
            ON ${alias}.artifact_id = (
              SELECT chosen.artifact_id
@@ -516,7 +533,8 @@ function singleDisplayArtifactJoin(alias: string, statusSql: string): string {
                 AND chosen.kind = ${DISPLAY_PREVIEW_KIND_SQL}
                 ${statusSql}
                 AND chosen.invalidated_at IS NULL
-              ORDER BY CASE chosen.mime_type
+              ORDER BY ${statusRank}
+              CASE chosen.mime_type
                 WHEN 'image/jpeg' THEN 0
                 WHEN 'image/webp' THEN 1
                 WHEN 'image/png' THEN 2
@@ -3011,6 +3029,13 @@ const FOLDER_CUSTOM_COVER_SCHEMA_CHECKSUM = createHash('sha256')
   .update(FOLDER_CUSTOM_COVER_SCHEMA_SQL)
   .digest('hex');
 
+const FOLDER_CUSTOM_COVER_ASSET_SCHEMA_SQL = `
+  ALTER TABLE folder_custom_covers ADD COLUMN cover_asset_id TEXT;
+`;
+const FOLDER_CUSTOM_COVER_ASSET_SCHEMA_CHECKSUM = createHash('sha256')
+  .update(FOLDER_CUSTOM_COVER_ASSET_SCHEMA_SQL)
+  .digest('hex');
+
 const ENTITY_APPEARANCE_TABLES = [
   'managed_folders',
   'linked_folders',
@@ -3031,6 +3056,13 @@ function ensureEntityAppearanceSchema(connection: DatabaseConnection): void {
       if (columns.has(column)) continue;
       connection.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
     }
+  }
+}
+
+function ensureFolderCustomCoverAssetSchema(connection: DatabaseConnection): void {
+  const columns = connection.pragma('table_info(folder_custom_covers)') as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'cover_asset_id')) {
+    connection.exec(FOLDER_CUSTOM_COVER_ASSET_SCHEMA_SQL);
   }
 }
 
@@ -3763,6 +3795,11 @@ export const MIGRATIONS = [
     sql: FOLDER_CUSTOM_COVER_SCHEMA_SQL,
     checksum: FOLDER_CUSTOM_COVER_SCHEMA_CHECKSUM,
   },
+  {
+    version: 58,
+    sql: FOLDER_CUSTOM_COVER_ASSET_SCHEMA_SQL,
+    checksum: FOLDER_CUSTOM_COVER_ASSET_SCHEMA_CHECKSUM,
+  },
 ] as const;
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS.at(-1)!.version;
 
@@ -3831,6 +3868,19 @@ interface OpenLibrary {
    * forcing the expensive navigation queries to run again.
    */
   navigationSummaryCache?: { key: string; value: LibraryNavigationSummary };
+  /**
+   * Custom folder covers for the current browse + library change sequence.
+   * Scoped folder-card reads reuse this map; a sequence change drops it.
+   */
+  folderCoverIndexCache?: {
+    key: string;
+    index: Map<string, {
+      token: string;
+      assetId?: string;
+      artifactId?: string;
+      revisionId?: string;
+    }>;
+  };
   /**
    * Remote-library metadata snapshot. The snapshot is disposable and
    * read-only; every write and ambiguous SQL statement remains on
@@ -4910,10 +4960,17 @@ export interface LibraryServiceOptions {
   }) => NetworkMetadataSourceState | undefined;
   /** Test-only seam for injecting a concurrent writer during SQLite backup. */
   onNetworkMetadataSnapshotProgress?: (progress: NetworkMetadataSnapshotProgress) => void;
+  /** Worker-owned SQLite backup for the independent semantic sidecar. */
+  backupSemanticIndex?: (input: {
+    libraryId: string;
+    libraryPath: string;
+    storageKind: LibraryStorageKind;
+    destinationPath: string;
+  }) => Promise<boolean>;
   afterSourceSnapshotCopy?: (sourcePath: string) => void;
   assetLstat?: (assetPath: string) => Stats;
   /** Test-only seams for classifying linked-root access failures on open. */
-  linkedRootLstat?: (absoluteRootPath: string) => Stats;
+  linkedRootLstat?: (absoluteRootPath: string) => Stats | BigIntStats;
   linkedRootAccess?: (absoluteRootPath: string) => void;
   /** Test-only async fingerprint seam for proving file I/O stays outside DB transactions. */
   contentFingerprintAsync?: (assetPath: string, signal?: AbortSignal) => Promise<string>;
@@ -5567,10 +5624,35 @@ function sourceHostDeviceHint(device: number | bigint | string): string {
 function sourceDeviceHint(
   device: number | bigint | string,
   inode: number | bigint | string = 'unknown',
+  birthNs: bigint | null = null,
 ): string {
+  // v3 binds directory birth time as well as device/inode. On ext4 and tmpfs,
+  // rm+mkdir at the same path can reuse the inode number; birth time still
+  // changes, while adding or removing children does not. v2 stays the legacy
+  // inode hint for libraries linked before birth time was recorded.
+  if (birthNs !== null && birthNs > 0n) {
+    return `v3:${createHash('sha256')
+      .update(
+        `${hostname()}\u0000${String(device)}\u0000${String(inode)}\u0000${birthNs.toString()}`,
+        'utf8',
+      )
+      .digest('hex')}`;
+  }
   return `v2:${createHash('sha256')
     .update(`${hostname()}\u0000${String(device)}\u0000${String(inode)}`, 'utf8')
     .digest('hex')}`;
+}
+
+function directoryBirthNs(stat: Stats | BigIntStats): bigint | null {
+  // Nanosecond birth time exists only on the bigint stat. Number stats omit it,
+  // and a zero birth time (procfs, some network mounts) is not an identity.
+  if (!('birthtimeNs' in stat)) return null;
+  const raw = stat.birthtimeNs;
+  if (typeof raw === 'bigint') return raw > 0n ? raw : null;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return BigInt(Math.trunc(raw));
+  }
+  return null;
 }
 
 function sameSourceSnapshot(left: SourceSnapshot, right: SourceSnapshot): boolean {
@@ -6617,6 +6699,8 @@ function migrateDatabaseUnserialized(connection: DatabaseConnection, allowFresh:
           ensureAssetNormalizedExtensionSchema(connection);
         } else if (migration.version === 55) {
           ensureEntityAppearanceSchema(connection);
+        } else if (migration.version === 58) {
+          ensureFolderCustomCoverAssetSchema(connection);
         } else {
           connection.exec(migration.sql);
         }
@@ -9624,6 +9708,37 @@ export class LibraryService {
     this.removeOperation(operationPath);
   }
 
+  /**
+   * True when materializing .worldlineboxignore would delete or insert a row.
+   * Reads only: a no-op write transaction drops the network metadata snapshot
+   * and advances browse_change_sequence.
+   */
+  private gitignoreMaterializationHasWork(
+    openLibrary: OpenLibrary,
+    rules: ReturnType<typeof parseGitignore>,
+  ): boolean {
+    const managedExplicitCount = Number((openLibrary.connection.prepare(
+      "SELECT COUNT(*) AS count FROM explicit_ignored_paths WHERE location_kind = 'managed'",
+    ).get() as { count: number } | undefined)?.count ?? 0);
+    const gitignoreCount = Number((openLibrary.connection.prepare(
+      'SELECT COUNT(*) AS count FROM gitignore_ignored_paths',
+    ).get() as { count: number } | undefined)?.count ?? 0);
+    const linkedFolderCount = hasTable(openLibrary.connection, 'linked_folders')
+      ? Number((openLibrary.connection.prepare(
+          'SELECT COUNT(*) AS count FROM linked_folders WHERE library_id = ?',
+        ).get(openLibrary.summary.libraryId) as { count: number } | undefined)?.count ?? 0)
+      : 0;
+    if (managedExplicitCount > 0 || gitignoreCount > 0 || linkedFolderCount > 0) return true;
+    const folders = openLibrary.connection.prepare(
+      'SELECT relative_path FROM managed_folders',
+    ).all() as Array<{ relative_path: string }>;
+    const assets = openLibrary.connection.prepare(
+      "SELECT relative_file_path FROM assets WHERE location_kind = 'managed' AND deleted_at IS NULL",
+    ).all() as Array<{ relative_file_path: string }>;
+    return folders.some((folder) => gitignoreMatchesPath(rules, folder.relative_path, 'folder'))
+      || assets.some((asset) => gitignoreMatchesPath(rules, asset.relative_file_path, 'asset'));
+  }
+
   private syncGitignore(openLibrary: OpenLibrary, text = readGitignoreText(openLibrary.summary.libraryPath)): void {
     if (openLibrary.readOnly || (text === openLibrary.gitignoreText && openLibrary.gitignoreMaterialized)) return;
     // Libraries created before ignore actions became file-backed may still
@@ -9652,6 +9767,14 @@ export class LibraryService {
       !hasTable(openLibrary.connection, 'explicit_ignored_paths') ||
       !hasTable(openLibrary.connection, 'gitignore_ignored_paths')
     ) {
+      return;
+    }
+    // An empty materialization still opens a write transaction. That
+    // invalidates a network metadata snapshot and bumps browse_change_sequence
+    // even when no ignore row changes, so skip it when there is nothing to write.
+    if (!this.gitignoreMaterializationHasWork(openLibrary, rules)) {
+      openLibrary.gitignoreText = migratedText;
+      openLibrary.gitignoreMaterialized = true;
       return;
     }
     const transaction = openLibrary.connection.transaction(() => {
@@ -9697,6 +9820,7 @@ export class LibraryService {
 
   private invalidateNavigationSummary(openLibrary: OpenLibrary): void {
     openLibrary.navigationSummaryCache = undefined;
+    openLibrary.folderCoverIndexCache = undefined;
     if (!hasTable(openLibrary.connection, 'browse_change_sequence')) return;
     openLibrary.connection.prepare(
       'UPDATE browse_change_sequence SET sequence = sequence + 1 WHERE library_id = ?',
@@ -12574,11 +12698,13 @@ export class LibraryService {
     | {
         available: true;
         deviceHint: string;
+        legacyInodeHint: string;
         legacyHostDeviceHint?: string;
         legacyDeviceHint?: string;
       }
     | { available: false; reason: PublicErrorReason } {
-    const lstat = this.options.linkedRootLstat ?? lstatSync;
+    const lstat = this.options.linkedRootLstat
+      ?? ((rootPath: string) => lstatSync(rootPath, { bigint: true }));
     const access = this.options.linkedRootAccess ?? ((rootPath: string) => {
       accessSync(rootPath, constants.R_OK | constants.X_OK);
     });
@@ -12604,9 +12730,11 @@ export class LibraryService {
         typeof entry.ino === 'number' || typeof entry.ino === 'bigint'
           ? entry.ino
           : 'unknown';
+      const birthNs = directoryBirthNs(entry);
       return {
         available: true,
-        deviceHint: sourceDeviceHint(device, inode),
+        deviceHint: sourceDeviceHint(device, inode, birthNs),
+        legacyInodeHint: sourceDeviceHint(device, inode),
         ...(device === 'unknown'
           ? {}
           : { legacyHostDeviceHint: sourceHostDeviceHint(device) }),
@@ -15753,45 +15881,138 @@ export class LibraryService {
     if (folderIds.length === 0) throw new LibraryServiceError('INVALID_SELECTION');
     for (const folderId of folderIds) this.assertFolderCoverTarget(openLibrary, folderId);
     const now = new Date().toISOString();
+    const libraryPath = openLibrary.summary.libraryPath;
     const previous = openLibrary.connection.prepare(
       `SELECT relative_name FROM folder_custom_covers
         WHERE library_id = ? AND folder_key = ?`,
     );
     const upsert = openLibrary.connection.prepare(
-      `INSERT INTO folder_custom_covers (library_id, folder_key, relative_name, updated_at)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO folder_custom_covers
+         (library_id, folder_key, relative_name, cover_asset_id, updated_at)
+       VALUES (?, ?, ?, NULL, ?)
        ON CONFLICT (library_id, folder_key) DO UPDATE SET
          relative_name = excluded.relative_name,
+         cover_asset_id = NULL,
          updated_at = excluded.updated_at`,
     );
+    const staged: Array<{ folderId: string; relativeName: string; previous: string | null }> = [];
+    let committed = false;
     try {
-      openLibrary.connection.transaction(() => {
-        for (const folderId of folderIds) {
-          const existing = previous.get(openLibrary.summary.libraryId, folderId) as
-            | { relative_name: string }
-            | undefined;
-          let relativeName: string;
-          try {
-            relativeName = installFolderCoverFile({
-              libraryPath: openLibrary.summary.libraryPath,
-              folderKey: folderId,
-              sourcePath: input.sourcePath,
-              previousRelativeName: existing?.relative_name,
-            });
-          } catch (error) {
-            const code = error instanceof Error ? error.message : '';
-            if (code === 'FOLDER_COVER_UNSUPPORTED' || code === 'FOLDER_COVER_NO_SPACE') {
-              throw new LibraryServiceError(code);
-            }
-            throw error;
+      for (const folderId of folderIds) {
+        const existing = previous.get(openLibrary.summary.libraryId, folderId) as
+          | { relative_name: string }
+          | undefined;
+        let relativeName: string;
+        try {
+          relativeName = installFolderCoverFile({
+            libraryPath,
+            folderKey: folderId,
+            sourcePath: input.sourcePath,
+            previousRelativeName: existing?.relative_name,
+          });
+        } catch (error) {
+          const code = error instanceof Error ? error.message : '';
+          if (code === 'FOLDER_COVER_UNSUPPORTED' || code === 'FOLDER_COVER_NO_SPACE') {
+            throw new LibraryServiceError(code);
           }
-          upsert.run(openLibrary.summary.libraryId, folderId, relativeName, now);
+          throw error;
         }
-      })();
+        staged.push({
+          folderId,
+          relativeName,
+          previous: existing?.relative_name ? existing.relative_name : null,
+        });
+      }
+      commitReplacingFolderCoverFiles({
+        libraryPath,
+        stagedRelativeNames: staged.map((item) => item.relativeName),
+        previousRelativeNames: staged.flatMap((item) => item.previous ? [item.previous] : []),
+        commit: () => {
+          openLibrary.connection.transaction(() => {
+            for (const item of staged) {
+              upsert.run(openLibrary.summary.libraryId, item.folderId, item.relativeName, now);
+            }
+          })();
+        },
+      });
+      committed = true;
     } catch (error) {
+      if (!committed) {
+        for (const item of staged) {
+          try {
+            removeFolderCoverFile(libraryPath, item.relativeName);
+          } catch {
+            // The commit already failed. Leave the previous cover in place.
+          }
+        }
+      }
       if (error instanceof LibraryServiceError) throw error;
       throw new LibraryServiceError('LIBRARY_IO_ERROR', { cause: error });
     }
+    this.invalidateNavigationSummary(openLibrary);
+    this.emitClientAssetsChanged(input.libraryId, folderIds.length);
+    return { folderIds, hasCustomCover: true };
+  }
+
+  /**
+   * Use an image already in the library as the folder cover.
+   * The asset id is the durable reference; the file is not copied again.
+   */
+  setFolderCustomCoverFromAsset(input: {
+    libraryId: string;
+    folderIds: readonly string[];
+    assetId: string;
+  }): { folderIds: string[]; hasCustomCover: true } {
+    const openLibrary = this.requireOpenLibrary(input.libraryId);
+    this.assertLibraryWritable(openLibrary);
+    const folderIds = [...new Set(input.folderIds)];
+    if (folderIds.length === 0) throw new LibraryServiceError('INVALID_SELECTION');
+    for (const folderId of folderIds) this.assertFolderCoverTarget(openLibrary, folderId);
+    const asset = openLibrary.connection.prepare(
+      `SELECT asset_id, relative_file_path, deleted_at
+         FROM assets
+        WHERE asset_id = ?`,
+    ).get(input.assetId) as
+      | { asset_id: string; relative_file_path: string; deleted_at: string | null }
+      | undefined;
+    if (!asset || asset.deleted_at) throw new LibraryServiceError('ASSET_NOT_FOUND');
+    if (!folderCoverStoredExtension(asset.relative_file_path)) {
+      throw new LibraryServiceError('FOLDER_COVER_UNSUPPORTED');
+    }
+    const now = new Date().toISOString();
+    const previous = openLibrary.connection.prepare(
+      `SELECT relative_name FROM folder_custom_covers
+        WHERE library_id = ? AND folder_key = ?`,
+    );
+    const upsert = openLibrary.connection.prepare(
+      `INSERT INTO folder_custom_covers
+         (library_id, folder_key, relative_name, cover_asset_id, updated_at)
+       VALUES (?, ?, '', ?, ?)
+       ON CONFLICT (library_id, folder_key) DO UPDATE SET
+         relative_name = '',
+         cover_asset_id = excluded.cover_asset_id,
+         updated_at = excluded.updated_at`,
+    );
+    const libraryPath = openLibrary.summary.libraryPath;
+    const previousFiles: string[] = [];
+    openLibrary.connection.transaction(() => {
+      for (const folderId of folderIds) {
+        const existing = previous.get(openLibrary.summary.libraryId, folderId) as
+          | { relative_name: string }
+          | undefined;
+        if (existing?.relative_name) previousFiles.push(existing.relative_name);
+        upsert.run(openLibrary.summary.libraryId, folderId, input.assetId, now);
+      }
+    })();
+    for (const relativeName of previousFiles) {
+      try {
+        removeFolderCoverFile(libraryPath, relativeName);
+      } catch {
+        // The asset id is already committed. A later sweep can remove the file.
+      }
+    }
+    this.invalidateNavigationSummary(openLibrary);
+    this.emitClientAssetsChanged(input.libraryId, folderIds.length);
     return { folderIds, hasCustomCover: true };
   }
 
@@ -15810,15 +16031,25 @@ export class LibraryService {
       `DELETE FROM folder_custom_covers WHERE library_id = ? AND folder_key = ?`,
     );
     const libraryPath = openLibrary.summary.libraryPath;
+    const previousFiles: string[] = [];
     openLibrary.connection.transaction(() => {
       for (const folderId of folderIds) {
         const row = select.get(openLibrary.summary.libraryId, folderId) as
           | { relative_name: string }
           | undefined;
         remove.run(openLibrary.summary.libraryId, folderId);
-        if (row) removeFolderCoverFile(libraryPath, row.relative_name);
+        if (row?.relative_name) previousFiles.push(row.relative_name);
       }
     })();
+    for (const relativeName of previousFiles) {
+      try {
+        removeFolderCoverFile(libraryPath, relativeName);
+      } catch {
+        // The row is already gone. A later sweep can remove the file.
+      }
+    }
+    this.invalidateNavigationSummary(openLibrary);
+    this.emitClientAssetsChanged(input.libraryId, folderIds.length);
     return { folderIds, hasCustomCover: false };
   }
 
@@ -15833,14 +16064,14 @@ export class LibraryService {
     ).get(openLibrary.summary.libraryId, input.folderId) as
       | { relative_name: string }
       | undefined;
-    if (!row) return null;
+    if (!row?.relative_name) return null;
     return {
       absolutePath: folderCoverAbsolutePath(openLibrary.summary.libraryPath, row.relative_name),
       mimeType: folderCoverMimeType(row.relative_name),
     };
   }
 
-  private folderCoverSwept = new WeakSet<OpenLibrary>();
+  private folderCoverSweepScheduled = new WeakSet<OpenLibrary>();
 
   private assertFolderCoverTarget(openLibrary: OpenLibrary, folderId: string): void {
     const managed = openLibrary.connection
@@ -15865,49 +16096,258 @@ export class LibraryService {
     throw new LibraryServiceError('FOLDER_NOT_FOUND');
   }
 
+  /**
+   * Orphan cover rows and unreferenced files are not needed to paint the
+   * sidebar. Run them after the navigation summary returns.
+   */
+  private scheduleOrphanFolderCoverSweep(openLibrary: OpenLibrary): void {
+    if (this.folderCoverSweepScheduled.has(openLibrary)) return;
+    this.folderCoverSweepScheduled.add(openLibrary);
+    setImmediate(() => {
+      try {
+        this.sweepOrphanFolderCovers(openLibrary);
+      } catch (error) {
+        this.diagnose('folder-cover.sweep', error, {
+          libraryId: openLibrary.summary.libraryId,
+        });
+      }
+    });
+  }
+
   private sweepOrphanFolderCovers(openLibrary: OpenLibrary): void {
-    if (this.folderCoverSwept.has(openLibrary)) return;
     if (!hasTable(openLibrary.connection, 'folder_custom_covers')) return;
-    this.folderCoverSwept.add(openLibrary);
+    const assetColumn = columnsFor(openLibrary.connection, 'folder_custom_covers').has('cover_asset_id');
     const rows = openLibrary.connection.prepare(
-      `SELECT folder_key, relative_name FROM folder_custom_covers WHERE library_id = ?`,
-    ).all(openLibrary.summary.libraryId) as Array<{ folder_key: string; relative_name: string }>;
+      assetColumn
+        ? `SELECT folder_key, relative_name, cover_asset_id
+             FROM folder_custom_covers WHERE library_id = ?`
+        : `SELECT folder_key, relative_name, NULL AS cover_asset_id
+             FROM folder_custom_covers WHERE library_id = ?`,
+    ).all(openLibrary.summary.libraryId) as Array<{
+      folder_key: string;
+      relative_name: string;
+      cover_asset_id: string | null;
+    }>;
     const remove = openLibrary.connection.prepare(
       `DELETE FROM folder_custom_covers WHERE library_id = ? AND folder_key = ?`,
     );
+    const assetExists = openLibrary.connection.prepare(
+      `SELECT 1 AS ok FROM assets WHERE asset_id = ?`,
+    );
+    let dropped = false;
+    const referenced = new Set<string>();
     for (const row of rows) {
+      let drop = false;
       try {
         this.assertFolderCoverTarget(openLibrary, row.folder_key);
       } catch (error) {
         if (!(error instanceof LibraryServiceError) || error.code !== 'FOLDER_NOT_FOUND') throw error;
+        drop = true;
+      }
+      if (!drop && row.cover_asset_id && !assetExists.get(row.cover_asset_id)) drop = true;
+      if (drop) {
         remove.run(openLibrary.summary.libraryId, row.folder_key);
-        removeFolderCoverFile(openLibrary.summary.libraryPath, row.relative_name);
+        if (row.relative_name) removeFolderCoverFile(openLibrary.summary.libraryPath, row.relative_name);
+        dropped = true;
+        continue;
+      }
+      if (row.relative_name) referenced.add(row.relative_name);
+    }
+    const stale = listStaleFolderCoverFiles(openLibrary.summary.libraryPath, referenced);
+    for (const relativeName of stale) {
+      removeFolderCoverFile(openLibrary.summary.libraryPath, relativeName);
+    }
+    if (dropped || stale.length > 0) {
+      openLibrary.folderCoverIndexCache = undefined;
+      openLibrary.navigationSummaryCache = undefined;
+    }
+  }
+
+  private folderCoverIndexCacheKey(openLibrary: OpenLibrary): string {
+    const libraryId = openLibrary.summary.libraryId;
+    return `${this.getBrowseChangeSequence(libraryId)}\u0000${this.getChangeSequence(libraryId)}`;
+  }
+
+  private folderCustomCoverRows(openLibrary: OpenLibrary, folderIds?: readonly string[]): Array<{
+    folder_key: string;
+    relative_name: string;
+    updated_at: string;
+    cover_asset_id: string | null;
+    current_revision_id: string | null;
+    deleted_at: string | null;
+    relative_file_path: string | null;
+    artifact_id: string | null;
+  }> {
+    if (!hasTable(openLibrary.connection, 'folder_custom_covers')) return [];
+    const assetColumn = columnsFor(openLibrary.connection, 'folder_custom_covers').has('cover_asset_id');
+    const artifactColumns = columnsFor(openLibrary.connection, 'revision_artifacts');
+    const artifactIdSelect = hasTable(openLibrary.connection, 'revision_artifacts')
+      && ['artifact_id', 'revision_id', 'kind'].every((column) => artifactColumns.has(column))
+      ? `(SELECT ra.artifact_id
+           FROM revision_artifacts ra
+          WHERE ra.revision_id = a.current_revision_id
+            ${artifactColumns.has('invalidated_at') ? 'AND ra.invalidated_at IS NULL' : ''}
+            ${artifactColumns.has('status') ? "AND ra.status = 'ready'" : ''}
+            AND ra.kind = 'thumbnail'
+          LIMIT 1)`
+      : 'NULL';
+    const select = assetColumn
+      ? `SELECT c.folder_key AS folder_key,
+                c.relative_name AS relative_name,
+                c.updated_at AS updated_at,
+                c.cover_asset_id AS cover_asset_id,
+                a.current_revision_id AS current_revision_id,
+                a.deleted_at AS deleted_at,
+                a.relative_file_path AS relative_file_path,
+                ${artifactIdSelect} AS artifact_id
+           FROM folder_custom_covers c
+           LEFT JOIN assets a ON a.asset_id = c.cover_asset_id
+          WHERE c.library_id = ?`
+      : `SELECT c.folder_key AS folder_key,
+                c.relative_name AS relative_name,
+                c.updated_at AS updated_at,
+                NULL AS cover_asset_id,
+                NULL AS current_revision_id,
+                NULL AS deleted_at,
+                NULL AS relative_file_path,
+                NULL AS artifact_id
+           FROM folder_custom_covers c
+          WHERE c.library_id = ?`;
+    const mapRow = (row: {
+      folder_key: string;
+      relative_name: string;
+      updated_at: string;
+      cover_asset_id: string | null;
+      current_revision_id: string | null;
+      deleted_at: string | null;
+      relative_file_path: string | null;
+      artifact_id: string | null;
+    }) => row;
+    if (!folderIds) {
+      return (openLibrary.connection.prepare(
+        `${select} ORDER BY c.updated_at DESC`,
+      ).all(openLibrary.summary.libraryId) as Array<ReturnType<typeof mapRow>>).map(mapRow);
+    }
+    const ids = [...new Set(folderIds)];
+    if (ids.length === 0) return [];
+    return sqliteAllInChunks<string, ReturnType<typeof mapRow>>({
+      connection: openLibrary.connection,
+      values: ids,
+      buildSql: (placeholders) =>
+        `${select} AND c.folder_key IN (${placeholders}) ORDER BY c.updated_at DESC`,
+      bind: (chunk) => [openLibrary.summary.libraryId, ...chunk],
+    });
+  }
+
+  private coverIndexFromRows(rows: ReturnType<LibraryService['folderCustomCoverRows']>): Map<string, {
+    token: string;
+    assetId?: string;
+    artifactId?: string;
+    revisionId?: string;
+  }> {
+    const index = new Map<string, {
+      token: string;
+      assetId?: string;
+      artifactId?: string;
+      revisionId?: string;
+    }>();
+    for (const row of rows) {
+      if (row.cover_asset_id) {
+        if (!row.current_revision_id || row.deleted_at) continue;
+        if (!row.relative_file_path || !folderCoverStoredExtension(row.relative_file_path)) continue;
+        const revisionId = row.current_revision_id;
+        index.set(row.folder_key, {
+          token: row.updated_at,
+          assetId: row.cover_asset_id,
+          ...(row.artifact_id ? { artifactId: row.artifact_id } : { revisionId }),
+        });
+        continue;
+      }
+      if (!row.relative_name) continue;
+      index.set(row.folder_key, { token: row.updated_at });
+    }
+    return index;
+  }
+
+  private loadFolderCustomCoverIndex(
+    openLibrary: OpenLibrary,
+    folderIds?: readonly string[],
+  ): Map<string, {
+    token: string;
+    assetId?: string;
+    artifactId?: string;
+    revisionId?: string;
+  }> {
+    const cacheKey = this.folderCoverIndexCacheKey(openLibrary);
+    const cached = openLibrary.folderCoverIndexCache;
+    if (cached?.key === cacheKey) {
+      if (!folderIds) return cached.index;
+      const scoped = new Map<string, {
+        token: string;
+        assetId?: string;
+        artifactId?: string;
+        revisionId?: string;
+      }>();
+      for (const folderId of folderIds) {
+        const cover = cached.index.get(folderId);
+        if (cover) scoped.set(folderId, cover);
+      }
+      return scoped;
+    }
+    if (folderIds) {
+      return this.coverIndexFromRows(this.folderCustomCoverRows(openLibrary, folderIds));
+    }
+    const index = this.coverIndexFromRows(this.folderCustomCoverRows(openLibrary));
+    openLibrary.folderCoverIndexCache = { key: cacheKey, index };
+    return index;
+  }
+
+  private listFolderNavigationCovers(openLibrary: OpenLibrary): LibraryNavigationSummary['folderCovers'] {
+    const covers: NonNullable<LibraryNavigationSummary['folderCovers']> = [];
+    for (const [folderId, cover] of this.loadFolderCustomCoverIndex(openLibrary)) {
+      if (covers.length >= FOLDER_NAVIGATION_COVER_CAP) break;
+      if (cover.assetId) {
+        covers.push({
+          folderId,
+          assetId: cover.assetId,
+          ...(cover.artifactId ? { artifactId: cover.artifactId } : {}),
+          ...(cover.revisionId ? { revisionId: cover.revisionId } : {}),
+        });
+        continue;
+      }
+      if (cover.token.length > 0 && cover.token.length <= 64) {
+        covers.push({ folderId, fileToken: cover.token });
       }
     }
+    return covers;
   }
 
   private withCustomFolderCovers(
     openLibrary: OpenLibrary,
     entries: FolderBrowseEntry[],
   ): FolderBrowseEntry[] {
-    this.sweepOrphanFolderCovers(openLibrary);
-    if (entries.length === 0 || !hasTable(openLibrary.connection, 'folder_custom_covers')) {
-      return entries;
-    }
-    const rows = sqliteAllInChunks<string, { folder_key: string; updated_at: string }>({
-      connection: openLibrary.connection,
-      values: entries.map((entry) => entry.folderId),
-      buildSql: (placeholders) =>
-        `SELECT folder_key, updated_at FROM folder_custom_covers
-          WHERE library_id = ?
-            AND folder_key IN (${placeholders})`,
-      bind: (chunk) => [openLibrary.summary.libraryId, ...chunk],
-    });
-    if (rows.length === 0) return entries;
-    const tokens = new Map(rows.map((row) => [row.folder_key, row.updated_at]));
+    if (entries.length === 0) return entries;
+    const covers = this.loadFolderCustomCoverIndex(
+      openLibrary,
+      entries.map((entry) => entry.folderId),
+    );
+    if (covers.size === 0) return entries;
     return entries.map((entry) => {
-      const token = tokens.get(entry.folderId);
-      if (!token) return entry;
+      const cover = covers.get(entry.folderId);
+      if (!cover) return entry;
+      const token = cover.token.length <= 64 ? cover.token : cover.token.slice(0, 64);
+      if (cover.assetId) {
+        return {
+          ...entry,
+          hasCustomCover: true,
+          customCoverToken: token,
+          customCoverAssetId: cover.assetId,
+          ...(cover.artifactId ? { customCoverArtifactId: cover.artifactId } : {}),
+          ...(cover.revisionId
+            ? { customCoverSourcePreview: { assetId: cover.assetId, revisionId: cover.revisionId } }
+            : {}),
+        };
+      }
       return { ...entry, hasCustomCover: true, customCoverToken: token };
     });
   }
@@ -15948,6 +16388,7 @@ export class LibraryService {
     includeTrashedFolders?: boolean;
   }): LibraryNavigationSummary {
     const openLibrary = this.requireOpenLibrary(input.libraryId);
+    this.scheduleOrphanFolderCoverSweep(openLibrary);
     const showIgnored = input.showIgnored === true;
     const includeTrashedFolders = input.includeTrashedFolders === true;
     const changeSequence = this.getChangeSequence(input.libraryId);
@@ -15989,6 +16430,7 @@ export class LibraryService {
       trashedFolders: includeTrashedFolders
         ? this.listTrashedFolders(input.libraryId)
         : [],
+      folderCovers: this.listFolderNavigationCovers(openLibrary),
     };
     if (
       this.getChangeSequence(input.libraryId) === changeSequence
@@ -16013,6 +16455,7 @@ export class LibraryService {
     includeTrashedFolders?: boolean;
   }): Promise<LibraryNavigationSummary> {
     const openLibrary = this.requireOpenLibrary(input.libraryId);
+    this.scheduleOrphanFolderCoverSweep(openLibrary);
     const showIgnored = input.showIgnored === true;
     const includeTrashedFolders = input.includeTrashedFolders === true;
     const changeSequence = this.getChangeSequence(input.libraryId);
@@ -16069,6 +16512,7 @@ export class LibraryService {
       collections,
       smartCollections,
       trashedFolders,
+      folderCovers: this.listFolderNavigationCovers(openLibrary),
     };
     if (
       this.getChangeSequence(input.libraryId) === changeSequence
@@ -18630,7 +19074,9 @@ export class LibraryService {
          LEFT JOIN asset_metadata m ON m.asset_id = a.asset_id
          ${singleDisplayArtifactJoin(
             'ra',
-            artifactColumns.has('status') ? "AND chosen.status = 'ready'" : '',
+            artifactColumns.has('status')
+              ? "AND chosen.status IN ('ready', 'pending', 'generating', 'failed')"
+              : '',
           )}
          LEFT JOIN revision_artifacts video_meta
            ON video_meta.revision_id = a.current_revision_id
@@ -18874,7 +19320,11 @@ export class LibraryService {
       const totalBytes = scannedBytes;
       emitLinkedProgress('copy', 0, entries.length, 0, totalBytes, true);
       const now = new Date().toISOString();
-      const sourceDeviceHintValue = sourceDeviceHint(rootStat.dev, rootStat.ino);
+      const sourceDeviceHintValue = sourceDeviceHint(
+        rootStat.dev,
+        rootStat.ino,
+        directoryBirthNs(rootStat),
+      );
       const importedAssetIds: string[] = [];
 
       openLibrary.connection.transaction(() => {
@@ -19057,7 +19507,11 @@ export class LibraryService {
       .get(newPathIdentity, input.folderId);
     if (conflict) throw new LibraryServiceError('FOLDER_ALREADY_EXISTS');
 
-    const sourceDeviceHintValue = sourceDeviceHint(rootStat.dev, rootStat.ino);
+    const sourceDeviceHintValue = sourceDeviceHint(
+      rootStat.dev,
+      rootStat.ino,
+      directoryBirthNs(rootStat),
+    );
     const now = new Date().toISOString();
 
     openLibrary.connection.transaction(() => {
@@ -20679,7 +21133,7 @@ export class LibraryService {
     // Read current state.
     const existing = openLibrary.connection
       .prepare(
-        'SELECT entity_version, rating, favorite, description, palette, source_page_url, author FROM asset_metadata WHERE asset_id = ?',
+        'SELECT entity_version, rating, favorite, description, palette, source_page_url, author, updated_at FROM asset_metadata WHERE asset_id = ?',
       )
       .get(input.assetId) as {
         entity_version: number;
@@ -20689,6 +21143,7 @@ export class LibraryService {
         palette: string | null;
         source_page_url: string | null;
         author: string | null;
+        updated_at: string;
       } | undefined;
 
     if (existing) {
@@ -20708,6 +21163,37 @@ export class LibraryService {
         input.author !== undefined
           ? (input.author.trim() === '' ? null : input.author.trim())
           : existing.author;
+
+      const unchanged =
+        newDescription === existing.description &&
+        newRating === existing.rating &&
+        newFavorite === existing.favorite &&
+        newPalette === existing.palette &&
+        newSourcePageUrl === existing.source_page_url &&
+        newAuthor === existing.author;
+      if (unchanged) {
+        // A repeated blur/click of the same inspector fields must not consume
+        // another optimistic-lock version. A stale expectedVersion is still a
+        // conflict, even when the payload happens to match the current row.
+        if (existing.entity_version !== input.expectedVersion) {
+          throw new LibraryServiceError('VERSION_CONFLICT', {
+            currentEntityVersion: existing.entity_version,
+          });
+        }
+        return {
+          assetId: input.assetId,
+          description: existing.description,
+          rating: existing.rating,
+          favorite: existing.favorite !== 0,
+          palette: existing.palette,
+          ...this.resolvedPaletteFields(openLibrary, input.assetId),
+          sourcePageUrl: existing.source_page_url,
+          author: existing.author,
+          tags: this.fetchAssetTags(openLibrary.connection, input.assetId),
+          entityVersion: existing.entity_version,
+          updatedAt: existing.updated_at,
+        };
+      }
 
       const result = openLibrary.connection
         .prepare(
@@ -28696,8 +29182,8 @@ export class LibraryService {
   } | null {
     const openLibrary = this.requireOpenLibrary(libraryId);
     const assetRow = openLibrary.connection
-      .prepare('SELECT current_revision_id FROM assets WHERE asset_id = ?')
-      .get(assetId) as { current_revision_id: string | null } | undefined;
+      .prepare('SELECT current_revision_id, relative_file_path FROM assets WHERE asset_id = ?')
+      .get(assetId) as { current_revision_id: string | null; relative_file_path: string } | undefined;
     if (!assetRow?.current_revision_id) return null;
 
     const row = openLibrary.connection
@@ -28705,13 +29191,18 @@ export class LibraryService {
         `SELECT artifact_id, file_path, width, height
            FROM revision_artifacts
           WHERE revision_id = ?
-            AND kind IN ('thumbnail', 'video_poster')
+            AND kind = CASE
+              WHEN LOWER(?) LIKE '%.mp4' OR LOWER(?) LIKE '%.webm' OR LOWER(?) LIKE '%.mov'
+                OR LOWER(?) LIKE '%.avi' OR LOWER(?) LIKE '%.wmv' OR LOWER(?) LIKE '%.mkv'
+                OR LOWER(?) LIKE '%.m4v' OR LOWER(?) LIKE '%.flv'
+              THEN 'video_poster' ELSE 'thumbnail' END
             AND status = 'ready'
             AND invalidated_at IS NULL
-          ORDER BY CASE kind WHEN 'video_poster' THEN 0 ELSE 1 END
+          ORDER BY CASE mime_type WHEN 'image/jpeg' THEN 0 WHEN 'image/webp' THEN 1
+            WHEN 'image/png' THEN 2 ELSE 3 END, rowid DESC
           LIMIT 1`,
       )
-      .get(assetRow.current_revision_id) as {
+      .get(assetRow.current_revision_id, ...Array(8).fill(assetRow.relative_file_path)) as {
         artifact_id: string;
         file_path: string;
         width: number | null;
@@ -28726,6 +29217,63 @@ export class LibraryService {
           height: row.height,
         }
       : null;
+  }
+
+  /**
+   * Narrow Worker-only projection for semantic revision checks. It avoids
+   * materializing complete AssetSummary objects (metadata, layout and folder
+   * adornments) when the vector index only needs source identity.
+   */
+  getSemanticAssetSources(libraryId: string, assetIds: readonly string[]): Array<{
+    assetId: string;
+    currentRevisionId: string;
+    relativeFilePath: string;
+    displayName: string;
+    mediaType: AssetSummary['mediaType'];
+    availability: AssetSummary['availability'];
+    deletedAt: string | null;
+    thumbnailStatus: 'ready' | null;
+    thumbnailArtifactId: string | null;
+    sequence: boolean;
+  }> {
+    const openLibrary = this.requireOpenLibrary(libraryId);
+    const ids = [...new Set(assetIds.filter((assetId) => assetId.length > 0))];
+    if (ids.length === 0) return [];
+    const hasFrames = hasTable(openLibrary.connection, 'asset_sequence_frames');
+    const hasSequences = hasTable(openLibrary.connection, 'asset_sequences');
+    const sequenceSql = hasFrames && hasSequences
+      ? `EXISTS (SELECT 1 FROM asset_sequence_frames sf WHERE sf.asset_id = a.asset_id)
+         OR EXISTS (SELECT 1 FROM asset_sequences ss WHERE ss.primary_asset_id = a.asset_id)`
+      : '0';
+    const rows = withSqliteInPredicate(openLibrary.connection, 'a.asset_id', ids, (predicate, parameters) =>
+      openLibrary.connection.prepare(`
+        SELECT a.asset_id, a.current_revision_id, a.relative_file_path, a.availability, a.deleted_at,
+               (${sequenceSql}) AS is_sequence,
+               (SELECT chosen.artifact_id FROM revision_artifacts chosen
+                 WHERE chosen.revision_id = a.current_revision_id
+                   AND chosen.kind = ${DISPLAY_PREVIEW_KIND_SQL}
+                   AND chosen.status = 'ready' AND chosen.invalidated_at IS NULL
+                 ORDER BY CASE chosen.mime_type WHEN 'image/jpeg' THEN 0 WHEN 'image/webp' THEN 1
+                   WHEN 'image/png' THEN 2 ELSE 3 END, chosen.rowid DESC LIMIT 1) AS thumbnail_artifact_id
+          FROM assets a WHERE ${predicate}
+      `).all(...parameters) as Array<{
+        asset_id: string; current_revision_id: string; relative_file_path: string;
+        availability: 'available' | 'missing'; deleted_at: string | null;
+        is_sequence: number;
+        thumbnail_artifact_id: string | null;
+      }>);
+    return rows.map((row) => ({
+      assetId: row.asset_id,
+      currentRevisionId: row.current_revision_id,
+      relativeFilePath: row.relative_file_path,
+      displayName: path.posix.basename(row.relative_file_path),
+      mediaType: LibraryService.toSummaryMediaType(LibraryService.detectMediaType(row.relative_file_path)),
+      availability: row.availability,
+      deletedAt: row.deleted_at,
+      thumbnailStatus: row.thumbnail_artifact_id ? 'ready' : null,
+      thumbnailArtifactId: row.thumbnail_artifact_id,
+      sequence: row.is_sequence !== 0,
+    }));
   }
 
   /** Persist bounded Main-brokered plugin media as the normal thumbnail artifact. */
@@ -34129,6 +34677,8 @@ export class LibraryService {
      * plus `assetIds` (capped at the browse-scope cap like scopeMode).
      */
     idsOnly?: boolean | null;
+    /** Worker-internal bounded page mode; ordinary idsOnly remains full-scope. */
+    idsPage?: boolean | null;
     /** Compact full-scope real-asset geometry for virtualized layout. */
     layoutOnly?: boolean | null;
     /** Worker-internal ordered snapshot source for BrowseSession pages. */
@@ -34159,6 +34709,7 @@ export class LibraryService {
     const hasSearchFts = hasTable(connection, 'asset_search');
     const scopeMode = input.scopeMode === true;
     const idsOnly = input.idsOnly === true;
+    const idsPage = idsOnly && input.idsPage === true;
     const layoutOnly = input.layoutOnly === true;
     const sessionAssetIds = input.sessionAssetIds === undefined
       ? undefined
@@ -34180,12 +34731,16 @@ export class LibraryService {
     }
     const limit = sessionMode
       ? Math.min(500, Math.max(1, input.limit ?? 100))
-      : scopeMode || idsOnly || layoutOnly
-        ? BROWSE_SCOPE_MAX_ASSETS
-        : (input.limit ?? 50);
+      : idsPage
+        ? Math.min(BROWSE_SCOPE_MAX_ASSETS, Math.max(1, input.limit ?? BROWSE_SCOPE_MAX_ASSETS))
+        : scopeMode || idsOnly || layoutOnly
+          ? BROWSE_SCOPE_MAX_ASSETS
+          : (input.limit ?? 50);
     const offset = sessionMode
       ? Math.max(0, input.offset ?? 0)
-      : scopeMode || idsOnly || layoutOnly ? 0 : (input.offset ?? 0);
+      : idsPage
+        ? Math.max(0, input.offset ?? 0)
+        : scopeMode || idsOnly || layoutOnly ? 0 : (input.offset ?? 0);
 
     const searchGroups = input.query ? normalizedSearchGroups(input.query) : [];
     const hasQuery = searchGroups.length > 0;
@@ -34516,7 +35071,7 @@ export class LibraryService {
       return {
         items: [],
         total,
-        offset: 0,
+        offset,
         assetIds: rows.map((row) => row.asset_id),
       };
     }
@@ -47085,6 +47640,7 @@ export class LibraryService {
     canonicalPath: string;
     worldlineboxPath: string;
     networkStorage?: boolean;
+    storageKind?: LibraryStorageKind;
     libraryVersion?: number;
     supportedSchemaVersion?: number;
     migrationStuck?: boolean;
@@ -47152,6 +47708,7 @@ export class LibraryService {
       libraryPath: input.canonicalPath,
       readOnly: false,
       ...(input.networkStorage ? { networkStorage: true } : {}),
+      storageKind: input.storageKind ?? 'unknown',
       ...(input.libraryVersion === undefined ? {} : { libraryVersion: input.libraryVersion }),
       ...(input.supportedSchemaVersion === undefined
         ? {}
@@ -47331,11 +47888,16 @@ export class LibraryService {
       if (!storedDeviceHint) {
         throw new LibraryServiceError('LINKED_FOLDER_UNAVAILABLE');
       }
-      if (
-        storedDeviceHint !== availability.deviceHint &&
-        storedDeviceHint !== availability.legacyHostDeviceHint &&
-        storedDeviceHint !== availability.legacyDeviceHint
-      ) {
+      // v3 hints include directory birth time, so an inode reused by
+      // rm+mkdir on ext4/tmpfs no longer matches. Older v2 / numeric hints
+      // stay accepted for the same device and inode.
+      const hintMatches = storedDeviceHint.startsWith('v3:')
+        ? storedDeviceHint === availability.deviceHint
+        : storedDeviceHint === availability.deviceHint
+          || storedDeviceHint === availability.legacyInodeHint
+          || storedDeviceHint === availability.legacyHostDeviceHint
+          || storedDeviceHint === availability.legacyDeviceHint;
+      if (!hintMatches) {
         throw new LibraryServiceError('LINKED_FOLDER_UNAVAILABLE', {
           reason: 'LINKED_FOLDER_FOREIGN_DEVICE',
         });
@@ -47500,6 +48062,7 @@ export class LibraryService {
         canonicalPath,
         worldlineboxPath,
         networkStorage,
+        storageKind,
         startServices: true,
         replaceExisting: options?.replaceExisting,
       });
@@ -48491,6 +49054,22 @@ export class LibraryService {
       // snapshot for the exported database.
       await this.createConsistentDatabaseSnapshot(openLibrary.writeConnection, tempDbPath, cancelState);
 
+      let semanticBackupPath: string | null = null;
+      if (this.options.backupSemanticIndex) {
+        semanticBackupPath = path.join(canonicalDest, '.worldlinebox', 'semantic', 'index.sqlite');
+        mkdirSync(path.dirname(semanticBackupPath), { recursive: true });
+        const copied = await this.options.backupSemanticIndex({
+          libraryId: input.libraryId,
+          libraryPath: openLibrary.summary.libraryPath,
+          storageKind: openLibrary.summary.storageKind ?? 'unknown',
+          destinationPath: semanticBackupPath,
+        });
+        if (!copied) {
+          rmSync(path.join(canonicalDest, '.worldlinebox'), { recursive: true, force: true });
+          semanticBackupPath = null;
+        }
+      }
+
       // Phase 2: enumerate
       this.emitProgress({
         type: 'export.progress', exportId,
@@ -48506,6 +49085,11 @@ export class LibraryService {
       }
       const entries: ExportEntry[] = [];
       let excludedPreviewCount = 0;
+      if (semanticBackupPath) {
+        const semanticStat = statSync(semanticBackupPath);
+        entries.push({ sourcePath: semanticBackupPath, relativePath: '.worldlinebox/semantic/index.sqlite',
+          byteSize: semanticStat.size });
+      }
 
       const walkDir = async (dirPath: string, relPrefix: string): Promise<void> => {
         if (cancelState.cancelled) return;
@@ -48524,8 +49108,10 @@ export class LibraryService {
           if (child.isSymbolicLink()) continue; // Never follow symlinks in export.
 
           if (child.isDirectory()) {
-            // Exclude .worldlinebox/previews and .worldlinebox/operations.
-            if (childRel === '.worldlinebox/previews' || childRel === '.worldlinebox/operations') {
+            // Exclude generated sidecar trees; the semantic DB is added from
+            // a verified SQLite backup snapshot above, never copied live.
+            if (childRel === '.worldlinebox/previews' || childRel === '.worldlinebox/operations'
+              || childRel === '.worldlinebox/semantic') {
               if (childRel === '.worldlinebox/previews') {
                 // Count preview files for excludedPreviewCount.
                 try {
@@ -49080,6 +49666,8 @@ export class LibraryService {
     let tempDbPath: string | undefined;
     let tempDirOwned = false;
     let destinationOwned = false;
+    let zipOutput: ReturnType<typeof createWriteStream> | undefined;
+    let abortArchive: (() => void) | undefined;
 
     function countFilesRecursive(dirPath: string): number {
       let count = 0;
@@ -49116,6 +49704,22 @@ export class LibraryService {
       tempDbPath = path.join(tempDir, `library-${exportId}.db`);
       await this.createConsistentDatabaseSnapshot(openLibrary.writeConnection, tempDbPath, cancelState);
 
+      let semanticBackupPath: string | null = null;
+      if (this.options.backupSemanticIndex) {
+        semanticBackupPath = path.join(tempDir, '.worldlinebox', 'semantic', 'index.sqlite');
+        mkdirSync(path.dirname(semanticBackupPath), { recursive: true });
+        const copied = await this.options.backupSemanticIndex({
+          libraryId: input.libraryId,
+          libraryPath: openLibrary.summary.libraryPath,
+          storageKind: openLibrary.summary.storageKind ?? 'unknown',
+          destinationPath: semanticBackupPath,
+        });
+        if (!copied) {
+          rmSync(path.join(tempDir, '.worldlinebox'), { recursive: true, force: true });
+          semanticBackupPath = null;
+        }
+      }
+
       // Phase 2: enumerate
       this.emitProgress({
         type: 'export.progress', exportId,
@@ -49131,6 +49735,11 @@ export class LibraryService {
       }
       const entries: ZipEntry[] = [];
       let excludedPreviewCount = 0;
+      if (semanticBackupPath) {
+        const semanticStat = statSync(semanticBackupPath);
+        entries.push({ sourcePath: semanticBackupPath, relativePath: '.worldlinebox/semantic/index.sqlite',
+          byteSize: semanticStat.size });
+      }
 
       const walkDir = async (dirPath: string, relPrefix: string): Promise<void> => {
         if (cancelState.cancelled) return;
@@ -49149,7 +49758,8 @@ export class LibraryService {
           if (child.isSymbolicLink()) continue;
 
           if (child.isDirectory()) {
-            if (childRel === '.worldlinebox/previews' || childRel === '.worldlinebox/operations') {
+            if (childRel === '.worldlinebox/previews' || childRel === '.worldlinebox/operations'
+              || childRel === '.worldlinebox/semantic') {
               if (childRel === '.worldlinebox/previews') {
                 try {
                   excludedPreviewCount += countFilesRecursive(childPath);
@@ -49296,7 +49906,9 @@ export class LibraryService {
       }
 
       const output = createWriteStream(destZipPath);
+      zipOutput = output;
       const archive = new archiverModule.ZipArchive({ zlib: { level: 6 }, forceZip64: false });
+      abortArchive = () => { archive.abort(); };
 
       let archiverError: Error | undefined;
       archive.on('error', (err: Error) => {
@@ -49428,6 +50040,19 @@ export class LibraryService {
         durationMs,
       };
     } catch (error) {
+      if (zipOutput) {
+        // A source/archiver failure can happen before finalization installs its
+        // stream handlers. Release the output handle before deleting our ZIP;
+        // Windows otherwise keeps its now-empty parent in delete-pending state.
+        const outputClosed = waitForStreamClose(zipOutput);
+        try {
+          abortArchive?.();
+        } catch (abortError) {
+          this.diagnose('export.zip.abort', abortError, { libraryId: input.libraryId, exportId });
+        }
+        zipOutput.destroy();
+        await outputClosed;
+      }
       if (cancelState.cancelled) {
         this.emitProgress({
           type: 'export.progress', exportId,

@@ -2,10 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AssetSummary } from "../../src/shared/asset-types";
 import type { WorldlineBoxLibraryApi } from "../../src/shared/library-api";
+import { nextUnfilledBrowsePageOffset } from "../../src/renderer/browse-window-slots";
 import {
   fetchBrowseScopeAssetIdsGuarded,
   fetchBrowseScopeIds,
   fetchBrowseLayout,
+  fetchFirstRankedBrowsePage,
+  fetchRankedBrowsePage,
+  browsePageFilledOffsets,
+  browsePageSize,
   isDiscardedBrowseWindowPage,
   isIgnorableBrowseWindowFailure,
   isBrowseRootNearTail,
@@ -61,7 +66,24 @@ const smartDefinition: BrowsePageDefinition = {
   target: "assets",
 };
 
+const rankedDefinition: BrowsePageDefinition = {
+  ...searchDefinition,
+  rankedAssetIds: ["rank-1", "rank-2", "rank-3", "rank-4"],
+};
+
 describe("fetchBrowseScopeIds (WorldlineBox-ws4k select-all id set)", () => {
+  it("uses the complete semantic ranking snapshot for scope selection", async () => {
+    const searchAssets = vi.fn();
+    const api = { searchAssets } as unknown as WorldlineBoxLibraryApi;
+    expect(await fetchBrowseScopeIds({ api, definition: rankedDefinition })).toEqual([
+      "rank-1",
+      "rank-2",
+      "rank-3",
+      "rank-4",
+    ]);
+    expect(searchAssets).not.toHaveBeenCalled();
+  });
+
   it("fetches idsOnly via searchAssets for search definitions", async () => {
     const searchAssets = vi.fn(async () => ({
       ok: true as const,
@@ -113,6 +135,13 @@ describe("fetchBrowseScopeIds (WorldlineBox-ws4k select-all id set)", () => {
 });
 
 describe("fetchBrowseLayout (WorldlineBox-sa65 compact geometry index)", () => {
+  it("does not replace semantic order with an ordinary search layout", async () => {
+    const searchAssets = vi.fn();
+    const api = { searchAssets } as unknown as WorldlineBoxLibraryApi;
+    expect(await fetchBrowseLayout({ api, definition: rankedDefinition })).toBeNull();
+    expect(searchAssets).not.toHaveBeenCalled();
+  });
+
   it("requests layoutOnly without materializing AssetSummary rows", async () => {
     const layout = [{ assetId: "a", width: 1600, height: 900 }];
     const searchAssets = vi.fn(async () => ({
@@ -141,6 +170,131 @@ describe("fetchBrowseLayout (WorldlineBox-sa65 compact geometry index)", () => {
     } as unknown as WorldlineBoxLibraryApi;
 
     expect(await fetchBrowseLayout({ api, definition: searchDefinition })).toBeNull();
+  });
+});
+
+describe("fetchRankedBrowsePage (semantic result stream)", () => {
+  it("uses smaller batches only for ranked semantic sources", () => {
+    expect(browsePageSize(rankedDefinition)).toBe(50);
+    expect(browsePageSize({ ...rankedDefinition, rankedPageSize: 25 })).toBe(25);
+    expect(browsePageSize({ ...rankedDefinition, rankedPageSize: 100 })).toBe(100);
+    expect(browsePageSize(searchDefinition)).toBe(100);
+  });
+
+  it("loads only the requested summary batch and restores model rank order", async () => {
+    const listAssets = vi.fn(async () => ({
+      ok: true as const,
+      value: [asset("rank-3"), asset("rank-2")],
+    }));
+    const api = { listAssets } as unknown as WorldlineBoxLibraryApi;
+    const result = await fetchRankedBrowsePage({
+      api,
+      definition: rankedDefinition,
+      offset: 1,
+      limit: 2,
+    });
+    expect(listAssets).toHaveBeenCalledWith({
+      libraryId: "lib-1",
+      recursive: true,
+      assetIds: ["rank-2", "rank-3"],
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: { items: [asset("rank-2"), asset("rank-3")], total: 4, offset: 1 },
+    });
+  });
+
+  it("consumes an empty or partial ranked ID slice so scrolling can advance", () => {
+    const definition = {
+      ...rankedDefinition,
+      rankedAssetIds: Array.from({ length: 75 }, (_, index) => `rank-${index}`),
+    };
+    expect(browsePageFilledOffsets({
+      definition,
+      offset: 50,
+      limit: 25,
+      itemCount: 0,
+      pageSize: 50,
+    })).toEqual([50]);
+    const filledAfterEmptyPage = new Set([0, ...browsePageFilledOffsets({
+      definition,
+      offset: 50,
+      limit: 50,
+      itemCount: 0,
+      pageSize: 50,
+    })]);
+    expect(nextUnfilledBrowsePageOffset(filledAfterEmptyPage, 125, 50)).toBe(100);
+    expect(browsePageFilledOffsets({
+      definition,
+      offset: 50,
+      limit: 25,
+      itemCount: 4,
+      pageSize: 50,
+    })).toEqual([50]);
+    expect(browsePageFilledOffsets({
+      definition,
+      offset: 75,
+      limit: 25,
+      itemCount: 0,
+      pageSize: 50,
+    })).toEqual([]);
+    expect(browsePageFilledOffsets({
+      definition: searchDefinition,
+      offset: 50,
+      limit: 50,
+      itemCount: 0,
+      pageSize: 100,
+    })).toEqual([]);
+  });
+
+  it("skips an entirely stale first batch but keeps the next batch rank order", async () => {
+    const listAssets = vi.fn()
+      .mockResolvedValueOnce({ ok: true as const, value: [] })
+      .mockResolvedValueOnce({ ok: true as const, value: [asset("rank-51"), asset("rank-50")] });
+    const api = { listAssets } as unknown as WorldlineBoxLibraryApi;
+    const rankedAssetIds = Array.from({ length: 75 }, (_, index) => `rank-${index}`);
+    const result = await fetchFirstRankedBrowsePage({
+      api,
+      libraryId: "lib-1",
+      rankedAssetIds,
+      pageSize: 50,
+    });
+
+    expect(listAssets.mock.calls.map(([input]) => input.assetIds)).toEqual([
+      rankedAssetIds.slice(0, 50),
+      rankedAssetIds.slice(50),
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        items: [asset("rank-50"), asset("rank-51")],
+        rankedAssetIds: rankedAssetIds.slice(50),
+      },
+    });
+  });
+
+  it("returns an exhausted empty snapshot when all ranked summaries are stale", async () => {
+    const listAssets = vi.fn(async () => ({ ok: true as const, value: [] }));
+    const rankedAssetIds = Array.from({ length: 27 }, (_, index) => `rank-${index}`);
+    const result = await fetchFirstRankedBrowsePage({
+      api: { listAssets } as unknown as WorldlineBoxLibraryApi,
+      libraryId: "lib-1",
+      rankedAssetIds,
+      pageSize: 25,
+    });
+    expect(result).toEqual({ ok: true, value: { items: [], rankedAssetIds: [] } });
+    expect(listAssets).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns null for ordinary browse definitions", async () => {
+    const listAssets = vi.fn();
+    expect(await fetchRankedBrowsePage({
+      api: { listAssets } as unknown as WorldlineBoxLibraryApi,
+      definition: searchDefinition,
+      offset: 0,
+      limit: 30,
+    })).toBeNull();
+    expect(listAssets).not.toHaveBeenCalled();
   });
 });
 
@@ -221,6 +375,28 @@ describe("fetchBrowseScopeAssetIdsGuarded (WorldlineBox-ws4k select-all race)", 
 });
 
 describe("registerBrowseSearchPage / registerBrowseSmartCollectionPage (WorldlineBox-ws4k)", () => {
+  it("registers the semantic ID snapshot as the page source", () => {
+    const beginPage = vi.fn();
+    registerBrowseSearchPage(beginPage, {
+      libraryId: "lib-1",
+      query: null,
+      showIgnored: false,
+      rankedAssetIds: ["rank-1", "rank-2"],
+      rankedPageSize: 25,
+      items: [asset("rank-1")],
+      total: 2,
+      offset: 0,
+    });
+    expect(beginPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "search",
+        rankedAssetIds: ["rank-1", "rank-2"],
+        rankedPageSize: 25,
+      }),
+      expect.objectContaining({ items: [asset("rank-1")], total: 2, offset: 0 }),
+    );
+  });
+
   it("registers a search page definition + first page through beginPage", () => {
     const beginPage = vi.fn();
     registerBrowseSearchPage(beginPage, {

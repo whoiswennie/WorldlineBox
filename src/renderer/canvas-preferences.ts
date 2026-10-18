@@ -281,6 +281,23 @@ export function assetCaptionAlignClass(align: CanvasCaptionAlign): string {
   return 'asset-caption-align-left';
 }
 
+/** Cycle left → center → right → left for the browse toolbar control. */
+export function nextCanvasCaptionAlign(
+  align: CanvasCaptionAlign,
+): CanvasCaptionAlign {
+  if (align === 'left') return 'center';
+  if (align === 'center') return 'right';
+  return 'left';
+}
+
+export function canvasCaptionAlignIcon(
+  align: CanvasCaptionAlign,
+): 'align-left' | 'align-center' | 'align-right' {
+  if (align === 'center') return 'align-center';
+  if (align === 'right') return 'align-right';
+  return 'align-left';
+}
+
 export function shouldShowGridDimensions(
   fields: Pick<CanvasPreferences['fields'], 'dimensions'>,
   _viewMode: CanvasPreferences['viewMode'],

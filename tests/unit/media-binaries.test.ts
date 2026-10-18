@@ -14,6 +14,9 @@ import { createHash } from 'node:crypto';
 import { createPackage } from '@electron/asar';
 
 import { afterEach, describe, expect, it } from 'vitest';
+// The media helper is an untyped ESM script; the test only needs the platform gate.
+// @ts-expect-error media-binaries-lib.mjs has no declaration file.
+import { SUPPORTED_PLATFORMS, currentPlatformKey, sourceLockForPlatform } from '../../scripts/media-binaries-lib.mjs';
 import forgeConfig from '../../forge.config';
 import {
   assertWindowsSystemDependencies,
@@ -24,6 +27,26 @@ const roots: string[] = [];
 const projectRoot = path.resolve(import.meta.dirname, '../..');
 const mediaScript = path.join(projectRoot, 'scripts', 'media-binaries.mjs');
 const packageVerifier = path.join(projectRoot, 'scripts', 'verify-package.mjs');
+
+it('accepts existing platform source locks when a different platform is added and still rejects target changes', () => {
+  const original = {
+    schemaVersion: 1,
+    registry: { commit: 'pinned-registry' },
+    components: { ffmpeg: { sha256: 'pinned-source' } },
+    platforms: { 'darwin-arm64': { components: { ffmpeg: { sha256: 'mac-source' } } } },
+  };
+  const expanded = {
+    ...original,
+    platforms: { ...original.platforms, 'linux-x64': { components: { ffmpeg: { sha256: 'linux-source' } } } },
+  };
+  expect(sourceLockForPlatform(expanded, 'win32-x64')).toEqual(sourceLockForPlatform(original, 'win32-x64'));
+  expect(sourceLockForPlatform(expanded, 'darwin-arm64')).toEqual(sourceLockForPlatform(original, 'darwin-arm64'));
+  expect(sourceLockForPlatform({ ...expanded, registry: { commit: 'changed-registry' } }, 'win32-x64'))
+    .not.toEqual(sourceLockForPlatform(original, 'win32-x64'));
+  expect(sourceLockForPlatform({ ...expanded, components: { ffmpeg: { sha256: 'changed-source' } } }, 'win32-x64'))
+    .not.toEqual(sourceLockForPlatform(original, 'win32-x64'));
+  expect(sourceLockForPlatform(expanded, 'linux-x64')).not.toEqual(sourceLockForPlatform(original, 'linux-x64'));
+});
 
 function run(root: string, command: 'manifest' | 'verify') {
   return spawnSync(process.execPath, [mediaScript, command, '--platform', 'darwin-arm64', '--root', root], {
@@ -233,11 +256,28 @@ describe.skipIf(process.platform === 'win32')('media binary release gate', () =>
         packagedResources,
         'app.asar.unpacked/node_modules/trash/lib/macos-trash',
       ));
+      // verify-package also requires the pinned sqlite-vec extension; copy the
+      // installed binary so its integrity hash matches the pinned manifest.
+      cpSync(
+        path.join(process.cwd(), 'node_modules/sqlite-vec-darwin-arm64/vec0.dylib'),
+        path.join(packagedResources, 'app.asar.unpacked/node_modules/sqlite-vec-darwin-arm64/vec0.dylib'),
+      );
       cpSync(root, path.join(packagedResources, 'resources'), { recursive: true });
+      // verify-package requires a sealed (ad-hoc signed) macOS bundle, so
+      // give the fixture a minimal executable + Info.plist and sign it.
+      const appBundle = path.join(packageRoot, 'WorldlineBox.app');
+      writeFixtureFile(
+        path.join(appBundle, 'Contents', 'Info.plist'),
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>WorldlineBox</string><key>CFBundleIdentifier</key><string>dev.worldlinebox.package-test</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>\n',
+      );
+      mkdirSync(path.join(appBundle, 'Contents', 'MacOS'), { recursive: true });
+      cpSync('/usr/bin/true', path.join(appBundle, 'Contents', 'MacOS', 'WorldlineBox'));
+      const signing = spawnSync('codesign', ['--force', '--sign', '-', appBundle], { encoding: 'utf8' });
+      expect(signing.status, signing.stderr).toBe(0);
 
       const result = spawnSync(process.execPath, [packageVerifier], {
         encoding: 'utf8',
-        env: { ...process.env, WORLDLINEBOX_PACKAGE_ROOT: packageRoot },
+        env: { ...process.env, WORLDLINEBOX_PACKAGE_ROOT: packageRoot, WORLDLINEBOX_PACKAGE_PLATFORM: 'darwin-arm64' },
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain('Verified packaged runtime files');
@@ -253,7 +293,7 @@ describe.skipIf(process.platform === 'win32')('media binary release gate', () =>
       );
       const substituted = spawnSync(process.execPath, [packageVerifier], {
         encoding: 'utf8',
-        env: { ...process.env, WORLDLINEBOX_PACKAGE_ROOT: packageRoot },
+        env: { ...process.env, WORLDLINEBOX_PACKAGE_ROOT: packageRoot, WORLDLINEBOX_PACKAGE_PLATFORM: 'darwin-arm64' },
       });
       expect(substituted.status).not.toBe(0);
       expect(substituted.stderr).toContain('receipt archiveSha256');
@@ -312,6 +352,13 @@ it('rejects non-x64 PE files and non-allowlisted delay-import DLLs', () => {
   expect(() => peImportsFromBuffer(wrongArchitecture)).toThrow(/not Windows x64/);
 });
 
+it('includes linux-x64 in the pinned media platform set', () => {
+  expect([...SUPPORTED_PLATFORMS].sort()).toEqual(['darwin-arm64', 'linux-x64', 'win32-x64']);
+  if (process.platform === 'linux' && process.arch === 'x64') {
+    expect(currentPlatformKey()).toBe('linux-x64');
+  }
+});
+
 it('installs media validation inside Forge package and make lifecycles', () => {
   expect(forgeConfig.hooks?.prePackage).toBeTypeOf('function');
   expect(forgeConfig.hooks?.postPackage).toBeTypeOf('function');
@@ -351,6 +398,19 @@ it('uses one LibRaw- and zlib-enabled media manifest for macOS and Windows build
   );
   expect(macScript).toContain('MANIFEST_ROOT="$ROOT/resources/media-binaries/vcpkg"');
   expect(windowsScript).toContain("$ManifestRoot = Join-Path $Root 'resources/media-binaries/vcpkg'");
+  const linuxScript = readFileSync(
+    path.join(projectRoot, 'scripts/media-build/linux-x64.sh'),
+    'utf8',
+  );
+  expect(linuxScript).toContain('MANIFEST_ROOT="$ROOT/resources/media-binaries/vcpkg"');
+  expect(linuxScript).toContain('--platform linux-x64');
+  expect(linuxScript).toContain('worldlinebox-x64-linux-static');
+  const linuxTriplet = readFileSync(
+    path.join(projectRoot, 'resources/media-binaries/vcpkg/triplets/worldlinebox-x64-linux-static.cmake'),
+    'utf8',
+  );
+  expect(linuxTriplet).toMatch(/^set\(VCPKG_CMAKE_SYSTEM_NAME Linux\)$/m);
+  expect(linuxTriplet).toMatch(/^set\(VCPKG_LIBRARY_LINKAGE static\)$/m);
   expect(macScript).toContain('export VCPKG_ROOT');
   expect(windowsScript).toContain('$env:VCPKG_ROOT = $VcpkgRoot');
   const windowsOiioScript = readFileSync(

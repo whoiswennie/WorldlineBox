@@ -227,7 +227,7 @@ export function TagPickerEntry({
     <button
       aria-haspopup="menu"
       aria-label={label}
-      title={label}
+      data-hover-tip={label}
       className="context-menu-item"
       onClick={onOpen}
       onMouseEnter={() => buttonRef.current?.focus()}

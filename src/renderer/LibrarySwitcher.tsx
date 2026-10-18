@@ -246,7 +246,7 @@ export function LibrarySwitcher({
           }}
           role="menuitem"
           tabIndex={-1}
-          title={t("shell.removeLibraryHint")}
+          data-hover-tip={t("shell.removeLibraryHint")}
           type="button"
         >
           {t("shell.removeLibrary")}
@@ -315,7 +315,7 @@ export function LibrarySwitcher({
                         onForgetRecent(entry.path);
                       }}
                       tabIndex={-1}
-                      title={t("shell.forgetRecentLibrary")}
+
                       type="button"
                       {...iconActionAttrs(t("shell.forgetRecentLibrary"))}
                     >
@@ -353,7 +353,7 @@ export function LibrarySwitcher({
           setOpen(true);
         }}
         ref={triggerRef}
-        title={
+        data-hover-tip={
           libraryName
             ? t("shell.libraryNamed", { name: libraryName })
             : t("shell.noLibraryOpen")

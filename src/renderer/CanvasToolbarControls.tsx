@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import {
+  canvasCaptionAlignIcon,
   type CanvasPreferences,
 } from "./canvas-preferences";
 import {
@@ -178,6 +179,16 @@ export function CanvasToolbarControls({
             />
           );
         })}
+        {(() => {
+          const align = resolveItem(ctx, "canvas.captionAlign.cycle");
+          return (
+            <ToolButton
+              icon={canvasCaptionAlignIcon(canvasPrefs.captionAlign)}
+              label={align.label}
+              onClick={align.run}
+            />
+          );
+        })()}
       </div>
     </ShellSurface>
   );

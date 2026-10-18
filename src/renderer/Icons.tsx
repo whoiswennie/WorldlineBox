@@ -52,6 +52,7 @@ export type IconName =
   | "rotate-cw"
   | "rotate-ccw"
   | "save"
+  | "scan-qr-code"
   | "flip-horizontal"
   | "flip-vertical"
   | "flip-horizontal-2"
@@ -75,7 +76,10 @@ export type IconName =
   | "equal-approximately"
   | "type"
   | "text-size"
-  | "wrap-text";
+  | "wrap-text"
+  | "align-left"
+  | "align-center"
+  | "align-right";
 
 const iconPaths: Record<IconName, ReactNode> = {
   users: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M22 21v-2a4 4 0 0 0-3-3.87" /><circle cx="9" cy="7" r="4" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>,
@@ -517,6 +521,19 @@ const iconPaths: Record<IconName, ReactNode> = {
       <path d="M5 9a6.5 6.5 0 0 1 7 0 6.5 6.5 0 0 0 7 0" />
     </>
   ),
+  // Lucide `scan-qr-code` (https://lucide.dev/icons/scan-qr-code).
+  "scan-qr-code": (
+    <>
+      <path d="M17 12v4a1 1 0 0 1-1 1h-4" />
+      <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+      <path d="M17 8V7" />
+      <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+      <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+      <path d="M7 17h.01" />
+      <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+      <rect x="7" y="7" width="5" height="5" rx="1" />
+    </>
+  ),
   // Lucide `type` (https://lucide.dev/icons/type): the font viewer's preview
   // text control (WorldlineBox-485aeb — labels there are icons, not words).
   type: (
@@ -543,6 +560,27 @@ const iconPaths: Record<IconName, ReactNode> = {
       <path d="M3 12h15a3 3 0 1 1 0 6h-4" />
       <path d="m16 16-2 2 2 2" />
       <path d="M3 18h7" />
+    </>
+  ),
+  "align-left": (
+    <>
+      <path d="M21 6H3" />
+      <path d="M15 12H3" />
+      <path d="M17 18H3" />
+    </>
+  ),
+  "align-center": (
+    <>
+      <path d="M21 6H3" />
+      <path d="M17 12H7" />
+      <path d="M19 18H5" />
+    </>
+  ),
+  "align-right": (
+    <>
+      <path d="M21 6H3" />
+      <path d="M21 12H9" />
+      <path d="M21 18H7" />
     </>
   ),
 };

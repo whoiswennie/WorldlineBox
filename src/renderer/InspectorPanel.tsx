@@ -565,7 +565,7 @@ function InspectorHero({
           livePreview={livePreview}
         />
       )}
-      <strong className="inspector-hero-title" title={title}>
+      <strong className="inspector-hero-title" data-hover-tip={title}>
         {isMulti ? (
           <>
             {/* WorldlineBox-poly1: name 可缩略、计数后缀不缩略，保证「等 N 个文件」始终可见。 */}
@@ -607,8 +607,10 @@ function InspectorHero({
 // --- Tag chip colors ---
 
 const TAG_CHIP_COLORS = [
-  "#4a9ec9", "#6db85d", "#c9773e", "#b866b8", "#d99a3e",
-  "#5d9b9b", "#c75252", "#7b68b8", "#5aa36b", "#b8734a",
+  // a82: clean, clearly-hued palette (no olive/brown/teal-gray that read muddy
+  // as light tints).
+  "#2f80ed", "#27ae60", "#9b51e0", "#eb5757", "#0ea5e9",
+  "#e0569b", "#5b5fe0", "#14b8a6", "#f2994a", "#7c3aed",
 ];
 
 function tagColor(tagId: string) {
@@ -1232,13 +1234,18 @@ export function InspectorPanel(props: InspectorPanelProps) {
                   className="tag-chip"
                   data-source={tag.source}
                   key={tag.id}
-                  style={{ borderColor: tagColor(tag.id) }}
+                  style={
+                    {
+                      borderColor: tagColor(tag.id),
+                      ["--tag-chip-color" as string]: tagColor(tag.id),
+                    }
+                  }
                 >
                   {tag.source === "ai" && showAiBadges && (
                     <span
                       aria-label={t("inspector.aiBadge")}
                       className="inspector-ai-badge inspector-ai-badge-inline"
-                      title={t("inspector.aiBadge")}
+                      data-hover-tip={t("inspector.aiBadge")}
                     >
                       AI
                     </span>
@@ -1299,7 +1306,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
                       aria-controls="inspector-tag-suggestions"
                       aria-expanded={tagSuggestions.length > 0}
                       aria-label={t("inspector.addTag")}
-                      title={t("inspector.addTag")}
+                      data-hover-tip={t("inspector.addTag")}
                       autoComplete="off"
                       autoFocus
                       className="tag-add-input"
@@ -1448,7 +1455,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
                         <span
                           aria-label={t("inspector.ratingAi")}
                           className="inspector-ai-badge inspector-ai-badge-inline"
-                          title={t("inspector.ratingAi")}
+                          data-hover-tip={t("inspector.ratingAi")}
                         >
                           AI
                         </span>
@@ -1482,7 +1489,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
                   )}
                 </div>
                 {favoriteMixed ? (
-                  <span className="inspector-mixed-value" title={t("inspector.favorite")}>
+                  <span className="inspector-mixed-value" data-hover-tip={t("inspector.favorite")}>
                     {t("inspector.mixedValues")}
                   </span>
                 ) : (
@@ -1548,7 +1555,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
                               : "transparent",
                           }}
                           tabIndex={0}
-                          title={
+                          data-hover-tip={
                             ratio === undefined
                               ? t("inspector.copyColorTitle", { color })
                               : t("inspector.copyColorTitleRatio", {
@@ -1579,7 +1586,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
                     <span
                       aria-label={t("inspector.aiBadge")}
                       className="inspector-ai-badge inspector-ai-badge-inline"
-                      title={t("inspector.aiBadge")}
+                      data-hover-tip={t("inspector.aiBadge")}
                     >
                       AI
                     </span>
@@ -1696,7 +1703,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
                     onClick={() => {
                       if (canOpenSourceUrl && !sourceMixed) onOpenSourceUrl?.();
                     }}
-                    title={
+                    data-hover-tip={
                       canOpenSourceUrl
                         ? t("inspector.openInBrowser")
                         : t("inspector.openInBrowserHint")

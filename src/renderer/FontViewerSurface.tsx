@@ -305,7 +305,7 @@ export function FontViewerSurface({
           aria-pressed={settings.bold}
           className={settings.bold ? "is-active" : undefined}
           onClick={() => update({ bold: !settings.bold })}
-          title={t("viewer.fontPreviewBold")}
+          data-hover-tip={t("viewer.fontPreviewBold")}
           type="button"
         >
           <span className="font-viewer-style-glyph" data-style="bold">
@@ -317,7 +317,7 @@ export function FontViewerSurface({
           aria-pressed={settings.italic}
           className={settings.italic ? "is-active" : undefined}
           onClick={() => update({ italic: !settings.italic })}
-          title={t("viewer.fontPreviewItalic")}
+          data-hover-tip={t("viewer.fontPreviewItalic")}
           type="button"
         >
           <span className="font-viewer-style-glyph" data-style="italic">
@@ -329,7 +329,7 @@ export function FontViewerSurface({
           aria-pressed={settings.underline}
           className={settings.underline ? "is-active" : undefined}
           onClick={() => update({ underline: !settings.underline })}
-          title={t("viewer.fontPreviewUnderline")}
+          data-hover-tip={t("viewer.fontPreviewUnderline")}
           type="button"
         >
           <span className="font-viewer-style-glyph" data-style="underline">

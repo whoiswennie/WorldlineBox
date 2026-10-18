@@ -60,7 +60,7 @@ export function PluginJobActivityBanner({
       title={(
         <span
           className="plugin-job-activity-title"
-          title={`${job.ownerPluginId} · ${job.pluginHandlerId}`}
+          data-hover-tip={`${job.ownerPluginId} · ${job.pluginHandlerId}`}
         >
           <span aria-hidden="true" className="plugin-job-activity-status-mark" />
           <span className="plugin-job-activity-plugin">{formatPluginJobPluginName(job.ownerPluginId)}</span>
@@ -74,7 +74,7 @@ export function PluginJobActivityBanner({
       valueText={progressPercentage}
     >
       {errorMessage ? (
-        <div className="plugin-job-activity-error" title={errorMessage}>
+        <div className="plugin-job-activity-error" data-hover-tip={errorMessage}>
           {errorMessage}
         </div>
       ) : null}

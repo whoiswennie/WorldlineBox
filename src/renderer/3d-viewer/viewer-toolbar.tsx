@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { createShellPortal } from '../ui/ShellStyleScope';
 import { useLocale } from '../i18n';
 import { isImeKeyboardEvent } from '../ime-safe-dismiss';
 import { Icon } from '../Icons';
@@ -41,6 +41,7 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
   const [pickerRect, setPickerRect] = useState<{
     bottom: number;
     right: number;
+    inModal: boolean;
   } | null>(null);
   const hdriPickerRef = useRef<HTMLDivElement>(null);
   const hdriTriggerRef = useRef<HTMLButtonElement>(null);
@@ -57,6 +58,7 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
       setPickerRect({
         bottom: window.innerHeight - rect.top + 8,
         right: window.innerWidth - rect.right,
+        inModal: hdriTriggerRef.current?.closest('[role="dialog"]') != null,
       });
     };
     update();
@@ -94,9 +96,10 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
 
   const hdriPicker =
     hdriOpen && pickerRect
-      ? createPortal(
+      ? createShellPortal(
           <div
-            className="model-viewer-hdri-picker is-ported"
+            className="ui-menu-surface model-viewer-hdri-picker is-ported"
+            data-modal-popover={pickerRect.inModal || undefined}
             ref={hdriListRef}
             role="listbox"
             style={{
@@ -197,7 +200,7 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
         className="model-viewer-toolbar-button"
         onClick={props.onResetView}
         tabIndex={0}
-        title={t('viewer3d.resetView')}
+        data-hover-tip={t('viewer3d.resetView')}
         type="button"
       >
         <Icon name="fit-window" size={16} />
@@ -208,7 +211,7 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
         className={`model-viewer-toolbar-button${props.statsVisible ? ' is-active' : ''}`}
         onClick={props.onToggleStats}
         tabIndex={0}
-        title={t('viewer3d.toggleStats')}
+        data-hover-tip={t('viewer3d.toggleStats')}
         type="button"
       >
         <Icon name="info" size={16} />
@@ -220,7 +223,7 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
         className="model-viewer-toolbar-button"
         onClick={props.onFullscreen}
         tabIndex={0}
-        title={props.isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+        data-hover-tip={props.isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
         type="button"
       >
         <Icon name={props.isFullscreen ? 'fullscreen-exit' : 'fullscreen'} size={16} />

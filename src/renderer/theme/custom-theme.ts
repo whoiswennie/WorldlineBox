@@ -60,6 +60,26 @@ export const CUSTOM_THEME_COLOR_TOKENS = [
 ] as const;
 
 export type CustomThemeColorToken = (typeof CUSTOM_THEME_COLOR_TOKENS)[number];
+
+/**
+ * Islands surface overrides (a93). Built-in profiles derive these surfaces
+ * from canvas/pane/raised in CSS; a custom theme may pin them directly.
+ * They are optional (not part of the profile token map) and only take effect
+ * when set — see the `[style*="--ui-island-…"]` rules in styles.css.
+ */
+export const CUSTOM_THEME_ISLAND_TOKENS = [
+  '--ui-island-backdrop',
+  '--ui-island-canvas',
+  '--ui-island-card',
+  '--ui-island-border',
+  '--ui-island-select',
+] as const;
+export type CustomThemeIslandToken = (typeof CUSTOM_THEME_ISLAND_TOKENS)[number];
+export type CustomThemeOverrideToken = CustomThemeColorToken | CustomThemeIslandToken;
+export const CUSTOM_THEME_OVERRIDE_TOKENS: readonly CustomThemeOverrideToken[] = [
+  ...CUSTOM_THEME_COLOR_TOKENS,
+  ...CUSTOM_THEME_ISLAND_TOKENS,
+];
 export type CustomThemeMode = 'light' | 'dark';
 
 const customThemeColorValueSchema = z
@@ -72,7 +92,7 @@ const customThemeColorValueSchema = z
   );
 
 const customThemeOverridesShape = Object.fromEntries(
-  CUSTOM_THEME_COLOR_TOKENS.map((token) => [
+  CUSTOM_THEME_OVERRIDE_TOKENS.map((token) => [
     token,
     customThemeColorValueSchema.optional(),
   ]),
@@ -146,7 +166,7 @@ export function saveCustomTheme(
 }
 
 function clearAppliedCustomTheme(root: HTMLElement): void {
-  for (const token of CUSTOM_THEME_COLOR_TOKENS) {
+  for (const token of CUSTOM_THEME_OVERRIDE_TOKENS) {
     root.style.removeProperty(token);
   }
 }

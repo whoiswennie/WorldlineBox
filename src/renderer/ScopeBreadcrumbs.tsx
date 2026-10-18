@@ -82,12 +82,14 @@ export function buildScopeBreadcrumbSegments(
     return [{ kind: "static", id: "root", label: t("scope.rootFolder") }];
   }
   if (input.folderTrail.length > 0) {
-    return input.folderTrail.map((entry) => ({
-      kind: "folder" as const,
-      id: entry.folderId,
-      label: entry.name,
-      folderId: entry.folderId,
-    }));
+    return input.folderTrail.map((entry) => {
+      return {
+        kind: "folder" as const,
+        id: entry.folderId,
+        label: entry.name,
+        folderId: entry.folderId,
+      };
+    });
   }
   if (input.linkedFolderLabel) {
     return [

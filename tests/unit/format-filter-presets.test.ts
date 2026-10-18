@@ -91,7 +91,7 @@ describe("format-filter-presets", () => {
     const documentGroup = FORMAT_FILTER_GROUPS.find(
       (group) => group.labelKey === "filter.formatGroupDocument",
     );
-    expect(documentGroup?.extensions).toEqual(["pdf"]);
+    expect(documentGroup?.extensions).toEqual(["pdf", "ai"]);
     expect(OTHER_FORMAT_EXTENSIONS).toEqual(["html", "hdf", "htm"]);
     expect(FORMAT_UNKNOWN_TOKEN).toBe("unknown");
     expect(allChipTokens()).not.toContain(FORMAT_UNKNOWN_TOKEN);

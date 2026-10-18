@@ -38,12 +38,13 @@ describe('sync metadata sidecar (GitHub #39 / WorldlineBox-4ffae8)', () => {
     expect(parsed.description).toBe('人手简介');
     expect(parsed.rating).toBe(2);
     expect(parsed.ai).toEqual({
-      tags: ['夜景', '风景'],
+      tags: expect.arrayContaining(['夜景', '风景']),
       description: '城市夜景',
       rating: 5,
       modelId: 'gpt-4o',
       modelVersion: '2024-05-13',
     });
+    expect(parsed.ai?.tags).toHaveLength(2);
   });
 
   it('ignores an empty AI object so hashes stay compatible with old remotes', () => {

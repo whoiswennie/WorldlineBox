@@ -47,8 +47,19 @@ describe('desktop drop path resolution', () => {
     expect(classifyDroppedSourcePaths([folder, first])).toBe('files');
     expect(classifyDroppedSourcePaths([folder, secondFolder])).toBe('files');
     expect(() => classifyDroppedSourcePaths(['relative.png'])).toThrow('INVALID_DROP_SELECTION');
+  });
+
+  it('rejects a dropped file symbolic link', ({ skip }) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-drop-link-unit-'));
+    roots.push(root);
+    const first = path.join(root, 'first.png');
+    writeFileSync(first, 'first');
     const link = path.join(root, 'linked.png');
-    symlinkSync(first, link);
+    try { symlinkSync(first, link, 'file'); }
+    catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'EPERM') return skip();
+      throw error;
+    }
     expect(() => classifyDroppedSourcePaths([link])).toThrow('SYMBOLIC_LINK_NOT_ALLOWED');
   });
 });

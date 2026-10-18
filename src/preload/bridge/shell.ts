@@ -56,8 +56,11 @@ import {
   VIEWER_VIDEO_SHORTCUTS_ACTIVE_CHANNEL,
   VIEWER_VIDEO_SHORTCUT_CHANNEL,
   WINDOW_CONTROL_CHANNEL,
+  WINDOW_EDGE_RESIZE_CHANNEL,
   WINDOW_FOCUS_CHANNEL,
+  WINDOW_GET_BOUNDS_CHANNEL,
   WINDOW_MAXIMIZED_CHANNEL,
+  WINDOW_SET_BOUNDS_CHANNEL,
 } from '../../shared/protocol/channels';
 import { shellNotifyPayloadSchema, type ShellNotifyPayload } from '../../shared/shell-notify';
 import type { ViewerVideoShortcutAction } from '../../shared/viewer-video-shortcuts';
@@ -66,6 +69,12 @@ import {
   parseWindowMaximizedStateEvent,
   type WindowControlAction,
 } from '../../shared/window-controls';
+import type {
+  WindowEdgeResizeResult,
+  WindowGetBoundsResult,
+  WindowResizeEdge,
+  WindowSetBoundsResult,
+} from '../../shared/window-edge-resize';
 
 export function parseRevealAppLogResult(input: unknown): RevealAppLogResult {
   if (
@@ -155,6 +164,50 @@ export const shell: WorldlineBoxShellApi = Object.freeze({
       action,
     });
     return parseWindowControlResult(result);
+  },
+  async beginWindowEdgeResize(edge: WindowResizeEdge): Promise<WindowEdgeResizeResult> {
+    const result: unknown = await ipcRenderer.invoke(WINDOW_EDGE_RESIZE_CHANNEL, {
+      edge,
+    });
+    if (
+      typeof result === 'object'
+      && result !== null
+      && 'ok' in result
+      && (result as { ok: unknown }).ok === true
+      && 'mode' in result
+      && ((result as { mode: unknown }).mode === 'native'
+        || (result as { mode: unknown }).mode === 'fallback')
+    ) {
+      return result as WindowEdgeResizeResult;
+    }
+    if (
+      typeof result === 'object'
+      && result !== null
+      && 'ok' in result
+      && (result as { ok: unknown }).ok === false
+    ) {
+      return result as WindowEdgeResizeResult;
+    }
+    return { ok: false, code: 'malformed_request' };
+  },
+  async getWindowBounds(): Promise<WindowGetBoundsResult> {
+    const result: unknown = await ipcRenderer.invoke(WINDOW_GET_BOUNDS_CHANNEL);
+    return result as WindowGetBoundsResult;
+  },
+  async setWindowBoundsFromEdgeDelta(input: {
+    edge: WindowResizeEdge;
+    startBounds: { x: number; y: number; width: number; height: number };
+    dx: number;
+    dy: number;
+  }): Promise<WindowSetBoundsResult> {
+    const result: unknown = await ipcRenderer.invoke(
+      WINDOW_SET_BOUNDS_CHANNEL,
+      input,
+    );
+    return result as WindowSetBoundsResult;
+  },
+  needsClientWindowEdgeResize(): boolean {
+    return process.platform === 'linux';
   },
   onWindowMaximizedChanged(listener: (maximized: boolean) => void): () => void {
     const handler = (_event: Electron.IpcRendererEvent, input: unknown) => {

@@ -1,12 +1,15 @@
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
 import { useT } from '../i18n';
+import { Icon } from '../Icons';
+import { ThemeMiniDialog } from './ThemeMiniDialog';
 import { Select, Slider, Switch } from '../ui/primitives';
 import { DSH_BACKGROUND_MEDIA, isAnimatedTheme } from './dsh-background-media';
 import { BackgroundImagePanel } from './BackgroundImageControls';
 import {
   BACKGROUND_DISPLAY_MODES,
   isSafeBackgroundImageDataUrl,
+  MIN_PANEL_OPACITY,
   type BackgroundDisplayMode,
 } from './background-preferences';
 import { compressBackgroundImage, formatBackgroundBytes } from './background-image-compression';
@@ -20,13 +23,45 @@ import {
   THEME_ACCENT_PRESETS,
   themeAccentPresetByHex,
 } from './theme-accent-preferences';
+import type { UserTheme } from './user-themes';
 
-const PROFILE_LABELS = {
+export const PROFILE_LABELS = {
   worldlinebox: 'settings.themeProfileWorldlineBox',
   vscode: 'settings.themeProfileVscode',
   soft: 'settings.themeProfileSoft',
   'whale-fantasy': 'settings.themeProfileWhaleFantasy',
   'shuimo-danqing': 'settings.themeProfileShuimoDanqing',
+  midnight: 'settings.themeProfileMidnight',
+  mist: 'settings.themeProfileMist',
+  sand: 'settings.themeProfileSand',
+  forest: 'settings.themeProfileForest',
+  indigo: 'settings.themeProfileIndigo',
+  rose: 'settings.themeProfileRose',
+  ocean: 'settings.themeProfileOcean',
+  copper: 'settings.themeProfileCopper',
+  ink: 'settings.themeProfileInk',
+  lilac: 'settings.themeProfileLilac',
+  citrus: 'settings.themeProfileCitrus',
+  paper: 'settings.themeProfilePaper',
+  slate: 'settings.themeProfileSlate',
+  film: 'settings.themeProfileFilm',
+  mono: 'settings.themeProfileMono',
+  blush: 'settings.themeProfileBlush',
+  olive: 'settings.themeProfileOlive',
+  charcoal: 'settings.themeProfileCharcoal',
+  silver: 'settings.themeProfileSilver',
+  graphite: 'settings.themeProfileGraphite',
+  smoke: 'settings.themeProfileSmoke',
+  ash: 'settings.themeProfileAsh',
+  notion: 'settings.themeProfileNotion',
+  onedark: 'settings.themeProfileOnedark',
+  code: 'settings.themeProfileCode',
+  azure: 'settings.themeProfileAzure',
+  teal: 'settings.themeProfileTeal',
+  jade: 'settings.themeProfileJade',
+  amber: 'settings.themeProfileAmber',
+  orchid: 'settings.themeProfileOrchid',
+  coral: 'settings.themeProfileCoral',
 } as const;
 
 const BACKGROUND_MODE_LABELS = {
@@ -35,26 +70,61 @@ const BACKGROUND_MODE_LABELS = {
   tile: 'settings.backgroundModeTile',
 } as const;
 
-function asPreviewStyle(profile: ThemeProfileId, resolved: 'light' | 'dark'): CSSProperties {
+function asPreviewStyle(
+  profile: ThemeProfileId,
+  resolved: 'light' | 'dark',
+  overrides: Partial<Record<string, string | undefined>> = {},
+): CSSProperties {
   const tokens = THEME_PROFILE_PRESETS[profile].tokens[resolved];
+  const pick = (token: keyof typeof tokens) => overrides[token] ?? tokens[token];
   return {
-    '--theme-preview-canvas': tokens['--ui-surface-canvas'],
-    '--theme-preview-pane': tokens['--ui-surface-pane'],
-    '--theme-preview-raised': tokens['--ui-surface-raised'],
-    '--theme-preview-accent': tokens['--ui-action-accent'],
-    '--theme-preview-text': tokens['--ui-content-primary'],
+    '--theme-preview-canvas': pick('--ui-surface-canvas'),
+    '--theme-preview-pane': pick('--ui-surface-pane'),
+    '--theme-preview-raised': pick('--ui-surface-raised'),
+    '--theme-preview-accent': pick('--ui-action-accent'),
+    '--theme-preview-text': pick('--ui-content-primary'),
   } as CSSProperties;
 }
 
+type PickerEntry =
+  | { readonly kind: 'user'; readonly key: string; readonly theme: UserTheme }
+  | { readonly kind: 'preset'; readonly key: string; readonly preset: ThemeProfileId };
+
 export function ThemeProfilePicker(): ReactNode {
   const t = useT();
-  const { themeProfile, setThemeProfile, resolved } = useTheme();
+  const {
+    themeProfile,
+    setThemeProfile,
+    resolved,
+    userThemes,
+    activeUserTheme,
+    selectUserTheme,
+    deleteUserTheme,
+    customOverlay,
+  } = useTheme();
+  const [pendingDelete, setPendingDelete] = useState<UserTheme | null>(null);
+  const hasOverlay = Object.values(customOverlay.light).some(Boolean)
+    || Object.values(customOverlay.dark).some(Boolean);
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const selectedIndex = Math.max(0, THEME_PROFILE_IDS.indexOf(themeProfile.preset));
+  // Custom themes lead the grid so they are visible without scrolling.
+  const entries: PickerEntry[] = [
+    ...userThemes.themes.map((theme) => ({ kind: 'user' as const, key: theme.id, theme })),
+    ...THEME_PROFILE_IDS.map((preset) => ({ kind: 'preset' as const, key: preset, preset })),
+  ];
+  const isSelected = (entry: PickerEntry) =>
+    entry.kind === 'user'
+      ? activeUserTheme?.id === entry.theme.id
+      : !activeUserTheme && themeProfile.preset === entry.preset;
+  const selectedIndex = Math.max(0, entries.findIndex(isSelected));
+
+  function select(entry: PickerEntry) {
+    if (entry.kind === 'user') selectUserTheme(entry.theme.id);
+    else setThemeProfile(entry.preset);
+  }
 
   function moveSelection(index: number) {
-    const nextIndex = (index + THEME_PROFILE_IDS.length) % THEME_PROFILE_IDS.length;
-    setThemeProfile(THEME_PROFILE_IDS[nextIndex]!);
+    const nextIndex = (index + entries.length) % entries.length;
+    select(entries[nextIndex]!);
     requestAnimationFrame(() => buttonRefs.current[nextIndex]?.focus());
   }
 
@@ -64,39 +134,47 @@ export function ThemeProfilePicker(): ReactNode {
       className="app-settings-theme-profiles"
       role="radiogroup"
     >
-      {THEME_PROFILE_IDS.map((profile) => {
-        const selected = themeProfile.preset === profile;
+      {entries.map((entry, index) => {
+        const selected = isSelected(entry);
+        const label = entry.kind === 'user'
+          ? entry.theme.name || t('settings.customThemeUntitled')
+          : t(PROFILE_LABELS[entry.preset]);
+        const style = entry.kind === 'user'
+          ? asPreviewStyle(entry.theme.base, resolved, entry.theme[resolved])
+          : asPreviewStyle(entry.preset, resolved);
         return (
+          <div className="app-settings-theme-profile-cell" key={entry.key}>
           <button
             aria-checked={selected}
-            className={`app-settings-theme-profile${selected ? ' is-active' : ''}`}
-            key={profile}
-            onClick={() => setThemeProfile(profile)}
+            className={`app-settings-theme-profile${selected ? ' is-active' : ''}${entry.kind === 'user' ? ' is-custom' : ''}`}
+            data-theme-entry={entry.key}
+            onClick={() => select(entry)}
             onKeyDown={(event) => {
               if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
                 event.preventDefault();
-                moveSelection(THEME_PROFILE_IDS.indexOf(profile) + 1);
+                moveSelection(index + 1);
               } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
                 event.preventDefault();
-                moveSelection(THEME_PROFILE_IDS.indexOf(profile) - 1);
+                moveSelection(index - 1);
               } else if (event.key === 'Home') {
                 event.preventDefault();
                 moveSelection(0);
               } else if (event.key === 'End') {
                 event.preventDefault();
-                moveSelection(THEME_PROFILE_IDS.length - 1);
+                moveSelection(entries.length - 1);
               }
             }}
             role="radio"
-            style={asPreviewStyle(profile, resolved)}
-            tabIndex={THEME_PROFILE_IDS.indexOf(profile) === selectedIndex ? 0 : -1}
+            style={style}
+            tabIndex={index === selectedIndex ? 0 : -1}
+            data-hover-tip={label}
             type="button"
             ref={(element) => {
-              buttonRefs.current[THEME_PROFILE_IDS.indexOf(profile)] = element;
+              buttonRefs.current[index] = element;
             }}
           >
             <span aria-hidden="true" className="app-settings-theme-profile-preview">
-              {isAnimatedTheme(profile) ? <img alt="" className="app-settings-theme-profile-art" loading="lazy" src={DSH_BACKGROUND_MEDIA[profile].poster} /> : null}
+              {entry.kind === 'preset' && isAnimatedTheme(entry.preset) ? <img alt="" className="app-settings-theme-profile-art" loading="lazy" src={DSH_BACKGROUND_MEDIA[entry.preset].poster} /> : null}
               <span className="app-settings-theme-profile-preview-sidebar" />
               <span className="app-settings-theme-profile-preview-content">
                 <span className="app-settings-theme-profile-preview-line is-long" />
@@ -105,11 +183,57 @@ export function ThemeProfilePicker(): ReactNode {
               </span>
             </span>
             <span className="app-settings-theme-profile-label">
-              {t(PROFILE_LABELS[profile])}
+              <span className="app-settings-theme-profile-name">{label}</span>
+              {entry.kind === 'user' ? (
+                <span className="app-settings-theme-profile-badge">
+                  {t('settings.customThemeBadge')}
+                </span>
+              ) : null}
+              {selected && hasOverlay ? (
+                <span
+                  aria-label={t('settings.customThemeModified')}
+                  className="app-settings-theme-modified-badge"
+                  role="img"
+                  data-hover-tip={t('settings.customThemeModified')}
+                >
+                  <Icon name="settings" size={11} />
+                </span>
+              ) : null}
             </span>
           </button>
+          {entry.kind === 'user' ? (
+            <button
+              aria-label={t('settings.customThemeDelete')}
+              className="app-settings-theme-profile-delete"
+              onClick={() => setPendingDelete(entry.theme)}
+              tabIndex={-1}
+              data-hover-tip={t('settings.customThemeDelete')}
+              type="button"
+            >
+              <Icon name="trash" size={12} />
+            </button>
+          ) : null}
+          </div>
         );
       })}
+      {pendingDelete ? (
+        <ThemeMiniDialog
+          cancelLabel={t('settings.customThemeCancel')}
+          confirmLabel={t('settings.customThemeDeleteConfirm')}
+          danger
+          dialogId="theme-delete-dialog"
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => {
+            deleteUserTheme(pendingDelete.id);
+            setPendingDelete(null);
+          }}
+          title={t('settings.customThemeDeleteTitle', {
+            name: pendingDelete.name || t('settings.customThemeUntitled'),
+          })}
+        >
+          <p className="theme-mini-dialog-body">{t('settings.customThemeDeleteBody')}</p>
+        </ThemeMiniDialog>
+      ) : null}
     </div>
   );
 }
@@ -151,7 +275,7 @@ export function ThemeAccentPicker(): ReactNode {
               onClick={() => setThemeAccent(preset.hex)}
               role="radio"
               style={{ background: preset.hex }}
-              title={label}
+              data-hover-tip={label}
               type="button"
             />
           );
@@ -189,7 +313,7 @@ export function ThemeModePicker(): ReactNode {
           key={mode.value}
           onClick={() => setTheme(mode.value)}
           role="radio"
-          title={mode.label}
+          data-hover-tip={mode.label}
           type="button"
         >
           <span aria-hidden="true" className="app-settings-theme-mode-disc-surface" />
@@ -233,6 +357,7 @@ export function BackgroundSettings(): ReactNode {
       const saved = setBackgroundPreferences({
         ...backgroundPreferences,
         imageDataUrl: result.dataUrl,
+        enabled: true,
         imageSource: {
           fileName: file.name,
           width: result.width,
@@ -273,17 +398,16 @@ export function BackgroundSettings(): ReactNode {
 
   return (
     <div className="app-settings-background-settings">
-      <div className="app-settings-background-opacity">
-        <Slider
-          aria-label={t('settings.backgroundOpacity')}
-          label={t('settings.backgroundOpacity')}
-          max={1}
-          min={0}
-          onValueChange={(value) => update({ imageOpacity: value })}
-          showValue
-          step={0.05}
-          value={backgroundPreferences.imageOpacity}
-          valueText={`${Math.round(backgroundPreferences.imageOpacity * 100)}%`}
+      <div className="app-settings-row app-settings-background-enabled">
+        <div className="app-settings-row-copy">
+          <strong>{t('settings.backgroundEnabled')}</strong>
+          <span>{t('settings.backgroundEnabledHint')}</span>
+        </div>
+        <Switch
+          aria-label={t('settings.backgroundEnabled')}
+          checked={backgroundPreferences.enabled}
+          disabled={backgroundPreferences.imageDataUrl === null && !isAnimatedTheme(themeProfile.preset)}
+          onCheckedChange={(checked) => update({ enabled: checked })}
         />
       </div>
       {isAnimatedTheme(themeProfile.preset) ? (
@@ -322,6 +446,46 @@ export function BackgroundSettings(): ReactNode {
           value={backgroundPreferences.mode}
         />
       </div>
+      <div className="app-settings-row app-settings-background-main-panel">
+        <div className="app-settings-row-copy">
+          <strong>{t('settings.backgroundMainPanel')}</strong>
+          <span>{t('settings.backgroundMainPanelHint')}</span>
+        </div>
+        <Switch
+          aria-label={t('settings.backgroundMainPanel')}
+          checked={backgroundPreferences.showInMainPanel}
+          disabled={(backgroundPreferences.imageDataUrl === null && !isAnimatedTheme(themeProfile.preset)) || !backgroundPreferences.enabled}
+          onCheckedChange={(checked) => update({ showInMainPanel: checked })}
+        />
+      </div>
+      <div className="app-settings-background-opacity">
+        <Slider
+          aria-label={t('settings.backgroundOpacity')}
+          label={t('settings.backgroundOpacity')}
+          max={1}
+          min={0}
+          onValueChange={(value) => update({ imageOpacity: value })}
+          showValue
+          step={0.05}
+          value={backgroundPreferences.imageOpacity}
+          valueText={`${Math.round(backgroundPreferences.imageOpacity * 100)}%`}
+        />
+      </div>
+      {backgroundPreferences.showInMainPanel && backgroundPreferences.enabled && (backgroundPreferences.imageDataUrl !== null || isAnimatedTheme(themeProfile.preset)) ? (
+        <div className="app-settings-background-opacity app-settings-background-panel-opacity">
+          <Slider
+            aria-label={t('settings.backgroundPanelOpacity')}
+            label={t('settings.backgroundPanelOpacity')}
+            max={1}
+            min={MIN_PANEL_OPACITY}
+            onValueChange={(value) => update({ panelOpacity: value })}
+            showValue
+            step={0.02}
+            value={backgroundPreferences.panelOpacity}
+            valueText={`${Math.round(backgroundPreferences.panelOpacity * 100)}%`}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -3145,4 +3145,19 @@ describe('library deletion deferred-cleanup protocol (WorldlineBox-65d837)', () 
       assetIds,
     });
   });
+
+  it('accepts native video modality in semantic Worker commands and payloads', () => {
+    expect(parseWorkerRequest({ requestId: 'semantic-video-targets', command: {
+      type: 'semantic.index.targets', libraryId: 'library-01', sessionGeneration: '2bfad4ec-a457-4f45-bc32-d107a1ed9d1f',
+      modalities: ['video', 'image'], offset: 0, limit: 10,
+    } }).command).toMatchObject({ type: 'semantic.index.targets', modalities: ['video', 'image'] });
+    expect(parseWorkerRequest({ requestId: 'semantic-video-prepare', command: {
+      type: 'semantic.index.prepare', libraryId: 'library-01', sessionGeneration: '2bfad4ec-a457-4f45-bc32-d107a1ed9d1f',
+      assetId: 'asset-1', sourceRevision: 'revision-1', kind: 'video', maxInputBytes: 64 * 1024 * 1024,
+    } }).command).toMatchObject({ type: 'semantic.index.prepare', kind: 'video' });
+    expect(parseWorkerResponse({ requestId: 'semantic-video-prepared', result: {
+      ok: true, type: 'semantic.index.prepared', assetId: 'asset-1', sourceRevision: 'revision-1',
+      kind: 'video', mimeType: 'video/mp4', bytesBase64: Buffer.from('mp4').toString('base64'),
+    } }).result).toMatchObject({ type: 'semantic.index.prepared', kind: 'video', mimeType: 'video/mp4' });
+  });
 });

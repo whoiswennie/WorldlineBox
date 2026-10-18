@@ -79,8 +79,9 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
     // and the Windows file/edit menu remain inside the asset workspace.
     const backButton = window.getByRole("button", { name: "后退" });
     const forwardButton = window.getByRole("button", { name: "前进" });
+    const useInAppMainMenu = process.platform !== "darwin";
     const menuButton =
-      process.platform === "win32"
+      useInAppMainMenu
         ? window.locator(".main-menu-trigger")
         : null;
     const settingsButton = window.getByRole("button", { name: "设置", exact: true });
@@ -89,7 +90,7 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
     await expect(backButton).toBeVisible();
     await expect(forwardButton).toBeVisible();
     await expect(settingsButton).toBeVisible();
-    if (process.platform === "win32") {
+    if (useInAppMainMenu) {
       await menuButton!.hover();
       await expect(window.getByRole("menu", { name: "主菜单" })).toHaveCount(0);
       await menuButton!.click();
@@ -148,9 +149,10 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
       await window.keyboard.press("Escape");
       await expect(window.getByRole("dialog")).toHaveCount(0);
 
-      // Windows has no native application menu; exercise its visible route.
+      // Diagnostics lives on the in-app Window menu. The macOS native menu is
+      // covered by the other branch.
       await menuButton!.click();
-      await window.getByRole("menuitem", { name: "关于", exact: true }).hover();
+      await window.getByRole("menuitem", { name: "窗口", exact: true }).hover();
       await window.getByRole("menuitem", { name: "查看诊断日志", exact: true }).click();
       await expect(
         window.getByRole("dialog", { name: "诊断日志" }),
@@ -288,16 +290,16 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
     };
     await setFontSizeIndex(0);
     await expect(fontSizeSlider).toHaveAttribute("aria-valuetext", "紧凑");
-    await expect.poll(readFontScale).toEqual({ scale: "0.94", size: "11.28px", zoom: "1" });
+    await expect.poll(readFontScale).toEqual({ scale: "0.94", size: "10.34px", zoom: "1" });
     await setFontSizeIndex(1);
     await expect(fontSizeSlider).toHaveAttribute("aria-valuetext", "默认");
-    await expect.poll(readFontScale).toEqual({ scale: "1", size: "12px", zoom: "1" });
+    await expect.poll(readFontScale).toEqual({ scale: "1", size: "11px", zoom: "1" });
     await setFontSizeIndex(2);
     await expect(fontSizeSlider).toHaveAttribute("aria-valuetext", "舒适");
-    await expect.poll(readFontScale).toEqual({ scale: "1.06", size: "12.72px", zoom: "1" });
+    await expect.poll(readFontScale).toEqual({ scale: "1.06", size: "11.66px", zoom: "1" });
     await setFontSizeIndex(3);
     await expect(fontSizeSlider).toHaveAttribute("aria-valuetext", "更大");
-    await expect.poll(readFontScale).toEqual({ scale: "1.12", size: "13.44px", zoom: "1" });
+    await expect.poll(readFontScale).toEqual({ scale: "1.12", size: "12.32px", zoom: "1" });
     await window.keyboard.press("Escape");
     await expect(fontSettingsDialog).toHaveCount(0);
 

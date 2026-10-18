@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { fileSymlinkOrSkip } from './symlink-fixture';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -783,7 +784,7 @@ describe('linked folder watcher', () => {
     expect(observers.closed).toContain(observers.roots.length - 1);
   });
 
-  it('ignores default entries and symlinks discovered after import and emits a diagnostic', async () => {
+  it('ignores default entries and symlinks discovered after import and emits a diagnostic', async ({ skip }) => {
     const root = temporaryRoot();
     const linkedRoot = path.join(root, 'linked');
     mkdirSync(linkedRoot);
@@ -803,7 +804,7 @@ describe('linked folder watcher', () => {
     writeFileSync(path.join(linkedRoot, '.git', 'config'), 'ignored');
     writeFileSync(path.join(linkedRoot, '.DS_Store'), 'ignored');
     writeFileSync(path.join(root, 'outside.png'), 'outside');
-    symlinkSync(path.join(root, 'outside.png'), path.join(linkedRoot, 'link.png'));
+    if (!fileSymlinkOrSkip(path.join(root, 'outside.png'), path.join(linkedRoot, 'link.png'), skip)) return;
     observers.callbacks[1]!();
     await scheduler.flush();
 

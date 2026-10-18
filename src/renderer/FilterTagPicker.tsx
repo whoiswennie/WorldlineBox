@@ -118,10 +118,10 @@ export function FilterTagPicker({
         <div className="filter-tag-chips">
           {selectedNames.map((name) => (
             <span className="filter-tag-chip is-selected" key={name}>
-              {name}
+              <span className="filter-tag-chip-label">{name}</span>
               <button
                 aria-label={t("filter.removeTagFilter", { name })}
-                title={t("filter.removeTagFilter", { name })}
+                data-hover-tip={t("filter.removeTagFilter", { name })}
                 onClick={() => remove(name)}
                 type="button"
               >
@@ -133,7 +133,7 @@ export function FilterTagPicker({
       )}
       <input
         aria-label={t("filter.tagFilter")}
-        title={t("filter.tagFilter")}
+        data-hover-tip={t("filter.tagFilter")}
         className="text-field"
         disabled={disabled}
         onChange={(event) => setQuery(event.target.value)}
@@ -160,7 +160,7 @@ export function FilterTagPicker({
                 className={`dimension-filter-btn${sortKey === key ? " is-active" : ""}`}
                 key={key}
                 onClick={() => handleSortClick(key)}
-                title={
+                data-hover-tip={
                   sortKey === key
                     ? t(sortDirection === "asc" ? "filter.sortAsc" : "filter.sortDesc")
                     : undefined

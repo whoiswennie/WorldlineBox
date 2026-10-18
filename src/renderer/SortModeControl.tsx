@@ -203,16 +203,21 @@ export function SortModeControl({
           ref={triggerRef}
           type="button"
         >
-          <Icon name="sliders" size={14} />
+          {/* a81: the direction glyph leads (reflects asc/desc); shuffle has no
+              direction, so it keeps the neutral sliders glyph. */}
+          <span className="sort-order-glyph" aria-hidden="true">
+            <Icon
+              name={
+                shuffleActive
+                  ? "sliders"
+                  : sortOrder === "asc"
+                    ? "sort-asc"
+                    : "sort-desc"
+              }
+              size={14}
+            />
+          </span>
           <span>{triggerLabel}</span>
-          {!shuffleActive ? (
-            <span className="sort-order-glyph" aria-hidden="true">
-              <Icon
-                name={sortOrder === "asc" ? "sort-asc" : "sort-desc"}
-                size={14}
-              />
-            </span>
-          ) : null}
         </button>
         {open && (
           <PortaledPopover

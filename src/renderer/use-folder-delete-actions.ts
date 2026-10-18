@@ -1,4 +1,5 @@
-import { useCallback } from "react";
+import { requestConfirmation } from "./local-confirmation";
+import { useCallback, useLayoutEffect, useRef } from "react";
 
 import type { WorldlineBoxLibraryApi } from "../shared/library-api";
 import { LibraryOperationError, toMessage } from "./error-utils";
@@ -58,6 +59,8 @@ export function useFolderDeleteActions({
   onManagedFoldersTrashed,
   onDeletedCurrentScope,
 }: UseFolderDeleteActionsParams) {
+  const currentLibraryId = useRef(libraryId);
+  useLayoutEffect(() => { currentLibraryId.current = libraryId; }, [libraryId]);
   const afterFolderMutation = useCallback(
     async (deletedFolderIds: readonly string[]) => {
       const linkedScopeAffected = deletedFolderIds.some((deletedId) => {
@@ -200,12 +203,12 @@ export function useFolderDeleteActions({
   const removeLinkedFolder = useCallback(
     async (folderId: string, name: string) => {
       if (!api || !libraryId) return;
-      const confirmed = window.confirm(
+      const confirmed = await requestConfirmation(
         translateForLocale(locale, "command.folder.removeLinkedFolderConfirm", {
           name,
         }),
       );
-      if (!confirmed) return;
+      if (!confirmed || currentLibraryId.current !== libraryId) return;
       setUiState("loading");
       try {
         const result = await api.removeLinkedFolder({ libraryId, folderId });

@@ -1,9 +1,11 @@
+import { requestConfirmation } from "./local-confirmation";
 import type { CollectionSummary, LinkedFolderSummary, TagSummary } from "../shared/asset-types";
 import type { WorldlineBoxLibraryApi } from "../shared/library-api";
 import type { RendererLibrarySummary } from "../shared/protocol/responses";
 import { LibraryOperationError, toMessage } from "./error-utils";
 import { formatBatchTagNotice } from "./batch-tag-notice";
 import { translateForLocale, useLocale } from "./i18n";
+import { appendSemanticCleanupNotice } from "./semantic-cleanup-notice";
 
 export interface UseBatchActionsParams {
   api: WorldlineBoxLibraryApi | null;
@@ -344,9 +346,10 @@ export function useBatchActions({
         throw new LibraryOperationError(result.error);
       }
       setNotice(
-        translateForLocale(locale, "toast.assetsDeletedFromDisk", {
+        appendSemanticCleanupNotice(translateForLocale(locale, "toast.assetsDeletedFromDisk", {
           count: result.value.deletedCount,
-        }),
+        }), result.value.semanticCleanupPending === true,
+        translateForLocale(locale, "toast.semanticCleanupPending")),
       );
       await refreshCollections(operationLibraryId);
       if (!isCurrentLibrary(operationLibraryId)) return;
@@ -374,7 +377,7 @@ export function useBatchActions({
   ) {
     if (!api || !library || assetIds.length === 0) return;
     if (
-      !confirm(
+      !await requestConfirmation(
         translateForLocale(locale, "toast.copyToExternalConfirm", {
           count: assetIds.length,
           name: folder.displayName,
@@ -382,6 +385,7 @@ export function useBatchActions({
       )
     )
       return;
+    if (!isCurrentLibrary(library.libraryId)) return;
     setUiState("importing");
     try {
       const result = await api.copyAssetsToLinkedFolder({

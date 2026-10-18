@@ -66,7 +66,7 @@ export function AppSettingsNavigation({
             <button
               aria-controls={`app-settings-page-${category.id}`}
               aria-selected={selected}
-              className={`app-settings-nav-item${selected ? " is-active" : ""}`}
+              className={`app-settings-nav-item${category.id === "semantic-search" ? " app-settings-nav-item--experimental" : ""}${selected ? " is-active" : ""}`}
               id={`app-settings-tab-${category.id}`}
               key={category.id}
               onClick={() => onSelectCategory(category.id)}
@@ -76,7 +76,14 @@ export function AppSettingsNavigation({
               type="button"
             >
               <Icon name={category.icon} size={16} />
-              <span>{t(category.labelKey)}</span>
+              <span className="app-settings-nav-label">
+                <span className="app-settings-nav-label-text">{t(category.labelKey)}</span>
+                {category.id === "semantic-search" ? (
+                  <span className="app-settings-experimental-badge">
+                    {t("settings.experimental")}
+                  </span>
+                ) : null}
+              </span>
             </button>
           );
         })}

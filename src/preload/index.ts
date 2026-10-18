@@ -18,6 +18,7 @@ import {
 import { mcp } from './bridge/mcp';
 import { plugins } from './bridge/plugins';
 import { shell } from './bridge/shell';
+import { startup } from './bridge/startup';
 import { getE2eRequestCount } from './transport';
 import type { RendererRequest } from '../shared/protocol/requests';
 
@@ -29,6 +30,21 @@ if (!process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT)) {
       if (state === 'ready' || state === 'failed') ipcRenderer.send(STARTUP_RENDERER_STATE_CHANNEL, state);
     },
   }));
+}
+
+if (e2eEnabled) {
+  // Preload globalThis is the isolated world. contextIsolation keeps that
+  // assignment invisible to the renderer, so a non-zh-CN host follows the OS
+  // language and Chinese E2E selectors time out. Copy the pin into the main
+  // world before the page resolves system locale.
+  const e2eLocale = process.env.WORLDLINEBOX_E2E_LOCALE === 'en' ? 'en' : 'zh-CN';
+  contextBridge.executeInMainWorld({
+    func: (locale: string) => {
+      (globalThis as { __WORLDLINEBOX_E2E_LOCALE__?: string }).__WORLDLINEBOX_E2E_LOCALE__ =
+        locale;
+    },
+    args: [e2eLocale],
+  });
 }
 
 const e2eDiagnostics = Object.freeze({
@@ -58,6 +74,7 @@ contextBridge.exposeInMainWorld(
   process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT) ? Object.freeze({ companionWorld }) : Object.freeze({
     library,
     shell,
+    startup,
     appUpdate,
     dshLauncher,
     browser,

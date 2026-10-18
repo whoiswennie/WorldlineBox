@@ -101,6 +101,7 @@ import { executeMediaGenerationWorkerCommand } from './handlers/media-generation
 import { executeVisibleWindowWorkerCommand } from './handlers/visible-window';
 import { executeAiWorkerCommand, type AiAnalysisControls } from './handlers/ai';
 import { executeAssetQueryWorkerCommand } from './handlers/asset-query';
+import { backupSemanticIndexWorkerLibrary, closeSemanticIndexWorkerLibrary, executeSemanticIndexWorkerCommand, reserveSemanticDeleteCleanup, semanticPermanentDeleteCandidates, withSemanticDeleteCleanupStatus } from './handlers/semantic-index';
 import { executeSmartCollectionWorkerCommand } from './handlers/smart-collections';
 import { executeLibraryLifecycleWorkerCommand } from './handlers/library-lifecycle';
 import { executeSyncWorkerCommand } from './handlers/sync';
@@ -236,6 +237,7 @@ const e2eTerminateProcessAt = (() => {
 })();
 
 const libraryService = new LibraryService({
+  backupSemanticIndex: backupSemanticIndexWorkerLibrary,
   onAssetsChanged: (event) => {
     lastVisibleWindowKeyByLibrary.delete(event.libraryId);
     lastVisibleWindowAssetIdsByLibrary.delete(event.libraryId);
@@ -2155,6 +2157,15 @@ function destructiveBackupLibraryId(command: WorkerCommand): string | undefined 
 }
 
 async function handleRequest(request: WorkerRequest): Promise<WorkerResult> {
+  if (request.command.type === 'library.open' || request.command.type === 'library.close'
+    || request.command.type === 'library.delete-from-disk') {
+    await closeSemanticIndexWorkerLibrary(request.command.type === 'library.open' ? undefined : request.command.libraryId);
+  }
+  const semanticResult = await executeSemanticIndexWorkerCommand(libraryService, request, {
+    runWithoutAdmission: (work) => interactiveScheduler.runWithoutAdmission(request.requestId, work),
+  });
+  if (semanticResult) return semanticResult;
+
   const automationResult = dispatchAutomationReadOnlyRequest(libraryService, request);
   if (automationResult) return automationResult;
 
@@ -2164,6 +2175,13 @@ async function handleRequest(request: WorkerRequest): Promise<WorkerResult> {
     // command. A failed snapshot is diagnosed by the service, while the
     // operation itself retains its existing typed error/confirmation path.
     await libraryService.createDatabaseBackup(destructiveLibraryId);
+  }
+
+  let semanticDeleteCandidates = request.command.type === 'asset.purge-trash'
+    ? []
+    : semanticPermanentDeleteCandidates(libraryService, request.command);
+  if (semanticDeleteCandidates.length > 0 && 'libraryId' in request.command) {
+    reserveSemanticDeleteCleanup(libraryService, request.command.libraryId, semanticDeleteCandidates);
   }
 
   if (request.command.type === 'history.group.begin' || request.command.type === 'history.group.complete') {
@@ -2223,17 +2241,35 @@ async function handleRequest(request: WorkerRequest): Promise<WorkerResult> {
   }
 
   const libraryId = boundedWriteLibraryId(request.command);
-  if (!libraryId) return handleRequestWithoutWriteLease(request);
+  if (!libraryId) {
+    const result = await handleRequestWithoutWriteLease(request);
+    return withSemanticDeleteResult(
+      libraryService, request.command, semanticDeleteCandidates, result,
+    );
+  }
 
   try {
     const result = await libraryService.runBoundedWrite(
       libraryId,
-      () => executeBoundedWriteWorkerCommand(libraryService, request.command, request.historyContext),
+      () => {
+        if (request.command.type === 'asset.purge-trash') {
+          // The writer lease is now held. Snapshot and reserve the exact trash
+          // contents this purge can remove, including assets moved to trash
+          // while this request waited in the write queue.
+          semanticDeleteCandidates = semanticPermanentDeleteCandidates(libraryService, request.command);
+          if (semanticDeleteCandidates.length > 0) {
+            reserveSemanticDeleteCleanup(libraryService, request.command.libraryId, semanticDeleteCandidates);
+          }
+        }
+        return executeBoundedWriteWorkerCommand(libraryService, request.command, request.historyContext);
+      },
     );
     if (result === undefined) {
       throw new Error(`Bounded write command ${request.command.type} has no executor.`);
     }
-    return result;
+    return withSemanticDeleteResult(
+      libraryService, request.command, semanticDeleteCandidates, result,
+    );
   } catch (error) {
     libraryService.reportDiagnostic('write-lease.execute', error, {
       libraryId,
@@ -2241,6 +2277,17 @@ async function handleRequest(request: WorkerRequest): Promise<WorkerResult> {
     });
     throw error;
   }
+}
+
+function withSemanticDeleteResult(
+  service: LibraryService,
+  command: WorkerCommand,
+  candidates: readonly string[],
+  result: WorkerResult,
+): WorkerResult {
+  const libraryId = 'libraryId' in command ? command.libraryId : undefined;
+  if (!libraryId) return result;
+  return withSemanticDeleteCleanupStatus(service, libraryId, candidates, result);
 }
 
 function recordPermanentDeleteBarrier(
@@ -2393,6 +2440,8 @@ async function handleRequestWithoutWriteLease(request: WorkerRequest): Promise<W
       throw new Error('Bounded folder.cover.set write was not dispatched through its transaction fence.');
     case 'folder.cover.clear':
       throw new Error('Bounded folder.cover.clear write was not dispatched through its transaction fence.');
+    case 'folder.cover.set-asset':
+      throw new Error('Bounded folder.cover.set-asset write was not dispatched through its transaction fence.');
     case 'folder.cover.resolve': {
       const resolved = libraryService.resolveFolderCustomCover(request.command);
       if (!resolved) throw new LibraryServiceError('FOLDER_NOT_FOUND');
@@ -2802,6 +2851,20 @@ async function handleRequestWithoutWriteLease(request: WorkerRequest): Promise<W
       throw new Error('Automation file-operation planning requires automation-readonly dispatch.');
     case 'automation.file-import-plan':
       throw new Error('Automation import planning requires automation-readonly dispatch.');
+    case 'semantic.index.begin':
+    case 'semantic.index.rebuild':
+    case 'semantic.index.targets':
+    case 'semantic.index.prepare':
+    case 'semantic.index.audio.release':
+    case 'semantic.index.audio-window':
+    case 'semantic.index.write':
+    case 'semantic.index.search':
+    case 'semantic.index.cancel-search':
+    case 'semantic.index.similar':
+    case 'semantic.index.close':
+    case 'semantic.index.job':
+    case 'semantic.index.import-legacy':
+      throw new Error('Semantic index commands must be dispatched through the Worker-owned index handler.');
     case 'selection.trash':
       throw new Error('Selection trash must be dispatched through its writer lease.');
     default:
@@ -2959,6 +3022,7 @@ const handleLibraryWorkerMessage = async (event: { data: unknown }): Promise<voi
       // Kill real encoder children first so a stuck media promise cannot hold
       // shutdown hostage. Abort/close then runs as a bounded second pass, and
       // the final cleanup catches children that raced the first termination.
+      await closeSemanticIndexWorkerLibrary();
       await shutdownWorkerResources(
         (timeoutMs) => libraryService.closeAllAsync(timeoutMs),
         shutdownActiveMediaProcesses,
@@ -3178,7 +3242,8 @@ const handleLibraryWorkerMessage = async (event: { data: unknown }): Promise<voi
       const cancelWhileTransferRuns =
         request.command.type === 'library.import-cancel'
         || request.command.type === 'library.export-cancel'
-        || request.command.type === 'asset.delete-cancel';
+        || request.command.type === 'asset.delete-cancel'
+        || request.command.type === 'semantic.index.cancel-search';
       const aiProcessLibraryId = request.command.type === 'ai.process-queue'
         ? request.command.libraryId
         : undefined;

@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -451,6 +452,23 @@ describe('Linked folder import', () => {
     );
   });
 
+  it('keeps a NAS linked folder available when files are added inside the same directory', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'stable-assets');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+
+    const service = newService({ storageKindOverrideForTests: 'network' });
+    const created = service.createLibrary({ displayName: 'NasLinked', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: created.libraryId, sourceRootPath: sourceRoot });
+    service.closeAll();
+
+    writeFileSync(path.join(sourceRoot, 'b.png'), 'bbb');
+
+    expect(() => service.openLibrary(created.libraryPath)).not.toThrow();
+    service.closeAll();
+  });
+
   it('rejects a replacement directory at the same NAS path', () => {
     const root = temporaryRoot();
     const sourceRoot = path.join(root, 'replaceable-assets');
@@ -472,6 +490,50 @@ describe('Linked folder import', () => {
         reason: 'LINKED_FOLDER_FOREIGN_DEVICE',
       }),
     );
+  });
+
+  it('detects a replacement even if the directory inode is reused', ({ skip }) => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'reused-inode');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    const originalStat = lstatSync(sourceRoot, { bigint: true });
+    if (originalStat.birthtimeNs <= 0n) { skip(); return; }
+
+    const creator = newService({ storageKindOverrideForTests: 'network' });
+    const created = creator.createLibrary({ displayName: 'BirthIdentity', selectedParentPath: root });
+    creator.importFolderAsLinked({ libraryId: created.libraryId, sourceRootPath: sourceRoot });
+    creator.closeAll();
+
+    const replacementStat = Object.assign(Object.create(originalStat), {
+      birthtimeNs: originalStat.birthtimeNs + 1n,
+    });
+    const opener = newService({
+      storageKindOverrideForTests: 'network',
+      linkedRootLstat: () => replacementStat,
+    });
+    expect(() => opener.openLibrary(created.libraryPath)).toThrowError(
+      expect.objectContaining({ code: 'LINKED_FOLDER_UNAVAILABLE', reason: 'LINKED_FOLDER_FOREIGN_DEVICE' }),
+    );
+  });
+
+  it('keeps pre-upgrade v2 inode identities readable', () => {
+    const root = temporaryRoot();
+    const sourceRoot = path.join(root, 'legacy-v2');
+    mkdirSync(sourceRoot);
+    writeFileSync(path.join(sourceRoot, 'a.png'), 'aaa');
+    const service = newService({ storageKindOverrideForTests: 'network' });
+    const created = service.createLibrary({ displayName: 'LegacyIdentity', selectedParentPath: root });
+    service.importFolderAsLinked({ libraryId: created.libraryId, sourceRootPath: sourceRoot });
+    service.closeAll();
+
+    const source = lstatSync(sourceRoot, { bigint: true });
+    const legacyHint = `v2:${createHash('sha256')
+      .update(`${hostname()}\u0000${source.dev}\u0000${source.ino}`, 'utf8').digest('hex')}`;
+    const database = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+    database.prepare('UPDATE linked_folders SET source_device_hint = ?').run(legacyHint);
+    database.close();
+    expect(() => service.openLibrary(created.libraryPath)).not.toThrow();
   });
 
   it('preserves permission failures instead of reporting a disconnected share', () => {
@@ -571,7 +633,7 @@ describe('Linked folder import', () => {
     service.closeAll();
   });
 
-  it('does not follow or register symlinks inside a linked root', () => {
+  it('does not follow or register symlinks inside a linked root', ({ skip }) => {
     const root = temporaryRoot();
     const sourceRoot = path.join(root, 'source');
     mkdirSync(sourceRoot);
@@ -579,7 +641,15 @@ describe('Linked folder import', () => {
     // A symlink inside the linked root that points outside the root must not be
     // followed and must not become an asset.
     writeFileSync(path.join(root, 'secret.png'), 'secret');
-    symlinkSync(path.join(root, 'secret.png'), path.join(sourceRoot, 'link.png'));
+    try {
+      symlinkSync(path.join(root, 'secret.png'), path.join(sourceRoot, 'link.png'));
+    } catch (error) {
+      if (process.platform === 'win32' && (error as NodeJS.ErrnoException).code === 'EPERM') {
+        skip(); // Windows requires Developer Mode or an elevated symlink privilege.
+        return;
+      }
+      throw error;
+    }
 
     const service = newService();
     const created = service.createLibrary({ displayName: 'Linked', selectedParentPath: root });

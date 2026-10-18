@@ -47,6 +47,16 @@
      "license": "LGPL-2.1-or-later"
     }
    }
+  },
+  "linux-x64": {
+   "components": {
+    "ffmpeg": {
+     "version": "8.1",
+     "sourceUrl": "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n8.1.tar.gz",
+     "sha256": "dd308201bb1239a1b73185f80c6b4121f4efdfa424a009ce544fd00bf736bb2e",
+     "license": "LGPL-2.1-or-later"
+    }
+   }
   }
  }
 }

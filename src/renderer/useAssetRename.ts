@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from "react";
+import { requestConfirmation } from "./local-confirmation";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 import type { AssetSummary } from "../shared/asset-types";
 import type { WorldlineBoxLibraryApi } from "../shared/library-api";
@@ -152,6 +153,8 @@ export function useAssetRename({
   setSelectedAssetIds,
 }: UseAssetRenameParams): UseAssetRenameResult {
   const { locale } = useLocale();
+  const currentLibraryId = useRef(library?.libraryId);
+  useLayoutEffect(() => { currentLibraryId.current = library?.libraryId; }, [library?.libraryId]);
   const [assetRenameDialog, setAssetRenameDialog] =
     useState<AssetRenameDialogState | null>(null);
   // Keep a synchronous mirror so Enter/Escape + the blur that follows
@@ -222,8 +225,11 @@ export function useAssetRename({
     const nextExtension = splitAssetFileName(newFileName).extension;
     if (nextExtension.toLowerCase() !== extension.toLowerCase()) {
       const warning = translateForLocale(locale, "assetRename.extensionWarning");
-      if (typeof window !== "undefined" && !window.confirm(warning)) return;
+      if (typeof window !== "undefined" && !await requestConfirmation(warning)) return;
     }
+    const currentSession = assetRenameDialogRef.current;
+    if (currentLibraryId.current !== library.libraryId || currentSession?.assetId !== assetId
+      || currentSession.value !== session.value || currentSession.submitting) return;
     const submittingSession = {
       ...session,
       submitting: true,

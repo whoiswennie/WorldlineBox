@@ -14,6 +14,13 @@ import {
   CONTENT_REPLACE_STAGE_CHUNK_MAX_BASE64_LENGTH,
 } from '../content-replace';
 import { performanceRequestEnvelopeSchema } from '../performance-contract';
+import { EMBEDDING_HTTP_ADAPTERS, isEmbeddingSelectionId } from '../embedding/http-service';
+import {
+  SEMANTIC_IMAGE_BYTES_MAX,
+  SEMANTIC_IMAGE_BYTES_MIN,
+  SEMANTIC_IMAGE_EDGE_MAX,
+  SEMANTIC_IMAGE_EDGE_MIN,
+} from '../embedding/image-limits';
 import {
   entityAppearanceSchema,
   entityAppearanceTargetSchema,
@@ -22,6 +29,7 @@ import {
 const nonBlankString = z.string().min(1).refine((value) => value.trim().length > 0, {
   message: 'Value must not be blank.',
 });
+const embeddingSelectionIdSchema = z.string().refine(isEmbeddingSelectionId);
 
 const displayNameSchema = nonBlankString.max(255);
 const identifierSchema = nonBlankString.max(255);
@@ -291,6 +299,12 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
     type: z.literal('folder.cover.clear.request'),
     libraryId: identifierSchema,
     folderIds: z.array(folderScopeIdSchema).min(1).max(100),
+  }),
+  z.strictObject({
+    type: z.literal('folder.cover.set-asset.request'),
+    libraryId: identifierSchema,
+    folderIds: z.array(folderScopeIdSchema).min(1).max(100),
+    assetId: identifierSchema,
   }),
   // Folder shell actions (REQ-MENU-006) are identified by folder id only; no
   // filesystem path may cross this boundary (REQ-COMMAND-003). The Worker
@@ -1373,6 +1387,103 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
     libraryId: identifierSchema,
     assetIds: z.array(identifierSchema).min(1),
   }),
+  z.strictObject({
+    type: z.literal('embedding.models.list.request'),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.models.upsert.request'),
+    id: identifierSchema.optional(),
+    name: nonBlankString.max(80),
+    tier: z.enum(['Q4_K_XL', 'Q8_0', 'BF16']),
+    modelDirectory: nonBlankString.max(1024),
+    runtimePath: nonBlankString.max(1024),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.models.delete.request'),
+    id: identifierSchema,
+  }),
+  z.strictObject({
+    type: z.literal('embedding.models.set-default.request'),
+    id: identifierSchema,
+  }),
+  z.strictObject({
+    type: z.literal('embedding.services.list.request'),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.services.save.request'),
+    id: z.string().regex(/^svc_[a-z0-9]{8,40}$/).optional(),
+    name: nonBlankString.max(80),
+    description: z.string().max(200).optional(),
+    adapter: z.enum(EMBEDDING_HTTP_ADAPTERS).optional(),
+    destination: z.enum(['loopback', 'lan', 'internet']),
+    baseUrl: nonBlankString.max(300),
+    modelName: nonBlankString.max(120),
+    apiKey: z.string().max(2048).optional(),
+    modalities: z.array(z.enum(['image', 'video', 'audio', 'text'])).min(1).max(4).optional(),
+    dimensions: z.number().int().min(1).max(8192).nullable().optional(),
+    maxImageEdgePx: z.number().int().min(SEMANTIC_IMAGE_EDGE_MIN).max(SEMANTIC_IMAGE_EDGE_MAX).optional(),
+    maxImageBytes: z.number().int().min(SEMANTIC_IMAGE_BYTES_MIN).max(SEMANTIC_IMAGE_BYTES_MAX).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.services.delete.request'),
+    id: z.string().regex(/^svc_[a-z0-9]{8,40}$/),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.services.probe.request'),
+    id: z.string().regex(/^svc_[a-z0-9]{8,40}$/),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.services.grant.request'),
+    id: z.string().regex(/^svc_[a-z0-9]{8,40}$/),
+    libraryId: identifierSchema,
+  }),
+  z.strictObject({
+    type: z.literal('embedding.binding.get.request'),
+    libraryId: identifierSchema,
+  }),
+  z.strictObject({
+    type: z.literal('embedding.binding.save.request'),
+    libraryId: identifierSchema,
+    selectionId: z.union([z.null(), embeddingSelectionIdSchema]),
+    inherit: z.boolean().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.install.status.request'),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.install.start.request'),
+    modelId: z.enum(['embeddinggemma-2-compact', 'embeddinggemma-2-balanced', 'embeddinggemma-2-quality']),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.install.delete.request'),
+    modelId: z.enum(['embeddinggemma-2-compact', 'embeddinggemma-2-balanced', 'embeddinggemma-2-quality']),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.index.status.request'),
+    libraryId: identifierSchema,
+    modelId: embeddingSelectionIdSchema,
+    run: z.boolean(),
+    restart: z.boolean(),
+    rebuild: z.boolean().optional(),
+    stop: z.boolean().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.search.request'),
+    libraryId: identifierSchema,
+    modelId: embeddingSelectionIdSchema,
+    query: z.string().trim().min(1).max(500),
+    filters: z.array(filterClauseSchema).max(100).optional(),
+    scope: searchScopeSchema.nullable().optional(),
+    showIgnored: z.boolean().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('embedding.similar.request'),
+    libraryId: identifierSchema,
+    modelId: embeddingSelectionIdSchema,
+    assetId: identifierSchema,
+    filters: z.array(filterClauseSchema).max(100).optional(),
+    scope: searchScopeSchema.nullable().optional(),
+  }),
 ]);
 
 export type RendererRequest = z.infer<typeof rendererRequestSchema>;
@@ -1558,6 +1669,12 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('folder.cover.clear'),
     libraryId: identifierSchema,
     folderIds: z.array(folderScopeIdSchema).min(1).max(100),
+  }),
+  z.strictObject({
+    type: z.literal('folder.cover.set-asset'),
+    libraryId: identifierSchema,
+    folderIds: z.array(folderScopeIdSchema).min(1).max(100),
+    assetId: identifierSchema,
   }),
   z.strictObject({
     type: z.literal('folder.cover.resolve'),
@@ -2812,6 +2929,116 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('ai.status'),
     libraryId: identifierSchema,
     jobIds: z.array(identifierSchema).min(1).max(10_000).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.begin'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    profileKey: nonBlankString.max(4096),
+    dimensions: z.number().int().min(1).max(8192),
+    modelRevision: nonBlankString.max(1024),
+    modality: z.enum(['image', 'audio', 'text', 'mixed']),
+    modalities: z.array(z.enum(['image', 'video', 'audio', 'text'])).min(1).max(4).optional(),
+    maxInputBytes: z.number().int().min(1).max(64 * 1024 * 1024),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.rebuild'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    confirmed: z.literal(true),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.targets'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    modalities: z.array(z.enum(['text', 'image', 'video', 'audio'])).min(1).max(4),
+    offset: z.number().int().min(0).max(100_000),
+    limit: z.number().int().min(1).max(500),
+    revisionSnapshot: z.number().int().nonnegative().nullable().optional(),
+    assetId: identifierSchema.optional(),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.prepare'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    assetId: identifierSchema,
+    sourceRevision: nonBlankString.max(4096),
+    kind: z.enum(['image', 'video', 'audio', 'text']),
+    maxInputBytes: z.number().int().min(1).max(64 * 1024 * 1024),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.audio.release'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    audioHandle: z.string().uuid(),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.audio-window'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    audioHandle: z.string().uuid(),
+    windowIndex: z.number().int().min(0).max(15),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.write'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    profileKey: nonBlankString.max(4096),
+    vectors: z.array(z.strictObject({
+      assetId: identifierSchema,
+      sourceRevision: nonBlankString.max(4096),
+      claimToken: z.string().uuid(),
+      vector: z.array(z.number().finite()).min(1).max(8192),
+    })).max(128),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.search'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    queryId: z.string().uuid(),
+    profileKey: nonBlankString.max(4096),
+    vector: z.array(z.number().finite()).min(1).max(8192),
+    filters: z.array(filterClauseSchema).max(100).optional(),
+    scope: searchScopeSchema.nullable().optional(),
+    showIgnored: z.boolean().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.cancel-search'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    queryId: z.string().uuid(),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.similar'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    queryId: z.string().uuid(),
+    profileKey: nonBlankString.max(4096),
+    sourceAssetId: identifierSchema,
+    filters: z.array(filterClauseSchema).max(100).optional(),
+    scope: searchScopeSchema.nullable().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.close'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.job'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    action: z.enum(['claim', 'fail']),
+    claimToken: z.string().uuid(),
+    assetId: identifierSchema,
+    sourceRevision: nonBlankString.max(4096),
+    errorCategory: z.enum(['provider', 'preparation', 'storage']).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('semantic.index.import-legacy'),
+    libraryId: identifierSchema,
+    sessionGeneration: z.string().uuid(),
+    cacheKind: z.enum(['local', 'http']),
+    cacheId: nonBlankString.max(255),
   }),
 ]);
 

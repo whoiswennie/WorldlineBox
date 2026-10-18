@@ -187,6 +187,16 @@ await build({
 });
 
 await build({
+  configFile: path.join(projectRoot, 'vite.browser-capture-preload.config.ts'),
+  resolve: nodeResolve,
+  build: {
+    emptyOutDir: false,
+    outDir: mainBuildDirectory,
+    rollupOptions: { external: electronExternals },
+  },
+});
+
+await build({
   configFile: path.join(projectRoot, 'vite.worker.config.ts'),
   resolve: nodeResolve,
   build: {

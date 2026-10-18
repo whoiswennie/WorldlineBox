@@ -5,11 +5,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { directorySymlink, fileSymlinkOrSkip } from './symlink-fixture';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -134,12 +134,13 @@ describe('database and path hardening', () => {
   it('rejects an Assets symlink and a symlinked destination ancestor', () => {
     const root = temporaryRoot();
     const external = path.join(root, 'external');
+    mkdirSync(external);
     const source = path.join(root, 'source.png');
     const service = new LibraryService();
     const library = service.createLibrary({ displayName: 'Links', selectedParentPath: root });
     const folder = service.createManagedFolder({ libraryId: library.libraryId, name: 'Target' });
     rmSync(path.join(library.libraryPath, 'Assets', 'Target'), { recursive: true });
-    symlinkSync(external, path.join(library.libraryPath, 'Assets', 'Target'));
+    directorySymlink(external, path.join(library.libraryPath, 'Assets', 'Target'));
     writeFileSync(source, 'source');
     expectCode(
       () => service.prepareImport({ libraryId: library.libraryId, targetFolderId: folder.folderId, sourceKind: 'files', sourcePaths: [source] }),
@@ -148,7 +149,7 @@ describe('database and path hardening', () => {
     service.closeAll();
 
     rmSync(path.join(library.libraryPath, 'Assets'), { recursive: true });
-    symlinkSync(external, path.join(library.libraryPath, 'Assets'));
+    directorySymlink(external, path.join(library.libraryPath, 'Assets'));
     expectCode(() => new LibraryService().openLibrary(library.libraryPath), 'NOT_A_LIBRARY');
   });
 
@@ -160,13 +161,13 @@ describe('database and path hardening', () => {
     const victim = path.join(root, 'victim');
     mkdirSync(victim);
     writeFileSync(path.join(victim, 'do-not-delete.txt'), 'keep');
-    symlinkSync(victim, path.join(library.libraryPath, '.worldlinebox', 'operations'));
+    directorySymlink(victim, path.join(library.libraryPath, '.worldlinebox', 'operations'));
 
     expectCode(() => new LibraryService().openLibrary(library.libraryPath), 'LIBRARY_CORRUPT');
     expect(readFileSync(path.join(victim, 'do-not-delete.txt'), 'utf8')).toBe('keep');
   });
 
-  it('rejects symlinked .worldlinebox metadata and library.db files', () => {
+  it('rejects a symlinked library.db file', ({ skip }) => {
     const root = temporaryRoot();
     const service = new LibraryService();
     const library = service.createLibrary({ displayName: 'Metadata Links', selectedParentPath: root });
@@ -175,14 +176,22 @@ describe('database and path hardening', () => {
     const databaseBackup = path.join(root, 'library-backup.db');
     copyFileSync(database, databaseBackup);
     rmSync(database);
-    symlinkSync(databaseBackup, database);
+    if (!fileSymlinkOrSkip(databaseBackup, database, skip)) return;
     expectCode(() => new LibraryService().openLibrary(library.libraryPath), 'NOT_A_LIBRARY');
+  });
 
+  it('rejects a symlinked .worldlinebox metadata directory', () => {
+    const root = temporaryRoot();
+    const service = new LibraryService();
+    const library = service.createLibrary({ displayName: 'Metadata Directory Links', selectedParentPath: root });
+    service.closeAll();
+    const databaseBackup = path.join(root, 'library-backup.db');
+    copyFileSync(path.join(library.libraryPath, '.worldlinebox', 'library.db'), databaseBackup);
     rmSync(path.join(library.libraryPath, '.worldlinebox'), { recursive: true });
     const metadataVictim = path.join(root, 'metadata-victim');
     mkdirSync(metadataVictim);
     copyFileSync(databaseBackup, path.join(metadataVictim, 'library.db'));
-    symlinkSync(metadataVictim, path.join(library.libraryPath, '.worldlinebox'));
+    directorySymlink(metadataVictim, path.join(library.libraryPath, '.worldlinebox'));
     expectCode(() => new LibraryService().openLibrary(library.libraryPath), 'NOT_A_LIBRARY');
   });
 

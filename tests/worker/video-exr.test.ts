@@ -2248,7 +2248,9 @@ describe('EXR/TGA (oiiotool)', () => {
     importNoConflict(service, created.libraryId, sourcePath);
     const asset = service.listAssets({ libraryId: created.libraryId, recursive: true })[0]!;
 
-    expect(service.enqueueThumbnailJobs(created.libraryId)).toBe(2);
+    // The return count is generate_thumbnail rows. Metadata is queued beside
+    // the card and is asserted through the job list.
+    expect(service.enqueueThumbnailJobs(created.libraryId)).toBe(1);
     expect(service.listMediaJobs(created.libraryId).jobs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ assetId: asset.assetId, kind: 'generate_thumbnail', status: 'queued' }),
@@ -2335,7 +2337,7 @@ describe('EXR/TGA (oiiotool)', () => {
       metadata: { width: 8256, height: 5504 },
     });
 
-    expect(service.enqueueThumbnailJobs(created.libraryId)).toBe(2);
+    expect(service.enqueueThumbnailJobs(created.libraryId)).toBe(1);
     await service.processThumbnailQueue(created.libraryId, {
       maxJobs: 1,
       jobKinds: ['extract_metadata'],
@@ -2936,13 +2938,22 @@ describe('EXR/TGA (oiiotool)', () => {
     ).run(generated.artifactId);
     db.close();
 
-    // Common TIFF metadata is now admitted as a secondary job alongside the
-    // legacy thumbnail repair check; the thumbnail itself remains current.
+    // Common TIFF metadata is admitted as a secondary job. The enqueue return
+    // counts generate_thumbnail rows only, and this legacy thumbnail stays current.
     expect(service.enqueueThumbnailJobs(created.libraryId, {
       assetIds: [asset.assetId],
       limit: 1,
       priority: 350,
-    })).toBe(1);
+    })).toBe(0);
+    expect(service.listMediaJobs(created.libraryId).jobs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          assetId: asset.assetId,
+          kind: 'extract_metadata',
+          status: 'queued',
+        }),
+      ]),
+    );
     service.closeAll();
   });
 

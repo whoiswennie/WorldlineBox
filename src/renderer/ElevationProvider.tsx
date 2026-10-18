@@ -13,6 +13,7 @@ import {
   clampShadowLevel,
   loadShadowPreferences,
   setStoredShadowLevel,
+  setStoredShadowValues,
   type ShadowLevel,
   type ShadowPreferences,
   type ShadowPreferencesStorage,
@@ -21,6 +22,8 @@ import {
 type ElevationContextValue = {
   readonly preferences: ShadowPreferences;
   readonly setLevel: (level: ShadowLevel) => void;
+  /** Continuous 0–100 axes (a87 2D pad). */
+  readonly setValues: (size: number, intensity: number) => void;
 };
 
 const ElevationContext = createContext<ElevationContextValue | null>(null);
@@ -32,8 +35,8 @@ export type ElevationProviderProps = {
 };
 
 /**
- * Elevation prefs (WorldlineBox-zcyg): 0–3 stepped levels drive CSS `--elev-*`
- * multipliers. Level 0 omits experimental shell/card box-shadows.
+ * Elevation prefs (WorldlineBox-zcyg, a87): continuous size × intensity (0–100)
+ * drive CSS `--elev-*` multipliers; either axis ~0 omits elevation shadows.
  */
 export function ElevationProvider({
   children,
@@ -55,9 +58,16 @@ export function ElevationProvider({
     [storage],
   );
 
+  const setValues = useCallback(
+    (size: number, intensity: number) => {
+      setPreferences(setStoredShadowValues(size, intensity, storage));
+    },
+    [storage],
+  );
+
   const value = useMemo(
-    () => ({ preferences, setLevel }),
-    [preferences, setLevel],
+    () => ({ preferences, setLevel, setValues }),
+    [preferences, setLevel, setValues],
   );
 
   return (

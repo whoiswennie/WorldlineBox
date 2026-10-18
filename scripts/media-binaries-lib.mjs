@@ -10,7 +10,7 @@ import {
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-export const SUPPORTED_PLATFORMS = new Set(['darwin-arm64', 'win32-x64']);
+export const SUPPORTED_PLATFORMS = new Set(['darwin-arm64', 'win32-x64', 'linux-x64']);
 
 const FORBIDDEN_FFMPEG_MARKERS = [
   '--enable-gpl',
@@ -44,16 +44,19 @@ export function currentPlatformKey() {
   if (process.platform === 'win32' && process.arch === 'x64') {
     return 'win32-x64';
   }
+  if (process.platform === 'linux' && process.arch === 'x64') {
+    return 'linux-x64';
+  }
   throw new Error(
     `Media release bundles are unsupported on ${process.platform}-${process.arch}; ` +
-      'supported targets are darwin-arm64 and win32-x64.',
+      'supported targets are darwin-arm64, win32-x64, and linux-x64.',
   );
 }
 
 export function assertPlatform(platform) {
   if (!SUPPORTED_PLATFORMS.has(platform)) {
     throw new Error(
-      `Unsupported media platform ${JSON.stringify(platform)}; expected darwin-arm64 or win32-x64.`,
+      `Unsupported media platform ${JSON.stringify(platform)}; expected darwin-arm64, win32-x64, or linux-x64.`,
     );
   }
 }
@@ -64,6 +67,15 @@ export function readJson(filePath) {
   } catch (error) {
     throw new Error(`Cannot read JSON ${filePath}: ${error.message}`, { cause: error });
   }
+}
+
+/** Trust metadata relevant to one target; other platforms can be added independently. */
+export function sourceLockForPlatform(sourceLock, platform) {
+  assertPlatform(platform);
+  return {
+    ...sourceLock,
+    platforms: { [platform]: sourceLock.platforms?.[platform] ?? null },
+  };
 }
 
 export function sha256File(filePath) {

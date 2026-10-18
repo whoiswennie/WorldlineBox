@@ -323,8 +323,8 @@ describe("NavigationSidebar virtual library root", () => {
     expect(childFolderRow?.querySelector(".nav-row-label")?.textContent).toBe(
       childFolderName,
     );
-    expect(parentFolderRow?.title).toBe(parentFolderName);
-    expect(childFolderRow?.title).toBe(childFolderName);
+    expect(parentFolderRow?.getAttribute("data-hover-tip")).toBe(parentFolderName);
+    expect(childFolderRow?.getAttribute("data-hover-tip")).toBe(childFolderName);
     expect(parentFolderRow?.style.paddingLeft).toBe("7px");
     expect(childFolderRow?.style.paddingLeft).toBe("7px");
     // Root-level folders start at depth 0 so they line up with the fixed root
@@ -356,8 +356,8 @@ describe("NavigationSidebar virtual library root", () => {
     const childCollectionRow = collectionRows.find(
       (row) => row.dataset.navCollectionId === childCollectionId,
     );
-    expect(parentCollectionRow?.title).toBe(parentCollectionName);
-    expect(childCollectionRow?.title).toBe(childCollectionName);
+    expect(parentCollectionRow?.getAttribute("data-hover-tip")).toBe(parentCollectionName);
+    expect(childCollectionRow?.getAttribute("data-hover-tip")).toBe(childCollectionName);
     expect(parentCollectionRow?.style.paddingLeft).toBe("7px");
     expect(childCollectionRow?.style.paddingLeft).toBe("7px");
     expect(
@@ -552,6 +552,8 @@ describe("NavigationSidebar virtual library root", () => {
     };
     const onAssetsDroppedOnCollection = vi.fn();
     const onResolveManagedAssetDrop = vi.fn(async () => ["asset-1"]);
+    const onImportDroppedFiles = vi.fn();
+    let internalAssetDrag = true;
     const props = createNavigationProps({
       collections: [parent, child],
       collectionTree: new Map([
@@ -561,6 +563,8 @@ describe("NavigationSidebar virtual library root", () => {
       onExternalDragOver: (event) => event.preventDefault(),
       onAssetsDroppedOnCollection,
       onResolveManagedAssetDrop,
+      onImportDroppedFiles,
+      isInternalAssetDrag: () => internalAssetDrag,
     });
     container = document.createElement("div");
     document.body.append(container);
@@ -619,6 +623,21 @@ describe("NavigationSidebar virtual library root", () => {
       child.collectionId,
       ["asset-1"],
       "move",
+    );
+
+    internalAssetDrag = false;
+    await act(async () => {
+      dropEvent = dispatchDropEvent(childRow!, nativeFileTransfer);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onResolveManagedAssetDrop).toHaveBeenCalledTimes(1);
+    expect(onAssetsDroppedOnCollection).toHaveBeenCalledTimes(1);
+    expect(onImportDroppedFiles).toHaveBeenCalledWith(
+      nativeFileTransfer.files,
+      undefined,
+      child.collectionId,
+      { files: nativeFileTransfer.files, html: "", uriList: "" },
     );
   });
 

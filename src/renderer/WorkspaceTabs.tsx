@@ -15,6 +15,7 @@ import {
   nextTabStripScrollLeft,
 } from "./workspace-tab-strip-scroll";
 import { workspaceTabWidthScale } from "./workspace-tabs";
+import { WorkspaceTabOutline } from "./WorkspaceTabOutline";
 import "./workspace-tabs.css";
 
 export interface WorkspaceTabItem {
@@ -197,6 +198,7 @@ export function WorkspaceTabs({
               if (!disabled) onContextMenu(tab.id, { x: event.clientX, y: event.clientY });
             }}
           >
+            {tab.id === activeTabId ? <WorkspaceTabOutline /> : null}
             <button
               className="workspace-tab-select"
               type="button"

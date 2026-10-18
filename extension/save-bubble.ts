@@ -1,3 +1,5 @@
+import { installContentStyle } from './content-style';
+
 /**
  * 页面内保存反馈气泡：拖拽树（radial-menu.ts）与右键菜单保存（background.ts
  * → content-script.ts）共用。自建 shadow host，pointer-events 全透传，
@@ -36,9 +38,7 @@ function ensureHost(): HTMLDivElement {
     pointerEvents: 'none',
   });
   const root = host.attachShadow({ mode: 'open' });
-  const style = document.createElement('style');
-  style.textContent = STYLE_TEXT;
-  root.appendChild(style);
+  installContentStyle(root, STYLE_TEXT);
   document.documentElement.appendChild(host);
   hostEl = host;
   return host;

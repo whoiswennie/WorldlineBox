@@ -55,6 +55,13 @@ export async function executeFolderMainCommand(
         libraryId: request.libraryId,
         folderIds: request.folderIds,
       };
+    case "folder.cover.set-asset.request":
+      return {
+        type: "folder.cover.set-asset",
+        libraryId: request.libraryId,
+        folderIds: request.folderIds,
+        assetId: request.assetId,
+      };
     case "folder.list.request":
       return { type: "folder.list", libraryId: request.libraryId, showIgnored: request.showIgnored };
     case "folder.browse-entries.request":

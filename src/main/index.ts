@@ -13,12 +13,13 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import {
-  readFileSync,
-  writeFileSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 
 import {
@@ -93,6 +94,25 @@ import {
   type SyncBindingRecord,
 } from "./library-request/sync";
 import { tryHandleAiOwnedRequest } from "./library-request/ai";
+import { tryHandleEmbeddingModelRequest } from "./library-request/embedding-models";
+import { EmbeddingTestIndex } from "./embedding-test-index";
+import { EmbeddingHttpIndex } from "./embedding-http-index";
+import {
+  embeddingSearchRoots,
+  inspectEmbeddingTree,
+  resolveInstalledEmbeddingLayout,
+} from "./embedding-install";
+import {
+  parseEmbeddingBindings,
+  type EmbeddingLibraryBinding,
+} from "./embedding-library-binding";
+import {
+  parseEmbeddingServiceCatalog,
+  type EmbeddingServiceCatalog,
+} from "./embedding-service-registry";
+import type { EmbeddingModelCatalog } from "./embedding-model-catalog";
+import { parseEmbeddingModelCatalog } from "./embedding-model-catalog";
+import { resolveEffectiveEmbeddingSelection } from "../shared/embedding/library-binding";
 import { tryHandlePreviewOwnedRequest } from "./library-request/preview";
 import { tryHandleMediaShellWorkerResult } from "./library-request/media-shell";
 import { maybePrimeNativeDrag } from "./library-request/native-drag";
@@ -144,6 +164,19 @@ import type {
   AppUpdateCheckResult,
   AppUpdateInstallResult,
 } from '../shared/app-update';
+import {
+  applyStartupLoginItem,
+  readStartupPreferences,
+  startupPreferencesSnapshot as createStartupPreferencesSnapshot,
+  startupPreferencesFilePath,
+  writeStartupPreferences,
+} from './startup-preferences-store';
+import {
+  shouldHandleSecondaryLaunch,
+  shouldShowMainWindowOnReady,
+  type StartupPreferences,
+  type StartupPreferencesSnapshot,
+} from '../shared/startup-preferences';
 
 import { popupEditContextMenu } from "./edit-context-menu";
 import {
@@ -188,6 +221,8 @@ import {
   APP_UPDATE_INSTALL_CHANNEL,
   APP_UPDATE_CANCEL_CHANNEL,
   APP_UPDATE_PROGRESS_CHANNEL,
+  STARTUP_PREFERENCES_GET_CHANNEL,
+  STARTUP_PREFERENCES_SET_CHANNEL,
   REVEAL_APP_LOG_CHANNEL,
   READ_APP_LOG_CHANNEL,
   SHOW_EDIT_CONTEXT_MENU_CHANNEL,
@@ -200,6 +235,7 @@ import {
   NATIVE_EDIT_COPY_CHANNEL,
   PLUGIN_MANAGER_CHANNEL,
   PLUGIN_INSTALL_PROGRESS_CHANNEL,
+  EMBEDDING_INSTALL_PROGRESS_CHANNEL,
   PLUGIN_CONTRIBUTIONS_CHANGED_CHANNEL,
   PLUGIN_INPUT_CAPTURE_EVENT_CHANNEL,
   PLUGIN_INPUT_CAPTURE_SESSIONS_CHANNEL,
@@ -304,6 +340,11 @@ import {
   type AutomationCommandId,
   type AutomationSource,
 } from '../automation/command-registry';
+import {
+  attachLinuxRoundedCorners,
+  linuxRoundedWindowOptions,
+  shouldUseLinuxRoundedCorners,
+} from "./linux-window-corners";
 import {
   shouldHideApplicationMenuBar,
   shouldUseFramelessTitleBar,
@@ -442,6 +483,10 @@ import {
   recordExtensionBrowseFolder,
 } from "./extension-recent-browse-folders";
 import { resolveExtensionSaveRouting } from "./extension-save-context";
+import { BROWSER_CAPTURE_OPEN_ASSETS } from '../shared/browser-capture';
+import type { BrowserCaptureHooks, BrowserCaptureTargets } from './browser/capture-host';
+import { captureLibraryWindowId } from './browser/capture-routing';
+import { captureLinkedFolderOptions } from './browser/capture-folders';
 import { RelinkPreviewStore } from "./relink-preview-store";
 import {
   cleanupClipboardImage,
@@ -457,9 +502,13 @@ import {
 // Headless E2E hosts may expose no hardware WebGL implementation. Opt those
 // tests into Chromium's explicitly acknowledged software path; production
 // keeps the platform's normal GPU selection and never silently downgrades it.
+// WORLDLINEBOX_SOFTWARE_GL=1 is the same explicit opt-in for users on GPU-less
+// hosts (Linux VMs / remote desktops without a usable GL driver), so the 3D
+// viewer and model thumbnails can render via SwiftShader. Off by default.
 if (
-  process.env.WORLDLINEBOX_E2E === "1" &&
-  process.env.WORLDLINEBOX_E2E_ENABLE_SWIFTSHADER === "1"
+  (process.env.WORLDLINEBOX_E2E === "1" &&
+    process.env.WORLDLINEBOX_E2E_ENABLE_SWIFTSHADER === "1") ||
+  process.env.WORLDLINEBOX_SOFTWARE_GL === "1"
 ) {
   app.commandLine.appendSwitch("enable-unsafe-swiftshader");
   app.commandLine.appendSwitch("use-angle", "swiftshader");
@@ -502,13 +551,60 @@ const hasSingleInstanceLock = allowMultiInstance
 
 let mainWindow: BrowserWindow | undefined;
 let dshLauncher: DshLauncher | undefined;
-let browserService: { shutdown(): Promise<void> } | undefined;
+let browserService: { shutdown(): Promise<void>; closeLibrary(libraryId: string): void } | undefined;
 let musicService: MusicService | undefined;
 let companionService: CompanionService | undefined;
 let companionWorldWindows: CompanionWorldWindowManager | undefined;
+const mainProcessSessionId = randomUUID();
 /** Effective UI locale for native dialogs; synced from Renderer (WorldlineBox-bwb). */
 let appLocale: AppLocale = "en";
 let workerClient: LibraryWorkerClient | undefined;
+let embeddingTestIndex: EmbeddingTestIndex | undefined;
+let embeddingHttpIndex: EmbeddingHttpIndex | undefined;
+
+function embeddingIndex(): EmbeddingTestIndex {
+  embeddingTestIndex ??= new EmbeddingTestIndex({
+    configDirectories: [process.cwd(), app.getAppPath()],
+    ...(process.platform === "win32"
+      ? { koffiPath: createRequire(path.join(app.getAppPath(), "package.json")).resolve("koffi") }
+      : {}),
+    requestWorker: (command) => {
+      if (!workerClient) return Promise.reject(new Error("Library Worker is unavailable."));
+      return workerClient.request(command);
+    },
+    installedLayout: (modelId) => resolveInstalledEmbeddingLayout(inspectEmbeddingTree(embeddingSearchRoots({
+      userData: app.getPath("userData"),
+      home: app.getPath("home"),
+    })), modelId),
+    resolveMediaBinaries: resolveHostMediaBinaries,
+  });
+  return embeddingTestIndex;
+}
+
+function embeddingHttp(): EmbeddingHttpIndex {
+  embeddingHttpIndex ??= new EmbeddingHttpIndex({
+    requestWorker: (command) => {
+      if (!workerClient) return Promise.reject(new Error("Library Worker is unavailable."));
+      return workerClient.request(command);
+    },
+    loadService: (id) => parseEmbeddingServiceCatalog(readEmbeddingServices()).services.find((service) => service.id === id) ?? null,
+    readKey: readEmbeddingServiceKey,
+    isLibraryEnabled: (libraryId, serviceId) => {
+      const binding = readEmbeddingBindings()[libraryId];
+      // Renderer selects the global default when the library inherits settings.
+      // Main does not own that preference; an absent per-library binding must
+      // therefore allow the already-routed service request.
+      if (!binding) return true;
+      const defaultModelId = parseEmbeddingModelCatalog(readEmbeddingModels()).defaultModelId ?? "";
+      return resolveEffectiveEmbeddingSelection({
+        globalEnabled: true,
+        defaultModelId,
+        libraryBinding: binding,
+      }) === serviceId;
+    },
+  });
+  return embeddingHttpIndex;
+}
 /** 自动同步调度器（WorldlineBox-bfsb 后续），随 Worker 生命周期启停。 */
 let syncAutoScheduler: SyncAutoScheduler | undefined;
 type ArtifactPathBatchWaiter = {
@@ -686,9 +782,12 @@ function initializePreviewCache(): void {
 let offscreenThumbnailRenderer: OffscreenThumbnailRenderer | undefined;
 let quitAfterShutdown = false;
 let applicationClosing = false;
-let shutdownStarted = false;
+let applicationQuitting = false;
+let applicationShutdownPromise: Promise<void> | null = null;
+let updateHandoff = false;
 let startupComplete = false;
 let startupWindow: StartupWindow | undefined;
+const UPDATE_HANDOFF_EXIT_MS = 8_000;
 let logger: AppLogger | undefined;
 const VIEWER_TIMING_LOG = process.env.WORLDLINEBOX_VIEWER_TIMING_LOG === "1";
 let appLogPath: string | undefined;
@@ -1173,6 +1272,76 @@ function writeSyncBindings(bindings: Record<string, SyncBindingRecord>): void {
   writeFileSync(syncBindingsPath(), JSON.stringify(bindings, null, 2), "utf-8");
 }
 
+function embeddingModelsPath(): string {
+  return path.join(app.getPath("userData"), "embedding-models.json");
+}
+
+function readEmbeddingModels(): unknown {
+  try {
+    return JSON.parse(readFileSync(embeddingModelsPath(), "utf-8")) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function writeEmbeddingModels(catalog: EmbeddingModelCatalog): void {
+  writeFileSync(embeddingModelsPath(), JSON.stringify(catalog, null, 2), "utf-8");
+}
+
+function embeddingServicesPath(): string {
+  return path.join(app.getPath("userData"), "embedding-services.json");
+}
+
+function readEmbeddingServices(): unknown {
+  try {
+    return JSON.parse(readFileSync(embeddingServicesPath(), "utf-8")) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function writeEmbeddingServices(catalog: EmbeddingServiceCatalog): void {
+  writeFileSync(embeddingServicesPath(), JSON.stringify(catalog, null, 2), "utf-8");
+}
+
+function embeddingBindingsPath(): string {
+  return path.join(app.getPath("userData"), "embedding-library-bindings.json");
+}
+
+function readEmbeddingBindings(): Record<string, EmbeddingLibraryBinding> {
+  try {
+    return parseEmbeddingBindings(JSON.parse(readFileSync(embeddingBindingsPath(), "utf-8")) as unknown);
+  } catch {
+    return {};
+  }
+}
+
+function writeEmbeddingBindings(bindings: Record<string, EmbeddingLibraryBinding>): void {
+  writeFileSync(embeddingBindingsPath(), JSON.stringify(bindings, null, 2), "utf-8");
+}
+
+function embeddingServiceKeyPath(id: string): string {
+  return path.join(app.getPath("userData"), "embedding-service-keys", `${id}.bin`);
+}
+
+function readEmbeddingServiceKey(id: string): string | null {
+  try {
+    return safeStorage.decryptString(readFileSync(embeddingServiceKeyPath(id)));
+  } catch {
+    return null;
+  }
+}
+
+function writeEmbeddingServiceKey(id: string, apiKey: string): void {
+  const filePath = embeddingServiceKeyPath(id);
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, safeStorage.encryptString(apiKey));
+}
+
+function deleteEmbeddingServiceKey(id: string): void {
+  rmSync(embeddingServiceKeyPath(id), { force: true });
+}
+
 function resolveSyncServerCredentials(serverId: string): {
   baseUrl: string;
   username?: string;
@@ -1286,13 +1455,124 @@ function saveEncryptedApiKey(apiKey: string): void {
 }
 
 function focusMainWindow(): boolean {
+  if (!shouldHandleSecondaryLaunch({ updateHandoff, applicationQuitting })) return false;
   if (startupWindow?.focus()) return true;
   return focusWorldlineBoxWindow(
     mainWindow && !mainWindow.isDestroyed() ? mainWindow.id : undefined,
   );
 }
 
+let loopbackRelease: Promise<void> | undefined;
+
+function releaseLoopbackListeners(): Promise<void> {
+  if (loopbackRelease !== undefined) return loopbackRelease;
+  try {
+    extensionServer?.server.close();
+  } catch (error) {
+    logger?.error("extension-server", error);
+  }
+  extensionServer = undefined;
+  const mcpClose = embeddedMcpServer?.close() ?? Promise.resolve();
+  loopbackRelease = mcpClose.catch((error: unknown) => {
+    logger?.error("automation.mcp.close", error);
+  });
+  return loopbackRelease;
+}
+
+function beginUpdateHandoff(): void {
+  if (updateHandoff) return;
+  updateHandoff = true;
+  applicationClosing = true;
+  applicationQuitting = true;
+  startupWindow?.complete(false);
+  startupWindow = undefined;
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.hide();
+  }
+  if (process.platform === "darwin") app.hide();
+  void releaseLoopbackListeners();
+  const exitTimer = setTimeout(() => {
+    app.exit(0);
+  }, UPDATE_HANDOFF_EXIT_MS);
+  exitTimer.unref();
+}
+
+function suppressWindowDuringUpdateHandoff(window: BrowserWindow): void {
+  if (shouldHandleSecondaryLaunch({ updateHandoff, applicationQuitting })) return;
+  if (!window.isDestroyed()) window.hide();
+  window.once("ready-to-show", () => {
+    if (
+      !window.isDestroyed()
+      && !shouldHandleSecondaryLaunch({ updateHandoff, applicationQuitting })
+    ) {
+      window.hide();
+    }
+  });
+}
+
+function startupPreferencesPath(): string {
+  return startupPreferencesFilePath(app.getPath("userData"));
+}
+
+function getOSLoginItemState(): {
+  openAtLogin: boolean;
+  executableWillLaunchAtLogin?: boolean;
+  status?: string;
+} {
+  const state = app.getLoginItemSettings(
+    process.platform === "win32" ? { args: [] } : undefined,
+  );
+  return {
+    openAtLogin: state.openAtLogin,
+    ...(process.platform === "win32"
+      ? { executableWillLaunchAtLogin: state.executableWillLaunchAtLogin }
+      : { status: state.status }),
+  };
+}
+
+function readStartupPreferencesSnapshot(): StartupPreferencesSnapshot {
+  const preferences = readStartupPreferences(startupPreferencesPath());
+  return createStartupPreferencesSnapshot({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    e2e: process.env.WORLDLINEBOX_E2E === "1",
+    preferences,
+    getLoginItemState: getOSLoginItemState,
+    onReadError: (error) => logger?.error("startup.login-item", error),
+  });
+}
+
+function storeStartupPreferences(input: unknown): StartupPreferencesSnapshot {
+  const current = readStartupPreferences(startupPreferencesPath());
+  const record = typeof input === "object" && input !== null ? input as {
+    openAtLogin?: unknown;
+  } : {};
+  const preferences: StartupPreferences = {
+    version: 1,
+    openAtLogin: typeof record.openAtLogin === "boolean" ? record.openAtLogin : current.openAtLogin,
+  };
+  const snapshot = applyStartupLoginItem({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    e2e: process.env.WORLDLINEBOX_E2E === "1",
+    preferences,
+    setLoginItemSettings: (settings) => {
+      app.setLoginItemSettings({
+        openAtLogin: settings.openAtLogin,
+        ...(settings.args === undefined ? {} : { args: [...settings.args] }),
+        ...(settings.enabled === undefined ? {} : { enabled: settings.enabled }),
+      });
+    },
+    getLoginItemState: getOSLoginItemState,
+  });
+  if (!snapshot.registrationFailed) {
+    writeStartupPreferences(startupPreferencesPath(), preferences);
+  }
+  return snapshot;
+}
+
 function handleSecondInstance(): void {
+  if (!shouldHandleSecondaryLaunch({ updateHandoff, applicationQuitting })) return;
   if (startupWindow?.focus()) return;
   if (
     MAIN_WINDOW_VITE_DEV_SERVER_URL &&
@@ -1309,6 +1589,7 @@ function handleSecondInstance(): void {
 }
 
 function focusWorldlineBoxWindow(windowId?: number): boolean {
+  if (!shouldHandleSecondaryLaunch({ updateHandoff, applicationQuitting })) return false;
   const target =
     windowId === undefined
       ? mainWindow
@@ -1433,6 +1714,7 @@ async function createMainWindow(): Promise<void> {
     app.dock?.setIcon(devIcon);
   }
 
+  const linuxRoundedCorners = shouldUseLinuxRoundedCorners();
   const window = new BrowserWindow({
     width: isolatedPlacement?.width ?? defaultWidth,
     height: isolatedPlacement?.height ?? defaultHeight,
@@ -1447,7 +1729,7 @@ async function createMainWindow(): Promise<void> {
     ...(process.platform === "darwin"
       ? {
           titleBarStyle: "hiddenInset" as const,
-          trafficLightPosition: { x: 14, y: 14 },
+          trafficLightPosition: { x: 14, y: 16 },
         }
       : shouldUseFramelessTitleBar(process.platform)
         ? {
@@ -1455,6 +1737,7 @@ async function createMainWindow(): Promise<void> {
             titleBarStyle: "hidden" as const,
           }
         : {}),
+    ...(linuxRoundedCorners ? linuxRoundedWindowOptions() : {}),
     webPreferences: {
       preload: path.join(__dirname, "index.js"),
       // A hidden startup window must still finish module fetches and paint.
@@ -1467,6 +1750,7 @@ async function createMainWindow(): Promise<void> {
   });
 
   mainWindow = window;
+  if (linuxRoundedCorners) attachLinuxRoundedCorners(window);
   const mainContentsId = window.webContents.id;
   // Keep renderer diagnostics active in both development and packaged builds.
   // A blank window in a packaged build must leave the same evidence as one
@@ -1488,10 +1772,12 @@ async function createMainWindow(): Promise<void> {
     show: () => {
       // E2E can keep its renderer fully loaded and automatable without putting
       // a test window over the user's desktop session.
-      if (
-        process.env.WORLDLINEBOX_E2E !== "1"
-        || process.env.WORLDLINEBOX_E2E_HIDE_WINDOW !== "1"
-      ) {
+      if (shouldShowMainWindowOnReady({
+        updateHandoff,
+        applicationQuitting,
+        e2eHideWindow: process.env.WORLDLINEBOX_E2E === "1"
+          && process.env.WORLDLINEBOX_E2E_HIDE_WINDOW === "1",
+      })) {
         window.show();
       }
     },
@@ -1769,6 +2055,59 @@ async function handleListFolders(): Promise<ListFoldersDisposition> {
   };
 }
 
+function browserCaptureLibraryOwner(libraryId: string): number | null {
+  return captureLibraryWindowId({ libraryId, contexts: focusedContexts,
+    liveWindowIds: new Set(BrowserWindow.getAllWindows().filter(window => !window.isDestroyed()).map(window => window.id)),
+    focusedWindowId: BrowserWindow.getFocusedWindow()?.id, lastTargetWindowId: lastExtensionTargetWindowId, mainWindowId: mainWindow?.id });
+}
+
+const browserCaptureHooks: BrowserCaptureHooks = {
+  async listTargets(requestedLibraryId) {
+    const empty: BrowserCaptureTargets = { libraries: [], activeLibraryId: null, defaultTarget: null, folders: [], recentBrowsedFolderIds: [] };
+    if (!workerClient || applicationQuitting) return empty;
+    const listed = await workerClient.request({ type: 'library.list' });
+    if (!listed.ok || listed.type !== 'library.list') return empty;
+    // Capture never opens an arbitrary path or changes another window's library.
+    const libraries = listed.libraries.filter(library => !library.readOnly && browserCaptureLibraryOwner(library.libraryId) !== null).slice(0, 100)
+      .map(library => ({ libraryId: library.libraryId, displayName: library.displayName }));
+    const active = getExtensionSaveContext();
+    const libraryId = libraries.some(library => library.libraryId === requestedLibraryId) ? requestedLibraryId!
+      : libraries.some(library => library.libraryId === active?.libraryId) ? active!.libraryId : libraries[0]?.libraryId;
+    if (!libraryId) return empty;
+    const [managed, linked] = await Promise.all([
+      workerClient.request({ type: 'folder.list', libraryId }),
+      workerClient.request({ type: 'linked-folder.list', libraryId }),
+    ]);
+    const folders: BrowserCaptureTargets['folders'] = managed.ok && managed.type === 'folder.list'
+      ? managed.folders.map(folder => ({ libraryId, folderId: folder.folderId, name: folder.name, relativePath: folder.relativePath,
+        assetCount: folder.directAssetCount, kind: 'managed', available: true })) : [];
+    if (linked.ok && linked.type === 'linked-folder.list') {
+      folders.push(...captureLinkedFolderOptions(libraryId, folders, linked.folders));
+    }
+    const selectedFolderId = active?.libraryId === libraryId && folders.some(folder => folder.folderId === active.selectedFolderId) ? active.selectedFolderId! : null;
+    const recent = extensionBrowseFoldersStorePath ? readExtensionBrowseFolderIds(extensionBrowseFoldersStorePath, libraryId) : [];
+    return { libraries, activeLibraryId: active?.libraryId ?? null, defaultTarget: { libraryId, folderId: selectedFolderId },
+      folders: folders.slice(0, 20_000), recentBrowsedFolderIds: (selectedFolderId ? [selectedFolderId, ...recent.filter(id => id !== selectedFolderId)] : recent).slice(0, 20) };
+  },
+  async importStaged(input) {
+    if (!workerClient || applicationQuitting) throw Error('资产管理器正在关闭。');
+    const target = input.target;
+    const targetWindowId = browserCaptureLibraryOwner(target.libraryId);
+    if (targetWindowId === null) throw Error('目标资源库所在窗口已切换或关闭，请重新选择采集目标。');
+    const result = await workerClient.request({ type: 'extension.save-from-file', libraryId: target.libraryId,
+      targetFolderId: target.folderId ?? undefined, sourcePageUrl: input.sourcePageUrl, mediaUrl: input.mediaUrl,
+      stagedFilePath: input.stagedFilePath, contentType: input.contentType, filename: input.filename });
+    if (!result.ok) throw Error(result.error.message);
+    if (result.type !== 'extension.asset-saved') throw Error('资产管理器返回了无效的采集结果。');
+    if (input.preferences.focusAppAfterSave) focusWorldlineBoxWindow(targetWindowId);
+    if (input.preferences.revealInLibrary) publishExtensionSaveCompleted(targetWindowId,
+      { type: 'extension.save.completed', libraryId: target.libraryId, asset: result.asset });
+    void enqueueAutoAnalyzeAfterImport(target.libraryId, [result.asset.assetId]);
+    return { assetId: result.asset.assetId };
+  },
+  openAssets() { mainWindow?.webContents.send(BROWSER_CAPTURE_OPEN_ASSETS); },
+};
+
 async function handleSaveIntent(
   intent: SaveIntent,
 ): Promise<SaveIntentDisposition> {
@@ -1936,10 +2275,22 @@ async function handleSaveUpload(
 }
 
 function publishLifecycle(event: RendererLifecycleEvent): void {
+  const parsed = parseRendererLifecycleEvent(event);
+  // Renderer, MCP, deletion and replacement all publish this same boundary.
+  // Release only already-created providers, even when no renderer is present.
+  if (parsed.type === "library.closed") {
+    browserService?.closeLibrary(parsed.libraryId);
+    void Promise.all([
+      embeddingTestIndex?.close(parsed.libraryId),
+      embeddingHttpIndex?.close(parsed.libraryId),
+    ]).catch((error: unknown) => {
+      logger?.error("embedding.library-closed", error, { libraryId: parsed.libraryId });
+    });
+  }
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send(
     LIBRARY_LIFECYCLE_CHANNEL,
-    parseRendererLifecycleEvent(event),
+    parsed,
   );
 }
 
@@ -2012,6 +2363,8 @@ function publishAssetChange(event: AssetChangeEvent): void {
   // library.changed channel and do not evict the viewer's hot path.
   sourcePathCache.clearLibrary(parsed.libraryId);
   evictArtifactPathCache(parsed.libraryId);
+  embeddingTestIndex?.catchUp(parsed.libraryId);
+  embeddingHttpIndex?.catchUp(parsed.libraryId);
   pluginActivationCoordinator?.fanOutDomainEvent(createPluginDomainEvent({
     kind: 'asset.changed',
     libraryId: parsed.libraryId,
@@ -2362,6 +2715,7 @@ async function commandFor(
     case "appearance.set.request":
     case "folder.cover.set.request":
     case "folder.cover.clear.request":
+    case "folder.cover.set-asset.request":
     case "folder.list.request":
     case "folder.browse-entries.request":
     case "folder.entries-request":
@@ -2602,6 +2956,24 @@ async function commandFor(
         createNativeDialogHost,
       });
     }
+    case "embedding.models.list.request":
+    case "embedding.models.upsert.request":
+    case "embedding.models.delete.request":
+    case "embedding.models.set-default.request":
+    case "embedding.services.list.request":
+    case "embedding.services.save.request":
+    case "embedding.services.delete.request":
+    case "embedding.services.probe.request":
+    case "embedding.services.grant.request":
+    case "embedding.binding.get.request":
+    case "embedding.binding.save.request":
+    case "embedding.install.status.request":
+    case "embedding.install.start.request":
+    case "embedding.install.delete.request":
+    case "embedding.index.status.request":
+    case "embedding.search.request":
+    case "embedding.similar.request":
+      return undefined;
     default:
       return assertNever(request);
   }
@@ -2742,6 +3114,36 @@ async function handleLibraryRequest(
       },
     });
     if (syncOwnedResult) return syncOwnedResult;
+
+    const embeddingModelResult = await tryHandleEmbeddingModelRequest(request, {
+      readCatalog: readEmbeddingModels,
+      writeCatalog: writeEmbeddingModels,
+      readServices: readEmbeddingServices,
+      writeServices: writeEmbeddingServices,
+      serviceCredentials: {
+        has: (id) => existsSync(embeddingServiceKeyPath(id)),
+        read: readEmbeddingServiceKey,
+        write: writeEmbeddingServiceKey,
+        delete: deleteEmbeddingServiceKey,
+      },
+      userDataPath: () => app.getPath("userData"),
+      homePath: () => app.getPath("home"),
+      readBindings: readEmbeddingBindings,
+      writeBindings: writeEmbeddingBindings,
+      get embeddingIndex() { return embeddingIndex(); },
+      get embeddingHttpIndex() { return embeddingHttp(); },
+      stopGemmaIndex: (libraryId) => embeddingTestIndex?.close(libraryId),
+      stopHttpIndex: (libraryId) => embeddingHttpIndex?.close(libraryId),
+      onInstallProgress: (event) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(EMBEDDING_INSTALL_PROGRESS_CHANNEL, event);
+        }
+      },
+      logError: (scope, error, context) => {
+        logger?.error(scope, error, context);
+      },
+    });
+    if (embeddingModelResult) return embeddingModelResult;
 
     const aiOwnedResult = await tryHandleAiOwnedRequest(request, {
       loadAiConfig,
@@ -3675,7 +4077,7 @@ async function startApplication(): Promise<void> {
     });
   }
   const { registerBrowserIpc } = await import('./browser/service');
-  browserService = registerBrowserIpc(() => mainWindow);
+  browserService = registerBrowserIpc(() => mainWindow, browserCaptureHooks);
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
@@ -3741,9 +4143,7 @@ async function startApplication(): Promise<void> {
         const openError = await shell.openPath(installerPath);
         if (openError !== '') throw new Error(openError);
       }
-      setImmediate(() => {
-        app.quit();
-      });
+      beginUpdateHandoff();
     },
     onDownloadProgress: (progress) => {
       mainWindow?.webContents.send(APP_UPDATE_PROGRESS_CHANNEL, progress);
@@ -3808,6 +4208,8 @@ async function startApplication(): Promise<void> {
         app.getPath('userData'),
         'library-metadata-cache',
       ),
+      WORLDLINEBOX_SEMANTIC_LEGACY_CACHE_ROOT: app.getPath('userData'),
+      WORLDLINEBOX_MAIN_PROCESS_SESSION_ID: mainProcessSessionId,
     },
   );
   startupWindow?.set("storage", "准备本地数据入口，按需打开资源库");
@@ -5083,6 +5485,14 @@ async function startApplication(): Promise<void> {
   // Forward thumbnail events to the renderer
   workerClient.onThumbnailEvent((event) => {
     if (
+      event.type === "asset.thumbnail.ready"
+      || (event.type === "asset.thumbnail.batch-ready" && event.ready.length > 0)
+    ) {
+      // Cover-only video semantics skips a clip until its poster exists.
+      // A ready cover is the cue to encode that clip; there is no frame-sampling fallback.
+      embeddingTestIndex?.catchUp(event.libraryId);
+    }
+    if (
       event.type === "asset.thumbnail.ready" ||
       event.type === "asset.thumbnail.failed"
     ) {
@@ -5801,6 +6211,31 @@ async function startApplication(): Promise<void> {
     return pluginPackageRequest(input);
   });
 
+  ipcMain.handle(STARTUP_PREFERENCES_GET_CHANNEL, (event): StartupPreferencesSnapshot => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) {
+      return readStartupPreferencesSnapshot();
+    }
+    return readStartupPreferencesSnapshot();
+  });
+
+  ipcMain.handle(STARTUP_PREFERENCES_SET_CHANNEL, (event, input: unknown): StartupPreferencesSnapshot => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) {
+      logger?.info("ipc.startup-preferences", "Rejected startup preference update.", {
+        code: "unauthorized-sender",
+      });
+      return readStartupPreferencesSnapshot();
+    }
+    try {
+      return storeStartupPreferences(input);
+    } catch (error) {
+      logger?.error("startup.login-item", error);
+      return {
+        ...readStartupPreferencesSnapshot(),
+        registrationFailed: true,
+      };
+    }
+  });
+
   ipcMain.handle(
     APP_UPDATE_CHECK_CHANNEL,
     async (event): Promise<AppUpdateCheckResult> => {
@@ -5829,7 +6264,14 @@ async function startApplication(): Promise<void> {
       if (appUpdateService === undefined) {
         return { ok: false, status: 'error', code: 'service-unavailable' };
       }
-      return appUpdateService.downloadAndInstall();
+      const result = await appUpdateService.downloadAndInstall();
+      if (result.ok && result.action === 'installer-opened') {
+        beginUpdateHandoff();
+        setImmediate(() => {
+          app.quit();
+        });
+      }
+      return result;
     },
   );
 
@@ -6106,6 +6548,27 @@ async function startApplication(): Promise<void> {
     logger,
   });
 
+  const startupPreferences = readStartupPreferences(startupPreferencesPath());
+  if (startupPreferences.openAtLogin) {
+    try {
+      applyStartupLoginItem({
+        platform: process.platform,
+        packaged: app.isPackaged,
+        e2e: process.env.WORLDLINEBOX_E2E === "1",
+        preferences: startupPreferences,
+        setLoginItemSettings: (settings) => {
+          app.setLoginItemSettings({
+            openAtLogin: settings.openAtLogin,
+            ...(settings.args === undefined ? {} : { args: [...settings.args] }),
+            ...(settings.enabled === undefined ? {} : { enabled: settings.enabled }),
+          });
+        },
+      });
+    } catch (error) {
+      logger?.error("startup.login-item", error);
+    }
+  }
+
   startupWindow?.set("interface", "装载应用界面，随后连接本地内容");
   await createMainWindow();
   try {
@@ -6156,6 +6619,10 @@ app.setName("WorldlineBox");
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
+  app.on("browser-window-created", (_event, window) => {
+    suppressWindowDuringUpdateHandoff(window);
+  });
+
   app.on("second-instance", handleSecondInstance);
 
   app
@@ -6174,6 +6641,7 @@ if (!hasSingleInstanceLock) {
     });
 
   app.on("activate", () => {
+    if (!shouldHandleSecondaryLaunch({ updateHandoff, applicationQuitting })) return;
     if (!startupComplete) return;
     if (BrowserWindow.getAllWindows().length === 0) void createMainWindow();
     else focusMainWindow();
@@ -6184,6 +6652,12 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("will-quit", () => {
+    void embeddingTestIndex?.close().catch((error) => {
+      logger?.error('embedding.local-index.close', error, { reason: 'application-quit' });
+    });
+    void embeddingHttpIndex?.close().catch((error) => {
+      logger?.error('embedding.http-index.close', error, { reason: 'application-quit' });
+    });
     void cleanupAllExternalSources();
     syncAutoScheduler?.stop();
     syncAutoScheduler = undefined;
@@ -6195,15 +6669,15 @@ if (!hasSingleInstanceLock) {
     applicationClosing = true;
     companionWorldWindows?.dispose();
     companionWorldWindows = undefined;
+    applicationQuitting = true;
     aiQueueScheduler.clearAll();
     criticalConfirmationWindowManager?.dispose();
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !dshLauncher && !companionService)) return;
+    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !browserService && !dshLauncher && !musicService && !companionService)) return;
     event.preventDefault();
-    if (shutdownStarted) return;
-    shutdownStarted = true;
+    if (applicationShutdownPromise) return;
 
     // Slice E: fail in-flight model thumbnail renders and destroy the window.
     offscreenThumbnailRenderer?.dispose();
@@ -6211,28 +6685,40 @@ if (!hasSingleInstanceLock) {
 
     pluginActivationCoordinator?.dispose('supervisor-shutdown');
 
-    // Close the extension server early; stop accepting new save intents.
-    try {
-      extensionServer?.server.close();
-      extensionServer = undefined;
-    } catch {
-      // Best effort.
-    }
-
-    const mcpClose = embeddedMcpServer?.close() ?? Promise.resolve();
-    void Promise.all([mcpClose, browserService?.shutdown() ?? Promise.resolve(), dshLauncher?.shutdown() ?? Promise.resolve(), musicService?.flush() ?? Promise.resolve(), companionService?.shutdown() ?? Promise.resolve()])
-      .catch((error: unknown) => {
-        logger?.error("automation.mcp.close", error);
-      })
-      .then(() => workerClient?.shutdown())
-      .finally(() => {
-        quitAfterShutdown = true;
-      // The first app.quit() is intentionally intercepted above while the
-      // worker drains. Once the worker is shut down there is nothing left to
-      // close asynchronously; app.exit() completes the already-authorized
-      // application shutdown instead of re-entering the quit lifecycle and
-      // leaving a hidden Electron process behind on Windows.
+    // Close loopback listeners before the worker drain so an update handoff
+    // does not keep a port open while the installer starts the next process.
+    const mcpClose = releaseLoopbackListeners();
+    // Stop model processes before app.exit(), which bypasses will-quit.
+    applicationShutdownPromise = (async (): Promise<void> => {
+      const results = await Promise.allSettled([
+        mcpClose,
+        embeddingTestIndex?.close(),
+        embeddingHttpIndex?.close(),
+        browserService?.shutdown(),
+        dshLauncher?.shutdown(),
+        musicService?.flush(),
+        companionService?.shutdown(),
+      ]);
+      for (const [index, result] of results.entries()) {
+        if (result.status !== "rejected") continue;
+        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown"][index]
+          ?? "application.shutdown.close";
+        logger?.error(source, result.reason, { reason: "application-quit" });
+      }
+      try {
+        await workerClient?.shutdown();
+      } catch (error) {
+        logger?.error("library.worker.shutdown", error, { reason: "application-quit" });
+      }
+      quitAfterShutdown = true;
+      // The first app.quit() is intentionally intercepted above while owned
+      // processes and the Worker drain. app.exit() then completes that quit.
       app.exit(0);
-      });
+    })();
+    void applicationShutdownPromise.catch((error: unknown) => {
+      logger?.error("application.shutdown", error);
+      quitAfterShutdown = true;
+      app.exit(0);
+    });
   });
 }

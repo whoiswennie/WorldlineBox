@@ -94,7 +94,7 @@ describe("distributed masonry", () => {
       (item) => heights[item]!,
     );
 
-    // Shortest-load packing → [a] | [b,d,e] | [c].
+    // Shortest-load packing with ASSET_GRID_GAP_PX=14 → [a] | [b,d,e] | [c].
     expect(columns.map((column) => column.items)).toEqual([
       ["a"],
       ["b", "d", "e"],
@@ -173,12 +173,12 @@ describe("layoutJustifiedRows", () => {
       ],
       900,
       120,
-      14,
+      ASSET_GRID_GAP_PX,
     );
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     const widths = row.items.map((item) => item.width);
-    const gaps = 14 * (row.items.length - 1);
+    const gaps = ASSET_GRID_GAP_PX * (row.items.length - 1);
     expect(widths.every((width) => Number.isInteger(width))).toBe(true);
     expect(Number.isInteger(row.height)).toBe(true);
     expect(widths.reduce((sum, w) => sum + w, 0) + gaps).toBe(900);
@@ -208,10 +208,32 @@ describe("layoutJustifiedRows", () => {
       [{ id: "solo", aspectRatio: 1 }],
       800,
       100,
-      14,
+      ASSET_GRID_GAP_PX,
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.height).toBe(100);
     expect(rows[0]!.items[0]!.width).toBe(100);
+  });
+});
+
+describe("layoutJustifiedRows closest-break smoothing", () => {
+  it("includes the overflowing item when that lands nearer the target height", () => {
+    // 1000px wide, target 200: three 1.5 aspect items natural = 900 + gaps.
+    // Greedy would close with 3 (scaled ~1.08); a 4th tall item (0.7) gives
+    // ~1.0 overall, which is closer to target.
+    const items = [1.5, 1.5, 1.5, 0.7, 1.5].map((aspectRatio, i) => ({ id: String(i), aspectRatio }));
+    const rows = layoutJustifiedRows(items, 1000, 200, 10);
+    expect(rows[0]!.items).toHaveLength(4);
+    expect(Math.abs(rows[0]!.height - 200)).toBeLessThan(20);
+  });
+});
+
+describe("layoutJustifiedRows minimum slot aspect", () => {
+  it("never makes a slot narrower than JUSTIFIED_MIN_SLOT_ASPECT x height", () => {
+    const items = Array.from({ length: 10 }, (_, i) => ({ id: String(i), aspectRatio: 0.3 }));
+    const rows = layoutJustifiedRows(items, 900, 200, 10);
+    for (const row of rows) for (const item of row.items) {
+      expect(item.width / row.height).toBeGreaterThanOrEqual(0.6);
+    }
   });
 });

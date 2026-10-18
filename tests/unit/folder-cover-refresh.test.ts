@@ -47,4 +47,14 @@ describe("collectFolderCoverCandidateAssetIds (WorldlineBox-d0nv)", () => {
     expect(collectFolderCoverCandidateAssetIds([]).size).toBe(0);
     expect(collectFolderCoverCandidateAssetIds([entry("folder-a", [])]).size).toBe(0);
   });
+
+  it("includes custom cover assets and sidebar cover assets", () => {
+    const entries = [
+      { ...entry("folder-a", ["asset-1"]), customCoverAssetId: "custom-1" },
+    ];
+    expect([...collectFolderCoverCandidateAssetIds(entries, [
+      { assetId: "nav-1" },
+      {},
+    ])].sort()).toEqual(["asset-1", "custom-1", "nav-1"]);
+  });
 });

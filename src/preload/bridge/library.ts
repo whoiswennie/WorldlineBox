@@ -10,9 +10,11 @@ function createNavigationId(): string {
 import { ipcRenderer, webUtils } from 'electron';
 
 import type { AiJobStatus, LibraryApiResult, LinkedAssetDeleteResult, MediaJobStatus, PluginJobStatus, PreviewResolution, RelinkAssetResult, WorldlineBoxLibraryApi, SyncCapabilities, SyncReport } from '../../shared/library-api';
+import type { EmbeddingInstallProgress } from '../../shared/embedding/install-progress';
 import type { MutationReceipt } from '../../shared/performance-contract';
 import { summarizePluginJobs } from '../../shared/plugin-job-status';
 import type { RecentLibraryEntry } from '../../shared/recent-libraries';
+import type { EmbeddingHttpAdapter } from '../../shared/embedding/http-service';
 import type { AiApiFormat } from '../../shared/ai-endpoints';
 import type { AiReliabilitySettings } from '../../shared/ai-reliability';
 import { searchQuerySchema } from '../../shared/asset-types';
@@ -28,6 +30,7 @@ import {
   LIBRARY_LIFECYCLE_CHANNEL,
   LIBRARY_CHANGED_CHANNEL,
   PROGRESS_CHANNEL,
+  EMBEDDING_INSTALL_PROGRESS_CHANNEL,
   AI_PROGRESS_CHANNEL,
   AI_COMPLETED_CHANNEL,
   AI_CLEARED_CHANNEL,
@@ -98,6 +101,8 @@ let e2eBrowseSessionDelay: {
   delayMs: number;
 } | null = null;
 if (e2eEnabled) {
+  // Isolated-world copy only. The renderer reads the main-world pin installed
+  // by preload/index.ts via contextBridge.executeInMainWorld.
   const e2eLocale = process.env.WORLDLINEBOX_E2E_LOCALE === 'en' ? 'en' : 'zh-CN';
   (globalThis as { __WORLDLINEBOX_E2E_LOCALE__?: string }).__WORLDLINEBOX_E2E_LOCALE__ =
     e2eLocale;
@@ -404,6 +409,13 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
 
   async setFolderCover(input: { libraryId: string; folderIds: string[] }) {
     const result = await request({ type: 'folder.cover.set.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'folder.cover.updated') throw new Error('Unexpected set-folder-cover response.');
+    return { ok: true as const, value: { folderIds: result.folderIds, hasCustomCover: result.hasCustomCover } };
+  },
+
+  async setFolderCoverFromAsset(input: { libraryId: string; folderIds: string[]; assetId: string }) {
+    const result = await request({ type: 'folder.cover.set-asset.request', ...input });
     if (!result.ok) return failure(result);
     if (result.type !== 'folder.cover.updated') throw new Error('Unexpected set-folder-cover response.');
     return { ok: true as const, value: { folderIds: result.folderIds, hasCustomCover: result.hasCustomCover } };
@@ -2060,6 +2072,223 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
     if (!result.ok) return failure(result);
     if (result.type !== 'sync.server.deleted') throw new Error('Unexpected sync server delete response.');
     return { ok: true, value: { id: result.id } };
+  },
+  async embeddingListModels() {
+    const result = await request({ type: 'embedding.models.list.request' });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.models.listed') throw new Error('Unexpected embedding model list response.');
+    return { ok: true as const, value: result.models };
+  },
+  async embeddingSaveModel(input: { id?: string; name: string; tier: 'Q4_K_XL' | 'Q8_0' | 'BF16'; modelDirectory: string; runtimePath: string }) {
+    const result = await request({ type: 'embedding.models.upsert.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.model.saved') throw new Error('Unexpected embedding model save response.');
+    return { ok: true as const, value: { id: result.id } };
+  },
+  async embeddingDeleteModel({ id }: { id: string }) {
+    const result = await request({ type: 'embedding.models.delete.request', id });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.model.deleted') throw new Error('Unexpected embedding model delete response.');
+    return { ok: true as const, value: { id: result.id } };
+  },
+  async embeddingInstallStatus() {
+    const result = await request({ type: 'embedding.install.status.request' });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.install.status') throw new Error('Unexpected embedding install status response.');
+    return {
+      ok: true as const,
+      value: {
+        runtimeInstalled: result.runtimeInstalled,
+        runtimeDownloadable: result.runtimeDownloadable,
+        models: result.models,
+      },
+    };
+  },
+  async embeddingInstall(input: { modelId: 'embeddinggemma-2-compact' | 'embeddinggemma-2-balanced' | 'embeddinggemma-2-quality' }) {
+    const result = await request({ type: 'embedding.install.start.request', modelId: input.modelId });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.install.status') throw new Error('Unexpected embedding install response.');
+    return {
+      ok: true as const,
+      value: {
+        runtimeInstalled: result.runtimeInstalled,
+        runtimeDownloadable: result.runtimeDownloadable,
+        models: result.models,
+      },
+    };
+  },
+  async embeddingUninstall(input: { modelId: 'embeddinggemma-2-compact' | 'embeddinggemma-2-balanced' | 'embeddinggemma-2-quality' }) {
+    const result = await request({ type: 'embedding.install.delete.request', modelId: input.modelId });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.install.status') throw new Error('Unexpected embedding uninstall response.');
+    return {
+      ok: true as const,
+      value: {
+        runtimeInstalled: result.runtimeInstalled,
+        runtimeDownloadable: result.runtimeDownloadable,
+        models: result.models,
+      },
+    };
+  },
+  onEmbeddingInstallProgress(listener: (event: EmbeddingInstallProgress) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      listener(payload as EmbeddingInstallProgress);
+    };
+    ipcRenderer.on(EMBEDDING_INSTALL_PROGRESS_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(EMBEDDING_INSTALL_PROGRESS_CHANNEL, handler);
+  },
+  async embeddingIndexStatus(input: {
+    libraryId: string;
+    modelId: string;
+    run: boolean;
+    restart: boolean;
+    rebuild?: boolean;
+    stop?: boolean;
+  }) {
+    const result = await request({ type: 'embedding.index.status.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.index.status') throw new Error('Unexpected embedding index status response.');
+    return {
+      ok: true as const,
+      value: {
+        phase: result.phase,
+        done: result.done,
+        total: result.total,
+        failedCount: result.failedCount,
+        ...(result.hold ? { hold: result.hold } : {}),
+      },
+    };
+  },
+  async embeddingSearch(input: {
+    libraryId: string;
+    modelId: string;
+    query: string;
+    filters?: FilterClause[];
+    scope?: SearchScope | null;
+    showIgnored?: boolean;
+  }) {
+    const result = await request({ type: 'embedding.search.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.search') throw new Error('Unexpected embedding search response.');
+    return {
+      ok: true as const,
+      value: {
+        phase: result.phase,
+        done: result.done,
+        total: result.total,
+        failedCount: result.failedCount,
+        ...(result.cancelled ? { cancelled: true } : {}),
+        assetIds: result.assetIds,
+        scores: result.scores,
+        ...(result.hold ? { hold: result.hold } : {}),
+      },
+    };
+  },
+  async embeddingListServices() {
+    const result = await request({ type: 'embedding.services.list.request' });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.services.listed') throw new Error('Unexpected embedding service list response.');
+    return { ok: true as const, value: result.services };
+  },
+  async embeddingSaveService(input: {
+    id?: string;
+    name: string;
+    description?: string;
+    adapter?: EmbeddingHttpAdapter;
+    destination: 'loopback' | 'lan' | 'internet';
+    baseUrl: string;
+    modelName: string;
+    apiKey?: string;
+    modalities?: Array<'image' | 'video' | 'audio' | 'text'>;
+    dimensions?: number | null;
+    maxImageEdgePx?: number;
+    maxImageBytes?: number;
+  }) {
+    const result = await request({ type: 'embedding.services.save.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.service.saved') throw new Error('Unexpected embedding service save response.');
+    return { ok: true as const, value: { id: result.id } };
+  },
+  async embeddingDeleteService({ id }: { id: string }) {
+    const result = await request({ type: 'embedding.services.delete.request', id });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.service.deleted') throw new Error('Unexpected embedding service delete response.');
+    return { ok: true as const, value: { id: result.id } };
+  },
+  async embeddingProbeService({ id }: { id: string }) {
+    const result = await request({ type: 'embedding.services.probe.request', id });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.service.probed') throw new Error('Unexpected embedding service probe response.');
+    return {
+      ok: true as const,
+      value: {
+        id: result.id,
+        textStatus: result.textStatus,
+        dimensions: result.dimensions,
+        probeFailure: result.probeFailure,
+      },
+    };
+  },
+  async embeddingGrantService(input: { id: string; libraryId: string }) {
+    const result = await request({ type: 'embedding.services.grant.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.service.granted') throw new Error('Unexpected embedding service grant response.');
+    return { ok: true as const, value: { id: result.id } };
+  },
+  async embeddingGetBinding({ libraryId }: { libraryId: string }) {
+    const result = await request({ type: 'embedding.binding.get.request', libraryId });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.binding') throw new Error('Unexpected embedding binding response.');
+    return {
+      ok: true as const,
+      value: {
+        selectionId: result.selectionId,
+        enabled: result.enabled,
+        inherit: result.inherit,
+      },
+    };
+  },
+  async embeddingSaveBinding(input: { libraryId: string; selectionId: string | null; inherit?: boolean }) {
+    const result = await request({ type: 'embedding.binding.save.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.binding') throw new Error('Unexpected embedding binding save response.');
+    return {
+      ok: true as const,
+      value: {
+        selectionId: result.selectionId,
+        enabled: result.enabled,
+        inherit: result.inherit,
+      },
+    };
+  },
+  async embeddingSimilar(input: {
+    libraryId: string;
+    modelId: string;
+    assetId: string;
+    filters?: FilterClause[];
+    scope?: SearchScope | null;
+  }) {
+    const result = await request({ type: 'embedding.similar.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.similar') throw new Error('Unexpected embedding similar response.');
+    return {
+      ok: true as const,
+      value: {
+        phase: result.phase,
+        done: result.done,
+        total: result.total,
+        failedCount: result.failedCount,
+        status: result.status,
+        sourceAssetId: result.sourceAssetId,
+        assetIds: result.assetIds,
+      },
+    };
+  },
+  async embeddingSetDefaultModel({ id }: { id: string }) {
+    const result = await request({ type: 'embedding.models.set-default.request', id });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.model.default-set') throw new Error('Unexpected embedding model default response.');
+    return { ok: true as const, value: { id: result.id } };
   },
   async syncSaveBinding({ libraryId, serverId, directoryName, enabled, pollIntervalMs, showCardSyncStatus }: { libraryId: string; serverId: string; directoryName?: string; enabled?: boolean; pollIntervalMs?: number; showCardSyncStatus?: boolean }): Promise<LibraryApiResult<void>> {
     const result = await request({ type: 'sync.library.binding.save.request', libraryId, serverId, directoryName, enabled, pollIntervalMs, showCardSyncStatus });

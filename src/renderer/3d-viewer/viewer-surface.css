@@ -40,7 +40,7 @@
   max-width: calc(100% - 24px);
   padding: 6px 10px;
   border: 1px solid var(--ui-border-divider);
-  border-radius: 10px;
+  border-radius: var(--ui-radius-overlay);
   background: color-mix(in srgb, var(--ui-surface-raised) 92%, transparent);
   box-shadow: 0 2px 12px rgb(0 0 0 / 24%);
   backdrop-filter: blur(10px);
@@ -55,7 +55,7 @@
   gap: 6px;
   height: 28px;
   padding: 0 8px;
-  border-radius: 7px;
+  border-radius: var(--ui-radius-control);
 }
 
 .model-viewer-toolbar-item.is-hdri {
@@ -76,7 +76,7 @@
   color: var(--ui-content-primary);
   background: var(--ui-surface-pane);
   border: 1px solid var(--ui-border-subtle);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-control);
   padding: 0 4px;
 }
 
@@ -100,7 +100,7 @@
   width: 28px;
   height: 28px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--ui-radius-control);
   background: transparent;
   color: var(--ui-content-secondary);
   cursor: pointer;
@@ -125,7 +125,7 @@
   margin: 0;
   padding: 10px 12px;
   border: 1px solid var(--ui-border-divider);
-  border-radius: 10px;
+  border-radius: var(--ui-radius-overlay);
   background: color-mix(in srgb, var(--ui-surface-raised) 92%, transparent);
   box-shadow: 0 2px 12px rgb(0 0 0 / 24%);
   color: var(--ui-content-primary);
@@ -201,7 +201,7 @@
   min-height: 30px;
   padding: 0 16px;
   border: 1px solid var(--ui-border-divider);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-surface);
   background: var(--ui-surface-raised);
   color: var(--ui-content-primary);
   font-size: calc(13px * var(--ui-font-scale));
@@ -239,7 +239,7 @@
   height: 24px;
   padding: 0 4px;
   border: 1px solid var(--ui-border-subtle);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-control);
   background: var(--ui-surface-pane);
   color: var(--ui-content-primary);
   font: inherit;
@@ -267,7 +267,7 @@
   width: 144px;
   height: 82px;
   flex: 0 0 auto;
-  border-radius: 5px;
+  border-radius: var(--ui-radius-control);
   object-fit: cover;
   background: var(--ui-surface-canvas);
 }
@@ -284,7 +284,7 @@
   max-width: min(300px, calc(100vw - 48px));
   padding: 8px;
   border: 1px solid var(--ui-border-divider);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-surface);
   background: var(--ui-surface-raised);
   box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
 }
@@ -301,7 +301,7 @@
   gap: 8px;
   padding: 6px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ui-radius-control);
   background: transparent;
   color: var(--ui-content-primary);
   font-size: var(--ui-font-size-body);

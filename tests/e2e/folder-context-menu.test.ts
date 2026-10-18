@@ -32,6 +32,7 @@ function launchApp(temporaryRoot: string, libraryPath: string, importFiles?: str
 }
 
 async function createLibrary(window: Page, libraryName: string) {
+  await window.locator('[data-application-module="assets"]').click();
   await window.getByRole("button", { name: "创建资源库" }).click();
   await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
   await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -84,7 +85,7 @@ async function createFolderViaSidebar(window: Page, folderName: string) {
 function sidebarFolderRow(window: Page, folderName: string) {
   const escapedTitle = folderName.replace(/["\\]/gu, "\\$&");
   return window.locator(
-    `.navigation-pane button.nav-row[title="${escapedTitle}"]`,
+    `.navigation-pane button.nav-row[data-hover-tip="${escapedTitle}"]`,
   );
 }
 
@@ -198,10 +199,10 @@ test("creates a nested subfolder inline from the folder context menu", async () 
     // directly after it and indented by exactly one depth step.
     const parentRow = sidebarFolderRow(window, "父级");
     const parentPadding = await parentRow.evaluate((element) =>
-      parseFloat(getComputedStyle(element).paddingLeft),
+      parseFloat(getComputedStyle(element.closest(".nav-tree-row")!).paddingLeft),
     );
     const editPadding = await editRow.evaluate((element) =>
-      parseFloat(getComputedStyle(element).paddingLeft),
+      parseFloat(getComputedStyle(element.closest(".nav-tree-row")!).paddingLeft),
     );
     expect(editPadding).toBe(parentPadding + 14);
     const pendingOrder = await folderRowOrder(window);
@@ -223,7 +224,7 @@ test("creates a nested subfolder inline from the folder context menu", async () 
     const childRow = sidebarFolderRow(window, "子级");
     await expect(childRow).toBeVisible({ timeout: 10_000 });
     const childPadding = await childRow.evaluate((element) =>
-      parseFloat(getComputedStyle(element).paddingLeft),
+      parseFloat(getComputedStyle(element.closest(".nav-tree-row")!).paddingLeft),
     );
     expect(childPadding).toBe(parentPadding + 14);
     const navOrder = await folderRowOrder(window);
@@ -236,6 +237,120 @@ test("creates a nested subfolder inline from the folder context menu", async () 
     expect(existsSync(path.join(libraryPath, "Assets", "父级", "子级"))).toBe(
       true,
     );
+  } finally {
+    await application.close();
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("restores the default cover only when a folder has a custom cover", async () => {
+  const temporaryRoot = mkdtempSync(
+    path.join(tmpdir(), "worldlinebox-folder-cover-menu-"),
+  );
+  const libraryName = "Folder Cover Menu";
+  const libraryPath = path.join(temporaryRoot, libraryName);
+  const sourcePath = path.join(temporaryRoot, "cover.png");
+  writeFileSync(sourcePath, VALID_PNG);
+
+  const application = await launchApp(temporaryRoot, libraryPath, sourcePath);
+
+  try {
+    const window = await application.firstWindow();
+    await createLibrary(window, libraryName);
+    await createFolderViaSidebar(window, "封面文件夹");
+    let menu = await openFolderContextMenu(window, "封面文件夹");
+    await expect(
+      menu.getByRole("menuitem", { name: "恢复默认封面", exact: true }),
+    ).toHaveCount(0);
+    await window.keyboard.press("Escape");
+
+    await window
+      .getByRole("button", { name: "导入文件", exact: true })
+      .first()
+      .click();
+    await expect(
+      window.locator('[data-asset-id][data-asset-name="cover.png"]'),
+    ).toBeVisible({ timeout: 15_000 });
+
+    const { libraryId, folderId, assetId } = await window.evaluate(async () => {
+      type Result<T> = { ok: boolean; value?: T; error?: { message?: string } };
+      const library = (globalThis as typeof globalThis & {
+        worldlinebox: { library: {
+          listOpen(): Promise<Result<Array<{ libraryId: string }>>>;
+          listFolders(input: { libraryId: string }): Promise<Result<Array<{ folderId: string; name: string }>>>;
+          listAssets(input: { libraryId: string; recursive: boolean }): Promise<Result<Array<{ assetId: string }>>>;
+        } };
+      }).worldlinebox.library;
+      const opened = await library.listOpen();
+      const libraryId = opened.value?.[0]?.libraryId;
+      if (!opened.ok || !libraryId) throw new Error("Expected an open library.");
+      const [folders, assets] = await Promise.all([
+        library.listFolders({ libraryId }),
+        library.listAssets({ libraryId, recursive: true }),
+      ]);
+      const folderId = folders.value?.find((folder) => folder.name === "封面文件夹")?.folderId;
+      const assetId = assets.value?.[0]?.assetId;
+      if (!folders.ok || !folderId || !assets.ok || !assetId) {
+        throw new Error("Expected a folder and an imported cover asset.");
+      }
+      return { libraryId, folderId, assetId };
+    });
+
+    await window.evaluate(async ({ libraryId, folderId, assetId }) => {
+      const api = (globalThis as typeof globalThis & {
+        worldlinebox: { library: {
+          setFolderCoverFromAsset(input: {
+            libraryId: string;
+            folderIds: string[];
+            assetId: string;
+          }): Promise<{ ok: boolean; error?: { message?: string } }>;
+        } };
+      }).worldlinebox.library;
+      const result = await api.setFolderCoverFromAsset({
+        libraryId,
+        folderIds: [folderId],
+        assetId,
+      });
+      if (!result.ok) throw new Error(result.error?.message ?? "Could not set the custom cover.");
+    }, { libraryId, folderId, assetId });
+
+    await window.reload();
+    await window.locator('[data-application-module="assets"]').click();
+    await expect(sidebarFolderRow(window, "封面文件夹")).toBeVisible({ timeout: 10_000 });
+    const folderGlyph = sidebarFolderRow(window, "封面文件夹").locator(".nav-entity-glyph");
+    await expect(folderGlyph.locator("img")).toHaveCount(0);
+    await expect(folderGlyph.locator("svg.icon")).toHaveCount(1);
+    menu = await openFolderContextMenu(window, "封面文件夹");
+    const restoreItem = menu.getByRole("menuitem", {
+      name: "恢复默认封面",
+      exact: true,
+    });
+    await expect(restoreItem).toBeVisible();
+    await restoreItem.click();
+
+    await expect.poll(async () => window.evaluate(async (folderId) => {
+      const api = (globalThis as typeof globalThis & {
+        worldlinebox: { library: {
+          listFolderBrowseEntries(input: {
+            libraryId: string;
+            parentFolderId: string | null;
+          }): Promise<{ ok: boolean; value?: Array<{ folderId: string; hasCustomCover?: boolean }> }>;
+          listOpen(): Promise<{ ok: boolean; value?: Array<{ libraryId: string }> }>;
+        } };
+      }).worldlinebox.library;
+      const opened = await api.listOpen();
+      const libraryId = opened.value?.[0]?.libraryId;
+      if (!opened.ok || !libraryId) return null;
+      const entries = await api.listFolderBrowseEntries({ libraryId, parentFolderId: null });
+      return entries.ok
+        ? entries.value?.find((entry) => entry.folderId === folderId)?.hasCustomCover ?? false
+        : null;
+    }, folderId)).toBe(false);
+
+    menu = await openFolderContextMenu(window, "封面文件夹");
+    await expect(
+      menu.getByRole("menuitem", { name: "恢复默认封面", exact: true }),
+    ).toHaveCount(0);
   } finally {
     await application.close();
     rmSync(temporaryRoot, { recursive: true, force: true });
@@ -432,11 +547,11 @@ test("shows inline invalid-name errors for illegal folder names and cancels with
 });
 
 // ---------------------------------------------------------------------------
-// Test 5 — Sidebar 「+」 lands at the selected folder; Escape cancels; blur
-// commits
+// Test 5 — Nested create from the folder menu; Escape cancels; blur commits.
+// Section 「+」 always creates at the library root (WorldlineBox-186547).
 // ---------------------------------------------------------------------------
 
-test("creates under the selected folder from the sidebar plus entry, cancels with Escape, commits on blur", async () => {
+test("creates a nested folder from the context menu, cancels with Escape, and commits on blur", async () => {
   const temporaryRoot = mkdtempSync(path.join(tmpdir(), "worldlinebox-folder-plus-"));
   const libraryName = "Folder Plus Inline";
   const libraryPath = path.join(temporaryRoot, libraryName);
@@ -448,7 +563,6 @@ test("creates under the selected folder from the sidebar plus entry, cancels wit
     await createLibrary(window, libraryName);
     await createFolderViaSidebar(window, "父级");
 
-    // Select 父级: the 「+」 entry targets the currently selected location.
     await sidebarFolderRow(window, "父级").click();
     await expect(window.locator(".scope-crumb-label.is-current")).toHaveText(
       "父级",
@@ -456,7 +570,8 @@ test("creates under the selected folder from the sidebar plus entry, cancels wit
     // Give the parent a disclosure control, then collapse it. Starting a
     // second create must reveal the inline row without losing the persisted
     // collapse preference when that create is cancelled.
-    await window.getByRole("button", { name: "添加文件夹" }).click();
+    const menu = await openFolderContextMenu(window, "父级");
+    await menu.getByRole("menuitem", { name: "新建子文件夹", exact: true }).click();
     const editRow = window.locator(".nav-inline-edit");
     await expect(editRow).toBeVisible({ timeout: 5_000 });
     await editRow.locator("input").fill("已有子级");
@@ -469,18 +584,20 @@ test("creates under the selected folder from the sidebar plus entry, cancels wit
       sidebarFolderRow(window, "已有子级"),
     ).toHaveCount(0);
 
-    // 创建「已有子级」后自动进入子级；折叠后显式回到父级再添加，
-    // 保证「+」入口嵌套在父级下。
+    // 创建「已有子级」后自动进入子级；折叠后显式回到父级，再从菜单新建子文件夹。
     await sidebarFolderRow(window, "父级").click();
-    await window.getByRole("button", { name: "添加文件夹" }).click();
+    const nestedMenu = await openFolderContextMenu(window, "父级");
+    await nestedMenu.getByRole("menuitem", { name: "新建子文件夹", exact: true }).click();
 
     // The pending row nests under the selected folder, not at the root.
+    // Depth lives on .nav-tree-row; the edit control's own padding is constant.
     await expect(editRow).toBeVisible({ timeout: 5_000 });
     const parentPadding = await sidebarFolderRow(window, "父级").evaluate(
-      (element) => parseFloat(getComputedStyle(element).paddingLeft),
+      (element) =>
+        parseFloat(getComputedStyle(element.closest(".nav-tree-row")!).paddingLeft),
     );
     const editPadding = await editRow.evaluate((element) =>
-      parseFloat(getComputedStyle(element).paddingLeft),
+      parseFloat(getComputedStyle(element.closest(".nav-tree-row")!).paddingLeft),
     );
     expect(editPadding).toBe(parentPadding + 14);
 
@@ -496,8 +613,10 @@ test("creates under the selected folder from the sidebar plus entry, cancels wit
     );
 
     // Blank blur resolves as cancellation and must not change the original
-    // persisted collapsed preference.
-    await window.getByRole("button", { name: "添加文件夹" }).click();
+    // persisted collapsed preference. Nested creates come from the parent
+    // menu; the section 「+」 always lands at the library root.
+    const blankMenu = await openFolderContextMenu(window, "父级");
+    await blankMenu.getByRole("menuitem", { name: "新建子文件夹", exact: true }).click();
     await expect(editRow).toBeVisible({ timeout: 5_000 });
     await input.fill("");
     await window.locator(".workspace").click();
@@ -509,7 +628,8 @@ test("creates under the selected folder from the sidebar plus entry, cancels wit
     // A rejected create keeps the editor visible. Cancelling it afterwards
     // must likewise restore the collapsed view instead of persisting the
     // temporary reveal used to show the inline row.
-    await window.getByRole("button", { name: "添加文件夹" }).click();
+    const conflictMenu = await openFolderContextMenu(window, "父级");
+    await conflictMenu.getByRole("menuitem", { name: "新建子文件夹", exact: true }).click();
     await expect(editRow).toBeVisible({ timeout: 5_000 });
     await input.fill("已有子级");
     await window.locator(".workspace").click();
@@ -523,7 +643,8 @@ test("creates under the selected folder from the sidebar plus entry, cancels wit
     ).toHaveCount(0);
 
     // Blur with a valid name commits: clicking away creates the folder.
-    await window.getByRole("button", { name: "添加文件夹" }).click();
+    const commitMenu = await openFolderContextMenu(window, "父级");
+    await commitMenu.getByRole("menuitem", { name: "新建子文件夹", exact: true }).click();
     await expect(editRow).toBeVisible({ timeout: 5_000 });
     await input.fill("子级");
     await window.locator(".workspace").click();

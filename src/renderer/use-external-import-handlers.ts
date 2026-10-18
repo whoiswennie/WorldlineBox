@@ -25,6 +25,7 @@ import {
   externalImportPayload,
   reduceInternalDragPhase,
   shouldActivateExternalImportOverlay,
+  shouldConsumeManagedAssetDrop,
   supportsExternalImportTransfer,
   type InternalDragPhase,
 } from "./external-import-transfer";
@@ -118,6 +119,10 @@ export function useExternalImportHandlers({
   const externalDragDepth = useRef(0);
   const internalDragPhase = useRef<InternalDragPhase>("idle");
   const internalDragArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isInternalAssetDrag = useCallback(
+    () => internalDragPhase.current !== "idle",
+    [],
+  );
 
   const dismissExternalDrop = useCallback(() => {
     externalDragDepth.current = 0;
@@ -157,7 +162,11 @@ export function useExternalImportHandlers({
   );
 
   useEffect(() => {
-    const onDrop = () => finishInternalAssetDrag("drop");
+    // Let React's bubbling drop handler inspect the active drag before the
+    // capture listener clears it. That distinction prevents external files
+    // which happen to live inside a linked/managed root from being mistaken
+    // for a WorldlineBox initiated drag.
+    const onDrop = () => queueMicrotask(() => finishInternalAssetDrag("drop"));
     const onDragEnd = () => finishInternalAssetDrag("dragend");
     window.addEventListener("drop", onDrop, true);
     window.addEventListener("dragend", onDragEnd, true);
@@ -420,12 +429,25 @@ export function useExternalImportHandlers({
       externalDragDepth.current = 0;
       setExternalDropActive(false);
       const payload = externalImportPayload(event.dataTransfer);
-      if (payload.files.length > 0 && onResolveManagedAssetDrop) {
+      const internalAssetDrag = internalDragPhase.current !== "idle";
+      if (
+        payload.files.length > 0 &&
+        internalAssetDrag &&
+        onResolveManagedAssetDrop
+      ) {
         // A native drag returning to the browse canvas is not an import. Its
         // File handles identify existing managed assets, so consume it here
         // rather than opening a false duplicate-file conflict dialog.
         void onResolveManagedAssetDrop(payload.files).then((assetIds) => {
-          if (assetIds.length > 0) return;
+          if (
+            shouldConsumeManagedAssetDrop(
+              internalAssetDrag,
+              payload.files.length,
+              assetIds,
+            )
+          ) {
+            return;
+          }
           void importDroppedFiles(payload.files, undefined, undefined, payload);
         });
         return;
@@ -467,11 +489,24 @@ export function useExternalImportHandlers({
       event.stopPropagation();
       setFolderCardDropTarget(null);
       const payload = externalImportPayload(event.dataTransfer);
-      if (payload.files.length > 0 && onResolveManagedAssetDrop) {
+      const internalAssetDrag = internalDragPhase.current !== "idle";
+      if (
+        payload.files.length > 0 &&
+        internalAssetDrag &&
+        onResolveManagedAssetDrop
+      ) {
         void onResolveManagedAssetDrop(payload.files).then((assetIds) => {
           // Folder/collection targets resolve native managed assets in their
           // dedicated drop handlers. A generic target must not re-import them.
-          if (assetIds.length > 0) return;
+          if (
+            shouldConsumeManagedAssetDrop(
+              internalAssetDrag,
+              payload.files.length,
+              assetIds,
+            )
+          ) {
+            return;
+          }
           void importDroppedFiles(
             payload.files,
             targetFolderId,
@@ -554,13 +589,24 @@ export function useExternalImportHandlers({
           return;
         }
         const files = Array.from(event.dataTransfer.files);
-        if (files.length > 0 && onResolveManagedAssetDrop) {
+        const internalAssetDrag = internalDragPhase.current !== "idle";
+        if (
+          files.length > 0 &&
+          internalAssetDrag &&
+          onResolveManagedAssetDrop
+        ) {
           event.preventDefault();
           event.stopPropagation();
           setFolderCardDropTarget(null);
           const payload = externalImportPayload(event.dataTransfer);
           void onResolveManagedAssetDrop(files).then((resolvedIds) => {
-            if (resolvedIds.length > 0) {
+            if (
+              shouldConsumeManagedAssetDrop(
+                internalAssetDrag,
+                files.length,
+                resolvedIds,
+              )
+            ) {
               onAssetsDroppedOnFolder?.(
                 folderId,
                 resolvedIds,
@@ -602,6 +648,7 @@ export function useExternalImportHandlers({
     pasteClipboardImage,
     importDroppedFiles,
     beginInternalAssetDrag,
+    isInternalAssetDrag,
     handleExternalDragEnter,
     handleExternalDragLeave,
     handleExternalDragOver,

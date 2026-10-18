@@ -26,6 +26,20 @@ export function shouldActivateExternalImportOverlay(
   return supportsExternalImportTypes(types);
 }
 
+/**
+ * Only consume a native file drop as an internal drag when every file maps
+ * back to one of the assets WorldlineBox started dragging. External files must
+ * continue through the import flow, even when their path matches a library
+ * asset or a mixed batch contains a partial match.
+ */
+export function shouldConsumeManagedAssetDrop(
+  internalAssetDrag: boolean,
+  fileCount: number,
+  assetIds: readonly string[],
+): boolean {
+  return internalAssetDrag && fileCount > 0 && assetIds.length === fileCount;
+}
+
 export type InternalDragPhase = "idle" | "starting" | "active";
 
 /**

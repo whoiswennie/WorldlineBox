@@ -48,12 +48,19 @@ const SAFE_RASTER_MIME_TYPES = new Set([
 ]);
 const DATA_URL_PATTERN = /^data:([^;,\s]+);base64,([a-z0-9+/]*={0,2})$/iu;
 
+/** Panel tint over the wallpaper; floor keeps text legible. */
+export const MIN_PANEL_OPACITY = 0.3;
+export const DEFAULT_PANEL_OPACITY = 0.72;
+
 const defaultPreferences = (): BackgroundPreferences => ({
   version: BACKGROUND_PREFERENCES_VERSION,
   imageDataUrl: null,
   imageSource: null,
   mode: 'cover',
   imageOpacity: 0.7,
+  showInMainPanel: false,
+  panelOpacity: DEFAULT_PANEL_OPACITY,
+  enabled: true,
 });
 
 export const DEFAULT_BACKGROUND_PREFERENCES: BackgroundPreferences =
@@ -122,7 +129,16 @@ export const backgroundPreferencesSchema = z.strictObject({
   imageSource: backgroundImageSourceSchema.nullable(),
   mode: backgroundDisplayModeSchema,
   imageOpacity: z.number().finite().min(0).max(1),
+  /** Also paint the wallpaper behind the centre (main) panel. Default off. */
+  showInMainPanel: z.boolean().default(false),
+  /** Opacity of the three panels when they show the wallpaper. */
+  /** Show the wallpaper. Off hides it without deleting the image. */
+  enabled: z.boolean().default(true),
+  panelOpacity: z.number().finite().min(MIN_PANEL_OPACITY).max(1).default(DEFAULT_PANEL_OPACITY),
 });
+
+/** Accepts records saved before `showInMainPanel` existed. */
+export type BackgroundPreferencesInput = z.input<typeof backgroundPreferencesSchema>;
 
 export type BackgroundPreferences = z.infer<
   typeof backgroundPreferencesSchema
@@ -200,6 +216,12 @@ export function normalizeBackgroundPreferences(
       record.imageOpacity,
       record.overlayOpacity,
     ),
+    showInMainPanel: record.showInMainPanel === true,
+    // Records from before the toggle existed: on (the image was showing).
+    enabled: record.enabled !== false,
+    panelOpacity: typeof record.panelOpacity === 'number' && Number.isFinite(record.panelOpacity)
+      ? Math.min(1, Math.max(MIN_PANEL_OPACITY, record.panelOpacity))
+      : DEFAULT_PANEL_OPACITY,
   };
 
   return backgroundPreferencesSchema.parse(normalized);
@@ -268,7 +290,7 @@ export function loadBackgroundPreferences(
  * false so the caller can show a notice without losing the in-memory state.
  */
 export function saveBackgroundPreferences(
-  preferences: BackgroundPreferences,
+  preferences: BackgroundPreferencesInput,
   storage?: BackgroundPreferencesStorage,
 ): boolean {
   const store = resolveStorage(storage);
@@ -298,13 +320,15 @@ export function clearBackgroundPreferences(
 
 /** Apply the validated background contract without allowing arbitrary CSS. */
 export function applyBackgroundPreferences(
-  preferences: BackgroundPreferences,
+  preferences: BackgroundPreferencesInput,
 ): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
   if (!root) return;
 
-  const normalized = normalizeBackgroundPreferences(preferences);
+  const stored = normalizeBackgroundPreferences(preferences);
+  // Disabled = render exactly as if no image were set (image kept in storage).
+  const normalized = stored.enabled ? stored : { ...stored, imageDataUrl: null };
   // The background color is gone in v3; let the token default (surface canvas)
   // own the variable so a stale v2 inline value cannot leak through.
   root.style.removeProperty('--ui-background-color');
@@ -329,5 +353,15 @@ export function applyBackgroundPreferences(
     normalized.mode === 'tile' ? 'auto' : normalized.mode === 'fill' ? '100% 100%' : 'cover',
   );
   root.style.setProperty('--ui-background-position', 'center');
+  root.style.setProperty('--ui-panel-opacity', `${Math.round(normalized.panelOpacity * 100)}%`);
+  // a94: the wallpaper veil only exists when an image is shown; without one
+  // the window backdrop must be exactly the theme's backdrop colour.
+  if (normalized.imageDataUrl !== null) root.setAttribute?.('data-bg-image', 'on');
+  else root.removeAttribute?.('data-bg-image');
+  if (normalized.showInMainPanel && normalized.imageDataUrl !== null) {
+    root.setAttribute?.('data-bg-main-panel', 'on');
+  } else {
+    root.removeAttribute?.('data-bg-main-panel');
+  }
   root.style.setProperty('--ui-background-repeat', normalized.mode === 'tile' ? 'repeat' : 'no-repeat');
 }

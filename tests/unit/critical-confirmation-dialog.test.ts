@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CriticalConfirmationDialog } from "../../src/renderer/CriticalConfirmationDialog";
+import { LocaleProvider } from "../../src/renderer/i18n";
 import type { CriticalConfirmationPrompt } from "../../src/shared/critical-confirmation";
 import { useDialogFocusTrap } from "../../src/renderer/use-dialog-focus-trap";
 
@@ -44,10 +45,12 @@ describe("CriticalConfirmationDialog", () => {
   }
 
   it("uses the app dialog shell and focuses force delete", async () => {
-    await render(createElement(FocusTrapHarness, {
-      children: createElement(CriticalConfirmationDialog, {
-        request,
-        onDecide: vi.fn(),
+    await render(createElement(LocaleProvider, {
+      children: createElement(FocusTrapHarness, {
+        children: createElement(CriticalConfirmationDialog, {
+          request,
+          onDecide: vi.fn(),
+        }),
       }),
     }));
     const dialog = document.querySelector(".dialog-backdrop .ui-dialog-shell");
@@ -60,10 +63,12 @@ describe("CriticalConfirmationDialog", () => {
   });
 
   it("keeps cancel focused when the prompt says so", async () => {
-    await render(createElement(FocusTrapHarness, {
-      children: createElement(CriticalConfirmationDialog, {
-        request: { ...request, initialFocus: "cancel", confirmLabel: "永久删除" },
-        onDecide: vi.fn(),
+    await render(createElement(LocaleProvider, {
+      children: createElement(FocusTrapHarness, {
+        children: createElement(CriticalConfirmationDialog, {
+          request: { ...request, initialFocus: "cancel", confirmLabel: "永久删除" },
+          onDecide: vi.fn(),
+        }),
       }),
     }));
     const cancel = [...document.querySelectorAll("button")].find((button) => button.textContent === "取消");

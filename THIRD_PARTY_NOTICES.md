@@ -20,6 +20,7 @@ Windows 安装器简体中文翻译来自 [kira-96/Inno-Setup-Chinese-Simplified
 | [Vite](https://vitejs.dev/) | MIT | 构建工具（打包产物含构建产物） |
 | [TypeScript](https://www.typescriptlang.org/) | Apache-2.0 | 类型系统与编译器 |
 | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | MIT | SQLite 绑定 |
+| [sqlite-vec](https://github.com/asg017/sqlite-vec) | MIT OR Apache-2.0 | 精确向量 cosine SQLite 扩展；版本锁定为 0.1.9，平台二进制随应用资源分发 |
 | [SQLite](https://www.sqlite.org/copyright.html) | Public Domain | 本地资源库数据库 |
 | [Sharp](https://sharp.pixelplumbing.com/) | Apache-2.0 | 图像处理（libvips） |
 | [FFmpeg](https://ffmpeg.org/)（BtbN builds） | LGPL-2.1 | 媒体解码/编码；许可证文本随包分发于 `resources/media-binaries/<platform>/licenses/` |

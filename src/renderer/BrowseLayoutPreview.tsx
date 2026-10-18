@@ -39,7 +39,7 @@ function formatLayoutMeta(
 function LayoutPreviewFilename({ name }: { name: string }) {
   const parts = splitFilenameForDisplay(name);
   return (
-    <strong className="asset-caption-filename" title={name}>
+    <strong className="asset-caption-filename" data-hover-tip={name}>
       <span className="asset-filename-prefix">{parts.prefix}</span>
       {parts.tail ? <span className="asset-filename-tail">{parts.tail}</span> : null}
       {parts.extension ? (

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { publishCanvasAssetLayoutIndex } from "../../src/renderer/canvas-asset-layout";
 import {
   captureReflowAnchorFromCards,
   isCanvasReflowRestorationPending,
@@ -218,6 +219,79 @@ describe("scheduleAnchorRestore", () => {
 
     // Card top 500 vs desired clientY 80 → scrollTop should move by ~420.
     expect(canvas.scrollTop).toBeCloseTo(420);
+
+    globalThis.requestAnimationFrame = originalRaf;
+    globalThis.cancelAnimationFrame = originalCancel;
+  });
+
+  it("scrolls toward published geometry when the anchor card is unmounted", () => {
+    const rafQueue: FrameRequestCallback[] = [];
+    const originalRaf = globalThis.requestAnimationFrame;
+    const originalCancel = globalThis.cancelAnimationFrame;
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    }) as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = ((id: number) => {
+      rafQueue[id - 1] = () => undefined;
+    }) as typeof cancelAnimationFrame;
+
+    const canvas = {
+      scrollLeft: 0,
+      scrollTop: 0,
+      scrollWidth: 800,
+      scrollHeight: 8_000,
+      clientWidth: 800,
+      clientHeight: 600,
+      querySelectorAll: (selector: string) => {
+        if (selector === ".justified-rows, .masonry-columns") return [host];
+        return [];
+      },
+    } as unknown as HTMLElement;
+    const host = {
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: -canvas.scrollTop,
+        width: 800,
+        height: 8_000,
+        right: 800,
+        bottom: 8_000 - canvas.scrollTop,
+        x: 0,
+        y: -canvas.scrollTop,
+        toJSON() {
+          return {};
+        },
+      }),
+    } as unknown as HTMLElement;
+    publishCanvasAssetLayoutIndex(host, {
+      total: 1,
+      forEachIntersecting: () => undefined,
+      forEachAll: (visit) => {
+        visit({ id: "lead", x: 40, y: 2_000, width: 120, height: 100 });
+      },
+    });
+
+    const frameRef: { current: number | null } = { current: null };
+    scheduleAnchorRestore(
+      canvas,
+      {
+        assetId: "lead",
+        ratioX: 0.5,
+        ratioY: 0,
+        clientX: 100,
+        clientY: 80,
+      },
+      frameRef,
+      1,
+    );
+
+    while (rafQueue.length > 0) {
+      const next = rafQueue.shift();
+      next?.(0);
+    }
+
+    // Content top 2000 should land on clientY 80.
+    expect(canvas.scrollTop).toBeCloseTo(1_920);
 
     globalThis.requestAnimationFrame = originalRaf;
     globalThis.cancelAnimationFrame = originalCancel;

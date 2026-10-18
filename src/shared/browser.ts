@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { browserCaptureStateSchema, type BrowserCaptureRequest, type BrowserCaptureResponse } from './browser-capture';
 export const BROWSER_REQUEST = 'worldlinebox:browser:request';
 export const BROWSER_CHANGED = 'worldlinebox:browser:changed';
 export const BROWSER_FOCUS = 'worldlinebox:browser:focus';
@@ -22,7 +23,8 @@ export const browserPermissionSchema = z.object({ id, origin: z.string().max(819
 export const browserStateSchema = z.object({ tabs: z.array(browserTabSchema).max(50), activeTabId: id.optional(), bookmarks: z.array(browserBookmarkSchema).max(1000),
   downloads: z.array(browserDownloadSchema).max(200), historyCount: z.number().int().min(0), preferences: browserPreferencesSchema,
   permissions: z.array(browserPermissionSchema).max(10), fullscreen: z.boolean(), revision: z.number().int().min(0),
-  find: z.object({ matches: z.number(), activeMatchOrdinal: z.number() }).optional(), cacheBytes: z.number().min(0).optional(), error: z.string().optional() });
+  find: z.object({ matches: z.number(), activeMatchOrdinal: z.number() }).optional(), cacheBytes: z.number().min(0).optional(), error: z.string().optional(),
+  capture: browserCaptureStateSchema.optional() });
 export type BrowserState = z.infer<typeof browserStateSchema>;
 export type BrowserTab = z.infer<typeof browserTabSchema>;
 export type BrowserDownload = z.infer<typeof browserDownloadSchema>;
@@ -49,5 +51,8 @@ export type BrowserRequest = z.infer<typeof browserRequestSchema>;
 export const browserResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), state: browserStateSchema.optional(),
   history: z.array(browserHistorySchema).max(100).optional(), total: z.number().int().optional(), found: z.object({ matches: z.number(), activeMatchOrdinal: z.number() }).optional() }), z.object({ ok: z.literal(false), error: z.string() })]);
 export type BrowserResponse = z.infer<typeof browserResponseSchema>;
-export interface WorldlineBoxBrowserApi { request(request: BrowserRequest): Promise<BrowserResponse>; onChanged(listener: (state: BrowserState) => void): () => void;
+export interface WorldlineBoxBrowserApi { request(request: BrowserRequest): Promise<BrowserResponse>;
+  capture(request: BrowserCaptureRequest): Promise<BrowserCaptureResponse>;
+  onCaptureOpenAssets(listener: () => void): () => void;
+  onChanged(listener: (state: BrowserState) => void): () => void;
   onFocus(listener: (target: 'address' | 'find') => void): () => void; }

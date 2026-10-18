@@ -69,7 +69,7 @@ export function WorkspaceToolsOverflow({
         className={`tool-button${hasActiveItem ? " has-badge" : ""}`}
         data-hover-tip={t("shell.moreWorkspaceTools")}
         onClick={() => setOpen((value) => !value)}
-        title={t("shell.moreWorkspaceTools")}
+
         type="button"
       >
         <Icon name="menu" size={14} />

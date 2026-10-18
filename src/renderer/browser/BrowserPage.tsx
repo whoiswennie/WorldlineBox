@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BrowserHistory, BrowserRequest, BrowserState, WorldlineBoxBrowserApi } from '../../shared/browser';
+import type { BrowserCaptureRequest, BrowserCaptureState } from '../../shared/browser-capture';
 import { Icon, type IconName } from '../Icons';
 import { Button, Select, TextField } from '../ui';
 import { useT } from '../i18n';
 import { formatBytes } from '../format-file-meta';
 import { BrowserBookmarks, SiteMark } from './BrowserBookmarks';
+import { BrowserCapturePanel } from './BrowserCapturePanel';
 import './browser.css';
 
-type Panel = 'bookmarks' | 'history' | 'downloads' | 'settings' | 'more';
-export function BrowserPage({ api, active, onOpenNetwork }: { api?: WorldlineBoxBrowserApi; active: boolean; onOpenNetwork(): void }) {
+type Panel = 'bookmarks' | 'history' | 'downloads' | 'settings' | 'more' | 'capture';
+export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets }: { api?: WorldlineBoxBrowserApi; active: boolean; onOpenNetwork(): void; onOpenAssets?(): void }) {
   const t = useT(); const b = (key: string) => t('browser.' + key);
-  const [state, setState] = useState<BrowserState>(); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
+  const [snapshot, setSnapshot] = useState<{ browser?: BrowserState; capture?: BrowserCaptureState }>({});
+  const state = snapshot.browser; const capture = snapshot.capture;
+  const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   const [panel, setPanel] = useState<Panel>(); const [location, setLocation] = useState('');
   const locationField = useRef<HTMLInputElement>(null); const locationEditing = useRef(false); const viewport = useRef<HTMLDivElement>(null);
   const lastAddressTab = useRef<string | undefined>(undefined);
@@ -20,12 +24,27 @@ export function BrowserPage({ api, active, onOpenNetwork }: { api?: WorldlineBox
   const [preferences, setPreferences] = useState<BrowserState['preferences']>();
   const [clear, setClear] = useState({ cache: true, siteData: false, history: false, downloads: false }); const [clearScope, setClearScope] = useState('all'); const [busy, setBusy] = useState(false);
   const [rememberPermission, setRememberPermission] = useState(false);
-  const accept = useCallback((next: BrowserState) => setState(previous => !previous || next.revision >= previous.revision ? next : previous), []);
+  const accept = useCallback((next: BrowserState) => setSnapshot(previous => previous.browser && next.revision < previous.browser.revision
+    ? previous
+    : { browser: next, capture: next.capture ?? previous.capture }), []);
+  const setCapture = useCallback((next: BrowserCaptureState) => setSnapshot(previous => ({ ...previous, capture: next })), []);
   const run = useCallback(async (request: BrowserRequest) => {
     if (!api) return undefined;
     try { const response = await api.request(request); if (!response.ok) setError(response.error); else { if (response.state) accept(response.state); if (request.type !== 'layout') setError(''); } return response; }
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return undefined; }
   }, [api, accept]);
+  const runCapture = useCallback(async (request: BrowserCaptureRequest) => {
+    if (!api) return undefined;
+    try {
+      const response = await api.capture(request);
+      if (response.state) setCapture(response.state);
+      setError(response.ok ? '' : response.error);
+      return response;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return undefined;
+    }
+  }, [api, setCapture]);
   const tab = state?.tabs.find(item => item.id === state.activeTabId);
   const bookmarked = state?.bookmarks.find(item => item.url === tab?.url);
   useEffect(() => {
@@ -38,8 +57,9 @@ export function BrowserPage({ api, active, onOpenNetwork }: { api?: WorldlineBox
     const stop = api.onChanged(accept);
     const focus = api.onFocus(target => { if (target === 'address') { locationField.current?.focus(); locationField.current?.select(); } else { setFindOpen(true); requestAnimationFrame(() => findField.current?.focus()); } });
     void api.request({ type: 'activate' }).then(response => { if (response.ok && response.state) accept(response.state); else if (!response.ok) setError(response.error); }).catch(cause => setError(String(cause)));
+    void api.capture({ type: 'state' }).then(response => { if (response.state) setCapture(response.state); if (!response.ok) setError(response.error); }).catch(cause => setError(String(cause)));
     return () => { stop(); focus(); void api.request({ type: 'layout', visible: false, bounds: { x: 0, y: 0, width: 0, height: 0 } }).catch(() => undefined); };
-  }, [api, accept]);
+  }, [api, accept, setCapture]);
   const ready = state !== undefined;
   useEffect(() => {
     if (!api || !viewport.current) return;
@@ -78,6 +98,7 @@ export function BrowserPage({ api, active, onOpenNetwork }: { api?: WorldlineBox
   const togglePanel = (next: Panel) => {
     setPanel(current => current === next ? undefined : next); setShown(100); setNotice('');
     if (next === 'settings' && state) { setPreferences({ ...state.preferences }); void run({ type: 'data.info' }); }
+    if (next === 'capture') void runCapture({ type: 'state' });
   };
   const action = (value: Extract<BrowserRequest, { type: 'tab.action' }>['action']) => void run({ type: 'tab.action', action: value });
   const iconButton = (name: IconName, label: string, click: () => void, disabled = false, selected = false) => <Button aria-label={label} title={label} aria-pressed={selected || undefined} iconName={name} variant="quiet" size="sm" onClick={click} disabled={disabled} />;
@@ -87,12 +108,15 @@ export function BrowserPage({ api, active, onOpenNetwork }: { api?: WorldlineBox
     finally { setBusy(false); }
   };
   const navigate = (url: string) => { locationEditing.current = false; setLocation(url); void run({ type: 'tab.navigate', text: url }); };
+  const captureLibrary = capture?.libraries.find(item => item.libraryId === (capture.target?.libraryId ?? capture.activeLibraryId));
+  const captureReady = Boolean(capture?.connected && captureLibrary && !captureLibrary.readOnly);
   return <section className="web-browser" data-web-browser aria-label={b('title')}>
     <div className="browser-tabs" role="tablist" aria-label={b('title')}>{state?.tabs.map(item => <div className={'browser-tab' + (item.id === state.activeTabId ? ' is-active' : '')} key={item.id}>
       <button role="tab" aria-selected={item.id === state.activeTabId} title={item.title + '\n' + item.url} onClick={() => void run({ type: 'tab.select', id: item.id })}><Icon name={item.loading ? 'loader' : item.pinned ? 'save' : 'globe'} size={14} /><span>{item.title}</span>{item.audible ? <span aria-label="audio">♪</span> : null}{item.muted ? <span>×♪</span> : null}</button>
       {iconButton('close', b('closeTab') + ' ' + item.title, () => void run({ type: 'tab.close', id: item.id }))}</div>)}{iconButton('plus', b('newTab'), () => void run({ type: 'tab.new' }))}</div>
     <div className="browser-toolbar">{iconButton('chevron-left', b('back'), () => action('back'), !tab?.canGoBack)}{iconButton('chevron-right', b('forward'), () => action('forward'), !tab?.canGoForward)}{iconButton(tab?.loading ? 'stop' : 'refresh', b(tab?.loading ? 'stop' : 'reload'), () => action(tab?.loading ? 'stop' : 'reload'), !tab)}{iconButton('globe', b('home'), () => action('home'))}
       <form className="browser-address" onSubmit={event => { event.preventDefault(); if (location.trim()) navigate(location); }}><span title={tab?.url.startsWith('https:') ? 'HTTPS' : 'HTTP'}><Icon name="globe" size={15} /></span><input ref={locationField} aria-label={b('address')} autoComplete="off" spellCheck={false} value={location} onFocus={() => { locationEditing.current = true; }} onBlur={() => { locationEditing.current = false; }} onChange={event => setLocation(event.target.value)} placeholder={b('address')} /></form>
+      <Button aria-label={b('capture')} aria-expanded={panel === 'capture'} aria-controls="browser-capture-panel" className={'browser-capture-trigger' + (captureReady ? ' is-ready' : '')} disabled={!api} iconName="save" onClick={() => togglePanel('capture')} size="sm" title={b('capture') + ' · ' + (captureLibrary?.displayName ?? b('captureNoLibrary'))} variant="quiet"><span className="browser-capture-trigger-label">{b('capture')}</span><span aria-hidden="true" className="browser-capture-dot" /></Button>
       {iconButton('star', b('favorite'), () => togglePanel('bookmarks'), !tab, !!bookmarked)}{iconButton('download', b('downloads'), () => togglePanel('downloads'), false, panel === 'downloads')}{iconButton('clock', b('history'), () => togglePanel('history'), false, panel === 'history')}{iconButton('settings', b('settings'), () => togglePanel('settings'), false, panel === 'settings')}{iconButton('menu', b('more'), () => togglePanel('more'))}
     </div>
     {state?.bookmarks.length ? <nav className="browser-bookmark-bar" aria-label={b('bookmarkBar')}>{state.bookmarks.slice(0, 10).map(item => <button key={item.id} title={item.title + '\n' + item.url} onClick={() => navigate(item.url)}><SiteMark url={item.url} /><span>{item.title}</span></button>)}<Button aria-label={b('bookmarks')} title={b('bookmarks')} iconName="chevron-right" variant="quiet" size="sm" onClick={() => togglePanel('bookmarks')} /></nav> : null}
@@ -101,7 +125,8 @@ export function BrowserPage({ api, active, onOpenNetwork }: { api?: WorldlineBox
     {error || state?.error ? <div className="browser-error" role="alert">{error || state?.error}{iconButton('close', b('close'), () => setError(''))}</div> : null}
     {tab?.loading ? <div className="browser-load-indicator" role="progressbar" aria-label={b('loading')} /> : null}
     <div className="browser-body"><div className="browser-viewport" ref={viewport} data-browser-viewport>{!state ? <p>{api ? b('loading') : b('unavailable')}</p> : tab?.error ? <div className="browser-failure"><Icon name="globe" size={32} /><h2>{b('pageError')}</h2><p>{tab.error}</p><Button onClick={() => action('reload')}>{b('reload')}</Button></div> : null}</div>
-      {panel ? <aside className="browser-panel" aria-label={b(panel === 'more' ? 'more' : panel)}><header><h2>{b(panel === 'more' ? 'more' : panel)}</h2>{iconButton('close', b('close'), () => setPanel(undefined))}</header>
+      {panel ? <aside className={'browser-panel' + (panel === 'capture' ? ' browser-capture-panel' : '')} id={panel === 'capture' ? 'browser-capture-panel' : undefined} aria-label={b(panel === 'capture' ? 'captureTitle' : panel)}><header><h2>{b(panel === 'capture' ? 'captureTitle' : panel)}</h2>{iconButton('close', b('close'), () => setPanel(undefined))}</header>
+        {panel === 'capture' ? <BrowserCapturePanel capture={capture} run={runCapture} onOpenAssets={onOpenAssets} /> : null}
         {panel === 'bookmarks' && state ? <BrowserBookmarks bookmarks={state.bookmarks} tab={tab} navigate={navigate} run={run} /> : null}
         {panel === 'history' ? <><TextField label={b('searchHistory')} maxLength={200} value={historyQuery} onChange={event => { setHistoryQuery(event.target.value); setHistoryOffset(0); }} />{history.length ? <ul className="browser-records">{history.map(item => <li key={item.id}><button className="browser-record-link" onClick={() => navigate(item.url)} title={item.url}><strong>{item.title}</strong><span>{new Date(item.visitedAt).toLocaleString()}</span><span>{item.url}</span></button></li>)}</ul> : <p className="browser-help">{b('emptyHistory')}</p>}<div className="browser-actions"><Button disabled={!historyOffset} onClick={() => setHistoryOffset(value => Math.max(0, value - 50))}>{b('previous')}</Button><span>{historyTotal}</span><Button disabled={historyOffset + 50 >= historyTotal} onClick={() => setHistoryOffset(value => value + 50)}>{b('next')}</Button></div></> : null}
         {panel === 'downloads' ? state?.downloads.length ? <ul className="browser-downloads">{state.downloads.slice(0, shown).map(item => <li key={item.id}><strong>{item.filename}</strong><span>{b(item.status)} · {formatBytes(item.received)}{item.total ? ' / ' + formatBytes(item.total) : ''}</span>{item.total > 0 ? <progress max={item.total} value={item.received} /> : null}{item.error ? <p className="browser-help">{item.error}</p> : null}<div className="browser-actions">{(['progressing', 'paused'].includes(item.status) ? [item.status === 'paused' ? 'resume' : 'pause', 'cancel'] : item.status === 'completed' ? ['open', 'reveal'] : ['retry', 'reveal']).map(value => <Button key={value} size="sm" onClick={() => void run({ type: 'download.action', id: item.id, action: value as 'pause' | 'resume' | 'cancel' | 'open' | 'reveal' | 'retry' })}>{b(value)}</Button>)}</div></li>)}</ul> : <p className="browser-help">{b('emptyDownloads')}</p> : null}

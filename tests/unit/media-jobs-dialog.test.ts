@@ -94,4 +94,62 @@ describe("MediaJobsDialog asset labels", () => {
 
     expect(html).toContain("加载更多");
   });
+
+  it("shows semantic index progress while indexing and hides it when ready", () => {
+    const indexing = createElement(MediaJobsDialog, {
+      open: true,
+      mediaJobsLoading: false,
+      mediaJobs: {
+        queued: 0,
+        running: 0,
+        succeeded: 0,
+        failed: 0,
+        paused: 0,
+        cancelled: 0,
+        jobs: [],
+      },
+      aiJobs: null,
+      pluginJobs: null,
+      embeddingIndex: {
+        modelId: "svc_textonly1",
+        snapshot: { phase: "indexing", done: 1, total: 3, failedCount: 0 },
+      },
+      onClose: () => undefined,
+      onControlMediaJobs: () => undefined,
+      onControlAiJobs: () => undefined,
+    });
+    const indexingHtml = renderToStaticMarkup(
+      createElement(LocaleProvider, { initialPreference: "en", children: indexing }),
+    );
+    expect(indexingHtml).toContain("media-jobs-embedding-section");
+    expect(indexingHtml).toContain("task-progress-fill");
+    expect(indexingHtml).toContain("Already indexed text can be searched now");
+
+    const ready = createElement(MediaJobsDialog, {
+      open: true,
+      mediaJobsLoading: false,
+      mediaJobs: {
+        queued: 0,
+        running: 0,
+        succeeded: 0,
+        failed: 0,
+        paused: 0,
+        cancelled: 0,
+        jobs: [],
+      },
+      aiJobs: null,
+      pluginJobs: null,
+      embeddingIndex: {
+        modelId: "svc_textonly1",
+        snapshot: { phase: "ready", done: 3, total: 3, failedCount: 0 },
+      },
+      onClose: () => undefined,
+      onControlMediaJobs: () => undefined,
+      onControlAiJobs: () => undefined,
+    });
+    const readyHtml = renderToStaticMarkup(
+      createElement(LocaleProvider, { initialPreference: "en", children: ready }),
+    );
+    expect(readyHtml).not.toContain("media-jobs-embedding-section");
+  });
 });

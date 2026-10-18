@@ -1,3 +1,4 @@
+import { requestConfirmation } from "../local-confirmation";
 // ---------------------------------------------------------------------------
 // 侧边栏右键菜单命令定义（REQ-COMMAND-001，切片 0015-D）
 // ---------------------------------------------------------------------------
@@ -371,9 +372,9 @@ export const sidebarCommandDefinitions: readonly SidebarCommandDefinition[] = [
       translateForLocale(ctx.locale, 'command.smartCollection.delete'),
     group: 'delete',
     visible: (ctx) => ctx.menuKind === 'smart-collection',
-    run: (ctx) => {
+    run: async (ctx) => {
       if (
-        window.confirm(
+        await requestConfirmation(
           translateForLocale(
             ctx.locale,
             'command.smartCollection.deleteConfirm',

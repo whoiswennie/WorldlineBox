@@ -23,6 +23,8 @@ export interface ToolbarCommandActions {
   readonly refresh: () => void;
   readonly setViewMode: (mode: CanvasViewMode) => void;
   readonly toggleField: (field: CanvasFieldKey) => void;
+  /** Cycle card caption alignment left → center → right. */
+  readonly cycleCaptionAlign: () => void;
   /** Opens the AI category in the consolidated settings center. */
   readonly openAiSettings: () => void;
   /** Opens the general category in the consolidated settings center. */
@@ -48,6 +50,7 @@ export const TOOLBAR_CANVAS_COMMAND_IDS = [
   'canvas.field.size',
   'canvas.field.date',
   'canvas.field.dimensions',
+  'canvas.captionAlign.cycle',
 ] as const;
 
 /** 工作区工具栏直出按钮。 */
@@ -117,6 +120,12 @@ export const toolbarCommandDefinitions: readonly ToolbarCommandDefinition[] = [
     title: (ctx) => t(ctx, 'toolbar.showDimensions'),
     group: 'metadata',
     run: (ctx) => ctx.actions.toggleField('dimensions'),
+  },
+  {
+    id: 'canvas.captionAlign.cycle',
+    title: (ctx) => t(ctx, 'toolbar.cycleCaptionAlign'),
+    group: 'metadata',
+    run: (ctx) => ctx.actions.cycleCaptionAlign(),
   },
   {
     id: 'workspace.ai-settings',

@@ -32,6 +32,7 @@ import {
   useCanvasLocalViewport,
 } from "../viewport-window";
 import { canvasHasPreviewScrollHold, logBrowseScrollWrite } from "../browse-scroll-debug";
+import { isCanvasReflowRestorationPending } from "../canvas-reflow-restore";
 import {
   type VirtualBrowseLayout,
   virtualLayoutEntryAt,
@@ -819,6 +820,10 @@ function useVirtualScrollAnchor(
     if (!canvasViewportIsMeasurable(canvas) || canvasHasPreviewScrollHold(canvas)) {
       return;
     }
+    // Card-size and panel reflow own the scroll offset until their anchor
+    // settle finishes. Applying a first-visible-slot delta here drops the
+    // pointer card out of the viewport.
+    if (isCanvasReflowRestorationPending(canvas)) return;
     const slot = [...container.querySelectorAll<HTMLElement>("[data-layout-index]")]
       .find((candidate) => Number(candidate.dataset.layoutIndex) === anchor.index);
     if (!slot) {

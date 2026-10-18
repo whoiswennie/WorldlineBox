@@ -1,5 +1,6 @@
 import { getGlobalLlmApi } from "./global-llm";
 import { DEFAULT_GLOBAL_LLM_CONFIG } from "../shared/llm";
+import { LocalConfirmationHost, useLocalConfirmation, requestConfirmation } from "./local-confirmation";
 import {
   useCallback,
   useEffect,
@@ -14,6 +15,7 @@ import {
   type Ref,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
+import { createShellPortal } from "./ui/ShellStyleScope";
 
 import { Icon, type IconName } from "./Icons";
 import type { ApplicationShellState } from "./ApplicationShell";
@@ -61,6 +63,7 @@ import {
   isBenignThumbnailErrorCode,
 } from "../shared/thumbnail-support";
 import { AssetCardMedia } from "./AssetCardMedia";
+import { FindSimilarBanner } from "./FindSimilarBanner";
 import { useAssetCardHoverPreview } from "./use-asset-card-hover-preview";
 import { SyncCardStatusBadge } from "./SyncCardStatusBadge";
 import { useSyncCardStatuses } from "./use-sync-card-status";
@@ -145,6 +148,13 @@ import {
 } from "./folder-browse-canvas";
 import { useFolderInspector } from "./folder-inspector";
 import { collectFolderCoverCandidateAssetIds } from "./folder-cover-refresh";
+import { patchFolderNavigationCoverArtifact } from "./folder-cover";
+import {
+  FOLDER_COVER_PICKER_PAGE_SIZE,
+  folderCoverPickerAssetMatches,
+  folderCoverPickerImageFilter,
+  folderCoverPickerSearchQuery,
+} from "./folder-cover-picker";
 import {
   decrementScopeCount,
   removeAssetIdsLocally,
@@ -180,7 +190,7 @@ import { useT, useLocale, translateForLocale, type AppLocale } from "./i18n";
 import type { AiApiFormat } from "../shared/ai-endpoints";
 import { DEFAULT_AI_API_FORMAT } from "../shared/ai-endpoints";
 import type { WorldlineBoxMcpSettingsApi } from "../shared/mcp";
-import type { HistoryStatus } from "../shared/protocol/responses";
+import type { ExtensionSaveCompletedEvent, HistoryStatus } from "../shared/protocol/responses";
 import { isEditableTextTarget } from "../shared/edit-context-menu";
 import type { SearchQuery } from "../shared/asset-types";
 import {
@@ -259,6 +269,7 @@ import {
   type CreateLibraryPhase,
 } from "./CreateDialog";
 import { CollectionEditorDialog } from "./CollectionEditorDialog";
+import { FolderCoverPickerDialog } from "./FolderCoverPickerDialog";
 import {
   AiConfigDialog,
   type AiConnectionState,
@@ -329,6 +340,7 @@ import { MediaJobsDialog } from "./MediaJobsDialog";
 import { PluginJobActivityBanner } from "./PluginJobActivityBanner";
 import { AiConnectionFailureDialog } from "./AiConnectionFailureDialog";
 import { FatalAlertDialog } from "./FatalAlertDialog";
+import { useShellLayout } from "./ui/use-shell-layout";
 import { CriticalConfirmationDialog } from "./CriticalConfirmationDialog";
 import { useCriticalConfirmationPrompt } from "./use-critical-confirmation-prompt";
 import { useAiConnectionFailure } from "./use-ai-connection-failure";
@@ -375,7 +387,6 @@ import {
   usePendingRestoredAssetFocus,
 } from "./use-browser-session-restore";
 import { useExtensionActiveContext } from "./use-extension-active-context";
-import { useExtensionSaveReveal } from "./use-extension-save-reveal";
 import { usePendingAssetReveal } from "./use-pending-asset-reveal";
 import { missingNavigationSummaryIsFailure } from "./blocking-navigation-summary";
 import {
@@ -493,14 +504,42 @@ import type {
   TagSummary,
   TrashedFolderSummary,
 } from "../shared/asset-types";
-import type { LibraryNavigationSummary } from "../shared/library-navigation";
+import type { FolderNavigationCover, LibraryNavigationSummary } from "../shared/library-navigation";
 import { LIBRARY_ROOT_FOLDER_ID, isLibraryRootFolderId } from "../shared/library-root-folder";
 import { DEFAULT_COLOR_SIMILARITY } from "../shared/color-filter-presets";
 import { loadColorFilterPreferences } from "./color-filter-preferences";
+import {
+  loadSemanticSearchPreferences,
+  saveSemanticSearchPreferences,
+  subscribeSemanticSearchPreferences,
+  type SemanticSearchPageSize,
+} from "./semantic-search-preferences";
+import { semanticSearchNotice } from "./semantic-index-copy";
+import { appendSemanticCleanupNotice } from "./semantic-cleanup-notice";
+import { mergeKeywordAndSemanticRanks, semanticBrowseRegistration } from "./semantic-browse";
+import { isEmbeddingServiceSelectionId } from "../shared/embedding/http-service";
+import {
+  embeddingInputModalitiesForAdapter,
+  embeddingServiceTextOnly,
+  LOCAL_SEMANTIC_ENCODE_MODALITIES,
+} from "../shared/embedding/modalities";
+import {
+  semanticBackgroundWorkActive,
+  semanticToolbarReady,
+} from "./semantic-work";
+import { resolveEffectiveEmbeddingSelection } from "../shared/embedding/library-binding";
+import { subscribeEmbeddingCatalog, subscribeEmbeddingInstallActivity } from "./embedding-catalog-events";
+import {
+  resolveFindSimilar,
+  canFindSimilarForAsset,
+  type FindSimilarSource,
+} from "./find-similar";
+import { isSemanticSearchModelId, type EmbeddingIndexSnapshot, type SemanticSearchModelId } from "../shared/embedding/profile";
 import { hasMeaningfulSmartCollectionCondition } from "../shared/smart-collection-query";
 import { compactFormatFilterTokens } from "../shared/text-media";
 import type {
   WorldlineBoxLibraryApi,
+  EmbeddingHttpServiceSummary,
   LibraryApiResult,
   ImportValidatedResult,
   MediaJobStatus,
@@ -536,6 +575,7 @@ import { createPluginMenuContributionContext } from "./plugin-contribution-conte
 import { InspectorPanel } from "./InspectorPanel";
 import {
   assetCaptionAlignClass,
+  nextCanvasCaptionAlign,
   CARD_SIZE_MAX,
   CARD_SIZE_MIN,
   loadCanvasPreferences,
@@ -557,6 +597,8 @@ import {
 } from "./browse-sort-preferences";
 import {
   FOLDER_CARD_ROW_INLINE_PADDING_PX,
+  browseCardLayoutWidthPx,
+  elementContentBoxWidthPx,
   masonryAlignedFolderWidthPx,
 } from "./folder-card-width";
 import { BrowseLayoutPreview } from "./BrowseLayoutPreview";
@@ -576,6 +618,7 @@ import {
 } from "./library-transfer-progress";
 import {
   BROWSE_PAGE_SIZE,
+  fetchFirstRankedBrowsePage,
   registerBrowseSearchPage,
   registerBrowseSmartCollectionPage,
   useBrowsePagination,
@@ -628,7 +671,7 @@ import {
   isMacPlatform,
   type CommandPlatform,
 } from "./commands/command-types";
-import { resolveRendererPlatform } from "./renderer-platform";
+import { usesWindowsStyleShell } from "./renderer-platform";
 import {
   defaultKeyboardCardSize,
   matchGlobalZoomShortcut,
@@ -636,8 +679,8 @@ import {
 } from "./global-zoom-shortcuts";
 
 const IS_MAC_PLATFORM = isMacPlatform(navigator.userAgent);
-const IS_WINDOWS_PLATFORM =
-  resolveRendererPlatform(navigator.userAgent) === "windows";
+// Windows-style shell: Windows and Linux (see usesWindowsStyleShell).
+const IS_WINDOWS_PLATFORM = usesWindowsStyleShell(navigator.userAgent);
 
 const SHORTCUT_PLATFORM: CommandPlatform = IS_MAC_PLATFORM ? "mac" : "windows";
 /**
@@ -821,10 +864,11 @@ function ToolButton({
 
 export interface AssetManagerHandle {
   openSettings: () => void;
+  revealExtensionSave: (event: ExtensionSaveCompletedEvent) => void;
 }
 
 function renderApplicationDialog(content: ReactNode) {
-  return createPortal(<div className="application-global-dialogs">{content}</div>, document.body);
+  return createShellPortal(<div className="application-global-dialogs">{content}</div>, document.body);
 }
 
 export function AssetManager({
@@ -836,6 +880,8 @@ export function AssetManager({
   readonly onShellStateChange: (state: ApplicationShellState) => void;
   readonly isModuleActive: boolean;
 }) {
+  const shellLayout = useShellLayout();
+  const localConfirmation = useLocalConfirmation();
   const t = useT();
   const { locale } = useLocale();
   const rawLibraryApi = (window as RendererWindow).worldlinebox?.library;
@@ -867,6 +913,8 @@ export function AssetManager({
     targetFolderId: string;
   }>({ folderId: "", name: "", targetFolderId: "" });
   const [assets, setAssets] = useState<AssetSummary[]>([]);
+  const [findSimilarSource, setFindSimilarSource] = useState<FindSimilarSource | null>(null);
+  const findSimilarTokenRef = useRef(0);
   const assetsRef = useRef<AssetSummary[]>([]);
   useEffect(() => {
     assetsRef.current = assets;
@@ -882,6 +930,17 @@ export function AssetManager({
   // REQ-FOLDER-001/002/003/010: direct child folder cards shown above assets
   // when the current browse parent is a managed folder or the managed root.
   const [folderBrowseEntries, setFolderBrowseEntries] = useState<FolderBrowseEntry[]>([]);
+  const [folderNavigationCovers, setFolderNavigationCovers] = useState<readonly FolderNavigationCover[]>(
+    [],
+  );
+  const [folderCustomCoverIds, setFolderCustomCoverIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const folderNavigationCoversRef = useRef<readonly FolderNavigationCover[]>([]);
+  const [folderCoverPicker, setFolderCoverPicker] = useState<{
+    folderIds: string[];
+    assetId: string;
+  } | null>(null);
   // WorldlineBox-d0nv: bump to re-fetch folder browse entries when a cover
   // candidate's thumbnail becomes ready (progressive cover refresh).
   const [folderBrowseRefreshToken, setFolderBrowseRefreshToken] = useState(0);
@@ -1320,6 +1379,7 @@ export function AssetManager({
     queries: string[];
   } | null>(null);
   const [searchHistoryOpen, setSearchHistoryOpen] = useState(false);
+  const searchHistoryDismissedUntilInputRef = useRef(false);
   const [searchHistoryActiveIndex, setSearchHistoryActiveIndex] = useState(-1);
   const searchHistoryLibraryId = library?.libraryId ?? null;
   const searchHistory =
@@ -1799,10 +1859,13 @@ export function AssetManager({
 
   // REQ-PREF-001: browse-area general settings panel (theme/language/canvas).
   const [appSettingsOpen, setAppSettingsOpen] = useState(false);
+  const [deferredExtensionSave, setDeferredExtensionSave] = useState<ExtensionSaveCompletedEvent | null>(null);
+  const handledExtensionSaveRef = useRef<ExtensionSaveCompletedEvent | null>(null);
   const [appSettingsCategory, setAppSettingsCategory] =
     useState<AppSettingsCategoryId>("profile");
 
   useImperativeHandle(settingsRef, () => ({
+    revealExtensionSave: setDeferredExtensionSave,
     openSettings: () => {
       setAppSettingsCategory("profile");
       setAppSettingsOpen(true);
@@ -1857,6 +1920,31 @@ export function AssetManager({
   const syncRunNotifiedRef = useRef(false);
   const syncRunStartedAtRef = useRef<number | null>(null);
   const [showIgnoredItems, setShowIgnoredItems] = useState(false);
+  const loadFolderCoverPickerPage = useCallback(async (query: string, offset: number) => {
+    if (!api || !library) return { items: [], total: 0 };
+    const result = await api.searchAssets({
+      libraryId: library.libraryId,
+      query: folderCoverPickerSearchQuery(query),
+      filters: [folderCoverPickerImageFilter()],
+      limit: FOLDER_COVER_PICKER_PAGE_SIZE,
+      offset,
+      showIgnored: showIgnoredItems,
+    });
+    if (!result.ok) throw new LibraryOperationError(result.error);
+    const items = result.value.items
+      .filter((asset) =>
+        asset.mediaType === "image"
+        && !asset.deletedAt
+        && folderCoverPickerAssetMatches(asset, query))
+      .map((asset) => ({
+        assetId: asset.assetId,
+        displayName: asset.displayName,
+        relativeFilePath: asset.relativeFilePath,
+        thumbnailArtifactId: asset.thumbnailArtifactId,
+        previewRevisionId: asset.previewRevisionId ?? asset.currentRevisionId,
+      }));
+    return { items, total: result.value.total };
+  }, [api, library, showIgnoredItems]);
   const [showMissingLinkedFiles, setShowMissingLinkedFiles] = useState(() =>
     readShowMissingLinkedFiles(globalThis.localStorage),
   );
@@ -1926,6 +2014,21 @@ export function AssetManager({
       );
     },
   });
+  const beginBrowsePageClearingSimilar = useCallback(
+    (...args: Parameters<typeof beginBrowsePage>) => {
+      const definition = args[0];
+      setFindSimilarSource((current) =>
+        current
+        && definition.kind === "search"
+        && definition.similaritySourceAssetId === current.assetId
+        && definition.libraryId === current.libraryId
+          ? current
+          : null,
+      );
+      return beginBrowsePage(...args);
+    },
+    [beginBrowsePage],
+  );
   useEffect(() => {
     activateRenderSnapshotLibrary(library?.libraryId ?? null);
   }, [activateRenderSnapshotLibrary, library?.libraryId]);
@@ -1953,7 +2056,7 @@ export function AssetManager({
     Extract<ReadAppLogResult, { ok: false }>["code"] | null
   >(null);
 
-  function confirmLibrarySwitch(): boolean {
+  async function confirmLibrarySwitch(keepDestinationChoice = false): Promise<boolean> {
     const activity = activeLibrarySwitchActivity({
       uiState: uiStateRef.current,
       importProgress: importProgressRef.current,
@@ -1961,7 +2064,11 @@ export function AssetManager({
       syncProgress: syncProgressRef.current,
       writeOperationInFlight: libraryWriteInFlightRef.current,
     });
-    return activity === null || window.confirm(t("shell.librarySwitchWarning"));
+    const sourceLibraryId = libraryRef.current?.libraryId;
+    const confirmed = activity === null || await requestConfirmation(
+      t("shell.librarySwitchWarning"), false, { scopeBound: !keepDestinationChoice },
+    );
+    return confirmed && (keepDestinationChoice || libraryRef.current?.libraryId === sourceLibraryId);
   }
 
   function openLibraryChooserFromError(): void {
@@ -2286,6 +2393,7 @@ export function AssetManager({
   const assetViewMode = canvasPrefs.viewMode;
   const assetCardSize = canvasPrefs.cardSize;
   const [canvasWidthPx, setCanvasWidthPx] = useState(0);
+  const [folderCanvasContentWidthPx, setFolderCanvasContentWidthPx] = useState(0);
   const cardSizeStops = useMemo(
     () => enumerateDiscreteCardSizes(canvasWidthPx),
     [canvasWidthPx],
@@ -2298,11 +2406,11 @@ export function AssetManager({
       masonryAlignedFolderWidthPx(
         Math.max(
           0,
-          canvasWidthPx - FOLDER_CARD_ROW_INLINE_PADDING_PX * 2,
+          folderCanvasContentWidthPx - FOLDER_CARD_ROW_INLINE_PADDING_PX * 2,
         ),
         assetCardSize,
       ),
-    [assetCardSize, canvasWidthPx],
+    [assetCardSize, folderCanvasContentWidthPx],
   );
   const workspaceCanvasRef = useRef<HTMLDivElement>(null);
   const previewScrollHoldTimerRef = useRef<number | null>(null);
@@ -2647,6 +2755,151 @@ export function AssetManager({
   const [pluginJobs, setPluginJobs] = useState<PluginJobStatus | null>(null);
   const [hiddenPluginJobActivityId, setHiddenPluginJobActivityId] = useState<string | null>(null);
   const [mediaJobsLoading, setMediaJobsLoading] = useState(false);
+  const [semanticSearchPrefs, setSemanticSearchPrefs] = useState(() => loadSemanticSearchPreferences());
+  const [embeddingIndex, setEmbeddingIndex] = useState<EmbeddingIndexSnapshot>({
+    phase: "unavailable",
+    done: 0,
+    total: 0,
+    failedCount: 0,
+  });
+  const [embeddingBinding, setEmbeddingBinding] = useState<{ selectionId: string | null; enabled: boolean; inherit: boolean } | null>(null);
+  const [embeddingForLibraryId, setEmbeddingForLibraryId] = useState<string | null>(null);
+  const [embeddingInstall, setEmbeddingInstall] = useState<{
+    runtimeInstalled: boolean;
+    runtimeDownloadable: boolean;
+    models: Array<{ modelId: SemanticSearchModelId; installed: boolean }>;
+  } | null>(null);
+  const [embeddingServices, setEmbeddingServices] = useState<EmbeddingHttpServiceSummary[]>([]);
+  const [embeddingInstalling, setEmbeddingInstalling] = useState(false);
+  const embeddingRestartRef = useRef(true);
+  const lastStartedSelectionRef = useRef<string | null>(null);
+  const embeddingSelectionRef = useRef<string | null>(null);
+  useEffect(() => subscribeSemanticSearchPreferences(() => {
+    setSemanticSearchPrefs(loadSemanticSearchPreferences());
+  }), []);
+  useEffect(() => subscribeEmbeddingInstallActivity(setEmbeddingInstalling), []);
+  const openLibraryId = library?.libraryId ?? null;
+  useEffect(() => {
+    if (!api || !openLibraryId) return;
+    let cancelled = false;
+    const load = async () => {
+      const [binding, status, services] = await Promise.all([
+        api.embeddingGetBinding({ libraryId: openLibraryId }),
+        api.embeddingInstallStatus(),
+        api.embeddingListServices(),
+      ]);
+      if (cancelled) return;
+      if (binding.ok) setEmbeddingBinding(binding.value);
+      if (status.ok) setEmbeddingInstall(status.value);
+      if (services.ok && services.value) setEmbeddingServices(services.value);
+      setEmbeddingForLibraryId(openLibraryId);
+      const prefs = loadSemanticSearchPreferences();
+      const libraryBinding = binding.ok
+        ? (binding.value.inherit ? undefined : { selectionId: binding.value.selectionId, enabled: binding.value.enabled })
+        : undefined;
+      const selectionId = resolveEffectiveEmbeddingSelection({
+        globalEnabled: prefs.enabled,
+        defaultModelId: prefs.modelId,
+        libraryBinding,
+      });
+      const service = services.ok && services.value
+        ? services.value.find((item) => item.id === selectionId) ?? null
+        : null;
+      const ready = semanticToolbarReady({
+        selectionId,
+        runtimeInstalled: status.ok ? status.value.runtimeInstalled : false,
+        models: status.ok ? status.value.models : [],
+        service,
+      });
+      const bound = Boolean(selectionId) && (
+        service
+          ? service.textStatus === "verified" && service.dimensions != null
+          : ready
+      );
+      if (!bound) setFindSimilarSource(null);
+    };
+    void load();
+    const unsubscribe = subscribeEmbeddingCatalog(() => { void load(); });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [api, openLibraryId]);
+  const activeEmbeddingBinding = embeddingForLibraryId === openLibraryId ? embeddingBinding : null;
+  const embeddingSelectionId = resolveEffectiveEmbeddingSelection({
+    globalEnabled: semanticSearchPrefs.enabled,
+    defaultModelId: semanticSearchPrefs.modelId,
+    libraryBinding: activeEmbeddingBinding == null || activeEmbeddingBinding.inherit
+      ? undefined
+      : { selectionId: activeEmbeddingBinding.selectionId, enabled: activeEmbeddingBinding.enabled },
+  });
+  const embeddingService = embeddingServices.find((service) => service.id === embeddingSelectionId) ?? null;
+  const embeddingSearchReady = semanticToolbarReady({
+    selectionId: embeddingSelectionId,
+    runtimeInstalled: embeddingInstall?.runtimeInstalled ?? false,
+    models: embeddingInstall?.models ?? [],
+    service: embeddingService,
+  });
+  const embeddingBound = Boolean(embeddingSelectionId) && (
+    embeddingService
+      ? embeddingService.textStatus === "verified" && embeddingService.dimensions != null
+      : embeddingSearchReady
+  );
+  embeddingSelectionRef.current = embeddingSearchReady ? embeddingSelectionId : null;
+  useEffect(() => {
+    embeddingRestartRef.current = true;
+  }, [embeddingSelectionId, library?.libraryId]);
+  useEffect(() => {
+    if (!api || !library) return;
+    if (!embeddingSearchReady || !embeddingSelectionId) {
+      const previous = lastStartedSelectionRef.current;
+      lastStartedSelectionRef.current = null;
+      if (!previous) return;
+      void api.embeddingIndexStatus({
+        libraryId: library.libraryId,
+        modelId: previous,
+        run: false,
+        stop: true,
+        restart: false,
+      }).then((result) => {
+        if (result.ok) setEmbeddingIndex(result.value);
+      });
+      return;
+    }
+    lastStartedSelectionRef.current = embeddingSelectionId;
+    let cancelled = false;
+    const tick = () => {
+      const restart = embeddingRestartRef.current;
+      embeddingRestartRef.current = false;
+      void api.embeddingIndexStatus({
+        libraryId: library.libraryId,
+        modelId: embeddingSelectionId,
+        run: true,
+        restart,
+      }).then((result) => {
+        if (cancelled || !result.ok) return;
+        setEmbeddingIndex(result.value);
+      });
+    };
+    tick();
+    const timer = window.setInterval(
+      tick,
+      embeddingIndex.phase === "ready" || embeddingIndex.phase === "failed" || embeddingIndex.phase === "unavailable"
+        ? 5_000
+        : 1_500,
+    );
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    api,
+    library,
+    embeddingSearchReady,
+    embeddingSelectionId,
+    embeddingIndex.phase,
+  ]);
+  const semanticSearchActive = embeddingSearchReady && semanticSearchPrefs.searchMode === "semantic";
   const pluginJobsActive = hasActivePluginJobs(pluginJobs);
   const pluginJobActivityCandidate = selectPluginJobActivity(pluginJobs);
   const pluginJobActivity =
@@ -2662,8 +2915,12 @@ export function AssetManager({
     const mediaActive =
       (mediaJobs?.queued ?? 0) + (mediaJobs?.running ?? 0) > 0;
     const aiActive = (aiJobs?.queued ?? 0) + (aiJobs?.running ?? 0) > 0;
-    return mediaActive || aiActive || pluginJobsActive;
-  }, [aiAnalyzing, aiJobs, mediaJobs, pluginJobsActive]);
+    return mediaActive || aiActive || pluginJobsActive || semanticBackgroundWorkActive({
+      installing: embeddingInstalling,
+      enabled: embeddingSearchReady,
+      phase: embeddingIndex.phase,
+    });
+  }, [aiAnalyzing, aiJobs, embeddingIndex.phase, embeddingInstalling, embeddingSearchReady, mediaJobs, pluginJobsActive]);
   const openMediaJobs = useCallback(() => {
     setMediaJobsLoading(true);
     setMediaJobsOpen(true);
@@ -3646,10 +3903,15 @@ export function AssetManager({
   // entries response) visible to the thumbnail event subscriber so a ready
   // cover refreshes the folder-card row without a full reload.
   useEffect(() => {
+    folderNavigationCoversRef.current = folderNavigationCovers;
+  }, [folderNavigationCovers]);
+
+  useEffect(() => {
     folderCoverCandidateAssetIdsRef.current = collectFolderCoverCandidateAssetIds(
       folderBrowseEntries,
+      folderNavigationCovers,
     );
-  }, [folderBrowseEntries]);
+  }, [folderBrowseEntries, folderNavigationCovers]);
 
   const previewIndex = previewAsset
     ? visibleAssets.findIndex((asset) => asset.assetId === previewAsset.assetId)
@@ -3684,7 +3946,7 @@ export function AssetManager({
   const resizeAssetCards = useCallback(
     (requestedSize: number, clientX?: number, clientY?: number) => {
       const root = workspaceCanvasRef.current;
-      const width = root?.clientWidth ?? 0;
+      const width = root ? browseCardLayoutWidthPx(root) : 0;
       const stops = enumerateDiscreteCardSizes(width);
       const nextSize = nearestDiscreteCardSize(
         Math.min(
@@ -3718,7 +3980,25 @@ export function AssetManager({
       const anchorState = anchorCard
         ? captureAnchor(anchorCard, anchorX, anchorY)
         : null;
-      if (!cardResizeAnchorRef.current) {
+      const previousAnchor = cardResizeAnchorRef.current;
+      const previousScroll = cardResizeScrollSnapshotRef.current;
+      const pointerMoved = Boolean(
+        previousAnchor &&
+          anchorState &&
+          Math.hypot(
+            previousAnchor.clientX - anchorState.clientX,
+            previousAnchor.clientY - anchorState.clientY,
+          ) > 24,
+      );
+      const scrollMoved = Boolean(
+        previousScroll &&
+          Math.abs(previousScroll.top - root.scrollTop) > 1,
+      );
+      // One continuous pinch keeps the first anchor. A later gesture whose
+      // pointer or scroll offset moved (slider, then wheel on another card)
+      // has to recapture; otherwise the stale snapshot scrolls back to the
+      // start of the previous gesture.
+      if (!previousAnchor || pointerMoved || scrollMoved) {
         cardResizeAnchorRef.current = anchorState;
         cardResizeScrollSnapshotRef.current = {
           left: root.scrollLeft,
@@ -3726,6 +4006,18 @@ export function AssetManager({
         };
       }
 
+      // Virtual geometry compensation and the width-reflow anchor must not
+      // fight the pointer anchor. Cancel an in-flight width restore so its
+      // completion callback cannot clear this zoom anchor.
+      if (reflowRestoreFrameRef.current !== null) {
+        window.cancelAnimationFrame(reflowRestoreFrameRef.current);
+        reflowRestoreFrameRef.current = null;
+      }
+      reflowAnchorRef.current = null;
+      reflowScrollSnapshotRef.current = null;
+      if (cardResizeAnchorRef.current) {
+        root.classList.add("is-reflow-restoring");
+      }
       setCanvasPrefs((p) => ({ ...p, cardSize: nextSize }));
       // WorldlineBox-32p: always re-anchor after settle; width/size reflow may reset
       // scrollTop mid-wait, and bailing left the visible set wrong.
@@ -3735,6 +4027,7 @@ export function AssetManager({
         cardSizeRestoreFrameRef,
         30,
         () => {
+          root.classList.remove("is-reflow-restoring");
           cardResizeAnchorRef.current = null;
           cardResizeScrollSnapshotRef.current = null;
         },
@@ -3760,15 +4053,18 @@ export function AssetManager({
       // The host is the flex item whose width changes when a divider moves.
       // Read the canvas's current width instead of trusting observer entry
       // ordering when both elements resize in the same notification.
-      const width = canvas.clientWidth;
+      const width = browseCardLayoutWidthPx(canvas);
+      const contentWidth = elementContentBoxWidthPx(canvas);
       // The viewer overlay preserves the canvas width. View-restore.ts owns
       // scroll restoration for the viewer close path, so a preview transition
       // must never be interpreted as a reflow.
       if (width <= 0) {
         lastWidth = null;
+        setFolderCanvasContentWidthPx(0);
         return;
       }
       setCanvasWidthPx(Math.round(width));
+      setFolderCanvasContentWidthPx(Math.round(contentWidth));
       if (lastWidth === null) {
         lastWidth = width;
         return;
@@ -3777,7 +4073,11 @@ export function AssetManager({
         width === lastWidth ||
         previewAssetRef.current ||
         previewRestoringRef.current ||
-        canvasHasPreviewScrollHold(canvas)
+        canvasHasPreviewScrollHold(canvas) ||
+        // Ctrl-wheel / slider zoom owns the pointer anchor. A scrollbar
+        // width change in that window must not retarget scroll to the
+        // topmost card and leave the pointed card below the fold.
+        cardResizeAnchorRef.current
       ) {
         lastWidth = width;
         return;
@@ -3890,19 +4190,14 @@ export function AssetManager({
           : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
             ? event.deltaY * canvas.clientHeight
             : event.deltaY;
-      const stops = enumerateDiscreteCardSizes(canvas.clientWidth);
+      const stops = enumerateDiscreteCardSizes(browseCardLayoutWidthPx(canvas));
       const nextSize = nextDiscreteCardSizeFromWheelDelta(
         assetCardSize,
         delta,
         stops,
         wheelSample,
       );
-      const rect = canvas.getBoundingClientRect();
-      resizeAssetCards(
-        nextSize,
-        rect.left + rect.width / 2,
-        rect.top + rect.height / 2,
-      );
+      resizeAssetCards(nextSize, event.clientX, event.clientY);
     };
     canvas.addEventListener("wheel", handleWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", handleWheel);
@@ -3929,7 +4224,9 @@ export function AssetManager({
         resizeAssetCards(defaultKeyboardCardSize(), centerX, centerY);
         return;
       }
-      const stops = enumerateDiscreteCardSizes(canvas?.clientWidth ?? 0);
+      const stops = enumerateDiscreteCardSizes(
+        canvas ? browseCardLayoutWidthPx(canvas) : 0,
+      );
       resizeAssetCards(
         stepDiscreteCardSize(
           assetCardSize,
@@ -4376,6 +4673,10 @@ export function AssetManager({
         setCollections(summary.collections);
         setSmartCollections(summary.smartCollections);
         setTrashedFolders(summary.trashedFolders);
+        const covers = summary.folderCovers ?? [];
+        folderNavigationCoversRef.current = covers;
+        setFolderNavigationCovers(covers);
+        setFolderCustomCoverIds(new Set(covers.map((cover) => cover.folderId)));
       };
       const loadNavigationSummary = () => {
         if (!isCurrentLibraryView(viewSession)) return Promise.resolve(undefined);
@@ -4486,7 +4787,7 @@ export function AssetManager({
       );
       // WorldlineBox-ws4k: register the paginated query so the scroll sentinel can
       // append the next page with the exact same scope/sort/filters.
-      registerBrowseSearchPage(beginBrowsePage, {
+      registerBrowseSearchPage(beginBrowsePageClearingSimilar, {
         libraryId: activeLibrary.libraryId,
         query: opts?.discovery?.search ?? null,
         filters: opts?.discovery?.filters,
@@ -4545,7 +4846,7 @@ export function AssetManager({
     },
     [
       api,
-      beginBrowsePage,
+      beginBrowsePageClearingSimilar,
       ensureLibraryView,
       isCurrentLibraryView,
       locale,
@@ -4572,7 +4873,7 @@ export function AssetManager({
     setActiveSmartCollectionId,
     setAssets,
     setSearchTotal,
-    beginBrowsePage,
+    beginBrowsePage: beginBrowsePageClearingSimilar,
     setSelectedAssetId,
     setSelectedAssetIds,
     setAssetSelectionAnchor,
@@ -4620,12 +4921,16 @@ export function AssetManager({
     setAssetSelectionAnchor,
     pendingRestoredFocusRef,
   });
-  useExtensionSaveReveal({
-    api: api ?? null,
-    libraryId: library?.libraryId,
-    chooseFolderRef,
-    pendingRevealRef,
-  });
+  useEffect(() => {
+    if (!deferredExtensionSave || !library || !isModuleActive || handledExtensionSaveRef.current === deferredExtensionSave) return;
+    handledExtensionSaveRef.current = deferredExtensionSave;
+    if (deferredExtensionSave.libraryId !== library.libraryId) return;
+    const reveal = pendingRevealFromAssets([deferredExtensionSave.asset]);
+    const scope = browseScopeForAsset(deferredExtensionSave.asset);
+    if (!reveal || scope === null) return;
+    pendingRevealRef.current = reveal;
+    void chooseFolderRef.current(scope);
+  }, [deferredExtensionSave, isModuleActive, library]);
   // WorldlineBox-y0au: keep recent libraries warm on the no-library start surface.
   useEffect(() => {
     if (!api || library) return;
@@ -5008,6 +5313,17 @@ export function AssetManager({
           });
           if (folderCoverCandidateAssetIdsRef.current.has(cardEvent.assetId)) {
             scheduleFolderBrowseRefresh();
+            if (effectLibraryId && cardEvent.artifactId) {
+              const patched = patchFolderNavigationCoverArtifact(
+                folderNavigationCoversRef.current,
+                cardEvent.assetId,
+                cardEvent.artifactId,
+              );
+              if (patched.changed) {
+                folderNavigationCoversRef.current = patched.covers;
+                setFolderNavigationCovers(patched.covers);
+              }
+            }
           }
         }
       }
@@ -5169,6 +5485,7 @@ export function AssetManager({
   }
 
   function beginWorkspaceNavigation(): () => boolean {
+    findSimilarTokenRef.current += 1;
     const token = (workspaceTabTransitionRef.current += 1);
     workspaceHistoryReplayEpochRef.current += 1;
     return () => workspaceTabTransitionRef.current === token;
@@ -5177,6 +5494,7 @@ export function AssetManager({
   function beginWorkspaceNavigationRequest(
     historyMode: WorkspaceNavigationHistoryMode,
   ): WorkspaceNavigationRequest {
+    findSimilarTokenRef.current += 1;
     const token = beginWorkspaceTabNavigation(historyMode);
     const request: WorkspaceNavigationRequest = {
       token,
@@ -5195,6 +5513,7 @@ export function AssetManager({
   }
 
   function applyWorkspaceLocationFlags(location: WorkspaceNavLocation): void {
+    if (location.kind === "similar") return;
     setShowTrash(location.kind === "trash");
     setShowTagManagement(location.kind === "tag-management");
     setActivePluginSidebarViewId(
@@ -5609,6 +5928,9 @@ export function AssetManager({
       case "plugin-sidebar":
         await enterPluginSidebarView(location.viewId, request);
         return;
+      case "similar":
+        await runFindSimilar(location.assetId, request);
+        return;
     }
   }
 
@@ -5771,7 +6093,7 @@ export function AssetManager({
     // an empty id; if it was left behind after a failed destination, allow retry
     // instead of trapping the user on "validating…".
     if (importProgress?.importId) return;
-    if (libraryTransitionLock.hasTransitionPending() || !confirmLibrarySwitch()) return;
+    if (libraryTransitionLock.hasTransitionPending() || !(await confirmLibrarySwitch())) return;
     setImportProgress(null);
     setDialog(null);
     const inspect = await runInlineLibraryOpening(
@@ -5824,7 +6146,7 @@ export function AssetManager({
   async function openBillfishLibrary() {
     if (!api) return;
     if (importProgress?.importId) return;
-    if (libraryTransitionLock.hasTransitionPending() || !confirmLibrarySwitch()) return;
+    if (libraryTransitionLock.hasTransitionPending() || !(await confirmLibrarySwitch())) return;
     setImportProgress(null);
     setDialog(null);
     const inspect = await runInlineLibraryOpening(
@@ -5924,7 +6246,7 @@ export function AssetManager({
     if (!api) return;
     // A second library choice is safe to queue behind the current transition;
     // silently dropping it made a fast switch look like a frozen switcher.
-    if (!openOptions?.skipSwitchConfirm && !confirmLibrarySwitch()) return;
+    if (!openOptions?.skipSwitchConfirm && !(await confirmLibrarySwitch(true))) return;
     // Opening, closing, and deleting a library all replace the renderer's
     // active identity. Keep their request, UI teardown, and ref updates in one
     // order; otherwise a close clicked while an open is resolving can close
@@ -6550,7 +6872,7 @@ export function AssetManager({
       setSearchOffset(0);
       api.setActiveContext(targetLibraryId);
       applySearchResult(result.value);
-      registerBrowseSearchPage(beginBrowsePage, {
+      registerBrowseSearchPage(beginBrowsePageClearingSimilar, {
         libraryId: targetLibraryId,
         query: definition.search ?? null,
         filters: definition.filters,
@@ -6634,7 +6956,7 @@ export function AssetManager({
       setSearchOffset(0);
       api.setActiveContext(targetLibraryId);
       applySearchResult(result.value);
-      registerBrowseSearchPage(beginBrowsePage, {
+      registerBrowseSearchPage(beginBrowsePageClearingSimilar, {
         libraryId: targetLibraryId,
         query: definition.search ?? null,
         filters: definition.filters,
@@ -7234,7 +7556,7 @@ export function AssetManager({
       resetDiscoveryIfNavigationReplacesLive(request);
       api.setActiveContext(targetLibraryId);
       applySearchResult(result.value);
-      registerBrowseSearchPage(beginBrowsePage, {
+      registerBrowseSearchPage(beginBrowsePageClearingSimilar, {
         libraryId: targetLibraryId,
         query: definition.search ?? null,
         scope: { kind: "collection", collectionId, recursive },
@@ -7802,7 +8124,8 @@ export function AssetManager({
     }
   }
 
-  function requestDeleteCollection(collectionId: string, name: string) {
+  async function requestDeleteCollection(collectionId: string, name: string) {
+    const sourceLibraryId = libraryRef.current?.libraryId;
     const collection = collections.find(
       (candidate) => candidate.collectionId === collectionId,
     );
@@ -7811,12 +8134,13 @@ export function AssetManager({
       (collection?.childCollectionCount ?? 0) > 0;
     if (
       hasContents &&
-      !window.confirm(
+      !await requestConfirmation(
         t("command.collection.deleteConfirm", { name }),
       )
     ) {
       return;
     }
+    if (libraryRef.current?.libraryId !== sourceLibraryId) return;
     void deleteCollection(collectionId);
   }
 
@@ -8148,6 +8472,7 @@ export function AssetManager({
     pasteClipboardImage,
     importDroppedFiles,
     beginInternalAssetDrag,
+    isInternalAssetDrag,
     handleExternalDragEnter,
     handleExternalDragLeave,
     handleExternalDragOver,
@@ -8370,6 +8695,57 @@ export function AssetManager({
           if (result.error.code === "CANCELLED") return;
           throw new LibraryOperationError(result.error);
         }
+        patchFolderCustomCoverIds(result.value.folderIds, result.value.hasCustomCover);
+        setFolderBrowseRefreshToken((token) => token + 1);
+      } catch (caught) {
+        setError(toMessage(caught, t("error.code.FOLDER_COVER_UNSUPPORTED"), locale));
+      }
+    })();
+  }
+
+  function openFolderCoverLibraryPicker(folderIds: readonly string[]) {
+    if (!library || folderIds.length === 0) return;
+    const images = visibleAssets.filter(
+      (asset) => asset.mediaType === "image" && !asset.deletedAt,
+    );
+    const selected = images.find((asset) => selectedAssetIds.includes(asset.assetId));
+    setFolderCoverPicker({
+      folderIds: [...folderIds],
+      assetId: selected?.assetId ?? "",
+    });
+  }
+
+  function applyFolderCoverFromLibrary(assetId: string) {
+    if (!api || !library || !folderCoverPicker || !assetId) return;
+    const { folderIds } = folderCoverPicker;
+    void (async () => {
+      try {
+        const result = await api.setFolderCoverFromAsset({
+          libraryId: library.libraryId,
+          folderIds,
+          assetId,
+        });
+        if (!result.ok) throw new LibraryOperationError(result.error);
+        patchFolderCustomCoverIds(result.value.folderIds, result.value.hasCustomCover);
+        setFolderCoverPicker(null);
+        setFolderBrowseRefreshToken((token) => token + 1);
+      } catch (caught) {
+        setError(toMessage(caught, t("error.code.FOLDER_COVER_UNSUPPORTED"), locale));
+      }
+    })();
+  }
+
+  function useAssetAsFolderCover(assetId: string, folderId: string) {
+    if (!api || !library) return;
+    void (async () => {
+      try {
+        const result = await api.setFolderCoverFromAsset({
+          libraryId: library.libraryId,
+          folderIds: [folderId],
+          assetId,
+        });
+        if (!result.ok) throw new LibraryOperationError(result.error);
+        patchFolderCustomCoverIds(result.value.folderIds, result.value.hasCustomCover);
         setFolderBrowseRefreshToken((token) => token + 1);
       } catch (caught) {
         setError(toMessage(caught, t("error.code.FOLDER_COVER_UNSUPPORTED"), locale));
@@ -8386,11 +8762,23 @@ export function AssetManager({
           folderIds: [...folderIds],
         });
         if (!result.ok) throw new LibraryOperationError(result.error);
+        patchFolderCustomCoverIds(result.value.folderIds, result.value.hasCustomCover);
         setFolderBrowseRefreshToken((token) => token + 1);
       } catch (caught) {
         setError(toMessage(caught, t("error.code.FOLDER_COVER_UNSUPPORTED"), locale));
       }
     })();
+  }
+
+  function patchFolderCustomCoverIds(folderIds: readonly string[], hasCustomCover: boolean) {
+    setFolderCustomCoverIds((current) => {
+      const next = new Set(current);
+      for (const folderId of folderIds) {
+        if (hasCustomCover) next.add(folderId);
+        else next.delete(folderId);
+      }
+      return next;
+    });
   }
 
   // WorldlineBox-vf8x: folder create/rename/trash chords (mac ⌘ / Windows Ctrl).
@@ -8519,11 +8907,21 @@ export function AssetManager({
     if (!tagFilter.trim()) setActiveTagId(null);
     setActiveSmartCollectionId(null);
     const pendingTabSelection = pendingWorkspaceTabSelectionRef.current;
+    const selectionNow = selectedAssetIdsRef.current;
+    const pageAssetIds = new Set(result.value.items.map((item) => item.assetId));
+    // A browse response used to clear the selection unconditionally. Keep a
+    // selection whose ids are all on the returned page so a click is not
+    // wiped when the in-flight or follow-up search lands.
+    const selectionStillOnPage =
+      selectionNow.length > 0
+      && selectionNow.every((id) => pageAssetIds.has(id));
     if (pendingTabSelection?.isCurrent()) {
       setSelectedAssetIds([...pendingTabSelection.selectedAssetIds]);
       setSelectedAssetId(pendingTabSelection.selectedAssetId ?? undefined);
       selectionAnchorRef.current = pendingTabSelection.selectedAssetId;
       pendingWorkspaceTabSelectionRef.current = null;
+    } else if (selectionStillOnPage) {
+      if (pendingTabSelection) pendingWorkspaceTabSelectionRef.current = null;
     } else {
       if (pendingTabSelection) pendingWorkspaceTabSelectionRef.current = null;
       if (!pendingRevealRef.current) {
@@ -8533,7 +8931,7 @@ export function AssetManager({
     applySearchResult(result.value);
     // WorldlineBox-ws4k: subsequent pages must reuse the same query/scope/sort.
     if (activeSmartCollectionId) {
-      registerBrowseSmartCollectionPage(beginBrowsePage, {
+      registerBrowseSmartCollectionPage(beginBrowsePageClearingSimilar, {
         libraryId: targetLibraryId,
         collectionId: activeSmartCollectionId,
         sessionId: result.value.sessionId,
@@ -8544,7 +8942,7 @@ export function AssetManager({
       });
       setUiState("ready");
     } else {
-      registerBrowseSearchPage(beginBrowsePage, {
+      registerBrowseSearchPage(beginBrowsePageClearingSimilar, {
         libraryId: targetLibraryId,
         query: definition.search ?? null,
         filters: definition.filters,
@@ -8572,12 +8970,269 @@ export function AssetManager({
     return result.value;
   }
 
+  function showSemanticResults(
+    items: AssetSummary[],
+    rankedAssetIds: readonly string[],
+    rankedPageSize: SemanticSearchPageSize,
+    source?: FindSimilarSource,
+  ) {
+    if (!library) return;
+    setShowTrash(false);
+    setShowTagManagement(false);
+    setActivePluginSidebarViewId(null);
+    setActiveSmartCollectionId(null);
+    if (!pendingRevealRef.current) clearAssetSelection({ preserveFolders: true });
+    const definition = currentQueryDefinition();
+    registerBrowseSearchPage(beginBrowsePageClearingSimilar, semanticBrowseRegistration({
+      libraryId: library.libraryId,
+      query: definition.search ?? null,
+      filters: definition.filters,
+      scope: currentSearchScope(definition.search !== undefined),
+      sort: definition.sort,
+      showIgnored: showIgnoredItems,
+      rankedAssetIds,
+      rankedPageSize,
+      items,
+      ...(source ? { similaritySourceAssetId: source.assetId } : {}),
+    }));
+    if (source) setFindSimilarSource(source);
+  }
+
+  async function runSemanticSearch(query: string, silent?: boolean, cancellationRetry = 0) {
+    if (!api || !library) return;
+    if (silent && (previewAssetRef.current || previewRestoringRef.current)) return;
+    const modelId = embeddingSelectionRef.current;
+    if (!modelId) return;
+    const searchPreferences = loadSemanticSearchPreferences();
+    const pageSize = searchPreferences.pageSize;
+    const definition = currentQueryDefinition();
+    const searchScope = currentSearchScope(definition.search !== undefined);
+    const request = silent
+      ? { isCurrent: () => true }
+      : beginWorkspaceNavigationRequest("none");
+    try {
+      if (!silent) await closeAssetPreview(false);
+      if (!request.isCurrent()) return;
+      const [ranked, keyword] = await Promise.all([
+        api.embeddingSearch({
+          libraryId: library.libraryId,
+          modelId,
+          query,
+          filters: definition.filters,
+          scope: searchScope,
+          showIgnored: showIgnoredItems,
+        }),
+        api.searchAssets({
+          libraryId: library.libraryId,
+          query: definition.search ?? null,
+          filters: definition.filters,
+          scope: searchScope,
+          idsOnly: true,
+          showIgnored: showIgnoredItems,
+        }),
+      ]);
+      if (!request.isCurrent()) return;
+      if (!ranked.ok) throw new LibraryOperationError(ranked.error);
+      if (ranked.value.cancelled) {
+        if (cancellationRetry < 1 && request.isCurrent()) {
+          await new Promise((resolve) => window.setTimeout(resolve, 50));
+          if (request.isCurrent()) await runSemanticSearch(query, silent, cancellationRetry + 1);
+        }
+        return;
+      }
+      const keywordAssetIds = keyword.ok ? (keyword.value.assetIds ?? []) : [];
+      const rankedAssetIds = mergeKeywordAndSemanticRanks({
+        keywordAssetIds,
+        semanticAssetIds: ranked.value.assetIds,
+      });
+      if (rankedAssetIds.length === 0) {
+        const notice = semanticSearchNotice({
+          ...ranked.value,
+          matched: 0,
+          textOnly: isEmbeddingServiceSelectionId(modelId) && embeddingServiceTextOnly(embeddingService?.modalities),
+        });
+        setNotice(t(notice.key, notice.params));
+        if (ranked.value.phase === "ready") {
+          showSemanticResults([], [], pageSize);
+        }
+        return;
+      }
+      const firstPage = await fetchFirstRankedBrowsePage({
+        api,
+        libraryId: library.libraryId,
+        rankedAssetIds,
+        pageSize,
+        shouldContinue: () => request.isCurrent(),
+      });
+      if (!request.isCurrent() || !firstPage) return;
+      if (!firstPage.ok) throw new LibraryOperationError(firstPage.error);
+      showSemanticResults(
+        firstPage.value.items,
+        firstPage.value.rankedAssetIds,
+        pageSize,
+      );
+      setNotice(null);
+    } catch (caught) {
+      if (request.isCurrent()) {
+        setError(toMessage(caught, t("toast.searchFailed"), locale));
+        if (!silent) setWorkspaceNavigationPending(false);
+      }
+    } finally {
+      if (request.isCurrent()) setUiState("ready");
+    }
+  }
+
+  async function describeSimilarSource(assetId: string): Promise<FindSimilarSource | null> {
+    if (!api || !library) return null;
+    const known = assetsRef.current.find((asset) => asset.assetId === assetId);
+    const listed = known
+      ? null
+      : await api.listAssets({
+          libraryId: library.libraryId,
+          recursive: true,
+          assetIds: [assetId],
+        });
+    if (listed && !listed.ok) throw new LibraryOperationError(listed.error);
+    const asset = known ?? listed?.value[0];
+    const coverUrl = asset
+      ? resolveAssetCardCoverUrl({
+          libraryId: library.libraryId,
+          assetId: asset.assetId,
+          mediaType: asset.mediaType,
+          availability: asset.availability,
+          deletedAt: asset.deletedAt,
+          thumbnailStatus: asset.thumbnailStatus,
+          thumbnailArtifactId: asset.thumbnailArtifactId,
+        }).url
+      : null;
+    return {
+      libraryId: library.libraryId,
+      workspaceTabId: workspaceTabsState.activeTabId,
+      assetId,
+      displayName: asset?.displayName ?? "",
+      coverUrl,
+    };
+  }
+
+  async function runFindSimilar(
+    assetId: string,
+    navigation?: WorkspaceNavigationRequest,
+  ) {
+    if (!api || !library) return;
+    const modelId = embeddingSelectionRef.current;
+    if (!modelId) return;
+    let source = assetsRef.current.find((asset) => asset.assetId === assetId);
+    if (!source) {
+      const listed = await api.listAssets({ libraryId: library.libraryId, recursive: true, assetIds: [assetId] });
+      if (!listed.ok) return;
+      source = listed.value[0];
+    }
+    const sourceModalities = isSemanticSearchModelId(modelId)
+      ? LOCAL_SEMANTIC_ENCODE_MODALITIES
+      : embeddingService
+        ? embeddingInputModalitiesForAdapter(embeddingService.adapter, embeddingService.modalities)
+        : [];
+    if (!source || !canFindSimilarForAsset(source, sourceModalities)) return;
+    const preferences = loadSemanticSearchPreferences();
+    const token = ++findSimilarTokenRef.current;
+    const polling = () =>
+      findSimilarTokenRef.current === token && (navigation?.isCurrent() ?? true);
+    let page;
+    try {
+      page = await resolveFindSimilar({
+        query: async () => {
+          const result = await api.embeddingSimilar({
+            libraryId: library.libraryId,
+            modelId,
+            assetId,
+            filters: currentQueryDefinition().filters,
+            scope: currentSearchScope(currentQueryDefinition().search !== undefined),
+          });
+          if (!result.ok) throw new LibraryOperationError(result.error);
+          return { status: result.value.status, assetIds: result.value.assetIds };
+        },
+        shouldContinue: polling,
+        delay: (milliseconds) => new Promise((resolve) => {
+          window.setTimeout(resolve, milliseconds);
+        }),
+        onPreparing: () => setNotice(t("settings.semanticSearch.similarPreparing")),
+      });
+    } catch (caught) {
+      if (polling()) setError(toMessage(caught, t("toast.searchFailed"), locale));
+      return;
+    }
+    if (!page || !polling()) return;
+    if (page.status === "unsupported") {
+      setNotice(t("settings.semanticSearch.similarUnsupported"));
+      return;
+    }
+    if (page.status === "unavailable") {
+      setNotice(t("settings.semanticSearch.similarUnavailable"));
+      return;
+    }
+    if (page.status === "failed") {
+      setNotice(t("settings.semanticSearch.similarFailed"));
+      return;
+    }
+    const request = navigation ?? beginWorkspaceNavigationRequest("push");
+    if (!request.isCurrent()) return;
+    try {
+      if (!navigation) await closeAssetPreview(false);
+      if (!request.isCurrent()) return;
+      const source = await describeSimilarSource(assetId);
+      if (!request.isCurrent() || !source) return;
+      if (page.assetIds.length === 0) {
+        showSemanticResults([], [], preferences.pageSize, source);
+        setNotice(t("settings.semanticSearch.similarEmpty"));
+      } else {
+        const firstPage = await fetchFirstRankedBrowsePage({
+          api,
+          libraryId: library.libraryId,
+          rankedAssetIds: page.assetIds,
+          pageSize: preferences.pageSize,
+          shouldContinue: () => request.isCurrent(),
+        });
+        if (!request.isCurrent() || !firstPage) return;
+        if (!firstPage.ok) throw new LibraryOperationError(firstPage.error);
+        showSemanticResults(
+          firstPage.value.items,
+          firstPage.value.rankedAssetIds,
+          preferences.pageSize,
+          source,
+        );
+        setNotice(null);
+      }
+      if (!navigation) {
+        recordNavigation({ kind: "similar", assetId }, request);
+        finishWorkspaceNavigation(request);
+      }
+    } catch (caught) {
+      if (request.isCurrent()) {
+        setError(toMessage(caught, t("toast.searchFailed"), locale));
+        if (!navigation) setWorkspaceNavigationPending(false);
+      }
+    } finally {
+      if (request.isCurrent()) setUiState("ready");
+    }
+  }
+
   async function runSearch(
     event?: FormEvent,
     opts?: { silent?: boolean },
   ) {
     event?.preventDefault();
+    if (event) {
+      searchHistoryDismissedUntilInputRef.current = true;
+      setSearchHistoryOpen(false);
+      setSearchHistoryActiveIndex(-1);
+    }
     if (!api || !library) return;
+    const semanticQuery = searchValue.trim();
+    const semantic = loadSemanticSearchPreferences();
+    if (semantic.searchMode === "semantic" && embeddingSelectionRef.current && semanticQuery) {
+      await runSemanticSearch(semanticQuery, opts?.silent);
+      return;
+    }
     if (opts?.silent && (previewAssetRef.current || previewRestoringRef.current)) {
       return;
     }
@@ -8769,7 +9424,7 @@ export function AssetManager({
         ),
       );
       applySearchResult(result.value);
-      registerBrowseSmartCollectionPage(beginBrowsePage, {
+      registerBrowseSmartCollectionPage(beginBrowsePageClearingSimilar, {
         libraryId: targetLibraryId,
         collectionId,
         sessionId: result.value.sessionId,
@@ -9512,11 +10167,12 @@ export function AssetManager({
     if (!api || !library || !convertLinkedDialog.folderId) return;
     const dialogState = convertLinkedDialog;
     if (
-      !confirm(
+      !await requestConfirmation(
         t("toast.convertLinkedConfirm", { name: dialogState.name }),
       )
     )
       return;
+    if (libraryRef.current?.libraryId !== library.libraryId) return;
     const startedAt = Date.now();
     setUiState("importing");
     try {
@@ -9542,7 +10198,7 @@ export function AssetManager({
 
   async function closeLibrary() {
     if (!api) return;
-    if (libraryTransitionLock.hasTransitionPending() || !confirmLibrarySwitch()) return;
+    if (libraryTransitionLock.hasTransitionPending() || !(await confirmLibrarySwitch())) return;
     await libraryTransitionLock(async () => {
       const currentLibrary = libraryRef.current;
       if (!currentLibrary) return;
@@ -9569,7 +10225,7 @@ export function AssetManager({
 
   async function removeLibrary() {
     if (!api) return;
-    if (libraryTransitionLock.hasTransitionPending() || !confirmLibrarySwitch()) return;
+    if (libraryTransitionLock.hasTransitionPending() || !(await confirmLibrarySwitch())) return;
     await libraryTransitionLock(async () => {
       const currentLibrary = libraryRef.current;
       if (!currentLibrary) return;
@@ -9632,6 +10288,7 @@ export function AssetManager({
     setFolders([]);
     setLinkedFolders([]);
     setAssets([]);
+    setFindSimilarSource(null);
     setBrowseLayout([]);
     setVirtualBrowseLayout(null);
     setLayoutThumbnailArtifacts({ libraryId: "", ids: new Map() });
@@ -9671,6 +10328,10 @@ export function AssetManager({
     setThumbnailFailures(new Map());
     setOperationHistory(null);
     setCollectionEditor(null);
+    setFolderCoverPicker(null);
+    folderNavigationCoversRef.current = [];
+    setFolderNavigationCovers([]);
+    setFolderCustomCoverIds(new Set());
     setInlineCollectionRename(null);
     setRenameTarget(null);
     setShowCollectionInput(false);
@@ -9706,7 +10367,7 @@ export function AssetManager({
 
   async function confirmDeleteLibraryFromDisk() {
     if (!api) return;
-    if (libraryTransitionLock.hasTransitionPending() || !confirmLibrarySwitch()) return;
+    if (libraryTransitionLock.hasTransitionPending() || !(await confirmLibrarySwitch())) return;
     await libraryTransitionLock(async () => {
       const currentLibrary = libraryRef.current;
       if (!currentLibrary) return;
@@ -9726,6 +10387,7 @@ export function AssetManager({
       // to rm the library root, then wait one paint so handles actually close.
       flushSync(() => {
         setAssets([]);
+        setFindSimilarSource(null);
         setSelectedAssetIds([]);
         setSelectedAssetId(undefined);
         setHoveredAssetId(null);
@@ -10017,6 +10679,8 @@ export function AssetManager({
       let msg = t("toast.permanentDeleted", {
         count: result.value.deletedCount,
       });
+      msg = appendSemanticCleanupNotice(msg, result.value.semanticCleanupPending === true,
+        t("toast.semanticCleanupPending"));
       if (result.value.skippedCount > 0) {
         const skippedNames = new Map(
           trashedAssets.map((asset) => [asset.assetId, asset.displayName]),
@@ -10176,6 +10840,7 @@ export function AssetManager({
     try {
       let deletedAssets = 0;
       let deletedFolders = 0;
+      let semanticCleanupPending = false;
       if (assetIds.length > 0) {
         const result = await api.deleteAssetsFromDisk({
           libraryId: library.libraryId,
@@ -10191,6 +10856,7 @@ export function AssetManager({
           throw new LibraryOperationError(result.error);
         }
         deletedAssets = result.value.deletedCount;
+        semanticCleanupPending = result.value.semanticCleanupPending === true;
         const collectionResult = await api.listCollections({
           libraryId: library.libraryId,
         });
@@ -10206,10 +10872,10 @@ export function AssetManager({
         deletedAssets += result.value.deletedAssetCount;
       }
       setNotice(
-        t("toast.selectionDeletedFromDisk", {
+        appendSemanticCleanupNotice(t("toast.selectionDeletedFromDisk", {
           folders: deletedFolders,
           assets: deletedAssets,
-        }),
+        }), semanticCleanupPending, t("toast.semanticCleanupPending")),
       );
       clearAssetSelection();
       applyLocalAssetRemoval(assetIds, { removedCount: deletedAssets });
@@ -10331,6 +10997,8 @@ export function AssetManager({
                 reasons: failureReasons.join("；"),
               })
             : "") +
+          appendSemanticCleanupNotice("", result.value.semanticCleanupPending === true,
+            t("toast.semanticCleanupPending")) +
           t("common.sentenceEnd"),
       );
       await loadContent(library, "all", { trashMode: true });
@@ -10684,7 +11352,7 @@ export function AssetManager({
     // The zip import itself is a tracked write. If the user requested a
     // library transition while it was running, do not let its late
     // activation overwrite the library the user chose next.
-    if (libraryTransitionLock.hasTransitionPending() || !confirmLibrarySwitch()) {
+    if (libraryTransitionLock.hasTransitionPending() || !(await confirmLibrarySwitch())) {
       return false;
     }
     let activated = false;
@@ -11291,11 +11959,11 @@ export function AssetManager({
         exportProgress &&
           !["complete", "cancelled", "failed"].includes(exportProgress.phase),
       ) ||
-      criticalConfirmation.request !== null)),
+      criticalConfirmation.request !== null || localConfirmation !== null)),
   );
   useDialogFocusTrap(
     dialogFocusTrapActive,
-    resolveDialogEscapeAction(dialogEscapeSnapshot).kind,
+    localConfirmation?.id ?? criticalConfirmation.request?.requestId ?? resolveDialogEscapeAction(dialogEscapeSnapshot).kind,
   );
 
   useWindowsBrowseShortcutBridge({
@@ -12148,12 +12816,13 @@ export function AssetManager({
     // enforces confirm for folder/library scopes).
     if (
       assetIds.length > 1 &&
-      !confirm(
+      !await requestConfirmation(
         t("toast.aiContentClearConfirm", { count: String(assetIds.length) }),
       )
     ) {
       return;
     }
+    if (libraryRef.current?.libraryId !== library.libraryId) return;
     try {
       const result = await api.clearAiContent({
         libraryId: library.libraryId,
@@ -13008,6 +13677,7 @@ export function AssetManager({
       />
     ) : null}
     <main
+      data-shell-layout={shellLayout}
       className={`app-shell${leftOpen ? "" : " left-collapsed"}${rightOpen ? "" : " right-collapsed"}${panelResizing ? " is-resizing" : ""}`}
       style={panelResizeShellStyle as React.CSSProperties}
     >
@@ -13080,7 +13750,9 @@ export function AssetManager({
               tabs={workspaceTabPresentations}
               onAdd={() => void addWorkspaceTab()}
               onClose={(tabId) => void closeWorkspaceTab(tabId)}
-              onSelect={(tabId) => void selectWorkspaceTab(tabId)}
+              onSelect={(tabId) => {
+                void selectWorkspaceTab(tabId);
+              }}
               onReorder={(tabId, toIndex) => moveWorkspaceTab(tabId, toIndex)}
               onContextMenu={(tabId, position) => {
                 const tab = workspaceTabPresentations.find(
@@ -13107,7 +13779,7 @@ export function AssetManager({
             role="search"
           >
             <div
-              className={`search-control-wrap${searchValue.trim() ? " has-value" : ""}`}
+              className={`search-control-wrap${searchValue.trim() ? " has-value" : ""}${semanticSearchActive ? " is-semantic" : ""}`}
             >
               <Icon name="search" size={15} />
               <input
@@ -13130,11 +13802,13 @@ export function AssetManager({
                   setSearchHistoryActiveIndex(-1);
                 }}
                 onChange={(event) => {
+                  searchHistoryDismissedUntilInputRef.current = false;
                   setSearchValue(event.target.value);
                   setSearchHistoryActiveIndex(-1);
                   setSearchHistoryOpen(true);
                 }}
                 onFocus={() => {
+                  if (searchHistoryDismissedUntilInputRef.current) return;
                   setSearchHistoryActiveIndex(-1);
                   setSearchHistoryOpen(true);
                 }}
@@ -13204,6 +13878,40 @@ export function AssetManager({
                   }}
                 />
               )}
+              <button
+                aria-disabled={!library || !embeddingSearchReady}
+                aria-label={t("toolbar.semanticSearch")}
+                aria-pressed={semanticSearchActive}
+                className={`search-semantic-toggle${semanticSearchActive ? " is-active" : ""}`}
+                data-hover-tip={
+                  !embeddingSearchReady
+                    ? t("toolbar.semanticSearchNeedsSetup")
+                    : embeddingIndex.phase === "starting" || embeddingIndex.phase === "indexing"
+                      ? t("toolbar.semanticSearchIndexing")
+                      : t(
+                        embeddingService
+                          ? "toolbar.semanticSearchHintText"
+                          : "toolbar.semanticSearchHint",
+                      )
+                }
+                disabled={!library}
+                onClick={() => {
+                  if (!embeddingSearchReady) return;
+                  const current = loadSemanticSearchPreferences();
+                  const active = current.searchMode === "semantic";
+                  saveSemanticSearchPreferences({
+                    version: 1,
+                    enabled: current.enabled,
+                    modelId: current.modelId,
+                    searchMode: active ? "keyword" : "semantic",
+                    pageSize: current.pageSize,
+                  });
+                  if (searchValue.trim()) void runSearch();
+                }}
+                type="button"
+              >
+                <Icon name="smart" size={13} />
+              </button>
               <button
                 aria-label={t("toolbar.searchSyntax")}
                 className="search-syntax-help"
@@ -13322,6 +14030,7 @@ export function AssetManager({
           )
         }
         onResolveManagedAssetDrop={resolveManagedAssetDrop}
+        isInternalAssetDrag={isInternalAssetDrag}
         onAssetsDroppedOnFolder={(folderId, assetIds, mode) =>
           handleAssetsDroppedOnFolder(folderId, assetIds, mode)
         }
@@ -13426,6 +14135,10 @@ export function AssetManager({
         }
       />
       <section className="workspace">
+        <div
+          className={`workspace-toolstrip${previewAsset ? " is-viewing" : previewRestoring ? " is-restoring" : ""}`}
+          data-chrome="unified"
+        >
         <div
           className={`workspace-bar${previewAsset ? " is-viewing" : previewRestoring ? " is-restoring" : ""}`}
         >
@@ -13608,6 +14321,12 @@ export function AssetManager({
                       fields: { ...p.fields, [field]: !p.fields[field] },
                     }));
                   },
+                  cycleCaptionAlign: () => {
+                    setCanvasPrefs((p) => ({
+                      ...p,
+                      captionAlign: nextCanvasCaptionAlign(p.captionAlign),
+                    }));
+                  },
                   openAiSettings: () => {
                     setAppSettingsCategory("ai");
                     setAppSettingsOpen(true);
@@ -13636,6 +14355,7 @@ export function AssetManager({
               selectedAssets={selectedVisibleAssets}
               context={pluginSurfaceContext}
             />
+            <span className="tool-separator" />
             <WorkspaceToolsOverflow
               items={[
                 {
@@ -13767,6 +14487,7 @@ export function AssetManager({
           />
         </div>
         )}
+        </div>
         {(aiAnalyzing ||
           (aiJobs !== null && aiJobs.queued + aiJobs.running > 0)) &&
           aiProgressBannerVisible &&
@@ -13876,6 +14597,16 @@ export function AssetManager({
                 document.body,
               )
             : null}
+        {findSimilarSource
+          && findSimilarSource.libraryId === library?.libraryId
+          && findSimilarSource.workspaceTabId === workspaceTabsState.activeTabId
+          && !previewAsset ? (
+            <FindSimilarBanner
+              coverUrl={findSimilarSource.coverUrl}
+              displayName={findSimilarSource.displayName}
+              onBack={() => void goWorkspaceBack()}
+            />
+          ) : null}
         <div
           className={`workspace-canvas${previewAsset ? " is-viewing" : previewRestoring ? " is-restoring" : ""}${externalDropActive ? " is-external-drop" : ""}`}
           onDragEnter={handleExternalDragEnter}
@@ -14045,6 +14776,7 @@ export function AssetManager({
                       return (
                     <CardTag
                       aria-label={canvasPrefs.fields.name ? undefined : asset.displayName}
+                      data-hover-tip={canvasPrefs.fields.name ? undefined : asset.displayName}
                       aria-pressed={selectedIdSet.has(asset.assetId)}
                       className={`asset-card${selectedIdSet.has(asset.assetId) ? " is-selected" : ""}${asset.availability === "missing" ? " is-missing" : ""}${corruptAsset ? " is-corrupt" : ""}${asset.deletedAt ? " is-trashed" : ""}${renamingThisAsset ? " is-renaming" : ""}`}
                       data-asset-id={asset.assetId}
@@ -14237,7 +14969,7 @@ export function AssetManager({
                     >
                       <div
                         className="asset-preview"
-                        title={
+                        data-hover-tip={
                           showThumbnailFailure
                             ? thumbnailFailures.get(asset.assetId)
                             : undefined
@@ -14372,7 +15104,7 @@ export function AssetManager({
                               name: sourceBadgeLabel,
                             })}
                             className="asset-source-badge"
-                            title={t("scope.containingFolder", {
+                            data-hover-tip={t("scope.containingFolder", {
                               name: sourceBadgeLabel,
                             })}
                           >
@@ -14385,7 +15117,7 @@ export function AssetManager({
                               name: trashOriginBadgeLabel,
                             })}
                             className="asset-source-badge"
-                            title={asset.trashedFromPath ?? trashOriginBadgeLabel}
+                            data-hover-tip={asset.trashedFromPath ?? trashOriginBadgeLabel}
                           >
                             {trashOriginBadgeLabel}
                           </span>
@@ -14408,7 +15140,7 @@ export function AssetManager({
                                 ? t("inspector.dataCorrupt")
                                 : t("inspector.missing")
                             }
-                            title={
+                            data-hover-tip={
                               corruptAsset
                                 ? t("inspector.dataCorrupt")
                                 : t("inspector.missing")
@@ -14500,7 +15232,8 @@ export function AssetManager({
                                     aria-label={t("dialog.rename.fileTitle")}
                                     autoFocus
                                     className="text-field asset-inline-rename-input"
-                                    disabled={assetRenameDialog.submitting}
+                                    readOnly={assetRenameDialog.submitting}
+                                    aria-disabled={assetRenameDialog.submitting || undefined}
                                     onBlur={() => {
                                       void submitAssetRename();
                                     }}
@@ -14537,7 +15270,7 @@ export function AssetManager({
                                   ) : null}
                                 </span>
                               ) : (
-                                <strong className="asset-caption-filename" title={asset.displayName}>
+                                <strong className="asset-caption-filename" data-hover-tip={asset.displayName}>
                                   {renderMiddleEllipsisFilename(asset.displayName, searchValue)}
                                 </strong>
                               )}
@@ -14674,6 +15407,7 @@ export function AssetManager({
                   <div className="empty-actions">
                     <button
                       className="primary-button"
+                      disabled={libraryLoading !== null}
                       onClick={() => void importAssets("files")}
                       type="button"
                     >
@@ -14681,6 +15415,7 @@ export function AssetManager({
                     </button>
                     <button
                       className="secondary-button"
+                      disabled={libraryLoading !== null}
                       onClick={() => void importAssets("folder")}
                       type="button"
                     >
@@ -14688,6 +15423,7 @@ export function AssetManager({
                     </button>
                     <button
                       className="secondary-button"
+                      disabled={libraryLoading !== null}
                       onClick={() => void pasteClipboardImage()}
                       type="button"
                     >
@@ -14986,6 +15722,20 @@ export function AssetManager({
         onSave={() => void saveCollectionDetails()}
         onCancel={() => setCollectionEditor(null)}
       />
+      <FolderCoverPickerDialog
+        open={folderCoverPicker !== null}
+        libraryId={library?.libraryId ?? null}
+        selectedAssetId={folderCoverPicker?.assetId ?? ""}
+        pageSize={FOLDER_COVER_PICKER_PAGE_SIZE}
+        loadPage={loadFolderCoverPickerPage}
+        onSelect={(assetId) =>
+          setFolderCoverPicker((current) =>
+            current ? { ...current, assetId } : current,
+          )
+        }
+        onConfirm={applyFolderCoverFromLibrary}
+        onCancel={() => setFolderCoverPicker(null)}
+      />
       <RenameDialog
         open={renameTarget !== null}
         kind={renameTarget?.kind ?? "collection"}
@@ -15152,6 +15902,7 @@ export function AssetManager({
             fields: { ...current.fields, badgeSync: checked },
           }));
         }}
+        embeddingServicesApi={api ?? undefined}
         syncServerCallbacks={{
           async syncListServers() {
             if (!api) return { ok: false, message: t("common.unavailable") };
@@ -15263,6 +16014,40 @@ export function AssetManager({
           },
         }}
         syncProgress={syncProgress}
+        embeddingIndex={embeddingBound ? embeddingIndex : null}
+        embeddingCallbacks={{
+          async listServices() {
+            if (!api) return { ok: false };
+            const result = await api.embeddingListServices();
+            if (!result.ok || !result.value) return { ok: false };
+            return { ok: true, value: result.value };
+          },
+          async installStatus() {
+            if (!api) return { ok: false };
+            const result = await api.embeddingInstallStatus();
+            if (!result.ok) return { ok: false };
+            return { ok: true, value: result.value };
+          },
+          async getBinding(input) {
+            if (!api) return { ok: false };
+            const result = await api.embeddingGetBinding(input);
+            if (!result.ok) return { ok: false };
+            return { ok: true, value: result.value };
+          },
+          async saveBinding(input) {
+            if (!api) return { ok: false };
+            const result = await api.embeddingSaveBinding(input);
+            if (!result.ok) return { ok: false };
+            return { ok: true };
+          },
+          async rebuildIndex(input) {
+            if (!api) return { ok: false };
+            const result = await api.embeddingIndexStatus({
+              libraryId: input.libraryId, modelId: input.modelId, run: true, restart: false, rebuild: true,
+            });
+            return result.ok ? { ok: true } : { ok: false };
+          },
+        }}
       />
       <OpenSyncLibraryDialog
         callbacks={{
@@ -15564,6 +16349,7 @@ export function AssetManager({
         mediaJobs={mediaJobs}
         mediaJobsLoading={mediaJobsLoading}
         aiJobs={aiJobs}
+        embeddingIndex={embeddingSearchReady && embeddingSelectionId ? { modelId: embeddingSelectionId, snapshot: embeddingIndex, modalities: embeddingService?.modalities } : null}
         pluginJobs={pluginJobs}
         onClose={() => setMediaJobsOpen(false)}
         onControlMediaJobs={(action, jobIds) => void controlMediaJobs(action, jobIds)}
@@ -15711,7 +16497,10 @@ export function AssetManager({
         }}
         onSetEntityAppearance={setEntityAppearance}
         onChooseFolderCover={chooseFolderCover}
+        onChooseFolderCoverFromLibrary={openFolderCoverLibraryPicker}
         onClearFolderCover={clearFolderCover}
+        customFolderCoverIds={folderCustomCoverIds}
+        onUseAssetAsFolderCover={useAssetAsFolderCover}
         onBatchAssignTag={(tagId, assetIds) => {
           void batchAssignTagToSelection(tagId, assetIds);
         }}
@@ -15789,6 +16578,13 @@ export function AssetManager({
         onRevealInFolder={(assetId) => { void handleRevealInFolder(assetId); }}
         onShowInLibraryFolder={(assetId) => {
           void showAssetInContainingFolder(assetId);
+        }}
+        semanticSearchEnabled={embeddingBound}
+        embeddingSelectionId={embeddingSelectionId}
+        embeddingAdapter={embeddingService?.adapter ?? null}
+        embeddingModalities={embeddingService?.modalities ?? null}
+        onFindSimilar={(assetId) => {
+          void runFindSimilar(assetId);
         }}
         onCopyFilePath={(assetId) => { void handleCopyFilePath(assetId); }}
         onCopyAssetFiles={(assetIds) => {
@@ -15884,6 +16680,7 @@ export function AssetManager({
         />
       )}
     </main>
+    <LocalConfirmationHost blocked={criticalConfirmation.request !== null} scopeKey={library?.libraryId} />
     </>
   );
 }

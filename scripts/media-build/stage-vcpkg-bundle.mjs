@@ -101,10 +101,20 @@ function extractLockedText(archive, suffix) {
   return run('tar', ['-xOf', archive, matches[0]]);
 }
 
-function extractUpstreamLicenses(vcpkgRoot, sourceLock) {
+function componentSha256(sourceLock, platform, component) {
+  // linux-x64 builds FFmpeg from the locked source tarball. darwin/win32 keep
+  // the global archive hash their existing staging downloads already match.
+  if (platform === 'linux-x64') {
+    const override = sourceLock.platforms?.[platform]?.components?.[component]?.sha256;
+    if (typeof override === 'string') return override;
+  }
+  return sourceLock.components[component].sha256;
+}
+
+function extractUpstreamLicenses(vcpkgRoot, sourceLock, platform) {
   const ffmpegArchive = findLockedArchive(
     path.join(vcpkgRoot, 'downloads'),
-    sourceLock.components.ffmpeg.sha256,
+    componentSha256(sourceLock, platform, 'ffmpeg'),
   );
   const oiioArchive = findLockedArchive(
     path.join(vcpkgRoot, 'downloads'),
@@ -135,6 +145,30 @@ function extractUpstreamLicenses(vcpkgRoot, sourceLock) {
     throw new Error('Locked OpenImageIO THIRD-PARTY.md is not the expected notice file.');
   }
   return licenses;
+}
+
+const LINUX_SYSTEM_LIBRARY =
+  /^(?:linux-vdso\.so|ld-linux|libc\.so|libm\.so|libdl\.so|librt\.so|libpthread\.so|libresolv\.so|libstdc\+\+\.so|libgcc_s\.so|libatomic\.so|libutil\.so|libnsl\.so)/;
+
+function assertLinuxSystemDependencies(binary) {
+  const output = run('ldd', [binary]);
+  if (/not found/i.test(output)) {
+    throw new Error(`${binary} has unresolved dynamic dependencies:\n${output}`);
+  }
+  const unexpected = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.includes('statically linked'))
+    .filter((line) => {
+      const name = line.split(/\s+/, 1)[0] ?? '';
+      if (!name || name.startsWith('/')) return false;
+      return !LINUX_SYSTEM_LIBRARY.test(name);
+    });
+  if (unexpected.length > 0) {
+    throw new Error(
+      `${binary} has non-system dynamic dependencies:\n${unexpected.join('\n')}`,
+    );
+  }
 }
 
 function assertMacSystemDependencies(binary) {
@@ -195,7 +229,9 @@ function generateDependencyNotices(installedRoot, targetRoot, triplet, registryC
 
 const options = parseArguments(process.argv.slice(2));
 const platform = required(options, 'platform');
-if (!['darwin-arm64', 'win32-x64'].includes(platform)) throw new Error(`Unsupported ${platform}.`);
+if (!['darwin-arm64', 'win32-x64', 'linux-x64'].includes(platform)) {
+  throw new Error(`Unsupported ${platform}.`);
+}
 const triplet = required(options, 'triplet');
 const installedRoot = path.resolve(required(options, 'installed-root'));
 const vcpkgRoot = path.resolve(required(options, 'vcpkg-root'));
@@ -233,10 +269,12 @@ const stagedTools = {
 };
 for (const name of Object.keys(sourceTools)) {
   copyFileSync(sourceTools[name], stagedTools[name]);
-  if (platform === 'darwin-arm64') chmodSync(stagedTools[name], 0o755);
+  if (platform !== 'win32-x64') chmodSync(stagedTools[name], 0o755);
 }
 
-for (const [fileName, contents] of Object.entries(extractUpstreamLicenses(vcpkgRoot, sourceLock))) {
+for (const [fileName, contents] of Object.entries(
+  extractUpstreamLicenses(vcpkgRoot, sourceLock, platform),
+)) {
   writeFileSync(path.join(licenseRoot, fileName), contents, 'utf8');
 }
 writeFileSync(
@@ -247,6 +285,7 @@ writeFileSync(
 
 for (const binary of Object.values(stagedTools)) {
   if (platform === 'darwin-arm64') assertMacSystemDependencies(binary);
+  else if (platform === 'linux-x64') assertLinuxSystemDependencies(binary);
   else assertWindowsSystemDependencies(binary);
 }
 

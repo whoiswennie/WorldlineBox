@@ -26,6 +26,10 @@ export const APP_UPDATE_INSTALL_CHANNEL = 'worldlinebox:app-update:install' as c
 export const APP_UPDATE_CANCEL_CHANNEL = 'worldlinebox:app-update:cancel' as const;
 /** Main → Renderer: update download/install progress for the About dialog. */
 export const APP_UPDATE_PROGRESS_CHANNEL = 'worldlinebox:app-update:progress' as const;
+/** Renderer → Main: read launch-at-login preferences. */
+export const STARTUP_PREFERENCES_GET_CHANNEL = 'worldlinebox:startup-preferences:get' as const;
+/** Renderer → Main: persist launch-at-login preferences. */
+export const STARTUP_PREFERENCES_SET_CHANNEL = 'worldlinebox:startup-preferences:set' as const;
 /** Main → Renderer: script/MCP/plugin user-visible toast or blocking dialog. */
 export const SHELL_NOTIFY_CHANNEL = 'worldlinebox:shell:notify' as const;
 /**
@@ -40,6 +44,12 @@ export const SHOW_EDIT_CONTEXT_MENU_CHANNEL =
   'worldlinebox:shell:show-edit-context-menu' as const;
 export const SHELL_SWIPE_CHANNEL = 'worldlinebox:shell:swipe' as const;
 export const WINDOW_CONTROL_CHANNEL = 'worldlinebox:shell:window-control' as const;
+/** Renderer → Main: begin frameless edge resize (Linux). */
+export const WINDOW_EDGE_RESIZE_CHANNEL = 'worldlinebox:shell:window-edge-resize' as const;
+/** Renderer → Main: setBounds fallback while dragging a resize edge. */
+export const WINDOW_SET_BOUNDS_CHANNEL = 'worldlinebox:shell:window-set-bounds' as const;
+/** Renderer → Main: read current window bounds (Linux edge-resize fallback). */
+export const WINDOW_GET_BOUNDS_CHANNEL = 'worldlinebox:shell:window-get-bounds' as const;
 /** Main → Renderer: trigger invert selection (macOS Edit menu, WorldlineBox-te8p). */
 export const INVERT_SELECTION_CHANNEL = 'worldlinebox:shell:invert-selection' as const;
 /** Main → Renderer: Edit Copy (⌘C) — file copy when assets selected (WorldlineBox-166q). */
@@ -99,6 +109,8 @@ export const CRITICAL_CONFIRMATION_RESPOND_CHANNEL = 'worldlinebox:critical-conf
 export const PLUGIN_MANAGER_CHANNEL = 'worldlinebox:plugin-manager:request' as const;
 /** Main → Renderer: progress and terminal state for a GitHub plugin install. */
 export const PLUGIN_INSTALL_PROGRESS_CHANNEL = 'worldlinebox:plugin:install-progress' as const;
+/** Main → Renderer: semantic model / runtime download progress. */
+export const EMBEDDING_INSTALL_PROGRESS_CHANNEL = 'worldlinebox:embedding:install-progress' as const;
 /** Main → Renderer: plugin contributions changed after install/enable/refresh. */
 export const PLUGIN_CONTRIBUTIONS_CHANGED_CHANNEL =
   'worldlinebox:plugin:contributions-changed' as const;

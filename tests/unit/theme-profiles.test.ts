@@ -66,8 +66,8 @@ afterEach(() => {
 });
 
 describe('theme profile contract v3', () => {
-  it('exposes the original themes and the two selected animated skins, each with complete tone variants', () => {
-    expect(THEME_PROFILE_IDS).toEqual(['worldlinebox', 'vscode', 'soft', 'whale-fantasy', 'shuimo-danqing']);
+  it('exposes theme presets, each with complete dark and light tone variants', () => {
+    expect(THEME_PROFILE_IDS).toEqual(['worldlinebox', 'vscode', 'soft', 'whale-fantasy', 'shuimo-danqing', 'midnight', 'mist', 'sand', 'forest', 'indigo', 'rose', 'ocean', 'copper', 'ink', 'lilac', 'citrus', 'paper', 'slate', 'film', 'mono', 'blush', 'olive', 'charcoal', 'silver', 'graphite', 'smoke', 'ash', 'notion', 'onedark', 'code', 'azure', 'teal', 'jade', 'amber', 'orchid', 'coral']);
 
     for (const id of THEME_PROFILE_IDS) {
       const preset = THEME_PROFILE_PRESETS[id];
@@ -89,7 +89,7 @@ describe('theme profile contract v3', () => {
     }
   });
 
-  it('keeps the original profiles in the blue family', () => {
+  it('ships a default theme color (blue family) for classic presets', () => {
     function isBlueFamily(hex: string): boolean {
       const r = parseInt(hex.slice(1, 3), 16);
       const g = parseInt(hex.slice(3, 5), 16);
@@ -97,7 +97,8 @@ describe('theme profile contract v3', () => {
       // Blue-family: the blue channel dominates over red and green.
       return b >= r && b >= g;
     }
-    for (const id of ['worldlinebox', 'vscode', 'soft'] as const) {
+    // Concept themes (sand/forest/rose/…) intentionally depart from blue.
+    for (const id of ['worldlinebox', 'vscode', 'soft', 'midnight', 'mist', 'indigo'] as const) {
       for (const mode of ['dark', 'light'] as const) {
         const tokens = THEME_PROFILE_PRESETS[id].tokens[mode];
         for (const token of [
@@ -269,7 +270,7 @@ describe('theme profile contract v3', () => {
     expect(quick.accentHex).toBe('#8b5cf6');
     expect(quick.tokens['--ui-action-accent']).toBe('#8b5cf6');
     expect(quick.tokens['--ui-action-accent-soft']).toBe(
-      'color-mix(in srgb, var(--ui-action-accent) 14%, transparent)',
+      'color-mix(in srgb, var(--ui-action-accent) 8%, transparent)',
     );
     expect(quick.tokens['--ui-content-accent']).toBe(
       'color-mix(in srgb, var(--ui-action-accent) 55%, white)',
@@ -330,7 +331,7 @@ describe('theme profile contract v3', () => {
       'light',
     );
     expect(dark.tokens['--ui-surface-canvas']).toBe('#202124');
-    expect(light.tokens['--ui-surface-canvas']).toBe('#f4f5f7');
+    expect(light.tokens['--ui-surface-canvas']).toBe('#f8f8fa');
     expect(dark.id).toBe('worldlinebox');
     expect(light.id).toBe('worldlinebox');
   });

@@ -1,8 +1,11 @@
-import { BrowserWindow, ipcMain, type WebContents } from "electron";
+import { BrowserWindow, ipcMain, screen, type WebContents } from "electron";
 
 import {
   WINDOW_CONTROL_CHANNEL,
+  WINDOW_EDGE_RESIZE_CHANNEL,
   WINDOW_MAXIMIZED_CHANNEL,
+  WINDOW_SET_BOUNDS_CHANNEL,
+  WINDOW_GET_BOUNDS_CHANNEL,
 } from "../shared/protocol/channels";
 import {
   parseWindowControlRequest,
@@ -12,6 +15,17 @@ import {
   type WindowControlResult,
   type WindowMaximizedStateEvent,
 } from "../shared/window-controls";
+import {
+  parseWindowEdgeResizeRequest,
+  parseWindowSetBoundsRequest,
+  type WindowEdgeResizeResult,
+  type WindowGetBoundsResult,
+  type WindowSetBoundsResult,
+} from "../shared/window-edge-resize";
+import {
+  applyWindowBoundsFromEdgeDelta,
+  beginLinuxWindowEdgeResize,
+} from "./linux-window-resize";
 import { ensureRendererKeyboardFocus } from "./renderer-keyboard-focus";
 import { sendToLiveWebContents } from "./web-contents-send";
 
@@ -110,6 +124,81 @@ export function registerWindowControls(options: {
         return { ok: false, code: "no_window" };
       }
       return applyWindowControl(window, parsed.action);
+    },
+  );
+
+  ipcMain.handle(
+    WINDOW_EDGE_RESIZE_CHANNEL,
+    (event, input: unknown): WindowEdgeResizeResult => {
+      if (process.platform !== "linux") {
+        return { ok: false, code: "unsupported_platform" };
+      }
+      const mainWindow = getMainWindow();
+      if (!mainWindow || event.sender !== mainWindow.webContents) {
+        return { ok: false, code: "no_window" };
+      }
+      const parsed = parseWindowEdgeResizeRequest(input);
+      if (!parsed) return { ok: false, code: "malformed_request" };
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window || window.isDestroyed()) {
+        return { ok: false, code: "no_window" };
+      }
+      if (window.isMaximized() || window.isFullScreen()) {
+        return { ok: false, code: "maximized" };
+      }
+      // Prefer renderer setBounds (pointer capture). Native _NET_WM_MOVERESIZE
+      // is attempted only when WORLDLINEBOX_LINUX_NATIVE_RESIZE=1 — Electron's
+      // button grab frequently prevents the WM from taking over.
+      if (process.env.WORLDLINEBOX_LINUX_NATIVE_RESIZE === "1") {
+        const point = screen.getCursorScreenPoint();
+        const native = beginLinuxWindowEdgeResize(window, parsed.edge, point);
+        if (native) return { ok: true, mode: "native" };
+      }
+      return { ok: true, mode: "fallback" };
+    },
+  );
+
+  ipcMain.handle(
+    WINDOW_GET_BOUNDS_CHANNEL,
+    (event): WindowGetBoundsResult => {
+      if (process.platform !== "linux") {
+        return { ok: false, code: "unsupported_platform" };
+      }
+      const mainWindow = getMainWindow();
+      if (!mainWindow || event.sender !== mainWindow.webContents) {
+        return { ok: false, code: "no_window" };
+      }
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window || window.isDestroyed()) {
+        return { ok: false, code: "no_window" };
+      }
+      return { ok: true, bounds: window.getBounds() };
+    },
+  );
+
+  ipcMain.handle(
+    WINDOW_SET_BOUNDS_CHANNEL,
+    (event, input: unknown): WindowSetBoundsResult => {
+      if (process.platform !== "linux") {
+        return { ok: false, code: "unsupported_platform" };
+      }
+      const mainWindow = getMainWindow();
+      if (!mainWindow || event.sender !== mainWindow.webContents) {
+        return { ok: false, code: "no_window" };
+      }
+      const parsed = parseWindowSetBoundsRequest(input);
+      if (!parsed) return { ok: false, code: "malformed_request" };
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window || window.isDestroyed()) {
+        return { ok: false, code: "no_window" };
+      }
+      return applyWindowBoundsFromEdgeDelta({
+        window,
+        edge: parsed.edge,
+        startBounds: parsed.startBounds,
+        dx: parsed.dx,
+        dy: parsed.dy,
+      });
     },
   );
 }

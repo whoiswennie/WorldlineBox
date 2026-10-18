@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileSymlinkOrSkip } from './symlink-fixture';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -792,13 +793,13 @@ describe('pending import plans', () => {
     service.closeAll();
   });
 
-  it('rejects symlinks and invalid source shapes before creating a plan', () => {
+  it('rejects symlinks and invalid source shapes before creating a plan', ({ skip }) => {
     const root = temporaryRoot();
     const source = path.join(root, 'Source');
     const outside = path.join(root, 'outside.png');
     mkdirSync(source);
     writeFileSync(outside, 'outside');
-    symlinkSync(outside, path.join(source, 'linked.png'));
+    if (!fileSymlinkOrSkip(outside, path.join(source, 'linked.png'), skip)) return;
     const service = new LibraryService();
     const library = service.createLibrary({ displayName: 'Library', selectedParentPath: root });
 
@@ -815,14 +816,14 @@ describe('pending import plans', () => {
     service.closeAll();
   });
 
-  it('offers to skip unreadable files when a folder also has valid files (WorldlineBox-7d1ba2)', () => {
+  it('offers to skip unreadable files when a folder also has valid files (WorldlineBox-7d1ba2)', ({ skip }) => {
     const root = temporaryRoot();
     const source = path.join(root, 'Source');
     const outside = path.join(root, 'outside.png');
     mkdirSync(source);
     writeFileSync(path.join(source, 'keep.png'), ONE_PX_RED_PNG);
     writeFileSync(outside, 'outside');
-    symlinkSync(outside, path.join(source, 'linked.png'));
+    if (!fileSymlinkOrSkip(outside, path.join(source, 'linked.png'), skip)) return;
     const service = new LibraryService();
     const library = service.createLibrary({ displayName: 'Skip Mix', selectedParentPath: root });
 
@@ -850,12 +851,15 @@ describe('pending import plans', () => {
     service.closeAll();
   });
 
-  it('rejects a source replaced by a symlink after enumeration but before opening', () => {
+  it('rejects a source replaced by a symlink after enumeration but before opening', ({ skip }) => {
     const root = temporaryRoot();
     const source = path.join(root, 'source.png');
     const outside = path.join(root, 'outside.png');
     writeFileSync(source, 'source');
     writeFileSync(outside, 'outside');
+    const probe = path.join(root, 'symlink-probe');
+    if (!fileSymlinkOrSkip(outside, probe, skip)) return;
+    rmSync(probe);
     const service = new LibraryService({
       beforeSourceSnapshotOpen: (sourcePath) => {
         rmSync(sourcePath);

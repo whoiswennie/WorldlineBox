@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { requestConfirmation } from '../../src/renderer/local-confirmation';
+vi.mock('../../src/renderer/local-confirmation', () => ({ requestConfirmation: vi.fn() }));
 
 import { createCommandRegistry } from '../../src/renderer/commands/command-registry';
 import type { ResolvedMenuItem } from '../../src/renderer/commands/command-types';
@@ -11,8 +13,8 @@ import type { LinkedFolderSummary } from '../../src/shared/asset-types';
 
 // REQ-COMMAND-001 / 切片 0015-D：侧边栏（文件夹 / 合集 / 智能合集）右键菜单
 // 定义的等价性验证。每条规则对照 0015-D 之前 AssetContextMenu 的内联 JSX
-// 条件；纯数据，node 环境。删除两项的 window.confirm 保留在 run 内，测试
-// 通过 vi.stubGlobal 注入 confirm 验证确认 / 取消两条路径。
+// 条件；纯数据，node 环境。智能合集删除等待共享确认决策，
+// 测试 mock 异步决策，核对确认 / 取消两条路径。
 
 const registry = createCommandRegistry(sidebarCommandDefinitions);
 
@@ -620,31 +622,30 @@ describe('删除命令的确认由界面动作统一处理', () => {
     ]);
   });
 
-  it('smart-collection.delete：confirm 通过 → 删除；文案与历史一致', () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal('window', { confirm });
+  it('smart-collection.delete：confirm 通过 → 删除；文案与历史一致', async () => {
+    vi.mocked(requestConfirmation).mockResolvedValue(true);
     const { ctx, calls } = makeCtx({
       menuKind: 'smart-collection',
       subjectId: 'smart-1',
       subjectName: '我的智能合集',
       locationKind: undefined,
     });
-    void registry.get('smart-collection.delete')?.run(ctx);
-    expect(confirm).toHaveBeenCalledWith('删除智能合集"我的智能合集"？');
+    await registry.get('smart-collection.delete')?.run(ctx);
+    expect(requestConfirmation).toHaveBeenCalledWith('删除智能合集"我的智能合集"？');
     expect(calls).toEqual([
       { action: 'deleteSmartCollection', args: ['smart-1', '我的智能合集'] },
     ]);
   });
 
-  it('smart-collection.delete：confirm 取消 → 不调用任何 action', () => {
-    vi.stubGlobal('window', { confirm: vi.fn(() => false) });
+  it('smart-collection.delete：confirm 取消 → 不调用任何 action', async () => {
+    vi.mocked(requestConfirmation).mockResolvedValue(false);
     const { ctx, calls } = makeCtx({
       menuKind: 'smart-collection',
       subjectId: 'smart-1',
       subjectName: '我的智能合集',
       locationKind: undefined,
     });
-    void registry.get('smart-collection.delete')?.run(ctx);
+    await registry.get('smart-collection.delete')?.run(ctx);
     expect(calls).toEqual([]);
   });
 });

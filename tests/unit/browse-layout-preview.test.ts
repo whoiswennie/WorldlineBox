@@ -166,7 +166,7 @@ describe("BrowseLayoutPreview caption (WorldlineBox-l2at / WorldlineBox-qc7v)", 
       );
     });
     const filename = container.querySelector(".asset-caption-filename");
-    expect(filename?.getAttribute("title")).toBe("wghuasgfsad.jpg");
+    expect(filename?.getAttribute("data-hover-tip")).toBe("wghuasgfsad.jpg");
     expect(filename?.querySelector(".asset-filename-prefix")?.textContent).toBe("wghuasgf");
     expect(filename?.querySelector(".asset-filename-tail")?.textContent).toBe("sad");
     expect(filename?.querySelector(".asset-filename-extension")?.textContent).toBe(".jpg");

@@ -205,13 +205,14 @@ function DimensionButton({
     <button
       aria-expanded={open || undefined}
       aria-pressed={active === undefined ? undefined : active}
+      data-hover-tip={label}
       className={`dimension-filter-btn${active ? " is-active" : ""}${open ? " is-open" : ""}${excluding ? " is-excluding" : ""}`}
       disabled={disabled}
       onClick={onClick}
       type="button"
     >
       <Icon name={icon} size={14} />
-      <span>{label}</span>
+      <span className="dimension-filter-btn-label">{label}</span>
     </button>
   );
 }
@@ -1209,7 +1210,7 @@ export function DimensionFilterBar(props: DimensionFilterBarProps) {
                 key={chip.id}
                 onClick={() => onClearFilter(chip.id as ClearableFilterId)}
                 type="button"
-                title={t("filter.clearChip")}
+                data-hover-tip={t("filter.clearChip")}
               >
                 <span>
                   {label}

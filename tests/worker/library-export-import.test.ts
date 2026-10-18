@@ -4,9 +4,11 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -17,7 +19,11 @@ import {
   LibraryService,
   LibraryServiceError,
 } from '../../src/worker/library-service';
-import { removePathWithSyncRetry } from '../../src/worker/windows-fs-retry';
+import { SemanticIndexStore } from '../../src/worker/semantic-index-store';
+import { embeddingTextRevision } from '../../src/shared/embedding/profile';
+import type { WorkerCommand, WorkerRequest } from '../../src/shared/protocol/requests';
+import type { WorkerResult } from '../../src/shared/protocol/responses';
+import { closeSemanticIndexWorkerLibrary, executeSemanticIndexWorkerCommand } from '../../src/worker/handlers/semantic-index';
 
 const temporaryRoots: string[] = [];
 
@@ -62,9 +68,11 @@ async function expectServiceErrorAsync(
 }
 
 afterEach(async () => {
+  await closeSemanticIndexWorkerLibrary();
   await Promise.all(services.splice(0).map((service) => service.closeAllAsync()));
   for (const root of temporaryRoots.splice(0)) {
-    removePathWithSyncRetry(root);
+    // Yield between retries so Windows can finish delivering watcher-close callbacks.
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -89,6 +97,120 @@ function createForeignDriveRoot(): string | null {
 }
 
 describe('LibraryService export', () => {
+  it('exports and reimports the semantic index through an SQLite backup snapshot', async () => {
+    const root = temporaryRoot();
+    let semanticStore: SemanticIndexStore | null = null;
+    const service = newService({
+      backupSemanticIndex: async ({ libraryId, destinationPath }) => {
+        const currentStore = semanticStore;
+        if (!currentStore) return false;
+        expect(libraryId).toBe(created.libraryId);
+        await currentStore.backupTo(destinationPath);
+        return true;
+      },
+    });
+    const created = service.createLibrary({ displayName: 'Semantic Export Test', selectedParentPath: root });
+    const folder = service.createManagedFolder({ libraryId: created.libraryId, name: 'Assets' });
+    const displayName = 'asset.txt';
+    const relativePath = `${folder.relativePath}/${displayName}`;
+    const assetPath = path.join(created.libraryPath, 'Assets', relativePath);
+    mkdirSync(path.dirname(assetPath), { recursive: true });
+    writeFileSync(assetPath, 'synthetic export fixture');
+    const assetId = 'semantic-export-asset';
+    const revisionId = 'semantic-export-revision';
+    const now = new Date().toISOString();
+    const assetStat = statSync(assetPath);
+    const database = new (require('better-sqlite3') as new (filename: string) => {
+      close(): void;
+      prepare(sql: string): { run(...parameters: unknown[]): unknown };
+    })(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+    try {
+      database.prepare(`INSERT INTO assets (asset_id, location_kind, managed_folder_id, linked_folder_id,
+        relative_file_path, current_revision_id, availability, path_identity, created_at, updated_at)
+        VALUES (?, 'managed', ?, NULL, ?, NULL, 'available', ?, ?, ?)`).run(
+        assetId, folder.folderId, relativePath, relativePath, now, now,
+      );
+      database.prepare(`INSERT INTO revisions (revision_id, asset_id, parent_revision_id, byte_size,
+        modified_at, original_filename, origin, accepted_at)
+        VALUES (?, ?, NULL, ?, ?, ?, 'import', ?)`).run(revisionId, assetId,
+        assetStat.size, assetStat.mtime.toISOString(), displayName, now);
+      database.prepare('UPDATE assets SET current_revision_id = ? WHERE asset_id = ?').run(revisionId, assetId);
+    } finally {
+      database.close();
+    }
+    const [assetSource] = service.getSemanticAssetSources(created.libraryId, [assetId]);
+    expect(assetSource).toBeDefined();
+    const sourceRevision = `${embeddingTextRevision(revisionId)}\ntitle:${displayName}`;
+    const sourceStore = new SemanticIndexStore({ libraryPath: created.libraryPath, libraryId: created.libraryId,
+      storageKind: 'local' });
+    semanticStore = sourceStore;
+    const profileId = sourceStore.ensureProfile({
+      profileKey: 'export-profile', dimensions: 3, modelRevision: 'model-v1', modality: 'text',
+    });
+    sourceStore.upsertBatch(profileId, [{ assetId, sourceRevision, vector: [1, 2, 3] }]);
+
+    const exportPath = path.join(root, 'semantic-export');
+    await service.exportLibraryToFolder({ libraryId: created.libraryId,
+      destinationPath: exportPath, includeLinkedContent: false });
+    const exportedSidecar = path.join(exportPath, '.worldlinebox', 'semantic', 'index.sqlite');
+    expect(existsSync(exportedSidecar)).toBe(true);
+    const zipPath = path.join(root, 'semantic-export.zip');
+    await service.exportLibraryToZip({ libraryId: created.libraryId,
+      destinationPath: zipPath, includeLinkedContent: false });
+
+    sourceStore.close();
+    semanticStore = null;
+    service.closeLibrary(created.libraryId);
+    const importParent = path.join(root, 'imported-libraries');
+    mkdirSync(importParent);
+    const imported = await service.importLibraryFromFolder({ sourceFolderPath: exportPath, copyToParentPath: importParent });
+    const importedStore = new SemanticIndexStore({ libraryPath: imported.libraryPath,
+      libraryId: imported.libraryId, storageKind: 'local' });
+    try {
+      expect(imported.libraryId).toBe(created.libraryId);
+      const restored = importedStore.vectorFor(profileId, assetId, sourceRevision);
+      expect(restored).not.toBeNull();
+      expect(Array.from(restored ?? [])).toHaveLength(3);
+      expect(restored?.[0]).toBeCloseTo(0.26726124, 6);
+      expect(restored?.[1]).toBeCloseTo(0.5345225, 6);
+      expect(restored?.[2]).toBeCloseTo(0.8017837, 6);
+      importedStore.close();
+      const sessionGeneration = '91716386-c85a-4b65-a237-c971bfc553e6';
+      const call = async (command: WorkerCommand): Promise<WorkerResult> => {
+        const result = await executeSemanticIndexWorkerCommand(service,
+          { requestId: 'semantic-export-query', command } as WorkerRequest,
+          { runWithoutAdmission: async (work) => work() });
+        if (!result) throw new Error(`Worker did not handle ${command.type}`);
+        return result;
+      };
+      await call({ type: 'semantic.index.begin', libraryId: imported.libraryId, sessionGeneration,
+        profileKey: 'export-profile', dimensions: 3, modelRevision: 'model-v1', modality: 'text',
+        maxInputBytes: 1024 });
+      const ranked = await call({ type: 'semantic.index.search', libraryId: imported.libraryId,
+        sessionGeneration, queryId: '36be067f-b9aa-46c0-a4fc-d2e80f933589',
+        profileKey: 'export-profile', vector: [1, 2, 3], scope: null, filters: [], showIgnored: false });
+      expect(ranked).toMatchObject({ ok: true, type: 'semantic.index.ranked', cancelled: false,
+        assetIds: [assetId] });
+    } finally {
+      importedStore.close();
+      semanticStore = null;
+    }
+
+    const zipParent = path.join(root, 'zip-imports');
+    mkdirSync(zipParent);
+    const zipService = newService();
+    const zipImported = await zipService.importLibraryFromZip({ sourceZipPath: zipPath,
+      destinationParentPath: zipParent });
+    const zipStore = new SemanticIndexStore({ libraryPath: zipImported.libraryPath,
+      libraryId: zipImported.libraryId, storageKind: 'local' });
+    try {
+      expect(zipImported.libraryId).toBe(created.libraryId);
+      expect(zipStore.vectorFor(profileId, assetId, sourceRevision)).not.toBeNull();
+    } finally {
+      zipStore.close();
+    }
+  });
+
   it('exports a library with Assets, revisions, trash, and library.db', async () => {
     const root = temporaryRoot();
     const service = newService();
@@ -522,10 +644,11 @@ describe('LibraryService import folder', () => {
     const created = service.createLibrary({ displayName: 'Nested Symlink', selectedParentPath: root });
     service.closeAll();
     const nested = path.join(created.libraryPath, 'Assets', 'nested');
-    const external = path.join(root, 'external.txt');
+    const external = path.join(root, 'external');
     mkdirSync(nested);
-    writeFileSync(external, 'outside');
-    symlinkSync(external, path.join(nested, 'escape-link'));
+    mkdirSync(external);
+    writeFileSync(path.join(external, 'outside.txt'), 'outside');
+    symlinkSync(external, path.join(nested, 'escape-link'), process.platform === 'win32' ? 'junction' : 'dir');
 
     expectServiceError(
       () => service.validateImportSource(created.libraryPath),

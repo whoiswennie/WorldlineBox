@@ -6,11 +6,102 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_PLUGIN_COMMUNITY_CATALOG_URL,
   parseCatalogSha256File,
   pluginCommunityCatalogSchema,
 } from '../../src/plugins/plugin-community-catalog';
 import { resolvePluginDisplayCopy } from '../../src/plugins/plugin-localized-copy';
 import { PluginCommunityCatalogStore } from '../../src/main/plugin-community-catalog-store';
+
+// Captured from the real upstream feed on 2026-10-18; its published SHA-256
+// was verified before recording this offline regression fixture.
+// https://raw.githubusercontent.com/dolag233/Serpent-Plugin-Pool/main/catalog.v1.json
+const upstreamCatalogSha256 = '035b59e3e3142b9843445fc6b93edcdd80c5133b133fc1bb9dfd846196f028ff';
+const upstreamCatalogJson = `{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-19T16:26:16.359Z",
+  "plugins": [
+    {
+      "id": "com.dolag.serpent.image-upscaler",
+      "tier": "first-party",
+      "repo": "dolag233/Serpent-Plugin-ImageUpscaler",
+      "releaseTag": "v0.1.0",
+      "version": "0.1.0",
+      "runtimeMode": "unrestricted",
+      "minSerpent": ">=0.1.0 <1.0.0",
+      "name": {
+        "zh-CN": "图像超分辨率",
+        "en": "Image Upscaler"
+      },
+      "description": {
+        "zh-CN": "使用 Upscayl NCNN 模型放大图片资产。",
+        "en": "Upscale image assets with Upscayl NCNN models."
+      },
+      "assets": [
+        {
+          "platform": "darwin-arm64",
+          "fileName": "com.dolag.serpent.image-upscaler-0.1.0-darwin-arm64.zip",
+          "sha256": "dd0306389214318c1c5665373442584ef7ea2d31c22ffb37f3aef0e24917a011"
+        },
+        {
+          "platform": "win32-x64",
+          "fileName": "com.dolag.serpent.image-upscaler-0.1.0-win32-x64.zip",
+          "sha256": "cc21904d5d897b8f0df6557db39f8f5c0c6e5be1e140bcfb14df2389d2afaf23"
+        }
+      ]
+    },
+    {
+      "id": "com.dolag.serpent.media-converter",
+      "tier": "first-party",
+      "repo": "dolag233/Serpent-Plugin-MediaConverter",
+      "releaseTag": "v0.1.1",
+      "version": "0.1.1",
+      "runtimeMode": "unrestricted",
+      "minSerpent": ">=0.1.0 <1.0.0",
+      "name": {
+        "zh-CN": "媒体转换器",
+        "en": "Media Converter"
+      },
+      "description": {
+        "zh-CN": "批量对多媒体资产进行压缩、转码",
+        "en": "Batch compress and transcode media assets."
+      },
+      "assets": [
+        {
+          "platform": "any",
+          "fileName": "com.dolag.serpent.media-converter-0.1.1-any.zip",
+          "sha256": "41e8ff5fbf837494fdfdb933cfd001e3c36c6d378f1504f3d5be5f1e38da3bb3"
+        }
+      ]
+    },
+    {
+      "id": "com.dolag.serpent.renamer",
+      "tier": "first-party",
+      "repo": "dolag233/Serpent-Plugin-Renamer",
+      "releaseTag": "v0.1.1",
+      "version": "0.1.1",
+      "runtimeMode": "unrestricted",
+      "minSerpent": ">=0.2.0 <1.0.0",
+      "name": {
+        "zh-CN": "批量重命名",
+        "en": "Batch Renamer"
+      },
+      "description": {
+        "zh-CN": "预览并批量重命名选中的资产",
+        "en": "Preview and batch-rename selected assets."
+      },
+      "assets": [
+        {
+          "platform": "any",
+          "fileName": "com.dolag.serpent.renamer-0.1.1-any.zip",
+          "sha256": "e48067bb0cc3d8dabb88bf970f461be4bdf55f49b6b092035464b52aa4a33da0"
+        }
+      ]
+    }
+  ],
+  "removed": []
+}
+`;
 
 const roots: string[] = [];
 
@@ -46,6 +137,60 @@ afterEach(() => {
 });
 
 describe('plugin community catalog', () => {
+  it('loads the verified upstream feed through the default URL and normalizes its external compatibility field', async () => {
+    expect(createHash('sha256').update(upstreamCatalogJson).digest('hex')).toBe(upstreamCatalogSha256);
+    const requested: string[] = [];
+    const store = new PluginCommunityCatalogStore({
+      userDataDirectory: temporaryRoot('worldlinebox-upstream-catalog-'),
+      fetchImpl: async (input) => {
+        const url = String(input);
+        requested.push(url);
+        return new Response(url.endsWith('.sha256') ? `${upstreamCatalogSha256}\n` : upstreamCatalogJson);
+      },
+    });
+    const result = await store.load({ refresh: true });
+    expect(DEFAULT_PLUGIN_COMMUNITY_CATALOG_URL)
+      .toBe('https://raw.githubusercontent.com/dolag233/Serpent-Plugin-Pool/main/catalog.v1.json');
+    expect(requested.sort()).toEqual([
+      DEFAULT_PLUGIN_COMMUNITY_CATALOG_URL,
+      `${DEFAULT_PLUGIN_COMMUNITY_CATALOG_URL}.sha256`,
+    ].sort());
+    expect(result.catalog.plugins).toHaveLength(3);
+    expect(result.catalog.plugins[0]).toMatchObject({
+      id: 'com.dolag.serpent.image-upscaler',
+      repo: 'dolag233/Serpent-Plugin-ImageUpscaler',
+      minWorldlineBox: '>=0.1.0 <1.0.0',
+    });
+    expect(result.catalog.plugins[0]).not.toHaveProperty('minSerpent');
+  });
+
+  it('keeps a custom catalog URL and WorldlineBox-specific compatibility constraints', async () => {
+    const customUrl = 'https://example.test/personal-plugin-catalog.json';
+    const json = JSON.stringify({
+      ...catalog,
+      plugins: [{ ...catalog.plugins[0], minWorldlineBox: '>=0.1.0', minSerpent: '>=0.3.0' }],
+    });
+    const digest = createHash('sha256').update(json).digest('hex');
+    const requested: string[] = [];
+    const store = new PluginCommunityCatalogStore({
+      userDataDirectory: temporaryRoot('worldlinebox-custom-catalog-'),
+      catalogUrl: customUrl,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        requested.push(url);
+        return new Response(url.endsWith('.sha256') ? digest : json);
+      },
+    });
+    const result = await store.load({ refresh: true });
+    expect(result.sourceUrl).toBe(customUrl);
+    expect(requested.sort()).toEqual([customUrl, `${customUrl}.sha256`].sort());
+    expect(result.catalog.plugins[0]?.minWorldlineBox).toBe('>=0.1.0');
+    expect(pluginCommunityCatalogSchema.safeParse({
+      ...catalog,
+      plugins: [{ ...catalog.plugins[0], minSerpent: 1 }],
+    }).success).toBe(false);
+  });
+
   it('parses a catalog document and a bare or GNU digest file', () => {
     expect(pluginCommunityCatalogSchema.parse(catalog).plugins[0]?.id).toBe('com.example.palette-tools');
     expect(parseCatalogSha256File(`${'b'.repeat(64)}\n`)).toBe('b'.repeat(64));
