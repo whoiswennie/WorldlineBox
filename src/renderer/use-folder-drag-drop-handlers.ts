@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 
 import type { ManagedFolderSummary } from '../shared/asset-types';
 import type { WorldlineBoxLibraryApi } from '../shared/library-api';
@@ -39,6 +39,15 @@ export function useFolderDragDropHandlers({
 }: UseFolderDragDropHandlersParams) {
   const t = useT();
   const { locale } = useLocale();
+  // A sidebar reorder is deliberately non-blocking; keep a second drop from
+  // racing the first while its disk move and navigation refresh are in flight.
+  const moveInFlightRef = useRef(false);
+  // Non-blocking reorders allow navigation while the move is pending. A late
+  // completion belongs to its original library and must not update a new view.
+  const currentLibraryIdRef = useRef(libraryId);
+  useLayoutEffect(() => {
+    currentLibraryIdRef.current = libraryId;
+  }, [libraryId]);
 
   const folderFacts = useCallback(
     (): FolderDragFact[] =>
@@ -50,8 +59,13 @@ export function useFolderDragDropHandlers({
   );
 
   const handleFoldersDroppedOnFolder = useCallback(
-    (targetFolderId: string | null, draggedFolderIds: readonly string[]) => {
+    (
+      targetFolderId: string | null,
+      draggedFolderIds: readonly string[],
+      options?: { blockingUi?: boolean },
+    ) => {
       if (!api || !libraryId) return;
+      if (moveInFlightRef.current) return;
       const resolution = resolveFolderOntoFolderDrop({
         targetFolderId,
         draggedFolderIds,
@@ -66,8 +80,10 @@ export function useFolderDragDropHandlers({
         // 「不能将文件夹移动到自身。」属冗余提示。)
         return;
       }
+      const blockingUi = options?.blockingUi ?? true;
+      moveInFlightRef.current = true;
       void (async () => {
-        setUiState('loading');
+        if (blockingUi) setUiState('loading');
         try {
           const result = await api.moveFolders({
             libraryId,
@@ -76,6 +92,7 @@ export function useFolderDragDropHandlers({
             conflictStrategy: 'keep-both',
           });
           if (!result.ok) throw new LibraryOperationError(result.error);
+          if (currentLibraryIdRef.current !== libraryId) return;
           if (result.value.skippedCount > 0) {
             setNotice(
               t('toast.folderMoveSkipped', {
@@ -92,9 +109,14 @@ export function useFolderDragDropHandlers({
           }
           await reloadCurrentContent();
         } catch (caught) {
-          setError(toMessage(caught, t('toast.folderMoveFailed'), locale));
+          if (currentLibraryIdRef.current === libraryId) {
+            setError(toMessage(caught, t('toast.folderMoveFailed'), locale));
+          }
         } finally {
-          setUiState('ready');
+          moveInFlightRef.current = false;
+          if (blockingUi && currentLibraryIdRef.current === libraryId) {
+            setUiState('ready');
+          }
         }
       })();
     },

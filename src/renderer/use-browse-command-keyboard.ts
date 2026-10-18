@@ -11,6 +11,7 @@
 import { useEffect, type RefObject } from "react";
 
 import type { AssetSummary } from "../shared/asset-types";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
 import { shouldForwardBrowseShortcut } from "../shared/browse-shortcut-dedupe";
 import {
   canRenameAssetWithShortcut,
@@ -21,8 +22,7 @@ import {
   isEditableAssetActionKeyboardTarget,
 } from "./asset-action-keyboard";
 import type { CommandPlatform } from "./commands/command-types";
-import { toolbarCommandRegistry } from "./commands/toolbar-commands";
-import { matchesShortcut } from "./commands/command-types";
+import { listenForShortcutInputs, matchesRuntimeShortcut } from "./shortcut-runtime";
 import {
   isLibrarySearchInput,
   matchFocusSearchShortcut,
@@ -93,23 +93,21 @@ export function useBrowseCommandKeyboard(
   useEffect(() => {
     if (!enabled) return;
 
-    const refreshShortcut = toolbarCommandRegistry.get("canvas.refresh")
-      ?.shortcut;
-
-    const onKeyDown = (event: KeyboardEvent) => {
+    const onShortcutInput = (shortcutInput: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
       if (isEditableAssetActionKeyboardTarget(event.target)) return;
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if (previewOpen) {
         const viewed = selectedAsset;
         if (!viewed || viewed.deletedAt) return;
-        const bareDelete = (event.key === "Delete" || event.key === "Backspace")
+        const bareDelete = shortcutInput.kind !== "mouse"
+          && (shortcutInput.key === "Delete" || shortcutInput.key === "Backspace")
           && !event.metaKey
           && !event.ctrlKey
           && !event.altKey;
         const diskDelete = (bareDelete && event.shiftKey)
-          || matchAssetActionKeyboardCommand("asset.delete-from-disk", event, platform);
+          || matchAssetActionKeyboardCommand("asset.delete-from-disk", shortcutInput, platform);
         const trashDelete = (bareDelete && !event.shiftKey)
-          || matchAssetActionKeyboardCommand("asset.move-to-trash", event, platform);
+          || matchAssetActionKeyboardCommand("asset.move-to-trash", shortcutInput, platform);
         if (diskDelete && !showTrash && libraryOpen) {
           if (!shouldForwardBrowseShortcut("disk-delete")) return;
           event.preventDefault();
@@ -139,8 +137,13 @@ export function useBrowseCommandKeyboard(
         return;
       }
 
+      // Sidebar rows own their folder/collection shortcuts while focused.
+      if (document.activeElement?.closest(".nav-tree-row")) {
+        return;
+      }
+
       if (
-        matchFocusSearchShortcut(event, platform) &&
+        matchFocusSearchShortcut(shortcutInput, platform) &&
         libraryOpen &&
         !isLibrarySearchInput(event.target)
       ) {
@@ -151,8 +154,7 @@ export function useBrowseCommandKeyboard(
       }
 
       if (
-        refreshShortcut !== undefined &&
-        matchesShortcut(refreshShortcut, event, platform) &&
+        matchesRuntimeShortcut("canvas.refresh", shortcutInput, platform) === true &&
         libraryOpen &&
         !busy
       ) {
@@ -162,7 +164,7 @@ export function useBrowseCommandKeyboard(
       }
 
       if (
-        matchAssetActionKeyboardCommand("asset.paste", event, platform) &&
+        matchAssetActionKeyboardCommand("asset.paste", shortcutInput, platform) &&
         !showTrash &&
         libraryOpen &&
         !busy &&
@@ -176,7 +178,7 @@ export function useBrowseCommandKeyboard(
       if (
         matchAssetActionKeyboardCommand(
           "asset.show-in-library-folder",
-          event,
+          shortcutInput,
           platform,
         ) &&
         !showTrash &&
@@ -191,7 +193,7 @@ export function useBrowseCommandKeyboard(
       if (
         matchAssetActionKeyboardCommand(
           "asset.reveal-in-folder",
-          event,
+          shortcutInput,
           platform,
         ) &&
         !showTrash &&
@@ -206,7 +208,7 @@ export function useBrowseCommandKeyboard(
       if (
         matchAssetActionKeyboardCommand(
           "asset.delete-from-disk",
-          event,
+          shortcutInput,
           platform,
         ) &&
         !showTrash &&
@@ -222,7 +224,7 @@ export function useBrowseCommandKeyboard(
       if (
         matchAssetActionKeyboardCommand(
           "asset.move-to-trash",
-          event,
+          shortcutInput,
           platform,
         )
       ) {
@@ -256,7 +258,7 @@ export function useBrowseCommandKeyboard(
       if (
         matchAssetActionKeyboardCommand(
           "asset.open-external",
-          event,
+          shortcutInput,
           platform,
         ) &&
         selectedAsset?.availability === "available" &&
@@ -268,7 +270,7 @@ export function useBrowseCommandKeyboard(
       }
 
       if (
-        matchAssetActionKeyboardCommand("asset.copy", event, platform) &&
+        matchAssetActionKeyboardCommand("asset.copy", shortcutInput, platform) &&
         !showTrash &&
         libraryOpen
       ) {
@@ -286,7 +288,7 @@ export function useBrowseCommandKeyboard(
       }
 
       if (
-        matchAssetActionKeyboardCommand("asset.copy-file-path", event, platform) &&
+        matchAssetActionKeyboardCommand("asset.copy-file-path", shortcutInput, platform) &&
         !showTrash &&
         selectedAsset?.availability === "available" &&
         !selectedAsset.deletedAt
@@ -297,7 +299,7 @@ export function useBrowseCommandKeyboard(
       }
 
       if (
-        matchAssetActionKeyboardCommand("asset.rename", event, platform) &&
+        matchAssetActionKeyboardCommand("asset.rename", shortcutInput, platform) &&
         canRenameAssetWithShortcut(selectedAsset)
       ) {
         if (!shouldForwardBrowseShortcut("rename")) return;
@@ -306,9 +308,7 @@ export function useBrowseCommandKeyboard(
       }
     };
 
-    document.addEventListener("keydown", onKeyDown, platform === "windows");
-    return () =>
-      document.removeEventListener("keydown", onKeyDown, platform === "windows");
+    return listenForShortcutInputs(document, onShortcutInput, platform === "windows");
   }, [
     enabled,
     platform,

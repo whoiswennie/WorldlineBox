@@ -117,12 +117,27 @@ describe('WorldlineBox app update release contract', () => {
       name: 'WorldlineBox-linux-x86-64-0.1.3.AppImage',
       assetKind: 'portable',
     });
-    // Linux only ships AppImage today; installed distribution still maps to portable.
+    const linuxArm64AppImage = resolveAppUpdateTarget({
+      platform: 'linux',
+      arch: 'arm64',
+      distribution: 'portable',
+    });
+    expect(linuxArm64AppImage).toEqual({ platform: 'linux', arch: 'arm64', distribution: 'portable' });
+    expect(updateAssetName('0.1.3', linuxArm64AppImage!)).toEqual({
+      name: 'WorldlineBox-linux-arm64-0.1.3.AppImage',
+      assetKind: 'portable',
+    });
+    // Linux only ships AppImage; installed distribution still maps to portable.
     expect(resolveAppUpdateTarget({
       platform: 'linux',
       arch: 'x64',
       distribution: 'installed',
     })).toEqual({ platform: 'linux', arch: 'x64', distribution: 'portable' });
+    expect(resolveAppUpdateTarget({
+      platform: 'linux',
+      arch: 'arm64',
+      distribution: 'installed',
+    })).toEqual({ platform: 'linux', arch: 'arm64', distribution: 'portable' });
     expect(resolveAppUpdateTarget({
       platform: 'darwin',
       arch: 'x64',
@@ -342,6 +357,101 @@ describe('WorldlineBox app update release contract', () => {
       expect(revealed).toHaveLength(1);
       expect(await readFile(revealed[0]!)).toEqual(portableBytes);
       expect(revealed[0]).toContain('WorldlineBox-win-x86-64-0.1.3-portable.zip');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['x64', 'arm64'] as const)(
+    'keeps and reveals the verified Linux %s AppImage update',
+    async (arch) => {
+      const appImageBytes = Buffer.from('Linux AppImage update bytes');
+      const checksum = createHash('sha256').update(appImageBytes).digest('hex');
+      const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-linux-test-'));
+      const revealed: string[] = [];
+      try {
+        const assetName = arch === 'arm64'
+          ? 'WorldlineBox-linux-arm64-0.1.3.AppImage'
+          : 'WorldlineBox-linux-x86-64-0.1.3.AppImage';
+        const payload = releasePayload({
+          assets: [{
+            name: assetName,
+            browser_download_url: `https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/${assetName}`,
+            size: appImageBytes.byteLength,
+          }, {
+            name: `${assetName}.sha256`,
+            browser_download_url: `https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/${assetName}.sha256`,
+            size: checksum.length,
+          }],
+        });
+        const service = createAppUpdateService({
+          currentVersion: '0.1.1',
+          isPackaged: true,
+          platform: 'linux',
+          arch,
+          executablePath: path.join(root, 'WorldlineBox.AppImage'),
+          tempDirectory: root,
+          downloadsDirectory: path.join(root, 'Downloads'),
+          fetchImpl: async (url) => {
+            if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+            if (url.endsWith('.sha256')) return new Response(`${checksum}\n`);
+            return new Response(appImageBytes);
+          },
+          showItemInFolder: (filePath) => revealed.push(filePath),
+        });
+
+        const result = await service.downloadAndInstall();
+        expect(result).toMatchObject({
+          ok: true,
+          status: 'completed',
+          action: 'portable-downloaded',
+          version: '0.1.3',
+          distribution: 'portable',
+        });
+        expect(revealed).toHaveLength(1);
+        expect(path.basename(revealed[0]!)).toBe(assetName);
+        expect(await readFile(revealed[0]!)).toEqual(appImageBytes);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('removes an unverified Linux AppImage download instead of leaving a broken update behind', async () => {
+    const appImageBytes = Buffer.from('Linux AppImage update bytes');
+    const wrongChecksum = '0'.repeat(64);
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-linux-failure-test-'));
+    try {
+      const assetName = 'WorldlineBox-linux-x86-64-0.1.3.AppImage';
+      const payload = releasePayload({
+        assets: [{
+          name: assetName,
+          browser_download_url: `https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/${assetName}`,
+          size: appImageBytes.byteLength,
+        }, {
+          name: `${assetName}.sha256`,
+          browser_download_url: `https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/${assetName}.sha256`,
+          size: wrongChecksum.length,
+        }],
+      });
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'linux',
+        arch: 'x64',
+        executablePath: path.join(root, 'WorldlineBox.AppImage'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        fetchImpl: async (url) => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(payload));
+          if (url.endsWith('.sha256')) return new Response(`${wrongChecksum}\n`);
+          return new Response(appImageBytes);
+        },
+      });
+
+      const result = await service.downloadAndInstall();
+      expect(result).toEqual({ ok: false, status: 'error', code: 'verification-failed' });
+      expect(await readdir(path.join(root, 'Downloads'))).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

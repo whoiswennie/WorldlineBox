@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCommandRegistry } from '../../src/renderer/commands/command-registry';
+import { setShortcutRuntime } from '../../src/renderer/shortcut-runtime';
+import { DEFAULT_SHORTCUT_BINDINGS, setShortcutOverride } from '../../src/shared/shortcut-bindings';
 import {
   formatShortcut,
   GROUP_ORDER,
@@ -38,6 +40,15 @@ function makeCommand(
 }
 
 describe('createCommandRegistry (REQ-COMMAND-001)', () => {
+  it('does not restore a cleared catalog binding from a legacy menu label', () => {
+    setShortcutRuntime('windows', setShortcutOverride(DEFAULT_SHORTCUT_BINDINGS, 'windows', 'asset.rename', null));
+    try {
+      const registry = createCommandRegistry([makeCommand({ id: 'asset.rename', shortcut: {
+        mac: { label: 'F2', key: 'F2' }, windows: { label: 'F2', key: 'F2' },
+      } })]);
+      expect(registry.resolveMenu(makeContext({ platform: 'windows' }))[0]?.shortcutLabel).toBeNull();
+    } finally { setShortcutRuntime('windows', DEFAULT_SHORTCUT_BINDINGS); }
+  });
   it('rejects duplicate command ids and names the id', () => {
     const first = makeCommand({ id: 'asset.open', group: 'open' });
     const second = makeCommand({ id: 'asset.open', title: '重复定义' });

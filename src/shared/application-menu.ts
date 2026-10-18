@@ -18,6 +18,15 @@
  * the zoom roles stay absent and Windows stays menu-less.
  */
 
+import {
+  DEFAULT_SHORTCUT_BINDINGS,
+  type ShortcutBindings,
+} from "./shortcut-bindings";
+import {
+  formatElectronAccelerator,
+  resolvePrimaryChord,
+} from "./shortcut-resolution";
+
 export type ApplicationMenuPlatform = "darwin" | "linux" | "win32";
 
 export type ApplicationMenuRole =
@@ -60,6 +69,10 @@ export type ApplicationMenuCommand =
   | "edit.paste"
   | "edit.select-all"
   | "edit.clear-selection"
+  | "canvas.zoom-in"
+  | "canvas.zoom-out"
+  | "canvas.zoom-reset"
+  | "window.toggle-fullscreen"
   | "library.create"
   | "library.open"
   | "library.open-recent"
@@ -94,6 +107,8 @@ export type ApplicationMenuItemTemplate = {
   readonly label?: string;
   /** Native accelerator for custom commands, when the platform has one. */
   readonly accelerator?: string;
+  /** Shared shortcut catalog action that owns this accelerator. */
+  readonly shortcutActionId?: string;
   /**
    * i18n catalog key (renderer/i18n/catalogs) resolved to the display label
    * by Main at install time using the effective app locale — the shared layer
@@ -124,6 +139,8 @@ export type ApplicationMenuTemplateOptions = {
     readonly path: string;
     readonly name: string;
   }[];
+  /** Current per-device bindings used to build native accelerator labels. */
+  readonly shortcutBindings?: ShortcutBindings;
 };
 
 const PAGE_ZOOM_ROLES = new Set(["zoomIn", "zoomOut", "resetZoom"]);
@@ -163,6 +180,24 @@ export function buildApplicationMenuTemplate(
   options: ApplicationMenuTemplateOptions,
 ): ApplicationMenuItemTemplate[] {
   const isMac = options.platform === "darwin";
+  const shortcutPlatform = isMac ? "mac" : "windows";
+  const shortcutBindings = options.shortcutBindings ?? DEFAULT_SHORTCUT_BINDINGS;
+  const shortcutItem = (
+    actionId: string,
+    labelKey: string,
+    command: ApplicationMenuCommand,
+  ): ApplicationMenuItemTemplate => {
+    const chord = resolvePrimaryChord(actionId, shortcutPlatform, shortcutBindings);
+    const accelerator = chord === null
+      ? null
+      : formatElectronAccelerator(chord, shortcutPlatform);
+    return {
+      labelKey,
+      command,
+      shortcutActionId: actionId,
+      ...(accelerator === null ? {} : { accelerator }),
+    };
+  };
 
   const viewSubmenu: ApplicationMenuItemTemplate[] = [
     { role: "reload", labelKey: "shell.mainMenuReload" },
@@ -171,8 +206,20 @@ export function buildApplicationMenuTemplate(
       ? ([{ role: "toggleDevTools", labelKey: "shell.mainMenuToggleDevTools" }] as const)
       : []),
     { type: "separator" },
-    // WorldlineBox-46i9: do NOT include zoomIn / zoomOut / resetZoom.
-    { role: "togglefullscreen", labelKey: "shell.mainMenuToggleFullscreen" },
+    ...(isMac
+      ? [
+          shortcutItem("canvas.zoom-in", "preview.zoomIn", "canvas.zoom-in"),
+          shortcutItem("canvas.zoom-out", "preview.zoomOut", "canvas.zoom-out"),
+          shortcutItem("canvas.zoom-reset", "preview.fitWindow", "canvas.zoom-reset"),
+          { type: "separator" } as const,
+        ]
+      : []),
+    // WorldlineBox-46i9: do NOT include Electron zoomIn / zoomOut / resetZoom roles.
+    shortcutItem(
+      "window.toggle-fullscreen",
+      "shell.mainMenuToggleFullscreen",
+      "window.toggle-fullscreen",
+    ),
   ];
 
   const macAppMenu: ApplicationMenuItemTemplate = {
@@ -208,18 +255,18 @@ export function buildApplicationMenuTemplate(
         // WorldlineBox-q0b1: business undo/redo (not the always-available text
         // editing roles) — enabled state mirrors the renderer's undoable
         // operation state, including the redo stack.
-        { labelKey: "shell.mainMenuUndo", command: "edit.undo", accelerator: "Cmd+Z" },
-        { labelKey: "shell.mainMenuRedo", command: "edit.redo", accelerator: "Cmd+Shift+Z" },
+        shortcutItem("edit.undo", "shell.mainMenuUndo", "edit.undo"),
+        shortcutItem("edit.redo", "shell.mainMenuRedo", "edit.redo"),
         { type: "separator" },
         { role: "cut", labelKey: "shell.mainMenuCut" },
         // WorldlineBox-166q: do not use role:copy — it steals ⌘C from asset file copy.
-        { labelKey: "shell.mainMenuCopySelection", command: "copy-selection" },
-        { role: "paste", labelKey: "shell.mainMenuPaste" },
+        shortcutItem("asset.copy", "shell.mainMenuCopySelection", "copy-selection"),
+        shortcutItem("asset.paste", "shell.mainMenuPaste", "edit.paste"),
         { role: "pasteAndMatchStyle", labelKey: "shell.mainMenuPasteMatchStyle" },
         { role: "delete", labelKey: "shell.mainMenuDelete" },
-        { role: "selectAll", labelKey: "shell.mainMenuSelectAll" },
+        shortcutItem("selection.select-all", "shell.mainMenuSelectAll", "edit.select-all"),
         { type: "separator" },
-        { labelKey: "shell.mainMenuInvertSelection", command: "invert-selection" },
+        shortcutItem("selection.invert", "shell.mainMenuInvertSelection", "invert-selection"),
       ]
     : [{ role: "editMenu" }];
 

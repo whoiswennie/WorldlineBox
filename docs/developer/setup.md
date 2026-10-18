@@ -4,7 +4,7 @@
 
 - Node.js **24.15.0**（`.nvmrc` 锁定，用 `nvm use` 切换）
 - npm（国内网络建议 `--registry=https://registry.npmjs.org`）
-- 原生开发目标：macOS arm64、Windows x64
+- 原生开发目标：macOS arm64、Windows x64、Linux x64/arm64；Linux 为预览支持，arm64 媒体包尚未晋升，不能直接生成正式发布包
 - **不要在 SMB/NAS 挂载目录上构建或运行**——Electron 在挂载盘上无法正常启动（`icudtl.dat not found`），打包产物也不能从挂载盘运行
 
 ### macOS
@@ -21,6 +21,16 @@
   - 官网安装方式：安装官方 Inno Setup 6 并将环境变量 `WORLDLINEBOX_INNO_TOOLS` 指向 `ISCC.exe` 所在目录（或加入系统 `PATH`）；
   - 若仅在开发态运行（`npm start`）或生成便携版（`npm run package`），则无需安装 Inno Setup。
 - 媒体组件构建（仅需要重建底层二进制时）：`scripts/media-build/win32-x64.ps1`（vcpkg）
+
+### Linux（预览）
+
+- 编译工具链与 Python（`better-sqlite3`）：Debian/Ubuntu 需要 `build-essential`、`python3`；构建媒体还需要脚本使用的 Git、CMake、zip、pkgconf 等工具。
+- `npm ci` 不安装媒体包。linux-x64 的锁定媒体包为 `ready`（`media-v0.1.3`）；linux-arm64 采用相同获取/校验门禁，但当前为 `build-required`。开发时可用 `npm run media:ensure` 获取已晋升包；未获取时可从 PATH 使用可信 `ffmpeg` / `ffprobe`，专业图像格式另需 `oiiotool`。
+- 原生 aarch64 媒体构建入口是 `scripts/media-build/linux-arm64.sh`；本地试跑与正式晋升步骤见[构建与打包](build-packaging.md#linux-appimage)。不能在 Windows 上交叉生成通过原生门禁的 Linux 包。
+- AppImage 推荐同架构 `npm run make:appimage:docker`，基线为 Ubuntu 22.04 / glibc 2.35；无 Docker 时可本机 `npm run make:appimage`，但须检查较新系统引入的运行依赖。运行需要 FUSE 或 `--appimage-extract-and-run`；X11/Wayland 与截图录屏权限需实机验证。
+- 常用变量：`WORLDLINEBOX_SOFTWARE_GL=1`（无可用 GPU 时软件 WebGL）、`WORLDLINEBOX_LINUX_ROUNDED_CORNERS=0|1`（强制直角/圆角）、`WORLDLINEBOX_FFMPEG_PATH` / `WORLDLINEBOX_OIIO_PATH`（可信工具路径）。
+
+本轮未安装系统服务、Docker 或 WSL，也未在当前 Windows 主机完成 Linux 实机验收；平台支持和制品是否已发布以锁文件、发布页及验收记录分别为准。
 
 ## 首次构建
 

@@ -32,7 +32,7 @@ export interface FolderSortPreferencesStorage {
 
 const folderSortPreferencesSchema = z.object({
   version: z.literal(1),
-  mode: z.enum(["name", "created", "count"]),
+  mode: z.enum(["name", "created", "count", "custom"]),
   // Optional for data written before the direction UI existed; load defaults
   // it to asc so a persisted `{ mode }` value keeps sorting instead of resetting.
   order: z.enum(["asc", "desc"]).optional(),
@@ -43,12 +43,12 @@ export const COLLECTION_SORT_PREF_KEY = "worldlinebox.collection-sort-prefs.v1";
 
 export const DEFAULT_FOLDER_SORT_PREFERENCES: FolderSortPreferences = {
   version: 1,
-  mode: "name",
+  mode: "custom",
   order: "asc",
 };
 export const DEFAULT_COLLECTION_SORT_PREFERENCES: CollectionSortPreferences = {
   version: 1,
-  mode: "name",
+  mode: "custom",
   order: "asc",
 };
 

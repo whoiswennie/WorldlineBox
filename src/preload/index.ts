@@ -21,6 +21,7 @@ import {
 import { mcp } from './bridge/mcp';
 import { plugins } from './bridge/plugins';
 import { shell } from './bridge/shell';
+import { shortcuts } from './bridge/shortcuts';
 import { startup } from './bridge/startup';
 import { getE2eRequestCount } from './transport';
 import type { RendererRequest } from '../shared/protocol/requests';
@@ -77,6 +78,7 @@ contextBridge.exposeInMainWorld(
   process.argv.includes(CAPTURE_TOOLS_ARGUMENT) ? Object.freeze({ captureTools }) : process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT) ? Object.freeze({ companionWorld }) : Object.freeze({
     library,
     shell,
+    shortcuts,
     startup,
     appUpdate,
     dshLauncher,

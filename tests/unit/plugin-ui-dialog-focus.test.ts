@@ -9,7 +9,10 @@ import {
   restoreDocumentKeyboardFocus,
   usePluginWidgetDialogKeyboardFocus,
 } from "../../src/renderer/plugin-ui-dialog-focus";
-import { useDialogFocusTrap } from "../../src/renderer/use-dialog-focus-trap";
+import {
+  hasActiveModalDialog,
+  useDialogFocusTrap,
+} from "../../src/renderer/use-dialog-focus-trap";
 
 describe("plugin widget dialog keyboard focus", () => {
   it("steals OS focus only when the document is inactive", () => {
@@ -43,6 +46,22 @@ describe("plugin widget dialog keyboard focus", () => {
     root = undefined;
     container?.remove();
     container = undefined;
+  });
+
+  it("does not treat a mounted closed dialog as keyboard ownership", () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    container.innerHTML = `
+      <div role="dialog" aria-modal="true" hidden></div>
+    `;
+
+    expect(hasActiveModalDialog()).toBe(false);
+    const dialog = container.querySelector('[role="dialog"]');
+    if (!(dialog instanceof HTMLElement)) throw new Error("Expected modal fixture.");
+    dialog.hidden = false;
+    expect(hasActiveModalDialog()).toBe(true);
+    dialog.setAttribute("aria-hidden", "true");
+    expect(hasActiveModalDialog()).toBe(false);
   });
 
   it("marks and focuses the first editable field", () => {

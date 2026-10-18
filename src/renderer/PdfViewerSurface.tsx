@@ -10,9 +10,13 @@ import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import type { WorldlineBoxLibraryApi } from "../shared/library-api";
 import { isMacPlatform } from "./commands/command-types";
 import {
+  GLOBAL_ZOOM_MENU_ACTION_EVENT,
   matchGlobalZoomShortcut,
+  type GlobalZoomAction,
   shouldIgnoreGlobalZoomShortcut,
 } from "./global-zoom-shortcuts";
+import { listenForShortcutInputs } from "./shortcut-runtime";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
 import { useT } from "./i18n";
 import type { PdfZoomAnchor } from "./pdf-viewer-layout";
 import {
@@ -557,20 +561,32 @@ export function PdfViewerSurface({
   useEffect(() => {
     if (keyboardShortcutsDisabled) return;
     const platform = isMacPlatform(navigator.userAgent) ? "mac" : "windows";
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (shouldIgnoreGlobalZoomShortcut(event.target)) return;
-      const action = matchGlobalZoomShortcut(event, platform);
-      if (!action) return;
-      event.preventDefault();
-      event.stopPropagation();
+    const applyZoomAction = (action: GlobalZoomAction) => {
       if (action === "reset") {
         setZoom(1);
         return;
       }
       zoomAtViewportCenter(action === "in" ? PDF_ZOOM_STEP : 1 / PDF_ZOOM_STEP);
     };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    const onShortcutInput = (input: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
+      if (shouldIgnoreGlobalZoomShortcut(event.target)) return;
+      const action = matchGlobalZoomShortcut(input, platform);
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      applyZoomAction(action);
+    };
+    const onMenuZoom = (event: Event) => {
+      if (shouldIgnoreGlobalZoomShortcut(document.activeElement)) return;
+      const action = (event as CustomEvent<GlobalZoomAction>).detail;
+      if (action === "in" || action === "out" || action === "reset") applyZoomAction(action);
+    };
+    const removeShortcutInputs = listenForShortcutInputs(window, onShortcutInput, true);
+    window.addEventListener(GLOBAL_ZOOM_MENU_ACTION_EVENT, onMenuZoom);
+    return () => {
+      removeShortcutInputs();
+      window.removeEventListener(GLOBAL_ZOOM_MENU_ACTION_EVENT, onMenuZoom);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyboardShortcutsDisabled, zoom]);
 

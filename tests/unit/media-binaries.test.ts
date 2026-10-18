@@ -352,10 +352,18 @@ it('rejects non-x64 PE files and non-allowlisted delay-import DLLs', () => {
   expect(() => peImportsFromBuffer(wrongArchitecture)).toThrow(/not Windows x64/);
 });
 
-it('includes linux-x64 in the pinned media platform set', () => {
-  expect([...SUPPORTED_PLATFORMS].sort()).toEqual(['darwin-arm64', 'linux-x64', 'win32-x64']);
+it('includes linux-x64 and linux-arm64 in the pinned media platform set', () => {
+  expect([...SUPPORTED_PLATFORMS].sort()).toEqual([
+    'darwin-arm64',
+    'linux-arm64',
+    'linux-x64',
+    'win32-x64',
+  ]);
   if (process.platform === 'linux' && process.arch === 'x64') {
     expect(currentPlatformKey()).toBe('linux-x64');
+  }
+  if (process.platform === 'linux' && process.arch === 'arm64') {
+    expect(currentPlatformKey()).toBe('linux-arm64');
   }
 });
 
@@ -405,12 +413,36 @@ it('uses one LibRaw- and zlib-enabled media manifest for macOS and Windows build
   expect(linuxScript).toContain('MANIFEST_ROOT="$ROOT/resources/media-binaries/vcpkg"');
   expect(linuxScript).toContain('--platform linux-x64');
   expect(linuxScript).toContain('worldlinebox-x64-linux-static');
+  const linuxArm64Script = readFileSync(
+    path.join(projectRoot, 'scripts/media-build/linux-arm64.sh'),
+    'utf8',
+  );
+  expect(linuxArm64Script).toContain('MANIFEST_ROOT="$ROOT/resources/media-binaries/vcpkg"');
+  expect(linuxArm64Script).toContain('--platform linux-arm64');
+  expect(linuxArm64Script).toContain('worldlinebox-arm64-linux-static');
+  expect(linuxArm64Script).toContain('pkgconf:arm64-linux');
+  expect(linuxArm64Script).toContain('uname -m');
+  expect(linuxArm64Script).toContain('aarch64');
   const linuxTriplet = readFileSync(
     path.join(projectRoot, 'resources/media-binaries/vcpkg/triplets/worldlinebox-x64-linux-static.cmake'),
     'utf8',
   );
   expect(linuxTriplet).toMatch(/^set\(VCPKG_CMAKE_SYSTEM_NAME Linux\)$/m);
   expect(linuxTriplet).toMatch(/^set\(VCPKG_LIBRARY_LINKAGE static\)$/m);
+  const linuxArm64Triplet = readFileSync(
+    path.join(projectRoot, 'resources/media-binaries/vcpkg/triplets/worldlinebox-arm64-linux-static.cmake'),
+    'utf8',
+  );
+  expect(linuxArm64Triplet).toMatch(/^set\(VCPKG_TARGET_ARCHITECTURE arm64\)$/m);
+  expect(linuxArm64Triplet).toMatch(/^set\(VCPKG_CMAKE_SYSTEM_NAME Linux\)$/m);
+  expect(linuxArm64Triplet).toMatch(/^set\(VCPKG_LIBRARY_LINKAGE static\)$/m);
+  const bundleLock = JSON.parse(readFileSync(
+    path.join(projectRoot, 'resources/media-binaries/bundle-lock.json'),
+    'utf8',
+  )) as { bundles: Record<string, { status?: string; reason?: string }> };
+  expect(bundleLock.bundles['linux-x64']?.status).toBe('ready');
+  expect(bundleLock.bundles['linux-arm64']?.status).toBe('build-required');
+  expect(bundleLock.bundles['linux-arm64']?.reason).toContain('worldlinebox-media-linux-arm64.zip');
   expect(macScript).toContain('export VCPKG_ROOT');
   expect(windowsScript).toContain('$env:VCPKG_ROOT = $VcpkgRoot');
   const windowsOiioScript = readFileSync(

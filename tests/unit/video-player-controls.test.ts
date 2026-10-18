@@ -195,6 +195,16 @@ describe("matchVideoPlaybackSeekKey / videoSeekDeltaSeconds (WorldlineBox-sk1)",
     ).toBeCloseTo(VIDEO_FRAME_STEP_SECONDS);
   });
 
+  it("ignores auto-repeat for frame and seek actions", () => {
+    expect(matchVideoPlaybackSeekKey({ ...base, key: "d", repeat: true })).toBeNull();
+    expect(matchVideoPlaybackSeekKey({
+      ...base,
+      key: "ArrowLeft",
+      ctrlKey: true,
+      repeat: true,
+    })).toBeNull();
+  });
+
   it("matches D/F by physical code even when IME sets key to Process", () => {
     expect(
       matchVideoPlaybackSeekKey({
@@ -287,6 +297,10 @@ describe("matchVideoPlaybackRateKey / stepVideoPlaybackRate (WorldlineBox-soii)"
     expect(stepVideoPlaybackRate(1, "slower")).toBe(0.5);
     expect(stepVideoPlaybackRate(0.25, "slower")).toBe(0.25);
     expect(stepVideoPlaybackRate(4, "faster")).toBe(4);
+  });
+
+  it("ignores auto-repeat for playback-rate actions", () => {
+    expect(matchVideoPlaybackRateKey({ ...base, key: "c", repeat: true })).toBeNull();
   });
 
   it("matches X/C by physical code under IME Process keys", () => {

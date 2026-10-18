@@ -5,6 +5,7 @@ import type {
 } from "../shared/asset-types";
 import type { EntityAppearance } from "../shared/entity-appearance";
 import { linkedFolderDepth } from "../shared/linked-folder-tree";
+import { resolveCustomPosition } from "./folder-custom-order";
 
 export type UnifiedDirectoryNavEntry =
   | {
@@ -258,7 +259,7 @@ export function filterCollapsedDirectoryEntries(
 // Sidebar folder tree sorting (WorldlineBox-db1835)
 // ---------------------------------------------------------------------------
 
-export type FolderTreeSortMode = "name" | "created" | "count";
+export type FolderTreeSortMode = "name" | "created" | "count" | "custom";
 
 export type CollectionTreeSortMode = Exclude<FolderTreeSortMode, "created">;
 
@@ -268,6 +269,8 @@ type SortableSidebarEntry = {
   name: string;
   createdAt?: string;
   assetCount: number;
+  /** Stored position in the user's custom folder order (ascending). */
+  position?: number;
 };
 
 /**
@@ -310,6 +313,15 @@ function compareSortableSidebarEntries(
       // Badge shows the displayed row count; sort by it, larger first.
       primary = (right.assetCount ?? 0) - (left.assetCount ?? 0);
       break;
+    case "custom": {
+      // Stored position is the order: the asc/desc switch does not apply, and
+      // folders the user has never reordered trail the explicit order.
+      const a = left.position ?? Number.MAX_SAFE_INTEGER;
+      const b = right.position ?? Number.MAX_SAFE_INTEGER;
+      if (a !== b) return a - b;
+      primary = 0;
+      break;
+    }
   }
   if (primary !== 0) return order === "asc" ? -primary : primary;
   return left.name.localeCompare(right.name, undefined, {
@@ -318,11 +330,16 @@ function compareSortableSidebarEntries(
   });
 }
 
-function directoryNavSortKey(entry: UnifiedDirectoryNavEntry): SortableSidebarEntry {
+function directoryNavSortKey(
+  entry: UnifiedDirectoryNavEntry,
+  parentFolderId: string | null,
+  customOrder?: ReadonlyMap<string, number>,
+): SortableSidebarEntry {
   return {
     name: entry.name,
     createdAt: entry.createdAt,
     assetCount: entry.kind === "managed" ? entry.directAssetCount : entry.assetCount,
+    position: resolveCustomPosition(customOrder, parentFolderId, entry.folderId),
   };
 }
 
@@ -336,6 +353,7 @@ export function sortManagedTreeEntries(
   entries: readonly UnifiedDirectoryNavEntry[],
   mode: FolderTreeSortMode,
   order: FolderTreeSortOrder,
+  customOrder?: ReadonlyMap<string, number>,
 ): UnifiedDirectoryNavEntry[] {
   const ids = new Set(entries.map((entry) => entry.folderId));
   const childrenByParent = new Map<string | null, UnifiedDirectoryNavEntry[]>();
@@ -346,15 +364,15 @@ export function sortManagedTreeEntries(
     group.push(entry);
     childrenByParent.set(key, group);
   }
-  const compare = (left: UnifiedDirectoryNavEntry, right: UnifiedDirectoryNavEntry) =>
-    compareSortableSidebarEntries(
-      directoryNavSortKey(left),
-      directoryNavSortKey(right),
-      mode,
-      order,
+  for (const [parentId, group] of childrenByParent) {
+    group.sort((left, right) =>
+      compareSortableSidebarEntries(
+        directoryNavSortKey(left, parentId, customOrder),
+        directoryNavSortKey(right, parentId, customOrder),
+        mode,
+        order,
+      ),
     );
-  for (const [, group] of childrenByParent) {
-    group.sort(compare);
   }
   const sorted: UnifiedDirectoryNavEntry[] = [];
   const visit = (parentId: string | null) => {
@@ -377,6 +395,7 @@ export function sortCollectionTree(
   tree: ReadonlyMap<string | null, readonly CollectionSummary[]>,
   mode: CollectionTreeSortMode,
   order: FolderTreeSortOrder,
+  customOrder?: ReadonlyMap<string, number>,
 ): Map<string | null, CollectionSummary[]> {
   const sorted = new Map<string | null, CollectionSummary[]>();
   for (const [parentId, children] of tree) {
@@ -387,10 +406,12 @@ export function sortCollectionTree(
           {
             name: left.name,
             assetCount: left.assetCount,
+            position: resolveCustomPosition(customOrder, parentId, left.collectionId),
           },
           {
             name: right.name,
             assetCount: right.assetCount,
+            position: resolveCustomPosition(customOrder, parentId, right.collectionId),
           },
           mode,
           order,

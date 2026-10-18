@@ -4,7 +4,7 @@
 
 - Node.js **24.15.0** (locked in `.nvmrc`; use `nvm use`)
 - npm
-- Native development targets: macOS arm64, Windows x64
+- Native development targets: macOS arm64, Windows x64, Linux x64/arm64; Linux is preview support, and the arm64 media bundle still needs promotion before production packaging
 - **Do not build or run from an SMB/NAS-mounted path** — Electron fails to start on mounted volumes (`icudtl.dat not found`) and packaged apps cannot run from them either
 
 ### macOS
@@ -21,6 +21,16 @@
   - Official installer: Install official Inno Setup 6 and set environment variable `WORLDLINEBOX_INNO_TOOLS` to the directory containing `ISCC.exe` (or add it to system `PATH`);
   - Not needed if only running dev mode (`npm start`) or creating portable builds (`npm run package`).
 - Media component builds (only when rebuilding underlying binaries): `scripts/media-build/win32-x64.ps1` (vcpkg)
+
+### Linux (preview)
+
+- Native module builds (`better-sqlite3`) need a compiler toolchain and Python, such as `build-essential` and `python3` on Debian/Ubuntu. Media builds also need the Git, CMake, zip and pkgconf tools used by the scripts.
+- `npm ci` does not install media. The linux-x64 bundle is `ready` (`media-v0.1.3`); linux-arm64 uses the same acquire/verify gate but remains `build-required`. `npm run media:ensure` acquires promoted media. Before acquisition, development can use trusted `ffmpeg` / `ffprobe` from PATH, with `oiiotool` for professional image formats.
+- The native aarch64 media entry point is `scripts/media-build/linux-arm64.sh`. See [Build and packaging](build-packaging.en.md#linux-appimage) for local trials and promotion. Windows cannot cross-package a Linux release through the native gates.
+- Prefer same-architecture `npm run make:appimage:docker` for Ubuntu 22.04 / glibc 2.35. Without Docker, use host `npm run make:appimage` and check runtime dependencies introduced by a newer distribution. Running needs FUSE or `--appimage-extract-and-run`; X11/Wayland and screen-capture permissions require native acceptance.
+- Useful variables: `WORLDLINEBOX_SOFTWARE_GL=1` (software WebGL without a usable GPU), `WORLDLINEBOX_LINUX_ROUNDED_CORNERS=0|1` (square/rounded corners), and trusted tool overrides `WORLDLINEBOX_FFMPEG_PATH` / `WORLDLINEBOX_OIIO_PATH`.
+
+No system services, Docker or WSL were installed for this upgrade, and Linux was not accepted on this Windows host. Distinguish source support, promoted bundles, released artifacts and native test evidence.
 
 ## First build
 

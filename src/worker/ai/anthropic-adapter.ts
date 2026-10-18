@@ -317,7 +317,11 @@ export class AnthropicVendorAdapter implements VendorAdapter {
 
     // Anthropic response format:
     // { content: [{ type: 'tool_use', input: {...} }], model: '...', ... }
-    if (!Array.isArray(body.content) || body.content.length === 0) {
+    const blocks = Array.isArray(body.content)
+      ? body.content.filter((block): block is Record<string, unknown> =>
+        block !== null && typeof block === 'object' && !Array.isArray(block))
+      : [];
+    if (blocks.length === 0) {
       throw new VendorAdapterError(
         'invalid_response',
         'The AI service returned no content blocks.',
@@ -325,10 +329,10 @@ export class AnthropicVendorAdapter implements VendorAdapter {
       );
     }
 
-    const block = body.content[0] as Record<string, unknown>;
+    const block = blocks[0]!;
     if (block.type !== 'tool_use') {
       // Claude might refuse; check for tool_use in other blocks
-      for (const b of body.content as Array<Record<string, unknown>>) {
+      for (const b of blocks) {
         if (b.type === 'tool_use') {
           const input = b.input as Record<string, unknown> | undefined;
           if (input) {

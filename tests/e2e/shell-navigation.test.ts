@@ -51,6 +51,7 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
   try {
     const window = await application.firstWindow();
     await window.locator('[data-application-module="assets"]').click();
+    await window.locator('[data-application-module="assets"]').click();
 
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
@@ -219,7 +220,7 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
         ".app-settings-theme-accent-swatch",
       );
       await expect(themeAccentSwatches).toHaveCount(8);
-      await settingsDialog.getByRole("radio", { name: "VS Code" }).click();
+      await settingsDialog.getByRole("radio", { name: "VS Code", exact: true }).click();
       await settingsDialog
         .locator('[data-theme-accent="purple"]')
         .click();
@@ -238,10 +239,13 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
           })),
         )
         .toEqual({ accent: "#8b5cf6", actionAccent: "#8b5cf6" });
+      // settings.advancedColors is 「自定义主题」. The disclosure button's
+      // accessible name also includes the hint, and the header sits below the
+      // theme grid inside the scrolling settings body (collapsed by default).
       const themeColorDisclosure = settingsDialog.getByRole("button", {
-        name: "高级颜色配置",
-        exact: true,
+        name: /^自定义主题/,
       });
+      await themeColorDisclosure.scrollIntoViewIfNeeded();
       await expect(themeColorDisclosure).toHaveAttribute(
         "aria-expanded",
         "false",
@@ -254,9 +258,9 @@ test("library switcher, breadcrumbs, and workspace history", async () => {
         "aria-expanded",
         "true",
       );
-      await expect(
-        settingsDialog.locator(".app-settings-custom-theme-grid"),
-      ).toBeVisible();
+      const themeColorGrid = settingsDialog.locator(".app-settings-custom-theme-grid");
+      await themeColorGrid.scrollIntoViewIfNeeded();
+      await expect(themeColorGrid).toBeVisible();
       await window.keyboard.press("Escape");
       await expect(settingsDialog).toHaveCount(0);
     }

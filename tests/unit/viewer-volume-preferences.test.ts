@@ -36,4 +36,15 @@ describe("viewer volume preferences (WorldlineBox-8w6x)", () => {
       }),
     ).toBeNull();
   });
+
+  it("ignores system key-repeat events", () => {
+    expect(matchViewerVolumeKey({
+      key: "ArrowUp",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      repeat: true,
+      target: { tagName: "DIV" },
+    })).toBeNull();
+  });
 });

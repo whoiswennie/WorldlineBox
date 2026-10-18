@@ -18,6 +18,7 @@ import type { WorldlineBoxShellApi } from '../shared/external-url';
 import type { WorldlineBoxBrowserApi } from '../shared/browser';
 import type { CaptureToolTask, WorldlineBoxCaptureToolsApi } from '../shared/capture-tools';
 import { CaptureToolsToolbar } from './CaptureToolsToolbar';
+import { useApplicationModuleShortcuts } from './use-application-module-shortcuts';
 import type { WorldlineBoxLibraryApi } from '../shared/library-api';
 import type { ExtensionSaveCompletedEvent } from '../shared/protocol/responses';
 import './feature-loading.css';
@@ -38,6 +39,7 @@ function FeatureLoading() {
 export function App() {
   const t = useT();
   const [activeModuleId, setActiveModuleId] = useState('dsh');
+  useApplicationModuleShortcuts(api?.shell, activeModuleId !== 'assets');
   const [toolError, setToolError] = useState('');
   const openTool = useCallback((task: CaptureToolTask, source?: 'browser') => {
     void api?.captureTools?.request({ type: 'open', task, ...(source ? { source } : {}) }).then(result => setToolError(result.ok ? '' : result.error)).catch(() => setToolError('无法打开屏幕工具，请重试。'));

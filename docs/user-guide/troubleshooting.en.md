@@ -4,6 +4,14 @@
 
 Development builds may be unsigned. Verify the package source first, then choose **Open** on macOS or **More info → Run anyway** on Windows. Do not bypass security prompts for an unknown package.
 
+## Linux AppImage will not run or previews fail
+
+Check that the AppImage matches the machine architecture (x86-64 for x86_64, arm64 for aarch64) and has execute permission. Without FUSE, use `--appimage-extract-and-run`. A missing `GLIBC_2.35` or newer symbol requires checking the distribution and actual build baseline; changing permissions or renaming a file cannot fix binary compatibility.
+
+A production AppImage should bundle media tools. For a development checkout or local trial with missing tools, inspect `media:ensure` and package verification results. An arm64 `build-required` message means its media bundle is unpromoted; skipping a check does not establish production support. Try `WORLDLINEBOX_SOFTWARE_GL=1` without a usable GPU, or `WORLDLINEBOX_LINUX_ROUNDED_CORNERS=0` for corner-rendering issues.
+
+This upgrade has no WorldlineBox Linux native acceptance result. When reporting a problem, include distribution, CPU architecture, X11/Wayland, desktop environment and whether it uses AppImage. Screen capture, recording and audio issues should also describe system permission status.
+
 ## Thumbnails or previews fail
 
 WorldlineBox generates previews for many image, RAW, video, audio, and 3D formats. Confirm that the source is readable and the library directory is writable, then fully quit and reopen the library so background jobs can retry. If the problem continues, open **Window → Background jobs** or **Main Menu → About → View Diagnostic Logs** to check messages and diagnostic logs.

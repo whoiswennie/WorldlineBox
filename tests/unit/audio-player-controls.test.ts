@@ -176,4 +176,62 @@ describe("AudioPlayerControls trail pump (WorldlineBox-mrsm)", () => {
     });
     expect(cancelCount).toBeGreaterThan(0);
   });
+
+  it("yields Space playback to a modal dialog's non-editable control", async () => {
+    await renderControls();
+    const audio = prepareAudio();
+    const dialog = document.createElement("section");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const button = document.createElement("button");
+    dialog.append(button);
+    document.body.append(dialog);
+    button.focus();
+    const event = new KeyboardEvent("keydown", {
+      key: " ",
+      code: "Space",
+      bubbles: true,
+      cancelable: true,
+    });
+
+    await act(async () => {
+      window.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(audio.paused).toBe(true);
+    dialog.remove();
+  });
+
+  it("arms the audio scope and consumes the Main play/pause fallback", async () => {
+    let forwardedAction: ((action: "play-pause") => void) | undefined;
+    const setActive = vi.fn();
+    const shell = {
+      setViewerVideoShortcutsActive: setActive,
+      onViewerVideoShortcut: (listener: typeof forwardedAction) => {
+        forwardedAction = listener;
+        return () => {
+          forwardedAction = undefined;
+        };
+      },
+    };
+    Object.defineProperty(window, "worldlinebox", {
+      configurable: true,
+      value: { shell },
+    });
+
+    await renderControls();
+    const audio = prepareAudio();
+
+    expect(setActive).toHaveBeenCalledWith(true, "viewer.audio");
+    await act(async () => {
+      forwardedAction?.("play-pause");
+    });
+
+    expect(audio.paused).toBe(false);
+    await act(async () => root?.unmount());
+    root = undefined;
+    expect(setActive).toHaveBeenCalledWith(false, "viewer.audio");
+    delete (window as Window & { worldlinebox?: unknown }).worldlinebox;
+  });
 });

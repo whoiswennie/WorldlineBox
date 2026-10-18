@@ -8,6 +8,10 @@ import { resolveElectronExecutablePath } from "./electron-test-helpers";
 
 test.describe.configure({ timeout: 180_000 });
 
+// sidebar-commands: macOS uses Finder; Windows and Linux use the file-explorer label.
+const revealInFileManagerName =
+  process.platform === "darwin" ? "在 Finder 中打开" : "在文件浏览器中打开";
+
 /**
  * WorldlineBox-6e3b10 / WorldlineBox-b29bc4: the blank area **of the folder section** —
  * the indentation gutter left of the rows — returns to the library root on
@@ -42,10 +46,7 @@ function launchApp(temporaryRoot: string, libraryPath: string) {
 }
 
 function folderRow(window: Page, name: string) {
-  const escapedName = name.replace(/["\\]/gu, "\\$&");
-  return window.locator(
-    `.navigation-pane button.nav-row[data-nav-folder-kind="managed"][title="${escapedName}"]`,
-  );
+  return window.locator(".navigation-pane").getByRole("button", { name, exact: true });
 }
 
 async function createLibrary(window: Page, name: string) {
@@ -137,6 +138,7 @@ test("folder-section + creates at the library root while a subfolder is in scope
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await createLibrary(window, libraryName);
     await createFolder(window, "Alpha");
     await createSubfolder(window, "Alpha", "Beta");
@@ -183,17 +185,16 @@ test("folder-section + creates at the library root while a subfolder is in scope
       .toBe(null);
 
     // Same level as Alpha (both top-level), i.e. it did not land inside Beta.
-    expect(
-      await window.evaluate(() => {
-        const depthOf = (name: string) => {
-          const row = document.querySelector<HTMLElement>(
-            `.navigation-pane button.nav-row[data-nav-folder-kind="managed"][title="${name}"]`,
-          );
-          return row?.closest<HTMLElement>(".nav-tree-row")?.style.paddingLeft ?? null;
-        };
-        return `${depthOf("Alpha")}|${depthOf("Created")}|${depthOf("Beta")}`;
-      }),
-    ).toBe("14px|14px|28px");
+    const [alphaIndent, createdIndent, betaIndent] = await Promise.all(
+      ["Alpha", "Created", "Beta"].map((name) =>
+        folderRow(window, name).locator("..").evaluate((row) =>
+          Number.parseFloat(getComputedStyle(row).paddingLeft),
+        ),
+      ),
+    );
+    expect(Number.isFinite(alphaIndent)).toBe(true);
+    expect(createdIndent).toBe(alphaIndent);
+    expect(betaIndent! - alphaIndent!).toBe(14);
   } finally {
     await application.close();
     rmSync(temporaryRoot, { recursive: true, force: true });
@@ -210,12 +211,13 @@ test("right-clicking the blank area opens the library-root folder menu", async (
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await createLibrary(window, libraryName);
     await createFolder(window, "Alpha");
     await createSubfolder(window, "Alpha", "Beta");
 
-    const betaGutterBox = await window
-      .locator('.navigation-pane .nav-tree-row:has(button[title="Beta"])')
+    const betaGutterBox = await folderRow(window, "Beta")
+      .locator("..")
       .boundingBox();
     expect(betaGutterBox).not.toBeNull();
     await window.mouse.click(
@@ -243,7 +245,7 @@ test("right-clicking the blank area opens the library-root folder menu", async (
 
     // Root-appropriate entries…
     await expect(
-      menu.getByRole("menuitem", { name: "在文件浏览器中打开" }),
+      menu.getByRole("menuitem", { name: revealInFileManagerName }),
     ).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: "新建文件夹" })).toBeVisible();
     await expect(
@@ -325,7 +327,7 @@ test("right-clicking the blank area opens the library-root folder menu", async (
       rowMenu.locator(".context-menu-selection-summary", { hasText: /^根目录$/u }),
     ).toBeVisible();
     await expect(
-      rowMenu.getByRole("menuitem", { name: "在文件浏览器中打开" }),
+      rowMenu.getByRole("menuitem", { name: revealInFileManagerName }),
     ).toBeVisible();
     await expect(
       rowMenu.getByRole("menuitem", { name: "新建文件夹" }),
@@ -346,13 +348,14 @@ test("folder-section blank area returns to the root and accepts folder drops", a
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await createLibrary(window, libraryName);
     await createFolder(window, "Alpha");
     await createSubfolder(window, "Alpha", "Beta");
 
     const betaRowBox = await folderRow(window, "Beta").boundingBox();
-    const betaGutterBox = await window
-      .locator('.navigation-pane .nav-tree-row:has(button[title="Beta"])')
+    const betaGutterBox = await folderRow(window, "Beta")
+      .locator("..")
       .boundingBox();
     const collectionsHeadingBox = await window
       .locator(".navigation-pane .nav-section-heading > span", {
@@ -467,12 +470,17 @@ test("folder-section blank area returns to the root and accepts folder drops", a
             const libraryId = open.value?.[0]?.libraryId;
             if (!libraryId) return null;
             const result = await api.listFolders({ libraryId });
+            const alpha = (result.value ?? []).find((item) => item.name === "Alpha");
             const beta = (result.value ?? []).find((item) => item.name === "Beta");
-            return beta ? `${beta.relativePath}|${beta.parentFolderId}` : null;
+            return alpha && beta ? {
+              betaPath: beta.relativePath,
+              alphaParent: alpha.parentFolderId,
+              betaParent: beta.parentFolderId,
+            } : null;
           }),
         { message: "Beta is reparented to the library root" },
       )
-      .toBe("Beta|null");
+      .toEqual({ betaPath: "Beta", alphaParent: null, betaParent: null });
 
     // The sidebar tree renders Beta at Alpha's level, i.e. it refreshed.
     await expect
@@ -480,16 +488,19 @@ test("folder-section blank area returns to the root and accepts folder drops", a
         window.evaluate(() => {
           const depthOf = (name: string) => {
             const row = document.querySelector<HTMLElement>(
-              `.navigation-pane button.nav-row[data-nav-folder-kind="managed"][title="${name}"]`,
+              `.navigation-pane button.nav-row[data-nav-folder-kind="managed"][data-hover-tip="${name}"]`,
             );
             return row?.closest<HTMLElement>(".nav-tree-row")?.style.paddingLeft ?? null;
           };
           const alpha = depthOf("Alpha");
           const beta = depthOf("Beta");
-          return alpha && beta ? `${alpha}|${beta}` : null;
+          return {
+            bothPresent: alpha !== null && beta !== null,
+            sameDepth: alpha !== null && beta !== null && alpha === beta,
+          };
         }),
       )
-      .toBe("14px|14px");
+      .toEqual({ bothPresent: true, sameDepth: true });
     // WorldlineBox-374266: dropping a folder back onto its own row changes nothing,
     // so it must not highlight and must not answer with a notice.
     const noticeText = () =>

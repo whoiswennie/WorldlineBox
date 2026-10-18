@@ -67,6 +67,13 @@ function runReleaseScript(scriptName, extraEnv = {}) {
   runNpmScript(scriptName, extraEnv, pipelineEnv);
 }
 
+function mediaBuildInvocation(platform) {
+  if (platform === 'darwin-arm64') return { command: 'bash', args: ['scripts/media-build/darwin-arm64.sh'] };
+  if (platform === 'linux-x64') return { command: 'bash', args: ['scripts/media-build/linux-x64.sh'] };
+  if (platform === 'linux-arm64') return { command: 'bash', args: ['scripts/media-build/linux-arm64.sh'] };
+  return { command: 'pwsh', args: ['-File', 'scripts/media-build/win32-x64.ps1'] };
+}
+
 function assertMediaBundleReady() {
   const lockPath = path.join(repoRoot, 'resources/media-binaries/bundle-lock.json');
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
@@ -75,11 +82,7 @@ function assertMediaBundleReady() {
 
   if (!entry || entry.status === 'build-required') {
     const reason = entry?.reason ?? 'bundle-lock has no ready entry for this platform.';
-    const buildScript = platform === 'darwin-arm64'
-      ? 'scripts/media-build/darwin-arm64.sh'
-      : platform === 'linux-x64'
-        ? 'scripts/media-build/linux-x64.sh'
-        : 'scripts/media-build/win32-x64.ps1';
+    const buildScript = mediaBuildInvocation(platform).args.at(-1);
 
     console.error(
       [
@@ -110,11 +113,7 @@ function assertMediaBundleReady() {
 
 function phaseMediaBuildLocally() {
   const platform = currentPlatformKey();
-  const buildCommand = platform === 'darwin-arm64'
-    ? { command: 'bash', args: ['scripts/media-build/darwin-arm64.sh'] }
-    : platform === 'linux-x64'
-      ? { command: 'bash', args: ['scripts/media-build/linux-x64.sh'] }
-      : { command: 'pwsh', args: ['-File', 'scripts/media-build/win32-x64.ps1'] };
+  const buildCommand = mediaBuildInvocation(platform);
 
   process.stdout.write(
     `\n[release:media] Building ${platform} media bundle locally (this can take 1-3+ hours)...\n`,
@@ -141,14 +140,8 @@ function phaseVerify() {
 }
 
 function phaseMedia({ buildMediaLocally }) {
-  // linux-arm64 has no pinned bundle. linux-x64 acquires the same release as
-  // macOS/Windows (or builds it with --build-media-locally).
-  if (process.platform === 'linux' && process.arch !== 'x64') {
-    console.warn(
-      '[release:media] Skipping media acquire/verify on linux-arm64 (no pinned media bundle).',
-    );
-    return;
-  }
+  // All supported Linux architectures verify pinned media. arm64 remains
+  // build-required until a native bundle is promoted with trusted hashes.
 
   if (buildMediaLocally) {
     phaseMediaBuildLocally();
@@ -162,7 +155,6 @@ function phaseMedia({ buildMediaLocally }) {
 
 function phasePackage() {
   runReleaseScript('package');
-  // linux-x64 verifies the pinned media bundle; linux-arm64 still skips it.
   runReleaseScript('verify:package');
 }
 

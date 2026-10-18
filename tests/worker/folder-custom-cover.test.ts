@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,9 +35,12 @@ function fixture() {
   return { library, root, service };
 }
 
-afterEach(() => {
-  for (const service of services.splice(0)) service.closeAll();
-  for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
+afterEach(async () => {
+  await Promise.all(services.splice(0).map((service) => service.closeAllAsync()));
+  for (const root of roots.splice(0)) {
+    // Let Windows deliver watcher/handle-close callbacks between bounded retries.
+    await rm(root, { force: true, recursive: true, maxRetries: 5, retryDelay: 100 });
+  }
 });
 
 describe("folder custom covers", () => {

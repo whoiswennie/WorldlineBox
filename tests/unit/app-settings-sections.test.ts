@@ -35,6 +35,7 @@ describe("app-settings-sections (WorldlineBox-97l / WorldlineBox-9es / Worldline
       "assets",
       "appearance",
       "browse",
+      "shortcuts",
       "ai",
       "semantic-search",
       "mcp",

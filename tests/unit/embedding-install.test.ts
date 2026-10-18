@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 import {
   embeddingDownloadUrl,
   embeddingInstallBytes,
-  inspectEmbeddingTree,
+  embeddingModelsDirectory,
+  inspectManagedEmbeddingInstall,
   installedSemanticModels,
   pinnedLlamaRuntimeUrl,
   resolveInstalledEmbeddingLayout,
@@ -27,19 +28,29 @@ describe("embedding install lookup", () => {
     expect(installedSemanticModels(new Set(["embeddinggemma-2-UD-Q4_K_XL.gguf"]))).toEqual([]);
   });
 
-  it("finds weights placed in an already downloaded folder", () => {
+  it("reads managed weights and runtime without traversing unrelated caches", () => {
     const root = mkdtempSync(path.join(tmpdir(), "worldlinebox-embedding-"));
-    const models = path.join(root, "embeddinggemma-cache", "models");
+    const elsewhere = path.join(root, "embeddinggemma-cache", "models");
+    mkdirSync(elsewhere, { recursive: true });
+    writeFileSync(path.join(elsewhere, "embeddinggemma-2-UD-Q4_K_XL.gguf"), "");
+    writeFileSync(path.join(elsewhere, "mmproj-Q8_0.gguf"), "");
+    writeFileSync(path.join(elsewhere, "llama-server.exe"), "");
+    const missing = inspectManagedEmbeddingInstall(root);
+    expect(installedSemanticModels(new Set(missing.files.keys()))).toEqual([]);
+    expect(missing.runtimeFound).toBe(false);
+
+    const models = embeddingModelsDirectory(root);
     mkdirSync(models, { recursive: true });
     writeFileSync(path.join(models, "embeddinggemma-2-UD-Q4_K_XL.gguf"), "");
     writeFileSync(path.join(models, "mmproj-Q8_0.gguf"), "");
-    mkdirSync(path.join(root, "embeddinggemma-cache", "runtime", "build"), { recursive: true });
-    writeFileSync(path.join(root, "embeddinggemma-cache", "runtime", "build", "llama-server.exe"), "");
+    mkdirSync(path.join(models, "runtime", "build"), { recursive: true });
+    writeFileSync(path.join(models, "runtime", "build", "llama-server.exe"), "");
 
-    const found = inspectEmbeddingTree([{ path: root, restrictNames: true }]);
+    const found = inspectManagedEmbeddingInstall(root);
     expect(installedSemanticModels(new Set(found.files.keys()))).toContain("embeddinggemma-2-compact");
     expect(found.runtimeFound).toBe(true);
-    expect([...found.files.values()].some((filePath) => filePath.includes(tmpdir()))).toBe(true);
+    expect(resolveInstalledEmbeddingLayout(found, "embeddinggemma-2-compact", "win32")?.modelDirectory).toBe(models);
+    expect(resolveInstalledEmbeddingLayout(found, "embeddinggemma-2-quality", "win32")).toBeNull();
   });
 
   it("builds the pinned download address", () => {
@@ -60,12 +71,12 @@ describe("embedding install lookup", () => {
       arch: "arm64",
     })).toBeGreaterThan(0);
     const root = mkdtempSync(path.join(tmpdir(), "worldlinebox-embedding-layout-"));
-    const models = path.join(root, "models");
-    mkdirSync(models, { recursive: true });
+    const models = embeddingModelsDirectory(root);
+    mkdirSync(path.join(models, "runtime"), { recursive: true });
     writeFileSync(path.join(models, "embeddinggemma-2-UD-Q4_K_XL.gguf"), "");
     writeFileSync(path.join(models, "mmproj-Q8_0.gguf"), "");
-    writeFileSync(path.join(models, "llama-server"), "");
-    const inspection = inspectEmbeddingTree([{ path: root, restrictNames: false }]);
+    writeFileSync(path.join(models, "runtime", "llama-server"), "");
+    const inspection = inspectManagedEmbeddingInstall(root);
     expect(resolveInstalledEmbeddingLayout(inspection, "embeddinggemma-2-compact", "darwin")?.modelDirectory).toBe(models);
     expect(resolveInstalledEmbeddingLayout(inspection, "embeddinggemma-2-quality", "darwin")).toBeNull();
   });
@@ -128,7 +139,6 @@ describe("embedding uninstall", () => {
     const removedCompact = uninstallSemanticModelFiles({
       modelId: "embeddinggemma-2-compact",
       userDataPath: root,
-      homePath: root,
     });
     expect(removedCompact.removed.some((item) => item.endsWith("embeddinggemma-2-UD-Q4_K_XL.gguf"))).toBe(true);
     // Shared projector stays because balanced is still present.
@@ -138,7 +148,6 @@ describe("embedding uninstall", () => {
     const removedBalanced = uninstallSemanticModelFiles({
       modelId: "embeddinggemma-2-balanced",
       userDataPath: root,
-      homePath: root,
     });
     expect(removedBalanced.removed.some((item) => item.endsWith("embeddinggemma-2-Q8_0.gguf"))).toBe(true);
     expect(removedBalanced.removed.some((item) => item.endsWith("mmproj-Q8_0.gguf"))).toBe(true);

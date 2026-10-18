@@ -321,4 +321,39 @@ describe("readFocusedNavFolder", () => {
       }),
     ).toBeNull();
   });
+  it("copy uses the focused folder and paste targets the focused or browse folder", () => {
+    expect(
+      resolveFolderShortcutAction({
+        commandId: "folder.copy",
+        focusedNav: { folderId: "folder-a", locationKind: "managed" },
+        browseManagedFolderId: "folder-b",
+        selectedFolderCardIds: [],
+        selectedAssetCount: 0,
+        resolveManagedFolderName: resolveName,
+      }),
+    ).toEqual({ type: "copy-folder", folderId: "folder-a" });
+
+    expect(
+      resolveFolderShortcutAction({
+        commandId: "folder.paste",
+        focusedNav: { folderId: "folder-a", locationKind: "managed" },
+        browseManagedFolderId: "folder-b",
+        selectedFolderCardIds: [],
+        selectedAssetCount: 0,
+        resolveManagedFolderName: resolveName,
+      }),
+    ).toEqual({ type: "paste-into-folder", folderId: "folder-a" });
+
+    expect(
+      resolveFolderShortcutAction({
+        commandId: "folder.paste",
+        focusedNav: null,
+        browseManagedFolderId: "folder-b",
+        selectedFolderCardIds: [],
+        selectedAssetCount: 0,
+        resolveManagedFolderName: resolveName,
+      }),
+    ).toEqual({ type: "paste-into-folder", folderId: "folder-b" });
+  });
+
 });

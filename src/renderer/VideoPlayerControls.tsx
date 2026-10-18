@@ -36,7 +36,10 @@ import {
   viewerDisplayTransformCss,
   type ViewerDisplayTransform,
 } from "./viewer-display-transform";
-import { isViewerFitShortcut } from "./viewer-fit-shortcut";
+import { shouldHandleViewerFitKeyboardEvent } from "./viewer-fit-shortcut";
+import { listenForShortcutInputs } from "./shortcut-runtime";
+import { hasActiveModalDialog } from "./use-dialog-focus-trap";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
 
 type RendererWindow = Window & {
   worldlinebox?: { shell?: WorldlineBoxShellApi };
@@ -242,31 +245,22 @@ export function VideoPlayerControls({
 
   useEffect(() => {
     if (keyboardShortcutsDisabled) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) {
-        return;
-      }
-      const numpadDecimal = isViewerFitShortcut(event);
-      if (
-        !isTypingKeyboardTarget(event.target) &&
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        !event.shiftKey &&
-        numpadDecimal
-      ) {
+    const onShortcutInput = (shortcutInput: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
+      if (hasActiveModalDialog()) return;
+      const input = { ...shortcutInput, target: event.target };
+      if (shouldHandleViewerFitKeyboardEvent(input, { modalOpen: false })) {
         event.preventDefault();
         event.stopPropagation();
         fitToWindow();
         return;
       }
-      if (shouldHandleVideoSpaceKey(event)) {
+      if (shouldHandleVideoSpaceKey(input)) {
         event.preventDefault();
         event.stopPropagation();
         togglePlayback();
         return;
       }
-      const action = matchVideoPlaybackSeekKey(event);
+      const action = matchVideoPlaybackSeekKey(input);
       if (action) {
         const video = videoRef.current;
         if (!video) return;
@@ -285,7 +279,7 @@ export function VideoPlayerControls({
         setCurrentTime(nextTime);
         return;
       }
-      const rateStep = matchVideoPlaybackRateKey(event);
+      const rateStep = matchVideoPlaybackRateKey(input);
       if (!rateStep) return;
       event.preventDefault();
       event.stopPropagation();
@@ -293,8 +287,7 @@ export function VideoPlayerControls({
         stepVideoPlaybackRate(playbackRateRef.current, rateStep),
       );
     };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    return listenForShortcutInputs(window, onShortcutInput, true);
   }, [
     applyPlaybackRate,
     fitToWindow,
@@ -316,13 +309,13 @@ export function VideoPlayerControls({
       // Only true typing surfaces disarm capture — keep armed under Chinese
       // IME while focus is on the viewer / chrome (product: any IME works).
       const typing = isTypingKeyboardTarget(document.activeElement);
-      const modalOpen = Boolean(
-        document.querySelector('[role="dialog"][aria-modal="true"]'),
+      shell.setViewerVideoShortcutsActive(
+        !typing && !hasActiveModalDialog(),
+        "viewer.video",
       );
-      shell.setViewerVideoShortcutsActive(!typing && !modalOpen);
     };
     // Arm immediately so the first key after open is not lost to IME.
-    shell.setViewerVideoShortcutsActive(true);
+    shell.setViewerVideoShortcutsActive(true, "viewer.video");
     syncArmed();
     document.addEventListener("focusin", syncArmed, true);
     document.addEventListener("focusout", syncArmed, true);
@@ -331,8 +324,12 @@ export function VideoPlayerControls({
 
     const applyMainAction = (action: ViewerVideoShortcutAction) => {
       if (isTypingKeyboardTarget(document.activeElement)) return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (hasActiveModalDialog()) return;
       onUserActivity?.();
+      if (action === "play-pause") {
+        togglePlayback();
+        return;
+      }
       if (action === "frame-prev") {
         void stepFrame(-1);
         return;
@@ -363,6 +360,7 @@ export function VideoPlayerControls({
     keyboardShortcutsDisabled,
     onUserActivity,
     stepFrame,
+    togglePlayback,
   ]);
 
   useEffect(() => {

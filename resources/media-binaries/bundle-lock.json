@@ -22,10 +22,15 @@
     },
     "linux-x64": {
       "status": "ready",
-      "url": "https://github.com/dolag233/Serpent-Build/releases/download/media-v0.1.2/serpent-media-linux-x64.zip",
-      "sha256": "a04bc5e7fd8413cebf79acad6d4f33231c877b7e21a2655cea07ef3af4d5cc0c",
-      "size": 42906702,
-      "manifestSha256": "b0044b68eb30ea2873c331875a43cb5f4ec93eb724d99458c08ba34344319d13"
+      "url": "https://github.com/dolag233/Serpent-Build/releases/download/media-v0.1.3/serpent-media-linux-x64.zip",
+      "sha256": "8dc6e4d16228bfe78296686344f2e10bf259fa1924f5e1cf83a4a23aa6f40784",
+      "size": 38037946,
+      "manifestSha256": "f48a561ad2e358efd9a82e95c0ba6221638ea4226c012831b1cdfa79018366ab",
+      "promotedAt": "2026-10-18T13:30:00.000Z"
+    },
+    "linux-arm64": {
+      "status": "build-required",
+      "reason": "No promoted worldlinebox-media-linux-arm64.zip. Build natively with scripts/media-build/linux-arm64.sh, then promote a trusted ZIP URL and SHA-256/manifest checksums before releasing."
     }
   }
 }

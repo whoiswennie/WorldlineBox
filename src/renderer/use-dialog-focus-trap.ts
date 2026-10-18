@@ -109,3 +109,8 @@ function getTopmostModal(): HTMLElement | null {
 function hasHiddenAncestor(element: HTMLElement): boolean {
   return element.closest('[hidden], [inert], [aria-hidden="true"]') !== null;
 }
+
+/** Retained, hidden views do not own keyboard input. */
+export function hasActiveModalDialog(): boolean {
+  return getTopmostModal() !== null;
+}

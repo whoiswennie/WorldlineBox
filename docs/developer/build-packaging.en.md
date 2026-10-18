@@ -73,10 +73,10 @@ Phases: `verify` → `media` → `package` → `e2e` → `make` → `checksums`
 | Phase | What it does |
 | --- | --- |
 | verify | `rebuild:native` + `verify:mainline` (same gates as CI) |
-| media | download the controlled media bundle (`media:acquire`) + verify |
+| media | download the controlled media bundle (`media:acquire`) + verify; Linux x64/arm64 use the same gate, and an unpromoted arm64 bundle blocks a production release |
 | package | `electron-forge package` + `verify:package` |
 | e2e | packaged startup tests (`test:e2e:packaged`) |
-| make | build installers |
+| make | build installers; Linux prefers a same-architecture Docker environment and produces the matching AppImage |
 | checksums | SHA-256 manifests (versioned header) |
 
 Skip slow phases with `--skip-verify` / `--skip-media` / `--skip-e2e`. Run one phase with `npm run release:<phase>` (the e2e phase is `npm run release:e2e:packaged`).
@@ -116,7 +116,23 @@ npm run release:local -- --skip-verify --build-media-locally
 
 ### Platforms
 
-`forge.config.ts` enforces **native-platform builds** (allowlist `darwin-arm64` / `win32-x64`) — media binaries, ufbx and native modules are platform-specific; cross-packaging is not supported. Windows runs the same pipeline on a Windows host.
+`forge.config.ts` enforces **native-platform builds**, with the media allowlist `darwin-arm64` / `win32-x64` / `linux-x64` / `linux-arm64`. Media binaries, ufbx and native modules are platform-specific; cross-packaging is not supported. Use a matching host OS/architecture or a same-architecture Linux container. A source-level platform entry does not prove that its artifact has been built or accepted on that platform.
+
+### Linux AppImage
+
+```bash
+npm run make:appimage           # out/make/appimage/WorldlineBox-<version>-x86_64.AppImage or -aarch64.AppImage
+npm run make:appimage:docker    # same-architecture Ubuntu 22.04 / glibc 2.35 environment
+npm run release:make            # canonical WorldlineBox-linux-x86-64-<version>.AppImage or -arm64-<version>.AppImage
+```
+
+- Both Linux architectures must acquire, verify and package `ffmpeg` / `ffprobe` / `oiiotool`; neither media validation nor package verification is skipped for arm64. The x64 lock pins upstream `media-v0.1.3`, rebuilt on Ubuntu 22.04 for the lower glibc baseline with unchanged source versions and configuration.
+- Linux arm64 remains `build-required`. Run `scripts/media-build/linux-arm64.sh` on native Linux aarch64, then promote a trusted ZIP URL, archive SHA-256 and manifest SHA-256 to `ready` before a production release. Upstream has not promoted this media bundle either. A build script is not a downloadable installer. Local `--build-media-locally` / `WORLDLINEBOX_MEDIA_SKIP_PROVENANCE=1` trials do not count as promotion or supply missing binaries.
+- Build Linux media in an Ubuntu 22.04 container with its system GCC. Before publishing, check that each executable requires at most GLIBC 2.35: `objdump -T <binary> | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1`. Building directly on a newer host can raise the runtime requirement; the AppImage wrapper alone does not establish old-distribution compatibility.
+- AppImage requires FUSE (usually `libfuse2`), or `--appimage-extract-and-run`. Both architectures share the window-system and permission constraints. X11, native Wayland, GPU support and screenshot/recording features need separate Linux acceptance.
+- Release names match the updater: `WorldlineBox-linux-x86-64-<version>.AppImage` / `WorldlineBox-linux-arm64-<version>.AppImage`, with sibling `.sha256` files and `SHA256SUMS-linux-x64.txt` / `SHA256SUMS-linux-arm64.txt` manifests.
+
+This upgrade was developed on Windows without a usable Docker, bash or WSL Linux environment. No Linux build or native acceptance is claimed. See the [platform synchronization audit](serpent-031-upgrade/platforms-audit.md) for scope and environment evidence.
 
 ### Windows installer (Inno Setup)
 
@@ -157,7 +173,7 @@ SHA-256); main-repo `release:media` downloads and verifies them:
    - `ffmpeg/ffprobe`: BtbN LGPL builds (`registry.npmmirror.com/-/binary/ffmpeg-builds/`
      `ffmpeg-<ver>-win32-x64-lgpl.tar.xz`, or the macOS variant), LGPL-only (no GPL markers)
    - `oiiotool`: `scripts/media-build/build-oiiotool-win32.ps1` (Windows) /
-     `darwin-arm64.sh` (macOS) — vcpkg build (pinned toolchain + registry commit)
+     `darwin-arm64.sh` (macOS) / `linux-x64.sh` (Linux x86_64) / `linux-arm64.sh` (Linux aarch64, including FFmpeg) — vcpkg build (pinned toolchain + registry commit)
 2. **Package and upload**:
    ```bash
    # assemble zip (platform layer ffmpeg/<platform>/…) + sha256

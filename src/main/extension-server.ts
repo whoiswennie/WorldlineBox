@@ -44,6 +44,63 @@ export type ListFoldersDisposition =
     }
   | { ok: false; status: number; reason: string };
 
+export interface ExtensionCollectionSummary {
+  collectionId: string;
+  name: string;
+  relativePath: string;
+  assetCount?: number;
+}
+
+export type ListCollectionsDisposition =
+  | {
+      ok: true;
+      collections: ExtensionCollectionSummary[];
+      libraryDisplayName: string;
+    }
+  | { ok: false; status: number; reason: string };
+
+/** 合集树用 `/` 分段。名称里的斜杠换成全角，避免被拆成额外层级。 */
+export function extensionCollectionSummaries(
+  collections: readonly {
+    collectionId: string;
+    parentId: string | null;
+    name: string;
+    assetCount?: number;
+  }[],
+): ExtensionCollectionSummary[] {
+  const byId = new Map(collections.map((collection) => [collection.collectionId, collection]));
+  const memo = new Map<string, string>();
+  const segment = (name: string): string => {
+    const safe = name.trim().replace(/[\\/]/g, '／');
+    return safe.length > 0 ? safe : '未命名合集';
+  };
+  const pathOf = (collectionId: string, stack: Set<string>): string => {
+    const cached = memo.get(collectionId);
+    if (cached) return cached;
+    const collection = byId.get(collectionId);
+    if (!collection) return '未命名合集';
+    const own = segment(collection.name);
+    if (stack.has(collectionId) || !collection.parentId || !byId.has(collection.parentId)) {
+      memo.set(collectionId, own);
+      return own;
+    }
+    stack.add(collectionId);
+    const path = `${pathOf(collection.parentId, stack)}/${own}`;
+    stack.delete(collectionId);
+    memo.set(collectionId, path);
+    return path;
+  };
+
+  return collections.map((collection) => ({
+    collectionId: collection.collectionId,
+    name: segment(collection.name),
+    relativePath: pathOf(collection.collectionId, new Set()),
+    ...(typeof collection.assetCount === 'number' && Number.isFinite(collection.assetCount)
+      ? { assetCount: Math.max(0, Math.floor(collection.assetCount)) }
+      : {}),
+  }));
+}
+
 /** Metadata for browser-fetched binary uploads (WorldlineBox-1jyi). */
 export interface SaveUploadRequest {
   kind: 'image' | 'video';
@@ -54,6 +111,8 @@ export interface SaveUploadRequest {
   stagedFilePath: string;
   stagingDirectory: string;
   targetFolderId?: string | null;
+  /** 设置后文件固定进资源库根目录，导入成功后再加入该合集。 */
+  targetCollectionId?: string;
   byteLength: number;
   focusAppAfterSave: boolean;
   revealInLibrary: boolean;
@@ -85,6 +144,8 @@ export interface ExtensionServerOptions {
   ) => void | SaveUploadDisposition | Promise<void | SaveUploadDisposition>;
   /** Called on GET /folders. */
   onListFolders: () => ListFoldersDisposition | Promise<ListFoldersDisposition>;
+  /** Called on GET /collections. */
+  onListCollections: () => ListCollectionsDisposition | Promise<ListCollectionsDisposition>;
   /** Optional error callback for server-level errors (e.g. bind failure). */
   onError?: (error: Error) => void;
 }
@@ -172,6 +233,7 @@ function parseUploadMetadata(headers: http.IncomingHttpHeaders):
     contentType: string;
     filename: string;
     targetFolderId?: string | null;
+    targetCollectionId?: string;
     focusAppAfterSave: boolean;
     revealInLibrary: boolean;
   }
@@ -185,6 +247,7 @@ function parseUploadMetadata(headers: http.IncomingHttpHeaders):
   );
   const filename = decodeHeaderText(headerValue(headers, 'x-worldlinebox-filename')) ?? 'download';
   const targetRaw = headerValue(headers, 'x-worldlinebox-target-folder-id');
+  const collectionRaw = headerValue(headers, 'x-worldlinebox-target-collection-id');
 
   if (kindRaw !== 'image' && kindRaw !== 'video') {
     return { ok: false, reason: 'invalid kind' };
@@ -225,6 +288,9 @@ function parseUploadMetadata(headers: http.IncomingHttpHeaders):
     contentType,
     filename: filename.trim() || 'download',
     targetFolderId,
+    ...(decodeHeaderText(collectionRaw)?.trim()
+      ? { targetCollectionId: decodeHeaderText(collectionRaw)!.trim() }
+      : {}),
     focusAppAfterSave: parseBooleanHeader(
       headerValue(headers, 'x-worldlinebox-focus-app-after-save'),
       true,
@@ -267,6 +333,7 @@ function sizeLimitTransform(maxBytes: number): {
  *
  *   GET  /ping         → 200 {"app":"WorldlineBox"}
  *   GET  /folders      → 200 {"folders":[...]} on success
+ *   GET  /collections  → 200 {"collections":[...]} on success
  *   POST /save         → 202 on valid save-intent JSON (desktop re-download)
  *   POST /save-upload  → 202 after browser-fetched bytes are staged (preferred)
  *
@@ -316,6 +383,36 @@ export async function createExtensionServer(
             status: 'ok',
             folders: disposition.folders,
             recentBrowsedFolderIds: disposition.recentBrowsedFolderIds,
+            libraryDisplayName: disposition.libraryDisplayName,
+          });
+        })
+        .catch((error) => {
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          options.onError?.(normalized);
+          jsonResponse(res, 500, { status: 'rejected', reason: 'internal error' });
+        });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/collections') {
+      if (!isAllowedOrigin(req.headers.origin)) {
+        jsonResponse(res, 403, { status: 'rejected', reason: 'forbidden origin' });
+        req.resume();
+        return;
+      }
+
+      void Promise.resolve(options.onListCollections())
+        .then((disposition) => {
+          if (!disposition.ok) {
+            jsonResponse(res, disposition.status, {
+              status: 'rejected',
+              reason: disposition.reason,
+            });
+            return;
+          }
+          jsonResponse(res, 200, {
+            status: 'ok',
+            collections: disposition.collections,
             libraryDisplayName: disposition.libraryDisplayName,
           });
         })
@@ -384,6 +481,9 @@ export async function createExtensionServer(
             stagedFilePath,
             stagingDirectory,
             targetFolderId: metadata.targetFolderId,
+            ...(metadata.targetCollectionId
+              ? { targetCollectionId: metadata.targetCollectionId }
+              : {}),
             byteLength,
             focusAppAfterSave: metadata.focusAppAfterSave,
             revealInLibrary: metadata.revealInLibrary,
@@ -399,6 +499,11 @@ export async function createExtensionServer(
             'accepted' in disposition &&
             !disposition.accepted
           ) {
+            // Main may reject before entering its import/cleanup block (for
+            // example, when no library is open). This directory belongs to
+            // this server request and must not survive that early rejection.
+            try { await rm(stagingDirectory, { recursive: true, force: true }); }
+            catch (error) { options.onError?.(error instanceof Error ? error : new Error(String(error))); }
             jsonResponse(res, disposition.status, {
               status: 'rejected',
               reason: disposition.reason,

@@ -27,10 +27,15 @@ function memoryStorage(initial: Record<string, string> = {}): FolderSortPreferen
 }
 
 describe("folder-sort-preferences", () => {
-  it("returns the default name sort when unset", () => {
+  it("defaults folders and collections to custom order", () => {
     expect(loadFolderSortPreferences(memoryStorage())).toEqual(
       DEFAULT_FOLDER_SORT_PREFERENCES,
     );
+    expect(loadCollectionSortPreferences(memoryStorage())).toEqual(
+      DEFAULT_COLLECTION_SORT_PREFERENCES,
+    );
+    expect(DEFAULT_FOLDER_SORT_PREFERENCES.mode).toBe("custom");
+    expect(DEFAULT_COLLECTION_SORT_PREFERENCES.mode).toBe("custom");
   });
 
   it("round-trips a chosen sort mode and order through storage", () => {

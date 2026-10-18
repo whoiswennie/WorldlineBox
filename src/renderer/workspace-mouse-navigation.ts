@@ -5,7 +5,11 @@
  * Search / Inspector / dialog fields still skip; viewer surfaces do not.
  */
 
+import { isTypingKeyboardTarget } from "./video-player-controls";
+
 export type WorkspaceMouseNavAction = "back" | "forward";
+type WorkspaceMouseNavInput = Pick<MouseEvent, "button" | "target">
+  & Partial<Pick<MouseEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">>;
 
 const WORKSPACE_VIEWER_SELECTOR = ".workspace-viewer";
 
@@ -49,13 +53,21 @@ export function resolveWorkspaceMouseNavButton(
 }
 
 export function resolveWorkspaceMouseNavAction(
-  event: Pick<MouseEvent, "button" | "target">,
+  event: WorkspaceMouseNavInput,
   options?: { readonly isModalOpen?: boolean },
 ): WorkspaceMouseNavAction | null {
+  // Modified side buttons belong to user-configured shortcuts. The app-wide
+  // shortcut listeners receive their subsequent mousedown event.
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null;
   const isModalOpen = options?.isModalOpen ?? isModalDialogOpen();
   if (isModalOpen) return null;
   if (isEditableMouseNavTarget(event.target)) return null;
   return resolveWorkspaceMouseNavButton(event.button);
+}
+
+/** Keep Chromium's history action from racing the app's side-button routes. */
+export function isWorkspaceMouseSideButton(button: number): boolean {
+  return button === 3 || button === 4;
 }
 
 /**
@@ -66,6 +78,10 @@ export function bindIframeWorkspaceMouseNav(iframe: HTMLIFrameElement): () => vo
   let boundDoc: Document | null = null;
   const onPointerDown = (event: PointerEvent) => {
     if (!resolveWorkspaceMouseNavButton(event.button)) return;
+    if (event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) {
+      event.preventDefault();
+      return;
+    }
     event.preventDefault();
     window.dispatchEvent(
       new PointerEvent("pointerdown", {
@@ -75,8 +91,27 @@ export function bindIframeWorkspaceMouseNav(iframe: HTMLIFrameElement): () => vo
       }),
     );
   };
+  const onMouseDown = (event: MouseEvent) => {
+    if (!resolveWorkspaceMouseNavButton(event.button)) return;
+    if (!event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) return;
+    event.preventDefault();
+    const activeElement = boundDoc?.activeElement ?? null;
+    if (isTypingKeyboardTarget(activeElement)) return;
+    iframe.dispatchEvent(
+      new MouseEvent("mousedown", {
+        bubbles: true,
+        cancelable: true,
+        button: event.button,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+      }),
+    );
+  };
   const unbind = () => {
     boundDoc?.removeEventListener("pointerdown", onPointerDown, true);
+    boundDoc?.removeEventListener("mousedown", onMouseDown, true);
     boundDoc = null;
   };
   const bind = () => {
@@ -90,6 +125,7 @@ export function bindIframeWorkspaceMouseNav(iframe: HTMLIFrameElement): () => vo
     unbind();
     boundDoc = doc;
     boundDoc?.addEventListener("pointerdown", onPointerDown, true);
+    boundDoc?.addEventListener("mousedown", onMouseDown, true);
   };
   iframe.addEventListener("load", bind);
   bind();

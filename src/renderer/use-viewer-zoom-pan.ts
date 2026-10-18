@@ -4,6 +4,8 @@ import { isMacPlatform } from "./commands/command-types";
 import {
   matchGlobalZoomShortcut,
   nextKeyboardZoomScale,
+  GLOBAL_ZOOM_MENU_ACTION_EVENT,
+  type GlobalZoomAction,
   shouldIgnoreGlobalZoomShortcut,
 } from "./global-zoom-shortcuts";
 import {
@@ -13,6 +15,8 @@ import {
   isAtFitScale,
 } from "./viewer-fit";
 import { isViewerPanPointerButton } from "./viewer-pointer-pan";
+import { listenForShortcutInputs } from "./shortcut-runtime";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
 import {
   classifyViewerWheel,
   isPrimarilyHorizontalWheel,
@@ -183,12 +187,7 @@ export function useViewerZoomPan({
   useEffect(() => {
     if (keyboardShortcutsDisabled) return;
     const platform = isMacPlatform(navigator.userAgent) ? "mac" : "windows";
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (shouldIgnoreGlobalZoomShortcut(event.target)) return;
-      const action = matchGlobalZoomShortcut(event, platform);
-      if (!action) return;
-      event.preventDefault();
-      event.stopPropagation();
+    const applyZoomAction = (action: GlobalZoomAction) => {
       if (action === "reset") {
         fitToWindow();
         return;
@@ -201,8 +200,25 @@ export function useViewerZoomPan({
         nextKeyboardZoomScale(viewRef.current.scale, action),
       );
     };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    const onShortcutInput = (input: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
+      if (shouldIgnoreGlobalZoomShortcut(event.target)) return;
+      const action = matchGlobalZoomShortcut(input, platform);
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      applyZoomAction(action);
+    };
+    const onMenuZoom = (event: Event) => {
+      if (shouldIgnoreGlobalZoomShortcut(document.activeElement)) return;
+      const action = (event as CustomEvent<GlobalZoomAction>).detail;
+      if (action === "in" || action === "out" || action === "reset") applyZoomAction(action);
+    };
+    const removeShortcutInputs = listenForShortcutInputs(window, onShortcutInput, true);
+    window.addEventListener(GLOBAL_ZOOM_MENU_ACTION_EVENT, onMenuZoom);
+    return () => {
+      removeShortcutInputs();
+      window.removeEventListener(GLOBAL_ZOOM_MENU_ACTION_EVENT, onMenuZoom);
+    };
   }, [fitToWindow, keyboardShortcutsDisabled, zoomAt]);
 
   // Wheel: mouse wheel zooms at the pointer; trackpad two-finger scroll

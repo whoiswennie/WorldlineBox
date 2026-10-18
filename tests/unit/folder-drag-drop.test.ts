@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canMoveFoldersToParent,
   isFolderDescendantOf,
   resolveDraggedFolderIds,
   resolveDraggedFolderIdsForTrash,
@@ -107,5 +108,54 @@ describe("isFolderDescendantOf", () => {
   it("detects ancestor relationships", () => {
     expect(isFolderDescendantOf(folders, "a", "c")).toBe(true);
     expect(isFolderDescendantOf(folders, "c", "a")).toBe(false);
+  });
+});
+
+describe("canMoveFoldersToParent", () => {
+  it("accepts moving into a different parent", () => {
+    expect(
+      canMoveFoldersToParent({
+        targetParentFolderId: "root-child",
+        draggedFolderIds: ["c"],
+        folders,
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts a sibling reorder inside the same parent", () => {
+    expect(
+      canMoveFoldersToParent({
+        targetParentFolderId: "a",
+        draggedFolderIds: ["b"],
+        folders,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects moving a folder into itself or its descendant", () => {
+    expect(
+      canMoveFoldersToParent({
+        targetParentFolderId: "a",
+        draggedFolderIds: ["a"],
+        folders,
+      }),
+    ).toBe(false);
+    expect(
+      canMoveFoldersToParent({
+        targetParentFolderId: "c",
+        draggedFolderIds: ["a"],
+        folders,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects an empty drag", () => {
+    expect(
+      canMoveFoldersToParent({
+        targetParentFolderId: null,
+        draggedFolderIds: [],
+        folders,
+      }),
+    ).toBe(false);
   });
 });

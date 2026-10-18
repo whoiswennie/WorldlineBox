@@ -53,10 +53,10 @@ npm run release:local
 | 阶段 | 内容 |
 | --- | --- |
 | verify | `rebuild:native` + `verify:mainline`（与 CI 相同门禁） |
-| media | 从受控 URL 下载媒体包（`media:acquire`）+ 校验 |
+| media | 从受控 URL 下载媒体包（`media:acquire`）+ 校验；Linux x64/arm64 使用相同门禁，arm64 尚未晋升时拒绝正式发布 |
 | package | `electron-forge package` + `verify:package` |
 | e2e | 对打包产物跑启动测试（`test:e2e:packaged`） |
-| make | 生成安装包 |
+| make | 生成安装包；Linux 优先使用同架构 Docker，并生成对应架构 AppImage |
 | checksums | 产物 SHA-256 manifest（带版本头） |
 
 跳过慢阶段的选项：`--skip-verify` / `--skip-media` / `--skip-e2e`。单独跑某阶段：`npm run release:<phase>`（e2e 阶段为 `npm run release:e2e:packaged`）。
@@ -96,7 +96,23 @@ npm run release:local -- --skip-verify --build-media-locally
 
 ### 平台
 
-`forge.config.ts` 强制**原生平台构建**（`darwin-arm64` / `win32-x64` 白名单）——媒体二进制、ufbx、native 模块均为平台相关，不支持交叉打包。Windows 需在 Windows 原生环境跑同一流水线。
+`forge.config.ts` 强制**原生平台构建**，媒体白名单为 `darwin-arm64` / `win32-x64` / `linux-x64` / `linux-arm64`。媒体二进制、ufbx、native 模块均为平台相关，不支持交叉打包。各平台须在匹配操作系统和架构的宿主机或同架构 Linux 容器中运行发布流水线。源码中的平台支持不代表对应制品已经构建或通过实机验收。
+
+### Linux AppImage
+
+```bash
+npm run make:appimage           # out/make/appimage/WorldlineBox-<版本>-x86_64.AppImage 或 -aarch64.AppImage
+npm run make:appimage:docker    # 同架构 Ubuntu 22.04 / glibc 2.35 构建环境
+npm run release:make            # 规范命名 WorldlineBox-linux-x86-64-<版本>.AppImage 或 -arm64-<版本>.AppImage
+```
+
+- Linux x64 与 arm64 都必须获取、验证并打包 `ffmpeg` / `ffprobe` / `oiiotool`，不再按架构跳过媒体或打包完整性门禁。x64 的 `bundle-lock.json` 已锁定上游 `media-v0.1.3`，该包使用 Ubuntu 22.04 重建以降低 glibc 基线，源版本与配置不变。
+- Linux arm64 当前仍是 `build-required`。必须在原生 Linux aarch64 上运行 `scripts/media-build/linux-arm64.sh`，将受信 ZIP、归档 SHA-256、manifest SHA-256 登记为 `ready` 后才能正式发布。上游也尚未晋升这一架构的媒体包，不能把已有脚本描述成现成可用安装包。本地 `--build-media-locally` / `WORLDLINEBOX_MEDIA_SKIP_PROVENANCE=1` 试跑不等于正式晋升，也不会凭空补齐缺失的二进制。
+- Linux 媒体包应在 Ubuntu 22.04 容器内使用系统 GCC 构建；发布前检查每个二进制最高 GLIBC 要求不高于 2.35：`objdump -T <二进制> | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1`。在较新宿主机直接构建可能提高运行要求，不能只凭 AppImage 外壳宣称兼容旧发行版。
+- AppImage 运行需要 FUSE（通常为 `libfuse2`）；也可加 `--appimage-extract-and-run`。两种架构采用相同的窗口系统与权限限制；X11、原生 Wayland、GPU、截图/录屏等需各自在 Linux 实机验收。
+- 发布名与更新器一致：`WorldlineBox-linux-x86-64-<版本>.AppImage` / `WorldlineBox-linux-arm64-<版本>.AppImage`，附同名 `.sha256`；总清单为 `SHA256SUMS-linux-x64.txt` / `SHA256SUMS-linux-arm64.txt`。
+
+本轮 Windows 开发机没有可用 Docker、bash 或 WSL Linux 环境，未进行 Linux 构建或实机验收。已完成范围及环境证据见 [平台同步审计](serpent-031-upgrade/platforms-audit.md)。
 
 ### Windows 安装器（Inno Setup）
 
@@ -153,7 +169,7 @@ npm run make:inno
    - `ffmpeg/ffprobe`：BtbN LGPL builds（`registry.npmmirror.com/-/binary/ffmpeg-builds/`
      `ffmpeg-<ver>-win32-x64-lgpl.tar.xz`，或 mac 版），LGPL-only 合规（无 GPL 标记）
    - `oiiotool`：`scripts/media-build/build-oiiotool-win32.ps1`（Windows）/
-     `darwin-arm64.sh`（macOS）——vcpkg 构建（锁定版本工具链 + registry commit）
+     `darwin-arm64.sh`（macOS）/ `linux-x64.sh`（Linux x86_64）/ `linux-arm64.sh`（Linux aarch64，连同 FFmpeg）——vcpkg 构建（锁定版本工具链 + registry commit）
 2. **打包上传**：
    ```bash
    # 组装 zip（平台层级结构 ffmpeg/<platform>/…）+ sha256

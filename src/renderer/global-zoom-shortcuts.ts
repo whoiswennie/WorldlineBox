@@ -14,8 +14,19 @@ import {
 import type { CommandPlatform } from "./commands/command-types";
 import { clampViewerScale } from "./viewer-fit";
 import { isEditableKeyboardTarget } from "./video-player-controls";
+import { matchesRuntimeShortcut } from "./shortcut-runtime";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
+import { hasActiveModalDialog } from "./use-dialog-focus-trap";
 
 export type GlobalZoomAction = "in" | "out" | "reset";
+
+export const GLOBAL_ZOOM_MENU_ACTION_EVENT = "worldlinebox:global-zoom-menu-action";
+
+export function dispatchGlobalZoomMenuAction(action: GlobalZoomAction): void {
+  window.dispatchEvent(
+    new CustomEvent(GLOBAL_ZOOM_MENU_ACTION_EVENT, { detail: action }),
+  );
+}
 
 /**
  * One keyboard notch ≈ mouse-wheel deltaY of 100 at the shared 0.002 gain
@@ -23,13 +34,7 @@ export type GlobalZoomAction = "in" | "out" | "reset";
  */
 export const GLOBAL_KEYBOARD_ZOOM_FACTOR = Math.exp(0.2);
 
-export interface GlobalZoomShortcutEvent {
-  readonly key: string;
-  readonly metaKey: boolean;
-  readonly ctrlKey: boolean;
-  readonly altKey: boolean;
-  readonly shiftKey: boolean;
-}
+export type GlobalZoomShortcutEvent = ShortcutEventLike;
 
 /**
  * Match Cmd/Ctrl+=|+ / -|_ / 0. `+` may arrive with Shift (Shift+=); that is
@@ -40,28 +45,9 @@ export function matchGlobalZoomShortcut(
   event: GlobalZoomShortcutEvent,
   platform: CommandPlatform,
 ): GlobalZoomAction | null {
-  if (event.altKey) return null;
-
-  const modOk =
-    platform === "mac"
-      ? event.metaKey && !event.ctrlKey
-      : event.ctrlKey && !event.metaKey;
-  if (!modOk) return null;
-
-  const key = event.key;
-  if (key === "=" || key === "+" || key === "Add") {
-    // Plain `=` must not carry Shift; `+` / numpad Add may.
-    if (key === "=" && event.shiftKey) return null;
-    return "in";
-  }
-  if (key === "-" || key === "_" || key === "Subtract") {
-    if (key === "-" && event.shiftKey) return null;
-    return "out";
-  }
-  if (key === "0") {
-    if (event.shiftKey) return null;
-    return "reset";
-  }
+  if (matchesRuntimeShortcut("canvas.zoom-in", event, platform)) return "in";
+  if (matchesRuntimeShortcut("canvas.zoom-out", event, platform)) return "out";
+  if (matchesRuntimeShortcut("canvas.zoom-reset", event, platform)) return "reset";
   return null;
 }
 
@@ -95,5 +81,17 @@ export function defaultKeyboardCardSize(): number {
 export function shouldIgnoreGlobalZoomShortcut(
   target: EventTarget | null,
 ): boolean {
-  return isEditableKeyboardTarget(target);
+  return hasActiveModalDialog() || isEditableKeyboardTarget(target);
+}
+
+/** Keep text controls and modal owners ahead of native View accelerators. */
+export function dispatchGlobalZoomMenuCommandIfAllowed(
+  action: GlobalZoomAction,
+  target: EventTarget | null,
+  modalOpen: boolean,
+  dispatch: (action: GlobalZoomAction) => void = dispatchGlobalZoomMenuAction,
+): boolean {
+  if (modalOpen || shouldIgnoreGlobalZoomShortcut(target)) return false;
+  dispatch(action);
+  return true;
 }

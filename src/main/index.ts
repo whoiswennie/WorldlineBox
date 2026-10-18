@@ -21,7 +21,9 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { createWindowsInstallerCleanupInvocation } from "./windows-installer-cleanup";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -70,10 +72,17 @@ import {
   clearViewerVideoShortcutCapture,
   isViewerVideoShortcutContentsActive,
   setViewerVideoShortcutCaptureActive,
+  viewerShortcutScopeForContents,
 } from "./viewer-video-shortcut-capture";
 import { forwardViewerVideoShortcut } from "./viewer-video-shortcut-forward";
 import { forwardBrowseShortcut } from "./browse-shortcut-forward";
-import { setWindowsBrowseShortcutAcceleratorsEnabled } from "./viewer-video-shortcut-menu";
+import {
+  forwardApplicationShortcutToWindow,
+  isWindowsApplicationShortcut,
+  matchWindowsApplicationShortcut,
+  setWindowsApplicationShortcutAcceleratorsEnabled,
+  setWindowsBrowseShortcutAcceleratorsEnabled,
+} from "./viewer-video-shortcut-menu";
 import { matchBrowseKeyboardShortcut } from "../shared/browse-keyboard-shortcuts";
 import { artifactProtocolMimeForExtension } from "../shared/media-formats";
 import {
@@ -104,8 +113,7 @@ import { tryHandleEmbeddingModelRequest } from "./library-request/embedding-mode
 import { EmbeddingTestIndex } from "./embedding-test-index";
 import { EmbeddingHttpIndex } from "./embedding-http-index";
 import {
-  embeddingSearchRoots,
-  inspectEmbeddingTree,
+  inspectManagedEmbeddingInstall,
   resolveInstalledEmbeddingLayout,
 } from "./embedding-install";
 import {
@@ -165,6 +173,7 @@ import {
 import {
   createAppUpdateService,
   type AppUpdateService,
+  type AppUpdateFetch,
 } from './app-update-service';
 import type {
   AppUpdateCheckResult,
@@ -183,6 +192,34 @@ import {
   type StartupPreferences,
   type StartupPreferencesSnapshot,
 } from '../shared/startup-preferences';
+import {
+  readShortcutBindings,
+  shortcutBindingsFilePath,
+  writeShortcutBindings,
+} from './shortcut-bindings-store';
+import {
+  DEFAULT_SHORTCUT_BINDINGS,
+  parseShortcutBindings,
+  parseShortcutChord,
+  shortcutPlatformFromProcess,
+  withPlatformBindings,
+  type ShortcutOverride,
+} from '../shared/shortcut-bindings';
+import { findShortcutAction } from '../shared/shortcut-catalog';
+import { findCaptureShortcutConflict } from '../shared/capture-shortcut-conflicts';
+import { DEFAULT_CAPTURE_TOOLS_SETTINGS } from '../shared/capture-tools';
+import {
+  findAllShortcutConflicts,
+  validateShortcutBindings,
+  validateShortcutChord,
+  matchesActionShortcut,
+} from '../shared/shortcut-resolution';
+import type {
+  ShortcutBindingsSetResult,
+  ShortcutFileExportResult,
+  ShortcutFileImportResult,
+} from '../shared/shortcut-api';
+import { resolveNativeDialogCopy } from '../shared/native-dialog-i18n';
 
 import { popupEditContextMenu } from "./edit-context-menu";
 import {
@@ -229,6 +266,10 @@ import {
   APP_UPDATE_PROGRESS_CHANNEL,
   STARTUP_PREFERENCES_GET_CHANNEL,
   STARTUP_PREFERENCES_SET_CHANNEL,
+  SHORTCUT_BINDINGS_EXPORT_CHANNEL,
+  SHORTCUT_BINDINGS_GET_CHANNEL,
+  SHORTCUT_BINDINGS_IMPORT_CHANNEL,
+  SHORTCUT_BINDINGS_SET_CHANNEL,
   REVEAL_APP_LOG_CHANNEL,
   READ_APP_LOG_CHANNEL,
   SHOW_EDIT_CONTEXT_MENU_CHANNEL,
@@ -239,6 +280,7 @@ import {
   SHELL_SWIPE_CHANNEL,
   WINDOW_FOCUS_CHANNEL,
   NATIVE_EDIT_COPY_CHANNEL,
+  NATIVE_EDIT_COMMAND_CHANNEL,
   PLUGIN_MANAGER_CHANNEL,
   PLUGIN_INSTALL_PROGRESS_CHANNEL,
   EMBEDDING_INSTALL_PROGRESS_CHANNEL,
@@ -248,6 +290,7 @@ import {
   PLUGIN_INPUT_CAPTURE_SYSTEM_MODAL_CHANNEL,
   VIEWER_VIDEO_SHORTCUTS_ACTIVE_CHANNEL,
   BROWSE_SHORTCUT_MENU_ENABLED_CHANNEL,
+  APPLICATION_SHORTCUTS_ENABLED_CHANNEL,
   OFFSCREEN_THUMBNAIL_FRAME_CHANNEL,
   MCP_SETTINGS_REQUEST_CHANNEL,
   MCP_SETTINGS_EVENT_CHANNEL,
@@ -477,12 +520,14 @@ import {
 } from "./model-thumbnail-source-cache";
 import {
   createExtensionServer,
+  extensionCollectionSummaries,
   type ExtensionServer,
   type SaveIntent,
   type SaveIntentDisposition,
   type SaveUploadDisposition,
   type SaveUploadRequest,
   type ListFoldersDisposition,
+  type ListCollectionsDisposition,
 } from "./extension-server";
 import {
   readExtensionBrowseFolderIds,
@@ -528,6 +573,14 @@ const applicationUserData = resolveApplicationUserData({
 mkdirSync(applicationUserData.userDataPath, { recursive: true });
 app.setPath("userData", applicationUserData.userDataPath);
 app.setPath("sessionData", applicationUserData.userDataPath);
+
+// Only a development E2E fixture may redirect updater scratch directories.
+if (!app.isPackaged && process.env.WORLDLINEBOX_E2E === "1" && process.env.WORLDLINEBOX_E2E_APP_UPDATE_FIXTURE === "1") {
+  for (const [key, variable] of [["downloads", "WORLDLINEBOX_E2E_DOWNLOADS_PATH"], ["temp", "WORLDLINEBOX_E2E_TEMP_PATH"]] as const) {
+    const configured = process.env[variable];
+    if (configured && path.isAbsolute(configured)) { mkdirSync(configured, { recursive: true }); app.setPath(key, configured); }
+  }
+}
 
 // Dev multi-instance (WorldlineBox-i6xg): isolate userData so SingletonLock / prefs
 // do not collide. Prefer `npm run start:multi`. Do not open the same library
@@ -581,10 +634,7 @@ function embeddingIndex(): EmbeddingTestIndex {
       if (!workerClient) return Promise.reject(new Error("Library Worker is unavailable."));
       return workerClient.request(command);
     },
-    installedLayout: (modelId) => resolveInstalledEmbeddingLayout(inspectEmbeddingTree(embeddingSearchRoots({
-      userData: app.getPath("userData"),
-      home: app.getPath("home"),
-    })), modelId),
+    installedLayout: (modelId) => resolveInstalledEmbeddingLayout(inspectManagedEmbeddingInstall(app.getPath("userData")), modelId),
     resolveMediaBinaries: resolveHostMediaBinaries,
   });
   return embeddingTestIndex;
@@ -989,6 +1039,7 @@ function refreshApplicationMenuRecentLibraries(): void {
   installApplicationMenu({
     locale: appLocale,
     recentLibraries: nativeMenuRecentLibraries(),
+    shortcutBindings: readShortcutBindingsSnapshot(),
   });
 }
 
@@ -1525,6 +1576,191 @@ function startupPreferencesPath(): string {
   return startupPreferencesFilePath(app.getPath("userData"));
 }
 
+function shortcutBindingsPath(): string {
+  return shortcutBindingsFilePath(app.getPath("userData"));
+}
+
+function readShortcutBindingsSnapshot() {
+  return readShortcutBindings(shortcutBindingsPath());
+}
+
+async function exportShortcutBindingsFile(): Promise<ShortcutFileExportResult> {
+  const copy = resolveNativeDialogCopy(appLocale, "exportShortcuts");
+  try {
+    const e2ePath =
+      process.env.WORLDLINEBOX_E2E === "1"
+        ? process.env.WORLDLINEBOX_E2E_SHORTCUTS_EXPORT_PATH
+        : undefined;
+    let filePath = e2ePath;
+    if (!filePath) {
+      const options: Electron.SaveDialogOptions = {
+        title: copy.title,
+        buttonLabel: copy.buttonLabel,
+        defaultPath: "worldlinebox-shortcuts.json",
+        filters: [{ name: copy.filterName ?? "JSON", extensions: ["json"] }],
+      };
+      const result = mainWindow
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) {
+        return { ok: false, error: "canceled", canceled: true };
+      }
+      filePath = result.filePath;
+    }
+    const bindings = readShortcutBindingsSnapshot();
+    writeFileSync(filePath, `${JSON.stringify(bindings, null, 2)}\n`, "utf8");
+    return { ok: true, path: filePath };
+  } catch (error) {
+    logger?.error("shortcuts.export", error);
+    return { ok: false, error: "shortcut-export-failed" };
+  } finally {
+    ensureRendererKeyboardFocus(mainWindow, {
+      reattachHwnd: true,
+      reason: "shortcuts.export",
+    });
+  }
+}
+
+async function importShortcutBindingsFile(): Promise<ShortcutFileImportResult> {
+  const copy = resolveNativeDialogCopy(appLocale, "importShortcuts");
+  try {
+    const e2ePath =
+      process.env.WORLDLINEBOX_E2E === "1"
+        ? process.env.WORLDLINEBOX_E2E_SHORTCUTS_IMPORT_PATH
+        : undefined;
+    let selected = e2ePath;
+    if (!selected) {
+      const options: Electron.OpenDialogOptions = {
+        title: copy.title,
+        buttonLabel: copy.buttonLabel,
+        properties: ["openFile"],
+        filters: [{ name: copy.filterName ?? "JSON", extensions: ["json"] }],
+      };
+      const result = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, options)
+        : await dialog.showOpenDialog(options);
+      selected = result.filePaths[0];
+      if (result.canceled || !selected) {
+        return { ok: false, error: "canceled", canceled: true };
+      }
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(selected, "utf8"));
+    } catch {
+      return { ok: false, error: "invalid-shortcut-file" };
+    }
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      (parsed as { version?: unknown }).version !== 1 ||
+      !(parsed as { platforms?: unknown }).platforms ||
+      typeof (parsed as { platforms?: unknown }).platforms !== "object" ||
+      Array.isArray((parsed as { platforms?: unknown }).platforms)
+    ) {
+      return { ok: false, error: "invalid-shortcut-file" };
+    }
+    const imported = parseShortcutBindings(parsed);
+    const platform = shortcutPlatformFromProcess(process.platform);
+    const validation = validateShortcutBindings(imported, platform);
+    if (validation !== null) return { ok: false, error: validation };
+    // Import only the current platform; the other platform's local settings
+    // are preserved when a backup moves between Windows and macOS.
+    const bindings = withPlatformBindings(
+      readShortcutBindingsSnapshot(),
+      platform,
+      imported.platforms[platform],
+    );
+    if (findCaptureShortcutConflict(bindings, platform, captureToolsService?.state().settings.shortcuts ?? DEFAULT_CAPTURE_TOOLS_SETTINGS.shortcuts)) {
+      return { ok: false, error: 'shortcut-global-tools-conflict' };
+    }
+    writeShortcutBindings(shortcutBindingsPath(), bindings);
+    installApplicationMenu({
+      locale: appLocale,
+      recentLibraries: nativeMenuRecentLibraries(),
+      shortcutBindings: bindings,
+    });
+    return { ok: true, bindings };
+  } catch (error) {
+    logger?.error("shortcuts.import", error);
+    return { ok: false, error: "shortcut-import-failed" };
+  } finally {
+    ensureRendererKeyboardFocus(mainWindow, {
+      reattachHwnd: true,
+      reason: "shortcuts.import",
+    });
+  }
+}
+
+function storeShortcutBindings(input: unknown): ShortcutBindingsSetResult {
+  const current = readShortcutBindingsSnapshot();
+  const platform = shortcutPlatformFromProcess(process.platform);
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, bindings: current, error: "invalid-shortcut-request" };
+  }
+  const record = input as { platform?: unknown; bindings?: unknown };
+  if (record.platform !== platform) {
+    return { ok: false, bindings: current, error: "invalid-shortcut-platform" };
+  }
+  if (
+    !record.bindings ||
+    typeof record.bindings !== "object" ||
+    Array.isArray(record.bindings)
+  ) {
+    return { ok: false, bindings: current, error: "invalid-shortcut-bindings" };
+  }
+
+  const next: Record<string, ShortcutOverride> = {};
+  for (const [actionId, value] of Object.entries(
+    record.bindings as Record<string, unknown>,
+  )) {
+    if (value === null) {
+      next[actionId] = null;
+      continue;
+    }
+    const chord = parseShortcutChord(value);
+    if (!chord) {
+      return { ok: false, bindings: current, error: "invalid-shortcut-chord" };
+    }
+    const action = findShortcutAction(actionId);
+    if (action?.customizable === false) {
+      return { ok: false, bindings: current, error: "shortcut-fixed" };
+    }
+    if (action) {
+      const reason = validateShortcutChord(chord, platform, action.scopes, actionId);
+      if (reason !== null) {
+        return { ok: false, bindings: current, error: "invalid-shortcut-chord" };
+      }
+    } else if (!Object.prototype.hasOwnProperty.call(current.platforms[platform], actionId)) {
+      // Unknown ids are not accepted from a fresh renderer payload; existing
+      // unknown entries are merged below so a downgrade does not lose data.
+      continue;
+    }
+    next[actionId] = chord;
+  }
+  for (const [actionId, value] of Object.entries(current.platforms[platform])) {
+    if (!(actionId in next) && !findShortcutAction(actionId)) {
+      next[actionId] = value;
+    }
+  }
+
+  const candidate = withPlatformBindings(current, platform, next);
+  if (findCaptureShortcutConflict(candidate, platform, captureToolsService?.state().settings.shortcuts ?? DEFAULT_CAPTURE_TOOLS_SETTINGS.shortcuts)) {
+    return { ok: false, bindings: current, error: 'shortcut-global-tools-conflict' };
+  }
+  if (findAllShortcutConflicts(platform, candidate).length > 0) {
+    return { ok: false, bindings: current, error: "shortcut-conflict" };
+  }
+  writeShortcutBindings(shortcutBindingsPath(), candidate);
+  installApplicationMenu({
+    locale: appLocale,
+    recentLibraries: nativeMenuRecentLibraries(),
+    shortcutBindings: candidate,
+  });
+  return { ok: true, bindings: candidate };
+}
+
 function getOSLoginItemState(): {
   openAtLogin: boolean;
   executableWillLaunchAtLogin?: boolean;
@@ -1833,6 +2069,34 @@ async function createMainWindow(): Promise<void> {
       return;
     }
     if (shouldHideApplicationMenuBar(process.platform)) {
+      const appAction = input.type === "keyDown"
+        ? matchWindowsApplicationShortcut({
+            key: input.key,
+            code: input.code,
+            keyCode: (input as { keyCode?: number }).keyCode,
+            control: input.control,
+            meta: input.meta,
+            alt: input.alt,
+            shift: input.shift,
+            isAutoRepeat: input.isAutoRepeat,
+          })
+        : null;
+      const repeatedAppAction = input.type === "keyDown" && input.isAutoRepeat
+        ? isWindowsApplicationShortcut({
+            key: input.key,
+            code: input.code,
+            keyCode: (input as { keyCode?: number }).keyCode,
+            control: input.control,
+            meta: input.meta,
+            alt: input.alt,
+            shift: input.shift,
+          })
+        : false;
+      if (appAction || repeatedAppAction) {
+        event.preventDefault();
+        if (appAction) forwardApplicationShortcutToWindow(window, appAction, 'before-input');
+        return;
+      }
       const browseAction = matchBrowseKeyboardShortcut({
         type: input.type,
         code: input.code,
@@ -1850,7 +2114,9 @@ async function createMainWindow(): Promise<void> {
     if (!isViewerVideoShortcutContentsActive(window.webContents.id)) {
       return;
     }
-    const action = matchViewerVideoLetterShortcut({
+    const viewerScope = viewerShortcutScopeForContents(window.webContents.id);
+    if (viewerScope === null) return;
+    const viewerInput = {
       type: input.type,
       code: input.code,
       key: input.key,
@@ -1859,10 +2125,27 @@ async function createMainWindow(): Promise<void> {
       meta: input.meta,
       alt: input.alt,
       shift: input.shift,
-    });
-    if (!action) return;
+      isAutoRepeat: input.isAutoRepeat,
+    };
+    const bindings = readShortcutBindingsSnapshot();
+    const platform = shortcutPlatformFromProcess(process.platform);
+    const action = matchViewerVideoLetterShortcut(
+      viewerInput,
+      bindings,
+      platform,
+      viewerScope,
+    );
+    const repeatedViewerAction = input.type === "keyDown" && input.isAutoRepeat
+      ? matchViewerVideoLetterShortcut(
+        { ...viewerInput, isAutoRepeat: false },
+        bindings,
+        platform,
+        viewerScope,
+      )
+      : null;
+    if (!action && !repeatedViewerAction) return;
     event.preventDefault();
-    forwardViewerVideoShortcut(window.webContents, action);
+    if (action) forwardViewerVideoShortcut(window.webContents, action);
   });
   // Defense in depth (WorldlineBox-46i9): even if a page-zoom accelerator sneaks
   // back into the menu, Chromium must not rescale the whole UI.
@@ -2066,6 +2349,21 @@ async function handleListFolders(): Promise<ListFoldersDisposition> {
   };
 }
 
+async function handleListCollections(): Promise<ListCollectionsDisposition> {
+  if (!workerClient) return { ok: false, status: 503, reason: "worker unavailable" };
+  const context = getExtensionSaveContext();
+  if (!context) return { ok: false, status: 503, reason: "no active library" };
+  const result = await workerClient.request({ type: "collection.list", libraryId: context.libraryId });
+  if (!result.ok) return { ok: false, status: result.error.code === "LIBRARY_NOT_OPEN" ? 503 : 422,
+    reason: result.error.reason ?? result.error.code };
+  if (result.type !== "collection.list") return { ok: false, status: 500, reason: "unexpected worker response" };
+  const libraries = await workerClient.request({ type: "library.list" });
+  const libraryDisplayName = libraries.ok && libraries.type === "library.list"
+    ? libraries.libraries.find(library => library.libraryId === context.libraryId)?.displayName ?? "WorldlineBox"
+    : "WorldlineBox";
+  return { ok: true, libraryDisplayName, collections: extensionCollectionSummaries(result.collections) };
+}
+
 function browserCaptureLibraryOwner(libraryId: string): number | null {
   return captureLibraryWindowId({ libraryId, contexts: focusedContexts,
     liveWindowIds: new Set(BrowserWindow.getAllWindows().filter(window => !window.isDestroyed()).map(window => window.id)),
@@ -2228,7 +2526,7 @@ async function handleSaveUpload(
     return { accepted: false, status: 503, reason: "no active library" };
   }
 
-  const targetFolderId =
+  const targetFolderId = upload.targetCollectionId ? undefined :
     upload.targetFolderId !== undefined
       ? upload.targetFolderId ?? undefined
       : saveContext.selectedFolderId;
@@ -2245,6 +2543,15 @@ async function handleSaveUpload(
   };
 
   try {
+    if (upload.targetCollectionId) {
+      const collections = await workerClient.request({ type: "collection.list", libraryId: saveContext.libraryId });
+      if (!collections.ok) return { accepted: false, status: collections.error.code === "LIBRARY_NOT_OPEN" ? 503 : 422,
+        reason: collections.error.reason ?? collections.error.code };
+      if (collections.type !== "collection.list") return { accepted: false, status: 500, reason: "unexpected worker response" };
+      if (!collections.collections.some(collection => collection.collectionId === upload.targetCollectionId)) {
+        return { accepted: false, status: 422, reason: "target collection not found" };
+      }
+    }
     const result = await workerClient.request(command);
     if (!result.ok) {
       logger?.error(
@@ -2263,6 +2570,17 @@ async function handleSaveUpload(
     }
     if (result.type !== "extension.asset-saved") {
       return { accepted: false, status: 500, reason: "unexpected worker response" };
+    }
+    if (upload.targetCollectionId) {
+      const added = await workerClient.request({ type: "collection.assets.add", libraryId: saveContext.libraryId,
+        collectionId: upload.targetCollectionId, assetIds: [result.asset.assetId] });
+      if (!added.ok || added.type !== "collection.assets.added") {
+        // Import and membership are separate transactions. Keep the saved file
+        // and report the partial outcome accurately if the collection changed.
+        logger?.error("extension-server.save-upload-collection", new Error("Asset saved but collection membership failed."),
+          { assetId: result.asset.assetId, collectionId: upload.targetCollectionId });
+        return { accepted: false, status: 422, reason: "asset saved in library root; could not add to target collection" };
+      }
     }
     logger?.info("extension-server.save-upload", "Asset saved successfully.", {
       type: result.type,
@@ -4015,32 +4333,120 @@ async function normalizeMcpCommandInput(input: {
 
 /**
  * A Windows installer keeps its executable locked while it is running, and
- * the main process exits immediately after handing it off. Use a detached
- * cmd helper as a last-mile cleanup fallback so an installer directory that
- * could not be removed before app.quit() is removed after setup releases it.
+ * the main process exits immediately after handing it off. A detached hidden
+ * PowerShell worker removes the installer directory after setup releases it.
  * The path is generated by the update service under the OS temp directory.
  */
-function scheduleWindowsInstallerCleanup(installerPath: string): void {
+async function scheduleWindowsInstallerCleanup(
+  installerPath: string,
+  installerPid: number,
+): Promise<void> {
   if (process.platform !== "win32") return;
-  const outputDirectory = path.dirname(installerPath);
-  const command = `ping 127.0.0.1 -n 3 >nul & for /l %i in (1,1,30) do @(del /f /q "${installerPath}" >nul 2>&1 && rmdir /s /q "${outputDirectory}" >nul 2>&1 && exit /b 0 || ping 127.0.0.1 -n 2 >nul)`;
+  const cleanup = createWindowsInstallerCleanupInvocation({
+    installerPath,
+    installerPid,
+    tempDirectory: app.getPath("temp"),
+    logPath: appLogPath,
+  });
+  const spawnOptions = {
+    detached: false,
+    stdio: "ignore" as const,
+    windowsHide: true,
+    env: cleanup.env,
+  };
   try {
     const cleanupProcess = spawn(
-      process.env.ComSpec ?? "cmd.exe",
-      ["/d", "/s", "/c", command],
-      { detached: true, stdio: "ignore", windowsHide: true },
+      cleanup.executable,
+      cleanup.args,
+      spawnOptions,
     );
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanupProcess.kill();
+        reject(new Error('The Windows cleanup launcher did not exit within 30 seconds.'));
+      }, 30_000);
+      const handleSpawnError = (error: Error) => {
+        clearTimeout(timeout);
+        reject(error);
+      };
+      const handleExit = (code: number | null) => {
+        clearTimeout(timeout);
+        cleanupProcess.off("error", handleSpawnError);
+        if (code === 0) resolve();
+        else reject(new Error(`The Windows cleanup launcher exited with code ${code ?? 'unknown'}.`));
+      };
+      cleanupProcess.once("error", handleSpawnError);
+      cleanupProcess.once("exit", handleExit);
+    });
     cleanupProcess.once("error", (error) => {
       logger?.error("app-update.cleanup", error, {
         artifactKind: "windows-installer-cleanup",
       });
     });
     cleanupProcess.unref();
+
+    if (
+      !app.isPackaged
+      && process.env.WORLDLINEBOX_E2E === "1"
+      && process.env.WORLDLINEBOX_E2E_APP_UPDATE_FIXTURE === "1"
+      && process.env.WORLDLINEBOX_E2E_APP_UPDATE_SPAWN_LOG
+    ) {
+      try {
+        appendFileSync(
+          process.env.WORLDLINEBOX_E2E_APP_UPDATE_SPAWN_LOG,
+          `${JSON.stringify({
+            executable: cleanup.executable,
+            args: cleanup.args,
+            installerPath: cleanup.env.WORLDLINEBOX_UPDATE_CLEANUP_INSTALLER,
+            ...spawnOptions,
+            env: undefined,
+            spawned: true,
+            pid: cleanupProcess.pid,
+          })}\n`,
+          "utf8",
+        );
+      } catch {
+        // Test instrumentation must not interfere with handing off an installer.
+      }
+    }
   } catch (error) {
     logger?.error("app-update.cleanup", error, {
       artifactKind: "windows-installer-cleanup",
     });
+    throw error;
   }
+}
+
+function createAppUpdateE2eFetch(): AppUpdateFetch | undefined {
+  if (
+    app.isPackaged || process.env.WORLDLINEBOX_E2E !== "1"
+    || process.env.WORLDLINEBOX_E2E_APP_UPDATE_FIXTURE !== "1"
+  ) return undefined;
+  const releasePath = process.env.WORLDLINEBOX_E2E_UPDATE_RELEASE;
+  const archivePath = process.env.WORLDLINEBOX_E2E_UPDATE_ARCHIVE;
+  const assetUrl = process.env.WORLDLINEBOX_E2E_UPDATE_ASSET_URL;
+  if (
+    !releasePath || !path.isAbsolute(releasePath)
+    || !archivePath || !path.isAbsolute(archivePath)
+    || !assetUrl
+  ) return undefined;
+
+  const releaseApiUrl = "https://api.github.com/repos/whoiswennie/WorldlineBox/releases/latest";
+  return async (input) => {
+    if (input === releaseApiUrl) {
+      return new Response(await readFile(releasePath), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (input === assetUrl) {
+      return new Response(await readFile(archivePath), {
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+      });
+    }
+    return new Response(null, { status: 404 });
+  };
 }
 
 async function startApplication(): Promise<void> {
@@ -4113,7 +4519,10 @@ async function startApplication(): Promise<void> {
     });
   }
   const { registerBrowserIpc } = await import('./browser/service');
-  browserService = registerBrowserIpc(() => mainWindow, browserCaptureHooks, async text => { if (!captureToolsService) throw Error('划词助手暂不可用。'); await captureToolsService.openSelection(text); });
+  browserService = registerBrowserIpc(() => mainWindow, browserCaptureHooks, async text => { if (!captureToolsService) throw Error('划词助手暂不可用。'); await captureToolsService.openSelection(text); }, input => matchesActionShortcut(
+    'window.toggle-fullscreen', { key: input.key, code: input.code, ctrlKey: input.control, metaKey: input.meta, altKey: input.alt, shiftKey: input.shift },
+    shortcutPlatformFromProcess(process.platform), readShortcutBindingsSnapshot(),
+  ));
   try {
     const { CaptureToolsService: ToolsService } = await import('./capture-tools/service');
     captureToolsService = new ToolsService({ getMainWindow: () => mainWindow ?? null,
@@ -4122,6 +4531,11 @@ async function startApplication(): Promise<void> {
       saveToLibrary: (bytes, filename) => browserService!.saveScreenshot(bytes, filename),
       captureBrowser: () => browserService!.captureViewport(),
       readBrowserSelection: () => browserService!.selectedText(),
+      validateShortcuts: settings => {
+        if (findCaptureShortcutConflict(readShortcutBindingsSnapshot(), shortcutPlatformFromProcess(process.platform), settings.shortcuts)) {
+          throw Error('该快捷键已用于资产管理动作，请在“快捷键”设置中修改后重试。');
+        }
+      },
       downloadPath: process.env.WORLDLINEBOX_E2E === '1' && process.env.WORLDLINEBOX_E2E_CAPTURE_DOWNLOAD_PATH ? process.env.WORLDLINEBOX_E2E_CAPTURE_DOWNLOAD_PATH : path.join(app.getPath('downloads'), 'WorldlineBox'),
       getFfmpeg: () => resolveHostMediaBinaries()?.ffmpegPath,
       loadWindow: async window => {
@@ -4188,12 +4602,44 @@ async function startApplication(): Promise<void> {
     tempDirectory: app.getPath('temp'),
     downloadsDirectory: app.getPath('downloads'),
     environment: process.env,
+    fetchImpl: createAppUpdateE2eFetch(),
     openPath: (filePath) => shell.openPath(filePath),
     showItemInFolder: (filePath) => shell.showItemInFolder(filePath),
     launchInstaller: async (installerPath) => {
       if (process.platform === 'win32') {
-        spawn(installerPath, [], { detached: true, stdio: 'ignore' }).unref();
-        scheduleWindowsInstallerCleanup(installerPath);
+        if (
+          !app.isPackaged && process.env.WORLDLINEBOX_E2E === "1"
+          && process.env.WORLDLINEBOX_E2E_APP_UPDATE_FIXTURE === "1"
+        ) {
+          // Keep the real updater download, extraction, cleanup worker and app
+          // quit path; only the inert fixture installer process is simulated.
+          await scheduleWindowsInstallerCleanup(installerPath, 730241);
+        } else {
+          const installer = spawn(installerPath, [], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true,
+          });
+          await new Promise<void>((resolve, reject) => {
+            const handleSpawnError = (error: Error) => reject(error);
+            installer.once('error', handleSpawnError);
+            installer.once('spawn', async () => {
+              installer.off('error', handleSpawnError);
+              if (installer.pid === undefined) {
+                reject(new Error('The Windows installer process has no process ID.'));
+                return;
+              }
+              installer.unref();
+              try {
+                await scheduleWindowsInstallerCleanup(installerPath, installer.pid);
+              } catch {
+                // The installer is already running and may be waiting for us
+                // to exit. Cleanup logs its own failure; handoff must continue.
+              }
+              resolve();
+            });
+          });
+        }
       } else {
         const openError = await shell.openPath(installerPath);
         if (openError !== '') throw new Error(openError);
@@ -6273,6 +6719,59 @@ async function startApplication(): Promise<void> {
     return readStartupPreferencesSnapshot();
   });
 
+  ipcMain.handle(SHORTCUT_BINDINGS_GET_CHANNEL, (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+      return DEFAULT_SHORTCUT_BINDINGS;
+    }
+    return readShortcutBindingsSnapshot();
+  });
+
+  ipcMain.handle(
+    SHORTCUT_BINDINGS_EXPORT_CHANNEL,
+    async (event): Promise<ShortcutFileExportResult> => {
+      if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+        return { ok: false, error: "unauthorized-sender" };
+      }
+      return exportShortcutBindingsFile();
+    },
+  );
+
+  ipcMain.handle(
+    SHORTCUT_BINDINGS_IMPORT_CHANNEL,
+    async (event): Promise<ShortcutFileImportResult> => {
+      if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+        return { ok: false, error: "unauthorized-sender" };
+      }
+      return importShortcutBindingsFile();
+    },
+  );
+
+  ipcMain.handle(
+    SHORTCUT_BINDINGS_SET_CHANNEL,
+    (event, input: unknown): ShortcutBindingsSetResult => {
+      if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+        logger?.info("ipc.shortcuts", "Rejected shortcut update.", {
+          code: "unauthorized-sender",
+        });
+        return {
+          ok: false,
+          bindings: DEFAULT_SHORTCUT_BINDINGS,
+          error: "unauthorized-sender",
+        };
+      }
+      try {
+        return storeShortcutBindings(input);
+      } catch (error) {
+        logger?.error("shortcuts.store", error);
+        return {
+          ok: false,
+          bindings: readShortcutBindingsSnapshot(),
+          error: "shortcut-save-failed",
+        };
+      }
+    },
+  );
+
   ipcMain.handle(STARTUP_PREFERENCES_SET_CHANNEL, (event, input: unknown): StartupPreferencesSnapshot => {
     if (!mainWindow || event.sender !== mainWindow.webContents) {
       logger?.info("ipc.startup-preferences", "Rejected startup preference update.", {
@@ -6459,6 +6958,11 @@ async function startApplication(): Promise<void> {
     if (!mainWindow || event.sender !== mainWindow.webContents) return;
     event.sender.copy();
   });
+  ipcMain.handle(NATIVE_EDIT_COMMAND_CHANNEL, (event, input: unknown): void => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return;
+    if (input === "paste") event.sender.paste();
+    if (input === "select-all") event.sender.selectAll();
+  });
 
   // Bootstrap dialog locale from OS before Renderer syncs (WorldlineBox-bwb).
   appLocale = mapSystemLocaleToAppLocale(app.getLocale());
@@ -6482,6 +6986,7 @@ async function startApplication(): Promise<void> {
     installApplicationMenu({
       locale: appLocale,
       recentLibraries: nativeMenuRecentLibraries(),
+      shortcutBindings: readShortcutBindingsSnapshot(),
     });
     windowsTray?.updateLocale(appLocale);
   });
@@ -6555,13 +7060,34 @@ async function startApplication(): Promise<void> {
     setWindowsBrowseShortcutAcceleratorsEnabled(enabled);
   });
 
+  ipcMain.on(APPLICATION_SHORTCUTS_ENABLED_CHANNEL, (event, input: unknown) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return;
+    const enabled =
+      typeof input === "object" &&
+      input !== null &&
+      "enabled" in input &&
+      Boolean((input as { enabled?: unknown }).enabled);
+    const fullscreenOnly = typeof input === 'object' && input !== null && 'fullscreenOnly' in input
+      && (input as { fullscreenOnly?: unknown }).fullscreenOnly === true;
+    setWindowsApplicationShortcutAcceleratorsEnabled(enabled, fullscreenOnly);
+  });
+
   ipcMain.on(VIEWER_VIDEO_SHORTCUTS_ACTIVE_CHANNEL, (event, input: unknown) => {
+    const scope = typeof input === "object" && input !== null && "scope" in input
+      && (input as { scope?: unknown }).scope === "viewer.audio"
+      ? "viewer.audio"
+      : "viewer.video";
     const active =
       typeof input === "object" &&
       input !== null &&
       "active" in input &&
       Boolean((input as { active?: unknown }).active);
-    setViewerVideoShortcutCaptureActive(event.sender, active);
+    setViewerVideoShortcutCaptureActive(
+      event.sender,
+      active,
+      readShortcutBindingsSnapshot(),
+      scope,
+    );
   });
 
   ipcMain.on(PLUGIN_INPUT_CAPTURE_EVENT_CHANNEL, (event, payload: unknown) => {
@@ -6596,6 +7122,7 @@ async function startApplication(): Promise<void> {
   installApplicationMenu({
     locale: appLocale,
     recentLibraries: nativeMenuRecentLibraries(),
+    shortcutBindings: readShortcutBindingsSnapshot(),
   });
 
   registerWindowControls({
@@ -6648,6 +7175,7 @@ async function startApplication(): Promise<void> {
       port: 19876,
       uploadStagingRoot: app.getPath("temp"),
       onListFolders: handleListFolders,
+      onListCollections: handleListCollections,
       onSaveIntent: handleSaveIntent,
       onSaveUpload: handleSaveUpload,
       onError: (err) => logger?.error("extension-server", err),

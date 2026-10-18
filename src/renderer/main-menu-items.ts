@@ -8,12 +8,14 @@ import {
 import type { IconName } from "./Icons";
 import type { CommandPlatform } from "./commands/command-types";
 import type { ApplicationMenuCommand } from "../shared/application-menu";
+import { formatRuntimeShortcut } from "./shortcut-runtime";
 
 export const WORLDLINEBOX_VERSION = packageJson.version;
 
 export type MainMenuSectionId =
   | "file"
   | "edit"
+  | "view"
   | "library"
   | "window"
   | "settings"
@@ -121,6 +123,9 @@ export type MainMenuActions = {
   readonly openSettings: () => void;
   readonly openBackgroundJobs: () => void;
   readonly toggleFullscreen: () => void;
+  readonly zoomIn: () => void;
+  readonly zoomOut: () => void;
+  readonly zoomReset: () => void;
   readonly openAppLog: () => void;
   readonly openAbout: () => void;
   readonly openGitHub: () => void;
@@ -150,8 +155,8 @@ export type MainMenuBuilderInput = {
   readonly actions: MainMenuActions;
 };
 
-function shortcut(platform: CommandPlatform, mac: string, windows: string): string {
-  return platform === "mac" ? mac : windows;
+function shortcut(actionId: string, platform: CommandPlatform): string | undefined {
+  return formatRuntimeShortcut(actionId, platform) ?? undefined;
 }
 
 function label(locale: AppLocale, key: string, params?: TranslateParams): string {
@@ -219,42 +224,42 @@ export function buildMainMenuSections({
         {
           id: "edit.undo",
           label: state.undoLabel ?? label(locale, "shell.mainMenuUndo"),
-          shortcut: shortcut(platform, "⌘Z", "Ctrl+Z"),
+          shortcut: shortcut("edit.undo", platform),
           disabled: !state.hasUndoableOperation || state.busy,
           onSelect: actions.undo,
         },
         {
           id: "edit.redo",
           label: state.redoLabel ?? label(locale, "shell.mainMenuRedo"),
-          shortcut: shortcut(platform, "⌘⇧Z", "Ctrl+Shift+Z"),
+          shortcut: shortcut("edit.redo", platform),
           disabled: !state.hasRedoableOperation || state.busy,
           onSelect: actions.redo,
         },
         {
           id: "edit.copy-selection",
           label: label(locale, "shell.mainMenuCopySelection"),
-          shortcut: shortcut(platform, "⌘C", "Ctrl+C"),
+          shortcut: shortcut("asset.copy", platform),
           disabled: selectionDisabled,
           onSelect: actions.copySelection,
         },
         {
           id: "edit.paste",
           label: label(locale, "shell.mainMenuPaste"),
-          shortcut: shortcut(platform, "⌘V", "Ctrl+V"),
+          shortcut: shortcut("asset.paste", platform),
           disabled: !state.hasPasteTarget,
           onSelect: actions.paste,
         },
         {
           id: "edit.select-all",
           label: label(locale, "shell.mainMenuSelectAll"),
-          shortcut: shortcut(platform, "⌘A", "Ctrl+A"),
+          shortcut: shortcut("selection.select-all", platform),
           disabled: selectDisabled,
           onSelect: actions.selectAll,
         },
         {
           id: "edit.invert-selection",
           label: label(locale, "shell.mainMenuInvertSelection"),
-          shortcut: shortcut(platform, "⌘I", "Ctrl+I"),
+          shortcut: shortcut("selection.invert", platform),
           disabled: selectDisabled,
           onSelect: actions.invertSelection,
         },
@@ -263,6 +268,31 @@ export function buildMainMenuSections({
           label: label(locale, "shell.mainMenuClearSelection"),
           disabled: !state.hasSelectedAssets,
           onSelect: actions.clearSelection,
+        },
+      ],
+    },
+    {
+      id: "view",
+      label: label(locale, "shell.mainMenuView"),
+      icon: "fit-window",
+      items: [
+        {
+          id: "canvas.zoom-in",
+          label: label(locale, "preview.zoomIn"),
+          shortcut: shortcut("canvas.zoom-in", platform),
+          onSelect: actions.zoomIn,
+        },
+        {
+          id: "canvas.zoom-out",
+          label: label(locale, "preview.zoomOut"),
+          shortcut: shortcut("canvas.zoom-out", platform),
+          onSelect: actions.zoomOut,
+        },
+        {
+          id: "canvas.zoom-reset",
+          label: label(locale, "preview.fitWindow"),
+          shortcut: shortcut("canvas.zoom-reset", platform),
+          onSelect: actions.zoomReset,
         },
       ],
     },
@@ -336,7 +366,7 @@ export function buildMainMenuSections({
         {
           id: "window.toggle-fullscreen",
           label: label(locale, "shell.mainMenuToggleFullscreen"),
-          shortcut: shortcut(platform, "⌃⌘F", "F11"),
+          shortcut: shortcut("window.toggle-fullscreen", platform),
           onSelect: actions.toggleFullscreen,
         },
         {

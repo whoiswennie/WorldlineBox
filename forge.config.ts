@@ -20,26 +20,12 @@ process.env.VcpkgEnabled = 'false';
 function nativeMediaPlatform(platform: string, arch: string): string {
   const expectedHost = `${process.platform}-${process.arch}`;
   const target = `${platform}-${arch}`;
-  if (target !== expectedHost || !['darwin-arm64', 'win32-x64', 'linux-x64'].includes(target)) {
+  if (target !== expectedHost || !['darwin-arm64', 'win32-x64', 'linux-x64', 'linux-arm64'].includes(target)) {
     throw new Error(
       `WorldlineBox release packages must be built and media-verified natively; host=${expectedHost}, target=${target}.`,
     );
   }
   return target;
-}
-
-/**
- * linux-arm64 has no pinned media bundle. x64 Linux uses the same ensure/verify
- * gate as macOS and Windows. Every Linux package must still be built natively.
- */
-function skipsPinnedMediaBundle(platform: string, arch: string): boolean {
-  if (platform !== 'linux' || arch === 'x64') return false;
-  if (platform !== process.platform || arch !== process.arch) {
-    throw new Error(
-      `WorldlineBox Linux packages must be built natively; host=${process.platform}-${process.arch}, target=${platform}-${arch}.`,
-    );
-  }
-  return true;
 }
 
 function runNodeGate(script: string, args: string[], extraEnv?: NodeJS.ProcessEnv): void {
@@ -69,10 +55,6 @@ const config: ForgeConfig = {
       // rebuild 之前强制 VcpkgEnabled=false（与 scripts/rebuild-native.mjs
       // 一致）。
       process.env.VcpkgEnabled = 'false';
-      if (skipsPinnedMediaBundle(platform, arch)) {
-        runNodeGate('scripts/build-extension.mjs', []);
-        return;
-      }
       const mediaPlatform = nativeMediaPlatform(platform, arch);
       runNodeGate('scripts/generate-automation-declarations.mjs', []);
       // Recover ignored media executables from the pinned WorldlineBox-Build
@@ -85,7 +67,6 @@ const config: ForgeConfig = {
       runNodeGate('scripts/build-extension.mjs', []);
     },
     postPackage: async (_forgeConfig, packageResult) => {
-      if (skipsPinnedMediaBundle(packageResult.platform, packageResult.arch)) return;
       nativeMediaPlatform(packageResult.platform, packageResult.arch);
       for (const outputPath of packageResult.outputPaths) {
         runNodeGate('scripts/verify-package.mjs', [], {
@@ -98,7 +79,6 @@ const config: ForgeConfig = {
     // input again so that shortcut cannot feed stale or modified bytes to a
     // maker without passing the package gate.
     preMake: async () => {
-      if (skipsPinnedMediaBundle(process.platform, process.arch)) return;
       const mediaPlatform = nativeMediaPlatform(process.platform, process.arch);
       runNodeGate('scripts/media-binaries.mjs', ['ensure', '--platform', mediaPlatform]);
       if (mediaPlatform === 'win32-x64') runNodeGate('scripts/portable-tools.mjs', ['release', '--release-root', packagedResourcesRoot]);

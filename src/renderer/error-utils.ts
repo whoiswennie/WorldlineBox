@@ -3,6 +3,7 @@ import type {
   PublicErrorCode,
   PublicErrorReason,
 } from "../shared/protocol/errors";
+import { publicErrorReasonSchema } from "../shared/protocol/errors";
 import { LibraryTransitionInProgressError } from "./library-transition-lock";
 import { catalogs } from "./i18n/catalogs";
 import { zhCN } from "./i18n/catalogs/zh-CN";
@@ -88,7 +89,18 @@ export function toMessage(
     const code = (error as { code?: unknown }).code;
     if (typeof code === "string") {
       const mapped = messageForCode(code as PublicErrorCode, locale);
-      if (mapped) return mapped;
+      if (mapped) {
+        // IPC returns plain PublicError objects rather than class instances.
+        // Preserve their stable, localized reason just as the wrapper does;
+        // arbitrary provider text is never used as reason copy.
+        const parsedReason = publicErrorReasonSchema.safeParse((error as { reason?: unknown }).reason);
+        const reason = parsedReason.success
+          ? reasonForCode(parsedReason.data, locale)
+          : undefined;
+        return reason
+          ? translateForLocale(locale, "error.withReason", { message: mapped, reason })
+          : mapped;
+      }
     }
     const objectMessage = (error as { message?: unknown }).message;
     if (typeof objectMessage === "string" && objectMessage.trim()) {

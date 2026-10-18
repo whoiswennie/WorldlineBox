@@ -38,6 +38,7 @@ import {
 } from "./asset-drag-drop";
 import {
   MANAGED_FOLDERS_DRAG_TYPE,
+  canMoveFoldersToParent,
   parseManagedFolderDrag,
   resolveDraggedFolderIds,
   resolveFolderOntoFolderDrop,
@@ -106,6 +107,15 @@ import {
 } from "./folder-sort-preferences";
 import { PortaledPopover } from "./PortaledPopover";
 import { PaneSurface } from "./ui/surfaces";
+import {
+  applyFolderSiblingOrder,
+  insertBesideSibling,
+  loadCollectionCustomOrder,
+  loadFolderCustomOrder,
+  saveCollectionCustomOrder,
+  saveFolderCustomOrder,
+  type FolderDropEdge,
+} from "./folder-custom-order";
 
 // ---------------------------------------------------------------------------
 // NavRow — local presentational row
@@ -136,6 +146,7 @@ function NavRow({
   navFolderKind,
   navCollectionId,
   multiSelected,
+  insertEdge,
 }: {
   icon: IconName;
   appearance?: EntityAppearance | null;
@@ -166,13 +177,28 @@ function NavRow({
   multiSelected?: boolean;
   /** Focus target for collection keyboard shortcuts. */
   navCollectionId?: string;
+  /** Custom-order drop insertion edge (WorldlineBox: folder 自定义 sort). */
+  insertEdge?: FolderDropEdge | null;
 }) {
   // CU-D9: always expose the full label on hover; when a status title is also
   // provided (e.g. offline linked folder), append it after the name.
   const hoverTitle =
     title && title !== label ? `${label} — ${title}` : label;
   return (
-    <div className="nav-tree-row" style={{ paddingLeft: depth * 14 }}>
+    <div
+      className="nav-tree-row"
+      data-insert-edge={insertEdge ?? undefined}
+      style={{ paddingLeft: depth * 14 }}
+    >
+      {insertEdge ? (
+        <span
+          aria-hidden="true"
+          className="nav-folder-insert-line"
+          // Start where the row button starts (after the disclosure column),
+          // so the line spans the folder row instead of the indentation gutter.
+          style={{ left: depth * 14 + 18 }}
+        />
+      ) : null}
       {disclosure ?? <span className="nav-disclosure-spacer" aria-hidden="true" />}
       <button
         className={`nav-row${active ? " is-active" : ""}${multiSelected ? " is-multi-selected" : ""}${dropActive ? " is-drop-target" : ""}`}
@@ -391,6 +417,7 @@ function InlineCollectionEditRow({
 
   return (
     <div className="nav-tree-row" style={{ paddingLeft: depth * 14 }}>
+
       <span className="nav-disclosure-spacer" aria-hidden="true" />
       <div className="nav-inline-edit" style={{ paddingLeft: 7 }}>
         <Icon name="collection" size={15} />
@@ -669,6 +696,7 @@ const FOLDER_SORT_FIELDS: readonly {
   { mode: "name", labelKey: "nav.sortByName" },
   { mode: "created", labelKey: "nav.sortByCreated" },
   { mode: "count", labelKey: "nav.sortByCount" },
+  { mode: "custom", labelKey: "nav.sortByCustom" },
 ];
 const COLLECTION_SORT_FIELDS = FOLDER_SORT_FIELDS.filter(
   ({ mode }) => mode !== "created",
@@ -704,7 +732,8 @@ function SidebarSortTrigger({
   const [keyboardNav, setKeyboardNav] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
   const listId = useId();
-  const nonDefault = mode !== "name" || order !== "asc";
+  // "自定义" is the default order; custom ignores the asc/desc switch.
+  const nonDefault = mode !== "custom";
 
   useEffect(() => {
     if (!open) return;
@@ -775,6 +804,7 @@ function SidebarSortTrigger({
           onPointerMove={() => setKeyboardNav(false)}
           role="dialog"
         >
+          {mode !== "custom" && (
           <div
             aria-label={t("nav.sortDirection")}
             className="sort-mode-order-group"
@@ -801,6 +831,7 @@ function SidebarSortTrigger({
               </button>
             ))}
           </div>
+          )}
           <div
             aria-label={t("nav.sortBy")}
             className="sort-mode-field-list"
@@ -925,6 +956,7 @@ export interface NavigationSidebarProps {
   onFoldersDroppedOnFolder: (
     targetFolderId: string | null,
     folderIds: string[],
+    options?: { blockingUi?: boolean },
   ) => void;
   /** Canvas/sidebar folder selection for folder drag (WorldlineBox-nno6). */
   selectedFolderIds: readonly string[];
@@ -993,8 +1025,15 @@ export interface NavigationSidebarProps {
   ) => void;
 
   // --- Collection drag/drop ---
-  onNestCollection: (sourceId: string, targetId: string) => void;
-  onMoveCollectionToRoot: (collectionId: string) => void;
+  onNestCollection: (
+    sourceId: string,
+    targetId: string,
+    options?: { blockingUi?: boolean },
+  ) => void;
+  onMoveCollectionToRoot: (
+    collectionId: string,
+    options?: { blockingUi?: boolean },
+  ) => void;
   onImportDroppedFiles: (
     files: File[],
     targetFolderId: string | null | undefined,
@@ -1150,6 +1189,28 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   );
   const [collectionSortPrefs, setCollectionSortPrefs] =
     useState<CollectionSortPreferences>(() => loadCollectionSortPreferences());
+  // WorldlineBox folder custom order: device-local, keyed by library id (the sort
+  // mode itself is device-local too).
+  const [folderCustomOrder, setFolderCustomOrder] = useState<
+    ReadonlyMap<string, number>
+  >(() => loadFolderCustomOrder(library?.libraryId));
+  const loadedCustomOrderLibraryRef = useRef<string | null>(null);
+  useEffect(() => {
+    const libraryId = library?.libraryId ?? null;
+    if (loadedCustomOrderLibraryRef.current === libraryId) return;
+    loadedCustomOrderLibraryRef.current = libraryId;
+    setFolderCustomOrder(loadFolderCustomOrder(libraryId));
+  }, [library?.libraryId]);
+  const [collectionCustomOrder, setCollectionCustomOrder] = useState<
+    ReadonlyMap<string, number>
+  >(() => loadCollectionCustomOrder(library?.libraryId));
+  const loadedCollectionOrderLibraryRef = useRef<string | null>(null);
+  useEffect(() => {
+    const libraryId = library?.libraryId ?? null;
+    if (loadedCollectionOrderLibraryRef.current === libraryId) return;
+    loadedCollectionOrderLibraryRef.current = libraryId;
+    setCollectionCustomOrder(loadCollectionCustomOrder(libraryId));
+  }, [library?.libraryId]);
   const [folderSearchOpen, setFolderSearchOpen] = useState(false);
   const [folderSearchQuery, setFolderSearchQuery] = useState("");
   const [collectionSearchOpen, setCollectionSearchOpen] = useState(false);
@@ -1406,13 +1467,16 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
    * The payload itself cannot be read here: HTML5 puts the drag data store in
    * protected mode during dragenter/dragover, so `getData` returns "".
    */
+  const currentDraggedFolderIds = useCallback((): string[] | null => {
+    return (
+      draggedFolderIdsRef.current ??
+      (getManagedFolderDragIds ? [...(getManagedFolderDragIds() ?? [])] : null)
+    );
+  }, [getManagedFolderDragIds]);
+
   const acceptsFolderDrop = useCallback(
     (targetFolderId: string | null): boolean => {
-      const draggedIds =
-        draggedFolderIdsRef.current ??
-        (getManagedFolderDragIds
-          ? [...(getManagedFolderDragIds() ?? [])]
-          : null);
+      const draggedIds = currentDraggedFolderIds();
       if (!draggedIds || draggedIds.length === 0) return true;
       return (
         resolveFolderOntoFolderDrop({
@@ -1422,8 +1486,28 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         }).kind === "move"
       );
     },
-    [folderDragFacts, getManagedFolderDragIds],
+    [currentDraggedFolderIds, folderDragFacts],
   );
+
+  /**
+   * A custom-order insertion beside a row lands the dragged folders in that
+   * row's parent. Validate the destination against the real folder tree so a
+   * drop never creates a cycle (folder into itself / into its descendant).
+   */
+  function acceptsFolderInsertBeside(targetFolderId: string): boolean {
+    const draggedIds = currentDraggedFolderIds();
+    if (!draggedIds || draggedIds.length === 0) return false;
+    if (draggedIds.includes(targetFolderId)) return false;
+    const target = sortedDirectoryEntries.find(
+      (entry) => entry.folderId === targetFolderId,
+    );
+    if (!target) return false;
+    return canMoveFoldersToParent({
+      targetParentFolderId: target.parentFolderId,
+      draggedFolderIds: draggedIds,
+      folders: folderDragFacts,
+    });
+  }
 
   function assetFolderDropHandlers(key: string, folderId: string | null) {
     return {
@@ -1522,6 +1606,84 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           return;
         }
         onExternalDrop(event, folderId, undefined);
+      },
+    };
+  }
+
+  /**
+   * Custom-order drop layer: in "自定义" mode the top/bottom 30% of a folder
+   * row inserts before/after while the middle keeps the existing
+   * move-into-folder behaviour. The insertion line is rendered from
+   * `folderInsertEdge`.
+   */
+  function folderRowDropHandlers(key: string, folderId: string | null) {
+    const base = assetFolderDropHandlers(key, folderId);
+    if (folderId === null) return base;
+    return {
+      ...base,
+      onDragEnter: (event: React.DragEvent<HTMLButtonElement>) => {
+        if (
+          folderSortPrefs.mode === "custom" &&
+          supportsManagedFolderDrag(event.dataTransfer)
+        ) {
+          // The row's top/bottom bands insert beside it; dragOver decides
+          // whether this is an insertion or a move-into-folder.
+          return;
+        }
+        base.onDragEnter?.(event);
+      },
+      onDragOver: (event: React.DragEvent<HTMLButtonElement>) => {
+        if (
+          folderSortPrefs.mode === "custom" &&
+          supportsManagedFolderDrag(event.dataTransfer)
+        ) {
+          const edge = acceptsFolderInsertBeside(folderId)
+            ? folderDropEdgeAt(event)
+            : null;
+          if (edge) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setAssetDropTarget(null);
+            setFolderInsertEdge((current) =>
+              current?.folderId === folderId && current.edge === edge
+                ? current
+                : { folderId, edge },
+            );
+            return;
+          }
+          setFolderInsertEdge((current) =>
+            current?.folderId === folderId ? null : current,
+          );
+          if (acceptsFolderDrop(folderId)) setAssetDropTarget(key);
+        }
+        base.onDragOver?.(event);
+      },
+      onDragLeave: (event: React.DragEvent<HTMLButtonElement>) => {
+        base.onDragLeave?.(event);
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          return;
+        }
+        setFolderInsertEdge((current) =>
+          current?.folderId === folderId ? null : current,
+        );
+      },
+      onDrop: (event: React.DragEvent<HTMLButtonElement>) => {
+        const folderIds = parseManagedFolderDrag(event.dataTransfer);
+        if (
+          folderSortPrefs.mode === "custom" &&
+          folderIds !== null &&
+          folderIds.length > 0 &&
+          folderInsertEdge?.folderId === folderId &&
+          acceptsFolderInsertBeside(folderId)
+        ) {
+          event.preventDefault();
+          setFolderInsertEdge(null);
+          setAssetDropTarget(null);
+          reorderFolderBeside(folderId, folderInsertEdge.edge, folderIds);
+          return;
+        }
+        setFolderInsertEdge(null);
+        base.onDrop?.(event);
       },
     };
   }
@@ -1668,6 +1830,36 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     return Boolean(dragged && dragged.parentId !== targetId);
   }
 
+  function collectionParentId(collectionId: string): string | null | undefined {
+    for (const [parentId, children] of collectionTree) {
+      if (children.some((collection) => collection.collectionId === collectionId)) {
+        return parentId;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Insertion beside a collection puts the dragged collection in the hovered
+   * row's parent. Reject drops that would nest a collection inside itself or
+   * inside one of its descendants.
+   */
+  function acceptsCollectionInsertBeside(targetCollectionId: string): boolean {
+    if (!draggedCollectionId || draggedCollectionId === targetCollectionId) {
+      return false;
+    }
+    const targetParentId = collectionParentId(targetCollectionId);
+    if (targetParentId === undefined) return false;
+    if (targetParentId === draggedCollectionId) return false;
+    if (
+      targetParentId !== null &&
+      isCollectionAncestor(draggedCollectionId, targetParentId)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   function highlightCollectionNestTarget(collectionId: string): boolean {
     if (!acceptsCollectionNestDrop(collectionId)) return false;
     setAssetDropTarget(`collection:${collectionId}`);
@@ -1729,7 +1921,127 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     unifiedDirectoryEntries,
     folderSortPrefs.mode,
     folderSortPrefs.order,
+    folderCustomOrder,
   );
+  const [folderInsertEdge, setFolderInsertEdge] = useState<{
+    folderId: string;
+    edge: FolderDropEdge;
+  } | null>(null);
+  const [collectionInsertEdge, setCollectionInsertEdge] = useState<{
+    collectionId: string;
+    edge: FolderDropEdge;
+  } | null>(null);
+  useEffect(() => {
+    const clear = () => {
+      setFolderInsertEdge(null);
+      setCollectionInsertEdge(null);
+    };
+    document.addEventListener("dragend", clear);
+    document.addEventListener("drop", clear);
+    return () => {
+      document.removeEventListener("dragend", clear);
+      document.removeEventListener("drop", clear);
+    };
+  }, []);
+
+  function folderDropEdgeAt(
+    event: React.DragEvent<HTMLElement>,
+  ): FolderDropEdge | null {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.height <= 0) return null;
+    const ratio = (event.clientY - rect.top) / rect.height;
+    if (ratio < 0.3) return "before";
+    if (ratio > 0.7) return "after";
+    return null;
+  }
+
+  /** Reorder the dragged folder beside `targetId` and persist the sequence. */
+  function reorderFolderBeside(
+    targetId: string,
+    edge: FolderDropEdge,
+    draggedIds: readonly string[],
+  ): void {
+    if (!library?.libraryId || draggedIds.length === 0) return;
+    const target = sortedDirectoryEntries.find(
+      (entry) => entry.folderId === targetId,
+    );
+    if (!target) return;
+    const draggedParents = draggedIds.map(
+      (folderId) =>
+        sortedDirectoryEntries.find((entry) => entry.folderId === folderId)
+          ?.parentFolderId ?? null,
+    );
+    const needsMove = draggedIds.some(
+      (_folderId, index) => draggedParents[index] !== target.parentFolderId,
+    );
+    const siblings = sortedDirectoryEntries
+      .filter((entry) => entry.parentFolderId === target.parentFolderId)
+      .map((entry) => entry.folderId);
+    if (siblings.length === 0 && !needsMove) return;
+    const nextSequence = insertBesideSibling(
+      siblings,
+      draggedIds,
+      targetId,
+      edge,
+    );
+    if (nextSequence.join("\u0000") === siblings.join("\u0000")) return;
+    const next = applyFolderSiblingOrder(
+      folderCustomOrder,
+      target.parentFolderId,
+      nextSequence,
+    );
+    setFolderCustomOrder(next);
+    saveFolderCustomOrder(library.libraryId, next);
+    // Cross-level drop: move first, then the stored order above places it
+    // beside the target as soon as the refreshed tree arrives.
+    if (needsMove) {
+      onFoldersDroppedOnFolder(target.parentFolderId, [...draggedIds], {
+        blockingUi: false,
+      });
+    }
+  }
+
+  /** Reorder a collection beside `targetId`; cross-parent drops reparent it. */
+  function reorderCollectionBeside(
+    targetId: string,
+    edge: FolderDropEdge,
+    draggedId: string,
+  ): void {
+    if (!library?.libraryId) return;
+    if (!acceptsCollectionInsertBeside(targetId)) return;
+    const targetParentId = collectionParentId(targetId);
+    if (targetParentId === undefined) return;
+    const draggedParentId = collectionParentId(draggedId) ?? null;
+    const needsMove = draggedParentId !== targetParentId;
+    // Use the visible (custom-ordered) sibling sequence so untouched rows
+    // keep their relative order when the sequence is renumbered.
+    const siblings = (sortedCollectionTree.get(targetParentId) ?? []).map(
+      (collection) => collection.collectionId,
+    );
+    const nextSequence = insertBesideSibling(
+      siblings,
+      [draggedId],
+      targetId,
+      edge,
+    );
+    if (nextSequence.join("\u0000") === siblings.join("\u0000")) return;
+    const next = applyFolderSiblingOrder(
+      collectionCustomOrder,
+      targetParentId,
+      nextSequence,
+    );
+    setCollectionCustomOrder(next);
+    saveCollectionCustomOrder(library.libraryId, next);
+    if (needsMove) {
+      if (targetParentId === null) {
+        onMoveCollectionToRoot(draggedId, { blockingUi: false });
+      } else {
+        void onNestCollection(draggedId, targetParentId, {
+          blockingUi: false,
+        });
+      }
+    }
+  }
   const folderSearchActive = folderSearchQuery.trim().length > 0;
   const directoryEntries = folderSearchActive
     ? filterDirectoryEntriesByName(sortedDirectoryEntries, folderSearchQuery)
@@ -1741,6 +2053,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     collectionTree,
     collectionSortPrefs.mode,
     collectionSortPrefs.order,
+    collectionCustomOrder,
   );
   const collectionSearchActive = collectionSearchQuery.trim().length > 0;
   const visibleCollectionTree = collectionSearchActive
@@ -1813,6 +2126,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             navFolderId={entry.folderId}
             navFolderKind="managed"
             multiSelected={selectedFolderIds.includes(entry.folderId)}
+            insertEdge={
+              folderInsertEdge?.folderId === entry.folderId
+                ? folderInsertEdge.edge
+                : null
+            }
             onClick={(event) => {
               // WorldlineBox-d7acfa：侧栏树里的文件夹也能 Ctrl/⌘ 多选，复用画布卡片的
               // 同一份选择状态与同一个批量菜单入口（普通点击仍然进文件夹）。
@@ -1866,7 +2184,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 { x: event.clientX, y: event.clientY },
               );
             }}
-            {...assetFolderDropHandlers(`folder:${entry.folderId}`, entry.folderId)}
+            {...folderRowDropHandlers(`folder:${entry.folderId}`, entry.folderId)}
           />
         );
       }
@@ -2152,6 +2470,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     rows.push(...children.map((c) => (
       <div
         className="collection-drop-target"
+        data-nav-collection-id={c.collectionId}
         draggable={inlineCollectionRename?.collectionId !== c.collectionId}
         key={c.collectionId}
         onDragEnd={() => onSetDraggedCollectionId(null)}
@@ -2306,6 +2625,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             depth={depth}
             navCollectionId={c.collectionId}
             dropActive={assetDropTarget === `collection:${c.collectionId}`}
+            insertEdge={
+              collectionInsertEdge?.collectionId === c.collectionId
+                ? collectionInsertEdge.edge
+                : null
+            }
             onDragEnter={(event) => {
               if (supportsAssetDropTransfer(event.dataTransfer)) {
                 event.stopPropagation();
@@ -2314,7 +2638,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               }
               if (draggedCollectionId) {
                 event.stopPropagation();
-                highlightCollectionNestTarget(c.collectionId);
+                // In custom mode the row's top/bottom bands insert beside it
+                // and only the middle nests; dragOver makes that call.
+                if (collectionSortPrefs.mode !== "custom") {
+                  highlightCollectionNestTarget(c.collectionId);
+                }
               }
             }}
             onDragLeave={(event) => {
@@ -2325,6 +2653,9 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 return;
               setAssetDropTarget((current) =>
                 current === `collection:${c.collectionId}` ? null : current,
+              );
+              setCollectionInsertEdge((current) =>
+                current?.collectionId === c.collectionId ? null : current,
               );
             }}
             onDragOver={(event) => {
@@ -2339,7 +2670,29 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 // highlight, therefore it must also accept the drop here.
                 onExternalDragOver(event);
               } else if (draggedCollectionId) {
-                if (isFolderListBlankTarget(event)) return;
+                // This handler only runs for the row button itself; gutter and
+                // blank hits bubble to the collection list's root-drop target.
+                if (collectionSortPrefs.mode === "custom") {
+                  const edge = acceptsCollectionInsertBeside(c.collectionId)
+                    ? folderDropEdgeAt(event)
+                    : null;
+                  if (edge) {
+                    event.stopPropagation();
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setAssetDropTarget(null);
+                    setCollectionInsertEdge((current) =>
+                      current?.collectionId === c.collectionId &&
+                      current.edge === edge
+                        ? current
+                        : { collectionId: c.collectionId, edge },
+                    );
+                    return;
+                  }
+                  setCollectionInsertEdge((current) =>
+                    current?.collectionId === c.collectionId ? null : current,
+                  );
+                }
                 if (!highlightCollectionNestTarget(c.collectionId)) return;
                 event.stopPropagation();
                 event.preventDefault();
@@ -2347,6 +2700,26 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               }
             }}
             onDrop={(event) => {
+              if (
+                draggedCollectionId &&
+                collectionSortPrefs.mode === "custom" &&
+                collectionInsertEdge?.collectionId === c.collectionId &&
+                acceptsCollectionInsertBeside(c.collectionId)
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                setAssetDropTarget(null);
+                setCollectionInsertEdge(null);
+                reorderCollectionBeside(
+                  c.collectionId,
+                  collectionInsertEdge.edge,
+                  draggedCollectionId,
+                );
+                return;
+              }
+              setCollectionInsertEdge((current) =>
+                current?.collectionId === c.collectionId ? null : current,
+              );
               const assetIds = parseManagedAssetDrag(event.dataTransfer);
               if (!assetIds || assetIds.length === 0) return;
               event.preventDefault();

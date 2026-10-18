@@ -7,9 +7,9 @@
  *
  * Output: out/make/appimage/WorldlineBox-<version>-<arch>.AppImage
  *
- * The AppImage bundles Electron, native modules, and the pinned linux-x64
+ * The AppImage bundles Electron, native modules, and the pinned host-architecture (linux-x64 or linux-arm64)
  * media binaries (`resources/ffmpeg` and `resources/oiio`) that `npm run package`
- * acquires via `media:ensure`. Build it on the oldest glibc you want to support
+ * acquires via `media:ensure`. Build natively on the oldest glibc you want to support
  * (scripts/appimage-docker.sh builds in Ubuntu 22.04, glibc 2.35). ffmpeg may
  * still be overridden with `WORLDLINEBOX_FFMPEG_PATH` / system PATH; oiiotool resolves
  * the bundled binary first.

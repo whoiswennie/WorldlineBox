@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment happy-dom
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CARD_SIZE_MAX,
@@ -12,12 +13,13 @@ import {
   nextKeyboardCardSize,
   nextKeyboardZoomScale,
   shouldIgnoreGlobalZoomShortcut,
-  type GlobalZoomShortcutEvent,
+  dispatchGlobalZoomMenuCommandIfAllowed,
 } from "../../src/renderer/global-zoom-shortcuts";
+import type { ShortcutKeyboardEventLike } from "../../src/shared/shortcut-resolution";
 
 const event = (
-  overrides: Partial<GlobalZoomShortcutEvent>,
-): GlobalZoomShortcutEvent => ({
+  overrides: Partial<ShortcutKeyboardEventLike>,
+): ShortcutKeyboardEventLike => ({
   key: "",
   metaKey: false,
   ctrlKey: false,
@@ -92,6 +94,15 @@ describe("matchGlobalZoomShortcut", () => {
       ),
     ).toBe("out");
   });
+
+  it("ignores system key-repeat events", () => {
+    expect(
+      matchGlobalZoomShortcut(
+        event({ key: "=", ctrlKey: true, repeat: true }),
+        "windows",
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("keyboard zoom / card-size steps", () => {
@@ -140,5 +151,35 @@ describe("shouldIgnoreGlobalZoomShortcut", () => {
         closest: () => null,
       } as unknown as EventTarget),
     ).toBe(false);
+  });
+
+  it("ignores a focused non-editable control while an active modal owns focus", () => {
+    const dialog = document.createElement("section");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const button = document.createElement("button");
+    dialog.append(button);
+    document.body.append(dialog);
+    button.focus();
+
+    expect(shouldIgnoreGlobalZoomShortcut(button)).toBe(true);
+
+    dialog.remove();
+  });
+});
+
+describe("native application-menu zoom ownership", () => {
+  it("keeps text inputs and modal dialogs ahead of View accelerators", () => {
+    const zoom = vi.fn();
+    expect(dispatchGlobalZoomMenuCommandIfAllowed("in", { tagName: "INPUT" } as unknown as EventTarget, false, zoom)).toBe(false);
+    expect(dispatchGlobalZoomMenuCommandIfAllowed("in", { tagName: "DIV" } as unknown as EventTarget, true, zoom)).toBe(false);
+    expect(zoom).not.toHaveBeenCalled();
+  });
+
+  it("dispatches View zoom commands from the normal canvas focus", () => {
+    const zoom = vi.fn();
+    const canvas = { tagName: "DIV", closest: () => null } as unknown as EventTarget;
+    expect(dispatchGlobalZoomMenuCommandIfAllowed("in", canvas, false, zoom)).toBe(true);
+    expect(zoom).toHaveBeenCalledWith("in");
   });
 });

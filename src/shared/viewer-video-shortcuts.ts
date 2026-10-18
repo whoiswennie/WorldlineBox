@@ -1,52 +1,73 @@
 /**
- * Video viewer letter shortcuts (VIEWER-018 / WorldlineBox-80c3).
- *
- * Product rule: unmodified letter chords (D/F/X/C) must work under **any**
- * IME — including Chinese. Unmodified letters often never reach the Renderer
- * while an IME is composing. On Windows the Main process:
- * 1. installs hidden Menu accelerators for D/F/X/C while the viewer is armed,
- * 2. temporarily suspends IMM32 conversion (ImmAssociateContext / SetOpenStatus),
- * 3. keeps `before-input-event` as a cross-platform fallback.
- * Focusing a text field or closing the viewer restores IME and clears the menu.
+ * Main-process fallback for viewer actions whose Windows CJK IME path needs a
+ * hidden Menu accelerator. The action ids and scopes come from the shortcut
+ * catalog; this table only connects those actions to Renderer handlers.
  */
 
-export const VIEWER_VIDEO_SHORTCUT_ACTIONS = [
-  "frame-prev",
-  "frame-next",
-  "rate-slower",
-  "rate-faster",
-] as const;
+import {
+  SHORTCUT_ACTIONS,
+  type ShortcutPlatform,
+} from "./shortcut-catalog";
+import {
+  DEFAULT_SHORTCUT_BINDINGS,
+  type ShortcutBindings,
+} from "./shortcut-bindings";
+import { matchesActionShortcut, resolveActionChords } from "./shortcut-resolution";
+
+export type ViewerShortcutScope = "viewer.video" | "viewer.audio";
+
+const RENDERER_ROUTE_BY_ACTION_ID = {
+  "viewer.media.play-pause": { action: "play-pause", label: "Play / Pause" },
+  "viewer.video.frame-prev": { action: "frame-prev", label: "Previous frame" },
+  "viewer.video.frame-next": { action: "frame-next", label: "Next frame" },
+  "viewer.video.rate-slower": { action: "rate-slower", label: "Slower playback" },
+  "viewer.video.rate-faster": { action: "rate-faster", label: "Faster playback" },
+} as const;
 
 export type ViewerVideoShortcutAction =
-  (typeof VIEWER_VIDEO_SHORTCUT_ACTIONS)[number];
+  (typeof RENDERER_ROUTE_BY_ACTION_ID)[keyof typeof RENDERER_ROUTE_BY_ACTION_ID]["action"];
 
-/** DOM / Electron physical key → action (USB code first, then keyCode). */
-const CODE_TO_ACTION: Readonly<Record<string, ViewerVideoShortcutAction>> = {
-  KeyD: "frame-prev",
-  KeyF: "frame-next",
-  KeyX: "rate-slower",
-  KeyC: "rate-faster",
+export type ViewerMainShortcutRoute = {
+  readonly id: keyof typeof RENDERER_ROUTE_BY_ACTION_ID;
+  readonly action: ViewerVideoShortcutAction;
+  readonly label: string;
 };
 
-/** Windows IME sessions sometimes omit `code` but still set keyCode. */
-const KEY_CODE_TO_ACTION: Readonly<Record<number, ViewerVideoShortcutAction>> =
-  {
-    68: "frame-prev", // D
-    70: "frame-next", // F
-    88: "rate-slower", // X
-    67: "rate-faster", // C
-  };
+/** Catalog actions with both an IME fallback surface and a Renderer handler. */
+export function viewerMainShortcutRoutes(
+  scope: ViewerShortcutScope,
+): readonly ViewerMainShortcutRoute[] {
+  return SHORTCUT_ACTIONS.flatMap((definition) => {
+    if (
+      !definition.customizable ||
+      definition.category !== "viewer" ||
+      !definition.scopes.includes(scope) ||
+      !definition.surfaces.includes("hidden-accelerator") ||
+      !definition.surfaces.includes("before-input")
+    ) {
+      return [];
+    }
+    const route = RENDERER_ROUTE_BY_ACTION_ID[
+      definition.id as keyof typeof RENDERER_ROUTE_BY_ACTION_ID
+    ];
+    return route ? [{ id: definition.id as ViewerMainShortcutRoute["id"], ...route }] : [];
+  });
+}
 
-const KEY_TO_ACTION: Readonly<Record<string, ViewerVideoShortcutAction>> = {
-  d: "frame-prev",
-  D: "frame-prev",
-  f: "frame-next",
-  F: "frame-next",
-  x: "rate-slower",
-  X: "rate-slower",
-  c: "rate-faster",
-  C: "rate-faster",
-};
+function isBareLetter(chord: { readonly key: string; readonly ctrlKey?: boolean; readonly metaKey?: boolean; readonly altKey?: boolean; readonly shiftKey?: boolean }): boolean {
+  return /^[a-z]$/iu.test(chord.key)
+    && !chord.ctrlKey && !chord.metaKey && !chord.altKey && !chord.shiftKey;
+}
+
+export function viewerVideoShortcutNeedsImeSuspension(
+  bindings: ShortcutBindings,
+  platform: ShortcutPlatform,
+  scope: ViewerShortcutScope = "viewer.video",
+): boolean {
+  return viewerMainShortcutRoutes(scope).some(({ id }) =>
+    resolveActionChords(id, platform, bindings).some(isBareLetter),
+  );
+}
 
 export type ViewerVideoShortcutInput = {
   readonly type?: string;
@@ -62,6 +83,8 @@ export type ViewerVideoShortcutInput = {
   readonly altKey?: boolean;
   readonly shift?: boolean;
   readonly shiftKey?: boolean;
+  readonly repeat?: boolean;
+  readonly isAutoRepeat?: boolean;
 };
 
 function hasCtrl(input: ViewerVideoShortcutInput): boolean {
@@ -77,32 +100,30 @@ function hasAlt(input: ViewerVideoShortcutInput): boolean {
 }
 
 function isKeyDown(input: ViewerVideoShortcutInput): boolean {
-  // Electron uses "keyDown"; DOM uses "keydown". Accept both.
+  // Electron uses "keyDown"; DOM uses "keydown".
   const type = input.type ?? "keyDown";
   return type === "keyDown" || type === "keydown";
 }
 
-/**
- * Match unmodified D/F/X/C from a Main `before-input-event` or DOM keydown.
- * Prefer `code`, then `keyCode` (IME on Windows), then `key`.
- */
+/** Match a catalog action from Main `before-input-event`, including IME Process events. */
 export function matchViewerVideoLetterShortcut(
   input: ViewerVideoShortcutInput,
+  bindings: ShortcutBindings = DEFAULT_SHORTCUT_BINDINGS,
+  platform: ShortcutPlatform = "windows",
+  scope: ViewerShortcutScope = "viewer.video",
 ): ViewerVideoShortcutAction | null {
-  if (!isKeyDown(input)) return null;
-  if (hasCtrl(input) || hasMeta(input) || hasAlt(input)) return null;
-
-  if (input.code && CODE_TO_ACTION[input.code]) {
-    return CODE_TO_ACTION[input.code] ?? null;
-  }
-  if (
-    typeof input.keyCode === "number" &&
-    KEY_CODE_TO_ACTION[input.keyCode]
-  ) {
-    return KEY_CODE_TO_ACTION[input.keyCode] ?? null;
-  }
-  if (input.key && KEY_TO_ACTION[input.key]) {
-    return KEY_TO_ACTION[input.key] ?? null;
-  }
-  return null;
+  if (!isKeyDown(input) || input.repeat || input.isAutoRepeat) return null;
+  const event = {
+    key: input.key ?? "",
+    ...(input.code === undefined ? {} : { code: input.code }),
+    ...(input.keyCode === undefined ? {} : { keyCode: input.keyCode }),
+    ctrlKey: hasCtrl(input),
+    metaKey: hasMeta(input),
+    altKey: hasAlt(input),
+    shiftKey: Boolean(input.shift ?? input.shiftKey),
+  };
+  const route = viewerMainShortcutRoutes(scope).find(({ id }) =>
+    matchesActionShortcut(id, event, platform, bindings),
+  );
+  return route?.action ?? null;
 }

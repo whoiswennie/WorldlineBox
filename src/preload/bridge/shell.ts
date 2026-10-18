@@ -38,12 +38,14 @@ import {
   APP_LOCALE_CHANNEL,
   BROWSE_SHORTCUT_CHANNEL,
   BROWSE_SHORTCUT_MENU_ENABLED_CHANNEL,
+  APPLICATION_SHORTCUTS_ENABLED_CHANNEL,
   COMMAND_COMPLETED_CHANNEL,
   CRITICAL_CONFIRMATION_PROMPT_CHANNEL,
   CRITICAL_CONFIRMATION_RESPOND_CHANNEL,
   COPY_SELECTION_CHANNEL,
   INVERT_SELECTION_CHANNEL,
   NATIVE_EDIT_COPY_CHANNEL,
+  NATIVE_EDIT_COMMAND_CHANNEL,
   OPEN_EXTERNAL_URL_CHANNEL,
   PLUGIN_INPUT_CAPTURE_EVENT_CHANNEL,
   PLUGIN_INPUT_CAPTURE_SESSIONS_CHANNEL,
@@ -63,7 +65,10 @@ import {
   WINDOW_SET_BOUNDS_CHANNEL,
 } from '../../shared/protocol/channels';
 import { shellNotifyPayloadSchema, type ShellNotifyPayload } from '../../shared/shell-notify';
-import type { ViewerVideoShortcutAction } from '../../shared/viewer-video-shortcuts';
+import type {
+  ViewerShortcutScope,
+  ViewerVideoShortcutAction,
+} from '../../shared/viewer-video-shortcuts';
 import {
   parseWindowControlResult,
   parseWindowMaximizedStateEvent,
@@ -299,6 +304,7 @@ export const shell: WorldlineBoxShellApi = Object.freeze({
       'invert-selection', 'copy-selection',
       'file.import-files', 'file.import-folder', 'file.import-linked-folder',
       'edit.undo', 'edit.redo', 'edit.paste', 'edit.select-all', 'edit.clear-selection',
+      'canvas.zoom-in', 'canvas.zoom-out', 'canvas.zoom-reset', 'window.toggle-fullscreen',
       'library.create', 'library.open', 'library.open-recent', 'library.close', 'library.remove',
       'library.delete-from-disk', 'library.import', 'library.import-eagle', 'library.export', 'library.settings',
       'window.background-jobs', 'window.diagnostics',
@@ -342,11 +348,17 @@ export const shell: WorldlineBoxShellApi = Object.freeze({
   async nativeEditCopy(): Promise<void> {
     await ipcRenderer.invoke(NATIVE_EDIT_COPY_CHANNEL);
   },
-  setViewerVideoShortcutsActive(active: boolean): void {
-    ipcRenderer.send(VIEWER_VIDEO_SHORTCUTS_ACTIVE_CHANNEL, { active: Boolean(active) });
+  async nativeEditCommand(command: "paste" | "select-all"): Promise<void> {
+    await ipcRenderer.invoke(NATIVE_EDIT_COMMAND_CHANNEL, command);
+  },
+  setViewerVideoShortcutsActive(active: boolean, scope: ViewerShortcutScope = 'viewer.video'): void {
+    ipcRenderer.send(VIEWER_VIDEO_SHORTCUTS_ACTIVE_CHANNEL, { active: Boolean(active), scope });
   },
   setBrowseShortcutAcceleratorsEnabled(enabled: boolean): void {
     ipcRenderer.send(BROWSE_SHORTCUT_MENU_ENABLED_CHANNEL, { enabled: Boolean(enabled) });
+  },
+  setApplicationShortcutAcceleratorsEnabled(enabled: boolean, fullscreenOnly = false): void {
+    ipcRenderer.send(APPLICATION_SHORTCUTS_ENABLED_CHANNEL, { enabled: Boolean(enabled), fullscreenOnly });
   },
   onBrowseShortcut(listener: (action: BrowseKeyboardAction) => void): () => void {
     const handler = (
@@ -370,6 +382,7 @@ export const shell: WorldlineBoxShellApi = Object.freeze({
     ) => {
       const action = payload?.action;
       if (
+        action === 'play-pause' ||
         action === 'frame-prev' ||
         action === 'frame-next' ||
         action === 'rate-slower' ||

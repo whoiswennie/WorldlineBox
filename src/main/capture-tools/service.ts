@@ -26,6 +26,8 @@ export interface CaptureToolsServiceOptions {
   getFfmpeg(): string | undefined | Promise<string | undefined>;
   captureBrowser?(): Promise<CaptureImageSource>;
   readBrowserSelection?(): Promise<string>;
+  /** Main checks custom application bindings before a global hotkey is saved. */
+  validateShortcuts?(settings: CaptureToolsSettings): void;
   root?: string;
   downloadPath?: string;
 }
@@ -141,6 +143,7 @@ export class CaptureToolsService {
     const settings = captureToolsSettingsSchema.parse(value);
     const keys = TASKS.map(task => canonicalCaptureShortcut(settings.shortcuts[task])).filter(Boolean);
     if (new Set(keys).size !== keys.length) throw Error('不同工具不能使用相同的快捷键。');
+    this.options.validateShortcuts?.(settings);
     await atomicJson(path.join(this.root, 'settings.json'), settings);
     this.settings = settings; this.settingsWarning = undefined; this.registerShortcuts(); this.changed();
   }

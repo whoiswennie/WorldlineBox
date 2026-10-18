@@ -68,4 +68,38 @@ describe('AI asset inputs and genuine text-only provider messages', () => {
     catch (error) { expect(error).toBeInstanceOf(VendorAdapterError); expect(vendorFailure(error as VendorAdapterError)).toEqual({ errorCode: 'AI_MODEL_NO_VISION', reason: 'AI_MODEL_NO_VISION', retryable: false }); }
     expect(calls).toBe(1);
   });
+
+  it.each([
+    ['Gemini null candidate', 'gemini', { candidates: [null] }],
+    ['Gemini non-array parts', 'gemini', { candidates: [{ content: { parts: {} } }] }],
+    ['Gemini null part', 'gemini', { candidates: [{ content: { parts: [null] } }] }],
+    ['Anthropic null block', 'anthropic', { content: [null] }],
+  ] as const)('reports %s as a provider response error instead of an internal crash', async (_label, kind, envelope) => {
+    const fetchFn: typeof fetch = async () => new Response(JSON.stringify(envelope));
+    const adapter = kind === 'gemini'
+      ? new GeminiVendorAdapter('fixture', 'gemini-test', fetchFn, 'http://localhost/model')
+      : new AnthropicVendorAdapter('fixture', 'claude-test', fetchFn, 'http://localhost/model');
+    await expect(adapter.analyze(request)).rejects.toMatchObject({ kind: 'invalid_response' });
+  });
+
+  it('ignores empty Anthropic blocks when a genuine analysis block follows', async () => {
+    const adapter = new AnthropicVendorAdapter('fixture', 'claude-test', async () => new Response(JSON.stringify({
+      content: [null, { type: 'tool_use', input: result }],
+    })));
+    await expect(adapter.analyze(request)).resolves.toMatchObject(result);
+  });
+
+  it.each([
+    ['qwen3-max', '/text-generation/', 'Reply with the single word OK.'],
+    ['qwen3-vl-plus', '/multimodal-generation/', [{ text: 'Reply with the single word OK.' }]],
+  ] as const)('checks DashScope %s through its matching native text transport', async (model, route, content) => {
+    let endpoint = ''; let wire: { input?: { messages?: Array<{ content?: unknown }> } } = {};
+    const adapter = new DashScopeVendorAdapter('fixture', model, async (url, init) => {
+      endpoint = String(url); wire = JSON.parse(String(init?.body));
+      return new Response('{}');
+    }, 'http://localhost/model');
+    await adapter.probeConnection();
+    expect(endpoint).toContain(route);
+    expect(wire.input?.messages?.[0]?.content).toEqual(content);
+  });
 });

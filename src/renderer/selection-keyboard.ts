@@ -7,11 +7,11 @@
  */
 
 import {
-  matchesShortcut,
   type CommandPlatform,
-  type ShortcutEvent,
   type ShortcutSpec,
 } from "./commands/command-types";
+import { matchesRuntimeShortcut } from "./shortcut-runtime";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
 
 /** Select all visible assets: ⌘A / Ctrl+A. */
 export const SELECT_ALL_SHORTCUT: ShortcutSpec = {
@@ -69,15 +69,15 @@ export function dispatchSelectionKeyboardAction(
 }
 
 export function matchSelectionKeyboardAction(
-  event: ShortcutEvent & { readonly key: string },
+  event: ShortcutEventLike,
   platform: CommandPlatform,
 ): SelectionKeyboardAction | null {
-  if (matchesShortcut(SELECT_ALL_SHORTCUT, event, platform)) return "select-all";
-  if (matchesShortcut(INVERT_SELECTION_SHORTCUT, event, platform)) {
+  if (matchesRuntimeShortcut("selection.select-all", event, platform) === true) return "select-all";
+  if (matchesRuntimeShortcut("selection.invert", event, platform) === true) {
     return "invert";
   }
   if (
-    event.key === "Escape" &&
+    event.kind !== "mouse" && event.key === "Escape" &&
     !event.metaKey &&
     !event.ctrlKey &&
     !event.altKey &&

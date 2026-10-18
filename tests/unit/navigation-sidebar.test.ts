@@ -12,6 +12,10 @@ import {
 import { MANAGED_FOLDERS_DRAG_TYPE } from "../../src/renderer/folder-drag-drop";
 import { LocaleProvider } from "../../src/renderer/i18n";
 import { NAV_TREE_PREF_KEY } from "../../src/renderer/nav-tree-preferences";
+import {
+  collectionCustomOrderKey,
+  customOrderKey,
+} from "../../src/renderer/folder-custom-order";
 
 function createDragTransfer(types: string[]): DataTransfer {
   return {
@@ -40,11 +44,31 @@ function dispatchDragEvent(
   element: Element,
   type: "dragenter" | "dragover" | "dragstart",
   dataTransfer: DataTransfer,
+  clientY = 0,
 ): Event {
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  Object.defineProperty(event, "clientY", { value: clientY });
   element.dispatchEvent(event);
   return event;
+}
+
+/** happy-dom reports a zero-size row; custom-order drops need a real band. */
+function setRowRect(element: Element, top = 100, height = 22): void {
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      top,
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 200,
+      width: 200,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    }),
+  });
 }
 
 function dispatchDropEvent(
@@ -1609,4 +1633,179 @@ describe("NavigationSidebar folder-section blank area", () => {
     expect(nav.querySelector("[data-nav-folder-id='folder-parent']")).not.toBeNull();
     expect(nav.querySelector("[data-nav-folder-id='folder-sibling']")).toBeNull();
   });
+  it("inserts a folder beside a row in another parent (custom order)", async () => {
+    const onFoldersDroppedOnFolder = vi.fn();
+    const nav = await renderSidebar({ onFoldersDroppedOnFolder });
+    const draggedRow = folderRow(nav, childFolder.folderId);
+    const targetRow = folderRow(nav, siblingFolder.folderId);
+    const transfer = createFolderDragTransfer([childFolder.folderId]);
+    setRowRect(targetRow);
+
+    await act(async () => {
+      dispatchDragEvent(draggedRow, "dragstart", transfer);
+      dispatchDragEvent(targetRow, "dragenter", transfer, 101);
+      dispatchDragEvent(targetRow, "dragover", transfer, 101);
+    });
+
+    expect(
+      targetRow.closest(".nav-tree-row")?.getAttribute("data-insert-edge"),
+    ).toBe("before");
+
+    await act(async () => {
+      dispatchDropEvent(targetRow, transfer);
+    });
+
+    expect(onFoldersDroppedOnFolder).toHaveBeenCalledWith(
+      null,
+      [childFolder.folderId],
+      { blockingUi: false },
+    );
+  });
+
+  it("aligns the insertion line with a nested folder row", async () => {
+    const nav = await renderSidebar();
+    const draggedRow = folderRow(nav, siblingFolder.folderId);
+    const targetRow = folderRow(nav, childFolder.folderId);
+    const transfer = createFolderDragTransfer([siblingFolder.folderId]);
+    setRowRect(targetRow);
+
+    await act(async () => {
+      dispatchDragEvent(draggedRow, "dragstart", transfer);
+      dispatchDragEvent(targetRow, "dragover", transfer, 101);
+    });
+
+    const line = targetRow
+      .closest(".nav-tree-row")
+      ?.querySelector<HTMLElement>(".nav-folder-insert-line");
+    expect(line).not.toBeNull();
+    // depth 1: 14px indent + 16px disclosure + 2px gap.
+    expect(line?.style.left).toBe("32px");
+  });
+
+  it("reorders collections with the custom insertion line", async () => {
+    localStorage.removeItem(collectionCustomOrderKey("library-1"));
+    const onNestCollection = vi.fn();
+    const onMoveCollectionToRoot = vi.fn();
+    const first = {
+      collectionId: "collection-first",
+      parentId: null,
+      name: "First",
+      description: null,
+      coverAssetId: null,
+      position: 0,
+      assetCount: 0,
+      childCollectionCount: 0,
+    };
+    const second = {
+      collectionId: "collection-second",
+      parentId: null,
+      name: "Second",
+      description: null,
+      coverAssetId: null,
+      position: 1,
+      assetCount: 0,
+      childCollectionCount: 0,
+    };
+    const nav = await renderSidebar({
+      collections: [first, second],
+      collectionTree: new Map([[null, [first, second]]]),
+      draggedCollectionId: second.collectionId,
+      onNestCollection,
+      onMoveCollectionToRoot,
+    });
+    const targetRow = nav.querySelector<HTMLButtonElement>(
+      `button[data-nav-collection-id="${first.collectionId}"]`,
+    )!;
+    const transfer = createDragTransfer([]);
+    setRowRect(targetRow);
+
+    await act(async () => {
+      dispatchDragEvent(targetRow, "dragover", transfer, 101);
+    });
+    expect(
+      targetRow.closest(".nav-tree-row")?.getAttribute("data-insert-edge"),
+    ).toBe("before");
+
+    await act(async () => {
+      dispatchDropEvent(targetRow, transfer);
+    });
+
+    expect(onNestCollection).not.toHaveBeenCalled();
+    expect(onMoveCollectionToRoot).not.toHaveBeenCalled();
+    const stored = JSON.parse(
+      localStorage.getItem(collectionCustomOrderKey("library-1")) ?? "{}",
+    ) as Record<string, number>;
+    const secondPosition = stored[customOrderKey(null, second.collectionId)];
+    const firstPosition = stored[customOrderKey(null, first.collectionId)];
+    expect(typeof secondPosition).toBe("number");
+    expect(typeof firstPosition).toBe("number");
+    expect(secondPosition as number).toBeLessThan(firstPosition as number);
+  });
+
+  it("nests a collection when inserted beside a child at another level", async () => {
+    localStorage.removeItem(collectionCustomOrderKey("library-1"));
+    const onNestCollection = vi.fn();
+    const parent = {
+      collectionId: "collection-parent",
+      parentId: null,
+      name: "Parent",
+      description: null,
+      coverAssetId: null,
+      position: 0,
+      assetCount: 0,
+      childCollectionCount: 1,
+    };
+    const child = {
+      collectionId: "collection-child",
+      parentId: parent.collectionId,
+      name: "Child",
+      description: null,
+      coverAssetId: null,
+      position: 0,
+      assetCount: 0,
+      childCollectionCount: 0,
+    };
+    const dragged = {
+      collectionId: "collection-dragged",
+      parentId: null,
+      name: "Dragged",
+      description: null,
+      coverAssetId: null,
+      position: 1,
+      assetCount: 0,
+      childCollectionCount: 0,
+    };
+    const nav = await renderSidebar({
+      collections: [parent, child, dragged],
+      collectionTree: new Map([
+        [null, [parent, dragged]],
+        [parent.collectionId, [child]],
+      ]),
+      draggedCollectionId: dragged.collectionId,
+      onNestCollection,
+    });
+    const targetRow = nav.querySelector<HTMLButtonElement>(
+      `button[data-nav-collection-id="${child.collectionId}"]`,
+    )!;
+    const transfer = createDragTransfer([]);
+    setRowRect(targetRow);
+
+    await act(async () => {
+      dispatchDragEvent(targetRow, "dragover", transfer, 120);
+    });
+    expect(
+      targetRow.closest(".nav-tree-row")?.getAttribute("data-insert-edge"),
+    ).toBe("after");
+
+    await act(async () => {
+      dispatchDropEvent(targetRow, transfer);
+    });
+
+    expect(onNestCollection).toHaveBeenCalledWith(
+      dragged.collectionId,
+      parent.collectionId,
+      { blockingUi: false },
+    );
+  });
+
 });

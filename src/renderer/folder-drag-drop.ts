@@ -90,6 +90,28 @@ export function isFolderDescendantOf(
 }
 
 /**
+ * Whether dragged folders may end up under `targetParentFolderId`. Custom
+ * ordering uses this for insertion drops beside a row: the row's parent is the
+ * destination even when the user never hovers that parent itself. A folder
+ * cannot become its own parent or move under one of its descendants.
+ */
+export function canMoveFoldersToParent(input: {
+  readonly targetParentFolderId: string | null;
+  readonly draggedFolderIds: readonly string[];
+  readonly folders: readonly FolderDragFact[];
+}): boolean {
+  const unique = [...new Set(input.draggedFolderIds.filter(Boolean))];
+  if (unique.length === 0) return false;
+  return unique.every((folderId) => {
+    if (input.targetParentFolderId === folderId) return false;
+    return (
+      input.targetParentFolderId === null ||
+      !isFolderDescendantOf(input.folders, folderId, input.targetParentFolderId)
+    );
+  });
+}
+
+/**
  * Resolve dropping dragged folders onto a managed folder row/card.
  * `targetFolderId` null = library root (Assets).
  */
@@ -107,16 +129,18 @@ export function resolveFolderOntoFolderDrop(input: {
     input.folders.map((folder) => [folder.folderId, folder]),
   );
 
-  for (const folderId of unique) {
-    if (input.targetFolderId === folderId) {
-      return { kind: 'reject', reason: 'into-self' };
-    }
-    if (
-      input.targetFolderId &&
-      isFolderDescendantOf(input.folders, folderId, input.targetFolderId)
-    ) {
-      return { kind: 'reject', reason: 'into-descendant' };
-    }
+  if (
+    !canMoveFoldersToParent({
+      targetParentFolderId: input.targetFolderId,
+      draggedFolderIds: unique,
+      folders: input.folders,
+    })
+  ) {
+    const hitsSelf = unique.some((folderId) => input.targetFolderId === folderId);
+    return {
+      kind: 'reject',
+      reason: hitsSelf ? 'into-self' : 'into-descendant',
+    };
   }
 
   const allSameParent = unique.every((folderId) => {

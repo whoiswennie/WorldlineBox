@@ -11,39 +11,25 @@ import {
   type SemanticSearchModelId,
 } from "../shared/embedding/profile";
 
-const TARGET_NAMES = new Set([
+const MODEL_FILE_NAMES = [
   "embeddinggemma-2-UD-Q4_K_XL.gguf",
   "embeddinggemma-2-Q8_0.gguf",
   "embeddinggemma-2-BF16.gguf",
   "mmproj-Q8_0.gguf",
   "mmproj-BF16.gguf",
-  "llama-server.exe",
-  "llama-server",
-]);
+] as const;
 
-const SKIP_DIRECTORIES = new Set([
-  "$recycle.bin",
-  ".git",
-  "appdata",
-  "node_modules",
-  "program files",
-  "program files (x86)",
-  "system volume information",
-  "windows",
-]);
-
-const INTERESTING_DIRECTORY = /embed|gemma|gguf|llama|unsloth|huggingface/i;
-
-export type EmbeddingSearchRoot = {
-  readonly path: string;
-  /** Drive roots only enter folders whose names look like a model cache. */
-  readonly restrictNames: boolean;
-};
+const RUNTIME_FILE_NAMES = new Set(["llama-server.exe", "llama-server"]);
 
 export type EmbeddingInstallInspection = {
   readonly files: ReadonlyMap<string, string>;
   readonly runtimeFound: boolean;
 };
+
+/** Directory the in-app installer writes. Status checks only look here. */
+export function embeddingModelsDirectory(userData: string): string {
+  return path.join(userData, "embedding-models");
+}
 
 export function installedSemanticModels(fileNames: ReadonlySet<string>): SemanticSearchModelId[] {
   return SEMANTIC_SEARCH_MODELS.filter((model) => {
@@ -52,61 +38,44 @@ export function installedSemanticModels(fileNames: ReadonlySet<string>): Semanti
   }).map((model) => model.id);
 }
 
-export function inspectEmbeddingTree(
-  roots: readonly EmbeddingSearchRoot[],
-  maxEntries = 8_000,
-): EmbeddingInstallInspection {
+/**
+ * Model weights are written directly into the managed install directory.
+ * Inspect only its runtime subtree: probing drive roots or unrelated caches
+ * can block the main process indefinitely on disconnected mapped drives.
+ */
+export function inspectManagedEmbeddingInstall(userData: string): EmbeddingInstallInspection {
+  const modelsDir = embeddingModelsDirectory(userData);
   const files = new Map<string, string>();
-  let seen = 0;
-  let runtimeFound = false;
+  for (const name of MODEL_FILE_NAMES) {
+    const filePath = path.join(modelsDir, name);
+    if (existsSync(filePath)) files.set(name, filePath);
+  }
+  const runtimePath = findRuntimeBinary(path.join(modelsDir, "runtime"));
+  if (runtimePath) files.set(path.basename(runtimePath), runtimePath);
+  return { files, runtimeFound: runtimePath !== null };
+}
 
-  const visit = (directory: string, depth: number, restrictNames: boolean): void => {
-    if (depth < 0 || seen >= maxEntries) return;
+function findRuntimeBinary(runtimeDirectory: string): string | null {
+  const visit = (directory: string, depth: number): string | null => {
+    if (depth < 0 || !existsSync(directory)) return null;
     let entries;
     try {
       entries = readdirSync(directory, { withFileTypes: true });
     } catch {
-      return;
+      return null;
     }
     for (const entry of entries) {
-      if (seen >= maxEntries) return;
-      seen += 1;
-      const fullPath = path.join(directory, entry.name);
-      if (entry.isFile() && TARGET_NAMES.has(entry.name)) {
-        if (!files.has(entry.name)) files.set(entry.name, fullPath);
-        if (entry.name === "llama-server.exe" || entry.name === "llama-server") runtimeFound = true;
-        continue;
-      }
-      if (!entry.isDirectory()) continue;
-      if (SKIP_DIRECTORIES.has(entry.name.toLowerCase())) continue;
-      const interesting = INTERESTING_DIRECTORY.test(entry.name);
-      if (restrictNames && !interesting) continue;
-      visit(fullPath, interesting ? Math.max(depth, 4) : depth - 1, false);
+      if (!entry.isFile() || !RUNTIME_FILE_NAMES.has(entry.name)) continue;
+      return path.join(directory, entry.name);
     }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const found = visit(path.join(directory, entry.name), depth - 1);
+      if (found) return found;
+    }
+    return null;
   };
-
-  for (const root of roots) {
-    if (!existsSync(root.path)) continue;
-    visit(root.path, root.restrictNames ? 1 : 6, root.restrictNames);
-  }
-  return { files, runtimeFound };
-}
-
-export function listExistingDriveRoots(): string[] {
-  const roots: string[] = [];
-  for (let code = "C".charCodeAt(0); code <= "Z".charCodeAt(0); code += 1) {
-    const root = `${String.fromCharCode(code)}:\\`;
-    if (existsSync(root)) roots.push(root);
-  }
-  return roots;
-}
-
-export function embeddingSearchRoots(input: { userData: string; home: string }): EmbeddingSearchRoot[] {
-  return [
-    { path: path.join(input.userData, "embedding-models"), restrictNames: false },
-    { path: path.join(input.home, ".cache", "huggingface"), restrictNames: false },
-    ...listExistingDriveRoots().map((root) => ({ path: root, restrictNames: true })),
-  ];
+  return visit(runtimeDirectory, 4);
 }
 
 /** Remove on-disk files for one Settings-installed model under userData/embedding-models.
@@ -115,14 +84,10 @@ export function embeddingSearchRoots(input: { userData: string; home: string }):
 export function uninstallSemanticModelFiles(input: {
   modelId: SemanticSearchModelId;
   userDataPath: string;
-  homePath: string;
 }): { removed: string[] } {
   const model = SEMANTIC_SEARCH_MODELS.find((entry) => entry.id === input.modelId);
   if (!model) return { removed: [] };
-  const inspection = inspectEmbeddingTree(embeddingSearchRoots({
-    userData: input.userDataPath,
-    home: input.homePath,
-  }));
+  const inspection = inspectManagedEmbeddingInstall(input.userDataPath);
   const installed = new Set(installedSemanticModels(new Set(inspection.files.keys())));
   if (!installed.has(input.modelId)) return { removed: [] };
 

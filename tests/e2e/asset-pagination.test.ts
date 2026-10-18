@@ -49,6 +49,7 @@ test("ordinary browsing continuously appends every asset without page controls",
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -183,15 +184,23 @@ test("ordinary browsing continuously appends every asset without page controls",
     const masonryCanvas = window.locator(".workspace-canvas");
     await masonryCanvas.evaluate((element) => element.scrollTo(0, 0));
     // The reflow anchor keeps the previous viewport stable while grid →
-    // masonry changes the column geometry. Explicitly bring the first card
-    // back into view before checking the first-row layout instead of racing
-    // that restoration effect with a raw scrollTop assertion.
-    await firstCard.scrollIntoViewIfNeeded();
-    const [canvasBox, masonryFirstBox] = await Promise.all([
-      window.locator(".workspace-canvas").boundingBox(),
-      firstCard.boundingBox(),
-    ]);
-    expect(masonryFirstBox!.y).toBeGreaterThanOrEqual(canvasBox!.y - 1);
+    // masonry changes the column geometry. Assert the sampled position that
+    // actually passed while the virtual window may recycle its first slot.
+    const masonryTopSnapshot: {
+      card: { x: number; y: number; width: number; height: number } | null;
+      canvas: { x: number; y: number; width: number; height: number } | null;
+    } = { card: null, canvas: null };
+    await expect.poll(async () => {
+      await masonryCanvas.evaluate((element) => element.scrollTo(0, 0));
+      const [cardBox, canvasBox] = await Promise.all([
+        firstCard.boundingBox(), masonryCanvas.boundingBox(),
+      ]);
+      masonryTopSnapshot.card = cardBox;
+      masonryTopSnapshot.canvas = canvasBox;
+      return Boolean(cardBox && canvasBox && cardBox.y >= canvasBox.y - 1);
+    }).toBe(true);
+    if (!masonryTopSnapshot.card || !masonryTopSnapshot.canvas) throw new Error("Masonry top position was not sampled.");
+    expect(masonryTopSnapshot.card.y).toBeGreaterThanOrEqual(masonryTopSnapshot.canvas.y - 1);
     const masonryLastCard = window.locator(".asset-card").last();
     const masonryScrollSnapshot: {
       last: { x: number; y: number; width: number; height: number } | null;
@@ -273,6 +282,7 @@ test("ordinary browsing continuously appends every asset without page controls",
                       return {
                         assetId: card.getAttribute("data-asset-id"),
                         displayName:
+                          card.getAttribute("data-asset-name") ??
                           card.querySelector("strong")?.getAttribute("title") ??
                           card.getAttribute("aria-label"),
                         isVisible:
@@ -335,18 +345,25 @@ test("ordinary browsing continuously appends every asset without page controls",
           ]);
           expect(viewerBox).not.toBeNull();
           expect(workspaceBox).not.toBeNull();
+          const workspaceBorder = await window.locator(".workspace").evaluate(element => {
+            const style = getComputedStyle(element);
+            return { left: parseFloat(style.borderLeftWidth), right: parseFloat(style.borderRightWidth),
+              top: parseFloat(style.borderTopWidth), bottom: parseFloat(style.borderBottomWidth) };
+          });
           await expect(workspaceCanvas).toBeHidden();
+          // The viewer fills the workspace content box. Its fractional hairline
+          // borders remain outside that box at Windows display scaling.
           expect(
-            Math.abs(viewerBox!.x - workspaceBox!.x),
+            Math.abs(viewerBox!.x - (workspaceBox!.x + workspaceBorder.left)),
           ).toBeLessThanOrEqual(1);
           expect(
-            Math.abs(viewerBox!.y - workspaceBox!.y),
+            Math.abs(viewerBox!.y - (workspaceBox!.y + workspaceBorder.top)),
           ).toBeLessThanOrEqual(1);
           expect(
-            Math.abs(viewerBox!.width - workspaceBox!.width),
+            Math.abs(viewerBox!.width - (workspaceBox!.width - workspaceBorder.left - workspaceBorder.right)),
           ).toBeLessThanOrEqual(1);
           expect(
-            Math.abs(viewerBox!.height - workspaceBox!.height),
+            Math.abs(viewerBox!.height - (workspaceBox!.height - workspaceBorder.top - workspaceBorder.bottom)),
           ).toBeLessThanOrEqual(1);
           await expect(
             textViewer.getByRole("button", { name: "重试生成" }),
@@ -364,15 +381,21 @@ test("ordinary browsing continuously appends every asset without page controls",
       }
     }
 
-    // Switching to a browse scope explicitly clears lingering discovery
-    // controls, so the loaded scope cannot use a stale query.
+    // WorldlineBox keeps live discovery filters within a tab during navigation.
+    // Verify that policy, then explicitly clear the filter before continuing.
     await window.getByRole("button", { name: "格式", exact: true }).click();
     await window.getByLabel("格式过滤").fill("png");
     await expect(window.locator(".asset-card")).toHaveCount(0);
     await sidebarFolderRow(window, "分页文件夹").click();
     await expect(
       window.getByRole("button", { name: "格式", exact: true }),
-    ).not.toHaveClass(/is-active/);
+    ).toHaveClass(/is-active/);
+    await expect(window.locator(".asset-card")).toHaveCount(0);
+    if (!await window.getByLabel("格式过滤").isVisible()) {
+      await window.getByRole("button", { name: "格式", exact: true }).click();
+    }
+    await window.getByLabel("格式过滤").fill("");
+    await expect(window.getByRole("button", { name: "格式", exact: true })).not.toHaveClass(/is-active/);
     await loadEveryAssetInCurrentScope();
 
     // Every browse scope uses the same continuous loading model. The current
@@ -521,8 +544,13 @@ test("ordinary browsing continuously appends every asset without page controls",
     await window.getByRole("button", { name: "格式", exact: true }).click();
     await window.getByLabel("格式过滤").fill("png");
     await expect(window.locator(".asset-card")).toHaveCount(0);
+    // Filters belong to this tab in WorldlineBox. Clear explicitly so the
+    // collection timing still measures rendering actual members, not an empty query.
+    await window.getByLabel("格式过滤").fill("");
+    await expect(window.locator(".asset-card").first()).toBeVisible();
     const collectionSwitchStartedAt = Date.now();
     await window.getByRole("button", { name: /^分页合集/ }).click();
+    await expect(window.getByRole("button", { name: /^分页合集/ })).toHaveClass(/is-active/);
     await expect(window.locator(".asset-card").first()).toBeVisible();
     const collectionSwitchMs = Date.now() - collectionSwitchStartedAt;
     console.info(
@@ -643,6 +671,7 @@ test("bottom-scroll appends assets beyond the first page (WorldlineBox-ws4k)", a
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();

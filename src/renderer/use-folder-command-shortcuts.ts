@@ -7,6 +7,12 @@ import {
   type ShortcutSpec,
 } from "./commands/command-types";
 import {
+  asLegacyKeyboardShortcutEvent,
+  listenForShortcutInputs,
+  matchesRuntimeShortcut,
+} from "./shortcut-runtime";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
+import {
   sidebarCommandDefinitions,
   type SidebarCommandDefinition,
 } from "./commands/sidebar-commands";
@@ -25,6 +31,8 @@ const FOLDER_SHORTCUT_COMMAND_IDS = [
   "folder.open-in-file-manager",
   "folder.create-subfolder",
   "folder.rename",
+  "folder.copy",
+  "folder.paste",
   "folder.move-to-trash",
   "folder.delete-from-disk",
 ] as const satisfies readonly FolderShortcutCommandId[];
@@ -40,14 +48,15 @@ function isEditableKeyboardTarget(target: EventTarget | null): boolean {
 
 function matchFolderCommandShortcut(
   commandId: FolderShortcutCommandId,
-  event: KeyboardEvent,
+  event: ShortcutEventLike,
   platform: CommandPlatform,
 ): boolean {
+  const resolved = matchesRuntimeShortcut(commandId, event, platform);
+  if (resolved !== null) return resolved;
   const spec: ShortcutSpec | undefined =
     folderKeyboardCommandRegistry.get(commandId)?.shortcut;
-  return (
-    spec !== undefined && matchesShortcut(spec, event, platform)
-  );
+  const keyboardEvent = asLegacyKeyboardShortcutEvent(event);
+  return keyboardEvent !== null && spec !== undefined && matchesShortcut(spec, keyboardEvent, platform);
 }
 
 export type UseFolderCommandShortcutsArgs = {
@@ -62,6 +71,8 @@ export type UseFolderCommandShortcutsArgs = {
   readonly canOpenFolder?: (folderId: string) => boolean;
   readonly openFolderInFileManager: (folderId: string) => void;
   readonly createSubfolder: (parentFolderId: string | null) => void;
+  readonly copyFolder: (folderId: string) => void;
+  readonly pasteIntoFolder: (folderId: string | null) => void;
   readonly renameFolder: (folderId: string, currentName: string) => void;
   readonly trashManagedFolder: (folderId: string, name: string) => void;
   readonly deleteFolderFromDisk: (folderId: string, name: string) => void;
@@ -87,6 +98,8 @@ export function useFolderCommandShortcuts(
     resolveManagedFolderName,
     canRenameFolder,
     createSubfolder,
+    copyFolder,
+    pasteIntoFolder,
     renameFolder,
     canOpenFolder,
     openFolderInFileManager,
@@ -99,13 +112,15 @@ export function useFolderCommandShortcuts(
   useEffect(() => {
     if (!enabled) return;
 
-    const onKeyDown = (event: KeyboardEvent) => {
+    const onShortcutInput = (shortcutInput: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
       if (isEditableKeyboardTarget(event.target)) return;
       if (previewOpen) return;
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      // Collection rows own their own F2 / Delete / create shortcuts.
+      if (document.activeElement?.closest("[data-nav-collection-id]")) return;
 
       for (const commandId of FOLDER_SHORTCUT_COMMAND_IDS) {
-        if (!matchFolderCommandShortcut(commandId, event, platform)) continue;
+        if (!matchFolderCommandShortcut(commandId, shortcutInput, platform)) continue;
 
         const action = resolveFolderShortcutAction({
           commandId,
@@ -137,6 +152,14 @@ export function useFolderCommandShortcuts(
         }
         if (action.type === "create-subfolder") {
           createSubfolder(action.parentFolderId);
+          return;
+        }
+        if (action.type === "copy-folder") {
+          copyFolder(action.folderId);
+          return;
+        }
+        if (action.type === "paste-into-folder") {
+          pasteIntoFolder(action.folderId);
           return;
         }
         if (action.type === "rename") {
@@ -175,8 +198,7 @@ export function useFolderCommandShortcuts(
       }
     };
 
-    document.addEventListener("keydown", onKeyDown, platform === "windows");
-    return () => document.removeEventListener("keydown", onKeyDown, platform === "windows");
+    return listenForShortcutInputs(document, onShortcutInput, platform === "windows");
   }, [
     enabled,
     platform,
@@ -187,6 +209,8 @@ export function useFolderCommandShortcuts(
     resolveManagedFolderName,
     canRenameFolder,
     createSubfolder,
+    copyFolder,
+    pasteIntoFolder,
     renameFolder,
     canOpenFolder,
     openFolderInFileManager,

@@ -138,6 +138,9 @@
   --shell-workspace-bar-height: 40px;
   --shell-control-height: 28px;
   --shell-chip-height: 22px;
+  /* Matches .toolbar-nav-cluster .library-switcher max-width. The collapsed
+     nav cluster is taken out of flow, so the browse row reserves this width. */
+  --shell-library-switcher-width: 170px;
 }
 
 /* Use installed UI faces; startup does not fetch split CJK webfonts. */
@@ -1266,8 +1269,8 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
 /* Toolbar placement (beside the panel toggle): a bounded width keeps the tabs
    from being squeezed, and the whole row is clickable. */
 .toolbar-nav-cluster .library-switcher {
-  flex: 0 1 170px;
-  max-width: 170px;
+  flex: 0 1 var(--shell-library-switcher-width);
+  max-width: var(--shell-library-switcher-width);
 }
 
 .toolbar-nav-cluster .library-switcher-trigger {
@@ -2405,12 +2408,52 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
 }
 
 .nav-tree-row {
+  position: relative;
   display: grid;
   width: 100%;
   min-width: 0;
   grid-template-columns: 16px minmax(0, 1fr);
   align-items: center;
   gap: 2px;
+}
+
+/* Custom folder order drag insertion line (folder "自定义" sort). */
+.nav-folder-insert-line {
+  position: absolute;
+  right: 0;
+  height: 2px;
+  border-radius: calc(1px * var(--ui-radius-scale, 1));
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.nav-tree-row[data-insert-edge="before"] .nav-folder-insert-line {
+  top: -1px;
+}
+
+.nav-tree-row[data-insert-edge="after"] .nav-folder-insert-line {
+  bottom: -1px;
+}
+
+.nav-folder-insert-line::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 0;
+  height: 0;
+  border-right: 4px solid transparent;
+  border-left: 4px solid transparent;
+}
+
+.nav-tree-row[data-insert-edge="before"] .nav-folder-insert-line::before {
+  top: -5px;
+  border-bottom: 6px solid var(--accent);
+}
+
+.nav-tree-row[data-insert-edge="after"] .nav-folder-insert-line::before {
+  bottom: -5px;
+  border-top: 6px solid var(--accent);
 }
 
 .nav-disclosure,
@@ -2463,11 +2506,17 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
   color: var(--text);
 }
 
-/* WorldlineBox-d7acfa：侧栏 Ctrl/⌘ 多选的行。沿用与拖放目标相同的「accent 轻染 +
-   inset 细环」语言，但更轻，避免与当前浏览范围的 is-active 混淆。 */
+/* WorldlineBox-d7acfa：侧栏 Ctrl/⌘ 多选的行。沿用与拖放目标相同的「accent 轻染」
+   语言，但更轻，避免与当前浏览范围的 is-active 混淆。用户 2026-10-17：选中态
+   不要描边，只用背景色区分。取值挂在 .navigation-pane 上：islands 布局把同一条
+   高亮矩形画在行容器 .nav-tree-row（见文末 sidebar 状态矩形一节），两处必须用
+   同一组颜色。 */
+.navigation-pane {
+  --nav-selected-wash: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .nav-row.is-multi-selected {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+  background: var(--nav-selected-wash);
   color: var(--text);
 }
 
@@ -17102,6 +17151,37 @@ html.worldlinebox-window-square .window-edge-resize-layer.is-disabled {
   color: var(--ui-content-primary);
 }
 
+/* ---- Sidebar row states share ONE highlight rectangle ---------------------
+   当前浏览范围（.is-active）、悬停、多选、资产拖放目标全都画在行容器
+   .nav-tree-row 上。四种状态曾分别画在行容器与内层 .nav-row 按钮上，而按钮被
+   展开箭头列 + 层级缩进往右推，于是同一条行出现两种宽度（选中/悬停比当前文件夹
+   短一截）。现在行容器是唯一的高亮面，按钮本身永远透明。
+
+   用户 2026-10-17：选中态不要描边，只用背景色；既在浏览又被选中时仍显示选中的
+   accent 轻染（中性 .is-active 底色不得把它盖掉）。 */
+.app-shell[data-shell-layout="islands"] .nav-tree-row:has(> .nav-row:hover:not(:disabled):not(.is-active):not(.is-multi-selected):not(.is-drop-target)) {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.app-shell[data-shell-layout="islands"] .nav-tree-row:has(> .nav-row.is-multi-selected) {
+  background: var(--nav-selected-wash);
+}
+
+.app-shell[data-shell-layout="islands"] .nav-tree-row:has(> .nav-row.is-drop-target) {
+  background: color-mix(in srgb, var(--accent) 20%, var(--active));
+}
+
+/* 行的所有状态底色都由 .nav-tree-row 提供；按钮自己再画一层就会在同一条行里
+   叠出第二条更窄的高亮（悬停时最明显）。 */
+.app-shell[data-shell-layout="islands"] .nav-tree-row > .nav-row,
+.app-shell[data-shell-layout="islands"] .nav-tree-row > .nav-row:hover:not(:disabled),
+.app-shell[data-shell-layout="islands"] .nav-tree-row > .nav-row.is-active,
+.app-shell[data-shell-layout="islands"] .nav-tree-row > .nav-row.is-multi-selected,
+.app-shell[data-shell-layout="islands"] .nav-tree-row > .nav-row.is-drop-target {
+  background: transparent;
+  box-shadow: none;
+}
+
 /* Unified dense toolstrip: title + filters on ONE row (bold a28) */
 .app-shell[data-shell-layout="islands"] .workspace-toolstrip {
   display: flex;
@@ -18001,6 +18081,32 @@ html.worldlinebox-window-square {
 .app-shell[data-shell-layout="islands"].right-collapsed > .workspace {
   margin-right: var(--island-outer-gap);
 }
+/* The shell's first column is 0 when the sidebar is collapsed, and a fixed
+   reservation left a wide hole after a short library name. Give the toolbar
+   its own leading column sized to the name, so history and tabs sit against it. */
+.app-shell[data-shell-layout="islands"].left-collapsed > .app-toolbar {
+  grid-template-columns: max-content minmax(0, 1fr) var(--inspector-width, 268px);
+}
+.app-shell[data-shell-layout="islands"].left-collapsed.right-collapsed > .app-toolbar {
+  grid-template-columns: max-content minmax(0, 1fr) 0;
+}
+.app-shell[data-shell-layout="islands"].left-collapsed .toolbar-nav-cluster {
+  position: static;
+  left: auto;
+  width: auto;
+  padding-left: var(--island-outer-gap);
+}
+.app-shell[data-shell-layout="islands"].left-collapsed .toolbar-nav-cluster .library-switcher {
+  flex: 0 0 auto;
+  width: fit-content;
+  max-width: var(--shell-library-switcher-width);
+}
+.app-shell[data-shell-layout="islands"].left-collapsed .toolbar-nav-cluster .library-switcher-trigger {
+  width: auto;
+}
+.app-shell[data-shell-layout="islands"].left-collapsed .toolbar-workspace-cluster {
+  padding-left: 8px;
+}
 
 /* Toolbar: outer clusters follow outer-gap; workspace cluster follows inter gap. */
 .app-shell[data-shell-layout="islands"] .toolbar-nav-cluster {
@@ -18199,14 +18305,18 @@ html.worldlinebox-window-square {
    (`.app-shell[islands] .toolbar-nav-cluster { padding-left: outer-gap }`)
    outrank it, so the sidebar toggle sat under the traffic lights.
    Lights: x 14→66 (trafficLightPosition x14), so reserve 78px (12px clear).
-   Collapsed: base CSS already moves the cluster to left:78px — drop the
-   extra outer gap there so toggle x matches the expanded state.
+   Collapsed: the leading cluster is back in flow, so the same 78px padding
+   clears the lights. Drop the fixed browse-row reservation or the tabs sit
+   a switcher-width too far right.
    Custom caption buttons render only on Windows (App.tsx), unchanged. */
 body.platform-darwin .app-shell[data-shell-layout="islands"] .toolbar-nav-cluster {
   padding-left: 78px;
 }
 body.platform-darwin .app-shell[data-shell-layout="islands"].left-collapsed .toolbar-nav-cluster {
-  padding-left: 0;
+  padding-left: 78px;
+}
+body.platform-darwin .app-shell[data-shell-layout="islands"].left-collapsed .toolbar-workspace-cluster {
+  padding-left: 8px;
 }
 /* The 78px inset narrows the cluster; keep the toggle square, let the
    library switcher truncate instead. */
@@ -19012,4 +19122,501 @@ body.platform-darwin .app-shell[data-shell-layout="islands"] .toolbar-nav-cluste
 
 .app-shell[data-shell-layout] .canvas-controls {
   flex-wrap: wrap;
+}
+
+/* Custom keyboard shortcuts settings (WorldlineBox custom shortcuts) */
+.shortcut-settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.shortcut-settings-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.shortcut-settings-search {
+  flex: 1 1 220px;
+  min-width: 160px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--divider);
+  border-radius: calc(6px * var(--ui-radius-scale, 1));
+  background: var(--raised);
+  color: var(--text);
+  font-size: calc(12px * var(--ui-font-scale));
+}
+
+.shortcut-settings-search:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.shortcut-settings-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.shortcut-settings-filter {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--divider);
+  border-radius: calc(6px * var(--ui-radius-scale, 1));
+  background: transparent;
+  color: var(--secondary);
+  font-size: calc(11px * var(--ui-font-scale));
+  cursor: pointer;
+}
+
+.shortcut-settings-filter:hover {
+  background: var(--hover);
+}
+
+.shortcut-settings-filter.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-soft-fg);
+}
+
+.shortcut-settings-filter-count {
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.shortcut-settings-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+}
+
+.shortcut-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px solid color-mix(in srgb, var(--divider) 70%, transparent);
+}
+
+.shortcut-settings-row:first-child {
+  border-top: 0;
+}
+
+.shortcut-settings-row.is-recording {
+  margin: 0 -8px;
+  padding: 6px 8px;
+  border-radius: calc(8px * var(--ui-radius-scale, 1));
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.shortcut-settings-row.has-conflict .shortcut-keycap {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--divider));
+}
+
+.shortcut-settings-row-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.shortcut-settings-row-title {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.shortcut-settings-row-title strong {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.shortcut-settings-row-copy strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: calc(12.5px * var(--ui-font-scale));
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shortcut-settings-row-copy > span {
+  flex: 0 0 auto;
+  color: var(--tertiary);
+  font-size: calc(10.5px * var(--ui-font-scale));
+  white-space: nowrap;
+}
+
+.shortcut-settings-row-key {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.shortcut-keycap {
+  min-width: 42px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--divider);
+  border-radius: calc(5px * var(--ui-radius-scale, 1));
+  background: var(--raised);
+  color: var(--text);
+  font-family: inherit;
+  font-size: calc(11px * var(--ui-font-scale));
+  cursor: pointer;
+}
+
+.shortcut-capture-input {
+  display: inline-flex;
+  min-width: 110px;
+  height: 27px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--divider));
+  border-radius: calc(5px * var(--ui-radius-scale, 1));
+  background: var(--raised);
+  color: var(--text);
+  font-family: inherit;
+  font-size: calc(11px * var(--ui-font-scale));
+  white-space: nowrap;
+  cursor: text;
+}
+
+.shortcut-capture-input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 1px;
+}
+
+.shortcut-capture-input.is-waiting {
+  border-color: var(--divider);
+  color: var(--tertiary);
+}
+
+.shortcut-capture-input.is-conflict {
+  border-color: color-mix(in srgb, var(--danger) 70%, var(--divider));
+  background: color-mix(in srgb, var(--danger) 14%, var(--raised));
+  color: var(--text);
+}
+
+.shortcut-keycap:hover {
+  background: var(--hover);
+}
+
+.shortcut-keycap.is-unassigned {
+  color: var(--tertiary);
+  font-family: inherit;
+  font-weight: 450;
+}
+
+.shortcut-settings-badge {
+  display: inline-flex;
+  height: 18px;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: calc(4px * var(--ui-radius-scale, 1));
+  background: var(--hover);
+  color: var(--secondary);
+  font-size: calc(10px * var(--ui-font-scale));
+  white-space: nowrap;
+}
+
+.shortcut-settings-badge.is-conflict {
+  background: color-mix(in srgb, var(--danger) 13%, transparent);
+  color: var(--danger);
+}
+
+.shortcut-settings-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.shortcut-settings-icon-button {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: calc(5px * var(--ui-radius-scale, 1));
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+
+.shortcut-settings-icon-button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--accent);
+}
+
+.shortcut-settings-icon-button.is-confirm {
+  color: var(--accent);
+}
+
+.shortcut-settings-icon-button.is-confirm:disabled {
+  color: var(--tertiary);
+}
+
+.shortcut-settings-icon-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.shortcut-settings-text-button {
+  height: 26px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: calc(5px * var(--ui-radius-scale, 1));
+  background: transparent;
+  color: var(--accent);
+  font-size: calc(11px * var(--ui-font-scale));
+  cursor: pointer;
+}
+
+.shortcut-settings-text-button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.shortcut-settings-text-button.is-muted {
+  color: var(--secondary);
+}
+
+.shortcut-settings-text-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.shortcut-recorder {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--divider));
+  border-radius: calc(8px * var(--ui-radius-scale, 1));
+  background: color-mix(in srgb, var(--raised) 82%, transparent);
+}
+
+.shortcut-recorder-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+  order: 1;
+}
+
+.shortcut-recorder-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  order: 2;
+}
+
+.shortcut-keycap.is-preview {
+  min-width: 68px;
+  height: 27px;
+  padding: 0 10px;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--divider));
+  background: color-mix(in srgb, var(--accent) 8%, var(--raised));
+  cursor: default;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  text-align: center;
+}
+
+.shortcut-keycap.is-preview.is-waiting {
+  border-color: var(--divider);
+  background: transparent;
+  color: var(--tertiary);
+  font-family: inherit;
+  font-size: calc(10.5px * var(--ui-font-scale));
+}
+
+.shortcut-recorder:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.shortcut-recorder-prompt {
+  color: var(--text);
+  font-size: calc(12px * var(--ui-font-scale));
+  font-weight: 560;
+}
+
+.shortcut-recorder-help {
+  color: var(--tertiary);
+  font-size: calc(10.5px * var(--ui-font-scale));
+}
+
+.shortcut-recorder-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: calc(11px * var(--ui-font-scale));
+}
+
+.shortcut-row-feedback {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shortcut-row-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: calc(11.5px * var(--ui-font-scale));
+  line-height: 1.45;
+}
+
+.shortcut-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--divider));
+  border-radius: calc(6px * var(--ui-radius-scale, 1));
+}
+
+.shortcut-conflict p {
+  margin: 0;
+  color: var(--text);
+  font-size: calc(11.5px * var(--ui-font-scale));
+}
+
+.shortcut-conflict-actions,
+.shortcut-recorder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shortcut-recorder-actions {
+  justify-content: flex-end;
+  order: 3;
+}
+
+.shortcut-conflict {
+  order: 4;
+  grid-column: 1 / -1;
+}
+
+.shortcut-fixed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shortcut-fixed-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--secondary);
+  font-size: calc(11.5px * var(--ui-font-scale));
+}
+
+.shortcut-settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.shortcut-settings-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.shortcut-settings-file-button {
+  display: inline-flex;
+  height: 26px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid var(--divider);
+  border-radius: calc(5px * var(--ui-radius-scale, 1));
+  background: transparent;
+  color: var(--secondary);
+  font-size: calc(11px * var(--ui-font-scale));
+  cursor: pointer;
+}
+
+.shortcut-settings-file-button:hover {
+  background: var(--hover);
+  color: var(--accent);
+}
+
+.shortcut-reset-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--secondary);
+  font-size: calc(11px * var(--ui-font-scale));
+}
+
+.shortcut-settings-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--divider));
+  border-radius: calc(6px * var(--ui-radius-scale, 1));
+  color: var(--danger);
+  font-size: calc(11px * var(--ui-font-scale));
+}
+
+.shortcut-settings-notice {
+  margin: 0;
+  color: var(--accent);
+  font-size: calc(11px * var(--ui-font-scale));
+}
+
+@media (max-width: 720px) {
+  .shortcut-settings-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .shortcut-recorder {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .shortcut-recorder-preview {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .shortcut-recorder-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
 }

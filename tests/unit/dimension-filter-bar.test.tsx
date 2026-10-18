@@ -275,4 +275,30 @@ describe("DimensionFilterBar hover opening", () => {
     root = undefined;
     document.body.querySelector("[data-dimension-filter-popover]")?.remove();
   });
+
+  it("does not highlight More when a bundled filter is on", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const current = props();
+    current.favoriteFilter = "yes";
+    current.excludeAvailabilityFilter = true;
+    current.availabilityFilter = "missing";
+
+    await act(async () => {
+      root?.render(
+        createElement(
+          LocaleProvider,
+          { children: null, initialPreference: "en" },
+          createElement(DimensionFilterBar, current),
+        ),
+      );
+    });
+
+    const more = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("More"));
+    expect(more?.classList.contains("is-active")).toBe(false);
+    expect(more?.classList.contains("is-excluding")).toBe(false);
+    expect(more?.getAttribute("aria-pressed")).toBeNull();
+  });
 });

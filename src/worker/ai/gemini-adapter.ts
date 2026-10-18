@@ -307,10 +307,17 @@ export class GeminiVendorAdapter implements VendorAdapter {
       );
     }
 
-    const candidate = body.candidates[0] as Record<string, unknown>;
-    const content = candidate.content as Record<string, unknown> | undefined;
-    const parts =
-      content?.parts as Array<Record<string, unknown>> | undefined;
+    const candidate: unknown = body.candidates[0];
+    const rawContent = candidate !== null && typeof candidate === 'object'
+      ? (candidate as Record<string, unknown>).content
+      : undefined;
+    const rawParts = rawContent !== null && typeof rawContent === 'object'
+      ? (rawContent as Record<string, unknown>).parts
+      : undefined;
+    const parts = Array.isArray(rawParts)
+      ? rawParts.filter((part): part is Record<string, unknown> =>
+        part !== null && typeof part === 'object' && !Array.isArray(part))
+      : [];
 
     if (!parts || parts.length === 0) {
       throw new VendorAdapterError(

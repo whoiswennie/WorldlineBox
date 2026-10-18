@@ -15,6 +15,7 @@ const gates = [
   'test',
   'test:perf:search',
   'test:e2e',
+  'test:e2e:shortcuts',
 ];
 
 for (const gate of gates) {

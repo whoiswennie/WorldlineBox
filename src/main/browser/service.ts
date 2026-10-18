@@ -36,7 +36,7 @@ export class BrowserService {
   private readonly textVersions = new Map<string, number>();
   private readonly textDrafts = new BrowserTextDrafts();
   private readonly selectionFrames = new Map<string, { frame: Electron.WebFrameMain; url: string; documentId: string }>();
-  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>) {
+  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>, private readonly fullscreenShortcut?: (input: Electron.Input) => boolean) {
     this.store = new BrowserStore(root, error => { this.error = '浏览器配置保存失败：' + String(error).slice(0, 600); this.changed(false); });
   }
   private init(): Promise<void> { return this.initialization ??= this.initialize(); }
@@ -330,7 +330,10 @@ export class BrowserService {
       this.previousFullscreen = owner.isFullScreen(); this.fullscreen = true; owner.setFullScreen(true); this.layout(); this.changed(false);
     });
     contents.on('leave-html-full-screen', () => { this.fullscreen = false; owner.setFullScreen(this.previousFullscreen); this.layout(); this.changed(false); });
-    contents.on('before-input-event', (event, input) => { if (input.type === 'keyDown') this.pageAction(() => { if (this.shortcut(input.key, input.control || input.meta, input.shift, input.alt)) event.preventDefault(); }); });
+    contents.on('before-input-event', (event, input) => { if (input.type === 'keyDown') this.pageAction(() => {
+      if (this.fullscreenShortcut?.(input)) { event.preventDefault(); if (!input.isAutoRepeat) this.act('fullscreen'); return; }
+      if (this.shortcut(input.key, input.control || input.meta, input.shift, input.alt)) event.preventDefault();
+    }); });
     contents.on('context-menu', (_event, params) => {
       const items: Electron.MenuItemConstructorOptions[] = [];
       const selectionVersion = this.textVersions.get(tab.id) ?? 0;
@@ -440,7 +443,7 @@ export class BrowserService {
     if (ctrl && lower === 'tab') { const tabs = this.store.data.tabs; const index = tabs.findIndex(item => item.id === this.store.data.activeTabId); this.select(tabs[(index + (shift ? tabs.length - 1 : 1)) % tabs.length]!.id); return true; }
     if ((ctrl && lower === 'r') || key === 'F5') { this.act('reload'); return true; }
     if (alt && ['ArrowLeft', 'ArrowRight'].includes(key)) { this.act(key === 'ArrowLeft' ? 'back' : 'forward'); return true; }
-    if (key === 'F11') { this.act('fullscreen'); return true; }
+    if (key === 'F11' && !this.fullscreenShortcut) { this.act('fullscreen'); return true; }
     if (key === 'Escape' && this.fullscreen) { void this.views.get(this.active().id)?.view.webContents.executeJavaScript('if(document.fullscreenElement)document.exitFullscreen()'); return true; }
     if (ctrl && ['+', '=', '-', '0'].includes(key)) { const tab = this.active(); tab.zoom = key === '0' ? 1 : Math.max(.25, Math.min(5, tab.zoom + (key === '-' ? -.1 : .1))); this.ensureView(tab).webContents.setZoomFactor(tab.zoom); this.changed(); return true; }
     return false;
@@ -568,18 +571,18 @@ export class BrowserService {
   }
 }
 
-export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>): { shutdown(): Promise<void>; closeLibrary(libraryId: string): void; captureViewport(): Promise<CaptureImageSource>; selectedText(): Promise<string>; saveScreenshot(bytes: Uint8Array, filename: string): Promise<void> } {
+export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean): { shutdown(): Promise<void>; closeLibrary(libraryId: string): void; captureViewport(): Promise<CaptureImageSource>; selectedText(): Promise<string>; saveScreenshot(bytes: Uint8Array, filename: string): Promise<void> } {
   let browser: BrowserService | undefined;
   ipcMain.handle(BROWSER_REQUEST, async (event, input: unknown): Promise<BrowserResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问浏览器。' };
     const request = browserRequestSchema.safeParse(input); if (!request.success) return { ok: false, error: '无效的浏览器请求。' };
-    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).handle(request.data); }
+    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).handle(request.data); }
     catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
   });
   ipcMain.handle(BROWSER_CAPTURE_REQUEST, async (event, input: unknown): Promise<BrowserCaptureResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问资产采集。' };
     const parsed = browserCaptureRequestSchema.safeParse(input); if (!parsed.success) return { ok: false, error: '无效的采集请求。' };
-    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).captureRequest(parsed.data); }
+    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).captureRequest(parsed.data); }
     catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
   });
   ipcMain.handle(BROWSER_CAPTURE_CONTENT_REQUEST, (event, input: unknown): Promise<BrowserCaptureContentResponse> | BrowserCaptureContentResponse => {
@@ -587,7 +590,7 @@ export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undef
   });
   ipcMain.on(BROWSER_CAPTURE_SELECTION_STATE, (event, value: unknown) => browser?.captureSelectionState(event, value));
   return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId),
-    captureViewport: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).captureViewport(),
-    selectedText: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).selectedText(),
-    saveScreenshot: (bytes, filename) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).saveScreenshot(bytes, filename) };
+    captureViewport: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).captureViewport(),
+    selectedText: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).selectedText(),
+    saveScreenshot: (bytes, filename) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).saveScreenshot(bytes, filename) };
 }

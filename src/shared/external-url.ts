@@ -1,7 +1,10 @@
 import { z } from 'zod';
 
 import type { ShowEditContextMenuResult } from './edit-context-menu';
-import type { ViewerVideoShortcutAction } from './viewer-video-shortcuts';
+import type {
+  ViewerShortcutScope,
+  ViewerVideoShortcutAction,
+} from './viewer-video-shortcuts';
 import type { BrowseKeyboardAction } from './browse-keyboard-shortcuts';
 import type {
   WindowControlAction,
@@ -200,11 +203,12 @@ export interface WorldlineBoxShellApi {
   setShowMissingLinkedFiles(show: boolean): Promise<void>;
   /** 请求 Main 对当前 webContents 执行原生 copy（文本框 ⌘C）。 */
   nativeEditCopy(): Promise<void>;
+  nativeEditCommand(command: "paste" | "select-all"): Promise<void>;
   /**
    * Enable Main `before-input-event` capture for video D/F/X/C (VIEWER-018).
    * Required on Windows when IME swallows unmodified letter keydowns.
    */
-  setViewerVideoShortcutsActive(active: boolean): void;
+  setViewerVideoShortcutsActive(active: boolean, scope?: ViewerShortcutScope): void;
   /** Main-forwarded video letter shortcuts (frame / rate). */
   onViewerVideoShortcut(
     listener: (action: ViewerVideoShortcutAction) => void,
@@ -222,6 +226,7 @@ export interface WorldlineBoxShellApi {
    * input, dialog, or preview owns those keys.
    */
   setBrowseShortcutAcceleratorsEnabled?(enabled: boolean): void;
+  setApplicationShortcutAcceleratorsEnabled?(enabled: boolean, fullscreenOnly?: boolean): void;
   /** Main-forwarded browse F2 / Delete / Shift+Delete. */
   onBrowseShortcut?(
     listener: (action: BrowseKeyboardAction) => void,

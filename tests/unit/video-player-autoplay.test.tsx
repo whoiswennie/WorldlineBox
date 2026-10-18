@@ -90,4 +90,31 @@ describe("VideoPlayerControls autoplay after viewer navigation", () => {
     await renderControls(false);
     expect(playSpy).not.toHaveBeenCalled();
   });
+
+  it("leaves playback and frame keys to a modal's non-editable control", async () => {
+    await renderControls(false);
+    const dialog = document.createElement("section");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const button = document.createElement("button");
+    dialog.append(button);
+    document.body.append(dialog);
+    button.focus();
+
+    for (const [key, code] of [[" ", "Space"], ["d", "KeyD"]]) {
+      const event = new KeyboardEvent("keydown", {
+        key,
+        code,
+        bubbles: true,
+        cancelable: true,
+      });
+      await act(async () => {
+        window.dispatchEvent(event);
+      });
+      expect(event.defaultPrevented).toBe(false);
+    }
+
+    expect(playSpy).not.toHaveBeenCalled();
+    dialog.remove();
+  });
 });

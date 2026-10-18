@@ -6,7 +6,10 @@
 
 import { useEffect } from "react";
 
-import { resolveWorkspaceMouseNavAction } from "./workspace-mouse-navigation";
+import {
+  isWorkspaceMouseSideButton,
+  resolveWorkspaceMouseNavAction,
+} from "./workspace-mouse-navigation";
 
 export type UseWorkspaceMouseNavigationArgs = {
   readonly enabled: boolean;
@@ -20,18 +23,27 @@ export function useWorkspaceMouseNavigation(
   const { enabled, onBack, onForward } = args;
 
   useEffect(() => {
-    if (!enabled) return;
-
     const onPointerDown = (event: PointerEvent) => {
+      if (!enabled) return;
       const action = resolveWorkspaceMouseNavAction(event);
       if (!action) return;
       event.preventDefault();
       if (action === "back") onBack();
       else onForward();
     };
+    const preventBrowserHistory = (event: MouseEvent) => {
+      if (isWorkspaceMouseSideButton(event.button)) event.preventDefault();
+    };
 
     window.addEventListener("pointerdown", onPointerDown, { capture: true });
-    return () =>
+    window.addEventListener("mousedown", preventBrowserHistory, { capture: true });
+    window.addEventListener("mouseup", preventBrowserHistory, { capture: true });
+    window.addEventListener("auxclick", preventBrowserHistory, { capture: true });
+    return () => {
       window.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      window.removeEventListener("mousedown", preventBrowserHistory, { capture: true });
+      window.removeEventListener("mouseup", preventBrowserHistory, { capture: true });
+      window.removeEventListener("auxclick", preventBrowserHistory, { capture: true });
+    };
   }, [enabled, onBack, onForward]);
 }

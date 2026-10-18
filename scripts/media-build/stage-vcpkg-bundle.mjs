@@ -104,7 +104,7 @@ function extractLockedText(archive, suffix) {
 function componentSha256(sourceLock, platform, component) {
   // linux-x64 builds FFmpeg from the locked source tarball. darwin/win32 keep
   // the global archive hash their existing staging downloads already match.
-  if (platform === 'linux-x64') {
+  if (platform === 'linux-x64' || platform === 'linux-arm64') {
     const override = sourceLock.platforms?.[platform]?.components?.[component]?.sha256;
     if (typeof override === 'string') return override;
   }
@@ -229,7 +229,7 @@ function generateDependencyNotices(installedRoot, targetRoot, triplet, registryC
 
 const options = parseArguments(process.argv.slice(2));
 const platform = required(options, 'platform');
-if (!['darwin-arm64', 'win32-x64', 'linux-x64'].includes(platform)) {
+if (!['darwin-arm64', 'win32-x64', 'linux-x64', 'linux-arm64'].includes(platform)) {
   throw new Error(`Unsupported ${platform}.`);
 }
 const triplet = required(options, 'triplet');
@@ -285,7 +285,7 @@ writeFileSync(
 
 for (const binary of Object.values(stagedTools)) {
   if (platform === 'darwin-arm64') assertMacSystemDependencies(binary);
-  else if (platform === 'linux-x64') assertLinuxSystemDependencies(binary);
+  else if (platform === 'linux-x64' || platform === 'linux-arm64') assertLinuxSystemDependencies(binary);
   else assertWindowsSystemDependencies(binary);
 }
 

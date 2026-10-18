@@ -1030,9 +1030,7 @@ export function DimensionFilterBar(props: DimensionFilterBarProps) {
 
         <div className="dimension-filter-dim" data-dimension="more" ref={moreDimRef}>
           <DimensionButton
-            active={moreActive}
             disabled={controlsDisabled}
-            excluding={excludeAvailabilityFilter && moreActive}
             icon="menu"
             label={t("filter.dimMore")}
             onClick={handleMoreDimensionClick}

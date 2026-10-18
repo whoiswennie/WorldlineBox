@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   deleteEmbeddingModel,
@@ -51,6 +54,39 @@ describe("embedding profile", () => {
 });
 
 describe("embedding model catalog", () => {
+  it("checks installation and uninstalls without inspecting home or mapped-drive roots", async () => {
+    const userData = mkdtempSync(path.join(tmpdir(), "worldlinebox-managed-embedding-"));
+    const models = path.join(userData, "embedding-models");
+    mkdirSync(path.join(models, "runtime"), { recursive: true });
+    writeFileSync(path.join(models, "embeddinggemma-2-UD-Q4_K_XL.gguf"), "core");
+    writeFileSync(path.join(models, "mmproj-Q8_0.gguf"), "projector");
+    writeFileSync(path.join(models, "runtime", "llama-server.exe"), "runtime");
+    const homePath = vi.fn(() => { throw new Error("Unavailable mapped home drive must not be probed."); });
+    const runtime = {
+      readCatalog: () => null, writeCatalog: () => undefined,
+      userDataPath: () => userData, homePath,
+    };
+    try {
+      const status = await tryHandleEmbeddingModelRequest({ type: "embedding.install.status.request" }, runtime);
+      expect(status).toMatchObject({ ok: true, type: "embedding.install.status", runtimeInstalled: true });
+      if (!status?.ok || status.type !== "embedding.install.status") throw new Error("status failed");
+      expect(status.models.find((model) => model.modelId === "embeddinggemma-2-compact")?.installed).toBe(true);
+      // An already installed tier must also resolve without a discovery scan or download.
+      expect(await tryHandleEmbeddingModelRequest({
+        type: "embedding.install.start.request", modelId: "embeddinggemma-2-compact",
+      }, runtime)).toEqual(status);
+      const removed = await tryHandleEmbeddingModelRequest({
+        type: "embedding.install.delete.request", modelId: "embeddinggemma-2-compact",
+      }, runtime);
+      expect(removed).toMatchObject({ ok: true, type: "embedding.install.status", runtimeInstalled: true });
+      if (!removed?.ok || removed.type !== "embedding.install.status") throw new Error("uninstall failed");
+      expect(removed.models.find((model) => model.modelId === "embeddinggemma-2-compact")?.installed).toBe(false);
+      expect(homePath).not.toHaveBeenCalled();
+    } finally {
+      rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
   it("stores a local registration and clears verification when the files change", () => {
     const saved = upsertEmbeddingModel(emptyEmbeddingModelCatalog(), sample);
     const verified = {

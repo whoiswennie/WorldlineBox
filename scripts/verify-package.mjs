@@ -199,9 +199,9 @@ if (!mainSource.includes(`AUTOMATION_API_VERSION`) || !mainSource.includes(Strin
   );
 }
 
-// linux-arm64 still has no pinned media bundle. linux-x64 ships the same
-// ffmpeg / oiiotool release as macOS and Windows.
-if (!(packagePlatform === 'linux' && packageArch !== 'x64')) {
+// Every supported architecture must pass the same native media contract;
+// linux-arm64 stays build-required until a trusted bundle has been promoted.
+{
   const mediaResourcesPath = path.join(resourcesPath, 'resources');
   if (process.platform === 'win32') {
     const toolResult = spawnSync(process.execPath, [path.join(projectRoot, 'scripts/portable-tools.mjs'), 'verify', '--root', path.join(mediaResourcesPath, 'portable-tools', 'win32-x64')], {
@@ -224,8 +224,6 @@ if (!(packagePlatform === 'linux' && packageArch !== 'x64')) {
   } else {
     verifyReleaseProvenance({ root: mediaResourcesPath, platform: mediaPlatform });
   }
-} else {
-  console.log('Skipping media bundle verification on this Linux architecture (no pinned bundle).');
 }
 
 if (packagePlatform === 'darwin') {

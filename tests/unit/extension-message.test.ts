@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createExtensionServer,
+  extensionCollectionSummaries,
   MAX_EXTENSION_UPLOAD_BYTES,
   saveIntentSchema,
   type ExtensionServer,
@@ -26,6 +27,11 @@ function startServer(overrides: Partial<ExtensionServerOptions> = {}): Promise<E
       ok: true,
       folders: [],
       recentBrowsedFolderIds: [],
+      libraryDisplayName: 'WorldlineBox',
+    }),
+    onListCollections: async () => ({
+      ok: true,
+      collections: [],
       libraryDisplayName: 'WorldlineBox',
     }),
     ...overrides,
@@ -182,6 +188,28 @@ function getFolders(port: number): Promise<{ status: number; body: unknown }> {
               parsed = text;
             }
             resolve({ status: res.statusCode ?? 0, body: parsed });
+          });
+        },
+      )
+      .on('error', reject);
+  });
+}
+
+function getCollections(port: number): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    http
+      .get(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/collections',
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => {
+            const text = Buffer.concat(chunks).toString('utf-8');
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(text) });
           });
         },
       )
@@ -448,6 +476,52 @@ describe('createExtensionServer', () => {
         },
       ],
       recentBrowsedFolderIds: [],
+      libraryDisplayName: '演示库',
+    });
+  });
+
+  it('returns nested collection paths for GET /collections', async () => {
+    expect(extensionCollectionSummaries([
+      { collectionId: 'child', parentId: 'parent', name: '草图', assetCount: 1 },
+      { collectionId: 'parent', parentId: null, name: '角色/原画', assetCount: 2 },
+    ])).toEqual([
+      {
+        collectionId: 'child',
+        name: '草图',
+        relativePath: '角色／原画/草图',
+        assetCount: 1,
+      },
+      {
+        collectionId: 'parent',
+        name: '角色／原画',
+        relativePath: '角色／原画',
+        assetCount: 2,
+      },
+    ]);
+
+    server = await startServer({
+      port: TEST_PORT,
+      onListCollections: async () => ({
+        ok: true,
+        collections: extensionCollectionSummaries([
+          { collectionId: 'parent', parentId: null, name: '角色', assetCount: 2 },
+        ]),
+        libraryDisplayName: '演示库',
+      }),
+    });
+
+    const res = await getCollections(server.port);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: 'ok',
+      collections: [
+        {
+          collectionId: 'parent',
+          name: '角色',
+          relativePath: '角色',
+          assetCount: 2,
+        },
+      ],
       libraryDisplayName: '演示库',
     });
   });
@@ -724,6 +798,20 @@ describe('createExtensionServer', () => {
   });
 
   describe('POST /save-upload', () => {
+    it('removes the request staging file after an early downstream rejection', async () => {
+      let rejectedPath: string | undefined;
+      server = await startServer({ port: TEST_PORT, onSaveUpload: async upload => {
+        rejectedPath = upload.stagedFilePath;
+        expect(await readFile(rejectedPath, 'utf8')).toBe('owned rejected upload');
+        return { accepted: false, status: 503, reason: 'no active library' };
+      } });
+      const response = await postUpload(server.port, Buffer.from('owned rejected upload'), validUploadHeaders);
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({ status: 'rejected', reason: 'no active library' });
+      expect(rejectedPath).toBeDefined();
+      await expect(readFile(rejectedPath!)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
     it('returns 202 for a valid upload and calls onSaveUpload', async () => {
       const uploads: SaveUploadRequest[] = [];
       const stagingRoot = path.join(os.tmpdir(), `worldlinebox-ext-test-${randomUUID()}`);
@@ -753,9 +841,39 @@ describe('createExtensionServer', () => {
           filename: 'photo.png',
           byteLength: payload.length,
         });
+        expect(uploads[0]).not.toHaveProperty('targetCollectionId');
 
         const fileContent = await readFile(uploads[0]!.stagedFilePath);
         expect(fileContent).toEqual(payload);
+        await rm(uploads[0]!.stagingDirectory, { recursive: true, force: true });
+      } finally {
+        await rm(stagingRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('records a collection target and still accepts an explicit root folder', async () => {
+      const uploads: SaveUploadRequest[] = [];
+      const stagingRoot = path.join(os.tmpdir(), `worldlinebox-ext-test-${randomUUID()}`);
+      await mkdir(stagingRoot, { recursive: true });
+      try {
+        server = await startServer({
+          port: TEST_PORT,
+          uploadStagingRoot: stagingRoot,
+          onSaveUpload: async (upload) => {
+            uploads.push(upload);
+            return { accepted: true };
+          },
+        });
+        const res = await postUpload(server.port, Buffer.from('png'), {
+          ...validUploadHeaders,
+          'X-WorldlineBox-Target-Folder-Id': 'null',
+          'X-WorldlineBox-Target-Collection-Id': encodeURIComponent('col/1'),
+        });
+        expect(res.status).toBe(202);
+        expect(uploads[0]).toMatchObject({
+          targetFolderId: null,
+          targetCollectionId: 'col/1',
+        });
         await rm(uploads[0]!.stagingDirectory, { recursive: true, force: true });
       } finally {
         await rm(stagingRoot, { recursive: true, force: true });

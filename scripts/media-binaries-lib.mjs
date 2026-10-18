@@ -10,7 +10,7 @@ import {
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-export const SUPPORTED_PLATFORMS = new Set(['darwin-arm64', 'win32-x64', 'linux-x64']);
+export const SUPPORTED_PLATFORMS = new Set(['darwin-arm64', 'win32-x64', 'linux-x64', 'linux-arm64']);
 
 const FORBIDDEN_FFMPEG_MARKERS = [
   '--enable-gpl',
@@ -47,16 +47,19 @@ export function currentPlatformKey() {
   if (process.platform === 'linux' && process.arch === 'x64') {
     return 'linux-x64';
   }
+  if (process.platform === 'linux' && process.arch === 'arm64') {
+    return 'linux-arm64';
+  }
   throw new Error(
     `Media release bundles are unsupported on ${process.platform}-${process.arch}; ` +
-      'supported targets are darwin-arm64, win32-x64, and linux-x64.',
+      'supported targets are darwin-arm64, win32-x64, linux-x64, and linux-arm64.',
   );
 }
 
 export function assertPlatform(platform) {
   if (!SUPPORTED_PLATFORMS.has(platform)) {
     throw new Error(
-      `Unsupported media platform ${JSON.stringify(platform)}; expected darwin-arm64, win32-x64, or linux-x64.`,
+      `Unsupported media platform ${JSON.stringify(platform)}; expected darwin-arm64, win32-x64, linux-x64, or linux-arm64.`,
     );
   }
 }

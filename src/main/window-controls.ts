@@ -96,7 +96,8 @@ export function registerWindowControls(options: {
   ipcMain.handle(
     WINDOW_CONTROL_CHANNEL,
     (event, input: unknown): WindowControlResult => {
-      if (!shouldUseFramelessTitleBar(process.platform)) {
+      const parsed = parseWindowControlRequest(input);
+      if (!shouldUseFramelessTitleBar(process.platform) && parsed?.action !== 'fullscreen-toggle') {
         logger?.info("ipc.window-control", "Rejected window-control request.", {
           code: "unsupported_platform",
         });
@@ -109,7 +110,6 @@ export function registerWindowControls(options: {
         });
         return { ok: false, code: "unauthorized_sender" };
       }
-      const parsed = parseWindowControlRequest(input);
       if (!parsed) {
         logger?.info("ipc.window-control", "Rejected window-control request.", {
           code: "malformed_request",

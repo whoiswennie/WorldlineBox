@@ -15,6 +15,7 @@ function event(
     ctrlKey: boolean;
     altKey: boolean;
     shiftKey: boolean;
+    repeat: boolean;
   }>,
 ) {
   return {
@@ -78,6 +79,15 @@ describe("selection keyboard chords (WorldlineBox-5fq)", () => {
     );
     expect(
       matchSelectionKeyboardAction(event({ key: "Escape", metaKey: true }), "mac"),
+    ).toBeNull();
+  });
+
+  it("ignores system repeat for customizable selection shortcuts", () => {
+    expect(
+      matchSelectionKeyboardAction(
+        event({ key: "a", ctrlKey: true, repeat: true }),
+        "windows",
+      ),
     ).toBeNull();
   });
 });

@@ -16,6 +16,8 @@
 import { useEffect } from "react";
 
 import type { CommandPlatform } from "./commands/command-types";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
+import { listenForShortcutInputs } from "./shortcut-runtime";
 import {
   dispatchSelectionKeyboardAction,
   isEditableSelectionKeyboardTarget,
@@ -51,12 +53,12 @@ export function useSelectionKeyboard(args: UseSelectionKeyboardArgs): void {
   useEffect(() => {
     if (!enabled) return;
 
-    const onKeyDown = (event: KeyboardEvent) => {
+    const onShortcutInput = (shortcutInput: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
       if (isEditableSelectionKeyboardTarget(event.target)) return;
       if (previewOpen) return;
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
 
-      const action = matchSelectionKeyboardAction(event, platform);
+      const action = matchSelectionKeyboardAction(shortcutInput, platform);
       const consumed = dispatchSelectionKeyboardAction(action, {
         browseScopeEmpty: browseScopeAssetIds.length === 0,
         selectionEmpty: selectedAssetIds.length === 0,
@@ -67,8 +69,7 @@ export function useSelectionKeyboard(args: UseSelectionKeyboardArgs): void {
       if (consumed) event.preventDefault();
     };
 
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    return listenForShortcutInputs(document, onShortcutInput);
   }, [
     enabled,
     platform,

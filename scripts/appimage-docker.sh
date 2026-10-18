@@ -6,6 +6,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_VERSION="$(cat "$ROOT/.nvmrc")"
 IMAGE="${WORLDLINEBOX_APPIMAGE_IMAGE:-ubuntu:22.04}"
+case "$(uname -m)" in
+  x86_64) NODE_ARCH=x64 ;;
+  aarch64|arm64) NODE_ARCH=arm64 ;;
+  *) echo "appimage-docker: unsupported native host architecture $(uname -m)." >&2; exit 1 ;;
+esac
 # Build from a clean copy so the host's node_modules (host glibc / ABI) never leak in.
 docker run --rm -e HOST_UID="${SUDO_UID:-$(id -u)}" -e HOST_GID="${SUDO_GID:-$(id -g)}" -v "$ROOT":/src:ro -v "$ROOT/out":/out "$IMAGE" bash -euxc "
   export DEBIAN_FRONTEND=noninteractive
@@ -19,8 +24,8 @@ docker run --rm -e HOST_UID="${SUDO_UID:-$(id -u)}" -e HOST_GID="${SUDO_GID:-$(i
   # Electron runtime libs (rebuild:native runs an FTS5 probe inside Electron)
   apt-get install -y -q libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libgtk-3-0 libasound2 libxss1 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libpango-1.0-0
   export CC=gcc-13 CXX=g++-13 LDFLAGS='-static-libstdc++ -static-libgcc'
-  curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz | tar -xz -C /opt
-  export PATH=/opt/node-v${NODE_VERSION}-linux-x64/bin:\$PATH
+  curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz | tar -xz -C /opt
+  export PATH=/opt/node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin:\$PATH
   mkdir -p /build && rsync -a --exclude node_modules --exclude out --exclude .git /src/ /build/
   cd /build
   npm ci --registry=https://registry.npmjs.org

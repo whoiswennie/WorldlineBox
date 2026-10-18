@@ -1,0 +1,468 @@
+{
+  "sourceBase": "03c99c0b",
+  "sourceTip": "7a94cabc",
+  "brand": "WorldlineBox",
+  "scope": "shortcut upstream delta and necessary WorldlineBox integrations; shared files only corresponding hunks",
+  "files": [
+    {
+      "file": "src/main/application-menu.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/main/browser/service.ts",
+      "status": "WorldlineBox integration: optional native-webpage custom fullscreen matcher only",
+      "inUpstream142": false
+    },
+    {
+      "file": "src/main/capture-tools/service.ts",
+      "status": "WorldlineBox integration: optional application shortcut validator before saving global settings",
+      "inUpstream142": false
+    },
+    {
+      "file": "src/main/index.ts",
+      "status": "15 shortcut hunks only; IPC mainFrame ownership and global capture conflicts added; other agents own non-shortcut hunks",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/main/shortcut-bindings-store.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/main/viewer-video-shortcut-capture.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/main/viewer-video-shortcut-menu.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/main/window-controls.ts",
+      "status": "WorldlineBox integration: authenticated macOS fullscreen command allowed; other caption restrictions retained",
+      "inUpstream142": false
+    },
+    {
+      "file": "src/preload/bridge/shell.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/preload/bridge/shortcuts.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/preload/index.ts",
+      "status": "three-way merged custom file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/app-settings-sections.ts",
+      "status": "three-way merged custom file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/App.tsx",
+      "status": "selected shortcut hunks only; retained module guards, 3 manual conflicts; sidebar hunks root-owned",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/Application.tsx",
+      "status": "WorldlineBox integration: outer-shell hook only; lazy modules retained",
+      "inUpstream142": false
+    },
+    {
+      "file": "src/renderer/AppSettingsDialog.tsx",
+      "status": "three-way merged custom file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/AppSettingsShortcutsPage.tsx",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/asset-action-keyboard.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/AudioPlayerControls.tsx",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/commands/command-registry.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/folder-shortcut-dispatch.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/GifViewerPlayer.tsx",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/global-zoom-shortcuts.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/i18n/catalogs/en.ts",
+      "status": "shortcuts object and settings category; retained custom model/music/capture text",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/i18n/catalogs/zh-CN.ts",
+      "status": "shortcuts object and settings category; retained custom model/music/capture text",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/main-menu-items.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/main.tsx",
+      "status": "manually merged ShortcutProvider around lazy main Application only",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/PdfViewerSurface.tsx",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/selection-keyboard.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/shortcut-provider.tsx",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/shortcut-runtime.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/shortcut-settings-model.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/styles.css",
+      "status": "only appended upstream shortcut settings style block; sidebar hunk owner independent",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/use-application-module-shortcuts.ts",
+      "status": "WorldlineBox integration: cold launcher/non-asset fullscreen and scope ownership",
+      "inUpstream142": false
+    },
+    {
+      "file": "src/renderer/use-browse-command-keyboard.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/use-collection-command-shortcuts.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/use-dialog-focus-trap.ts",
+      "status": "manually merged hasActiveModalDialog while retaining hidden/inert ancestor behavior",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/use-folder-command-shortcuts.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/use-selection-keyboard.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/use-viewer-volume.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/use-viewer-zoom-pan.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/use-windows-browse-shortcut-bridge.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/use-workspace-mouse-navigation.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/video-player-controls.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/VideoPlayerControls.tsx",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/viewer-fit-shortcut.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/viewer-volume-preferences.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/workspace-discovery-shortcuts.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/workspace-mouse-navigation.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/renderer/zoomable-preview-image.tsx",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/shared/application-menu.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/shared/application-shortcut-dedupe.ts",
+      "status": "WorldlineBox runtime fix: deduplicate only opposite delivery paths, not independent physical presses",
+      "inUpstream142": false
+    },
+    {
+      "file": "src/shared/capture-shortcut-conflicts.ts",
+      "status": "WorldlineBox integration: bidirectional overlap with global screen-tool shortcuts",
+      "inUpstream142": false
+    },
+    {
+      "file": "src/shared/external-url.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/shared/native-dialog-i18n.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/shared/protocol/channels.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/shared/shortcut-api.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/shared/shortcut-bindings.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/shared/shortcut-catalog.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/shared/shortcut-resolution.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "src/shared/viewer-video-shortcuts.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/e2e/custom-shortcut-runtime.test.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/e2e/custom-shortcut-worldlinebox.test.ts",
+      "status": "WorldlineBox integration: native cold launcher/browser fullscreen, module transitions, global conflicts; root executes",
+      "inUpstream142": false
+    },
+    {
+      "file": "tests/e2e/custom-shortcuts.test.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/app-settings-sections.test.ts",
+      "status": "three-way merged custom file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/app-settings-shortcuts-page.test.tsx",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/application-menu.test.ts",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/application-module-shortcuts.test.tsx",
+      "status": "WorldlineBox integration: cold ownership, input/modal exclusion, switch cleanup",
+      "inUpstream142": false
+    },
+    {
+      "file": "tests/unit/application-shortcut-dedupe.test.ts",
+      "status": "Regression: 14 ms independent presses, both cross-path orders, windows/actions and clock adjustment",
+      "inUpstream142": false
+    },
+    {
+      "file": "tests/unit/application-shortcut-menu.test.ts",
+      "status": "WorldlineBox integration: fullscreen-only native menu, binding rebuild, auto-repeat and editing ownership",
+      "inUpstream142": false
+    },
+    {
+      "file": "tests/unit/audio-player-controls.test.ts",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/capture-shortcut-conflicts.test.ts",
+      "status": "WorldlineBox integration: aliases, scopes, defaults and disabled/side-button cases",
+      "inUpstream142": false
+    },
+    {
+      "file": "tests/unit/capture-tools-service.test.ts",
+      "status": "WorldlineBox integration: conflict rejects settings write and registration replacement",
+      "inUpstream142": false
+    },
+    {
+      "file": "tests/unit/collection-command-shortcuts.test.tsx",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/command-registry.test.ts",
+      "status": "WorldlineBox integration: cleared binding must not regain legacy menu label",
+      "inUpstream142": false
+    },
+    {
+      "file": "tests/unit/folder-shortcut-dispatch.test.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/global-zoom-shortcuts.test.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/main-menu-items.test.ts",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/plugin-ui-dialog-focus.test.ts",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/selection-keyboard.test.ts",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/shortcut-bindings-store.test.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/shortcut-bindings.test.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/shortcut-catalog.test.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/shortcut-runtime.test.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/shortcut-settings-model.test.ts",
+      "status": "new normalized upstream file",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/use-viewer-volume.test.tsx",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/use-viewer-zoom-pan-middle-button.test.tsx",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/video-player-autoplay.test.tsx",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/video-player-controls.test.ts",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/viewer-fit-shortcut.test.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/viewer-video-shortcuts.test.ts",
+      "status": "baseline equal; applied only upstream delta",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/viewer-volume-preferences.test.ts",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    },
+    {
+      "file": "tests/unit/workspace-mouse-navigation.test.ts",
+      "status": "three-way merged upstream regression coverage; preserved existing local tests",
+      "inUpstream142": true
+    }
+  ]
+}

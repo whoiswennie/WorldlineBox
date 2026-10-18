@@ -39,7 +39,10 @@ import {
   viewerDisplayTransformCss,
   type ViewerDisplayTransform,
 } from "./viewer-display-transform";
-import { isViewerFitShortcut } from "./viewer-fit-shortcut";
+import { shouldHandleViewerFitKeyboardEvent } from "./viewer-fit-shortcut";
+import { listenForShortcutInputs } from "./shortcut-runtime";
+import { hasActiveModalDialog } from "./use-dialog-focus-trap";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
 import { ZoomableImage } from "./zoomable-preview-image";
 
 type RendererWindow = Window & {
@@ -357,28 +360,22 @@ function GifAnimatedStage({
 
   useEffect(() => {
     if (keyboardShortcutsDisabled || !session) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-      if (
-        !isTypingKeyboardTarget(event.target) &&
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        !event.shiftKey &&
-        isViewerFitShortcut(event)
-      ) {
+    const onShortcutInput = (shortcutInput: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
+      if (hasActiveModalDialog()) return;
+      const input = { ...shortcutInput, target: event.target };
+      if (shouldHandleViewerFitKeyboardEvent(input, { modalOpen: false })) {
         event.preventDefault();
         event.stopPropagation();
         fitToWindow();
         return;
       }
-      if (shouldHandleVideoSpaceKey(event)) {
+      if (shouldHandleVideoSpaceKey(input)) {
         event.preventDefault();
         event.stopPropagation();
         togglePlayback();
         return;
       }
-      const action = matchVideoPlaybackSeekKey(event);
+      const action = matchVideoPlaybackSeekKey(input);
       if (action) {
         event.preventDefault();
         event.stopPropagation();
@@ -395,7 +392,7 @@ function GifAnimatedStage({
         );
         return;
       }
-      const rateStep = matchVideoPlaybackRateKey(event);
+      const rateStep = matchVideoPlaybackRateKey(input);
       if (!rateStep) return;
       event.preventDefault();
       event.stopPropagation();
@@ -403,8 +400,7 @@ function GifAnimatedStage({
         stepVideoPlaybackRate(playbackRateRef.current, rateStep),
       );
     };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    return listenForShortcutInputs(window, onShortcutInput, true);
   }, [
     applyPlaybackRate,
     fitToWindow,
@@ -423,20 +419,24 @@ function GifAnimatedStage({
     }
     const syncArmed = () => {
       const typing = isTypingKeyboardTarget(document.activeElement);
-      const modalOpen = Boolean(
-        document.querySelector('[role="dialog"][aria-modal="true"]'),
+      shell.setViewerVideoShortcutsActive(
+        !typing && !hasActiveModalDialog(),
+        "viewer.video",
       );
-      shell.setViewerVideoShortcutsActive(!typing && !modalOpen);
     };
-    shell.setViewerVideoShortcutsActive(true);
+    shell.setViewerVideoShortcutsActive(true, "viewer.video");
     syncArmed();
     document.addEventListener("focusin", syncArmed, true);
     document.addEventListener("focusout", syncArmed, true);
     window.addEventListener("keyup", syncArmed, true);
     const applyMainAction = (action: ViewerVideoShortcutAction) => {
       if (isTypingKeyboardTarget(document.activeElement)) return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (hasActiveModalDialog()) return;
       onUserActivity?.();
+      if (action === "play-pause") {
+        togglePlayback();
+        return;
+      }
       if (action === "frame-prev") {
         stepFrame(-1);
         return;
@@ -466,6 +466,7 @@ function GifAnimatedStage({
     onUserActivity,
     session,
     stepFrame,
+    togglePlayback,
   ]);
 
   const durationMs = gifTimelineDurationMs(session?.frames ?? []);

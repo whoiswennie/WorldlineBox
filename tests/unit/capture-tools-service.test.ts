@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserWindow, clipboard, desktopCapturer, globalShortcut, session, shell, type IpcMainInvokeEvent } from 'electron';
 import { CaptureToolsService, canonicalCaptureShortcut } from '../../src/main/capture-tools/service';
-import { CAPTURE_TOOLS_STOP_RECORDING, DEFAULT_CAPTURE_TOOLS_SETTINGS, type CaptureImageSource } from '../../src/shared/capture-tools';
+import { CAPTURE_TOOLS_STOP_RECORDING, DEFAULT_CAPTURE_TOOLS_SETTINGS, type CaptureImageSource, type CaptureToolsSettings } from '../../src/shared/capture-tools';
 import { readFocusedSelectedText } from '../../src/main/capture-tools/selected-text';
 import { answerSelectedText } from '../../src/main/capture-tools/text-answer';
 import type * as SelectedText from '../../src/main/capture-tools/selected-text';
@@ -44,14 +44,14 @@ const services: CaptureToolsService[] = [];
 beforeEach(async () => { mock.windows.length = 0; mock.scope = {}; mock.callbacks.clear(); vi.clearAllMocks(); mock.png = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#123456' } }).png().toBuffer(); });
 afterEach(async () => { for (const service of services.splice(0)) await service.shutdown(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 function event(window: BrowserWindow, frame = window.webContents.mainFrame) { return { sender: window.webContents, senderFrame: frame } as IpcMainInvokeEvent; }
-async function fixture() {
+async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => void) {
   const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-capture-service-')); roots.push(root);
   const main = new BrowserWindow({}); const saveToLibrary = vi.fn<() => Promise<void>>(async () => undefined);
   const source: CaptureImageSource = { dataUrl: 'data:image/png;base64,' + mock.png.toString('base64'), width: 64, height: 64, title: 'Provided browser', url: 'https://actual.example/page' };
   const captureBrowser = vi.fn(async () => source);
   const readBrowserSelection = vi.fn(async () => 'Actual browser selection');
   const service = new CaptureToolsService({ root, downloadPath: path.join(root, 'Downloads'), getMainWindow: () => main, preloadPath: 'minimal-preload.js', loadWindow: async () => undefined,
-    getModelConfig: () => ({ apiFormat: 'openai_chat', model: 'vision-test', apiKey: 'SECRET' }), saveToLibrary, getFfmpeg: () => undefined, captureBrowser, readBrowserSelection });
+    getModelConfig: () => ({ apiFormat: 'openai_chat', model: 'vision-test', apiKey: 'SECRET' }), saveToLibrary, getFfmpeg: () => undefined, captureBrowser, readBrowserSelection, validateShortcuts });
   services.push(service); await service.init(); await service.open('screenshot', source, captureBrowser);
   const tool = mock.windows.at(-1) as BrowserWindow;
   return { service, root, main, tool, source, saveToLibrary, captureBrowser, readBrowserSelection };
@@ -59,6 +59,16 @@ async function fixture() {
 function handler(name: string) { return mock.scope[name] as (...args: unknown[]) => unknown; }
 
 describe('isolated capture tools authorization and settings', () => {
+  it('rejects a global hotkey owned by application shortcuts before saving or replacing registrations', async () => {
+    const validate = vi.fn(() => { throw Error('Application shortcut conflict'); });
+    const { service, main, root } = await fixture(validate);
+    const settings = structuredClone(DEFAULT_CAPTURE_TOOLS_SETTINGS); settings.shortcuts.screenshot = 'Control+Shift+S';
+    vi.mocked(globalShortcut.unregister).mockClear();
+    expect(await service.handle(event(main), { type: 'settings.save', settings })).toMatchObject({ ok: false, error: 'Application shortcut conflict' });
+    expect(validate).toHaveBeenCalledOnce(); expect(service.state().settings).toEqual(DEFAULT_CAPTURE_TOOLS_SETTINGS);
+    expect(globalShortcut.unregister).not.toHaveBeenCalled();
+    await expect(readFile(path.join(root, 'settings.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
   it('limits main UI to settings/open/state and rejects web contents from another window or an iframe', async () => {
     const { service, main, tool, source } = await fixture();
     expect((await service.handle(event(main), { type: 'state' })).ok).toBe(true);

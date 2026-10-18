@@ -25,6 +25,8 @@ import {
   type ViewerDisplayTransform,
 } from "./viewer-display-transform";
 import { isViewerFitShortcut } from "./viewer-fit-shortcut";
+import { listenForShortcutInputs } from "./shortcut-runtime";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
 import {
   VIEWER_MAX_SCALE,
   VIEWER_MIN_SCALE,
@@ -288,22 +290,22 @@ export const ZoomableImage = forwardRef<
 
   useEffect(() => {
     if (keyboardShortcutsDisabled) return;
-    const onKeyDown = (event: KeyboardEvent) => {
+    const onShortcutInput = (input: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
       if (isTypingTarget(event.target)) return;
-      const key = event.key;
       // The numpad decimal key is the viewer-wide fit command.  Chromium
       // normally reports NumpadDecimal; Windows/IME paths may expose the
       // legacy Decimal value instead.
-      const numpadDecimalOk = isViewerFitShortcut(event);
-      const spaceOk = fitKeybinds === "space-and-f" && key === " ";
+      const numpadDecimalOk = isViewerFitShortcut(input);
+      const spaceOk = input.kind !== "mouse"
+        && fitKeybinds === "space-and-f"
+        && input.key === " ";
       const fitOk = numpadDecimalOk || spaceOk;
       if (!fitOk) return;
       event.preventDefault();
       event.stopPropagation();
       fitToWindow();
     };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    return listenForShortcutInputs(window, onShortcutInput, true);
   }, [fitKeybinds, fitToWindow, keyboardShortcutsDisabled]);
 
   // The range must describe the same scale domain as wheel/keyboard zoom.

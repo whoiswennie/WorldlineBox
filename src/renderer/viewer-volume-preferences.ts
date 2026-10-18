@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import type { KeyboardTargetLike } from "./video-player-controls";
 import { isEditableKeyboardTarget } from "./video-player-controls";
+import { matchesRuntimeShortcut } from "./shortcut-runtime";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
 
 export interface ViewerVolumePreferences {
   readonly version: 1;
@@ -69,18 +71,12 @@ export function stepViewerVolumeLevel(
  * ↑ / ↓ adjust global viewer volume (WorldlineBox-8w6x). Capture-phase callers
  * should stopPropagation so browse shortcuts do not fire underneath.
  */
-export function matchViewerVolumeKey(event: {
-  key: string;
-  code?: string;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  altKey: boolean;
+export function matchViewerVolumeKey(event: ShortcutEventLike & {
   target: KeyboardTargetLike | EventTarget | null;
 }): ViewerVolumeDirection | null {
   if (isEditableKeyboardTarget(event.target)) return null;
-  if (event.ctrlKey || event.metaKey || event.altKey) return null;
-  if (event.key === "ArrowUp" || event.code === "ArrowUp") return "up";
-  if (event.key === "ArrowDown" || event.code === "ArrowDown") return "down";
+  if (matchesRuntimeShortcut("viewer.volume-up", event) === true) return "up";
+  if (matchesRuntimeShortcut("viewer.volume-down", event) === true) return "down";
   return null;
 }
 

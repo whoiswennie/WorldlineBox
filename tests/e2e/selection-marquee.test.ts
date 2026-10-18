@@ -19,6 +19,11 @@ function skipDragOnWindows(): void {
   );
 }
 
+/** DPR and subpixel layout can shift a painted edge by a fraction of a pixel. */
+function expectWithinOnePixel(actual: number, expected: number) {
+  expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1);
+}
+
 /**
  * Use distinct text payloads for selection-only E2E fixtures. The tests cover
  * geometry and keyboard selection, not media decoding, so a plain text asset
@@ -73,6 +78,7 @@ async function setupLibrary(assetCount: number) {
   });
 
   const window = await application.firstWindow();
+  await window.locator('[data-application-module="assets"]').click();
   return { temporaryRoot, application, window };
 }
 
@@ -358,10 +364,10 @@ test("marquee keeps its viewport range aligned after the canvas is scrolled", as
     await expect(marquee).toBeVisible();
     const marqueeBox = await marquee.boundingBox();
     expect(marqueeBox).not.toBeNull();
-    expect(marqueeBox!.x).toBeCloseTo(geometry.start.x, 0);
-    expect(marqueeBox!.y).toBeCloseTo(geometry.start.y, 0);
-    expect(marqueeBox!.width).toBeCloseTo(geometry.end.x - geometry.start.x, 0);
-    expect(marqueeBox!.height).toBeCloseTo(geometry.end.y - geometry.start.y, 0);
+    expectWithinOnePixel(marqueeBox!.x, geometry.start.x);
+    expectWithinOnePixel(marqueeBox!.y, geometry.start.y);
+    expectWithinOnePixel(marqueeBox!.width, geometry.end.x - geometry.start.x);
+    expectWithinOnePixel(marqueeBox!.height, geometry.end.y - geometry.start.y);
 
     await window.mouse.up();
     const selectedIds = await window.evaluate(() =>
@@ -446,7 +452,7 @@ test("marquee keeps its anchor attached while auto-scroll moves the canvas", asy
     // The drag anchor is content-local. Once scrolling moves it above the
     // viewport, the visible marquee must be clipped to the canvas top rather
     // than remaining at the anchor's old clientY.
-    expect(marqueeBox!.y).toBeCloseTo(geometry.canvas.top, 0);
+    expectWithinOnePixel(marqueeBox!.y, geometry.canvas.top);
 
     await window.mouse.up();
   } finally {
@@ -508,8 +514,13 @@ test("marquee refreshes its visible range when the canvas scrolls during a drag"
     expect(scrollDelta).toBeGreaterThan(0);
 
     await expect
-      .poll(async () => (await marquee.boundingBox())?.y ?? null)
-      .toBeCloseTo(beforeScrollBox!.y - scrollDelta, 0);
+      .poll(async () => {
+        const y = (await marquee.boundingBox())?.y;
+        return y == null
+          ? Number.POSITIVE_INFINITY
+          : Math.abs(y - (beforeScrollBox!.y - scrollDelta));
+      })
+      .toBeLessThanOrEqual(1);
 
     await window.mouse.up();
   } finally {

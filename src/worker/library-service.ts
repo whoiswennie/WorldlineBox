@@ -5461,11 +5461,21 @@ interface ActiveImportTransfer {
  * command. Transfer code uses this at file/entry boundaries, matching the
  * cancellation granularity promised by the protocol.
  *
- * Use a zero-delay timer, not setImmediate: setImmediate can keep running in
- * the same check phase and starve parentPort messages (the same reason
+ * Periodically use a zero-delay timer: setImmediate alone can keep running
+ * in the same check phase and starve parentPort messages (the same reason
  * navigationCheckpoint uses setTimeout).
+ *
+ * Windows timers can have a roughly 15ms floor. Only pay that floor after a
+ * 50ms work slice; inside the slice still yield a macrotask at every file so
+ * in-process cancellation is delivered immediately between entries.
  */
+const transferYieldSliceMs = 50;
+let nextTransferYieldAt = 0;
+
 function transferCheckpoint(): Promise<void> {
+  const now = Date.now();
+  if (now < nextTransferYieldAt) return new Promise((resolve) => setImmediate(resolve));
+  nextTransferYieldAt = now + transferYieldSliceMs;
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 

@@ -10,6 +10,8 @@ import type { AiAnalysisRequest, AiAnalysisResult } from './protocol';
 import { isAiAbortOrTimeoutError, VendorAdapterError } from './vendor-adapter';
 import type { VendorAdapter, VendorId } from './vendor-adapter';
 
+const MULTIMODAL_MODEL_NAME = /(?:vl|omni|qvq|vision)/iu;
+
 function httpStatusToErrorKind(
   status: number,
   bodyText: string,
@@ -62,7 +64,7 @@ export class DashScopeVendorAdapter implements VendorAdapter {
     signal?: AbortSignal,
   ): Promise<AiAnalysisResult> {
     const textOnlyEndpoint = request.mediaType === 'text' && !request.imageBase64 && !request.contactSheetBase64
-      && !/(?:vl|omni|qvq|vision)/iu.test(this.#model);
+      && !MULTIMODAL_MODEL_NAME.test(this.#model);
     const body = {
       model: this.#model,
       input: {
@@ -117,10 +119,12 @@ export class DashScopeVendorAdapter implements VendorAdapter {
   }
 
   async probeConnection(signal?: AbortSignal): Promise<void> {
+    const textOnlyEndpoint = !MULTIMODAL_MODEL_NAME.test(this.#model);
+    const probeText = 'Reply with the single word OK.';
     let response: Response;
     try {
       response = await this.#fetch(
-        resolveDashScopeMultimodalGenerationUrl(this.#baseUrl),
+        (textOnlyEndpoint ? resolveDashScopeTextGenerationUrl : resolveDashScopeMultimodalGenerationUrl)(this.#baseUrl),
         {
           method: 'POST',
           headers: {
@@ -132,7 +136,7 @@ export class DashScopeVendorAdapter implements VendorAdapter {
             input: {
               messages: [{
                 role: 'user',
-                content: 'Reply with the single word OK.',
+                content: textOnlyEndpoint ? probeText : [{ text: probeText }],
               }],
             },
             parameters: { result_format: 'message', temperature: 0 },

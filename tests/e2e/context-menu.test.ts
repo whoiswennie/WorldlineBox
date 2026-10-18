@@ -41,6 +41,58 @@ async function getViewportSize(page: Page) {
   }));
 }
 
+/**
+ * Outside-click dismissal. `.item-count` sits in the workspace bar, but a tall
+ * asset menu clamped to a short viewport (macOS work area) covers that bar.
+ * The click must land outside the menu box, on a non-interactive target, so
+ * the document mousedown listener is what closes the menu.
+ */
+async function clickOutsideContextMenu(window: Page) {
+  const menu = window.getByRole("menu");
+  const menuBox = await menu.boundingBox();
+  expect(menuBox, "context menu bounds").not.toBeNull();
+  const point = await window.evaluate((box) => {
+    if (!box) return null;
+    const outside = (x: number, y: number) =>
+      x < box.x - 1 ||
+      x > box.x + box.width + 1 ||
+      y < box.y - 1 ||
+      y > box.y + box.height + 1;
+    const interactive = (node: Element | null) =>
+      Boolean(
+        node?.closest(
+          'button, a, input, textarea, select, [role="button"], [role="menuitem"], [role="menu"]',
+        ),
+      );
+    const candidates: Array<{ x: number; y: number }> = [];
+    const count = document.querySelector(".item-count");
+    if (count) {
+      const rect = count.getBoundingClientRect();
+      candidates.push({
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      });
+    }
+    const width = document.documentElement.clientWidth;
+    const height = document.documentElement.clientHeight;
+    candidates.push(
+      { x: 16, y: height - 16 },
+      { x: width - 16, y: height - 16 },
+      { x: width / 2, y: height - 16 },
+      { x: width - 16, y: 72 },
+    );
+    for (const candidate of candidates) {
+      if (!outside(candidate.x, candidate.y)) continue;
+      const hit = document.elementFromPoint(candidate.x, candidate.y);
+      if (!hit || interactive(hit)) continue;
+      return candidate;
+    }
+    return null;
+  }, menuBox);
+  expect(point, "inert point outside the context menu").not.toBeNull();
+  await window.mouse.click(point!.x, point!.y);
+}
+
 // ---------------------------------------------------------------------------
 // Test 1 — Close on outside click, Escape, scroll, and window resize
 // ---------------------------------------------------------------------------
@@ -55,6 +107,7 @@ test("context menu closes on outside click, Escape, scroll, and window resize", 
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -70,8 +123,7 @@ test("context menu closes on outside click, Escape, scroll, and window resize", 
     // Right-click on the asset card to open context menu
     await assetCard.click({ button: "right" });
     await expect(window.getByRole("menu")).toBeVisible({ timeout: 5_000 });
-    // Click on a safe area — the item-count label in the workspace bar is outside the menu
-    await window.locator(".item-count").click();
+    await clickOutsideContextMenu(window);
     await expect(window.getByRole("menu")).not.toBeVisible({ timeout: 5_000 });
 
     // --- Escape closes ---
@@ -132,6 +184,7 @@ test("context menu clamps at viewport edges", async () => {
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -220,6 +273,7 @@ test("single-menu enforcement — opening new context menu closes existing one",
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -288,6 +342,7 @@ test("context menu has accessible name and keyboard Escape", async () => {
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -332,6 +387,7 @@ test("window blur closes the context menu", async () => {
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -372,6 +428,7 @@ test("context menu clamps within viewport at all four corners", async () => {
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -467,6 +524,7 @@ test("scope change closes the context menu", async () => {
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -501,6 +559,7 @@ test("pointer hover stays subtle in the context menu", async () => {
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill("CM Highlight Test");
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -606,6 +665,7 @@ test("multi-asset menu shows a visible count and mixed-selection skip reasons", 
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill("CM Mixed Test");
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -649,8 +709,11 @@ test("multi-asset menu shows a visible count and mixed-selection skip reasons", 
       menu.getByRole("menuitem", { name: "移动到文件夹…（1 项）" }),
     ).toBeVisible();
     await expect(
-      menu.getByRole("menuitem", { name: "移入回收站（2 项）" }),
+      menu.getByRole("menuitem", { name: "移入回收站（1 项）" }),
     ).toBeVisible();
+    // WorldlineBox keeps linked source deletion separate from managed trash.
+    // The mixed selection remains available to explicit disk deletion.
+    await expect(menu.getByRole("menuitem", { name: "从硬盘中删除…（2 项）" })).toBeVisible();
   } finally {
     await application.close();
     rmSync(temporaryRoot, { recursive: true, force: true });
@@ -672,6 +735,7 @@ test("tag picker searches, survives in-menu scroll, has no back button, and clos
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     // Create library and import one asset
     await window.getByRole("button", { name: "创建资源库" }).click();

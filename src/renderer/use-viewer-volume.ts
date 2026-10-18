@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   clampViewerVolume,
@@ -10,6 +10,11 @@ import {
   type ViewerVolumeDirection,
   type ViewerVolumePreferences,
 } from "./viewer-volume-preferences";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
+import { listenForShortcutInputs } from "./shortcut-runtime";
+import { hasActiveModalDialog } from "./use-dialog-focus-trap";
+
+const VIEWER_VOLUME_UPDATED_EVENT = "worldlinebox:viewer-volume-updated";
 
 export function useViewerVolume(
   enabled = true,
@@ -22,15 +27,29 @@ export function useViewerVolume(
   const [prefs, setPrefs] = useState<ViewerVolumePreferences>(() =>
     loadViewerVolumePreferences(),
   );
+  const prefsRef = useRef(prefs);
+
+  useEffect(() => {
+    const onPreferencesChanged = (event: Event) => {
+      const next = (event as CustomEvent<ViewerVolumePreferences>).detail;
+      if (!next) return;
+      prefsRef.current = next;
+      setPrefs(next);
+    };
+    window.addEventListener(VIEWER_VOLUME_UPDATED_EVENT, onPreferencesChanged);
+    return () => window.removeEventListener(VIEWER_VOLUME_UPDATED_EVENT, onPreferencesChanged);
+  }, []);
 
   /** Always derive next prefs from previous state so rapid drag updates never race. */
   const commit = useCallback(
     (updater: (prev: ViewerVolumePreferences) => ViewerVolumePreferences) => {
-      setPrefs((prev) => {
-        const next = updater(prev);
-        saveViewerVolumePreferences(next);
-        return next;
-      });
+      const next = updater(prefsRef.current);
+      prefsRef.current = next;
+      saveViewerVolumePreferences(next);
+      setPrefs(next);
+      window.dispatchEvent(
+        new CustomEvent(VIEWER_VOLUME_UPDATED_EVENT, { detail: next }),
+      );
     },
     [],
   );
@@ -80,15 +99,15 @@ export function useViewerVolume(
 
   useEffect(() => {
     if (!enabled) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      const direction = matchViewerVolumeKey(event);
+    const onShortcutInput = (input: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
+      if (hasActiveModalDialog()) return;
+      const direction = matchViewerVolumeKey({ ...input, target: event.target });
       if (!direction) return;
       event.preventDefault();
       event.stopPropagation();
       adjustVolume(direction);
     };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    return listenForShortcutInputs(window, onShortcutInput, true);
   }, [adjustVolume, enabled]);
 
   return {

@@ -67,7 +67,9 @@
     "ticket": "node scripts/ticket.mjs",
     "install:git-hooks": "node scripts/install-git-hooks.mjs",
     "make:appimage": "node scripts/make-appimage.mjs",
-    "make:appimage:docker": "bash scripts/appimage-docker.sh"
+    "make:appimage:docker": "bash scripts/appimage-docker.sh",
+    "test:e2e:shortcuts": "node scripts/run-e2e.mjs tests/e2e/custom-shortcuts.test.ts tests/e2e/custom-shortcut-runtime.test.ts tests/e2e/custom-shortcut-worldlinebox.test.ts",
+    "pretest:e2e:shortcuts": "node scripts/ensure-native.mjs"
   },
   "dependencies": {
     "7zip-bin": "5.2.0",

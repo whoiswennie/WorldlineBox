@@ -5,6 +5,8 @@ import {
   collectMainMenuCommandStates,
   type MainMenuActions,
 } from "../../src/renderer/main-menu-items";
+import { setShortcutRuntime } from "../../src/renderer/shortcut-runtime";
+import { DEFAULT_SHORTCUT_BINDINGS, setShortcutOverride } from "../../src/shared/shortcut-bindings";
 
 function createActions(): MainMenuActions {
   return {
@@ -29,6 +31,9 @@ function createActions(): MainMenuActions {
     openSettings: vi.fn(),
     openBackgroundJobs: vi.fn(),
     toggleFullscreen: vi.fn(),
+    zoomIn: vi.fn(),
+    zoomOut: vi.fn(),
+    zoomReset: vi.fn(),
     openAppLog: vi.fn(),
     openAbout: vi.fn(),
     openGitHub: vi.fn(),
@@ -65,6 +70,7 @@ describe("main-menu-items (WorldlineBox-bnah)", () => {
     expect(sections.map((section) => section.id)).toEqual([
       "file",
       "edit",
+      "view",
       "library",
       "window",
       "about",
@@ -73,6 +79,7 @@ describe("main-menu-items (WorldlineBox-bnah)", () => {
     expect(sections.map((section) => section.label)).toEqual([
       "文件",
       "编辑",
+      "查看",
       "资源库",
       "窗口",
       "关于",
@@ -94,6 +101,21 @@ describe("main-menu-items (WorldlineBox-bnah)", () => {
     const edit = sections.find((section) => section.id === "edit");
     expect(edit?.items?.find((item) => item.id === "edit.undo")?.shortcut).toBe("⌘Z");
     expect(edit?.items?.find((item) => item.id === "edit.redo")?.shortcut).toBe("⌘⇧Z");
+  });
+
+  it("updates Main menu labels from the active shortcut bindings", () => {
+    let bindings = setShortcutOverride(DEFAULT_SHORTCUT_BINDINGS, "mac", "edit.undo", {
+      key: "y", code: "KeyY", metaKey: true,
+    });
+    bindings = setShortcutOverride(bindings, "mac", "selection.invert", {
+      key: "i", code: "KeyI", metaKey: true, shiftKey: true,
+    });
+    setShortcutRuntime("mac", bindings);
+    const { sections } = build({ platform: "mac" });
+    const edit = sections.find((section) => section.id === "edit");
+    expect(edit?.items?.find((item) => item.id === "edit.undo")?.shortcut).toBe("⌘Y");
+    expect(edit?.items?.find((item) => item.id === "edit.invert-selection")?.shortcut).toBe("⌘⇧I");
+    setShortcutRuntime("windows", DEFAULT_SHORTCUT_BINDINGS);
   });
 
   it("gates library and selection actions from the shared state", () => {

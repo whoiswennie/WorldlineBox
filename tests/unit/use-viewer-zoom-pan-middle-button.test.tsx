@@ -7,6 +7,8 @@ import {
   useViewerZoomPan,
   type UseViewerZoomPanApi,
 } from "../../src/renderer/use-viewer-zoom-pan";
+import { DEFAULT_SHORTCUT_BINDINGS } from "../../src/shared/shortcut-bindings";
+import { setShortcutRuntime } from "../../src/renderer/shortcut-runtime";
 
 type HarnessProps = {
   onApi: (api: UseViewerZoomPanApi) => void;
@@ -65,6 +67,7 @@ describe("useViewerZoomPan middle-button pan (WorldlineBox-16cd1e)", () => {
   let api: UseViewerZoomPanApi | undefined;
 
   beforeEach(() => {
+    setShortcutRuntime("windows", DEFAULT_SHORTCUT_BINDINGS);
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -159,5 +162,27 @@ describe("useViewerZoomPan middle-button pan (WorldlineBox-16cd1e)", () => {
     });
 
     expect(readPan(container!).x - before.x).toBe(20);
+  });
+
+  it("does not consume global zoom keys while a modal owns a non-editable control", () => {
+    const dialog = document.createElement("section");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const button = document.createElement("button");
+    dialog.append(button);
+    document.body.append(dialog);
+    button.focus();
+    const event = new KeyboardEvent("keydown", {
+      key: "=",
+      code: "Equal",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    act(() => window.dispatchEvent(event));
+
+    expect(event.defaultPrevented).toBe(false);
+    dialog.remove();
   });
 });

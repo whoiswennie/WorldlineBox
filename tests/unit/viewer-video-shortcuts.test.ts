@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { matchViewerVideoLetterShortcut } from "../../src/shared/viewer-video-shortcuts";
+import {
+  matchViewerVideoLetterShortcut,
+  viewerMainShortcutRoutes,
+  viewerVideoShortcutNeedsImeSuspension,
+} from "../../src/shared/viewer-video-shortcuts";
+import { DEFAULT_SHORTCUT_BINDINGS } from "../../src/shared/shortcut-bindings";
+import { setShortcutOverride } from "../../src/shared/shortcut-bindings";
 
 describe("matchViewerVideoLetterShortcut (Main before-input)", () => {
   const base = {
@@ -71,5 +77,63 @@ describe("matchViewerVideoLetterShortcut (Main before-input)", () => {
         code: "KeyD",
       }),
     ).toBeNull();
+  });
+
+  it("suspends Windows IME only while an effective bare viewer letter remains", () => {
+    expect(viewerVideoShortcutNeedsImeSuspension(DEFAULT_SHORTCUT_BINDINGS, "windows"))
+      .toBe(true);
+    expect(viewerVideoShortcutNeedsImeSuspension({
+      version: 1,
+      platforms: {
+        mac: {},
+        windows: {
+          "viewer.video.frame-prev": { key: "d", ctrlKey: true },
+          "viewer.video.frame-next": { key: "f", ctrlKey: true },
+          "viewer.video.rate-slower": { key: "x", ctrlKey: true },
+          "viewer.video.rate-faster": { key: "c", ctrlKey: true },
+        },
+      },
+    }, "windows")).toBe(false);
+  });
+
+  it("ignores repeated physical key events after the first viewer action", () => {
+    expect(matchViewerVideoLetterShortcut({
+      ...base,
+      code: "KeyC",
+      isAutoRepeat: true,
+    })).toBeNull();
+  });
+
+  it("routes audio/video play-pause through the catalog even when frame/rate letters are modified", () => {
+    let bindings = DEFAULT_SHORTCUT_BINDINGS;
+    bindings = setShortcutOverride(bindings, "windows", "viewer.media.play-pause", {
+      key: "p",
+      code: "KeyP",
+    });
+    for (const [actionId, key] of [
+      ["viewer.video.frame-prev", "d"],
+      ["viewer.video.frame-next", "f"],
+      ["viewer.video.rate-slower", "x"],
+      ["viewer.video.rate-faster", "c"],
+    ] as const) {
+      bindings = setShortcutOverride(bindings, "windows", actionId, {
+        key,
+        code: `Key${key.toUpperCase()}`,
+        ctrlKey: true,
+      });
+    }
+
+    expect(viewerVideoShortcutNeedsImeSuspension(bindings, "windows", "viewer.audio"))
+      .toBe(true);
+    expect(viewerVideoShortcutNeedsImeSuspension(bindings, "windows", "viewer.video"))
+      .toBe(true);
+    expect(matchViewerVideoLetterShortcut({ ...base, code: "KeyP" }, bindings, "windows", "viewer.audio"))
+      .toBe("play-pause");
+    expect(matchViewerVideoLetterShortcut({ ...base, code: "KeyP" }, bindings, "windows", "viewer.video"))
+      .toBe("play-pause");
+    expect(viewerMainShortcutRoutes("viewer.audio").map((route) => route.action))
+      .toEqual(["play-pause"]);
+    expect(viewerMainShortcutRoutes("viewer.video").map((route) => route.action))
+      .toEqual(["play-pause", "frame-prev", "frame-next", "rate-slower", "rate-faster"]);
   });
 });

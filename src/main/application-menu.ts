@@ -6,6 +6,7 @@ import {
   type ApplicationMenuItemTemplate,
   type ApplicationMenuPlatform,
 } from "../shared/application-menu";
+import type { ShortcutBindings } from "../shared/shortcut-bindings";
 import {
   APPLICATION_MENU_COMMAND_CHANNEL,
   INVERT_SELECTION_CHANNEL,
@@ -30,24 +31,6 @@ function resolveLabelKey(
   const primary = locale === "zh-CN" ? zhCN : en;
   const resolved = lookupMessage(primary, labelKey) ?? lookupMessage(en, labelKey);
   return resolved ?? labelKey;
-}
-
-function acceleratorForCommand(
-  command: NonNullable<ApplicationMenuItemTemplate["command"]>,
-): string | undefined {
-  if (command === "invert-selection") {
-    return process.platform === "darwin" ? "Cmd+I" : "Ctrl+I";
-  }
-  if (command === "copy-selection") {
-    return process.platform === "darwin" ? "Cmd+C" : "Ctrl+C";
-  }
-  if (command === "edit.undo") {
-    return process.platform === "darwin" ? "Cmd+Z" : "Ctrl+Z";
-  }
-  if (command === "edit.redo") {
-    return process.platform === "darwin" ? "Cmd+Shift+Z" : "Ctrl+Shift+Z";
-  }
-  return undefined;
 }
 
 /**
@@ -112,7 +95,7 @@ function enrichMenuTemplate(
       return {
         id: item.command,
         label: resolvedLabel,
-        accelerator: acceleratorForCommand(item.command),
+        ...(item.accelerator ? { accelerator: item.accelerator } : {}),
         click: (_menuItem, window) => {
           const target = window as BrowserWindow | undefined;
           target?.webContents.send(channel);
@@ -181,10 +164,11 @@ export function installApplicationMenu(options?: {
   locale?: "zh-CN" | "en";
   /** Known libraries, most recently opened first, for the native library menu. */
   recentLibraries?: readonly { path: string; name: string }[];
+  shortcutBindings?: ShortcutBindings;
 }): void {
   const platform = process.platform as ApplicationMenuPlatform;
   if (shouldHideApplicationMenuBar(platform)) {
-    installWindowsHiddenAcceleratorMenu();
+    installWindowsHiddenAcceleratorMenu(options?.shortcutBindings);
     return;
   }
   const showDevTools =
@@ -195,6 +179,7 @@ export function installApplicationMenu(options?: {
     locale: options?.locale,
     version: app.getVersion(),
     recentLibraries: options?.recentLibraries,
+    shortcutBindings: options?.shortcutBindings,
   });
   Menu.setApplicationMenu(
     Menu.buildFromTemplate(enrichMenuTemplate(template, options?.locale)),

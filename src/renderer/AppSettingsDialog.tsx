@@ -10,6 +10,7 @@ import {
   GeneralSettingsPage,
 } from "./AppSettingsPages";
 import { McpSettingsPage } from "./McpSettingsPage";
+import { AppSettingsShortcutsPage } from "./AppSettingsShortcutsPage";
 import { PluginSettingsPage } from "./PluginSettingsPage";
 import { PluginCommunityPage } from "./PluginCommunityPage";
 import { SemanticSearchSettings } from "./SemanticSearchSettings";
@@ -281,6 +282,9 @@ export function AppSettingsDialog({
               />
             ) : null}
             {!showingPluginSettings && activeCategory === "appearance" ? <AppearanceSettingsPage /> : null}
+            {!showingPluginSettings && activeCategory === "shortcuts" ? (
+              <AppSettingsShortcutsPage />
+            ) : null}
             {!showingPluginSettings && activeCategory === "browse" ? (
               <BrowseSettingsPage
                 canvasPrefs={canvasPrefs}

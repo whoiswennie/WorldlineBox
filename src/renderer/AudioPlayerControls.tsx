@@ -35,6 +35,16 @@ import {
 import { ViewerVolumeControls } from "./ViewerVolumeControls";
 import { VIEWER_CHROME_TAB_INDEX } from "./viewer-focus-policy";
 import { applyViewerVolumeToMedia } from "./viewer-volume-preferences";
+import { listenForShortcutInputs } from "./shortcut-runtime";
+import { hasActiveModalDialog } from "./use-dialog-focus-trap";
+import { isTypingKeyboardTarget } from "./video-player-controls";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
+import type { WorldlineBoxShellApi } from "../shared/external-url";
+import type { ViewerVideoShortcutAction } from "../shared/viewer-video-shortcuts";
+
+type RendererWindow = Window & {
+  worldlinebox?: { shell?: WorldlineBoxShellApi };
+};
 
 export interface AudioPlayerControlsProps {
   /** Keep preloaded navigation surfaces from capturing global shortcuts. */
@@ -128,15 +138,49 @@ export function AudioPlayerControls({
 
   useEffect(() => {
     if (keyboardShortcutsDisabled) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!shouldHandleVideoSpaceKey(event)) return;
+    const onShortcutInput = (input: ShortcutEventLike, event: KeyboardEvent | MouseEvent) => {
+      if (hasActiveModalDialog()) return;
+      if (!shouldHandleVideoSpaceKey({ ...input, target: event.target })) return;
       event.preventDefault();
       event.stopPropagation();
       togglePlayback();
     };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    return listenForShortcutInputs(window, onShortcutInput, true);
   }, [keyboardShortcutsDisabled, togglePlayback]);
+
+  useEffect(() => {
+    if (keyboardShortcutsDisabled) return;
+    const shell = (window as RendererWindow).worldlinebox?.shell;
+    if (!shell?.setViewerVideoShortcutsActive || !shell.onViewerVideoShortcut) return;
+
+    const syncArmed = () => {
+      const typing = isTypingKeyboardTarget(document.activeElement);
+      shell.setViewerVideoShortcutsActive(
+        !typing && !hasActiveModalDialog(),
+        "viewer.audio",
+      );
+    };
+    shell.setViewerVideoShortcutsActive(true, "viewer.audio");
+    syncArmed();
+    document.addEventListener("focusin", syncArmed, true);
+    document.addEventListener("focusout", syncArmed, true);
+    window.addEventListener("keyup", syncArmed, true);
+
+    const applyMainAction = (action: ViewerVideoShortcutAction) => {
+      if (action !== "play-pause") return;
+      if (isTypingKeyboardTarget(document.activeElement) || hasActiveModalDialog()) return;
+      onUserActivity?.();
+      togglePlayback();
+    };
+    const unsubscribe = shell.onViewerVideoShortcut(applyMainAction);
+    return () => {
+      shell.setViewerVideoShortcutsActive(false, "viewer.audio");
+      document.removeEventListener("focusin", syncArmed, true);
+      document.removeEventListener("focusout", syncArmed, true);
+      window.removeEventListener("keyup", syncArmed, true);
+      unsubscribe();
+    };
+  }, [keyboardShortcutsDisabled, onUserActivity, togglePlayback]);
 
   // Parent remounts with key={src}; only cancel in-flight seek on unmount/src change.
   useEffect(() => {

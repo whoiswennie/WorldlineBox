@@ -39,6 +39,7 @@ export type AppSettingsCategoryId =
   | "assets"
   | "appearance"
   | "browse"
+  | "shortcuts"
   | "ai"
   | "music"
   | "capture-tools"
@@ -62,6 +63,7 @@ export type AppSettingsCategory = {
     | "settings.categoryAssets"
     | "settings.categoryAppearance"
     | "settings.categoryBrowse"
+    | "settings.categoryShortcuts"
     | "settings.categoryAi"
     | "settings.categoryMusic"
     | "settings.categoryCaptureTools"
@@ -92,6 +94,11 @@ export const APP_SETTINGS_CATEGORIES: readonly AppSettingsCategory[] = [
     id: "browse",
     icon: "grid",
     labelKey: "settings.categoryBrowse",
+  },
+  {
+    id: "shortcuts",
+    icon: "sliders",
+    labelKey: "settings.categoryShortcuts",
   },
   {
     id: "ai",

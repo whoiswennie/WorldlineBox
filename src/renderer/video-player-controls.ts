@@ -12,6 +12,9 @@
 
 export const VIDEO_PLAYBACK_RATES = [0.25, 0.5, 1, 1.5, 2, 4] as const;
 
+import { matchesRuntimeShortcut } from "./shortcut-runtime";
+import type { ShortcutEventLike } from "../shared/shortcut-resolution";
+
 export type VideoPlaybackRate = (typeof VIDEO_PLAYBACK_RATES)[number];
 
 export type PlaybackIntent = "play" | "pause";
@@ -126,16 +129,6 @@ export function isTypingKeyboardTarget(
   return false;
 }
 
-/** Prefer physical key codes so IME `key: "Process"` still matches D/F/X/C. */
-function matchPhysicalOrKey(
-  event: { key: string; code?: string },
-  code: string,
-  keys: readonly string[],
-): boolean {
-  if (event.code === code) return true;
-  return keys.includes(event.key);
-}
-
 /**
  * Space toggles play/pause when the viewer is open. The video scrubber is
  * deliberately owned by the viewer shortcut so its native Space behavior
@@ -143,17 +136,13 @@ function matchPhysicalOrKey(
  * to every non-editable viewer control; real text fields retain their native
  * semantics.
  */
-export function shouldHandleVideoSpaceKey(event: {
-  key: string;
-  code?: string;
-  repeat: boolean;
+export function shouldHandleVideoSpaceKey(event: ShortcutEventLike & {
   target: KeyboardTargetLike | EventTarget | null;
 }): boolean {
   if (event.repeat) return false;
-  if (event.key !== " " && event.code !== "Space") return false;
   if (isEditableKeyboardTarget(event.target)) return false;
   if (isVideoPlaybackRateMenuTarget(event.target)) return false;
-  return true;
+  return matchesRuntimeShortcut("viewer.media.play-pause", event) === true;
 }
 
 /**
@@ -176,33 +165,22 @@ export type VideoKeyboardSeekAction =
  * Capture-phase callers must stopPropagation so shell ←/→ asset nav does not fire.
  * Uses Ctrl (not Cmd) on all platforms per product request.
  */
-export function matchVideoPlaybackSeekKey(event: {
-  key: string;
-  code?: string;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  altKey: boolean;
-  shiftKey?: boolean;
+export function matchVideoPlaybackSeekKey(event: ShortcutEventLike & {
   target: KeyboardTargetLike | EventTarget | null;
 }): VideoKeyboardSeekAction | null {
   // Only block true typing surfaces — not viewer chrome select/buttons.
   if (isTypingKeyboardTarget(event.target)) return null;
 
-  // Ctrl+Arrow — require ctrl, reject Cmd/Alt so macOS system chords stay free.
-  if (event.ctrlKey && !event.metaKey && !event.altKey) {
-    if (event.key === "ArrowLeft" || event.code === "ArrowLeft") {
-      return { kind: "skip", direction: -1 };
-    }
-    if (event.key === "ArrowRight" || event.code === "ArrowRight") {
-      return { kind: "skip", direction: 1 };
-    }
+  if (matchesRuntimeShortcut("viewer.video.seek-back", event) === true) {
+    return { kind: "skip", direction: -1 };
   }
-
-  if (event.ctrlKey || event.metaKey || event.altKey) return null;
-  if (matchPhysicalOrKey(event, "KeyD", ["d", "D"])) {
+  if (matchesRuntimeShortcut("viewer.video.seek-forward", event) === true) {
+    return { kind: "skip", direction: 1 };
+  }
+  if (matchesRuntimeShortcut("viewer.video.frame-prev", event) === true) {
     return { kind: "frame", direction: -1 };
   }
-  if (matchPhysicalOrKey(event, "KeyF", ["f", "F"])) {
+  if (matchesRuntimeShortcut("viewer.video.frame-next", event) === true) {
     return { kind: "frame", direction: 1 };
   }
   return null;
@@ -213,20 +191,14 @@ export type VideoPlaybackRateStep = "slower" | "faster";
 /**
  * X = slower, C = faster — step within VIDEO_PLAYBACK_RATES (WorldlineBox-soii).
  */
-export function matchVideoPlaybackRateKey(event: {
-  key: string;
-  code?: string;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  altKey: boolean;
+export function matchVideoPlaybackRateKey(event: ShortcutEventLike & {
   target: KeyboardTargetLike | EventTarget | null;
 }): VideoPlaybackRateStep | null {
   if (isTypingKeyboardTarget(event.target)) return null;
-  if (event.ctrlKey || event.metaKey || event.altKey) return null;
-  if (matchPhysicalOrKey(event, "KeyX", ["x", "X"])) {
+  if (matchesRuntimeShortcut("viewer.video.rate-slower", event) === true) {
     return "slower";
   }
-  if (matchPhysicalOrKey(event, "KeyC", ["c", "C"])) {
+  if (matchesRuntimeShortcut("viewer.video.rate-faster", event) === true) {
     return "faster";
   }
   return null;

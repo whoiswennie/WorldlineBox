@@ -10,6 +10,7 @@ import {
 import { lookupMessage } from "../../src/renderer/i18n/types";
 import { zhCN } from "../../src/renderer/i18n/catalogs/zh-CN";
 import { en } from "../../src/renderer/i18n/catalogs/en";
+import { setShortcutOverrides, DEFAULT_SHORTCUT_BINDINGS } from "../../src/shared/shortcut-bindings";
 
 describe("shouldInstallApplicationMenu (WorldlineBox-r7gu)", () => {
   it("keeps the macOS application menu and hides Windows", () => {
@@ -32,8 +33,9 @@ describe("buildApplicationMenuTemplate (WorldlineBox-46i9)", () => {
       expect(roles).not.toContain("zoomIn");
       expect(roles).not.toContain("zoomOut");
       expect(roles).not.toContain("resetZoom");
-      // Window "Zoom" (maximize) on macOS is unrelated and may remain.
-      expect(roles).toContain("togglefullscreen");
+      // Fullscreen is a custom command so clearing its binding cannot restore
+      // Electron's implicit role accelerator.
+      expect(roles).not.toContain("togglefullscreen");
       expect(roles).toContain("toggleDevTools");
       if (platform === "darwin") {
         expect(roles).not.toContain("editMenu");
@@ -142,6 +144,66 @@ describe("buildApplicationMenuTemplate (WorldlineBox-46i9)", () => {
     expect(findCommand(template, "edit.undo")?.accelerator).toBe("Cmd+Z");
     expect(findCommand(template, "edit.redo")?.accelerator).toBe("Cmd+Shift+Z");
   });
+
+  it("builds native Edit and View accelerators from the active custom bindings", () => {
+    const bindings = setShortcutOverrides(DEFAULT_SHORTCUT_BINDINGS, "mac", {
+      "edit.undo": { key: "y", code: "KeyY", metaKey: true },
+      "asset.copy": { key: "c", code: "KeyC", metaKey: true, shiftKey: true },
+      "asset.paste": { key: "v", code: "KeyV", metaKey: true, shiftKey: true },
+      "selection.select-all": { key: "a", code: "KeyA", metaKey: true, shiftKey: true },
+      "selection.invert": { key: "i", code: "KeyI", metaKey: true, shiftKey: true },
+      "canvas.zoom-in": { key: "k", code: "KeyK", metaKey: true, shiftKey: true },
+      "window.toggle-fullscreen": { key: "f", code: "KeyF", metaKey: true, shiftKey: true },
+    });
+    const template = buildApplicationMenuTemplate({
+      platform: "darwin",
+      showDevTools: false,
+      shortcutBindings: bindings,
+    });
+    const findAction = (actionId: string): ApplicationMenuItemTemplate | undefined => {
+      const visit = (items: readonly ApplicationMenuItemTemplate[]): ApplicationMenuItemTemplate | undefined => {
+        for (const item of items) {
+          if (item.shortcutActionId === actionId) return item;
+          const nested = item.submenu ? visit(item.submenu) : undefined;
+          if (nested) return nested;
+        }
+        return undefined;
+      };
+      return visit(template);
+    };
+
+    expect(findAction("edit.undo")?.accelerator).toBe("Cmd+Y");
+    expect(findAction("asset.copy")?.accelerator).toBe("Cmd+Shift+C");
+    expect(findAction("asset.paste")?.accelerator).toBe("Cmd+Shift+V");
+    expect(findAction("selection.select-all")?.accelerator).toBe("Cmd+Shift+A");
+    expect(findAction("selection.invert")?.accelerator).toBe("Cmd+Shift+I");
+    expect(findAction("canvas.zoom-in")?.accelerator).toBe("Cmd+Shift+K");
+    expect(findAction("window.toggle-fullscreen")?.accelerator).toBe("Cmd+Shift+F");
+    expect(findAction("window.toggle-fullscreen")?.role).toBeUndefined();
+  });
+
+  it("keeps the fullscreen menu command while omitting unsupported mouse accelerators", () => {
+    const bindings = setShortcutOverrides(DEFAULT_SHORTCUT_BINDINGS, "mac", {
+      "window.toggle-fullscreen": { key: "MouseForward", metaKey: true },
+    });
+    const template = buildApplicationMenuTemplate({
+      platform: "darwin",
+      showDevTools: false,
+      shortcutBindings: bindings,
+    });
+    const visit = (items: readonly ApplicationMenuItemTemplate[]): ApplicationMenuItemTemplate | undefined => {
+      for (const item of items) {
+        if (item.shortcutActionId === "window.toggle-fullscreen") return item;
+        const nested = item.submenu ? visit(item.submenu) : undefined;
+        if (nested) return nested;
+      }
+      return undefined;
+    };
+    const fullscreen = visit(template);
+    expect(fullscreen?.command).toBe("window.toggle-fullscreen");
+    expect(fullscreen?.accelerator).toBeUndefined();
+    expect(fullscreen?.role).toBeUndefined();
+  });
 });
 
 describe("macOS product menu mirror (WorldlineBox-q0b1)", () => {
@@ -237,8 +299,34 @@ describe("macOS product menu mirror (WorldlineBox-q0b1)", () => {
         platform,
         showDevTools: false,
       });
-      expect(commandsOf(template)).toEqual([]);
+      expect(commandsOf(template)).toEqual(["window.toggle-fullscreen"]);
     }
+  });
+
+  it("keeps native Cut and Paste-and-Match-Style roles outside custom accelerators", () => {
+    const template = buildApplicationMenuTemplate({
+      platform: "darwin",
+      showDevTools: false,
+      locale: "en",
+    });
+    const findRole = (
+      items: readonly ApplicationMenuItemTemplate[],
+      role: "cut" | "pasteAndMatchStyle",
+    ): ApplicationMenuItemTemplate | undefined => {
+      for (const item of items) {
+        if (item.role === role) return item;
+        const nested = item.submenu ? findRole(item.submenu, role) : undefined;
+        if (nested) return nested;
+      }
+      return undefined;
+    };
+
+    expect(findRole(template, "cut")).toMatchObject({ role: "cut" });
+    expect(findRole(template, "cut")?.accelerator).toBeUndefined();
+    expect(findRole(template, "pasteAndMatchStyle")).toMatchObject({
+      role: "pasteAndMatchStyle",
+    });
+    expect(findRole(template, "pasteAndMatchStyle")?.accelerator).toBeUndefined();
   });
 });
 

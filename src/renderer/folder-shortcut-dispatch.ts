@@ -10,6 +10,8 @@ export type FolderShortcutCommandId =
   | "folder.create-subfolder"
   | "folder.open-in-file-manager"
   | "folder.rename"
+  | "folder.copy"
+  | "folder.paste"
   | "folder.move-to-trash"
   | "folder.delete-from-disk";
 
@@ -21,6 +23,8 @@ export type FocusedNavFolder = {
 export type FolderShortcutAction =
   | { readonly type: "create-subfolder"; readonly parentFolderId: string | null }
   | { readonly type: "open-in-file-manager"; readonly folderId: string }
+  | { readonly type: "copy-folder"; readonly folderId: string }
+  | { readonly type: "paste-into-folder"; readonly folderId: string | null }
   | {
       readonly type: "rename";
       readonly folderId: string;
@@ -114,6 +118,21 @@ export function resolveFolderShortcutAction(
 
   if (commandId === "folder.open-in-file-manager") {
     return resolveOpenFolderShortcut(input, canOpenFolder);
+  }
+
+  if (commandId === "folder.copy") {
+    const folderId = focusedNav
+      ? focusedNav.folderId
+      : selectedFolderCardIds.length === 1
+        ? selectedFolderCardIds[0]
+        : null;
+    if (!folderId) return { type: "none" };
+    return { type: "copy-folder", folderId };
+  }
+
+  if (commandId === "folder.paste") {
+    const folderId = focusedNav ? focusedNav.folderId : browseManagedFolderId;
+    return { type: "paste-into-folder", folderId };
   }
 
   if (commandId === "folder.create-subfolder") {

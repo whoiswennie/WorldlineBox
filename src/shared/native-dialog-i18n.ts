@@ -70,7 +70,9 @@ export type NativeDialogId =
   /** Local plugin ZIP (GitHub #19). Never combined with openDirectory. */
   | "installPluginZip"
   /** Local plugin folder (GitHub #19). Never combined with openFile. */
-  | "installPluginFolder";
+  | "installPluginFolder"
+  | "exportShortcuts"
+  | "importShortcuts";
 
 export type NativeDialogCopy = {
   readonly title: string;
@@ -180,6 +182,16 @@ const EN: DialogCatalog = {
   installPluginFolder: {
     title: "Install plugin folder",
     buttonLabel: "Choose Folder",
+  },
+  exportShortcuts: {
+    title: "Export Shortcuts",
+    buttonLabel: "Export",
+    filterName: "Shortcut settings",
+  },
+  importShortcuts: {
+    title: "Import Shortcuts",
+    buttonLabel: "Import",
+    filterName: "Shortcut settings",
   },
 };
 
@@ -293,6 +305,16 @@ const ZH_CN: DialogCatalog = {
   installPluginFolder: {
     title: "\u5b89\u88c5\u63d2\u4ef6\u6587\u4ef6\u5939",
     buttonLabel: "\u9009\u62e9\u6587\u4ef6\u5939",
+  },
+  exportShortcuts: {
+    title: "\u5bfc\u51fa\u5feb\u6377\u952e",
+    buttonLabel: "\u5bfc\u51fa",
+    filterName: "\u5feb\u6377\u952e\u8bbe\u7f6e",
+  },
+  importShortcuts: {
+    title: "\u5bfc\u5165\u5feb\u6377\u952e",
+    buttonLabel: "\u5bfc\u5165",
+    filterName: "\u5feb\u6377\u952e\u8bbe\u7f6e",
   },
 };
 
