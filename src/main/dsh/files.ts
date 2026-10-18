@@ -158,7 +158,8 @@ export async function assertOwnedDirectory(root: string, directory: string): Pro
 }
 
 export function redact(text: string): string {
-  return text.replace(/(https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+[^?\s"']*\?)[^\s"']+/gi, '$1[redacted]')
+  return text.replace(/(https?:\/\/)[^/@\s]+@/gi, '$1[redacted]@')
+    .replace(/(https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+[^?\s"']*\?)[^\s"']+/gi, '$1[redacted]')
     .replace(/([?&](?:token|key|api_key|auth|access_token)=)[^\s&#"']+/gi, '$1[redacted]')
     .replace(/\b(sk-[a-z0-9_-]{8,})\b/gi, '[redacted]')
     .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,"'}]+/gi, '$1[redacted]');

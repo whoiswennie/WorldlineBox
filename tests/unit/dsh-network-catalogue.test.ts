@@ -24,6 +24,26 @@ function release(version: string) { return { name: '@deepseek-ai/dsh', version, 
 const npm = { name: '@deepseek-ai/dsh', 'dist-tags': { latest: '0.2.0-rc.2' }, versions: Object.fromEntries(['0.2.0-rc.2', '0.2.1-alpha.2', '0.2.1-alpha.10'].map(version => [version, release(version)])) };
 
 describe('hot launcher networking', () => {
+  it('preserves an old SOCKS file while keeping startup usable and rejects unsupported active global routes', async () => {
+    const root = await temporary();
+    const saved = JSON.stringify({ ...DEFAULT_LAUNCHER_NETWORK, proxyMode: 'custom', proxyUrl: 'socks5://127.0.0.1:7891' });
+    await writeFile(path.join(root, 'network.json'), saved);
+    const service = new LauncherNetwork(root, () => undefined, () => scope() as unknown as Session); await service.init();
+    expect(service.state().settings.proxyMode).toBe('direct');
+    expect(service.state().error).toContain('SOCKS');
+    expect(await readFile(path.join(root, 'network.json'), 'utf8')).toBe(saved);
+    await expect(service.patch({ proxyMode: 'custom', proxyUrl: 'socks5://127.0.0.1:7891' })).rejects.toThrow('HTTP/HTTPS');
+    expect(service.state().settings.proxyMode).toBe('direct');
+  });
+  it('keeps private child relays out of the environment applied to the application itself', async () => {
+    const service = new LauncherNetwork(await temporary(), () => undefined, () => scope() as unknown as Session); await service.init();
+    service.setChildEnvironmentHandler(async env => ({ ...env, HTTP_PROXY: 'http://worldlinebox:private@127.0.0.1:9000' }));
+    const apply = vi.fn(); await service.setEnvironmentHandler(apply);
+    expect(apply.mock.calls[0]![0].HTTP_PROXY).toBe('http://127.0.0.1:7897');
+    expect((await service.environment()).HTTP_PROXY).toContain('private@');
+    await service.setProxyEnabled(false);
+    expect(apply.mock.lastCall![0].HTTP_PROXY).toBeUndefined();
+  });
   it('disables to direct even when the OS has a proxy, and restores the same custom address after restart', async () => {
     const root = await temporary(); const current = scope();
     const service = new LauncherNetwork(root, () => undefined, () => current as unknown as Session); await service.init();

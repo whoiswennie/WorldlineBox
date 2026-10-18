@@ -1,4 +1,5 @@
 import { createPluginStandardHostHandler } from './plugin-standard-host';
+import { receiveRuntimeNetworkPolicy } from './network-policy';
 
 const parentPort = process.parentPort;
 if (parentPort === undefined) {
@@ -10,7 +11,7 @@ const processLifetime = setInterval(() => {}, 60 * 60_000);
 const handler = createPluginStandardHostHandler({
   postMessage: (message) => parentPort.postMessage(message),
 });
-parentPort.on('message', (event) => handler.handle(event.data));
+parentPort.on('message', (event) => { if (!receiveRuntimeNetworkPolicy(event.data)) handler.handle(event.data); });
 setImmediate(() => parentPort.postMessage({ type: 'plugin-runtime.ready' }));
 process.once('exit', () => {
   clearInterval(processLifetime);

@@ -4,6 +4,7 @@ import { STARTUP_RENDERER_STATE_CHANNEL, type StartupRendererState } from '../sh
 import { appUpdate } from './bridge/app-update';
 import { dshLauncher } from './bridge/dsh-launcher';
 import { browser } from './bridge/browser';
+import { network } from './bridge/application-network';
 import { llm } from './bridge/llm';
 import { music } from './bridge/music';
 import { companions } from './bridge/companions';
@@ -78,6 +79,7 @@ contextBridge.exposeInMainWorld(
     appUpdate,
     dshLauncher,
     browser,
+    network,
     llm,
     music,
     companions,

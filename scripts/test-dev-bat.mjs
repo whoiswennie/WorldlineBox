@@ -170,6 +170,22 @@ async function run() {
     await expect(dsh).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('[data-application-module]').first()).toHaveAttribute('data-application-module', 'dsh');
     await expect(page.locator('[data-application-view="assets"]')).toBeHidden();
+    await expect(page.locator('.launcher-navigation').getByRole('button', { name: '网络设置', exact: true })).toHaveCount(0);
+    await page.locator('[data-application-module="network"]').click();
+    await expect(page.locator('[data-application-network]')).toBeVisible();
+    const globalNetwork = await page.evaluate(() => globalThis.worldlinebox.network.request({ type: 'state' }));
+    expect(globalNetwork.ok && globalNetwork.state?.settings.proxyMode).toBe('system');
+    await page.getByRole('switch', { name: '启用代理' }).click();
+    await expect.poll(async () => {
+      const response = await page.evaluate(() => globalThis.worldlinebox.network.request({ type: 'state' }));
+      return response.ok ? response.state?.settings.proxyMode : 'failed';
+    }).toBe('direct');
+    expect((await launcherState(page)).network?.settings.proxyMode).toBe('direct');
+    await page.screenshot({ path: path.join(report, 'global-network.png') });
+    await page.getByRole('switch', { name: '启用代理' }).click();
+    await expect.poll(async () => (await launcherState(page)).network?.settings.proxyMode).toBe('system');
+    await dsh.click();
+    await expect(dsh).toHaveAttribute('aria-current', 'page');
     const settings = page.locator('.application-navigation-footer').getByRole('button', { name: '设置', exact: true });
     for (const theme of ['亮色', '暗色']) {
       await settings.click(); const dialog = page.getByRole('dialog', { name: '通用设置', exact: true });
@@ -191,7 +207,7 @@ async function run() {
       dependencyInstallation: false, nativeRebuild: false,
       firstModule: 'dsh', settingsPreserveModule: true, themes: ['light', 'dark'], portableToolsOnDemand: true,
       inactiveModulesUnloaded: true, noStartupDataWorkers: true, homeProcesses,
-      nativePreloadIpc: true, isolatedUserData: userData, runtimeInstalls: 0, modelCalls: 0 };
+      nativePreloadIpc: true, globalNetworkRail: true, globalNetworkLiveToggle: true, isolatedUserData: userData, runtimeInstalls: 0, modelCalls: 0 };
   } catch (error) { failure = error; }
   finally {
     if (page && !page.isClosed()) {

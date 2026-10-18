@@ -4,6 +4,9 @@ import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
 import type { DshLauncher } from './dsh/launcher';
+import type { LauncherNetwork } from './dsh/launcher-network';
+import { forkNetworkUtility } from './network-utility-process';
+import { APPLICATION_NETWORK_REQUEST } from '../shared/application-network';
 import type { CompanionService } from './companions/service';
 import { CompanionWorldWindowManager } from './companions/world-windows';
 import type { MusicService } from './music/service';
@@ -33,7 +36,6 @@ import {
   screen,
   shell,
   nativeImage,
-  utilityProcess,
 } from "electron";
 import type { MessageBoxOptions, NativeImage } from "electron";
 // Local acceptance of the BAT entry uses an isolated profile and a loopback-only CDP port.
@@ -551,6 +553,8 @@ const hasSingleInstanceLock = allowMultiInstance
 
 let mainWindow: BrowserWindow | undefined;
 let dshLauncher: DshLauncher | undefined;
+let closeGlobalNetwork: (() => Promise<void>) | undefined;
+let disposeGlobalNetworkIpc: (() => void) | undefined;
 let browserService: { shutdown(): Promise<void>; closeLibrary(libraryId: string): void } | undefined;
 let musicService: MusicService | undefined;
 let companionService: CompanionService | undefined;
@@ -4062,9 +4066,24 @@ async function startApplication(): Promise<void> {
       logger.error("dsh.legacy-storage", error);
     }
   }
+  let applicationNetwork: LauncherNetwork | undefined;
   try {
-    const { getApplicationNetwork } = await import('./application-network');
-    const applicationNetwork = await getApplicationNetwork();
+    const { getApplicationNetwork, setApplicationNetworkFailureReporter, closeApplicationNetwork } = await import('./application-network');
+    setApplicationNetworkFailureReporter(failure => logger?.info('network.request-failed', 'An HTTP request failed; repeated failures are aggregated in global network diagnostics.', failure));
+    closeGlobalNetwork = closeApplicationNetwork;
+    applicationNetwork = await getApplicationNetwork();
+    const { registerApplicationNetworkIpc } = await import('./application-network-ipc');
+    disposeGlobalNetworkIpc = registerApplicationNetworkIpc(() => mainWindow, applicationNetwork);
+  } catch (error) {
+    logger.error('network.initialization', error);
+    ipcMain.handle(APPLICATION_NETWORK_REQUEST, (event) => {
+      if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权访问全局网络设置。' };
+      return { ok: false, error: '全局网络服务初始化失败，请查看应用诊断日志。' };
+    });
+    disposeGlobalNetworkIpc = () => ipcMain.removeHandler(APPLICATION_NETWORK_REQUEST);
+  }
+  try {
+    if (!applicationNetwork) throw new Error('Application network policy is unavailable.');
     const { DshLauncher: LauncherService } = await import('./dsh/launcher');
     dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error), applicationNetwork);
     dshLauncher.registerIpc();
@@ -4742,7 +4761,7 @@ async function startApplication(): Promise<void> {
   );
   scriptRuntimeSupervisor = new ScriptRuntimeSupervisor({
     modulePath: path.join(__dirname, 'script_runtime_utility.js'),
-    fork: (modulePath) => utilityProcess.fork(modulePath, [], {
+    fork: (modulePath) => forkNetworkUtility(modulePath, {
       serviceName: 'WorldlineBox Script Runtime',
       stdio: 'pipe',
     }),
@@ -5082,7 +5101,7 @@ async function startApplication(): Promise<void> {
   });
   pluginRuntimeSupervisor = new PluginRuntimeSupervisor({
     modulePath: path.join(__dirname, 'plugin_standard_host.js'),
-    fork: (modulePath) => utilityProcess.fork(modulePath, [], {
+    fork: (modulePath) => forkNetworkUtility(modulePath, {
       serviceName: 'WorldlineBox Plugin Standard Host',
       stdio: 'pipe',
     }),
@@ -5107,7 +5126,7 @@ async function startApplication(): Promise<void> {
   });
   pluginTrustedRuntimeSupervisor = new PluginTrustedRuntimeSupervisor({
     modulePath: path.join(__dirname, 'plugin_trusted_host.js'),
-    fork: (modulePath) => utilityProcess.fork(modulePath, [], {
+    fork: (modulePath) => forkNetworkUtility(modulePath, {
       serviceName: 'WorldlineBox Plugin Trusted Host',
       stdio: 'pipe',
     }),
@@ -6675,7 +6694,7 @@ if (!hasSingleInstanceLock) {
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !browserService && !dshLauncher && !musicService && !companionService)) return;
+    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !browserService && !dshLauncher && !musicService && !companionService && !closeGlobalNetwork)) return;
     event.preventDefault();
     if (applicationShutdownPromise) return;
 
@@ -6710,6 +6729,12 @@ if (!hasSingleInstanceLock) {
       } catch (error) {
         logger?.error("library.worker.shutdown", error, { reason: "application-quit" });
       }
+      // Keep the relay alive while managed processes drain, then release its
+      // ephemeral listener and global page subscriptions before exiting.
+      disposeGlobalNetworkIpc?.(); disposeGlobalNetworkIpc = undefined;
+      try { await closeGlobalNetwork?.(); }
+      catch (error) { logger?.error('network.shutdown', error); }
+      closeGlobalNetwork = undefined;
       quitAfterShutdown = true;
       // The first app.quit() is intentionally intercepted above while owned
       // processes and the Worker drain. app.exit() then completes that quit.

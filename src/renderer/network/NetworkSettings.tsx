@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import type { DshLauncherState, DshNetworkSettings, DshNetworkSourceKind, DshNetworkPatch, DshLauncherRequest } from '../../shared/dsh-launcher';
+import type { DshNetworkSettings, DshNetworkSourceKind, DshNetworkPatch } from '../../shared/dsh-launcher';
 import { LOCAL_HTTP_PROXY_PORTS, NETWORK_SOURCE_PRESETS } from '../../shared/network-presets';
 import { useT } from '../i18n';
 import { Button, Select, TextField } from '../ui';
-import type { LauncherRunRequest } from './DshLauncher';
+import type { ApplicationNetworkState, ApplicationNetworkRequest, ApplicationNetworkResponse } from '../../shared/application-network';
+import { RecentNetworkFailures } from './RecentNetworkFailures';
+
+export type NetworkRunRequest = (request: ApplicationNetworkRequest) => Promise<ApplicationNetworkResponse>;
 
 const sourceNames = { npm: 'npm', python: 'Python', github: 'GitHub' };
 const officialNpm = 'https://registry.npmjs.org';
@@ -15,10 +18,10 @@ function sourceActive(settings: DshNetworkSettings, kind: DshNetworkSourceKind, 
   return address(kind === 'npm' ? settings.npmRegistry : kind === 'python' ? settings.pythonIndex : settings.githubMirror === 'custom' ? settings.githubMirrorUrl : '') === address(url);
 }
 
-export function LauncherNetworkSettings({ state, run, disabled = false }: {
-  readonly state: DshLauncherState; readonly run: LauncherRunRequest; readonly disabled?: boolean;
+export function NetworkSettings({ network, run, disabled = false }: {
+  readonly network?: ApplicationNetworkState; readonly run: NetworkRunRequest; readonly disabled?: boolean;
 }) {
-  const t = useT(); const network = state.network; const stored = network?.settings;
+  const t = useT(); const stored = network?.settings;
   const [changes, setChanges] = useState<Partial<DshNetworkSettings>>({});
   const [profileName, setProfileName] = useState(''); const [profileUrl, setProfileUrl] = useState('');
   const [editingProxy, setEditingProxy] = useState<string>();
@@ -32,7 +35,7 @@ export function LauncherNetworkSettings({ state, run, disabled = false }: {
     if (!network || inspected.current === network.revision) return;
     inspected.current = network.revision; void run({ type: 'network.inspect' });
   }, [network, run]);
-  if (!stored || !network) return <div className="launcher-page"><h1>{t('launcher.networkSettings')}</h1><p>{t('launcher.loading')}</p></div>;
+  if (!stored || !network) return <div className="launcher-page"><h1>{t('appNavigation.network')}</h1><p>{t('launcher.loading')}</p></div>;
   const draft: DshNetworkSettings = { ...stored, ...changes };
   const dirty = JSON.stringify(draft) !== JSON.stringify(stored);
   const locked = disabled || busy || testing;
@@ -54,7 +57,7 @@ export function LauncherNetworkSettings({ state, run, disabled = false }: {
     finally { saving.current = false; setBusy(false); }
   };
   // Live controls send only the selected applied policy. Other form edits remain drafts.
-  const applyLive = async (request: Extract<DshLauncherRequest, { type: 'network.patch' | 'network.proxy.toggle' }>): Promise<boolean> => {
+  const applyLive = async (request: Extract<ApplicationNetworkRequest, { type: 'network.patch' | 'network.proxy.toggle' }>): Promise<boolean> => {
     if (saving.current) return false;
     saving.current = true; setBusy(true); setError('');
     try {
@@ -103,9 +106,10 @@ export function LauncherNetworkSettings({ state, run, disabled = false }: {
     return route?.error ?? (route?.proxy === 'DIRECT' ? t('launcher.proxyDirect') : route?.proxy ?? (stored.proxyMode === 'custom' ? stored.proxyUrl : stored.proxyMode === 'direct' ? t('launcher.proxyDirect') : t('launcher.resolvingProxy')));
   };
   const githubPolicy = stored.githubMirror === 'auto' ? t('launcher.githubAutoPolicy') : stored.githubMirror === 'direct' ? t('launcher.githubOfficial') : (stored.githubMirror === 'custom' ? stored.githubMirrorUrl : { 'gh-proxy': 'https://gh-proxy.com/', ghfast: 'https://ghfast.top/', ghproxy: 'https://ghproxy.net/' }[stored.githubMirror]) + ' · ' + t('launcher.fallbackOfficial');
-  return <div className="launcher-page launcher-network-page" data-dsh-network-settings>
-    <div className="launcher-page-heading"><div><h1>{t('launcher.networkSettings')}</h1><p>{t('launcher.networkHotNote')}</p></div><Button disabled={locked || !dirty} loading={busy} iconName="check" onClick={() => void save()} variant="primary">{t('launcher.saveNetwork')}</Button></div>
+  return <div className="launcher-page launcher-network-page" data-application-network-settings>
+    <div className="launcher-page-heading"><div><h1>{t('appNavigation.network')}</h1><p>{t('launcher.networkHotNote')}</p></div><Button disabled={locked || !dirty} loading={busy} iconName="check" onClick={() => void save()} variant="primary">{t('launcher.saveNetwork')}</Button></div>
     {error ? <p className="launcher-network-error" role="alert">{error}</p> : null}
+    {network.error && network.error !== error ? <p className="launcher-network-error" role="alert">{network.error}</p> : null}
     <section className="launcher-card launcher-network-active" data-network-active aria-label={t('launcher.networkActive')}>
       <div className="launcher-card-heading"><div><h2>{t('launcher.networkActive')}</h2><p>{t('launcher.networkActiveNote')}</p></div><span className="launcher-badge launcher-badge--success">{t('launcher.appliedConfig')}</span></div>
       {dirty ? <p className="launcher-network-pending" role="status">{t('launcher.networkPendingNote')}</p> : null}
@@ -143,5 +147,6 @@ export function LauncherNetworkSettings({ state, run, disabled = false }: {
     <section className="launcher-card launcher-network-test"><div className="launcher-card-heading"><div><h2>{t('launcher.networkDiagnostics')}</h2><p>{t('launcher.networkTestNote')}</p></div><Button disabled={locked} loading={testing} iconName="activity" onClick={() => void test()}>{t(dirty ? 'launcher.saveAndTestNetwork' : 'launcher.testNetwork')}</Button></div>
       {checks ? <div className="launcher-network-checks">{checks.results.map(result => <div key={result.kind} className="launcher-network-check" data-check-ok={result.ok}><h3>{sourceNames[result.kind]} <span>{t(result.ok ? 'launcher.checkPassed' : 'launcher.checkFailed')}</span></h3>{result.attempts.map((attempt, index) => <div key={index + '-' + attempt.url}><p>{index ? t('launcher.checkFallback') + ' · ' : ''}{attempt.url}</p><code>{attempt.proxy === 'DIRECT' ? t('launcher.proxyDirect') : attempt.proxy} · {Math.round(attempt.elapsedMs)} ms{attempt.status ? ' · HTTP ' + attempt.status : ''}</code>{attempt.error ? <p className="launcher-network-error">{attempt.error}</p> : null}</div>)}</div>)}<p className="launcher-help">{t('launcher.lastChecked')} {new Date(checks.checkedAt).toLocaleString()}</p></div> : <pre aria-label={t('launcher.networkDiagnostics')} className="launcher-command-output">{testResult || t('launcher.networkTestEmpty')}</pre>}
     </section>
+    <RecentNetworkFailures network={network} run={run} />
   </div>;
 }

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { _electron as electron, expect, test } from '@playwright/test';
 import { BrowserStore } from '../../src/main/browser/store';
+import type { WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 test('saved operation, download and browsing histories search all records while rendering only the current page', async () => {
@@ -31,6 +32,13 @@ test('saved operation, download and browsing histories search all records while 
     if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) expect(await application.evaluate(({ app }) => app.isPackaged)).toBe(true);
     const page = await application.firstWindow();
     await (await application.browserWindow(page)).evaluate(window => { window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.showInactive(); });
+    // The navigation rail paints before the lazy launcher finishes preparing
+    // its CLI and reading the journal. Wait for real service readiness before
+    // checking pagination; the regular UI assertions retain their short waits.
+    await expect.poll(() => page.evaluate(async () => {
+      const response = await (globalThis as unknown as { worldlinebox: { dshLauncher: WorldlineBoxDshLauncherApi } }).worldlinebox.dshLauncher.request({ type: 'state' });
+      return response.ok ? { ok: true, operationCount: response.state?.operations.length } : { ok: false, error: response.error };
+    }), { timeout: 30_000, message: 'The launcher must load the 55 seeded journal entries before checking rendered pages.' }).toEqual({ ok: true, operationCount: 55 });
     await page.locator('.launcher-navigation').getByRole('button', { name: '操作记录', exact: true }).click();
     await expect(page.locator('[data-dsh-operation]')).toHaveCount(20);
     const operationPages = page.getByRole('navigation', { name: '操作记录分页' });

@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { X509Certificate } from 'node:crypto';
+import dns from 'node:dns';
 import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -8,9 +9,15 @@ import path from 'node:path';
 import { app, BrowserWindow, WebContentsView, session, utilityProcess, type UtilityProcess } from 'electron';
 import { currentNetworkEnvironment, getApplicationNetwork, onNetworkEnvironment } from '../../../src/main/application-network';
 import { networkChildEnvironment } from '../../../src/shared/network-environment';
+import { isManagedNetworkRelayUrl } from '../../../src/shared/network-relay-url';
 
 const root = process.env.WORLDLINEBOX_PROXY_TOGGLE_FIXTURE_ROOT!;
 const hostname = 'worldlinebox-proxy.test';
+// This synthetic fixture domain has no public DNS record. Give Node the same
+// controlled lookup as Chromium so the real relay can exercise direct routing.
+const originalLookup = dns.lookup;
+dns.lookup = ((name: string, ...arguments_: unknown[]) => Reflect.apply(originalLookup, dns,
+  [name === hostname ? '127.0.0.1' : name, ...arguments_])) as typeof dns.lookup;
 console.log('PROXY_TOGGLE_PROGRESS starting');
 app.setPath('userData', path.join(root, 'electron-data'));
 app.commandLine.appendSwitch('host-resolver-rules', `MAP ${hostname} 127.0.0.1`);
@@ -115,7 +122,7 @@ app.whenReady().then(async () => {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(Error('Worker startup timed out')), 10_000);
       worker!.on('message', (message: { type?: string; id?: number; text?: string; error?: string; inheritedProxy?: string; proxy?: string }) => {
-        if (message.type === 'ready') { clearTimeout(timer); try { assert.equal(message.error, undefined); assert.equal(message.text, 'node-fetch-ok'); assert.equal(message.inheritedProxy, proxyUrl); resolve(); } catch (error) { reject(error); } }
+        if (message.type === 'ready') { clearTimeout(timer); try { assert.equal(message.error, undefined); assert.equal(message.text, 'node-fetch-ok'); assert(isManagedNetworkRelayUrl(message.inheritedProxy ?? ''), 'Worker must inherit the private per-destination policy relay'); assert(message.inheritedProxy === currentNetworkEnvironment()!.HTTP_PROXY); resolve(); } catch (error) { reject(error); } }
         else if (message.id !== undefined) { const settle = pending.get(message.id); pending.delete(message.id); settle?.(message); }
       });
       worker!.once('exit', code => reject(Error('Worker exited: ' + code)));
@@ -135,7 +142,9 @@ app.whenReady().then(async () => {
     const enabledCounts = [connections.length, forwarded.length];
     await network.setProxyEnabled(false);
     assert.equal(await browserScope.resolveProxy(address), 'DIRECT');
-    assert.equal(process.env.HTTP_PROXY, undefined); assert.equal(process.env.HTTPS_PROXY, undefined); assert.equal(process.env.ALL_PROXY, undefined);
+    assert(isManagedNetworkRelayUrl(process.env.HTTP_PROXY ?? ''), 'Direct mode keeps the stable private endpoint for already running processes');
+    assert(process.env.HTTP_PROXY === process.env.HTTPS_PROXY && process.env.HTTP_PROXY === process.env.ALL_PROXY);
+    assert.equal(await network.resolveProxy(address), 'DIRECT');
     await probe();
     assert.deepEqual([connections.length, forwarded.length], enabledCounts, 'Disabled proxy must receive no new Chromium or Node traffic');
     assert.equal(network.state().settings.proxyUrl, proxyUrl);
@@ -158,5 +167,5 @@ app.whenReady().then(async () => {
     console.log('PROXY_TOGGLE_RESULT ' + JSON.stringify({ chromiumConnect: true, nodeHttpsConnect: true, nodeFetch: true, utilityWorkerInheritedProxy: true, utilityWorkerInitialDirect: true, utilityWorkerHotUpdates: true, directBypassesProxy: true, sameProxyRestored: true, npmMirrorLiveBytes: true, pythonMirrorLiveRequest: true, githubMirrorLiveRequest: true, secureCertificateValidation: true, connections: connections.length, forwarded: forwarded.length }));
     app.exit(0);
   } catch (error) { console.error(error); app.exit(1); }
-  finally { stopNetworkListener?.(); worker?.kill(); for (const socket of sockets) socket.destroy(); origin.closeAllConnections(); plain.closeAllConnections(); proxy.closeAllConnections(); origin.close(); plain.close(); proxy.close(); view.webContents.close(); host.destroy(); }
+  finally { dns.lookup = originalLookup; stopNetworkListener?.(); worker?.kill(); for (const socket of sockets) socket.destroy(); origin.closeAllConnections(); plain.closeAllConnections(); proxy.closeAllConnections(); origin.close(); plain.close(); proxy.close(); view.webContents.close(); host.destroy(); }
 }).catch(error => { console.error(error); app.exit(1); });

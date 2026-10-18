@@ -1,8 +1,9 @@
 import { setGlobalProxyFromEnv } from 'node:http';
 import { z } from 'zod';
+import { isManagedNetworkRelayUrl } from './network-relay-url';
 
 const proxy = z.string().max(2048).refine(value => {
-  try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password; } catch { return false; }
+  try { const url = new URL(value); return isManagedNetworkRelayUrl(value) || ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password; } catch { return false; }
 }, '全局代理请使用 HTTP/HTTPS 地址，例如 Clash 的 HTTP 或混合端口。');
 export const networkEnvironmentSchema = z.object({ HTTP_PROXY: proxy.optional(), HTTPS_PROXY: proxy.optional(),
   ALL_PROXY: proxy.optional(), NO_PROXY: z.string().max(2048), npm_config_registry: z.string().url().max(2048), PIP_INDEX_URL: z.string().url().max(2048), NODE_USE_ENV_PROXY: z.literal('1') });

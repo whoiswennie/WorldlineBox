@@ -1,4 +1,5 @@
 import { createScriptRuntimeUtilityHandler } from './script-runtime-utility';
+import { receiveRuntimeNetworkPolicy } from './network-policy';
 
 const parentPort = process.parentPort;
 if (parentPort === undefined) {
@@ -10,7 +11,7 @@ const processLifetime = setInterval(() => {}, 60 * 60_000);
 const handler = createScriptRuntimeUtilityHandler({
   postMessage: (message) => parentPort.postMessage(message),
 });
-parentPort.on('message', (event) => handler.handle(event.data));
+parentPort.on('message', (event) => { if (!receiveRuntimeNetworkPolicy(event.data)) handler.handle(event.data); });
 // Fork returns before Main can install its listener. Defer ready past this
 // bootstrap turn so the message cannot be emitted synchronously during fork.
 setImmediate(() => parentPort.postMessage({ type: 'script-runtime.ready' }));

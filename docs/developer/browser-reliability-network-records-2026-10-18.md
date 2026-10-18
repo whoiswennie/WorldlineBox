@@ -2,6 +2,8 @@
 
 本轮针对用户截图中的主进程 `Invalid webContents` 异常、采集处理器拒绝日志及网络连接错误修复，并补齐代理即时开关、常用来源和记录查询。保留 WorldlineBox 品牌、原有资产导入链路、登录分区和项目自定义功能。
 
+同日后续的全局侧边栏、全部模块代理路径及新安装器收据，见 [全局网络增量记录](global-network-2026-10-18.md)。本文下方保留此前构建的历史收据。
+
 ## 视频页面与新标签
 
 截图中的异常来自新窗口接管：Electron 已创建原生 guest WebContents，但旧实现另建视图并返回不同的 WebContents，违反原生对象身份约定。现在 `createWindow` 原样接管 `options.webContents`；对于普通链接经 `OpenURLFromTab` 打开且没有原生 guest 的路径，显式完成首次导航，并传递 Referrer、表单 POST 内容及对应请求头。这样分别覆盖 `target="_blank"`、`window.open()`、先开空白页再导航、表单和后台标签。该约定见 [Electron WebContents 文档](https://www.electronjs.org/docs/latest/api/web-contents#contentssetwindowopenhandlerhandler)。

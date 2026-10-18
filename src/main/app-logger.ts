@@ -14,6 +14,7 @@ const sensitiveContextKey = /^(?:api[_-]?key|access[_-]?token|token|secret|passw
 
 function redactText(value: string): string {
   return value
+    .replace(/(https?:\/\/)[^/@\s]+@/gi, '$1[REDACTED]@')
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_API_KEY]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED_TOKEN]')
     .replace(/((?:proxy-)?authorization\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]')

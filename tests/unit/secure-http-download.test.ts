@@ -1,15 +1,20 @@
 import http from 'node:http';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { defaultPinnedHttpTransport } from '../../src/worker/secure-http-download';
 
 const servers: http.Server[] = [];
 
+beforeEach(() => {
+  for (const name of ['http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY']) vi.stubEnv(name, undefined);
+});
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
     server.close(() => resolve());
   })));
+  vi.unstubAllEnvs();
 });
 
 describe('defaultPinnedHttpTransport', () => {

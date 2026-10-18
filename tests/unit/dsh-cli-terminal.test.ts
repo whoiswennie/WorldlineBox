@@ -75,8 +75,8 @@ else{let task='';process.stdin.on('data',chunk=>task+=chunk);process.stdin.on('e
   await terminal.init();
   return { root, selections, terminal, outputs };
 }
-async function runShim(root: string, args: string[], input?: string) {
-  const child = spawn(process.execPath, [path.join(root, 'cli', 'shim.cjs'), ...args], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+async function runShim(root: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) {
+  const child = spawn(process.execPath, [path.join(root, 'cli', 'shim.cjs'), ...args], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], ...(env ? { env } : {}) });
   let stdout = ''; let stderr = ''; child.stdout.on('data', chunk => { stdout += chunk.toString(); }); child.stderr.on('data', chunk => { stderr += chunk.toString(); });
   child.stdin.end(input ?? '');
   const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
@@ -159,6 +159,23 @@ describe('managed CLI entrypoint', () => {
       await writeFile(path.join(root,'network.json'),JSON.stringify({proxyMode:'custom',proxyUrl:'http://fixture-user:fixture-secret@127.0.0.1:7897',npmRegistry:'https://registry.npmjs.org',pythonIndex:'https://pypi.org/simple'}));const refused=await runShim(root,['--env-probe']);expect(refused.code).toBe(1);expect(refused.stderr).toContain('Invalid launcher network settings');expect(refused.stderr).not.toContain('fixture-secret');
     }finally{await terminal.close();clear();for(const[key,value]of previous)if(value!==undefined)process.env[key]=value;}
   },30_000);
+  it.skipIf(process.platform !== 'win32')('retains the live app relay only for managed terminals and never persists relay credentials into exported CLI contexts', async () => {
+    const { root, selections, terminal } = await setup('node-cli-web-v1');
+    const endpoint = `http://worldlinebox:${'a'.repeat(64)}@127.0.0.1:12345`;
+    selections[0]!.env.WORLDLINEBOX_CHILD_NETWORK_RELAY = endpoint;
+    selections[0]!.env.HTTPS_PROXY = endpoint;
+    try {
+      await terminal.selectContext(selections[0]);
+      expect(await readFile(path.join(root, 'cli', 'context.json'), 'utf8')).not.toContain(endpoint);
+      const result = await runShim(root, ['--env-probe'], undefined, { ...process.env, WORLDLINEBOX_CHILD_NETWORK_RELAY: endpoint });
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(/^FIXTURE_ENV (.+)$/m.exec(result.stdout)![1]!)).toMatchObject({ httpProxy: endpoint, httpsProxy: endpoint, allProxy: endpoint });
+      const standaloneEnvironment = { ...process.env }; delete standaloneEnvironment.WORLDLINEBOX_CHILD_NETWORK_RELAY;
+      const standalone = await runShim(root, ['--env-probe'], undefined, standaloneEnvironment);
+      expect(standalone.code, standalone.stderr).toBe(0);
+      expect(JSON.parse(/^FIXTURE_ENV (.+)$/m.exec(standalone.stdout)![1]!)).toMatchObject({ httpProxy: null, httpsProxy: null, allProxy: null });
+    } finally { await terminal.close(); }
+  }, 30_000);
   it.skipIf(process.platform !== 'win32')('refuses altered runtime content and foreign context environment paths before executing code', async () => {
     const { root, selections, terminal } = await setup(); const selected = selections[0]!;
     await terminal.selectContext(selected);

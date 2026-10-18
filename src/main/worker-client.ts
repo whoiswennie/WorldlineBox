@@ -218,7 +218,10 @@ export class LibraryWorkerClient {
     private readonly workerEnvironment: NodeJS.ProcessEnv = process.env,
   ) {
     this.#modulePath = modulePath;
-    this.#stopNetworkUpdates = onNetworkEnvironment(environment => { this.#child?.postMessage({ type: 'worker.network-environment', environment }); });
+    this.#stopNetworkUpdates = onNetworkEnvironment(environment => {
+      try { this.#child?.postMessage({ type: 'worker.network-environment', environment }); }
+      catch { /* A Worker racing its exit is restarted with the latest policy. */ }
+    });
   }
 
   async start(): Promise<void> {

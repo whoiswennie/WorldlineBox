@@ -108,6 +108,21 @@ test('normalizes structured Worker diagnostics so AI causes are readable in the 
   }
 });
 
+test('redacts relay URL credentials from every diagnostic sink', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-log-relay-test-'));
+  try {
+    const file = path.join(root, 'worldlinebox.log'); const logger = new AppLogger(file);
+    const endpoint = `http://worldlinebox:${'a'.repeat(64)}@127.0.0.1:7896`;
+    logger.info('network', endpoint, { endpoint });
+    logger.error('network', new Error(endpoint));
+    logger.worker('stderr', JSON.stringify({ scope: 'network', message: endpoint, context: { endpoint } }));
+    logger.worker('stdout', endpoint);
+    const persisted = readFileSync(file, 'utf8');
+    expect(persisted).not.toContain('a'.repeat(64));
+    expect(persisted).toContain('[REDACTED]@127.0.0.1:7896');
+  } finally { rmSync(root, { force: true, recursive: true }); }
+});
+
 test('redacts local filesystem paths only for the in-app view', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-log-path-test-'));
   try {

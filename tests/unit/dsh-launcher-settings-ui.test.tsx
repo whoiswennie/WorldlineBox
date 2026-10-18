@@ -5,7 +5,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { DshLauncherState, DshNetworkSettings, DshRuntime } from '../../src/shared/dsh-launcher';
 import { LocaleProvider } from '../../src/renderer/i18n';
 import { OfficialVersionPicker } from '../../src/renderer/launcher/OfficialVersionPicker';
-import { LauncherNetworkSettings } from '../../src/renderer/launcher/LauncherNetworkSettings';
+import { NetworkSettings, type NetworkRunRequest } from '../../src/renderer/network/NetworkSettings';
+import type { ApplicationNetworkState } from '../../src/shared/application-network';
 import type { LauncherRunRequest } from '../../src/renderer/launcher/DshLauncher';
 
 let root: Root | undefined; let container: HTMLDivElement | undefined;
@@ -92,23 +93,23 @@ async function select(label: string, value: string) {
   await act(() => { field.value = value; field.dispatchEvent(new Event('change', { bubbles: true })); });
 }
 async function mountNetwork(initial = network(), rejectSave = false) {
-  let applied: DshLauncherState = { ...base(), network: { settings: initial, revision: 0 } };
-  const request = vi.fn<LauncherRunRequest>();
+  let applied: ApplicationNetworkState = { settings: initial, revision: 0, recentFailures: [] };
+  const request = vi.fn<NetworkRunRequest>();
   function Harness() {
     const [value, setValue] = useState(applied);
     request.mockImplementation(async input => {
       if (input.type === 'network.save' || input.type === 'network.patch' || input.type === 'network.proxy.toggle') {
         if (rejectSave) return { ok: false, error: 'Invalid proxy URL' };
-        const previous = applied.network!.settings;
+        const previous = applied.settings;
         const settings = input.type === 'network.save' ? input.settings : input.type === 'network.patch' ? { ...previous, ...input.patch }
           : { ...previous, proxyMode: input.enabled ? previous.proxyResumeMode ?? 'system' : 'direct', proxyResumeMode: previous.proxyMode === 'direct' ? previous.proxyResumeMode : previous.proxyMode } as DshNetworkSettings;
-        applied = { ...applied, network: { settings, revision: applied.network!.revision + 1 } };
+        applied = { ...applied, settings, revision: applied.revision + 1 };
         setValue(applied); return { ok: true, state: applied };
       }
       if (input.type === 'network.test') return { ok: true, text: 'GitHub: OK\nnpm: OK' };
       return { ok: true, state: applied };
     });
-    return <LauncherNetworkSettings state={value} run={request} />;
+    return <NetworkSettings network={value} run={request} />;
   }
   await mount(<Harness />); return request;
 }
@@ -197,7 +198,7 @@ it('shows actual per-source proxy routes and bounded diagnostic failures without
       { kind: 'npm', ok: true, attempts: [{ url: 'https://registry.npmmirror.com/zod/latest', proxy: 'DIRECT', ok: true, elapsedMs: 12, status: 200 }] },
       { kind: 'github', ok: false, attempts: [{ url: 'https://api.github.com/releases', proxy: 'http://127.0.0.1:7897', ok: false, elapsedMs: 80, status: 403, error: 'HTTP 403' }] },
     ] } } };
-  await mount(<LauncherNetworkSettings state={state} run={vi.fn<LauncherRunRequest>().mockResolvedValue({ ok: true })} />);
+  await mount(<NetworkSettings network={{ ...state.network!, recentFailures: [] }} run={vi.fn<NetworkRunRequest>().mockResolvedValue({ ok: true })} />);
   expect(container!.querySelector('[data-active-source="npm"]')!.textContent).toContain('http://127.0.0.1:7897');
   expect(container!.querySelector('[data-active-source="python"]')!.textContent).toContain('直接连接');
   expect(container!.querySelectorAll('[data-check-ok="true"]')).toHaveLength(1);

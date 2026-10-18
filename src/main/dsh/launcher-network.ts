@@ -28,6 +28,8 @@ export function validateLauncherNetwork(value: unknown): DshNetworkSettings {
   settings.npmRegistry = endpoint(settings.npmRegistry, ['https:']); settings.pythonIndex = endpoint(settings.pythonIndex, ['https:']);
   if (settings.proxyUrl) settings.proxyUrl = endpoint(settings.proxyUrl, ['http:', 'https:', 'socks5:']);
   if (settings.proxyMode === 'custom' && !settings.proxyUrl) throw new Error('请填写代理地址。');
+  if (settings.proxyMode === 'custom' && !['http:', 'https:'].includes(new URL(settings.proxyUrl).protocol))
+    throw new Error('全局代理请使用 HTTP/HTTPS 地址，例如 Clash 的 HTTP 或混合端口；SOCKS 专用端口不能用于整个项目。');
   settings.proxyProfiles = settings.proxyProfiles.map(profile => ({ ...profile, url: endpoint(profile.url, ['http:', 'https:', 'socks5:']) }));
   if (settings.sourceProfiles) settings.sourceProfiles = settings.sourceProfiles.map(profile => ({ ...profile,
     url: `${endpoint(profile.url, ['https:'])}${profile.kind === 'github' ? '/' : ''}` }));
@@ -55,12 +57,22 @@ export class LauncherNetwork {
   private readonly sessions = new Set<Session>();
   private readonly listeners = new Set<() => void>();
   private applyEnvironment?: (environment: NodeJS.ProcessEnv) => void | Promise<void>;
+  private childEnvironment?: (environment: NodeJS.ProcessEnv) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>;
   constructor(private readonly rootPath: string, private readonly onChanged: () => void,
     private readonly createSession = () => session.fromPartition('persist:worldlinebox-dsh-network')) {}
   state(): DshNetworkState { return structuredClone({ settings: this.settings, revision: this.revision,
     ...(this.issue ? { error: this.issue } : {}), inspection: this.inspection, checks: this.checks }); }
   async init(): Promise<void> {
-    try { const stored = await readJson<unknown>(path.join(this.rootPath, 'network.json')); if (stored) this.settings = validateLauncherNetwork(stored); }
+    try {
+      const stored = await readJson<unknown>(path.join(this.rootPath, 'network.json'));
+      if (stored) {
+        const parsed = dshNetworkSettingsSchema.parse(stored);
+        if (parsed.proxyMode === 'custom' && /^socks5:/i.test(parsed.proxyUrl)) {
+          this.settings = validateLauncherNetwork({ ...parsed, proxyMode: 'direct', proxyResumeMode: 'system' });
+          this.issue = '旧配置使用 SOCKS 专用端口，已暂时改为直连。请在全局网络中选择 HTTP/混合端口；原配置文件保留。';
+        } else this.settings = validateLauncherNetwork(parsed);
+      }
+    }
     catch { this.issue = '网络配置读取失败，已采用默认设置；原文件保留。'; }
     if (!this.settings.proxyPresetsVersion) {
       // Older installations already had 7897/7890. Seed only the new suggestions once;
@@ -80,8 +92,11 @@ export class LauncherNetwork {
     this.queue = work.catch(() => undefined); return work;
   }
   async setEnvironmentHandler(handler: (environment: NodeJS.ProcessEnv) => void | Promise<void>): Promise<void> {
-    this.applyEnvironment = handler; await handler(await this.environment());
+    this.applyEnvironment = handler; await this.queue;
+    await handler(await this.commandEnvironment(process.env, this.settings.npmRegistry));
   }
+  setChildEnvironmentHandler(handler: (environment: NodeJS.ProcessEnv) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>): void { this.childEnvironment = handler; }
+  async resolveProxy(destination: string): Promise<string> { await this.queue; return this.proxyFor(destination); }
   private async applySession(scope: Session): Promise<void> {
     const settings = this.settings;
     await scope.setProxy(settings.proxyMode === 'custom'
@@ -182,7 +197,8 @@ export class LauncherNetwork {
   }
   async environment(base: NodeJS.ProcessEnv = process.env, destination = this.settings.npmRegistry): Promise<NodeJS.ProcessEnv> {
     await this.queue;
-    return this.commandEnvironment(base, destination);
+    const environment = await this.commandEnvironment(base, destination);
+    return this.childEnvironment ? this.childEnvironment(environment) : environment;
   }
   private async commandEnvironment(base: NodeJS.ProcessEnv, destination: string): Promise<NodeJS.ProcessEnv> {
     const env = { ...base };
