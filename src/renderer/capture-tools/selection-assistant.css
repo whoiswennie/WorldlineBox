@@ -1,0 +1,48 @@
+.selection-assistant { font-family: inherit; }
+.selection-assistant > header { padding: 15px 22px; }
+.selection-heading { display: flex; gap: 11px; align-items: center; min-width: 0; }
+.selection-heading > span { display: grid; place-items: center; width: 37px; height: 37px; border-radius: 11px; color: var(--ui-content-accent); background: color-mix(in srgb, var(--ui-content-accent) 9%, transparent); flex-shrink: 0; }
+.selection-heading p { margin: 4px 0 0; color: var(--ui-content-tertiary); font-size: 11px; }
+.selection-header-actions { display: flex; gap: 4px; align-items: center; }
+.selection-assistant button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--ui-border-subtle); border-radius: 7px; background: var(--ui-surface-raised); color: var(--ui-content-primary); font: inherit; font-size: 12px; cursor: pointer; -webkit-app-region: no-drag; }
+.selection-assistant button:hover:not(:disabled) { border-color: var(--ui-content-accent); background: var(--ui-surface-field); }
+.selection-assistant button:disabled { opacity: .4; cursor: default; }
+.selection-assistant button:focus-visible, .selection-assistant textarea:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset: 2px; }
+.selection-assistant .selection-icon-button { border-color: transparent; padding: 6px; background: transparent; }
+.selection-source { margin: 17px 22px 0; padding: 12px 14px; border: 1px solid var(--ui-border-subtle); border-radius: 11px; background: var(--ui-surface-field); flex-shrink: 0; }
+.selection-source-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.selection-source-heading > button { padding: 0; border: 0; color: var(--ui-content-secondary); background: transparent; font-size: 11px; }
+.selection-source-heading > button:first-child { justify-content: flex-start; flex: 1; min-width: 0; gap: 7px; }
+.selection-source-heading strong { color: var(--ui-content-primary); font-size: 12px; font-weight: 550; }
+.selection-source-heading > button:first-child > span { margin-left: auto; color: var(--ui-content-tertiary); font-size: 10px; }
+.selection-source-heading > button:hover:not(:disabled) { background: transparent; color: var(--ui-content-accent); }
+.selection-source textarea { display: block; width: 100%; min-height: 62px; max-height: 23vh; margin-top: 10px; padding: 0; border: 0; resize: vertical; background: transparent; color: var(--ui-content-primary); font: inherit; font-size: 13px; line-height: 1.75; scrollbar-width: thin; }
+.selection-source-hint { margin: 6px 0 0; color: var(--ui-content-tertiary); font-size: 10px; line-height: 1.6; }
+.selection-source .selection-source-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; width: 100%; overflow: hidden; padding: 0; margin-top: 8px; border: 0; background: transparent; color: var(--ui-content-secondary); font-size: 12px; line-height: 1.75; text-align: left; overflow-wrap: anywhere; white-space: pre-wrap; }
+.selection-conversation { flex: 1; min-height: 0; overflow-y: auto; padding: 15px 22px; overscroll-behavior: contain; scrollbar-width: thin; }
+.selection-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; min-height: 100%; padding: 15px; text-align: center; color: var(--ui-content-secondary); }
+.selection-empty > span { display: grid; place-items: center; width: 46px; height: 46px; margin-bottom: 2px; border-radius: 15px; color: var(--ui-content-accent); background: color-mix(in srgb, var(--ui-content-accent) 7%, transparent); }
+.selection-empty h2 { margin: 0; color: var(--ui-content-primary); font-size: 16px; font-weight: 550; }
+.selection-empty > p { max-width: 450px; margin: 0; font-size: 12px; line-height: 1.8; }
+.selection-presets { display: flex; justify-content: center; flex-wrap: wrap; gap: 7px; margin-top: 7px; }
+.selection-presets > button { font-size: 11px; padding: 7px 10px; }
+.selection-messages { display: flex; flex-direction: column; gap: 17px; }
+.selection-messages article { min-width: 0; padding: 12px 14px; border: 1px solid var(--ui-border-subtle); border-radius: 11px; }
+.selection-messages article.is-user { align-self: flex-end; max-width: 90%; border-color: transparent; background: color-mix(in srgb, var(--ui-content-accent) 7%, var(--ui-surface-raised)); }
+.selection-messages article.is-assistant { align-self: stretch; }
+.selection-messages article > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 20px; }
+.selection-messages strong { color: var(--ui-content-secondary); font-size: 10px; font-weight: 500; }
+.selection-messages article p { margin: 6px 0 0; color: var(--ui-content-primary); font-size: 13px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
+.selection-messages article .selection-icon-button { padding: 2px; color: var(--ui-content-tertiary); }
+.selection-thinking { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--ui-content-secondary); font-size: 12px; }
+.selection-bottom { flex-shrink: 0; padding: 0 22px 19px; }
+.selection-error, .selection-notice { margin: 0 0 9px; color: var(--ui-status-danger-content); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.selection-notice { color: var(--ui-content-secondary); }
+.selection-composer { padding: 12px 13px 9px; border: 1px solid var(--ui-border-subtle); border-radius: 12px; background: var(--ui-surface-field); }
+.selection-composer:focus-within { border-color: var(--ui-content-accent); }
+.selection-composer textarea { display: block; width: 100%; min-height: 48px; max-height: 22vh; padding: 0; border: 0; outline: 0; resize: vertical; color: var(--ui-content-primary); background: transparent; font: inherit; font-size: 13px; line-height: 1.7; }
+.selection-composer > div { display: flex; align-items: center; gap: 9px; margin-top: 9px; min-width: 0; }
+.selection-composer > div > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--ui-content-tertiary); }
+.selection-composer small { color: var(--ui-content-tertiary); font-size: 9px; }
+.selection-composer .is-primary { border-color: var(--ui-content-accent); background: var(--ui-content-accent); color: #fff; }
+@media (max-width: 620px) { .selection-assistant > header { padding: 12px 14px; } .selection-source { margin: 13px 14px 0; } .selection-conversation { padding: 12px 14px; } .selection-bottom { padding: 0 14px 14px; } .selection-presets { gap: 5px; } .selection-composer small { display: none; } }

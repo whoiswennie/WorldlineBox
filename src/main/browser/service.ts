@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { closeSync, existsSync, mkdirSync, openSync, statSync, unlinkSync } from 'node:fs';
 import { app, clipboard, dialog, ipcMain, Menu, session, shell, WebContentsView, type BrowserWindow, type DownloadItem, type Session } from 'electron';
+import type { CaptureImageSource } from '../../shared/capture-tools';
 import { BROWSER_CHANGED, BROWSER_FOCUS, BROWSER_REQUEST, BROWSER_HOME, browserRequestSchema, type BrowserDownload, type BrowserRequest, type BrowserResponse, type BrowserState, type BrowserTab } from '../../shared/browser';
 import { getApplicationNetwork } from '../application-network';
 import { BrowserStore, browserAddress, isBrowserUrl, newBrowserTab } from './store';
-import { BROWSER_CAPTURE_CONTENT_REQUEST, BROWSER_CAPTURE_REQUEST, browserCaptureContentRequestSchema, browserCaptureRequestSchema, type BrowserCaptureRequest, type BrowserCaptureResponse, type BrowserCaptureContentResponse } from '../../shared/browser-capture';
+import { BROWSER_CAPTURE_CONTENT_REQUEST, BROWSER_CAPTURE_REQUEST, browserCaptureContentRequestSchema, browserCaptureRequestSchema, type BrowserCaptureTarget, type BrowserCaptureRequest, type BrowserCaptureResponse, type BrowserCaptureContentResponse } from '../../shared/browser-capture';
 import { BrowserCaptureHost, type BrowserCaptureHooks, type BrowserCaptureSource } from './capture-host';
 import { formatBrowserLoadError, shouldIgnoreBrowserLoadError } from '../../shared/browser-load-error';
 
@@ -31,7 +32,7 @@ export class BrowserService {
   private capture?: BrowserCaptureHost;
   private preloadRegistration?: string;
   private readonly navigationVersions = new Map<string, number>();
-  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks) {
+  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>) {
     this.store = new BrowserStore(root, error => { this.error = '浏览器配置保存失败：' + String(error).slice(0, 600); this.changed(false); });
   }
   private init(): Promise<void> { return this.initialization ??= this.initialize(); }
@@ -44,6 +45,9 @@ export class BrowserService {
       this.capture = new BrowserCaptureHost(this.root, this.captureHooks, { tempRoot: app.getPath('temp'), fetch: (url, init) => this.scope!.fetch(url, init),
         chooseLocalImage: async () => { const owner = this.getWindow(); if (!owner || owner.isDestroyed()) return undefined;
           const selected = await dialog.showOpenDialog(owner, { title: '采集本地图片', properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }] });
+          return selected.canceled ? undefined : selected.filePaths[0]; },
+        chooseLocalFile: async () => { const owner = this.getWindow(); if (!owner || owner.isDestroyed()) return undefined;
+          const selected = await dialog.showOpenDialog(owner, { title: '采集本地文件', properties: ['openFile'], filters: [{ name: '媒体与文档', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'tif', 'tiff', 'mp4', 'webm', 'mov', 'mp3', 'wav', 'ogg', 'flac', 'm4a', 'pdf', 'txt', 'md', 'csv', 'json', 'yaml', 'yml', 'docx', 'xlsx', 'pptx', 'epub', 'zip', '7z', 'rar'] }] });
           return selected.canceled ? undefined : selected.filePaths[0]; },
         changed: () => this.changed(false), sources: () => this.captureSources(), source: tabId => this.captureSource(tabId) });
     }
@@ -74,7 +78,44 @@ export class BrowserService {
     return entry && !entry.view.webContents.isDestroyed() ? { tabId: tabId!, contents: entry.view.webContents, frame: entry.view.webContents.mainFrame } : undefined;
   }
   async captureRequest(request: BrowserCaptureRequest): Promise<BrowserCaptureResponse> {
-    await this.init(); if (!this.capture) return { ok: false, error: '资产采集服务不可用。' }; return this.capture.handle(request);
+    await this.init(); if (!this.capture) return { ok: false, error: '资产采集服务不可用。' };
+    if (request.type === 'page.save' || request.type === 'text.save') {
+      const source = this.captureSource(request.tabId);
+      if (!source || !/^https?:\/\//.test(source.frame.url)) return { ok: false, error: '请先打开需要采集的网页。' };
+      return this.saveDocument(source, request.type === 'page.save' ? 'page' : 'text', request.target);
+    }
+    return this.capture.handle(request);
+  }
+  private async saveDocument(source: BrowserCaptureSource, kind: 'page' | 'text', target?: BrowserCaptureTarget): Promise<BrowserCaptureResponse> {
+    if (!this.capture) return { ok: false, error: '资产采集服务不可用。' };
+    const url = source.frame.url;
+    const value: unknown = await source.frame.executeJavaScript(kind === 'text'
+      ? '({title:document.title.slice(0,500),text:String(window.getSelection()).slice(0,4190000)})'
+      : '({title:document.title.slice(0,500),text:(document.body?.innerText||"").slice(0,4190000)})');
+    if (source.contents.isDestroyed() || source.frame.isDestroyed() || source.frame.url !== url) return { ok: false, error: '页面已跳转，请重新采集。' };
+    if (!value || typeof value !== 'object' || !('text' in value) || typeof value.text !== 'string') return { ok: false, error: '无法读取网页内容。' };
+    const input = { title: 'title' in value && typeof value.title === 'string' ? value.title : source.contents.getTitle(), text: value.text };
+    return kind === 'page' ? this.capture.savePage(source, target, input) : this.capture.saveText(source, target, input);
+  }
+  async captureViewport(): Promise<CaptureImageSource> {
+    await this.init(); const tab = this.active(); const contents = this.ensureView(tab).webContents;
+    const image = await contents.capturePage(); const size = image.getSize();
+    if (image.isEmpty() || !size.width || !size.height) throw Error('当前网页无法截图。');
+    return { dataUrl: image.toDataURL(), width: size.width, height: size.height, title: tab.title, url: tab.url };
+  }
+  async selectedText(): Promise<string> {
+    await this.init(); if (!this.visible) return '';
+    const tab = this.active(); const contents = this.ensureView(tab).webContents; const url = contents.getURL();
+    const text: unknown = await contents.mainFrame.executeJavaScript(`(()=>{const e=document.activeElement;if(e instanceof HTMLInputElement&&e.type==='password')return '';if((e instanceof HTMLInputElement||e instanceof HTMLTextAreaElement)&&typeof e.selectionStart==='number'&&typeof e.selectionEnd==='number')return e.value.slice(e.selectionStart,e.selectionEnd).slice(0,32768);return String(window.getSelection()).slice(0,32768)})()`);
+    if (contents.isDestroyed() || contents.getURL() !== url || typeof text !== 'string') return '';
+    return Buffer.from(text, 'utf8').subarray(0, 32768).toString('utf8').replace(/\uFFFD$/u, '').trim();
+  }
+  async saveScreenshot(bytes: Uint8Array, filename: string): Promise<void> {
+    await this.init(); if (!this.capture) throw Error('资产采集服务不可用。');
+    const result = await this.capture.saveBytes(undefined, undefined, { bytes, filename, contentType: 'image/png' });
+    if (!result.ok) throw Error(result.error);
+    if (!result.jobId) throw Error('截图未开始保存，请重试。');
+    await this.capture.waitForJob(result.jobId);
   }
   async captureContent(event: Electron.IpcMainInvokeEvent, input: unknown): Promise<BrowserCaptureContentResponse> {
     try {
@@ -241,13 +282,23 @@ export class BrowserService {
       if (params.srcURL && (isBrowserUrl(params.srcURL) || params.srcURL.startsWith('blob:'))) items.push({ label: '下载此内容', click: () => contents.downloadURL(params.srcURL) });
       if (params.isEditable) items.push({ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' });
       else if (params.selectionText) items.push({ label: '复制', click: () => contents.copy() });
+      if (params.formControlType !== 'input-password' && params.selectionText.trim() && this.onSelection) items.push({ label: 'AI 划词助手', click: () => { void this.onSelection!(params.selectionText).catch(error => this.reportPageError(error)); } });
       items.push({ type: 'separator' }, { label: '后退', enabled: contents.navigationHistory.canGoBack(), click: () => contents.navigationHistory.goBack() }, { label: '前进', enabled: contents.navigationHistory.canGoForward(), click: () => contents.navigationHistory.goForward() }, { label: '重新加载', click: () => contents.reload() }, { label: '检查页面', click: () => contents.inspectElement(params.x, params.y) });
       const popup = async () => {
         const frame = params.frame ?? contents.mainFrame;
-        if (this.capture && params.srcURL && ['image', 'video'].includes(params.mediaType) && /^https?:\/\//.test(params.srcURL)) {
-          try { const captureItems = await this.capture.contextMenu({ tabId: tab.id, contents, frame, sourcePageUrl: /^https?:\/\//.test(frame.url) ? frame.url : contents.getURL() }, params.mediaType as 'image' | 'video', params.srcURL);
+        if (this.capture && params.srcURL && ['image', 'video', 'audio'].includes(params.mediaType) && /^https?:\/\//.test(params.srcURL)) {
+          try { const captureItems = await this.capture.contextMenu({ tabId: tab.id, contents, frame, sourcePageUrl: /^https?:\/\//.test(frame.url) ? frame.url : contents.getURL() }, params.mediaType as 'image' | 'video' | 'audio', params.srcURL);
             items.unshift(...captureItems, { type: 'separator' }); }
           catch { items.unshift({ label: '资产采集暂不可用', enabled: false }); }
+        }
+        if (this.capture && /^https?:\/\//.test(frame.url)) {
+          const source = { tabId: tab.id, contents, frame, sourcePageUrl: frame.url };
+          const documentSave = (kind: 'page' | 'text') => { void this.saveDocument(source, kind).then(result => { if (!result.ok) this.reportPageError(Error(result.error)); }).catch(error => this.reportPageError(error)); };
+          items.unshift({ label: '保存当前网页到资产库', click: () => documentSave('page') });
+          if (params.selectionText.trim()) items.unshift({ label: '保存选中文字到资产库', click: () => documentSave('text') });
+          if (params.linkURL && /^https?:\/\//.test(params.linkURL)) {
+            try { const files = await this.capture.contextMenu(source, 'file', params.linkURL); items.unshift(...files); } catch { /* Ordinary page links may not be downloadable files. */ }
+          }
         }
         if (!contents.isDestroyed() && !owner.isDestroyed() && !frame.isDestroyed()) Menu.buildFromTemplate(items).popup({ window: owner });
       };
@@ -456,22 +507,25 @@ export class BrowserService {
   }
 }
 
-export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks): { shutdown(): Promise<void>; closeLibrary(libraryId: string): void } {
+export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>): { shutdown(): Promise<void>; closeLibrary(libraryId: string): void; captureViewport(): Promise<CaptureImageSource>; selectedText(): Promise<string>; saveScreenshot(bytes: Uint8Array, filename: string): Promise<void> } {
   let browser: BrowserService | undefined;
   ipcMain.handle(BROWSER_REQUEST, async (event, input: unknown): Promise<BrowserResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问浏览器。' };
     const request = browserRequestSchema.safeParse(input); if (!request.success) return { ok: false, error: '无效的浏览器请求。' };
-    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks)).handle(request.data); }
+    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).handle(request.data); }
     catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
   });
   ipcMain.handle(BROWSER_CAPTURE_REQUEST, async (event, input: unknown): Promise<BrowserCaptureResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问资产采集。' };
     const parsed = browserCaptureRequestSchema.safeParse(input); if (!parsed.success) return { ok: false, error: '无效的采集请求。' };
-    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks)).captureRequest(parsed.data); }
+    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).captureRequest(parsed.data); }
     catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
   });
   ipcMain.handle(BROWSER_CAPTURE_CONTENT_REQUEST, (event, input: unknown): Promise<BrowserCaptureContentResponse> | BrowserCaptureContentResponse => {
     if (!browser) return { ok: false, code: 'unavailable', error: '浏览器尚未启动。' }; return browser.captureContent(event, input);
   });
-  return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId) };
+  return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId),
+    captureViewport: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).captureViewport(),
+    selectedText: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).selectedText(),
+    saveScreenshot: (bytes, filename) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).saveScreenshot(bytes, filename) };
 }

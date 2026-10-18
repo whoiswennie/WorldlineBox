@@ -1,0 +1,36 @@
+const zh = {
+  title: '截图工作台', select: '拖动选择截图区域', selectHelp: '拖动框选区域，或直接使用整个页面可见区域。Esc 取消。',
+  full: '使用整个可见区域', confirm: '编辑选区', close: '关闭截图', crop: '重选区域',
+  pen: '画笔', highlight: '荧光笔', arrow: '箭头', rect: '矩形', ellipse: '椭圆', text: '文字', redact: '遮盖', mosaic: '马赛克',
+  color: '标注颜色', size: '笔画粗细', fontSize: '文字大小', textPlaceholder: '输入文字，然后在图上点击放置',
+  textHelp: '输入文字后，点击截图放置；支持换行。', undo: '撤销', redo: '重做', reset: '清除标注', zoom: '缩放', fit: '适应窗口',
+  copy: '复制图片', save: '保存到资源库', copied: '已复制截图', saved: '截图已保存到资源库',
+  currentImage: '截图编辑画布', dimensions: '截图尺寸', loading: '正在准备截图…', failed: '截图加载失败，请关闭后重试。',
+  editHelp: '拖动绘制标注。遮盖与马赛克会作为图片像素导出。Ctrl/Cmd+Z 撤销，Ctrl/Cmd+Shift+Z 重做。',
+  limit: '标注已达上限，请撤销或清除一些标注。',
+  chat: '问问这张图', chatToggle: '图片问答', chatHint: '发送时会把当前编辑后的截图交给全局模型；对话仅保留在本次截图中。',
+  chatUnavailable: '请先在设置中配置全局 LLM 服务。', chatNoVision: '当前模型未启用图片输入，请在全局模型设置中选择支持视觉的模型。',
+  chatUnknown: '图片输入能力尚未确认，服务不支持时会显示原因。', chatPrompt: '关于这张截图，想问什么？',
+  ask: '发送', asking: '正在分析图片…', stop: '停止回答', clearChat: '清空对话', user: '你', assistant: '模型',
+  cancelled: '已停止回答', emptyAnswer: '模型没有返回文字，请重试。', questionLimit: '本次对话已达 20 轮，请清空后继续。',
+  questionTooLong: '问题最多 4000 个字符。', viewport: '可见页面',
+};
+const en: typeof zh = {
+  title: 'Screenshot studio', select: 'Drag to select an area', selectHelp: 'Drag to select a region, or use the entire visible page. Press Esc to cancel.',
+  full: 'Use visible page', confirm: 'Edit selection', close: 'Close screenshot', crop: 'Select another area',
+  pen: 'Pen', highlight: 'Highlighter', arrow: 'Arrow', rect: 'Rectangle', ellipse: 'Ellipse', text: 'Text', redact: 'Redact', mosaic: 'Mosaic',
+  color: 'Annotation color', size: 'Stroke width', fontSize: 'Text size', textPlaceholder: 'Type text, then click the image to place it',
+  textHelp: 'Type text, then click the screenshot to place it. Multiple lines are supported.', undo: 'Undo', redo: 'Redo', reset: 'Clear annotations', zoom: 'Zoom', fit: 'Fit',
+  copy: 'Copy image', save: 'Save to library', copied: 'Screenshot copied', saved: 'Screenshot saved to library',
+  currentImage: 'Screenshot editing canvas', dimensions: 'Image dimensions', loading: 'Preparing screenshot…', failed: 'Could not load the screenshot. Close and try again.',
+  editHelp: 'Drag to annotate. Redaction and mosaic are flattened into exported image pixels. Ctrl/Cmd+Z to undo; Ctrl/Cmd+Shift+Z to redo.',
+  limit: 'Annotation limit reached. Undo or clear some annotations.',
+  chat: 'Ask about this image', chatToggle: 'Image Q&A', chatHint: 'Each question sends the currently edited image to your global model. This conversation lasts only for this screenshot.',
+  chatUnavailable: 'Configure a global LLM service in Settings first.', chatNoVision: 'Image input is disabled for this model. Choose a vision model in global model settings.',
+  chatUnknown: 'Image support is not confirmed. An unsupported service will report its reason.', chatPrompt: 'What would you like to know about this screenshot?',
+  ask: 'Send', asking: 'Analyzing image…', stop: 'Stop response', clearChat: 'Clear conversation', user: 'You', assistant: 'Model',
+  cancelled: 'Response stopped', emptyAnswer: 'The model returned no text. Please retry.', questionLimit: 'This conversation reached 20 rounds. Clear it to continue.',
+  questionTooLong: 'Questions may contain up to 4,000 characters.', viewport: 'Visible page',
+};
+export type ScreenshotMessageKey = keyof typeof zh;
+export const screenshotMessages = { 'zh-CN': zh, en };

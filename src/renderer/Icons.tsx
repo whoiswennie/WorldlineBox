@@ -1,6 +1,21 @@
 import { type ReactNode } from "react";
 
 export type IconName =
+  | "pen-tool"
+  | "highlighter"
+  | "arrow-up-right"
+  | "rectangle"
+  | "ellipse"
+  | "redact"
+  | "pixelate"
+  | "crop"
+  | "redo"
+  | "sparkles"
+  | "scan-text"
+  | "languages"
+  | "send"
+  | "camera"
+  | "video"
   | "users"
   | "message-circle"
   | "activity"
@@ -83,6 +98,21 @@ export type IconName =
   | "align-right";
 
 const iconPaths: Record<IconName, ReactNode> = {
+  "pen-tool": <><path d="m15.5 4.5 4 4M4 20l4.6-1 12-12a2.8 2.8 0 0 0-4-4l-12 12L4 20Z" /><path d="m5.6 15.4 3 3M13 21h8" /></>,
+  highlighter: <><path d="m13 3 8 8-9 9H4v-8l9-9Z" /><path d="m9 7 8 8M4 12l8 8M4 16l4 4M3 22h7" /></>,
+  "arrow-up-right": <><path d="M5 19 19 5M8 5h11v11" /></>,
+  rectangle: <><rect x="3.5" y="5" width="17" height="14" rx="2" /><path d="M3.5 9v6M20.5 9v6" /></>,
+  ellipse: <ellipse cx="12" cy="12" rx="9" ry="7" />,
+  redact: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 10h10M7 14h10" strokeWidth="3" /></>,
+  pixelate: <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18M15 3v18M3 9h18M3 15h18" /><path d="M9 9h6v6H9zM3 3h6v6H3zM15 15h6v6h-6z" fill="currentColor" stroke="none" opacity=".16" /></>,
+  crop: <><path d="M6 3v13a2 2 0 0 0 2 2h13M3 6h13a2 2 0 0 1 2 2v13" /><path d="M9 3v3M18 15h3" /></>,
+  redo: <><path d="m16 3 5 5-5 5M21 8H9a6 6 0 0 0 0 12h4" /></>,
+  sparkles: <><path d="m12 3 2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6L12 3Z" /><path d="M20 2v4M18 4h4M3 18v4M1 20h4" /></>,
+  "scan-text": <><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 8h10M7 12h10M7 16h6" /></>,
+  languages: <><path d="M3 5h12M9 3v2M5 5c1 6 5 9 9 10M13 5c-1 5-4 8-9 10M13 21l4-10 4 10M14.5 18h5" /></>,
+  send: <><path d="m21 3-7 18-4-7-7-4L21 3ZM10 14 21 3" /></>,
+  camera: <><path d="M14 4h-4L8 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-4Z" /><circle cx="12" cy="13" r="4" /></>,
+  video: <><rect x="2" y="5" width="14" height="14" rx="2" /><path d="m16 10 6-4v12l-6-4Z" /></>,
   users: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M22 21v-2a4 4 0 0 0-3-3.87" /><circle cx="9" cy="7" r="4" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>,
   'message-circle': <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z" />,
   music: <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>,
@@ -596,6 +626,11 @@ export function Icon({ name, size = 16, color }: { name: IconName; size?: number
       viewBox="0 0 24 24"
       width={size}
       height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
     >
       {iconPaths[name]}
     </svg>

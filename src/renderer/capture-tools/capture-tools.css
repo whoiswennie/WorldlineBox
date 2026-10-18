@@ -1,0 +1,58 @@
+.capture-tools-settings { display: flex; flex-direction: column; gap: 20px; min-width: 0; padding: 4px 0; color: var(--ui-content-primary); }
+.capture-tools-settings fieldset, .capture-recorder fieldset { display: flex; flex-direction: column; gap: 15px; min-width: 0; padding: 0; margin: 0; border: 0; }
+.capture-tools-settings legend { padding: 0 0 14px; color: var(--ui-content-primary); font-size: 13px; font-weight: 600; }
+.capture-tools-muted { margin: 0; color: var(--ui-content-secondary); font-size: 12px; line-height: 1.75; overflow-wrap: anywhere; }
+.capture-tools-error { margin: 0; padding: 10px 12px; border-radius: 8px; color: var(--ui-status-danger-content); background: var(--ui-status-danger-surface); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.capture-shortcut-row { display: flex; flex-direction: column; gap: 5px; }
+.capture-shortcut-row small { color: var(--ui-content-tertiary); font-size: 11px; }
+.capture-shortcut-row small.is-error { color: var(--ui-status-danger-content); }
+.capture-shortcut-row .ui-field-control { font-family: var(--font-mono, monospace); }
+.capture-option { display: flex; align-items: center; gap: 9px; color: var(--ui-content-primary); font-size: 12px; line-height: 1.6; }
+.capture-option input { accent-color: var(--ui-content-accent); margin: 0; flex-shrink: 0; }
+.capture-tools-location { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; min-width: 0; padding: 12px; border: 1px solid var(--ui-border-subtle); border-radius: 9px; font-size: 12px; }
+.capture-tools-location > strong { flex-basis: 100%; font-size: 12px; }
+.capture-tools-location > span { flex: 1; min-width: 100px; overflow-wrap: anywhere; color: var(--ui-content-secondary); font-size: 11px; }
+.capture-tools-actions { display: flex; justify-content: flex-end; align-items: center; gap: 9px; }
+.capture-tools-window { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; min-width: 0; overflow: hidden; color: var(--ui-content-primary); background: var(--ui-surface-raised); }
+.capture-tools-window > header { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-shrink: 0; padding: 14px 20px; border-bottom: 1px solid var(--ui-border-subtle); -webkit-app-region: drag; }
+.capture-tools-window > header > div { display: flex; gap: 9px; align-items: center; }
+.capture-tools-window > header button { -webkit-app-region: no-drag; }
+.capture-tools-window h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.capture-tools-source-picker { padding: 0 20px 20px; }
+.capture-tools-source-picker > header { margin: 0 -20px 20px; }
+.capture-tools-source-picker > section { display: flex; flex-direction: column; align-items: stretch; gap: 18px; max-width: 900px; width: 100%; margin: auto; padding: 15px; overflow: auto; }
+.capture-source-image { display: block; max-width: 100%; max-height: 65vh; object-fit: contain; border-radius: 9px; }
+.capture-recorder-body { display: flex; flex-direction: column; gap: 16px; flex: 1; min-height: 0; overflow-y: auto; padding: 20px; }
+.capture-recording-status { display: flex; align-items: center; gap: 8px; color: var(--ui-content-secondary); font-size: 12px; }
+.capture-recording-status > span { width: 8px; height: 8px; border-radius: 50%; background: var(--ui-content-tertiary); }
+.capture-recording-status > strong { font-size: 12px; font-weight: 500; }
+.capture-recording-status time { margin-left: auto; color: var(--ui-content-primary); font-size: 23px; font-variant-numeric: tabular-nums; font-family: var(--font-mono, monospace); }
+.capture-recording-status.is-recording > span { background: #e84953; box-shadow: 0 0 0 4px #e849531c; }
+.capture-recording-status.is-saved > span { background: var(--ui-status-success-content); }
+.capture-source-heading { display: flex; align-items: flex-end; gap: 8px; }
+.capture-source-heading > .ui-field { flex: 1; min-width: 0; }
+.capture-source-preview { position: relative; min-height: 100px; overflow: hidden; border: 1px solid var(--ui-border-subtle); border-radius: 8px; background: #101318; touch-action: none; user-select: none; }
+.capture-source-preview.is-selecting { cursor: crosshair; }
+.capture-source-preview img { display: block; width: 100%; pointer-events: none; }
+.capture-source-placeholder { aspect-ratio: 16 / 9; }
+.capture-region-picker { display: flex; flex-direction: column; gap: 10px; }
+.capture-region-picker > .ui-button { align-self: flex-start; }
+.capture-region-box { position: absolute; border: 2px solid #8faaff; background: #6487f72b; box-shadow: 0 0 0 9999px #0005; pointer-events: none; }
+.capture-region-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.capture-region-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 10px; color: var(--ui-content-secondary); }
+.capture-region-fields input { min-width: 0; width: 100%; padding: 6px; border: 1px solid var(--ui-border-subtle); border-radius: 6px; color: var(--ui-content-primary); background: var(--ui-surface-field); font: inherit; font-size: 12px; }
+.capture-recording-options { display: flex; align-items: center; gap: 20px; padding-top: 3px; }
+.capture-recording-options > .ui-field { flex: 1; }
+.capture-recording-options > div:last-child { display: flex; flex-direction: column; gap: 10px; }
+.capture-recorder > footer { flex-shrink: 0; padding: 13px 20px; border-top: 1px solid var(--ui-border-subtle); }
+.capture-recorder [hidden] { display: none !important; }
+.capture-recording-audio { display: flex; align-items: center; gap: 15px; color: var(--ui-content-secondary); font-size: 11px; }
+.capture-recording-audio > span { display: inline-flex; align-items: center; gap: 5px; }
+.capture-recorder.is-active .capture-recorder-body { gap: 10px; padding: 12px 18px; }
+.capture-recorder.is-active > header { padding: 9px 16px; }
+.capture-recorder.is-active h1 { font-size: 13px; }
+.capture-recorder.is-active > footer { padding: 10px 16px; }
+.capture-long-controls > header { padding: 12px 16px; }
+.capture-long-controls > header span { color: var(--ui-content-secondary); font-size: 11px; }
+.capture-long-controls > p { padding: 0 16px; margin-top: 10px; font-size: 11px; }
+.capture-long-controls > footer { padding: 13px 16px; margin-top: auto; flex-wrap: wrap; }

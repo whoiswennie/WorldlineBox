@@ -32,6 +32,7 @@ import type { WorldlineBoxPluginManagerApi } from "../shared/plugin-manager-api"
 import type { WorldlineBoxMcpSettingsApi } from "../shared/mcp";
 import { DialogShell } from "./ui/patterns";
 import { MusicSettingsSlot } from './music/MusicProvider';
+import { CaptureToolsSettingsPage } from './capture-tools/CaptureToolsSettingsPage';
 import { UserProfileSettingsPage } from './UserProfileSettingsPage';
 
 export interface AppSettingsDialogProps {
@@ -313,6 +314,7 @@ export function AppSettingsDialog({
             ) : null}
             {!showingPluginSettings && activeCategory === "mcp" ? <McpSettingsPage api={mcpApi} onOpenAppLog={onOpenAppLog} /> : null}
             {!showingPluginSettings && activeCategory === "music" ? <MusicSettingsSlot /> : null}
+            {!showingPluginSettings && activeCategory === "capture-tools" ? <CaptureToolsSettingsPage /> : null}
             {!showingPluginSettings && !showingCommunity && activeCategory === "plugins" ? (
               <PluginSettingsPage
                 api={pluginApi}

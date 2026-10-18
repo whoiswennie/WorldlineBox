@@ -22,7 +22,7 @@ export function BrowserCaptureFolders({ folders, recentFolderIds, selectedFolder
   const recent = [...new Set(recentFolderIds)].flatMap(id => {
     const folder = byId.get(id);
     return folder ? [folder] : [];
-  }).slice(0, 6);
+  }).slice(0, 3);
   const search = query.trim().toLocaleLowerCase();
   const matches = search ? folders.filter(folder => (folder.relativePath || folder.name).toLocaleLowerCase().includes(search)) : [];
   const folderButton = (folderId: string | null, name: string, path: string) => <button

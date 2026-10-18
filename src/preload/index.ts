@@ -4,6 +4,8 @@ import { STARTUP_RENDERER_STATE_CHANNEL, type StartupRendererState } from '../sh
 import { appUpdate } from './bridge/app-update';
 import { dshLauncher } from './bridge/dsh-launcher';
 import { browser } from './bridge/browser';
+import { captureTools } from './bridge/capture-tools';
+import { CAPTURE_TOOLS_ARGUMENT } from '../shared/capture-tools';
 import { network } from './bridge/application-network';
 import { llm } from './bridge/llm';
 import { music } from './bridge/music';
@@ -25,7 +27,7 @@ import type { RendererRequest } from '../shared/protocol/requests';
 
 const e2eEnabled = process.env.WORLDLINEBOX_E2E === '1';
 
-if (!process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT)) {
+if (!process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT) && !process.argv.includes(CAPTURE_TOOLS_ARGUMENT)) {
   contextBridge.exposeInMainWorld('worldlineboxStartup', Object.freeze({
     notify(state: StartupRendererState): void {
       if (state === 'ready' || state === 'failed') ipcRenderer.send(STARTUP_RENDERER_STATE_CHANNEL, state);
@@ -72,13 +74,14 @@ const e2eDiagnostics = Object.freeze({
 
 contextBridge.exposeInMainWorld(
   'worldlinebox',
-  process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT) ? Object.freeze({ companionWorld }) : Object.freeze({
+  process.argv.includes(CAPTURE_TOOLS_ARGUMENT) ? Object.freeze({ captureTools }) : process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT) ? Object.freeze({ companionWorld }) : Object.freeze({
     library,
     shell,
     startup,
     appUpdate,
     dshLauncher,
     browser,
+    captureTools,
     network,
     llm,
     music,

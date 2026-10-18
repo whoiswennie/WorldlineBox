@@ -44,6 +44,9 @@ export const en = {
     failurePage: "Page {page} of {pages} · {count} records",
   },
   appNavigation: {
+    screenshot: "Screenshot",
+    recording: "Record screen",
+    selection: "Selection assistant",
     label: "Application sidebar",
     network: "Global network",
     modules: "Modules",
@@ -1388,6 +1391,7 @@ export const en = {
     categoryBrowse: "Browse",
     categoryAi: "Global model",
     categoryMusic: "Music",
+    categoryCaptureTools: "Global tools & shortcuts",
     categorySemanticSearch: "Semantic search",
     experimental: "Experimental",
     categoryMcp: "MCP",

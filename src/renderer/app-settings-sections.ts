@@ -41,6 +41,7 @@ export type AppSettingsCategoryId =
   | "browse"
   | "ai"
   | "music"
+  | "capture-tools"
   | "semantic-search"
   | "mcp"
   | "plugins"
@@ -63,6 +64,7 @@ export type AppSettingsCategory = {
     | "settings.categoryBrowse"
     | "settings.categoryAi"
     | "settings.categoryMusic"
+    | "settings.categoryCaptureTools"
     | "settings.categorySemanticSearch"
     | "settings.categoryMcp"
     | "settings.categoryPlugins"
@@ -107,6 +109,7 @@ export const APP_SETTINGS_CATEGORIES: readonly AppSettingsCategory[] = [
     labelKey: "settings.categoryMcp",
   },
   { id: "music", icon: "music", labelKey: "settings.categoryMusic" },
+  { id: "capture-tools", icon: "camera", labelKey: "settings.categoryCaptureTools" },
   {
     id: "plugins",
     icon: "box",

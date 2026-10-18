@@ -35,6 +35,9 @@ export const zhCN = {
     failurePage: "第 {page} / {pages} 页 · {count} 条记录",
   },
   appNavigation: {
+    screenshot: "截图",
+    recording: "录屏",
+    selection: "划词助手",
     label: "应用侧边栏",
     network: "全局网络",
     modules: "功能模块",
@@ -1369,6 +1372,7 @@ export const zhCN = {
     categoryBrowse: "浏览",
     categoryAi: "全局模型",
     categoryMusic: "音乐",
+    categoryCaptureTools: "全局工具与快捷键",
     categorySemanticSearch: "语义搜索",
     experimental: "实验性",
     categoryMcp: "MCP",

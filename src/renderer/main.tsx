@@ -47,7 +47,9 @@ applyFontSizePreferences(loadFontSizePreferences());
 const root = document.getElementById('root');
 const App = lazy(() => import('./Application').then(module => ({ default: module.App })));
 const WorldWindow = lazy(() => import('./companions/world/CompanionWorldWindow').then(module => ({ default: module.CompanionWorldWindow })));
+const CaptureWindow = lazy(() => import('./capture-tools/CaptureToolsWindow').then(module => ({ default: module.CaptureToolsWindow })));
 const observer = new URLSearchParams(window.location.search).get('window') === 'companion-world';
+const captureWindow = new URLSearchParams(window.location.search).get('window') === 'capture-tools';
 
 if (!root) {
   throw new Error('Renderer root element is missing.');
@@ -66,7 +68,7 @@ applicationRoot.render(
             <RadiusProvider>
             <MenuAcrylicProvider>
               <InspectorCardFeelProvider>
-                <StartupBoundary><Suspense fallback={observer ? <StartupScreen title="正在打开伙伴世界" compact /> : null}><RendererReady>{observer ? <WorldWindow /> : <App />}</RendererReady></Suspense></StartupBoundary>
+                <StartupBoundary><Suspense fallback={observer || captureWindow ? <StartupScreen title={captureWindow ? '正在打开屏幕工具' : '正在打开伙伴世界'} compact /> : null}><RendererReady>{captureWindow ? <CaptureWindow /> : observer ? <WorldWindow /> : <App />}</RendererReady></Suspense></StartupBoundary>
               </InspectorCardFeelProvider>
             </MenuAcrylicProvider>
             </RadiusProvider>

@@ -117,7 +117,7 @@ test('the built-in browser captures authenticated media into real libraries and 
       .toEqual({ require: 'undefined', process: 'undefined', bridge: 'undefined' });
     await capture(page, { type: 'preferences.save', preferences: { notificationsEnabled: false, focusAppAfterSave: false, revealInLibrary: false, dragRadialMenuEnabled: true } });
     await page.getByRole('button', { name: '保存到资产库', exact: true }).click();
-    await expect(page.getByText('已内置 · 无需安装扩展', { exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: '保存', exact: true })).toBeVisible();
     await capture(page, { type: 'target.set', target: { libraryId: fixture.libraryId, folderId: fixture.childId } });
     const save = async (url: string, kind: 'image' | 'video' = 'image') => {
       const result = await capture(page, { type: 'save', kind, mediaUrl: url });

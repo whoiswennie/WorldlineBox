@@ -10,6 +10,10 @@ import { APPLICATION_NETWORK_REQUEST } from '../shared/application-network';
 import type { CompanionService } from './companions/service';
 import { CompanionWorldWindowManager } from './companions/world-windows';
 import type { MusicService } from './music/service';
+import type { CaptureToolsService } from './capture-tools/service';
+import type { BrowserService } from './browser/service';
+import { importCapturedFile } from './browser/import-staged';
+import { parseLinkedVirtualFolderId } from '../shared/linked-folder-tree';
 import { COMPANIONS_CHANNEL } from '../shared/companions';
 import { DSH_LAUNCHER_CHANNEL } from '../shared/dsh-launcher';
 import { spawn } from "node:child_process";
@@ -555,7 +559,8 @@ let mainWindow: BrowserWindow | undefined;
 let dshLauncher: DshLauncher | undefined;
 let closeGlobalNetwork: (() => Promise<void>) | undefined;
 let disposeGlobalNetworkIpc: (() => void) | undefined;
-let browserService: { shutdown(): Promise<void>; closeLibrary(libraryId: string): void } | undefined;
+let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot'> | undefined;
+let captureToolsService: CaptureToolsService | undefined;
 let musicService: MusicService | undefined;
 let companionService: CompanionService | undefined;
 let companionWorldWindows: CompanionWorldWindowManager | undefined;
@@ -1442,6 +1447,7 @@ function saveAiConfig(config: AiConfig): void {
   toSave.disclaimerAccepted = config.disclaimerAccepted;
   writeFileSync(aiConfigPath(), JSON.stringify(toSave, null, 2), "utf-8");
   companionService?.configurationChanged();
+  captureToolsService?.configurationChanged();
 }
 
 function getDecryptedApiKey(): string {
@@ -1456,6 +1462,7 @@ function getDecryptedApiKey(): string {
 function saveEncryptedApiKey(apiKey: string): void {
   const encrypted = safeStorage.encryptString(apiKey);
   writeFileSync(aiKeyPath(), encrypted);
+  captureToolsService?.configurationChanged();
 }
 
 function focusMainWindow(): boolean {
@@ -2098,16 +2105,26 @@ const browserCaptureHooks: BrowserCaptureHooks = {
     const target = input.target;
     const targetWindowId = browserCaptureLibraryOwner(target.libraryId);
     if (targetWindowId === null) throw Error('目标资源库所在窗口已切换或关闭，请重新选择采集目标。');
-    const result = await workerClient.request({ type: 'extension.save-from-file', libraryId: target.libraryId,
-      targetFolderId: target.folderId ?? undefined, sourcePageUrl: input.sourcePageUrl, mediaUrl: input.mediaUrl,
-      stagedFilePath: input.stagedFilePath, contentType: input.contentType, filename: input.filename });
-    if (!result.ok) throw Error(result.error.message);
-    if (result.type !== 'extension.asset-saved') throw Error('资产管理器返回了无效的采集结果。');
+    const asset = await importCapturedFile(input, command => workerClient!.request(command));
     if (input.preferences.focusAppAfterSave) focusWorldlineBoxWindow(targetWindowId);
     if (input.preferences.revealInLibrary) publishExtensionSaveCompleted(targetWindowId,
-      { type: 'extension.save.completed', libraryId: target.libraryId, asset: result.asset });
-    void enqueueAutoAnalyzeAfterImport(target.libraryId, [result.asset.assetId]);
-    return { assetId: result.asset.assetId };
+      { type: 'extension.save.completed', libraryId: target.libraryId, asset });
+    void enqueueAutoAnalyzeAfterImport(target.libraryId, [asset.assetId]);
+    return { assetId: asset.assetId };
+  },
+  async createFolder({ target, name }) {
+    if (!workerClient || applicationQuitting || browserCaptureLibraryOwner(target.libraryId) === null) throw Error('目标资源库不可用，请重新选择。');
+    const targets = await browserCaptureHooks.listTargets(target.libraryId);
+    if (!targets.libraries.some(library => library.libraryId === target.libraryId)) throw Error('目标资源库不可写。');
+    const parent = target.folderId ? targets.folders.find(folder => folder.folderId === target.folderId) : undefined;
+    if (target.folderId && (!parent || !parent.available)) throw Error('目标文件夹不可用。');
+    const linked = parent?.kind === 'linked' ? parseLinkedVirtualFolderId(parent.folderId) ?? { linkedFolderId: parent.folderId, relativePath: '' } : undefined;
+    const result = await workerClient.request(linked ? { type: 'linked-folder.create-directory', libraryId: target.libraryId,
+      linkedFolderId: linked.linkedFolderId, relativePath: linked.relativePath, name }
+      : { type: 'folder.create', libraryId: target.libraryId, parentFolderId: target.folderId ?? undefined, name });
+    if (!result.ok) throw Error(result.error.message);
+    if (result.type !== 'folder.created' && result.type !== 'linked-folder.directory-created') throw Error('文件夹未创建，请重试。');
+    return result.folder.folderId;
   },
   openAssets() { mainWindow?.webContents.send(BROWSER_CAPTURE_OPEN_ASSETS); },
 };
@@ -4096,7 +4113,26 @@ async function startApplication(): Promise<void> {
     });
   }
   const { registerBrowserIpc } = await import('./browser/service');
-  browserService = registerBrowserIpc(() => mainWindow, browserCaptureHooks);
+  browserService = registerBrowserIpc(() => mainWindow, browserCaptureHooks, async text => { if (!captureToolsService) throw Error('划词助手暂不可用。'); await captureToolsService.openSelection(text); });
+  try {
+    const { CaptureToolsService: ToolsService } = await import('./capture-tools/service');
+    captureToolsService = new ToolsService({ getMainWindow: () => mainWindow ?? null,
+      preloadPath: path.join(__dirname, 'index.js'),
+      getModelConfig: () => { const config = loadAiConfig(); return { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: config.hasKey ? getDecryptedApiKey() : '' }; },
+      saveToLibrary: (bytes, filename) => browserService!.saveScreenshot(bytes, filename),
+      captureBrowser: () => browserService!.captureViewport(),
+      readBrowserSelection: () => browserService!.selectedText(),
+      downloadPath: process.env.WORLDLINEBOX_E2E === '1' && process.env.WORLDLINEBOX_E2E_CAPTURE_DOWNLOAD_PATH ? process.env.WORLDLINEBOX_E2E_CAPTURE_DOWNLOAD_PATH : path.join(app.getPath('downloads'), 'WorldlineBox'),
+      getFfmpeg: () => resolveHostMediaBinaries()?.ffmpegPath,
+      loadWindow: async window => {
+        attachRendererDiagnostics(window);
+        if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+          const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL); url.searchParams.set('window', 'capture-tools'); await window.loadURL(url.toString());
+        } else await window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`), { query: { window: 'capture-tools' } });
+      },
+    });
+    await captureToolsService.init(); captureToolsService.registerIpc();
+  } catch (error) { logger.error('capture-tools.initialization', error); }
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
@@ -6694,7 +6730,7 @@ if (!hasSingleInstanceLock) {
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !browserService && !dshLauncher && !musicService && !companionService && !closeGlobalNetwork)) return;
+    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !browserService && !captureToolsService && !dshLauncher && !musicService && !companionService && !closeGlobalNetwork)) return;
     event.preventDefault();
     if (applicationShutdownPromise) return;
 
@@ -6717,10 +6753,11 @@ if (!hasSingleInstanceLock) {
         dshLauncher?.shutdown(),
         musicService?.flush(),
         companionService?.shutdown(),
+        captureToolsService?.shutdown(),
       ]);
       for (const [index, result] of results.entries()) {
         if (result.status !== "rejected") continue;
-        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown"][index]
+        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown", "capture-tools.shutdown"][index]
           ?? "application.shutdown.close";
         logger?.error(source, result.reason, { reason: "application-quit" });
       }

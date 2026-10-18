@@ -29,6 +29,7 @@ export function ApplicationShell({
   onOpenSettings,
   settingsOpen = false,
   settingsDisabled = false,
+  tools,
 }: {
   readonly modules: readonly ApplicationModule[];
   readonly activeModuleId: string;
@@ -36,6 +37,7 @@ export function ApplicationShell({
   readonly onOpenSettings: () => void;
   readonly settingsOpen?: boolean;
   readonly settingsDisabled?: boolean;
+  readonly tools?: ReactNode;
 }) {
   const t = useT();
   const selectedId = modules.some((module) => module.id === activeModuleId)
@@ -80,6 +82,7 @@ export function ApplicationShell({
           ))}
         </nav>
         <div className="application-navigation-footer">
+          {tools}
           <button
             {...iconActionAttrs(t("toolbar.appSettings"))}
             aria-expanded={settingsOpen}

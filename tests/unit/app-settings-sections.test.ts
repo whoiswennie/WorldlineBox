@@ -39,6 +39,7 @@ describe("app-settings-sections (WorldlineBox-97l / WorldlineBox-9es / Worldline
       "semantic-search",
       "mcp",
       "music",
+      "capture-tools",
       "plugins",
       "sync",
     ]);

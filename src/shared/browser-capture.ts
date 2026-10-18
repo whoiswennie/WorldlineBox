@@ -6,10 +6,23 @@ export const BROWSER_CAPTURE_CONTENT_EVENT = 'worldlinebox:browser:capture:conte
 export const BROWSER_CAPTURE_OPEN_ASSETS = 'worldlinebox:browser:capture:open-assets';
 export const BROWSER_CAPTURE_MAX_BYTES = 500 * 1024 * 1024;
 export const BROWSER_CAPTURE_LOCAL_MAX_BYTES = 32 * 1024 * 1024;
+export const BROWSER_CAPTURE_HISTORY_LIMIT = 1000;
+export const BROWSER_CAPTURE_TEXT_MAX_BYTES = 4 * 1024 * 1024;
 
 const id = z.string().min(1).max(255);
 const folderId = z.string().min(1).max(4096);
 const url = z.string().min(1).max(8192);
+export const browserCaptureKindSchema = z.enum(['image', 'video', 'audio', 'file', 'text', 'page', 'screenshot']);
+export type BrowserCaptureKind = z.infer<typeof browserCaptureKindSchema>;
+export const browserCaptureRemoteKindSchema = z.enum(['image', 'video', 'audio', 'file']);
+export type BrowserCaptureRemoteKind = z.infer<typeof browserCaptureRemoteKindSchema>;
+const jobStatus = z.enum(['saving', 'saved', 'failed', 'cancelled']);
+// A name is one path component. In particular, the browser cannot escape a
+// selected folder or address Windows device names through folder creation.
+export const browserCaptureFolderNameSchema = z.string().trim().min(1).max(200)
+  // eslint-disable-next-line no-control-regex -- filesystem name validation
+  .refine(value => !/[<>:"/\\|?*\u0000-\u001f]/.test(value) && !/[. ]$/.test(value)
+    && value !== '.' && value !== '..' && !/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(value), '文件夹名称无效。');
 
 export const browserCapturePreferencesSchema = z.strictObject({
   notificationsEnabled: z.boolean(),
@@ -32,14 +45,19 @@ export const browserCaptureFolderSchema = z.strictObject({
 });
 export type BrowserCaptureFolder = z.infer<typeof browserCaptureFolderSchema>;
 export const browserCaptureJobSchema = z.strictObject({
-  id, tabId: id, target: browserCaptureTargetSchema, kind: z.enum(['image', 'video']),
-  status: z.enum(['saving', 'saved', 'failed', 'cancelled']),
+  id, tabId: id, target: browserCaptureTargetSchema, kind: browserCaptureKindSchema,
+  status: jobStatus,
   message: z.string().max(1000), filename: z.string().max(500).optional(),
   assetId: id.optional(), deduplicated: z.boolean().optional(),
   receivedBytes: z.number().int().nonnegative().optional(), totalBytes: z.number().int().nonnegative().optional(),
   startedAt: z.string().max(64), finishedAt: z.string().max(64).optional(),
 });
 export type BrowserCaptureJob = z.infer<typeof browserCaptureJobSchema>;
+export const browserCaptureHistorySchema = z.strictObject({
+  items: z.array(browserCaptureJobSchema).max(100), total: z.number().int().nonnegative(),
+  page: z.number().int().positive(), pageSize: z.number().int().min(1).max(100),
+});
+export type BrowserCaptureHistory = z.infer<typeof browserCaptureHistorySchema>;
 export const browserCaptureStateSchema = z.strictObject({
   connected: z.boolean(), libraries: z.array(browserCaptureLibrarySchema).max(100),
   activeLibraryId: id.nullable(), target: browserCaptureTargetSchema.nullable(),
@@ -54,15 +72,24 @@ export const browserCaptureRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }),
   z.strictObject({ type: z.literal('target.set'), target: browserCaptureTargetSchema }),
   z.strictObject({ type: z.literal('preferences.save'), preferences: browserCapturePreferencesSchema }),
-  z.strictObject({ type: z.literal('save'), kind: z.enum(['image', 'video']), mediaUrl: url,
+  z.strictObject({ type: z.literal('save'), kind: browserCaptureRemoteKindSchema, mediaUrl: url,
     tabId: id.optional(), target: browserCaptureTargetSchema.optional() }),
+  z.strictObject({ type: z.literal('text.save'), tabId: id.optional(), target: browserCaptureTargetSchema.optional() }),
+  z.strictObject({ type: z.literal('page.save'), tabId: id.optional(), target: browserCaptureTargetSchema.optional() }),
+  z.strictObject({ type: z.literal('folder.create'), target: browserCaptureTargetSchema, name: browserCaptureFolderNameSchema }),
+  z.strictObject({ type: z.literal('history.list'), page: z.number().int().positive().optional(),
+    pageSize: z.number().int().min(1).max(100).optional(), query: z.string().max(200).optional(),
+    status: jobStatus.optional(), kind: browserCaptureKindSchema.optional() }),
+  z.strictObject({ type: z.literal('history.clear') }),
   z.strictObject({ type: z.literal('cancel'), id }),
   z.strictObject({ type: z.literal('open-assets') }),
   z.strictObject({ type: z.literal('local.open') }),
+  z.strictObject({ type: z.literal('file.open') }),
 ]);
 export type BrowserCaptureRequest = z.infer<typeof browserCaptureRequestSchema>;
 export const browserCaptureResponseSchema = z.discriminatedUnion('ok', [
-  z.strictObject({ ok: z.literal(true), state: browserCaptureStateSchema, jobId: id.optional() }),
+  z.strictObject({ ok: z.literal(true), state: browserCaptureStateSchema, jobId: id.optional(),
+    folderId: folderId.optional(), history: browserCaptureHistorySchema.optional() }),
   z.strictObject({ ok: z.literal(false), error: z.string().max(1000), state: browserCaptureStateSchema.optional() }),
 ]);
 export type BrowserCaptureResponse = z.infer<typeof browserCaptureResponseSchema>;
