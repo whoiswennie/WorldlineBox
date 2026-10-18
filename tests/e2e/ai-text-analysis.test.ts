@@ -124,6 +124,7 @@ test('a TXT asset uses the global text-only model and refreshes its AI descripti
     });
     expect(toastErrors).toEqual([]); expect(analysis).toHaveLength(1);
     expect(readFileSync(path.join(libraryPath, 'Assets', 'project-note.txt'), 'utf8')).toBe(TEXT);
+    await expect(inspector.locator('.inspector-ai-analyzing')).toHaveCount(0, { timeout: 15000 });
     const png = await native.evaluate(async window => (await window.webContents.capturePage()).toPNG().toString('base64'));
     writeFileSync('.tools/test-output/ai-text-analysis-inspector.png', Buffer.from(png, 'base64'));
     const evidence = { realPackagedMainAndWorker: Boolean(process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE), actualTextOnlyHttpRequests: analysis.length,
