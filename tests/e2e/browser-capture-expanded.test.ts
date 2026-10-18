@@ -158,10 +158,13 @@ test('browser capture creates folders and imports real selected text, page snaps
       const result = await (globalThis as unknown as { worldlinebox: Bridge }).worldlinebox.library.readTextAsset(input);
       if (!result.ok) throw Error(result.error.message); return result.value.content;
     }, { libraryId, assetId: textJob.assetId! });
-    expect(selectedText).toContain('Selected words from the real web page.');
+    expect(selectedText).toBe('Selected words from the real web page.');
     expect(selectedText).not.toContain('Other paragraph is present only in the page snapshot.');
+    expect(textJob.filename).toContain('Selected words from the real web page');
+    expect(textJob.filename).not.toContain('Mixed capture fixture');
 
-    // A caller cannot supply invented selection text through the strict bridge.
+    // Editable text requires a Main-issued draft; it cannot be invented by a
+    // privileged caller that skips selection preparation.
     const spoofed = await shell.evaluate(async () => {
       try {
         const result = await (globalThis as unknown as { worldlinebox: Bridge }).worldlinebox.browser.capture({ type: 'text.save', text: 'invented privileged selection' } as unknown as BrowserCaptureRequest);
@@ -169,7 +172,7 @@ test('browser capture creates folders and imports real selected text, page snaps
       } catch (cause) { return { rejected: true, error: String(cause) }; }
     });
     expect(spoofed.rejected).toBe(true);
-    expect(spoofed.error).toMatch(/unrecognized_keys|无效/);
+    expect(spoofed.error).toMatch(/unrecognized_keys|无效|草稿|真实选区|draft/);
     const audioJob = await saved(shell, { type: 'save', kind: 'audio', mediaUrl: origin + '/protected.wav' });
     const documentJob = await saved(shell, { type: 'save', kind: 'file', mediaUrl: origin + '/protected.pdf' });
     const captured = await libraryAssets(shell, libraryId);
@@ -208,7 +211,7 @@ test('browser capture creates folders and imports real selected text, page snaps
       await web.evaluate(index => {
         document.title = 'HistorySnapshot-' + String(index).padStart(2, '0');
         const element = document.getElementById('selection')!;
-        element.textContent = 'Unique history fixture text ' + index;
+        element.textContent = 'HistorySnippet-' + String(index).padStart(2, '0') + ' unique selected words';
         const range = document.createRange(); range.selectNodeContents(element);
         const selected = window.getSelection(); selected?.removeAllRanges(); selected?.addRange(range);
       }, index);
@@ -222,13 +225,13 @@ test('browser capture creates folders and imports real selected text, page snaps
     await panel.getByRole('button', { name: '下一页', exact: true }).click();
     await expect(panel.locator('.capture-pagination')).toContainText('2 / 2');
     await expect(panel.locator('.capture-history-item')).toHaveCount(8);
-    await panel.getByRole('textbox', { name: '搜索文件名或消息', exact: true }).fill('HistorySnapshot-11');
+    await panel.getByRole('textbox', { name: '搜索文件名或消息', exact: true }).fill('HistorySnippet-11');
     await expect(panel.locator('.capture-history-item')).toHaveCount(1);
-    await expect(panel.locator('.capture-history-item')).toContainText('HistorySnapshot-11');
+    await expect(panel.locator('.capture-history-item')).toContainText('HistorySnippet-11');
     await testInfo.attach('capture-sidebar-history', { body: await panel.screenshot({ path: path.resolve('artifacts/capture-sidebar-history.png') }), contentType: 'image/png' });
-    const history = await capture(shell, { type: 'history.list', page: 1, pageSize: 10, query: 'HistorySnapshot-', status: 'saved' });
+    const history = await capture(shell, { type: 'history.list', page: 1, pageSize: 10, query: 'HistorySnippet-', status: 'saved' });
     expect(history.history?.total).toBe(12); expect(history.history?.items).toHaveLength(10);
-    const secondPage = await capture(shell, { type: 'history.list', page: 2, pageSize: 10, query: 'HistorySnapshot-', status: 'saved' });
+    const secondPage = await capture(shell, { type: 'history.list', page: 2, pageSize: 10, query: 'HistorySnippet-', status: 'saved' });
     expect(secondPage.history?.items).toHaveLength(2);
     await testInfo.attach('expanded-browser-capture-summary', { body: JSON.stringify({ managedFolderCreated: target.folderId, linkedFolderCreated: linkedCreated.folderId,
       pageAndSelectionReadFromRealDOM: true, nativeFilePicker: true, cookieAndRefererProtectedAudioAndPDF: authorised, boundedSearchableHistory: history.history?.total }), contentType: 'application/json' });

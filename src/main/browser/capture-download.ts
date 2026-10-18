@@ -114,14 +114,22 @@ async function validateCaptureFile(filename: string, head: Buffer, declared: str
 }
 /** Local snapshots never contain executable HTML or a page-supplied file path. */
 export async function stageCaptureBytes(options: { tempRoot: string; bytes: Uint8Array; filename: string; contentType: string;
-  kind: BrowserCaptureRemoteKind; signal: AbortSignal }): Promise<StagedBrowserCapture> {
+  kind: BrowserCaptureRemoteKind; signal: AbortSignal; literalText?: boolean }): Promise<StagedBrowserCapture> {
   if (!options.bytes.length || options.bytes.length > BROWSER_CAPTURE_LOCAL_MAX_BYTES) throw Error('本地内容超过 32 MiB 上限或为空。');
   const stagingDirectory = path.join(options.tempRoot, 'worldlinebox-browser-capture-' + randomUUID());
   const stagedFilePath = path.join(stagingDirectory, 'media'); let complete = false;
   try {
     options.signal.throwIfAborted(); await mkdir(stagingDirectory, { recursive: true });
     await writeFile(stagedFilePath, options.bytes, { flag: 'wx', mode: 0o600 });
-    const contentType = await validateCaptureFile(stagedFilePath, Buffer.from(options.bytes.subarray(0, 32)), options.contentType, options.kind);
+    let contentType: string;
+    if (options.literalText) {
+      // Only Main's selected-text save path sets this flag. Code snippets are
+      // inert UTF-8 .txt/.md assets even when their first word is HTML or MZ.
+      if (options.kind !== 'file' || !['text/plain', 'text/markdown'].includes(options.contentType) || !/\.(txt|md)$/iu.test(options.filename)
+        || options.bytes.length > BROWSER_CAPTURE_TEXT_MAX_BYTES) throw Error('选中文字必须保存为不超过 4 MiB 的纯文本。');
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(options.bytes);
+      if (text.includes('\0')) throw Error('文字包含无效字符。'); contentType = options.contentType;
+    } else contentType = await validateCaptureFile(stagedFilePath, Buffer.from(options.bytes.subarray(0, 32)), options.contentType, options.kind);
     options.signal.throwIfAborted(); complete = true;
     return { stagingDirectory, stagedFilePath, filename: alignCaptureFilename(safeCaptureFilename(options.filename), contentType), contentType, byteLength: options.bytes.length };
   } finally { if (!complete) await rm(stagingDirectory, { recursive: true, force: true }); }

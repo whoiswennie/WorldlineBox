@@ -7,6 +7,7 @@ import { formatBytes } from '../format-file-meta';
 import { useT } from '../i18n';
 import { Button, Select, TextField } from '../ui';
 import { BrowserCaptureFolders } from './BrowserCaptureFolders';
+import { BrowserCaptureTextSave } from './BrowserCaptureTextSave';
 
 import './capture-panel.css';
 
@@ -14,11 +15,12 @@ type CaptureTab = 'save' | 'history' | 'options';
 type HistoryStatus = '' | BrowserCaptureJob['status'];
 const HISTORY_PAGE_SIZE = 10;
 
-export function BrowserCapturePanel({ capture, run, onOpenAssets, onScreenshot }: {
+export function BrowserCapturePanel({ capture, run, onOpenAssets, onScreenshot, documentKey }: {
   capture?: BrowserCaptureState;
   run(request: BrowserCaptureRequest): Promise<BrowserCaptureResponse | undefined>;
   onOpenAssets?(): void;
   onScreenshot?(): void;
+  documentKey?: string;
 }) {
   const t = useT();
   const b = (key: string) => t('browser.' + key);
@@ -126,7 +128,7 @@ export function BrowserCapturePanel({ capture, run, onOpenAssets, onScreenshot }
         <div className="capture-action-grid">
           <button className="capture-action is-primary" disabled={busy || !onScreenshot} onClick={onScreenshot} type="button"><Icon name="camera" size={19} /><span>{b('captureScreenshot')}</span></button>
           {action('globe', 'capturePage', { type: 'page.save' })}
-          {action('type', 'captureSelectedText', { type: 'text.save' })}
+          <BrowserCaptureTextSave key={documentKey} disabled={saveDisabled} busy={busy} run={perform} />
           {action('file', 'captureLocalFile', { type: 'file.open' })}
         </div>
         <p className="capture-inline-hint">{b('captureMediaHint')}</p>

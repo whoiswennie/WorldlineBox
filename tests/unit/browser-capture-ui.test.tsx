@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import { BrowserCapturePanel } from '../../src/renderer/browser/BrowserCapturePanel';
 import { LocaleProvider } from '../../src/renderer/i18n';
-import { DEFAULT_BROWSER_CAPTURE_PREFERENCES, type BrowserCaptureRequest, type BrowserCaptureState } from '../../src/shared/browser-capture';
+import { DEFAULT_BROWSER_CAPTURE_PREFERENCES, type BrowserCaptureRequest, type BrowserCaptureResponse, type BrowserCaptureState } from '../../src/shared/browser-capture';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let host: HTMLDivElement;
@@ -30,7 +30,8 @@ function state(): BrowserCaptureState {
 }
 
 async function mount(capture = state(), locale: 'zh-CN' | 'en' = 'zh-CN') {
-  const run = vi.fn(async (request: BrowserCaptureRequest) => {
+  const run = vi.fn(async (request: BrowserCaptureRequest): Promise<BrowserCaptureResponse> => {
+    if (request.type === 'text.prepare') return { ok: true, state: capture, textDraft: { id: 'selected-draft', text: '用户实际选中的段落。', title: '用户实际选中的段落', pageTitle: '网页标题不作为正文', sourcePageUrl: 'https://example.com/page' } };
     if (request.type === 'history.list') {
       const matched = capture.jobs.filter(job => (!request.status || job.status === request.status) && (!request.query || (job.filename + job.message).includes(request.query)));
       const start = ((request.page ?? 1) - 1) * (request.pageSize ?? 10);
@@ -52,9 +53,9 @@ function button(label: string) {
   if (!found) throw Error('Missing button: ' + label);
   return found;
 }
-async function enter(input: HTMLInputElement, value: string) {
+async function enter(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(() => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+    Object.getOwnPropertyDescriptor(input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')!.set!.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
@@ -114,10 +115,56 @@ it('keeps screenshots and the asset-manager route available without a library', 
 
 it('routes media, page, selected text and common local files through typed native requests', async () => {
   const { run } = await mount();
-  for (const [label, type] of [['采集本地图片', 'local.open'], ['导入本地文件', 'file.open'], ['保存网页', 'page.save'], ['保存选中文字', 'text.save']] as const) {
+  for (const [label, type] of [['采集本地图片', 'local.open'], ['导入本地文件', 'file.open'], ['保存网页', 'page.save'], ['保存选中文字', 'text.prepare']] as const) {
     await act(() => button(label).click());
     expect(run).toHaveBeenLastCalledWith({ type });
   }
+});
+
+it('previews the real selected text and saves only explicitly confirmed edits', async () => {
+  const { run } = await mount();
+  await act(() => button('保存选中文字').click());
+  expect(run.mock.calls.some(([request]) => request.type === 'text.save')).toBe(false);
+  const preview = host.querySelector<HTMLElement>('[aria-label="选中文字预览"]')!;
+  const title = preview.querySelector<HTMLInputElement>('input')!;
+  const text = preview.querySelector<HTMLTextAreaElement>('textarea')!;
+  expect(title.value).toBe('用户实际选中的段落');
+  expect(text.value).toBe('用户实际选中的段落。');
+  expect(preview.querySelector('.capture-text-source')?.textContent).toContain('网页标题不作为正文');
+  await enter(title, '我的摘录');
+  await enter(text, '只保存这一段\n包括我补充的文字。');
+  await act(() => preview.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  expect(run).toHaveBeenLastCalledWith({ type: 'text.save', draftId: 'selected-draft', title: '我的摘录', text: '只保存这一段\n包括我补充的文字。' });
+  expect(host.querySelector('[aria-label="选中文字预览"]')).toBeNull();
+});
+
+it('preserves edited content on save failure and does not save blank text or cancelled previews', async () => {
+  const { run } = await mount();
+  await act(() => button('保存选中文字').click());
+  const text = host.querySelector<HTMLTextAreaElement>('.capture-text-content textarea')!;
+  await enter(text, '   ');
+  expect(button('保存文字').disabled).toBe(true);
+  await enter(text, '保留我的修改');
+  run.mockResolvedValueOnce({ ok: false, error: '网页已跳转，请重新选择文字。' });
+  await act(() => host.querySelector('.capture-text-preview form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  expect(text.value).toBe('保留我的修改');
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('网页已跳转');
+  const count = run.mock.calls.length;
+  await act(() => button('取消').click());
+  expect(host.querySelector('.capture-text-preview')).toBeNull();
+  expect(run.mock.calls).toHaveLength(count);
+});
+
+it('does not reopen a late selection preview after switching documents', async () => {
+  const capture = state();
+  const { run } = await mount(capture);
+  let resolve!: (response: BrowserCaptureResponse) => void;
+  run.mockImplementationOnce(() => new Promise<BrowserCaptureResponse>(done => { resolve = done; }));
+  await act(() => button('保存选中文字').click());
+  await act(() => root.render(<LocaleProvider initialPreference="zh-CN"><BrowserCapturePanel capture={capture} run={run} documentKey="different-document" /></LocaleProvider>));
+  await act(async () => { resolve({ ok: true, state: capture, textDraft: { id: 'old-draft', text: '来自旧网页', title: '旧选区', pageTitle: '旧网页', sourcePageUrl: 'https://example.com/old' } }); });
+  expect(host.querySelector('.capture-text-preview')).toBeNull();
+  expect(run.mock.calls.some(([request]) => request.type === 'text.save')).toBe(false);
 });
 
 it('keeps a bounded summary on Save and shows cancellable jobs only in History', async () => {

@@ -4,10 +4,13 @@ export const BROWSER_CAPTURE_REQUEST = 'worldlinebox:browser:capture:request';
 export const BROWSER_CAPTURE_CONTENT_REQUEST = 'worldlinebox:browser:capture:content:request';
 export const BROWSER_CAPTURE_CONTENT_EVENT = 'worldlinebox:browser:capture:content:event';
 export const BROWSER_CAPTURE_OPEN_ASSETS = 'worldlinebox:browser:capture:open-assets';
+export const BROWSER_CAPTURE_SELECTION_STATE = 'worldlinebox:browser:capture:selection-state';
 export const BROWSER_CAPTURE_MAX_BYTES = 500 * 1024 * 1024;
 export const BROWSER_CAPTURE_LOCAL_MAX_BYTES = 32 * 1024 * 1024;
 export const BROWSER_CAPTURE_HISTORY_LIMIT = 1000;
 export const BROWSER_CAPTURE_TEXT_MAX_BYTES = 4 * 1024 * 1024;
+const selectedText = z.string().max(BROWSER_CAPTURE_TEXT_MAX_BYTES)
+  .refine(value => new TextEncoder().encode(value).byteLength <= BROWSER_CAPTURE_TEXT_MAX_BYTES, '选中文字超过 4 MiB 上限。');
 
 const id = z.string().min(1).max(255);
 const folderId = z.string().min(1).max(4096);
@@ -67,6 +70,12 @@ export const browserCaptureStateSchema = z.strictObject({
   error: z.string().max(1000).optional(),
 });
 export type BrowserCaptureState = z.infer<typeof browserCaptureStateSchema>;
+export const browserCaptureTextDraftSchema = z.strictObject({ id, text: selectedText, title: z.string().min(1).max(180),
+  pageTitle: z.string().max(500), sourcePageUrl: url });
+export type BrowserCaptureTextDraft = z.infer<typeof browserCaptureTextDraftSchema>;
+// This private isolated-preload channel carries no selected text or page URL.
+// Main always re-reads the live frame before preparing a text draft.
+export const browserCaptureSelectionStateSchema = z.strictObject({ documentId: id, focused: z.boolean(), hasSelection: z.boolean() });
 
 export const browserCaptureRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }),
@@ -74,7 +83,10 @@ export const browserCaptureRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('preferences.save'), preferences: browserCapturePreferencesSchema }),
   z.strictObject({ type: z.literal('save'), kind: browserCaptureRemoteKindSchema, mediaUrl: url,
     tabId: id.optional(), target: browserCaptureTargetSchema.optional() }),
-  z.strictObject({ type: z.literal('text.save'), tabId: id.optional(), target: browserCaptureTargetSchema.optional() }),
+  z.strictObject({ type: z.literal('text.prepare'), tabId: id.optional() }),
+  z.strictObject({ type: z.literal('text.save'), tabId: id.optional(), target: browserCaptureTargetSchema.optional(), draftId: id.optional(),
+    text: selectedText.optional(), title: z.string().trim().min(1).max(180).optional() })
+    .refine(value => !!value.draftId || value.text === undefined && value.title === undefined, '请先读取真实选区，再编辑并保存。'),
   z.strictObject({ type: z.literal('page.save'), tabId: id.optional(), target: browserCaptureTargetSchema.optional() }),
   z.strictObject({ type: z.literal('folder.create'), target: browserCaptureTargetSchema, name: browserCaptureFolderNameSchema }),
   z.strictObject({ type: z.literal('history.list'), page: z.number().int().positive().optional(),
@@ -89,7 +101,7 @@ export const browserCaptureRequestSchema = z.discriminatedUnion('type', [
 export type BrowserCaptureRequest = z.infer<typeof browserCaptureRequestSchema>;
 export const browserCaptureResponseSchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(true), state: browserCaptureStateSchema, jobId: id.optional(),
-    folderId: folderId.optional(), history: browserCaptureHistorySchema.optional() }),
+    folderId: folderId.optional(), history: browserCaptureHistorySchema.optional(), textDraft: browserCaptureTextDraftSchema.optional() }),
   z.strictObject({ ok: z.literal(false), error: z.string().max(1000), state: browserCaptureStateSchema.optional() }),
 ]);
 export type BrowserCaptureResponse = z.infer<typeof browserCaptureResponseSchema>;

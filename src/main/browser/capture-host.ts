@@ -13,6 +13,7 @@ import {
 import { buildSaveMenuTree, sortFoldersForSaveMenu, type SaveMenuTreeFolder } from '../../../extension/folder-menu';
 import { atomicJson, readJson } from '../dsh/files';
 import { stageBrowserCapture, captureHttpUrl, readPickedCaptureImage, safeCaptureFilename, stageCaptureBytes, stagePickedCaptureFile, type StagedBrowserCapture } from './capture-download';
+import { browserTextTitle } from './text-selection';
 
 export interface BrowserCaptureTargets {
   libraries: BrowserCaptureLibrary[];
@@ -28,7 +29,7 @@ export interface BrowserCaptureHooks {
   createFolder?(input: { target: BrowserCaptureTarget; name: string }): Promise<string>;
   openAssets(): void;
 }
-export interface BrowserCaptureSource { tabId: string; contents: WebContents; frame: WebFrameMain; sourcePageUrl?: string }
+export interface BrowserCaptureSource { tabId: string; contents: WebContents; frame: WebFrameMain; sourcePageUrl?: string; isCurrent?(): boolean }
 const storedSchema = z.object({ preferences: browserCapturePreferencesSchema.default(DEFAULT_BROWSER_CAPTURE_PREFERENCES),
   target: browserCaptureTargetSchema.nullable().default(null), recent: z.record(z.string(), z.array(z.string().max(4096)).max(20)).default({}),
   history: z.array(browserCaptureJobSchema).max(BROWSER_CAPTURE_HISTORY_LIMIT + 4).catch([]).default([]) });
@@ -188,7 +189,7 @@ export class BrowserCaptureHost {
         const job = await this.start(source, target, request.kind, { mediaUrl: request.mediaUrl });
         return { ok: true, state: this.state(), jobId: job.id };
       }
-      if (request.type === 'page.save' || request.type === 'text.save') throw Error('请从活动网页采集当前内容。');
+      if (request.type === 'page.save' || request.type === 'text.save' || request.type === 'text.prepare') throw Error('请从活动网页采集当前内容。');
       await this.refresh(); this.environment.changed(); return { ok: true, state: this.state() };
     } catch (error) { this.error = (error instanceof Error ? error.message : String(error)).slice(0, 1000); return { ok: false, error: this.error, state: this.state() }; }
   }
@@ -209,11 +210,11 @@ export class BrowserCaptureHost {
   private async saveDocument(source: BrowserCaptureSource, target: BrowserCaptureTarget | undefined, kind: 'text' | 'page', input: { text: string; title?: string; format?: 'txt' | 'md' }): Promise<BrowserCaptureResponse> {
     try {
       await this.refresh(); const selected = target ?? this.stored.target; if (!selected) throw Error('请先选择资源库。');
-      const text = input.text.replaceAll('\0', '').trim(); if (kind === 'text' && !text) throw Error('请先选中需要保存的文字。');
-      if (Buffer.byteLength(text, 'utf8') > BROWSER_CAPTURE_TEXT_MAX_BYTES - 16_384) throw Error('网页文字超过 4 MiB 上限。');
-      const title = (input.title?.replace(/[\r\n]/g, ' ').trim() || (kind === 'page' ? '网页快照' : '选中文字')).slice(0, 180);
+      const text = input.text.replaceAll('\0', ''); if (kind === 'text' && !text.trim()) throw Error('请先选中需要保存的文字。');
+      if (Buffer.byteLength(text, 'utf8') > BROWSER_CAPTURE_TEXT_MAX_BYTES - (kind === 'page' ? 16_384 : 0)) throw Error('网页文字超过 4 MiB 上限。');
+      const title = (input.title?.replace(/[\r\n]/g, ' ').trim() || (kind === 'page' ? '网页快照' : browserTextTitle(text))).slice(0, 180);
       const pageUrl = captureHttpUrl(source.sourcePageUrl ?? source.frame.url);
-      const body = `${title}\n来源：${pageUrl}\n采集时间：${new Date().toISOString()}\n\n${text}\n`;
+      const body = kind === 'text' ? text : `${title}\n来源：${pageUrl}\n采集时间：${new Date().toISOString()}\n\n${text.trim()}\n`;
       const format = input.format === 'md' ? 'md' : 'txt';
       const job = await this.start(source, selected, kind, { bytes: Buffer.from(body, 'utf8'), filename: safeCaptureFilename(title) + '.' + format,
         contentType: format === 'md' ? 'text/markdown' : 'text/plain' });
@@ -252,7 +253,7 @@ export class BrowserCaptureHost {
     const generation = this.libraryGenerations.get(target.libraryId) ?? 0;
     await this.validateTarget(target);
     if ((this.libraryGenerations.get(target.libraryId) ?? 0) !== generation) throw Error('目标资源库已关闭。');
-    if (this.closed || (!localPicker && (!source || source.contents.isDestroyed() || source.frame.isDestroyed()))) throw Error('采集页面已关闭。');
+    if (this.closed || (!localPicker && (!source || source.contents.isDestroyed() || source.frame.isDestroyed() || source.isCurrent?.() === false))) throw Error('采集页面已关闭或跳转，请重新采集。');
     if (this.running.size >= 4) throw Error('最多同时采集 4 个媒体，请稍后再试。');
     const job: BrowserCaptureJob = { id: randomUUID(), tabId: source?.tabId ?? 'local-content', target: { ...target }, kind, status: 'saving', message: 'mediaUrl' in input ? '正在下载资源…' : '正在准备资源…', startedAt: new Date().toISOString() };
     const controller = new AbortController(); const preferences = { ...this.stored.preferences };
@@ -270,7 +271,7 @@ export class BrowserCaptureHost {
             if (Date.now() - this.lastProgress > 250) { this.lastProgress = Date.now(); this.environment.changed(); } } });
         else if ('pickedFile' in input) staged = await stagePickedCaptureFile({ filename: input.pickedFile, tempRoot: this.environment.tempRoot, signal: controller.signal });
         else if ('bytes' in input) staged = await stageCaptureBytes({ ...input, tempRoot: this.environment.tempRoot,
-          kind: kind === 'screenshot' ? 'image' : 'file', signal: controller.signal });
+          kind: kind === 'screenshot' ? 'image' : 'file', signal: controller.signal, ...(kind === 'text' ? { literalText: true } : {}) });
         else {
           if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.local.bodyBase64)) throw Error('图片数据无效。');
           const bytes = Buffer.from(input.local.bodyBase64, 'base64');
@@ -279,6 +280,7 @@ export class BrowserCaptureHost {
             contentType: input.local.contentType, kind: input.local.kind, signal: controller.signal });
         }
         controller.signal.throwIfAborted(); await this.validateTarget(job.target); controller.signal.throwIfAborted();
+        if (source?.isCurrent?.() === false) throw Error('采集页面已切换或跳转，请重新采集。');
         runtime.committing = true; clearTimeout(timer); job.message = '正在导入资源库…'; job.filename = staged.filename; this.environment.changed();
         const result = await this.hooks.importStaged({ ...staged, target: job.target, kind, sourcePageUrl,
           ...('mediaUrl' in input ? { mediaUrl: input.mediaUrl } : {}), preferences });
@@ -313,6 +315,7 @@ export class BrowserCaptureHost {
     return [{ label: '保存到 WorldlineBox', enabled: libraryMenus.length > 0, submenu: libraryMenus.length ? libraryMenus : [{ label: '请先打开资源库', enabled: false }] }];
   }
   cancelTab(tabId: string): void { for (const job of this.jobs) { const running = this.running.get(job.id); if (job.tabId === tabId && running && !running.committing) running.controller.abort(Error('页面已关闭。')); } }
+  cancelTextTab(tabId?: string): void { for (const job of this.jobs) { const running = this.running.get(job.id); if (job.kind === 'text' && (!tabId || job.tabId === tabId) && running && !running.committing) running.controller.abort(Error('采集页面已切换或跳转，请重新选择文字。')); } }
   closeLibrary(libraryId: string): void {
     this.libraryGenerations.set(libraryId, (this.libraryGenerations.get(libraryId) ?? 0) + 1);
     for (const job of this.jobs) { const running = this.running.get(job.id); if (job.target.libraryId === libraryId && running && !running.committing) running.controller.abort(Error('目标资源库已关闭。')); }

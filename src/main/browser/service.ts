@@ -6,9 +6,10 @@ import type { CaptureImageSource } from '../../shared/capture-tools';
 import { BROWSER_CHANGED, BROWSER_FOCUS, BROWSER_REQUEST, BROWSER_HOME, browserRequestSchema, type BrowserDownload, type BrowserRequest, type BrowserResponse, type BrowserState, type BrowserTab } from '../../shared/browser';
 import { getApplicationNetwork } from '../application-network';
 import { BrowserStore, browserAddress, isBrowserUrl, newBrowserTab } from './store';
-import { BROWSER_CAPTURE_CONTENT_REQUEST, BROWSER_CAPTURE_REQUEST, browserCaptureContentRequestSchema, browserCaptureRequestSchema, type BrowserCaptureTarget, type BrowserCaptureRequest, type BrowserCaptureResponse, type BrowserCaptureContentResponse } from '../../shared/browser-capture';
+import { BROWSER_CAPTURE_CONTENT_REQUEST, BROWSER_CAPTURE_REQUEST, BROWSER_CAPTURE_SELECTION_STATE, browserCaptureContentRequestSchema, browserCaptureRequestSchema, browserCaptureSelectionStateSchema, type BrowserCaptureTarget, type BrowserCaptureRequest, type BrowserCaptureResponse, type BrowserCaptureContentResponse } from '../../shared/browser-capture';
 import { BrowserCaptureHost, type BrowserCaptureHooks, type BrowserCaptureSource } from './capture-host';
 import { formatBrowserLoadError, shouldIgnoreBrowserLoadError } from '../../shared/browser-load-error';
+import { BrowserTextDrafts, browserTextTitle, readBrowserTextSelection } from './text-selection';
 
 const MAX_LIVE_PAGES = 8;
 export class BrowserService {
@@ -32,6 +33,9 @@ export class BrowserService {
   private capture?: BrowserCaptureHost;
   private preloadRegistration?: string;
   private readonly navigationVersions = new Map<string, number>();
+  private readonly textVersions = new Map<string, number>();
+  private readonly textDrafts = new BrowserTextDrafts();
+  private readonly selectionFrames = new Map<string, { frame: Electron.WebFrameMain; url: string; documentId: string }>();
   constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>) {
     this.store = new BrowserStore(root, error => { this.error = '浏览器配置保存失败：' + String(error).slice(0, 600); this.changed(false); });
   }
@@ -79,23 +83,73 @@ export class BrowserService {
   }
   async captureRequest(request: BrowserCaptureRequest): Promise<BrowserCaptureResponse> {
     await this.init(); if (!this.capture) return { ok: false, error: '资产采集服务不可用。' };
-    if (request.type === 'page.save' || request.type === 'text.save') {
+    if (request.type === 'text.prepare' || request.type === 'text.save') {
+      try {
+        if (request.type === 'text.save' && request.draftId) {
+          const active = this.store.data.activeTabId;
+          if (request.tabId && request.tabId !== active) throw Error('页面已切换，请重新选择文字。');
+          const draft = this.textDrafts.get(request.draftId, active ?? null, this.textVersions.get(active ?? '') ?? 0);
+          const result = await this.capture.saveText(draft.source, request.target, { text: request.text ?? draft.value.text, title: request.title ?? draft.value.title });
+          if (result.ok) this.textDrafts.consume(request.draftId); return result;
+        }
+        const source = this.textSource(request.tabId); const version = this.textVersions.get(source.tabId) ?? 0;
+        const bound = this.bindTextSource(source, version); const text = await readBrowserTextSelection(bound);
+        if (!bound.isCurrent?.()) throw Error('页面已切换或跳转，请重新选择文字。');
+        if (request.type === 'text.prepare') {
+          await this.capture.handle({ type: 'state' });
+          if (!bound.isCurrent?.()) throw Error('页面已切换或跳转，请重新选择文字。');
+          const textDraft = this.textDrafts.create(bound, text, source.contents.getTitle(), version);
+          return { ok: true, state: this.capture.state(), textDraft };
+        }
+        return this.capture.saveText(bound, request.target, { text, title: browserTextTitle(text) });
+      } catch (error) { return { ok: false, state: this.capture.state(), error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
+    }
+    if (request.type === 'page.save') {
       const source = this.captureSource(request.tabId);
       if (!source || !/^https?:\/\//.test(source.frame.url)) return { ok: false, error: '请先打开需要采集的网页。' };
-      return this.saveDocument(source, request.type === 'page.save' ? 'page' : 'text', request.target);
+      return this.saveDocument(source, 'page', request.target);
     }
     return this.capture.handle(request);
   }
   private async saveDocument(source: BrowserCaptureSource, kind: 'page' | 'text', target?: BrowserCaptureTarget): Promise<BrowserCaptureResponse> {
     if (!this.capture) return { ok: false, error: '资产采集服务不可用。' };
     const url = source.frame.url;
-    const value: unknown = await source.frame.executeJavaScript(kind === 'text'
-      ? '({title:document.title.slice(0,500),text:String(window.getSelection()).slice(0,4190000)})'
-      : '({title:document.title.slice(0,500),text:(document.body?.innerText||"").slice(0,4190000)})');
+    if (kind === 'text') { const text = await readBrowserTextSelection(source); return this.capture.saveText(source, target, { text, title: browserTextTitle(text) }); }
+    const value: unknown = await source.frame.executeJavaScript('({title:document.title.slice(0,500),text:(document.body?.innerText||"").slice(0,4190000)})');
     if (source.contents.isDestroyed() || source.frame.isDestroyed() || source.frame.url !== url) return { ok: false, error: '页面已跳转，请重新采集。' };
     if (!value || typeof value !== 'object' || !('text' in value) || typeof value.text !== 'string') return { ok: false, error: '无法读取网页内容。' };
     const input = { title: 'title' in value && typeof value.title === 'string' ? value.title : source.contents.getTitle(), text: value.text };
-    return kind === 'page' ? this.capture.savePage(source, target, input) : this.capture.saveText(source, target, input);
+    return this.capture.savePage(source, target, input);
+  }
+  private textSource(tabId = this.store.data.activeTabId): BrowserCaptureSource {
+    if (!tabId || tabId !== this.store.data.activeTabId) throw Error('页面已切换，请重新选择文字。');
+    const source = this.captureSource(tabId);
+    if (!source || !/^https?:\/\//u.test(source.contents.getURL())) throw Error('请先打开需要采集的网页。');
+    const frames = source.contents.mainFrame.framesInSubtree;
+    const remembered = this.selectionFrames.get(tabId);
+    const frame = source.contents.focusedFrame ?? (remembered && !remembered.frame.isDestroyed() && remembered.frame.url === remembered.url && frames.includes(remembered.frame)
+      ? remembered.frame : source.frame);
+    if (frame.isDestroyed() || !frames.includes(frame)) throw Error('选区所在页面已关闭，请重新选择文字。');
+    return { ...source, frame, sourcePageUrl: /^https?:\/\//u.test(frame.url) ? frame.url : source.contents.getURL() };
+  }
+  private bindTextSource(source: BrowserCaptureSource, version: number): BrowserCaptureSource {
+    const frameUrl = source.frame.url; const pageUrl = source.contents.getURL();
+    return { ...source, isCurrent: () => source.tabId === this.store.data.activeTabId && (this.textVersions.get(source.tabId) ?? 0) === version
+      && this.captureSource(source.tabId)?.contents === source.contents && !source.contents.isDestroyed() && !source.frame.isDestroyed()
+      && source.frame.url === frameUrl && source.contents.getURL() === pageUrl && source.contents.mainFrame.framesInSubtree.includes(source.frame) };
+  }
+  captureSelectionState(event: Electron.IpcMainEvent, value: unknown): void {
+    const parsed = browserCaptureSelectionStateSchema.safeParse(value); if (!parsed.success) return;
+    const source = this.captureSources().find(source => source.contents === event.sender && source.frame === event.senderFrame); if (!source) return;
+    const current = this.selectionFrames.get(source.tabId);
+    if (current?.frame === source.frame && current.documentId !== parsed.data.documentId) this.invalidateText(source.tabId);
+    if (parsed.data.focused || parsed.data.hasSelection || current?.frame === source.frame) this.selectionFrames.set(source.tabId,
+      { frame: source.frame, url: source.frame.url, documentId: parsed.data.documentId });
+  }
+  private invalidateText(tabId?: string): void {
+    this.textDrafts.clear(tabId); this.capture?.cancelTextTab(tabId);
+    if (tabId) { this.selectionFrames.delete(tabId); this.textVersions.set(tabId, (this.textVersions.get(tabId) ?? 0) + 1); }
+    else { this.selectionFrames.clear(); for (const id of new Set([...this.views.keys(), ...this.textVersions.keys()])) this.textVersions.set(id, (this.textVersions.get(id) ?? 0) + 1); }
   }
   async captureViewport(): Promise<CaptureImageSource> {
     await this.init(); const tab = this.active(); const contents = this.ensureView(tab).webContents;
@@ -105,10 +159,10 @@ export class BrowserService {
   }
   async selectedText(): Promise<string> {
     await this.init(); if (!this.visible) return '';
-    const tab = this.active(); const contents = this.ensureView(tab).webContents; const url = contents.getURL();
-    const text: unknown = await contents.mainFrame.executeJavaScript(`(()=>{const e=document.activeElement;if(e instanceof HTMLInputElement&&e.type==='password')return '';if((e instanceof HTMLInputElement||e instanceof HTMLTextAreaElement)&&typeof e.selectionStart==='number'&&typeof e.selectionEnd==='number')return e.value.slice(e.selectionStart,e.selectionEnd).slice(0,32768);return String(window.getSelection()).slice(0,32768)})()`);
-    if (contents.isDestroyed() || contents.getURL() !== url || typeof text !== 'string') return '';
-    return Buffer.from(text, 'utf8').subarray(0, 32768).toString('utf8').replace(/\uFFFD$/u, '').trim();
+    try { const source = this.bindTextSource(this.textSource(), this.textVersions.get(this.store.data.activeTabId ?? '') ?? 0);
+      const text = await readBrowserTextSelection(source); if (!source.isCurrent?.()) return '';
+      return Buffer.from(text, 'utf8').subarray(0, 32768).toString('utf8').replace(/\uFFFD$/u, '').trim();
+    } catch { return ''; }
   }
   async saveScreenshot(bytes: Uint8Array, filename: string): Promise<void> {
     await this.init(); if (!this.capture) throw Error('资产采集服务不可用。');
@@ -156,7 +210,7 @@ export class BrowserService {
       owner.on('resize', () => this.layout());
       owner.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => { if (mainFrame) { this.visible = false; this.layout(); } });
       owner.webContents.on('render-process-gone', () => { this.visible = false; this.layout(); });
-      owner.once('closed', () => { this.visible = false; for (const [tabId, item] of this.views) { this.capture?.cancelTab(tabId); if (!item.view.webContents.isDestroyed()) item.view.webContents.close(); } this.views.clear(); });
+      owner.once('closed', () => { this.visible = false; this.invalidateText(); for (const [tabId, item] of this.views) { this.capture?.cancelTab(tabId); if (!item.view.webContents.isDestroyed()) item.view.webContents.close(); } this.views.clear(); });
     }
     return owner;
   }
@@ -201,7 +255,7 @@ export class BrowserService {
       // window.close() must remove its tab as well. Explicit closes/evictions
       // remove the map entry first and must not recursively open another page.
       if (this.views.get(tab.id)?.view !== view) return;
-      this.views.delete(tab.id); this.navigationVersions.delete(tab.id); this.capture?.cancelTab(tab.id);
+      this.views.delete(tab.id); this.navigationVersions.delete(tab.id); this.invalidateText(tab.id); this.textVersions.delete(tab.id); this.capture?.cancelTab(tab.id);
       if (owner.isDestroyed()) return;
       owner.contentView.removeChildView(view);
       this.pageAction(() => this.closeTab(tab.id));
@@ -218,6 +272,7 @@ export class BrowserService {
     };
     contents.on('did-start-loading', () => { tab.error = undefined; refresh(); });
     contents.on('did-start-navigation', (_event, url, inPlace, mainFrame) => {
+      this.invalidateText(tab.id);
       if (!mainFrame || inPlace) return;
       this.navigationVersions.set(tab.id, (this.navigationVersions.get(tab.id) ?? 0) + 1);
       if (isBrowserUrl(url)) tab.url = url.slice(0, 8192);
@@ -235,7 +290,7 @@ export class BrowserService {
         tab.error = formatBrowserLoadError(code, description); tab.loading = false; this.layout(); this.changed();
       }
     });
-    contents.on('render-process-gone', () => { tab.error = '页面进程已退出，请重新加载。'; tab.loading = false; tab.discarded = true; this.layout(); this.changed(); });
+    contents.on('render-process-gone', () => { this.invalidateText(tab.id); tab.error = '页面进程已退出，请重新加载。'; tab.loading = false; tab.discarded = true; this.layout(); this.changed(); });
     contents.on('will-navigate', (event, url) => { if (!isBrowserUrl(url)) event.preventDefault(); });
     contents.on('will-redirect', (event, url) => { if (!isBrowserUrl(url)) event.preventDefault(); });
     contents.setWindowOpenHandler(details => {
@@ -278,6 +333,8 @@ export class BrowserService {
     contents.on('before-input-event', (event, input) => { if (input.type === 'keyDown') this.pageAction(() => { if (this.shortcut(input.key, input.control || input.meta, input.shift, input.alt)) event.preventDefault(); }); });
     contents.on('context-menu', (_event, params) => {
       const items: Electron.MenuItemConstructorOptions[] = [];
+      const selectionVersion = this.textVersions.get(tab.id) ?? 0;
+      const selectedSnapshot = params.formControlType !== 'input-password' ? params.selectionText : '';
       if (params.linkURL && isBrowserUrl(params.linkURL)) items.push({ label: '在新标签页打开链接', click: () => this.pageAction(() => { this.addTab(params.linkURL, true); this.changed(); }) }, { label: '复制链接地址', click: () => clipboard.writeText(params.linkURL) }, { type: 'separator' });
       if (params.srcURL && (isBrowserUrl(params.srcURL) || params.srcURL.startsWith('blob:'))) items.push({ label: '下载此内容', click: () => contents.downloadURL(params.srcURL) });
       if (params.isEditable) items.push({ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' });
@@ -292,10 +349,13 @@ export class BrowserService {
           catch { items.unshift({ label: '资产采集暂不可用', enabled: false }); }
         }
         if (this.capture && /^https?:\/\//.test(frame.url)) {
-          const source = { tabId: tab.id, contents, frame, sourcePageUrl: frame.url };
+          const source = this.bindTextSource({ tabId: tab.id, contents, frame, sourcePageUrl: frame.url }, selectionVersion);
           const documentSave = (kind: 'page' | 'text') => { void this.saveDocument(source, kind).then(result => { if (!result.ok) this.reportPageError(Error(result.error)); }).catch(error => this.reportPageError(error)); };
           items.unshift({ label: '保存当前网页到资产库', click: () => documentSave('page') });
-          if (params.selectionText.trim()) items.unshift({ label: '保存选中文字到资产库', click: () => documentSave('text') });
+          if (selectedSnapshot.trim()) items.unshift({ label: '保存选中文字到资产库', click: () => {
+            void this.capture!.saveText(source, undefined, { text: selectedSnapshot, title: browserTextTitle(selectedSnapshot) })
+              .then(result => { if (!result.ok) this.reportPageError(Error(result.error)); }).catch(error => this.reportPageError(error));
+          } });
           if (params.linkURL && /^https?:\/\//.test(params.linkURL)) {
             try { const files = await this.capture.contextMenu(source, 'file', params.linkURL); items.unshift(...files); } catch { /* Ordinary page links may not be downloadable files. */ }
           }
@@ -330,7 +390,7 @@ export class BrowserService {
   }
   private destroyView(id: string): void {
     const entry = this.views.get(id); if (!entry) return;
-    this.capture?.cancelTab(id); this.owner?.contentView.removeChildView(entry.view); this.views.delete(id); this.navigationVersions.delete(id);
+    this.invalidateText(id); this.capture?.cancelTab(id); this.owner?.contentView.removeChildView(entry.view); this.views.delete(id); this.navigationVersions.delete(id); this.textVersions.delete(id);
     if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
     const tab = this.store.data.tabs.find(item => item.id === id); if (tab) { tab.discarded = true; tab.loading = false; }
   }
@@ -340,7 +400,7 @@ export class BrowserService {
     const previous = this.store.data.activeTabId;
     const tab = newBrowserTab(url); this.store.data.tabs.push(tab);
     if (!background || popupOptions) {
-      if (!background) this.store.data.activeTabId = tab.id;
+      if (!background) { this.invalidateText(); this.store.data.activeTabId = tab.id; }
       try { this.ensureView(tab, navigate, popupOptions, protectedTab); } catch (error) { this.destroyView(tab.id); this.store.data.tabs = this.store.data.tabs.filter(item => item.id !== tab.id); this.store.data.activeTabId = previous; this.layout(); throw error; }
       this.layout();
     }
@@ -348,7 +408,7 @@ export class BrowserService {
   }
   private select(id: string): void {
     const tab = this.store.data.tabs.find(item => item.id === id); if (!tab) throw Error('标签页不存在。');
-    const previous = this.store.data.activeTabId; this.store.data.activeTabId = id;
+    const previous = this.store.data.activeTabId; if (previous !== id) this.invalidateText(); this.store.data.activeTabId = id;
     try { this.ensureView(tab); } catch (error) { this.store.data.activeTabId = previous; this.layout(); throw error; }
     this.layout(); this.changed();
   }
@@ -498,6 +558,7 @@ export class BrowserService {
   }
   async shutdown(): Promise<void> {
     await this.initialization?.catch(() => undefined);
+    this.invalidateText();
     await this.capture?.shutdown();
     if (this.preloadRegistration) { this.scope?.unregisterPreloadScript(this.preloadRegistration); this.preloadRegistration = undefined; }
     clearTimeout(this.progressTimer);
@@ -524,6 +585,7 @@ export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undef
   ipcMain.handle(BROWSER_CAPTURE_CONTENT_REQUEST, (event, input: unknown): Promise<BrowserCaptureContentResponse> | BrowserCaptureContentResponse => {
     if (!browser) return { ok: false, code: 'unavailable', error: '浏览器尚未启动。' }; return browser.captureContent(event, input);
   });
+  ipcMain.on(BROWSER_CAPTURE_SELECTION_STATE, (event, value: unknown) => browser?.captureSelectionState(event, value));
   return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId),
     captureViewport: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).captureViewport(),
     selectedText: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection)).selectedText(),
