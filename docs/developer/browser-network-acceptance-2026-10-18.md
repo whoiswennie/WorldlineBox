@@ -57,6 +57,7 @@
 - 12 个单元测试文件 **82 项通过**，覆盖网络方案的新增/切换/失败草稿、会话回滚、Worker 更新、收藏编辑与版本化预置、启动交接等。
 - 10 个 DSH 回归测试文件 **74 项通过**，覆盖安装、运行制品、CLI、任务、兼容性和工作台浏览器。与前组有部分重叠，不相加为独立用例总数。
 - 生产构建的启动交接、损坏 DSH 索引隔离、缺少启动器依赖隔离、启动器交互 **4 项端到端测试通过**。
+- 针对本轮 `03-Build-Installer.bat` 流程实际生成的 `out/WorldlineBox-win32-x64/WorldlineBox.exe` 再运行启动交接测试，**1 项通过（14.8 秒为整项测试耗时，包含受控视觉重放）**；确认真实主界面绘制、重新加载与重型服务延迟激活。日志 `.tools/test-output/browser-packaged-startup.log`。
 - 主项目与浏览器扩展 TypeScript、改动文件 ESLint、`git diff --check` 通过。
 - 启动窗口使用真实生产 HTML / CSS 受控重放，480 × 354 DIP 无溢出，Logo 为 56 × 56 DIP，未创建旋转圆框。重放仅用于视觉验收，不作为启动耗时证据。
 
@@ -65,3 +66,13 @@
 ![深色启动窗口](../assets/ui/startup-dark.png)
 
 相关 API 行为参考 [Electron WebContents](https://www.electronjs.org/docs/latest/api/web-contents)、[WebContentsView](https://www.electronjs.org/docs/latest/api/web-contents-view) 和 [Node 24 HTTP 全局代理](https://nodejs.org/download/release/latest-v24.x/docs/api/http.html)。
+
+## 安装包产物
+
+本轮从 `03-Build-Installer.bat` 完成 TypeScript、生产打包、随包工具及媒体校验和 Inno Setup 编译，退出码 0。功能源码提交为 `5eb7fb3`；本节是构建完成后补充的产物收据。
+
+- 文件：`out/make/inno/WorldlineBoxSetup.exe`。
+- 生成时间：2026-10-18 13:33:08（Asia/Shanghai）。
+- 大小：723,418,945 字节（689.9 MiB）。
+- SHA-256：`a9129fd5d969320f0bc17d802f668508f99b9f5117a77132e0fa9453004290ea`。
+- 构建日志：`.tools/test-output/browser-final-installer.log`。真实程序启动验收针对本轮打包目录中的 `WorldlineBox.exe`；安装器完成编译和哈希核验。
