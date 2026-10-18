@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { DshLauncherState, DshNetworkSettings, DshRuntime } from '../../src/shared/dsh-launcher';
@@ -82,30 +82,122 @@ it('formats release headings, lists, code and tables while keeping anchors local
   expect(request).not.toHaveBeenCalled();
 });
 
-it('saves custom proxy profiles and download sources before a connection test', async () => {
-  const request = vi.fn<LauncherRunRequest>().mockImplementation(async input => input.type === 'network.test' ? { ok: true, text: 'GitHub: OK\nnpm: OK' } : { ok: true });
-  const state: DshLauncherState = { ...base(), network: { settings: network(), revision: 0 } };
-  await mount(<LauncherNetworkSettings state={state} run={request} />);
-  const proxyMode = container!.querySelector<HTMLSelectElement>('select')!;
-  await act(() => { proxyMode.value = 'custom'; proxyMode.dispatchEvent(new Event('change', { bubbles: true })); });
-  const inputs = [...container!.querySelectorAll<HTMLInputElement>('input')];
-  await fill(inputs[0]!, 'http://127.0.0.1:7890');
-  await fill(container!.querySelector<HTMLInputElement>('[aria-label="代理名称"]')!, '家里');
-  await act(() => button('添加到常用代理').click());
-  expect(request).not.toHaveBeenCalled();
-  expect(container!.querySelectorAll('.launcher-proxy-profile-list li')).toHaveLength(1);
-  await act(() => button('保存并测试').click());
-  expect(request.mock.calls[0]![0]).toMatchObject({ type: 'network.save', settings: { proxyMode: 'custom', proxyUrl: 'http://127.0.0.1:7890', proxyProfiles: [{ name: '家里', url: 'http://127.0.0.1:7890' }] } });
-  expect(request.mock.calls[1]![0]).toEqual({ type: 'network.test' });
+function control<T extends HTMLInputElement | HTMLSelectElement>(label: string): T {
+  const field = [...container!.querySelectorAll<HTMLLabelElement>('label')].find(item => item.textContent === label);
+  if (!field) throw Error('Missing field ' + label);
+  return document.getElementById(field.htmlFor) as T;
+}
+async function select(label: string, value: string) {
+  const field = control<HTMLSelectElement>(label);
+  await act(() => { field.value = value; field.dispatchEvent(new Event('change', { bubbles: true })); });
+}
+async function mountNetwork(initial = network(), rejectSave = false) {
+  let applied: DshLauncherState = { ...base(), network: { settings: initial, revision: 0 } };
+  const request = vi.fn<LauncherRunRequest>();
+  function Harness() {
+    const [value, setValue] = useState(applied);
+    request.mockImplementation(async input => {
+      if (input.type === 'network.save') {
+        if (rejectSave) return { ok: false, error: 'Invalid proxy URL' };
+        applied = { ...applied, network: { settings: input.settings, revision: applied.network!.revision + 1 } };
+        setValue(applied); return { ok: true, state: applied };
+      }
+      if (input.type === 'network.test') return { ok: true, text: 'GitHub: OK\nnpm: OK' };
+      return { ok: true, state: applied };
+    });
+    return <LauncherNetworkSettings state={value} run={request} />;
+  }
+  await mount(<Harness />); return request;
+}
+
+it('keeps the applied summary unchanged while editing and applies new proxy profiles immediately', async () => {
+  const request = await mountNetwork();
+  await select('代理模式', 'custom');
+  await fill(control('代理地址'), 'http://127.0.0.1:7890');
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('跟随系统代理');
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('有未应用的修改');
+  await fill(control('代理名称'), '家里');
+  await fill(control('新增代理地址'), 'http://127.0.0.1:7890');
+  await act(() => button('添加并启用', container!.querySelector('.launcher-network-profile-add')!).click());
+  const saved = request.mock.calls.find(([input]) => input.type === 'network.save')![0];
+  expect(saved).toMatchObject({ type: 'network.save', settings: { proxyMode: 'custom', proxyUrl: 'http://127.0.0.1:7890', proxyProfiles: [{ name: '家里', url: 'http://127.0.0.1:7890' }] } });
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('家里');
+  expect(container!.querySelectorAll('[data-profile-active="true"]')).toHaveLength(1);
+  expect(control<HTMLInputElement>('新增代理地址').value).toBe('');
+  await act(() => button('测试连接').click());
+  expect(request.mock.calls.at(-1)![0]).toEqual({ type: 'network.test' });
   expect(container!.querySelector('pre')!.textContent).toBe('GitHub: OK\nnpm: OK');
 });
 
-it('retains the unsaved network draft when a save fails and does not test a route that was not accepted', async () => {
-  const request = vi.fn<LauncherRunRequest>().mockResolvedValue({ ok: false, error: 'Invalid proxy URL' });
-  await mount(<LauncherNetworkSettings state={{ ...base(), network: { settings: network(), revision: 0 } }} run={request} />);
-  const input = container!.querySelector<HTMLInputElement>('input')!;
-  await fill(input, 'invalid address');
-  await act(() => button('保存并测试').click());
-  expect(request).toHaveBeenCalledTimes(1); expect(input.value).toBe('invalid address');
-  expect(container!.textContent).toContain('未保存');
+it('shows only the enabled proxy and saves switching without a second save action', async () => {
+  const settings = { ...network(), proxyMode: 'custom' as const, proxyUrl: 'http://127.0.0.1:7897', proxyProfiles: [
+    { id: 'one', name: 'A', url: 'http://127.0.0.1:7897' }, { id: 'two', name: 'B', url: 'http://127.0.0.1:7890' },
+  ] };
+  const request = await mountNetwork(settings);
+  expect(container!.querySelectorAll('[data-profile-active="true"]')).toHaveLength(1);
+  const second = container!.querySelectorAll('.launcher-proxy-profile-list li')[1]!;
+  expect(second.textContent).toContain('已保存 · 未启用');
+  await act(() => button('保存并启用', second).click());
+  expect(request.mock.calls.filter(([input]) => input.type === 'network.save')).toHaveLength(1);
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('B');
+  expect(container!.querySelector('[data-profile-active="true"] strong')!.textContent).toBe('B');
 });
+
+it('allows adding a proxy while system mode is active and editing its address without stale activation', async () => {
+  await mountNetwork();
+  expect(control<HTMLInputElement>('代理地址').disabled).toBe(true);
+  expect(control<HTMLInputElement>('新增代理地址').disabled).toBe(false);
+  await fill(control('代理名称'), '自定义');
+  await fill(control('新增代理地址'), 'http://localhost:7897');
+  await act(() => button('添加并启用', container!.querySelector('.launcher-network-profile-add')!).click());
+  await act(() => button('编辑', container!.querySelector('.launcher-proxy-profile-list li')!).click());
+  await fill(control('新增代理地址'), 'http://localhost:7890');
+  await act(() => button('保存并启用', container!.querySelector('.launcher-network-profile-add')!).click());
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('http://localhost:7890');
+  expect(container!.querySelectorAll('.launcher-proxy-profile-list li')).toHaveLength(1);
+});
+
+it('adds and activates a custom mirror and removes a saved profile without changing the active endpoint', async () => {
+  const request = await mountNetwork();
+  await fill(control('方案名称'), '公司源');
+  await fill(control('来源地址'), 'https://packages.example/npm');
+  await act(() => button('添加并启用', container!.querySelector('.launcher-source-profile-add')!).click());
+  expect(request.mock.calls.find(([input]) => input.type === 'network.save')![0]).toMatchObject({ settings: {
+    npmRegistry: 'https://packages.example/npm', npmDownloadRoute: 'registry', sourceProfiles: [{ name: '公司源', kind: 'npm', url: 'https://packages.example/npm' }],
+  } });
+  expect(container!.querySelector('[data-active-source="npm"]')!.textContent).toContain('https://packages.example/npm');
+  expect(control<HTMLSelectElement>('依赖解析与下载线路').disabled).toBe(true);
+  await act(() => button('移除来源方案 公司源').click());
+  expect(container!.querySelector('[data-active-source="npm"]')!.textContent).toContain('https://packages.example/npm');
+  expect(request.mock.calls.at(-2)![0]).toMatchObject({ settings: { sourceProfiles: [] } });
+});
+
+it('retains an unsaved draft and active route when saving fails, and does not test it', async () => {
+  const request = await mountNetwork(network(), true);
+  await select('代理模式', 'custom');
+  await fill(control('代理地址'), 'invalid address');
+  await act(() => button('保存并测试').click());
+  expect(request.mock.calls.filter(([input]) => input.type === 'network.save')).toHaveLength(1);
+  expect(request.mock.calls.some(([input]) => input.type === 'network.test')).toBe(false);
+  expect(control<HTMLInputElement>('代理地址').value).toBe('invalid address');
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('跟随系统代理');
+  expect(container!.querySelector('[role="alert"]')!.textContent).toBe('Invalid proxy URL');
+});
+
+it('shows actual per-source proxy routes and bounded diagnostic failures without claiming all sources passed', async () => {
+  const state: DshLauncherState = { ...base(), network: { settings: network(), revision: 2,
+    inspection: { revision: 2, inspectedAt: '', routes: [
+      { kind: 'npm', url: officialNpmForTest, proxy: 'http://127.0.0.1:7897' },
+      { kind: 'python', url: 'https://pypi.org/simple', proxy: 'DIRECT' },
+    ], npmSelection: { registry: 'https://registry.npmmirror.com', checkedAt: '', elapsedMs: 20, probed: true } },
+    checks: { revision: 2, checkedAt: new Date().toISOString(), results: [
+      { kind: 'npm', ok: true, attempts: [{ url: 'https://registry.npmmirror.com/zod/latest', proxy: 'DIRECT', ok: true, elapsedMs: 12, status: 200 }] },
+      { kind: 'github', ok: false, attempts: [{ url: 'https://api.github.com/releases', proxy: 'http://127.0.0.1:7897', ok: false, elapsedMs: 80, status: 403, error: 'HTTP 403' }] },
+    ] } } };
+  await mount(<LauncherNetworkSettings state={state} run={vi.fn<LauncherRunRequest>().mockResolvedValue({ ok: true })} />);
+  expect(container!.querySelector('[data-active-source="npm"]')!.textContent).toContain('http://127.0.0.1:7897');
+  expect(container!.querySelector('[data-active-source="python"]')!.textContent).toContain('直接连接');
+  expect(container!.querySelectorAll('[data-check-ok="true"]')).toHaveLength(1);
+  expect(container!.querySelector('[data-check-ok="false"]')!.textContent).toContain('HTTP 403');
+});
+const officialNpmForTest = 'https://registry.npmjs.org';

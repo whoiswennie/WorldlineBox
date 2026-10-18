@@ -1,12 +1,13 @@
 import path from 'node:path';
 import { session, type Session } from 'electron';
-import { dshNetworkSettingsSchema, type DshNetworkSettings } from '../../shared/dsh-launcher';
+import { dshNetworkSettingsSchema, type DshNetworkSettings, type DshNetworkState } from '../../shared/dsh-launcher';
 import { atomicJson, readJson } from './files';
 import { createElectronHttpsDownload, createElectronPublicationRequest } from './electron-https-download';
 import type { PackPublishRequest } from './pack-distribution';
 import type { HttpsDownloadFetch } from './https-download';
 import type { NodeInstallNetwork } from './node-runtime-service';
 import { AUTOMATIC_NPM_MIRROR, OFFICIAL_NPM_REGISTRY, selectNpmMetadataRoute, type NpmMetadataRoute } from './npm-registry-route';
+import { checkNetworkSource } from './network-diagnostics';
 
 export const DEFAULT_LAUNCHER_NETWORK: DshNetworkSettings = {
   proxyMode: 'system', proxyUrl: 'http://127.0.0.1:7897',
@@ -26,11 +27,16 @@ export function validateLauncherNetwork(value: unknown): DshNetworkSettings {
   if (settings.proxyUrl) settings.proxyUrl = endpoint(settings.proxyUrl, ['http:', 'https:', 'socks5:']);
   if (settings.proxyMode === 'custom' && !settings.proxyUrl) throw new Error('请填写代理地址。');
   settings.proxyProfiles = settings.proxyProfiles.map(profile => ({ ...profile, url: endpoint(profile.url, ['http:', 'https:', 'socks5:']) }));
+  if (settings.sourceProfiles) settings.sourceProfiles = settings.sourceProfiles.map(profile => ({ ...profile,
+    url: `${endpoint(profile.url, ['https:'])}${profile.kind === 'github' ? '/' : ''}` }));
+  for (const profiles of [settings.proxyProfiles, settings.sourceProfiles ?? []]) {
+    if (new Set(profiles.map(profile => profile.id)).size !== profiles.length) throw Error('配置方案 ID 不可重复。');
+  }
   if (settings.githubMirror === 'custom') settings.githubMirrorUrl = `${endpoint(settings.githubMirrorUrl, ['https:'])}/`;
   return settings;
 }
 
-/** One application-owned Chromium session handles downloads; no system proxy settings are changed. */
+/** Application sessions share one live policy; the operating system proxy settings are unchanged. */
 export class LauncherNetwork {
   private settings = structuredClone(DEFAULT_LAUNCHER_NETWORK);
   private revision = 0;
@@ -40,29 +46,51 @@ export class LauncherNetwork {
   private scope?: Session;
   private lifetime = new AbortController();
   private metadataRoute?: { revision:number; expiresAt:number; result:Promise<NpmMetadataRoute> };
+  private inspection?: DshNetworkState['inspection'];
+  private checks?: DshNetworkState['checks'];
+  private npmSelection?: NonNullable<DshNetworkState['inspection']>['npmSelection'];
+  private githubSelection?: NonNullable<DshNetworkState['inspection']>['githubSelection'];
+  private readonly sessions = new Set<Session>();
+  private readonly listeners = new Set<() => void>();
+  private applyEnvironment?: (environment: NodeJS.ProcessEnv) => void | Promise<void>;
   constructor(private readonly rootPath: string, private readonly onChanged: () => void,
     private readonly createSession = () => session.fromPartition('persist:worldlinebox-dsh-network')) {}
-  state() { return { settings: structuredClone(this.settings), revision: this.revision, ...(this.issue ? { error: this.issue } : {}) }; }
+  state(): DshNetworkState { return structuredClone({ settings: this.settings, revision: this.revision,
+    ...(this.issue ? { error: this.issue } : {}), inspection: this.inspection, checks: this.checks }); }
   async init(): Promise<void> {
     try { const stored = await readJson<unknown>(path.join(this.rootPath, 'network.json')); if (stored) this.settings = validateLauncherNetwork(stored); }
     catch { this.issue = '网络配置读取失败，已采用默认设置；原文件保留。'; }
-    this.scope = this.createSession(); this.transport = createElectronHttpsDownload(this.scope); await this.apply();
+    this.scope = this.createSession(); this.sessions.add(this.scope); this.transport = createElectronHttpsDownload(this.scope); await this.apply();
   }
-  private async apply(): Promise<void> {
+  subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  private changed(): void { this.onChanged(); for (const listener of this.listeners) listener(); }
+  attachSession(scope: Session): Promise<void> {
+    const work = this.queue.then(async () => { await this.applySession(scope); this.sessions.add(scope); });
+    this.queue = work.catch(() => undefined); return work;
+  }
+  async setEnvironmentHandler(handler: (environment: NodeJS.ProcessEnv) => void | Promise<void>): Promise<void> {
+    this.applyEnvironment = handler; await handler(await this.environment());
+  }
+  private async applySession(scope: Session): Promise<void> {
     const settings = this.settings;
-    await this.scope!.setProxy(settings.proxyMode === 'custom'
+    await scope.setProxy(settings.proxyMode === 'custom'
       ? { mode: 'fixed_servers', proxyRules: settings.proxyUrl, proxyBypassRules: '<local>;localhost;127.0.0.1;[::1]' }
       : { mode: settings.proxyMode });
-    await this.scope!.forceReloadProxyConfig();
+    await scope.forceReloadProxyConfig();
+  }
+  private async apply(): Promise<void> {
+    await Promise.all([...this.sessions].map(scope => this.applySession(scope)));
+    if (this.applyEnvironment) await this.applyEnvironment(await this.commandEnvironment(process.env, this.settings.npmRegistry));
   }
   save(value: DshNetworkSettings): Promise<void> {
     const settings = validateLauncherNetwork(value);
     const work = this.queue.then(async () => {
       const previous = this.settings; this.settings = settings;
-      try { await this.apply(); await atomicJson(path.join(this.rootPath, 'network.json'), settings); }
+      try { await this.apply(); await Promise.all([...this.sessions].map(scope => scope.closeAllConnections())); await atomicJson(path.join(this.rootPath, 'network.json'), settings); }
       catch (error) { this.settings = previous; await this.apply(); throw error; }
       this.issue = undefined; this.revision++; this.lifetime.abort(new Error('Network settings changed.')); this.lifetime = new AbortController();
-      await this.scope!.closeAllConnections(); this.onChanged();
+      this.inspection = undefined; this.checks = undefined; this.npmSelection = undefined; this.githubSelection = undefined;
+      this.metadataRoute = undefined; this.changed();
     });
     this.queue = work.catch(() => undefined); return work;
   }
@@ -87,7 +115,17 @@ export class LauncherNetwork {
       signal.throwIfAborted();
       try {
         const response = await this.transport(candidate, { ...options, signal });
-        if (response.ok || candidate === candidates.at(-1)) return response;
+        if (response.ok || candidate === candidates.at(-1)) {
+          const githubHosts = ['github.com', 'api.github.com', 'raw.githubusercontent.com', 'codeload.github.com', 'objects.githubusercontent.com'];
+          const routedGithub = githubHosts.includes(requested.hostname) || githubHosts.some(host => candidate.includes(`https://${host}/`));
+          if (response.ok && routedGithub) {
+            const previous = this.githubSelection?.url;
+            this.githubSelection = { url: candidate, checkedAt: new Date().toISOString() };
+            if (this.inspection) this.inspection.githubSelection = this.githubSelection;
+            if (!previous || new URL(previous).origin !== new URL(candidate).origin) { await this.inspect(); this.changed(); }
+          }
+          return response;
+        }
         await response.body?.cancel(); rejected = response;
       } catch (error) { signal.throwIfAborted(); if (candidate === candidates.at(-1)) throw error; }
     }
@@ -117,19 +155,45 @@ export class LauncherNetwork {
   }
   async environment(base: NodeJS.ProcessEnv = process.env, destination = this.settings.npmRegistry): Promise<NodeJS.ProcessEnv> {
     await this.queue;
+    return this.commandEnvironment(base, destination);
+  }
+  private async commandEnvironment(base: NodeJS.ProcessEnv, destination: string): Promise<NodeJS.ProcessEnv> {
     const env = { ...base };
     for (const key of Object.keys(env)) if (/^(?:HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|PROXY|NO_PROXY|npm_config_(?:registry|proxy|https_proxy|noproxy)|PIP_INDEX_URL)$/i.test(key)) delete env[key];
-    let proxy = this.settings.proxyMode === 'custom' ? this.settings.proxyUrl : '';
-    if (this.settings.proxyMode === 'system') {
-      const rule = await this.scope!.resolveProxy(destination);
-      // Respect the first PAC route, including DIRECT; do not pick a later fallback proxy.
-      const match = /^(PROXY|HTTPS|SOCKS5?)\s+([^;]+)/.exec(rule.trim());
-      if (match) proxy = `${match[1] === 'HTTPS' ? 'https' : match[1]!.startsWith('SOCKS') ? 'socks5' : 'http'}://${match[2]}`;
-    }
+    const resolved = await this.proxyFor(destination);
+    const proxy = resolved === 'DIRECT' ? '' : resolved;
     if (proxy) Object.assign(env, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, ALL_PROXY: proxy, npm_config_proxy: proxy, npm_config_https_proxy: proxy });
     Object.assign(env, { NO_PROXY: 'localhost,127.0.0.1,::1', npm_config_registry: this.settings.npmRegistry,
       npm_config_fetch_timeout: '120000', npm_config_fetch_retries: '2', PIP_INDEX_URL: this.settings.pythonIndex });
     return env;
+  }
+  private async proxyFor(destination: string): Promise<string> {
+    let proxy = this.settings.proxyMode === 'custom' ? this.settings.proxyUrl : '';
+    if (this.settings.proxyMode === 'system') {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const rule = await Promise.race([this.scope!.resolveProxy(destination), new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(Error('系统代理解析超过 5 秒。')), 5_000);
+      })]).finally(() => clearTimeout(timeout));
+      // Respect the first PAC route, including DIRECT; do not pick a later fallback proxy.
+      const match = /^(PROXY|HTTPS|SOCKS5?)\s+([^;]+)/.exec(rule.trim());
+      if (match) proxy = `${match[1] === 'HTTPS' ? 'https' : match[1]!.startsWith('SOCKS') ? 'socks5' : 'http'}://${match[2]}`;
+    }
+    return proxy || 'DIRECT';
+  }
+  async inspect(): Promise<void> {
+    await this.queue;
+    const revision = this.revision;
+    const destinations = [
+      { kind: 'npm' as const, url: this.npmSelection?.registry ?? this.settings.npmRegistry },
+      { kind: 'python' as const, url: this.settings.pythonIndex },
+      { kind: 'github' as const, url: this.githubSelection?.url ?? this.githubCandidates('https://api.github.com/repos/deepseek-ai/deepseek-harness/releases?per_page=1')[0]! },
+    ];
+    const routes = await Promise.all(destinations.map(async route => {
+      try { return { ...route, proxy: await this.proxyFor(route.url) }; }
+      catch { return { ...route, proxy: 'UNKNOWN', error: '无法解析此目标的系统代理' }; }
+    }));
+    if (revision === this.revision) this.inspection = { revision, inspectedAt: new Date().toISOString(), routes,
+      npmSelection: this.npmSelection, githubSelection: this.githubSelection };
   }
   async nodeInstallNetwork(signal: AbortSignal = new AbortController().signal): Promise<NodeInstallNetwork> {
     await this.queue; signal.throwIfAborted();
@@ -151,13 +215,30 @@ export class LauncherNetwork {
       })]);
     } finally { removeAbort(); }
     currentSignal.throwIfAborted();
-    return {env:await this.environment(process.env,route.registry),registry:route.registry,tarballMirror:AUTOMATIC_NPM_MIRROR,
-      metadataRoute:route, ...(route.registry!==OFFICIAL_NPM_REGISTRY?{fallback:{registry:OFFICIAL_NPM_REGISTRY,env:await this.environment(process.env,OFFICIAL_NPM_REGISTRY)}}:{})};
+    const env = await this.environment(process.env, route.registry);
+    const fallback = route.registry !== OFFICIAL_NPM_REGISTRY ? { registry: OFFICIAL_NPM_REGISTRY, env: await this.environment(process.env, OFFICIAL_NPM_REGISTRY) } : undefined;
+    currentSignal.throwIfAborted();
+    const previous = this.npmSelection?.registry;
+    this.npmSelection = { registry: route.registry, elapsedMs: route.elapsedMs, probed: route.probed, checkedAt: new Date().toISOString() };
+    if (this.inspection) this.inspection.npmSelection = this.npmSelection;
+    if (previous !== route.registry) { await this.inspect(); this.changed(); }
+    return { env, registry: route.registry, tarballMirror: AUTOMATIC_NPM_MIRROR, metadataRoute: route, ...(fallback ? { fallback } : {}) };
   }
   async test(signal?: AbortSignal): Promise<string> {
-    const started = Date.now();
-    await this.json(`${this.settings.npmRegistry}/-/ping`, signal);
-    const env = await this.environment();
-    return `npm 注册表：${this.settings.npmRegistry}\n连接方式：${this.settings.proxyMode}\nnpm 子进程代理：${env.HTTPS_PROXY || 'DIRECT（直连）'}\n注册表响应：${Date.now() - started} ms\n依赖包使用 8 路并发、完整性校验及跨版本内容缓存；实际速度取决于线路和上游服务。`;
+    await this.queue;
+    const revision = this.revision;
+    const currentSignal = AbortSignal.any([signal ?? new AbortController().signal, this.lifetime.signal, AbortSignal.timeout(45_000)]);
+    const install = await this.nodeInstallNetwork(currentSignal);
+    const github = this.githubCandidates('https://api.github.com/repos/deepseek-ai/deepseek-harness/releases?per_page=1');
+    const results = await Promise.all([
+      checkNetworkSource('npm', [`${install.registry}/zod/latest`], this.fetch, url => this.proxyFor(url), currentSignal),
+      checkNetworkSource('python', [`${this.settings.pythonIndex}/`], this.fetch, url => this.proxyFor(url), currentSignal),
+      checkNetworkSource('github', github, this.fetch, url => this.proxyFor(url), currentSignal),
+    ]);
+    currentSignal.throwIfAborted();
+    if (revision !== this.revision) throw Error('网络设置已变化，请重新检查。');
+    this.checks = { revision, checkedAt: new Date().toISOString(), results };
+    await this.inspect(); this.changed();
+    return results.map(result => `${result.kind}: ${result.ok ? 'OK' : 'FAILED'}\n${result.attempts.map(attempt => `${attempt.url}\n${attempt.proxy} · ${attempt.elapsedMs} ms${attempt.error ? ` · ${attempt.error}` : ''}`).join('\n')}`).join('\n\n');
   }
 }

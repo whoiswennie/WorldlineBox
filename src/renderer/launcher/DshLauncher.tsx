@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 
 import {
   DSH_OFFICIAL_WINDOWS_URL,
@@ -28,24 +28,26 @@ import { PackSharing, PackUrlImport } from './PackSharing';
 import { RuntimeCompatibilityPanel } from './RuntimeCompatibilityPanel';
 import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import './launcher.css';
-const LauncherTerminal = lazy(() => import('./LauncherTerminal').then(module => ({ default: module.LauncherTerminal })));
 
 export type LauncherRunRequest = (request: DshLauncherRequest) => Promise<DshLauncherResponse>;
-type LauncherPage = 'instances' | 'runtimes' | 'packs' | 'operations' | 'terminal' | 'network' | 'plugin-market' | 'skill-market' | 'task-access';
+type LauncherPage = 'instances' | 'runtimes' | 'packs' | 'operations' | 'network' | 'plugin-market' | 'skill-market' | 'task-access';
 const navigation: readonly { page: LauncherPage; label: string; icon: IconName }[] = [
   { page: 'instances', label: 'instances', icon: 'box' }, { page: 'runtimes', label: 'runtimes', icon: 'download' },
   { page: 'packs', label: 'packs', icon: 'archive' }, { page: 'plugin-market', label: 'pluginMarket', icon: 'grid' },
-  { page: 'skill-market', label: 'skillMarket', icon: 'smart' }, { page: 'terminal', label: 'terminal', icon: 'code' },
+  { page: 'skill-market', label: 'skillMarket', icon: 'smart' },
   { page: 'task-access', label: 'taskAccess', icon: 'sliders' },
   { page: 'operations', label: 'operations', icon: 'activity' }, { page: 'network', label: 'network', icon: 'globe' },
 ];
 
-export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi }): ReactNode {
+export function DshLauncher({ api, openNetworkRequest = 0 }: { readonly api?: WorldlineBoxDshLauncherApi; readonly openNetworkRequest?: number }): ReactNode {
   const t = useT();
   const [state, setState] = useState<DshLauncherState | null>(null);
-  const [page, setPage] = useState<LauncherPage>('instances');
-  const [terminalActivated, setTerminalActivated] = useState(false);
-  if (page === 'terminal' && !terminalActivated) setTerminalActivated(true);
+  const [page, setPage] = useState<LauncherPage>(openNetworkRequest ? 'network' : 'instances');
+  const [seenNetworkRequest, setSeenNetworkRequest] = useState(openNetworkRequest);
+  if (seenNetworkRequest !== openNetworkRequest) {
+    setSeenNetworkRequest(openNetworkRequest);
+    if (openNetworkRequest) setPage('network');
+  }
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +101,10 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
     if (request.type === 'terminal.input' || request.type === 'terminal.resize') {
       try { return await api.request(request); }
       catch { return { ok: false, error: t('launcher.errorFallback') }; }
+    }
+    if (request.type === 'network.inspect') {
+      try { const result = await api.request(request); if (result.ok && result.state) acceptState(result.state); return result; }
+      catch (cause) { return { ok: false, error: cause instanceof Error ? cause.message : t('launcher.errorFallback') }; }
     }
     if (request.type === 'cli.select') {
       if (cliRequest.current?.instanceId === request.instanceId) return cliRequest.current.promise;
@@ -211,8 +217,7 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
         </aside>
         <main className="launcher-main">
           {!api || !connected ? <EmptyState icon="box" title={api && !error ? t('launcher.loading') : t('launcher.unavailable')} /> : !state?.supported ? <EmptyState icon="info" title={t('launcher.unsupported')} /> : <>
-            <div data-dsh-terminal-container hidden={page !== 'terminal'}>{terminalActivated ? <Suspense fallback={<div className="feature-loading" role="status">正在打开终端…</div>}><LauncherTerminal visible={page === 'terminal'} api={api} state={state} run={run} busy={requesting} preparingCli={preparingCli ?? undefined} /></Suspense> : null}</div>
-            {page === 'terminal' ? null : page === 'runtimes' ? <RuntimePage state={state} disabled={requesting} run={run} onDelete={(runtime) => setDialog({ kind: 'delete-runtime', runtime })} /> : page === 'task-access' ? <LauncherTaskAccess state={state} run={run} disabled={requesting} /> : page === 'network' ? <LauncherNetworkSettings state={state} run={run} disabled={requesting} /> : page === 'plugin-market' || page === 'skill-market' ? <LauncherMarketplace kind={page === 'plugin-market' ? 'plugin' : 'skill'} state={state} run={run} disabled={requesting} /> : page === 'packs' ? <PackPage state={state} disabled={requesting} onDialog={setDialog} run={run} /> : page === 'operations' ? <OperationsPage state={state} disabled={requesting} run={run} /> : selected ? <InstanceDetails api={api} busy={selectedBusy} instance={selected} key={selected.id} onDialog={setDialog} onError={setError} preparingStart={queuedStart === selected.id} run={run} state={state} /> : <EmptyState icon="box" title={t('launcher.noInstances')} description={t('launcher.noInstancesDescription')}><Button iconName={state.runtimes.length ? 'plus' : 'download'} onClick={state.runtimes.length ? openCreate : () => setPage('runtimes')} variant="primary">{t(state.runtimes.length ? 'launcher.create' : 'launcher.getRuntime')}</Button></EmptyState>}
+            {page === 'runtimes' ? <RuntimePage state={state} disabled={requesting} run={run} onDelete={(runtime) => setDialog({ kind: 'delete-runtime', runtime })} /> : page === 'task-access' ? <LauncherTaskAccess state={state} run={run} disabled={requesting} /> : page === 'network' ? <LauncherNetworkSettings state={state} run={run} disabled={requesting} /> : page === 'plugin-market' || page === 'skill-market' ? <LauncherMarketplace kind={page === 'plugin-market' ? 'plugin' : 'skill'} state={state} run={run} disabled={requesting} /> : page === 'packs' ? <PackPage state={state} disabled={requesting} onDialog={setDialog} run={run} /> : page === 'operations' ? <OperationsPage state={state} disabled={requesting} run={run} /> : selected ? <InstanceDetails api={api} busy={selectedBusy} instance={selected} key={selected.id} onDialog={setDialog} onError={setError} preparingStart={queuedStart === selected.id} run={run} state={state} /> : <EmptyState icon="box" title={t('launcher.noInstances')} description={t('launcher.noInstancesDescription')}><Button iconName={state.runtimes.length ? 'plus' : 'download'} onClick={state.runtimes.length ? openCreate : () => setPage('runtimes')} variant="primary">{t(state.runtimes.length ? 'launcher.create' : 'launcher.getRuntime')}</Button></EmptyState>}
           </>}
         </main>
       </div>

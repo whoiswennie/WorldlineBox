@@ -92,9 +92,24 @@ export const dshNetworkSettingsSchema = z.object({
   npmRegistry: z.string().trim().max(2048), pythonIndex: z.string().trim().max(2048),
   npmDownloadRoute: z.enum(['auto', 'registry']).default('auto'),
   githubMirror: z.enum(['auto', 'direct', 'gh-proxy', 'ghfast', 'ghproxy', 'custom']), githubMirrorUrl: z.string().trim().max(2048),
+  sourceProfiles: z.array(z.object({ id, name, kind: z.enum(['npm', 'python', 'github']), url: z.string().trim().max(2048) })).max(30).optional(),
 });
 export type DshNetworkSettings = z.infer<typeof dshNetworkSettingsSchema>;
-export const dshNetworkStateSchema = z.object({ settings: dshNetworkSettingsSchema, revision: z.number().int().min(0), error: z.string().optional() });
+export const dshNetworkSourceKindSchema = z.enum(['npm', 'python', 'github']);
+export type DshNetworkSourceKind = z.infer<typeof dshNetworkSourceKindSchema>;
+const networkRouteSchema = z.object({ kind: dshNetworkSourceKindSchema, url: z.string(), proxy: z.string(), error: z.string().optional() });
+const networkAttemptSchema = z.object({ url: z.string(), proxy: z.string(), elapsedMs: z.number(), ok: z.boolean(), status: z.number().optional(), error: z.string().optional() });
+export const dshNetworkStateSchema = z.object({
+  settings: dshNetworkSettingsSchema, revision: z.number().int().min(0), error: z.string().optional(),
+  inspection: z.object({ revision: z.number().int(), inspectedAt: z.string(), routes: z.array(networkRouteSchema),
+    npmSelection: z.object({ registry: z.string(), checkedAt: z.string(), elapsedMs: z.number(), probed: z.boolean() }).optional(),
+    githubSelection: z.object({ url: z.string(), checkedAt: z.string() }).optional(),
+  }).optional(),
+  checks: z.object({ revision: z.number().int(), checkedAt: z.string(), results: z.array(z.object({
+    kind: dshNetworkSourceKindSchema, ok: z.boolean(), attempts: z.array(networkAttemptSchema),
+  })) }).optional(),
+});
+export type DshNetworkState = z.infer<typeof dshNetworkStateSchema>;
 export const dshOfficialVersionSchema = z.object({
   version: z.string().max(128), channel: z.enum(['stable', 'rc', 'alpha', 'beta', 'preview']), recommended: z.boolean(),
   publishedAt: z.string().optional(), releaseUrl: z.string().max(4096), notes: z.string().max(30000).optional(),
@@ -127,6 +142,7 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('runtime.install'), version: z.string().regex(/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/) }),
   z.strictObject({ type: z.literal('network.save'), settings: dshNetworkSettingsSchema }),
   z.strictObject({ type: z.literal('network.test') }),
+  z.strictObject({ type: z.literal('network.inspect') }),
   z.strictObject({ type: z.literal('runtime.import'), sourceKind: z.enum(['directory', 'installer']) }),
   z.strictObject({ type: z.literal('runtime.verify'), runtimeId: id }),
   z.strictObject({ type: z.literal('runtime.compatibility'), runtimeId: id }),

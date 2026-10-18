@@ -24,6 +24,23 @@ function release(version: string) { return { name: '@deepseek-ai/dsh', version, 
 const npm = { name: '@deepseek-ai/dsh', 'dist-tags': { latest: '0.2.0-rc.2' }, versions: Object.fromEntries(['0.2.0-rc.2', '0.2.1-alpha.2', '0.2.1-alpha.10'].map(version => [version, release(version)])) };
 
 describe('hot launcher networking', () => {
+  it('updates existing and newly attached sessions and rolls every consumer back if application fails', async () => {
+    const first = scope(); const second = scope(); const third = scope();
+    const root = await temporary();
+    const service = new LauncherNetwork(root, () => undefined, () => first as unknown as Session);
+    await service.init(); await service.attachSession(second as unknown as Session);
+    const environment = vi.fn<(env: NodeJS.ProcessEnv) => Promise<void>>(async () => undefined);
+    await service.setEnvironmentHandler(environment);
+    const direct = { ...DEFAULT_LAUNCHER_NETWORK, proxyMode: 'direct' as const };
+    await Promise.all([service.save(direct), service.attachSession(third as unknown as Session)]);
+    for (const session of [first, second, third]) expect(session.setProxy).toHaveBeenLastCalledWith({ mode: 'direct' });
+    expect(environment).toHaveBeenLastCalledWith(expect.not.objectContaining({ HTTP_PROXY: expect.any(String) }));
+    second.setProxy.mockRejectedValueOnce(Error('cannot apply proxy'));
+    await expect(service.save({ ...direct, proxyMode: 'custom' })).rejects.toThrow('cannot apply proxy');
+    expect(service.state().settings.proxyMode).toBe('direct');
+    for (const session of [first, second, third]) expect(session.setProxy).toHaveBeenLastCalledWith({ mode: 'direct' });
+    expect(JSON.parse(await readFile(path.join(root, 'network.json'), 'utf8')).proxyMode).toBe('direct');
+  });
   it('shares a metadata probe, keeps other installs alive on cancellation, and resolves PAC for the selected destination', async () => {
     const proxySession=scope();
     proxySession.resolveProxy.mockImplementation(async (url?:string)=>url?.includes('npmmirror')?'DIRECT':'PROXY 127.0.0.1:7897');

@@ -123,9 +123,8 @@ test('installs a real pinned community plugin, verifies private copies and nativ
     const terminalId = (await state(page)).cli!.activeTerminalId!;
     await complete(page, { type: 'terminal.input', terminalId, text: 'dsh --version\r' });
     await expect.poll(async () => (await state(page)).cli!.output, { timeout: 60_000 }).toContain('0.2.1-alpha.2');
-    await page.locator('.launcher-navigation').getByRole('button', { name: '实时终端', exact: true }).click();
-    await page.screenshot({ path: test.info().outputPath('real-terminal.png') });
-    await page.getByRole('button', { name: '关闭终端：新版验收 C', exact: true }).click();
+    await complete(page, { type: 'terminal.close', terminalId });
+    await complete(page, { type: 'terminal.remove', terminalId });
     await expect.poll(async () => (await state(page)).cli!.terminals?.length).toBe(0);
     receipt.realCliVersionAndClose = true; receipt.status = 'passed';
     console.info('REAL_PLUGIN_AUDIT installation, native loading, neighbour isolation, enable/disable/remove, immutable runtimes and real terminal close passed');

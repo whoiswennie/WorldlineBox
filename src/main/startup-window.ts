@@ -20,7 +20,9 @@ export class StartupWindow {
     // The dedicated startup check opts in to this additional native surface.
     if (process.env.WORLDLINEBOX_E2E === '1' && process.env.WORLDLINEBOX_E2E_STARTUP_SCREEN !== '1') return;
     const hidden = process.env.WORLDLINEBOX_E2E === '1' && process.env.WORLDLINEBOX_E2E_HIDE_WINDOW === '1';
-    this.window = new BrowserWindow(withAppWindowIcon({ width: 440, height: 300, show: false, resizable: false, maximizable: false, minimizable: true, autoHideMenuBar: true, title: 'WorldlineBox', backgroundColor: nativeTheme.shouldUseDarkColors ? '#171b25' : '#f6f7fb', webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } }));
+    this.window = new BrowserWindow(withAppWindowIcon({ width: 480, height: 352, useContentSize: true, show: false, resizable: false, maximizable: false, minimizable: true, autoHideMenuBar: true, title: 'WorldlineBox',
+      titleBarStyle: 'hidden', titleBarOverlay: { color: nativeTheme.shouldUseDarkColors ? '#191d29' : '#f8f9fd', symbolColor: nativeTheme.shouldUseDarkColors ? '#aeb9cd' : '#68758c', height: 32 },
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#191d29' : '#f8f9fd', webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } }));
     this.window.on('close', () => { if (!this.finished) app.quit(); });
     this.window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     this.window.webContents.on('will-navigate', (event, url) => {

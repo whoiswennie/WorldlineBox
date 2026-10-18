@@ -57,7 +57,8 @@ export class DshLauncher {
   private readonly initialization: Promise<void>;
   private closed = false;
   private previousThrottling: boolean | undefined;
-  constructor(private readonly getMainWindow: () => BrowserWindow | null | undefined, reportInitializationError?: (error: unknown) => void) {
+  constructor(private readonly getMainWindow: () => BrowserWindow | null | undefined, reportInitializationError?: (error: unknown) => void,
+    private readonly applicationNetwork?: LauncherNetwork) {
     this.rootPath = path.join(app.getPath('userData'), 'dsh-launcher');
     this.taskAccess = new DshTaskAccessStore(this.rootPath);
     const onChanged = () => {
@@ -84,7 +85,8 @@ export class DshLauncher {
       }
     };
     this.operations = new OperationStore(path.join(this.rootPath, 'operations'), onChanged);
-    this.network = new LauncherNetwork(this.rootPath, onChanged);
+    this.network = applicationNetwork ?? new LauncherNetwork(this.rootPath, onChanged);
+    if (applicationNetwork) applicationNetwork.subscribe(onChanged);
     this.versions = new OfficialVersionCatalogue({ rootPath: this.rootPath, json: (url, signal) => this.network.json(url, signal), onChanged });
     this.marketplace = new MarketplaceService({ rootPath: this.rootPath, network: this.network, onChanged });
     this.skills = new SkillInstaller({ rootPath: this.rootPath, network: this.network });
@@ -137,7 +139,7 @@ export class DshLauncher {
   private toolchain(): Promise<PortableToolchain> { return this.tools ??= resolvePortableTools(); }
   private async init(): Promise<void> {
     await mkdir(this.rootPath, { recursive: true });
-    await this.network.init(); await this.versions.init(); await this.marketplace.init();
+    if (!this.applicationNetwork) await this.network.init(); await this.versions.init(); await this.marketplace.init();
     await this.operations.init(); await this.runtimes.init(); await this.sharedData.init(); await this.instances.init(); await this.packs.init(); await this.cliTerminal.init();
     await this.tasks.init(); await this.taskAccess.load();
     const publications = await readJson<unknown[]>(path.join(this.rootPath, 'pack-publications.json')) ?? [];
@@ -164,6 +166,7 @@ export class DshLauncher {
     const existing = this.windows.get(instance.id);
     if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return; }
     const icon = await resolveDshWorkbenchIcon(this.runtimes.directory(instance.runtimeId));
+    await this.network.attachSession(session.fromPartition(instance.browserPartition));
     const window = new BrowserWindow({ width: 1280, height: 850, minWidth: 900, minHeight: 620, title: `${instance.name} · DSH ${this.runtimes.get(instance.runtimeId).version}`, icon, show: false,
       autoHideMenuBar: true, webPreferences: { partition: instance.browserPartition, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, ...(silentTesting ? { backgroundThrottling: false } : {}) } });
     window.setMenu(null);
@@ -267,8 +270,9 @@ export class DshLauncher {
         if (target.canceled || !target.filePath) return { ok: true, cancelled: true };
         await writeFile(target.filePath, this.cliTerminal.export(request.terminalId), { mode: 0o600 }); return { ok: true };
       }
-      case 'network.save': await this.network.save(request.settings); return { ok: true, state: this.state() };
-      case 'network.test': return { ok: true, text: await this.network.test() };
+      case 'network.save': await this.network.save(request.settings); await this.network.inspect(); return { ok: true, state: this.state() };
+      case 'network.inspect': await this.network.inspect(); return { ok: true, state: this.state() };
+      case 'network.test': { const text = await this.network.test(); return { ok: true, text, state: this.state() }; }
       case 'versions.refresh': return { ok: true, operationId: await this.operations.run(request.type, '同步官方 DSH 发行版', undefined, op => this.versions.refresh(op.signal)) };
       case 'runtime.install': return { ok: true, operationId: await this.operations.run(request.type, `安装 DSH ${request.version} WebUI`, undefined, async op => { await this.runtimes.installNode(await this.versions.release(request.version, op.signal), op); }, request) };
       case 'market.search': return { ok: true, marketPage: await this.marketplace.search(request) };

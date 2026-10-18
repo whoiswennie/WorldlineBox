@@ -145,38 +145,6 @@
 .launcher-operation-status.is-succeeded { color: var(--ui-status-success); }
 .launcher-operation-status.is-failed, .launcher-operation-status.is-interrupted { color: var(--ui-status-danger); }
 .launcher-snapshot-list { display: flex; flex-direction: column; }
-.launcher-cli-context { display: flex; flex-direction: column; gap: var(--ui-space-4); }
-.launcher-cli-command { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--ui-space-3); }
-.launcher-cli-command code { overflow-wrap: anywhere; min-width: 0; font-size: var(--ui-font-size-caption); }
-.launcher-terminal-output { height: clamp(240px, 42vh, 600px); overflow: auto; padding: var(--ui-space-4); border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-md); background: var(--ui-surface-field); color: var(--ui-content-primary); font-family: var(--ui-font-family-mono); font-size: var(--ui-font-size-caption); line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
-.launcher-terminal-input { display: flex; align-items: end; gap: var(--ui-space-3); }
-.launcher-terminal-input > :first-child { flex: 1; min-width: 0; }
-.launcher-terminal-viewport { position: relative; min-width: 0; height: clamp(340px, 55vh, 820px); overflow: hidden; padding: 12px 10px; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-md); background: color-mix(in srgb, var(--ui-surface-field) 96%, transparent); color: var(--ui-content-primary); }
-.launcher-xterm-host { width: 100%; height: 100%; }
-.launcher-xterm-host .xterm { height: 100%; padding: 0; }
-.launcher-xterm-host .xterm-viewport { scrollbar-width: thin; }
-.launcher-xterm-host .xterm-screen { outline: none; }
-.launcher-xterm-host .xterm:focus-within { outline: none; }
-.launcher-terminal-viewport:focus-within { border-color: var(--ui-border-focus); }
-.launcher-terminal-sessions { display: flex; align-items: center; gap: var(--ui-space-1); min-width: 0; overflow-x: auto; padding: 0 0 var(--ui-space-2); scrollbar-width: thin; }
-.launcher-terminal-session { display: inline-flex; align-items: center; flex: 0 0 auto; gap: var(--ui-space-2); max-width: 250px; min-height: 34px; padding: 6px 12px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--ui-content-secondary); cursor: pointer; font: inherit; }
-.launcher-terminal-session[aria-selected="true"] { border-color: var(--ui-border-subtle); background: var(--ui-surface-field); color: var(--ui-content-primary); }
-.launcher-terminal-session > span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.launcher-terminal-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--ui-space-3); margin: 0 0 var(--ui-space-3); }
-.launcher-terminal-toolbar .launcher-actions { gap: var(--ui-space-1); }
-.launcher-terminal-context-label { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ui-space-2); color: var(--ui-content-secondary); font-size: var(--ui-font-size-caption); }
-.launcher-terminal-context-label code { max-width: min(600px, 42vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.launcher-terminal-search { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ui-space-2); padding: var(--ui-space-3); margin-bottom: var(--ui-space-3); border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-md); background: var(--ui-surface-field); }
-.launcher-terminal-search .ui-text-field { flex: 1; min-width: 180px; }
-.launcher-terminal-search-status { color: var(--ui-content-tertiary); font-size: var(--ui-font-size-caption); }
-.launcher-terminal-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--ui-space-3); margin-top: var(--ui-space-3); color: var(--ui-content-tertiary); font-size: var(--ui-font-size-caption); }
-.launcher-terminal-footer kbd { padding: 2px 5px; border: 1px solid var(--ui-border-subtle); border-radius: 4px; background: var(--ui-surface-field); font-family: var(--ui-font-family-mono); font-size: var(--ui-font-size-micro); }
-.launcher-terminal-session:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset: 2px; }
-.launcher-terminal-session-group { display: inline-flex; align-items: center; flex: 0 0 auto; min-width: 0; max-width: 280px; border: 1px solid transparent; border-radius: 8px; }
-.launcher-terminal-session-group[data-active="true"] { border-color: var(--ui-border-subtle); background: var(--ui-surface-field); }
-.launcher-terminal-session-group .launcher-terminal-session { min-width: 0; flex: 1; border: 0; background: transparent; }
-.launcher-terminal-session-group .launcher-terminal-session-close { flex: 0 0 auto; min-width: 26px; min-height: 26px; margin-right: 5px; padding: 4px; }
-.launcher-terminal-session-close:hover { background: var(--ui-status-danger-surface); color: var(--ui-status-danger-content); }
 .launcher-drawer-backdrop { position: fixed; z-index: var(--ui-layer-modal-backdrop); inset: 44px 0 0 68px; display: flex; justify-content: flex-end; background: color-mix(in srgb, var(--ui-surface-scrim) 65%, transparent); }
 .launcher-drawer { display: flex; flex-direction: column; width: min(620px, calc(100vw - 92px)); min-width: 0; height: 100%; border-left: 1px solid var(--ui-border-subtle); background: var(--ui-surface-raised); box-shadow: var(--ui-shadow-menu); color: var(--ui-content-primary); }
 .launcher-drawer > header { flex: 0 0 auto; padding: var(--ui-space-5); border-bottom: 1px solid var(--ui-border-subtle); }
@@ -259,8 +227,36 @@
 .launcher-network-profiles { display: flex; flex-direction: column; gap: var(--ui-space-3); margin-top: var(--ui-space-5); padding-top: var(--ui-space-4); border-top: 1px solid var(--ui-border-subtle); }
 .launcher-network-profiles h3 { margin: 0; font-size: var(--ui-font-size-body); font-weight: 550; }
 .launcher-network-profiles .launcher-help { margin: var(--ui-space-2) 0 0; }
-.launcher-network-profile-add { display: flex; align-items: center; gap: var(--ui-space-3); }
+.launcher-network-profile-add { display: flex; align-items: flex-end; gap: var(--ui-space-3); flex-wrap: wrap; }
 .launcher-network-profile-add .ui-text-field { flex: 1; }
+.launcher-network-fields { margin: 0; padding: 0; min-width: 0; border: 0; }
+.launcher-network-active { border-color: color-mix(in srgb, var(--ui-status-success) 25%, var(--ui-border-subtle)); }
+.launcher-active-proxy { display: flex; align-items: center; gap: var(--ui-space-3); margin-bottom: var(--ui-space-5); }
+.launcher-active-proxy strong { font-size: var(--ui-font-size-body); }
+.launcher-active-proxy p { margin: 4px 0 0; color: var(--ui-content-secondary); overflow-wrap: anywhere; }
+.launcher-active-dot { width: 10px; height: 10px; flex: 0 0 10px; border-radius: 50%; background: var(--ui-status-success); box-shadow: 0 0 0 5px color-mix(in srgb, var(--ui-status-success) 10%, transparent); }
+.launcher-active-sources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ui-space-3); }
+.launcher-active-source { min-width: 0; padding: var(--ui-space-4); border-radius: var(--ui-radius-control); background: var(--ui-surface-field); border: 1px solid var(--ui-border-subtle); }
+.launcher-active-source h3 { margin: 0 0 var(--ui-space-2); font-size: var(--ui-font-size-caption); color: var(--ui-content-secondary); }
+.launcher-active-source > strong { font-size: var(--ui-font-size-body); }
+.launcher-active-source p { margin: var(--ui-space-2) 0; overflow-wrap: anywhere; line-height: 1.65; font-size: var(--ui-font-size-caption); color: var(--ui-content-secondary); }
+.launcher-route-proxy { margin-top: var(--ui-space-3); padding-top: var(--ui-space-3); border-top: 1px solid var(--ui-border-subtle); display: grid; gap: var(--ui-space-1); font-size: var(--ui-font-size-caption); color: var(--ui-content-secondary); }
+.launcher-route-proxy code { color: var(--ui-content-primary); overflow-wrap: anywhere; }
+.launcher-network-pending { padding: var(--ui-space-3); margin: 0 0 var(--ui-space-4); background: var(--ui-status-warning-surface); color: var(--ui-status-warning-content); border-radius: var(--ui-radius-control); }
+.launcher-network-error { color: var(--ui-status-danger-content); overflow-wrap: anywhere; }
+.launcher-profile-status { display: block; margin-top: var(--ui-space-1); color: var(--ui-content-tertiary); font-size: var(--ui-font-size-caption); }
+.launcher-profile-status.is-active { color: var(--ui-status-success-content); }
+.launcher-proxy-profile-list li[data-profile-active="true"] { border-color: color-mix(in srgb, var(--ui-status-success) 40%, var(--ui-border-subtle)); background: var(--ui-status-success-surface); }
+.launcher-network-policy { margin-top: var(--ui-space-5); padding-top: var(--ui-space-4); border-top: 1px solid var(--ui-border-subtle); }
+.launcher-source-profile-add { display: grid; grid-template-columns: minmax(90px, .5fr) minmax(120px, .8fr) minmax(180px, 1.5fr) auto; align-items: end; gap: var(--ui-space-3); }
+.launcher-network-checks { display: grid; gap: var(--ui-space-3); }
+.launcher-network-check { padding: var(--ui-space-4); background: var(--ui-surface-field); border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-control); overflow-wrap: anywhere; }
+.launcher-network-check h3 { display: flex; justify-content: space-between; margin: 0 0 var(--ui-space-3); font-size: var(--ui-font-size-body); }
+.launcher-network-check h3 span { color: var(--ui-status-danger-content); font-size: var(--ui-font-size-caption); }
+.launcher-network-check[data-check-ok="true"] h3 span { color: var(--ui-status-success-content); }
+.launcher-network-check p { margin: var(--ui-space-2) 0; font-size: var(--ui-font-size-caption); }
+.launcher-network-check code { color: var(--ui-content-secondary); font-size: var(--ui-font-size-caption); }
+@media (max-width: 1100px) { .launcher-active-sources { grid-template-columns: minmax(0, 1fr); } .launcher-source-profile-add { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .launcher-proxy-profile-list { display: flex; flex-direction: column; gap: var(--ui-space-2); margin: 0; padding: 0; list-style: none; }
 .launcher-proxy-profile-list li { display: grid; grid-template-columns: minmax(100px, 0.7fr) minmax(0, 1.5fr) auto; align-items: center; gap: var(--ui-space-3); padding: var(--ui-space-3); border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-control); background: var(--ui-surface-field); }
 .launcher-proxy-profile-list strong { font-weight: 550; overflow-wrap: anywhere; }

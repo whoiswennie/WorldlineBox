@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { applyNodeNetworkEnvironment, networkEnvironmentMessageSchema } from '../shared/network-environment';
 import {
   parseWorkerRequest,
   type WorkerCommand,
@@ -3255,6 +3256,8 @@ const handleLibraryWorkerMessage = async (event: { data: unknown }): Promise<voi
 };
 
 parentPort.on('message', (event) => {
+  const network = networkEnvironmentMessageSchema.safeParse(event.data);
+  if (network.success) { applyNodeNetworkEnvironment(network.data.environment); return; }
   void handleLibraryWorkerMessage(event);
 });
 

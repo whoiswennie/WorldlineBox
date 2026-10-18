@@ -12,7 +12,7 @@ async function removeProfile(root: string, parent: string) {
   await rm(resolved, { recursive: true, force: true });
 }
 
-test('terminal close is visible, background selection stays responsive, workflows do not reflow, and the LLM store is global', async () => {
+test('terminal navigation is removed, background selection stays responsive, workflows do not reflow, and the LLM store is global', async () => {
   test.setTimeout(120_000);
   const parent = await realpath(tmpdir());
   const root = await mkdtemp(path.join(parent, 'worldlinebox-feedback-ui-'));
@@ -53,12 +53,7 @@ test('terminal close is visible, background selection stays responsive, workflow
     await page.locator('[data-dsh-instance="instance-b"]').click();
     await expect(page.locator('.launcher-instance-details h1')).toHaveText('环境 B');
     await expect(page.getByRole('button', { name: '启动实例', exact: true })).toBeEnabled();
-    await page.locator('.launcher-navigation').getByRole('button', { name: '实时终端', exact: true }).click();
-    await expect(page.getByRole('button', { name: '关闭终端：环境 A', exact: true })).toBeInViewport();
-    await page.getByRole('button', { name: '关闭终端：环境 A', exact: true }).click();
-    await expect(page.getByRole('tab', { name: '环境 A', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('tab', { name: '环境 B', exact: true })).toBeVisible();
-    await page.screenshot({ path: test.info().outputPath('terminal-close-tabs.png') });
+    await expect(page.locator('.launcher-navigation').getByRole('button', { name: '实时终端', exact: true })).toHaveCount(0);
 
     await page.locator('.launcher-navigation').getByRole('button', { name: '技能市场', exact: true }).click();
     const grid = page.locator('.launcher-market-grid'); await expect(grid).toBeVisible();

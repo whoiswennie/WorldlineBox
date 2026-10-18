@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AppLogger } from '../../src/main/app-logger';
+import type { NetworkEnvironment } from '../../src/shared/network-environment';
 
 class FakeUtilityProcess extends EventEmitter {
   readonly pid = 1234;
@@ -11,6 +12,8 @@ class FakeUtilityProcess extends EventEmitter {
 }
 
 const utilityProcessFork = vi.hoisted(() => vi.fn());
+const networkUpdates = vi.hoisted(() => ({ current: vi.fn(), subscribe: vi.fn<((listener: (value: NetworkEnvironment) => void) => () => void)>(() => vi.fn()) }));
+vi.mock('../../src/main/application-network', () => ({ currentNetworkEnvironment: networkUpdates.current, onNetworkEnvironment: networkUpdates.subscribe }));
 vi.mock('electron', () => ({
   utilityProcess: { fork: utilityProcessFork },
 }));
@@ -22,6 +25,22 @@ import {
 } from '../../src/main/worker-client';
 
 describe('requestTimeoutForCommand', () => {
+  it('inherits current network settings and updates an already running worker without starting an idle one', async () => {
+    const environment: NetworkEnvironment = { HTTP_PROXY: 'http://127.0.0.1:7897', HTTPS_PROXY: 'http://127.0.0.1:7897', NO_PROXY: 'localhost,127.0.0.1,::1', npm_config_registry: 'https://registry.npmmirror.com', PIP_INDEX_URL: 'https://pypi.org/simple', NODE_USE_ENV_PROXY: '1' };
+    const unsubscribe = vi.fn(); let publish: ((value: NetworkEnvironment) => void) | undefined;
+    networkUpdates.current.mockReturnValueOnce(environment);
+    networkUpdates.subscribe.mockImplementationOnce(listener => { publish = listener; return unsubscribe; });
+    utilityProcessFork.mockClear(); const child = new FakeUtilityProcess(); utilityProcessFork.mockReturnValueOnce(child);
+    const client = new LibraryWorkerClient('/tmp/library-worker.js', { worker: vi.fn(), error: vi.fn(), info: vi.fn() } as unknown as AppLogger,
+      { HTTP_PROXY: 'http://old:1234', https_proxy: 'http://old:1234', WORLDLINEBOX_FFMPEG_PATH: '/fixture/ffmpeg', WORLDLINEBOX_OIIO_PATH: '/fixture/oiio' });
+    publish!(environment); expect(utilityProcessFork).not.toHaveBeenCalled();
+    const starting = client.start(); child.emit('message', { type: 'worker.ready' }); await starting;
+    expect(utilityProcessFork.mock.calls[0]?.[2].env).toMatchObject(environment);
+    const changed = { ...environment, HTTP_PROXY: 'http://127.0.0.1:7890' }; publish!(changed);
+    expect(child.postMessage).toHaveBeenLastCalledWith({ type: 'worker.network-environment', environment: changed });
+    const shutdown = client.shutdown(); child.emit('message', { type: 'worker.shutdown.ack' }); await shutdown;
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
   it('keeps an unused worker cold and never starts it after shutdown', async () => {
     utilityProcessFork.mockClear();
     const logger = { worker: vi.fn(), error: vi.fn(), info: vi.fn() } as unknown as AppLogger;

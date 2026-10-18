@@ -1,5 +1,6 @@
 import type { MessageTree } from '../types';
 import { launcherZh } from '../../launcher/messages';
+import { browserZh } from '../../browser/messages';
 
 /**
  * zh-CN message catalog (REQ-I18N-001).
@@ -17,12 +18,14 @@ import { launcherZh } from '../../launcher/messages';
  */
 export const zhCN = {
   launcher: launcherZh,
+  browser: browserZh,
   appNavigation: {
     label: "应用侧边栏",
     modules: "功能模块",
     assets: "资产管理",
     launcher: "启动器",
     companions: "伙伴",
+    browser: "浏览器",
   },
   tabs: {
     label: "工作区标签页",

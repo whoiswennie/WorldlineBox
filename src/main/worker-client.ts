@@ -10,6 +10,8 @@ import {
 import type { AppLogger } from './app-logger';
 import { LibraryRequestBroker } from './library-request-broker';
 import { mediaBinaryWorkerEnv } from './media-binary-env';
+import { currentNetworkEnvironment, onNetworkEnvironment } from './application-network';
+import { networkChildEnvironment } from '../shared/network-environment';
 import {
   parseWorkerControlMessage,
   parseAssetChangeEvent,
@@ -208,6 +210,7 @@ export class LibraryWorkerClient {
   #modelThumbnailRenderCancelListener: ((requestId: string) => void) | undefined;
   #documentThumbnailRenderListener:
     ((request: DocumentThumbnailRenderRequest) => Promise<DocumentThumbnailRenderResponse["result"]>) | undefined;
+  readonly #stopNetworkUpdates: () => void;
 
   constructor(
     modulePath: string,
@@ -215,6 +218,7 @@ export class LibraryWorkerClient {
     private readonly workerEnvironment: NodeJS.ProcessEnv = process.env,
   ) {
     this.#modulePath = modulePath;
+    this.#stopNetworkUpdates = onNetworkEnvironment(environment => { this.#child?.postMessage({ type: 'worker.network-environment', environment }); });
   }
 
   async start(): Promise<void> {
@@ -267,7 +271,7 @@ export class LibraryWorkerClient {
         : {}),
       // GUI / UtilityProcess PATH often omits user-installed ffmpeg; pin
       // absolute bundled/dev media CLIs so video posters match hover preview.
-      env: mediaBinaryWorkerEnv(this.workerEnvironment),
+      env: mediaBinaryWorkerEnv(networkChildEnvironment(this.workerEnvironment, currentNetworkEnvironment())),
     });
     this.#child = child;
     child.stdout?.on('data', (chunk) => this.logger.worker('stdout', chunk));
@@ -662,6 +666,7 @@ export class LibraryWorkerClient {
   }
 
   async shutdown(): Promise<void> {
+    this.#stopNetworkUpdates();
     this.#closed = true;
     const child = this.#child;
     if (!child) return;

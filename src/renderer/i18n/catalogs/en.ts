@@ -1,5 +1,6 @@
 import type { zhCN } from './zh-CN';
 import { launcherEn } from '../../launcher/messages';
+import { browserEn } from '../../browser/messages';
 
 /**
  * Widen leaf literals to `string` while keeping the zh-CN key tree.
@@ -26,12 +27,14 @@ type CatalogMessages<T> = {
  */
 export const en = {
   launcher: launcherEn,
+  browser: browserEn,
   appNavigation: {
     label: "Application sidebar",
     modules: "Modules",
     assets: "Assets",
     launcher: "Launcher",
     companions: "Companions",
+    browser: "Browser",
   },
   tabs: {
     label: "Workspace tabs",

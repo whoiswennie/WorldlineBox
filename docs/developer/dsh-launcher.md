@@ -94,7 +94,7 @@ HttpOnly Cookie，向同一 loopback origin 的 `/api/settings/describe`、`/api
 私有 profile，并由原生锁、HMR 与 revision 校验提交。实际官方 0.2.0-rc.2 的原生 provider
 修改、过期 revision 拒绝和 WS 推送已在 canonical 程序路径与完整 instanceEnvironment 下验证。
 
-## CLI 上下文与逐行终端
+## CLI 上下文
 
 `cli-terminal.ts` 的 `DshCliTerminal` 持有当前 CLI 上下文、命令 shim 与受管 PowerShell，
 状态通过 `DshLauncherState.cli` 分发。`cli.select` 只选择实例，不启动 Web Host；
@@ -112,15 +112,7 @@ bundle，再关闭 `web-startup`、`webserver`、`web-runtime`、`connection`、
 Web carrier 条目。外置 patch 不改 sealed runtime、manifest 或插件安装；共享存储技术路由
 随后附加。任何发行版本都可以接受同一套实际能力检查；共享存档必须具有当前制品的通过证据。原生 CLI 组合始终检查随包 manifest 与 Web / headless transport 行，未知能力不会因为版本名称较新而获得放行。
 
-`terminal.open/input/resize/select/clear/export/remove/close` 管理多会话真实 ConPTY。
-`node-pty` 在独立 RunAsNode worker 内加载，主进程先把 worker 放入 Windows Job，再允许其创建 PTY。
-Shell 自然退出和关闭都会等待 Job 活动进程归零，解决 ConPTY conout worker 残留导致主进程不能退出的问题。
-原始 ANSI 流使用 revision + UTF-16 offset 有序增量，单会话保留 64 KiB、最多八个活跃和八个保留会话；清屏会隔离旧 IPC 增量。xterm 的输入和 resize IPC 不触发全页面刷新或通知。
-默认 CLI 上下文可以在终端运行时更新；每个终端、执行任务使用独立固定上下文文件，已有任务不会改换程序、插件和工作区。
-
-`LauncherTerminal` 保留用户的非底部输出滚动位置，回到底部后跟随增量输出；命令发送不重建
-工作区或弹出逐条成功提示，IME 选词键不参与历史切换。`dsh-launcher-ui.test.tsx` 覆盖这些
-行为；共享设置 shutdown 测试还确认挂起的 HTTP 读取会在 dispose 时先取消，再等待串行队列。
+实时终端页面与 xterm 渲染依赖已移除；CLI 上下文仍为伙伴任务和外部受管命令提供固定的执行环境。浏览器使用独立 WebContentsView 服务，见 [浏览器与网络验收](browser-network-acceptance-2026-10-18.md)。
 
 ## 主脑与角色调用的任务入口
 

@@ -76,12 +76,6 @@ function button(text: string, scope: ParentNode = document): HTMLButtonElement {
 
 async function click(text: string, scope?: ParentNode) { await act(() => button(text, scope).click()); }
 
-async function openTerminal() {
-  await click('实时终端', container!.querySelector('.launcher-navigation')!);
-  await act(async () => { await import('../../src/renderer/launcher/LauncherTerminal'); });
-  expect(container!.querySelector('.launcher-cli-context')).not.toBeNull();
-}
-
 it('shows the selected instance immediately, coalesces preparation and keeps navigation responsive', async () => {
   const subject = fixture([], { cli: { selectedInstanceId: 'instance-a', commandPath: '', binPath: '', pathEnabled: false, output: '', terminals: [] } });
   const original = subject.request.getMockImplementation()!;
@@ -143,83 +137,10 @@ const cliFixture = (running = false): NonNullable<DshLauncherState['cli']> => ({
   ...(running ? { terminal: { id: 'private-terminal', instanceId: 'instance-a', runtimeVersion: '0.9.0', status: 'running' as const, cwd: 'C:\\managed\\shared\\workspace' } } : {}),
 });
 
-async function terminalInput(value: string) {
-  const field = container!.querySelector<HTMLInputElement>('.launcher-terminal-input input')!;
-  await act(() => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, value);
-    field.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  return field;
-}
-
-it('selects a CLI context without starting its workbench and locks selection while the terminal runs', async () => {
-  const f = fixture([], { cli: cliFixture() });
-  await mount(f.api); await openTerminal();
-  const select = container!.querySelector<HTMLSelectElement>('.launcher-cli-context select')!;
-  expect(select.disabled).toBe(false);
-  await act(() => { select.value = 'instance-b'; select.dispatchEvent(new Event('change', { bubbles: true })); });
-  expect(f.request).toHaveBeenCalledWith({ type: 'cli.select', instanceId: 'instance-b' });
-  expect(f.request.mock.calls.some(([input]) => input.type === 'instance.start')).toBe(false);
-  expect(f.state().instances.every(value => value.status === 'stopped')).toBe(true);
-  await click('打开终端');
-  expect(select.disabled).toBe(true);
-  expect(button('打开终端').disabled).toBe(true);
-  expect(button('关闭终端').disabled).toBe(false);
-  expect(container!.textContent).toContain('请先关闭终端');
-  await click('关闭终端');
-  expect(select.disabled).toBe(false);
-});
-
-it('preserves scrolled terminal output until the user returns to its bottom', async () => {
-  const f = fixture([], { cli: cliFixture(true) });
-  await mount(f.api); await openTerminal();
-  const output = container!.querySelector<HTMLPreElement>('[data-dsh-terminal-output]')!;
-  Object.defineProperties(output, { scrollHeight: { configurable: true, value: 1_000 }, clientHeight: { configurable: true, value: 200 } });
-  await act(() => { output.scrollTop = 200; output.dispatchEvent(new Event('scroll')); });
-  await f.publish({ ...f.state(), cli: { ...f.state().cli!, output: 'Ready for commands\nFirst streamed line' } });
-  expect(container!.querySelector('[data-dsh-terminal-output]')).toBe(output);
-  expect(output.textContent).toContain('First streamed line');
-  expect(output.scrollTop).toBe(200);
-  await act(() => { output.scrollTop = 790; output.dispatchEvent(new Event('scroll')); });
-  Object.defineProperty(output, 'scrollHeight', { configurable: true, value: 1_100 });
-  await f.publish({ ...f.state(), cli: { ...f.state().cli!, output: 'Ready for commands\nFirst streamed line\nSecond line' } });
-  expect(output.scrollTop).toBe(1_100);
-});
-
-it('sends line input and reuses history without creating success notifications or replacing the workspace', async () => {
-  const f = fixture([], { cli: cliFixture(true) });
-  await mount(f.api); await openTerminal();
-  const main = container!.querySelector<HTMLElement>('.launcher-main')!;
-  const heading = main.querySelector('.launcher-page-heading');
-  const card = main.querySelector('.launcher-terminal-card');
-  main.scrollTop = 90;
-  const field = await terminalInput('dsh --help');
-  await click('发送', container!.querySelector('.launcher-terminal-input')!);
-  expect(f.request).toHaveBeenCalledWith({ type: 'terminal.input', text: 'dsh --help\n' });
-  expect(field.value).toBe('');
-  expect(container!.querySelector('[data-dsh-notification]')).toBeNull();
-  expect(main.querySelector('.launcher-page-heading')).toBe(heading);
-  expect(main.querySelector('.launcher-terminal-card')).toBe(card);
-  expect(main.scrollTop).toBe(90);
-  await act(() => field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })));
-  expect(field.value).toBe('dsh --help');
-  await click('发送', container!.querySelector('.launcher-terminal-input')!);
-  expect(f.request.mock.calls.filter(([input]) => input.type === 'terminal.input')).toHaveLength(2);
-  expect(container!.querySelector('[data-dsh-notification]')).toBeNull();
-});
-
-it('does not replace a composing terminal prompt with command history', async () => {
-  const f = fixture([], { cli: cliFixture(true) });
-  await mount(f.api); await openTerminal();
-  await terminalInput('dsh --help');
-  await click('发送', container!.querySelector('.launcher-terminal-input')!);
-  const field = await terminalInput('中文待选');
-  await act(() => field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', isComposing: true, bubbles: true, cancelable: true })));
-  expect(field.value).toBe('中文待选');
-  await act(() => field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', keyCode: 229, bubbles: true, cancelable: true })));
-  expect(field.value).toBe('中文待选');
-  await act(() => field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })));
-  expect(field.value).toBe('dsh --help');
+it('removes the interactive terminal navigation while retaining instance CLI selection', async () => {
+  await mount(fixture([], { cli: cliFixture() }).api);
+  expect([...container!.querySelectorAll('.launcher-navigation button')].some(item => item.textContent === '实时终端')).toBe(false);
+  expect(container!.querySelector('[data-dsh-terminal-container]')).toBeNull();
 });
 
 it('creates a named instance with an explicit pinned runtime', async () => {

@@ -502,6 +502,7 @@ const hasSingleInstanceLock = allowMultiInstance
 
 let mainWindow: BrowserWindow | undefined;
 let dshLauncher: DshLauncher | undefined;
+let browserService: { shutdown(): Promise<void> } | undefined;
 let musicService: MusicService | undefined;
 let companionService: CompanionService | undefined;
 let companionWorldWindows: CompanionWorldWindowManager | undefined;
@@ -3660,8 +3661,10 @@ async function startApplication(): Promise<void> {
     }
   }
   try {
+    const { getApplicationNetwork } = await import('./application-network');
+    const applicationNetwork = await getApplicationNetwork();
     const { DshLauncher: LauncherService } = await import('./dsh/launcher');
-    dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error));
+    dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error), applicationNetwork);
     dshLauncher.registerIpc();
   } catch (error) {
     logger.error('dsh.launcher.initialization', error);
@@ -3671,6 +3674,8 @@ async function startApplication(): Promise<void> {
       return { ok: false, error: 'DSH launcher initialization failed. Open application diagnostics for details; the asset manager remains available.' };
     });
   }
+  const { registerBrowserIpc } = await import('./browser/service');
+  browserService = registerBrowserIpc(() => mainWindow);
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
@@ -6215,7 +6220,7 @@ if (!hasSingleInstanceLock) {
     }
 
     const mcpClose = embeddedMcpServer?.close() ?? Promise.resolve();
-    void Promise.all([mcpClose, dshLauncher?.shutdown() ?? Promise.resolve(), musicService?.flush() ?? Promise.resolve(), companionService?.shutdown() ?? Promise.resolve()])
+    void Promise.all([mcpClose, browserService?.shutdown() ?? Promise.resolve(), dshLauncher?.shutdown() ?? Promise.resolve(), musicService?.flush() ?? Promise.resolve(), companionService?.shutdown() ?? Promise.resolve()])
       .catch((error: unknown) => {
         logger?.error("automation.mcp.close", error);
       })

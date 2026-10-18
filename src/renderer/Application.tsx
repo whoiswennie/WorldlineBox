@@ -13,13 +13,15 @@ import type { WorldlineBoxDshLauncherApi } from '../shared/dsh-launcher';
 import type { WorldlineBoxCompanionsApi } from '../shared/companions';
 import type { WorldlineBoxMusicApi } from '../shared/music';
 import type { WorldlineBoxShellApi } from '../shared/external-url';
+import type { WorldlineBoxBrowserApi } from '../shared/browser';
 import './feature-loading.css';
 
 const Launcher = lazy(() => import('./launcher/DshLauncher').then(module => ({ default: module.DshLauncher })));
+const Browser = lazy(() => import('./browser/BrowserPage').then(module => ({ default: module.BrowserPage })));
 const Companions = lazy(() => import('./companions/Companions').then(module => ({ default: module.Companions })));
 const Assets = lazy(() => import('./App').then(module => ({ default: module.AssetManager })));
 const api = (window as Window & { worldlinebox?: { dshLauncher?: WorldlineBoxDshLauncherApi;
-  companions?: WorldlineBoxCompanionsApi; music?: WorldlineBoxMusicApi; shell?: WorldlineBoxShellApi } }).worldlinebox;
+  companions?: WorldlineBoxCompanionsApi; music?: WorldlineBoxMusicApi; shell?: WorldlineBoxShellApi; browser?: WorldlineBoxBrowserApi } }).worldlinebox;
 
 function FeatureLoading() {
   return <div className="feature-loading" role="status"><span className="feature-loading-dot" aria-hidden="true" />正在打开…</div>;
@@ -29,6 +31,7 @@ function FeatureLoading() {
 export function App() {
   const t = useT();
   const [activeModuleId, setActiveModuleId] = useState('dsh');
+  const [networkRequest, setNetworkRequest] = useState(0);
   const assetManagerRef = useRef<AssetManagerHandle>(null);
   const pendingSettings = useRef(false);
   const [settingsController, setSettingsController] = useState<'idle' | 'opening' | 'open'>('idle');
@@ -52,9 +55,10 @@ export function App() {
       <ApplicationShell activeModuleId={activeModuleId} onSelectModule={setActiveModuleId} onOpenSettings={openSettings}
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
         modules={[
-          { id: 'dsh', label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },
+          { id: 'dsh', label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} openNetworkRequest={networkRequest} /></Suspense> },
           { id: 'companions', label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions api={api?.companions} dshApi={api?.dshLauncher} onOpenSettings={openSettings} isActive={activeModuleId === 'companions'} /></Suspense> },
           { id: 'assets', label: t('appNavigation.assets'), icon: 'grid', keepEffectsActive: settingsController !== 'idle', content: <Suspense fallback={<FeatureLoading />}><Assets settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === 'assets'} /></Suspense> },
+          { id: 'browser', label: t('appNavigation.browser'), icon: 'globe', content: <Suspense fallback={<FeatureLoading />}><Browser api={api?.browser} active={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen} onOpenNetwork={() => { setActiveModuleId('dsh'); setNetworkRequest(value => value + 1); }} /></Suspense> },
         ]} />
     </div>
   </MusicProvider></ContextMenuProvider>;

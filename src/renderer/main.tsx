@@ -2,7 +2,7 @@
 // Font assets opened by the asset viewer continue to load on demand.
 import { lazy, StrictMode, Suspense } from 'react';
 import { RendererReady, StartupBoundary, StartupScreen } from './StartupScreen';
-import { createRoot } from 'react-dom/client';
+import { createRoot, type Root } from 'react-dom/client';
 
 import { ElevationProvider } from './ElevationProvider';
 import { FontSizeProvider } from './FontSizeProvider';
@@ -46,7 +46,11 @@ if (!root) {
   throw new Error('Renderer root element is missing.');
 }
 
-createRoot(root).render(
+// Entry-point invalidation can re-evaluate this module during development.
+// Reuse the existing root so HMR does not create two owners for the same DOM.
+const applicationRoot: Root = import.meta.hot?.data.applicationRoot ?? createRoot(root);
+if (import.meta.hot) import.meta.hot.data.applicationRoot = applicationRoot;
+applicationRoot.render(
   <StrictMode>
     <LocaleProvider>
       <FontSizeProvider>
