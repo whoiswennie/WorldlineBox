@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { CaptureAnswerProgress } from './capture-answer';
 
 export const CAPTURE_TOOLS_REQUEST = 'worldlinebox:capture-tools:request';
 export const CAPTURE_TOOLS_CHANGED = 'worldlinebox:capture-tools:changed';
@@ -69,6 +70,9 @@ export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('selection.copy'), text: selectionText }),
   z.strictObject({ type: z.literal('selection.pin'), pinned: z.boolean() }),
   z.strictObject({ type: z.literal('ask.cancel'), id: z.string().max(100) }),
+  z.strictObject({ type: z.literal('link.open'), url: z.string().min(1).max(8192).refine(value => {
+    try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password; } catch { return false; }
+  }) }),
   z.strictObject({ type: z.literal('recording.prepare'), sourceId: z.string().min(1).max(255), format: z.enum(['mp4', 'webm', 'gif']), systemAudio: z.boolean(), microphone: z.boolean(), quality: captureRecordingQualitySchema.optional(),
     rect: z.strictObject({ x: z.number().int().nonnegative().max(32768), y: z.number().int().nonnegative().max(32768), width: z.number().int().positive().max(32768), height: z.number().int().positive().max(32768) }).optional() }),
   z.strictObject({ type: z.literal('recording.chunk'), id: z.string().max(100), sequence: z.number().int().nonnegative(), chunk: z.instanceof(Uint8Array).refine(value => value.byteLength > 0 && value.byteLength <= 16 * 1024 * 1024) }),
@@ -87,5 +91,6 @@ export interface WorldlineBoxCaptureToolsApi {
   request(request: CaptureToolsRequest): Promise<CaptureToolsResponse>;
   onChanged(listener: (state: CaptureToolsState) => void): () => void;
   onStopRecording(listener: () => void): () => void;
+  onAnswerProgress?(listener: (update: CaptureAnswerProgress) => void): () => void;
 }
 export const CAPTURE_TOOLS_STOP_RECORDING = 'worldlinebox:capture-tools:stop-recording';

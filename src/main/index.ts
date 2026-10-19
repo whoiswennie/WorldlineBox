@@ -4530,7 +4530,6 @@ async function startApplication(): Promise<void> {
       preloadPath: path.join(__dirname, 'index.js'),
       getModelConfig: () => { const config = loadAiConfig(); return { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: config.hasKey ? getDecryptedApiKey() : '' }; },
       saveToLibrary: (bytes, filename) => browserService!.saveScreenshot(bytes, filename),
-      captureBrowser: () => browserService!.captureViewport(),
       readBrowserSelection: () => browserService!.selectedText(),
       validateShortcuts: settings => {
         if (findCaptureShortcutConflict(readShortcutBindingsSnapshot(), shortcutPlatformFromProcess(process.platform), settings.shortcuts)) {

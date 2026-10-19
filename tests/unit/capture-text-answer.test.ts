@@ -34,7 +34,7 @@ describe('ephemeral selected-text model requests', () => {
     const fetchFn = vi.fn<typeof fetch>(async () => Response.json(bodies.openai_chat));
     await answerSelectedText({ config: { ...config(), baseUrl: 'https://api.deepseek.com' }, selection, messages, fetchFn });
     const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
-    expect(body.model).toBe('deepseek-v4-pro'); expect(body.thinking).toEqual({ type: 'disabled' }); expect(fetchFn).toHaveBeenCalledOnce();
+    expect(body.model).toBe('deepseek-v4-pro'); expect(body).not.toHaveProperty('thinking'); expect(fetchFn).toHaveBeenCalledOnce();
   });
 
   it('keeps DashScope vision-model text requests on their compatible native endpoint without images', async () => {

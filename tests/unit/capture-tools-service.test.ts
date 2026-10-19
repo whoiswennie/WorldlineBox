@@ -8,6 +8,8 @@ import { CaptureToolsService, canonicalCaptureShortcut, type CaptureToolsService
 import { CAPTURE_TOOLS_STOP_RECORDING, DEFAULT_CAPTURE_TOOLS_SETTINGS, type CaptureImageSource, type CaptureToolsSettings } from '../../src/shared/capture-tools';
 import { readFocusedSelectedText } from '../../src/main/capture-tools/selected-text';
 import { answerSelectedText } from '../../src/main/capture-tools/text-answer';
+import { answerCaptureImage } from '../../src/main/capture-tools/visual-answer';
+import { CAPTURE_TOOLS_ANSWER_PROGRESS, type CaptureAnswerUpdate } from '../../src/shared/capture-answer';
 import type * as SelectedText from '../../src/main/capture-tools/selected-text';
 import type * as DesktopRegions from '../../src/main/capture-tools/desktop-regions';
 import { positionCaptureWindowInPhysicalPixels, readWindowsCaptureMonitor } from '../../src/main/capture-tools/desktop-regions';
@@ -35,7 +37,7 @@ vi.mock('electron', async () => {
     globalShortcut: { register: vi.fn((key: string, callback: () => void) => { mock.callbacks.set(key, callback); return true; }), unregister: vi.fn() },
     desktopCapturer: { getSources: vi.fn(async () => [{ id: 'screen:1:0', name: 'Screen', display_id: '1', thumbnail: image }]) },
     session: { fromPartition: vi.fn(() => scope) }, nativeImage: { createFromBuffer: () => image }, clipboard: { writeImage: vi.fn(), readText: vi.fn(() => 'Clipboard selection'), writeText: vi.fn() },
-    shell: { showItemInFolder: vi.fn(), openPath: vi.fn(async () => '') }, powerMonitor: new EventEmitter(),
+    shell: { showItemInFolder: vi.fn(), openPath: vi.fn(async () => ''), openExternal: vi.fn(async () => undefined) }, powerMonitor: new EventEmitter(),
     screen: { getCursorScreenPoint: () => ({ x: 20, y: 30 }),
       getDisplayNearestPoint: () => ({ id: 1, size: { width: 2160, height: 1354 }, bounds: { x: 0, y: 0, width: 2160, height: 1354 }, workArea: { x: 0, y: 0, width: 2160, height: 1314 }, scaleFactor: 1 }),
       getAllDisplays: () => [{ id: 1, size: { width: 2160, height: 1354 }, bounds: { x: 0, y: 0, width: 2160, height: 1354 }, workArea: { x: 0, y: 0, width: 2160, height: 1314 }, scaleFactor: 1 }],
@@ -59,7 +61,7 @@ async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => v
   const captureBrowser = vi.fn(async () => source);
   const readBrowserSelection = vi.fn(async () => 'Actual browser selection');
   const service = new CaptureToolsService({ root, downloadPath: path.join(root, 'Downloads'), getMainWindow: () => main, preloadPath: 'minimal-preload.js', loadWindow: async () => undefined,
-    getModelConfig: () => ({ apiFormat: 'openai_chat', model: 'vision-test', apiKey: 'SECRET' }), saveToLibrary, getFfmpeg: () => undefined, captureBrowser, readBrowserSelection, validateShortcuts, onStateChanged });
+    getModelConfig: () => ({ apiFormat: 'openai_chat', model: 'vision-test', apiKey: 'SECRET' }), saveToLibrary, getFfmpeg: () => undefined, readBrowserSelection, validateShortcuts, onStateChanged });
   services.push(service); await service.init(); await service.open('screenshot', source, captureBrowser);
   const tool = mock.windows.at(-1) as BrowserWindow;
   return { service, root, main, tool, source, saveToLibrary, captureBrowser, readBrowserSelection };
@@ -67,6 +69,55 @@ async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => v
 function handler(name: string) { return mock.scope[name] as (...args: unknown[]) => unknown; }
 
 describe('isolated capture tools authorization and settings', () => {
+  it('sends cumulative bounded answer progress only to the requesting tool and flushes its final snapshot', async () => {
+    const changed = vi.fn(); const { service, main, tool, source } = await fixture(undefined, changed);
+    let emit!: (update: CaptureAnswerUpdate) => void, resolve!: (text: string) => void;
+    vi.mocked(answerCaptureImage).mockImplementationOnce(options => { emit = options.onUpdate!; return new Promise<string>(done => { resolve = done; }); });
+    vi.mocked(tool.webContents.send).mockClear(); vi.mocked(main.webContents.send).mockClear(); changed.mockClear();
+    const pending = service.handle(event(tool), { type: 'screenshot.ask', id: 'stream-one', dataUrl: source.dataUrl, messages: [{ role: 'user', content: 'Explain' }] });
+    await vi.waitFor(() => expect(emit).toBeTypeOf('function'));
+    emit({ text: '', reasoning: 'Provider summary' });
+    emit({ text: '**Partial**', reasoning: 'Provider summary' });
+    emit({ text: 'bad'.repeat(20000), reasoning: '' });
+    expect(tool.webContents.send).toHaveBeenCalledTimes(1);
+    expect(tool.webContents.send).toHaveBeenLastCalledWith(CAPTURE_TOOLS_ANSWER_PROGRESS, { id: 'stream-one', sequence: 1, text: '', reasoning: 'Provider summary' });
+    resolve('**Final**'); expect(await pending).toMatchObject({ ok: true, text: '**Final**' });
+    expect(tool.webContents.send).toHaveBeenCalledTimes(2);
+    expect(tool.webContents.send).toHaveBeenLastCalledWith(CAPTURE_TOOLS_ANSWER_PROGRESS, { id: 'stream-one', sequence: 2, text: '**Final**', reasoning: 'Provider summary' });
+    expect(main.webContents.send).not.toHaveBeenCalled(); expect(changed).not.toHaveBeenCalled();
+    expect(JSON.stringify(service.state())).not.toContain('Provider summary');
+    emit({ text: 'late', reasoning: 'late' }); expect(tool.webContents.send).toHaveBeenCalledTimes(2);
+  });
+  it('drops queued and late reasoning after cancellation and after replacing the temporary window', async () => {
+    const { service, tool } = await fixture();
+    let emit!: (update: CaptureAnswerUpdate) => void, resolve!: (text: string) => void;
+    vi.mocked(answerSelectedText).mockImplementationOnce(options => { emit = options.onUpdate!; return new Promise<string>(done => { resolve = done; }); });
+    const pending = service.handle(event(tool), { type: 'selection.ask', id: 'cancel-stream', selection: 'Selected text', messages: [{ role: 'user', content: 'Explain' }] });
+    await vi.waitFor(() => expect(emit).toBeTypeOf('function'));
+    vi.mocked(tool.webContents.send).mockClear(); emit({ text: '', reasoning: 'First' }); emit({ text: 'queued', reasoning: 'First' });
+    await service.handle(event(tool), { type: 'ask.cancel', id: 'cancel-stream' });
+    await service.handle(event(tool), { type: 'close' }); await service.open('selection'); const next = mock.windows.at(-1) as BrowserWindow;
+    vi.mocked(next.webContents.send).mockClear(); emit({ text: 'late', reasoning: 'late' }); resolve('late');
+    expect(await pending).toMatchObject({ ok: false });
+    await new Promise(done => setTimeout(done, 55));
+    expect(vi.mocked(tool.webContents.send).mock.calls.filter(([channel]) => channel === CAPTURE_TOOLS_ANSWER_PROGRESS)).toHaveLength(1);
+    expect(next.webContents.send).not.toHaveBeenCalled();
+  });
+  it('opens only explicit safe web links from its isolated main frame', async () => {
+    const { service, main, tool } = await fixture(); const safe = { type: 'link.open', url: 'https://example.com/docs?q=test' };
+    expect((await service.handle(event(main), safe)).ok).toBe(false);
+    expect((await service.handle(event(tool, {} as Electron.WebFrameMain), safe)).ok).toBe(false);
+    for (const url of ['javascript:alert(1)', 'file:///C:/private.txt', 'data:text/html,hello', 'https://user:secret@example.com']) expect((await service.handle(event(tool), { type: 'link.open', url })).ok).toBe(false);
+    expect(shell.openExternal).not.toHaveBeenCalled();
+    expect((await service.handle(event(tool), safe)).ok).toBe(true); expect(shell.openExternal).toHaveBeenCalledWith(safe.url);
+    vi.mocked(shell.openExternal).mockRejectedValueOnce(Error('private system failure'));
+    expect(await service.handle(event(tool), safe)).toEqual({ ok: false, error: '无法打开链接，请检查系统默认浏览器。' });
+  });
+  it('rechecks the requesting tool identity after asynchronous initialization', async () => {
+    const { service, tool } = await fixture();
+    const pending = service.handle(event(tool), { type: 'link.open', url: 'https://example.com' }); tool.destroy();
+    expect(await pending).toEqual({ ok: false, error: '问答窗口已关闭。' }); expect(shell.openExternal).not.toHaveBeenCalled();
+  });
   it('rejects a global hotkey owned by application shortcuts before saving or replacing registrations', async () => {
     const validate = vi.fn(() => { throw Error('Application shortcut conflict'); });
     const { service, main, root } = await fixture(validate);
@@ -123,10 +174,11 @@ describe('isolated capture tools authorization and settings', () => {
     expect(canonicalCaptureShortcut('Control+Alt+P')).toBe(canonicalCaptureShortcut('Alt+Ctrl+P'));
   });
 
-  it('captures the browser through its trusted provider without hiding it and uses dynamic global AI state', async () => {
+  it('routes the retired browser capture request to the real desktop overlay and hides the application', async () => {
     const { service, main, captureBrowser } = await fixture();
     const opened = await service.handle(event(main), { type: 'open', task: 'screenshot', source: 'browser' });
-    expect(opened.ok && opened.source?.title).toBe('Provided browser'); expect(captureBrowser).toHaveBeenCalledTimes(1); expect(desktopCapturer.getSources).not.toHaveBeenCalled();
+    expect(opened.ok && opened.source?.desktop).toBeTruthy(); expect(opened.ok && opened.source?.url).toBe('');
+    expect(captureBrowser).not.toHaveBeenCalled(); expect(desktopCapturer.getSources).toHaveBeenCalled(); expect(main.isVisible()).toBe(false);
   });
 
   it('opens a real screen as a frameless display overlay including the taskbar and remains remotely capturable', async () => {

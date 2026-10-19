@@ -39,6 +39,33 @@ function crop() { return JSON.parse(container.querySelector('.desktop-screenshot
 async function fill(value: string, label = '关于这张截图，想问什么？') { const input = container.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${label}"]`)!; await act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); }); }
 
 describe('desktop screenshot overlay', () => {
+  it('immediately edits a stitched image without desktop metadata using its full pixel bounds', async () => {
+    const value = props();
+    await render({ ...value, source: { ...value.source, desktop: undefined } });
+    expect(crop()).toEqual({ x: 0, y: 0, width: 1600, height: 900 });
+    expect(container.querySelector('.desktop-screenshot-selection-canvas')).not.toBeNull();
+    expect(container.querySelector('.desktop-screenshot-guide')).toBeNull();
+    await click('复制图片');
+    expect(value.onCopy).toHaveBeenCalledWith('data:image/png;base64,RURJVEVE');
+    expect(vi.mocked(exportScreenshot).mock.calls.at(-1)?.[1]).toEqual({ x: 0, y: 0, width: 1600, height: 900 });
+  });
+
+  it('contains an extremely tall stitched image on window resize and maps drawing back to source pixels', async () => {
+    vi.stubGlobal('Image', class extends FakeImage { override naturalHeight = 16000; });
+    const value = props(); await render({ ...value, source: { ...value.source, height: 16000, desktop: undefined } });
+    const image = container.querySelector<HTMLImageElement>('.desktop-screenshot-surface')!;
+    const selection = container.querySelector<HTMLElement>('.desktop-screenshot-selection')!;
+    expect(image.style.width).toBe('72px'); expect(image.style.height).toBe('720px'); expect(image.style.left).toBe('604px');
+    expect(selection.style.left).toBe('604px'); expect(selection.style.width).toBe('72px');
+    vi.stubGlobal('innerWidth', 1000); vi.stubGlobal('innerHeight', 500);
+    await act(() => window.dispatchEvent(new Event('resize')));
+    expect(image.style.width).toBe('50px'); expect(image.style.height).toBe('500px'); expect(image.style.left).toBe('475px');
+    expect(selection.style.left).toBe('475px'); expect(selection.style.width).toBe('50px');
+    await click('遮盖'); await pointer('pointerdown', 487.5, 125); await pointer('pointerup', 512.5, 375); await click('复制图片');
+    expect(vi.mocked(exportScreenshot).mock.calls.at(-1)?.[1]).toEqual({ x: 0, y: 0, width: 1600, height: 16000 });
+    expect(vi.mocked(exportScreenshot).mock.calls.at(-1)?.[2]).toEqual([{ tool: 'redact', from: { x: 400, y: 4000 }, to: { x: 1200, y: 12000 }, size: 4 }]);
+  });
+
   it('single-clicks the real window candidate and immediately edits at its screen coordinates', async () => {
     await render(); expect(container.querySelector('.screenshot-studio')).toBeNull();
     expect(container.querySelector('.desktop-screenshot-hover')?.getAttribute('data-candidate-kind')).toBe('window');
@@ -72,6 +99,65 @@ describe('desktop screenshot overlay', () => {
     expect(localWrites).not.toHaveBeenCalled(); expect(sessionWrites).not.toHaveBeenCalled();
     await click('清空对话'); expect(container.querySelectorAll('.screenshot-chat-messages article')).toHaveLength(0);
   });
+
+  it('shows streamed Markdown and collapsed reasoning without leaking reasoning into multi-turn context', async () => {
+    let finish!: (answer: string) => void;
+    const localWrites = vi.spyOn(localStorage, 'setItem'); const sessionWrites = vi.spyOn(sessionStorage, 'setItem');
+    const onAsk = vi.fn<DesktopScreenshotOverlayProps['onAsk']>()
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValueOnce('继续回答');
+    await render({ ...props(), onAsk }); await click('使用整个屏幕'); await click('图片问答'); await fill('分析选区'); await click('发送');
+    const first = onAsk.mock.calls[0]![0];
+    await act(() => first.onUpdate!({ text: '## 正在输出\n\n- **第一项**', reasoning: '服务的临时分析' }));
+    expect(container.querySelector('.is-streaming h2')?.textContent).toBe('正在输出');
+    expect(container.querySelector('.is-streaming li strong')?.textContent).toBe('第一项');
+    expect(container.querySelector<HTMLDetailsElement>('.is-streaming details')?.open).toBe(false);
+    expect(container.querySelector('.is-streaming details')?.textContent).toContain('服务的临时分析');
+    await act(() => finish('最终**分析结果**'));
+    expect(container.querySelector('.is-streaming')).toBeNull();
+    await fill('继续'); await click('发送');
+    expect(onAsk.mock.calls[1]![0].messages).toEqual([{ role: 'user', content: '分析选区' }, { role: 'assistant', content: '最终**分析结果**' }, { role: 'user', content: '继续' }]);
+    expect(localWrites).not.toHaveBeenCalled(); expect(sessionWrites).not.toHaveBeenCalled();
+    await click('清空对话'); expect(container.querySelector('.capture-answer-reasoning')).toBeNull();
+  });
+
+  it('drops stopped or reselected stream callbacks while allowing the next answer to update live', async () => {
+    const finish: ((answer: string) => void)[] = [];
+    const onAsk = vi.fn<DesktopScreenshotOverlayProps['onAsk']>(() => new Promise(resolve => { finish.push(resolve); }));
+    await render({ ...props(), onAsk }); await click('使用整个屏幕'); await click('图片问答'); await fill('停止这轮'); await click('发送');
+    const first = onAsk.mock.calls[0]![0];
+    await act(() => first.onUpdate!({ text: '部分内容', reasoning: '部分思考' })); await click('停止回答');
+    await fill('新的问题'); await click('发送'); const second = onAsk.mock.calls[1]![0];
+    await act(() => { first.onUpdate!({ text: '旧回调污染', reasoning: '旧思考污染' }); finish[0]!('旧完成污染'); second.onUpdate!({ text: '新流式输出', reasoning: '新思考' }); });
+    expect(container.textContent).toContain('新流式输出'); expect(container.textContent).not.toContain('污染');
+    await click('重新选择');
+    await act(() => { second.onUpdate!({ text: '重新选择后的晚到输出', reasoning: '' }); finish[1]!('重新选择后的晚到回答'); });
+    expect(second.signal.aborted).toBe(true); expect(container.querySelector('.screenshot-chat-messages')).toBeNull();
+    await click('使用整个屏幕');
+    expect(container.textContent).not.toContain('新思考'); expect(container.textContent).not.toContain('晚到');
+  });
+
+  it('uses compact labelled send controls, grows long drafts with a bound, and keeps Shift+Enter for new lines', async () => {
+    const value = props(); await render(value); await click('使用整个屏幕'); await click('图片问答');
+    const input = container.querySelector<HTMLTextAreaElement>('.screenshot-chat-composer textarea')!;
+    Object.defineProperty(input, 'scrollHeight', { configurable: true, get: () => 260 });
+    await fill('一段很长的输入'); expect(input.style.height).toBe('128px'); expect(input.style.overflowY).toBe('auto');
+    expect(button('发送').textContent).toBe(''); expect(button('发送').title).toBe('发送');
+    const newline = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true });
+    await act(() => input.dispatchEvent(newline)); expect(newline.defaultPrevented).toBe(false); expect(value.onAsk).not.toHaveBeenCalled();
+    const send = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    await act(() => input.dispatchEvent(send)); expect(send.defaultPrevented).toBe(true); expect(value.onAsk).toHaveBeenCalledOnce();
+  });
+
+  it('shows rejected link opens in the screenshot overlay without losing the answer', async () => {
+    const onOpenLink = vi.fn(async () => { throw Error('无法打开浏览器链接'); });
+    await render({ ...props(), onAsk: vi.fn(async () => '[参考来源](https://example.com/reference)'), onOpenLink });
+    await click('使用整个屏幕'); await click('图片问答'); await fill('请给出来源'); await click('发送');
+    expect(onOpenLink).not.toHaveBeenCalled(); await click('参考来源');
+    expect(onOpenLink).toHaveBeenCalledWith('https://example.com/reference');
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('无法打开浏览器链接');
+    expect(container.querySelector('.capture-answer-link')?.textContent).toBe('参考来源');
+  });
   it('writes text directly on the selected screen and preserves undo/redo in exports', async () => {
     await render(); await click('使用整个屏幕'); await click('文字'); await pointer('pointerdown', 240, 160); await pointer('pointerup', 240, 160);
     await fill('屏幕上的标注', '文字');
@@ -100,6 +186,29 @@ describe('desktop screenshot overlay', () => {
     await act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(value.onClose).toHaveBeenCalledOnce(); expect(value.onAsk.mock.calls[0]?.[0].signal.aborted).toBe(true);
     await act(() => answer('不应出现的迟到回答')); expect(container.textContent).not.toContain('不应出现的迟到回答');
+  });
+
+  it('preserves completed rounds when stopping a later answer and restores only the unfinished question', async () => {
+    let finish!: (answer: string) => void;
+    const onAsk = vi.fn<DesktopScreenshotOverlayProps['onAsk']>()
+      .mockResolvedValueOnce('第一轮回答')
+      .mockResolvedValueOnce('第二轮回答')
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await render({ ...props(), onAsk }); await click('使用整个屏幕'); await click('图片问答');
+    await fill('第一轮问题'); await click('发送'); await fill('第二轮问题'); await click('发送');
+    await fill('第三轮问题'); await click('发送'); await click('停止回答');
+    expect(container.querySelectorAll('.screenshot-chat-messages article')).toHaveLength(4);
+    expect(container.querySelector<HTMLTextAreaElement>('.screenshot-chat-composer textarea')?.value).toBe('第三轮问题');
+    expect(container.textContent).toContain('第一轮回答'); expect(container.textContent).toContain('第二轮回答');
+    await act(() => finish('迟到的第三轮')); expect(container.textContent).not.toContain('迟到的第三轮');
+    expect(onAsk).toHaveBeenCalledTimes(3);
+  });
+
+  it('never analyzes a screenshot automatically and blocks unsupported visual models', async () => {
+    const value = props(); await render({ ...value, initialTask: 'ocr', ai: { ...value.ai, visionSupported: false } });
+    expect(value.onAsk).not.toHaveBeenCalled(); await click('使用整个屏幕');
+    expect(container.textContent).toContain('当前模型未启用图片输入'); expect(button('发送').disabled).toBe(true);
+    expect(value.onAsk).not.toHaveBeenCalled();
   });
   it('reuses the same smart region selector for recording configuration', async () => {
     const onSelection = vi.fn(); await render({ ...props(), recording: { onSelection, toolbar: createElement('button', null, '开始录制') } });

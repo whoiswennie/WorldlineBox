@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 vi.mock('../../src/renderer/i18n', () => ({ useLocale: () => ({ locale: 'zh-CN' }) }));
 import { SelectionAssistant } from '../../src/renderer/capture-tools/SelectionAssistant';
 import { DEFAULT_CAPTURE_TOOLS_SETTINGS, type CaptureToolsRequest, type CaptureToolsResponse, type CaptureToolsState, type WorldlineBoxCaptureToolsApi } from '../../src/shared/capture-tools';
+import type { CaptureAnswerProgress } from '../../src/shared/capture-answer';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
@@ -225,4 +226,69 @@ it('scrolls only its conversation container and returns to the top when the cont
     expect(scroller.scrollTop).toBe(0);
     expect(scrollAncestor).not.toHaveBeenCalled();
   } finally { HTMLElement.prototype.scrollIntoView = previous; }
+});
+
+it('subscribes before asking, renders live Markdown and reasoning snapshots, and keeps reasoning out of follow-up context', async () => {
+  const value = fixture(); let emit!: (update: CaptureAnswerProgress) => void;
+  let finish!: (response: CaptureToolsResponse) => void;
+  const unsubscribe = vi.fn();
+  value.api.onAnswerProgress = vi.fn(listener => { emit = listener; return unsubscribe; });
+  value.request.mockImplementation(async input => {
+    if (input.type !== 'selection.ask') return { ok: true };
+    expect(emit).toBeTypeOf('function');
+    emit({ id: input.id, sequence: 1, text: '', reasoning: '检查选中的原文。' });
+    return new Promise(resolve => { finish = resolve; });
+  });
+  await mount(value); await fill('流式解释。'); await click('发送');
+  const ask = value.request.mock.calls.find(([input]) => input.type === 'selection.ask')![0];
+  if (ask.type !== 'selection.ask') throw Error('Expected ask');
+  expect(host.querySelector('.selection-answer-draft details')?.textContent).toContain('检查选中的原文。');
+  expect(host.querySelector<HTMLDetailsElement>('details')?.open).toBe(false);
+  await act(() => emit({ id: ask.id, sequence: 2, text: '这是 **实时答案**。', reasoning: '检查选中的原文。再总结重点。' }));
+  expect(host.querySelector('.selection-answer-draft strong')?.textContent).toBe('实时答案');
+  await act(() => {
+    emit({ id: 'another-window', sequence: 10, text: '不属于这次问题', reasoning: '' });
+    emit({ id: ask.id, sequence: 1, text: '旧快照', reasoning: '' });
+  });
+  expect(host.textContent).not.toContain('不属于这次问题'); expect(host.textContent).not.toContain('旧快照');
+  await act(() => finish({ ok: true, text: '这是 **最终答案**。' }));
+  expect(unsubscribe).toHaveBeenCalledOnce();
+  expect(host.querySelector('.selection-messages article.is-assistant strong')?.textContent).toBe('最终答案');
+  expect(host.querySelector('details')?.textContent).toContain('再总结重点。');
+  expect(host.querySelector('summary')?.textContent).toContain('已完成');
+  expect(host.querySelector('.selection-answer-draft')).toBeNull();
+  await fill('继续追问。'); await click('发送');
+  expect(value.request).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'selection.ask', messages: [
+    { role: 'user', content: '流式解释。' }, { role: 'assistant', content: '这是 **最终答案**。' }, { role: 'user', content: '继续追问。' },
+  ] }));
+  await click('停止回答');
+});
+
+it('unsubscribes and blocks late progress on Stop, Clear, Close and unmount', async () => {
+  for (const action of ['停止回答', '清空临时对话', '关闭', 'unmount']) {
+    const value = fixture(); let emit!: (update: CaptureAnswerProgress) => void; let finish!: (response: CaptureToolsResponse) => void;
+    const unsubscribe = vi.fn();
+    value.api.onAnswerProgress = listener => { emit = listener; return unsubscribe; };
+    value.request.mockImplementation(async input => input.type === 'selection.ask' ? new Promise(resolve => { finish = resolve; }) : { ok: true });
+    await act(() => root.render(null)); await mount(value); await fill('等待中的问题。'); await click('发送');
+    const ask = value.request.mock.calls[0]![0]; if (ask.type !== 'selection.ask') throw Error('Expected ask');
+    await act(() => emit({ id: ask.id, sequence: 1, text: '还在输出', reasoning: '服务思考' }));
+    if (action === 'unmount') await act(() => root.render(null)); else await click(action);
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    await act(() => { emit({ id: ask.id, sequence: 2, text: '过期增量', reasoning: '过期思考' }); finish({ ok: true, text: '过期终稿' }); });
+    expect(host.textContent).not.toContain('过期增量'); expect(host.textContent).not.toContain('过期终稿');
+    expect(host.textContent).not.toContain('过期思考');
+  }
+});
+
+it('opens answer links only on explicit clicks and reports native open failures', async () => {
+  const value = fixture();
+  value.request.mockImplementation(async input => input.type === 'selection.ask'
+    ? { ok: true, text: '[参考链接](https://example.com/reference)' }
+    : input.type === 'link.open' ? { ok: false, error: '链接未打开。' } : { ok: true });
+  await mount(value); await fill('提供参考。'); await click('发送');
+  expect(value.request.mock.calls.some(([input]) => input.type === 'link.open')).toBe(false);
+  await click('参考链接');
+  expect(value.request).toHaveBeenLastCalledWith({ type: 'link.open', url: 'https://example.com/reference' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('链接未打开。');
 });

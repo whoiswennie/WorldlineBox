@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CaptureDesktopSource, CaptureImageSource, CaptureToolsRequest, CaptureToolsResponse, CaptureToolsState, WorldlineBoxCaptureToolsApi } from '../../shared/capture-tools';
-import { ScreenshotStudio, type ScreenshotAsk } from '../browser/screenshot/ScreenshotStudio';
+import type { ScreenshotAsk } from '../browser/screenshot/types';
 import { DesktopScreenshotOverlay } from './DesktopScreenshotOverlay';
 import type { Rect } from '../browser/screenshot/model';
 import { Button, Select } from '../ui';
@@ -54,17 +54,22 @@ export function CaptureToolsWindow({ api = getCaptureToolsApi() }: { api?: World
     catch (cause) { setError(cause instanceof Error ? cause.message : words.failed); }
     finally { setBusy(false); }
   }
-  async function ask({ dataUrl, messages, signal }: ScreenshotAsk) {
+  async function ask({ dataUrl, messages, signal, onUpdate }: ScreenshotAsk) {
     const id = crypto.randomUUID();
+    let sequence = 0;
     const abort = () => { void api?.request({ type: 'ask.cancel', id }).catch(() => undefined); };
     if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
     signal.addEventListener('abort', abort, { once: true });
+    const unsubscribe = api?.onAnswerProgress?.(update => {
+      if (signal.aborted || update.id !== id || update.sequence <= sequence) return;
+      sequence = update.sequence; onUpdate?.({ text: update.text, reasoning: update.reasoning });
+    });
     try {
       const result = await request({ type: 'screenshot.ask', id, dataUrl, messages });
       if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
       if (!result.text) throw Error(words.failed);
       return result.text;
-    } finally { signal.removeEventListener('abort', abort); }
+    } finally { unsubscribe?.(); signal.removeEventListener('abort', abort); }
   }
   function close() { void request({ type: 'close' }).catch(cause => setError(cause instanceof Error ? cause.message : words.failed)); }
   if (state?.task === 'recording' && api) return <RecorderPanel api={api} state={state} source={source} onSourceChange={next => { setSource(next); setSourceRevision(value => value + 1); }} onClose={close} />;
@@ -87,12 +92,12 @@ export function CaptureToolsWindow({ api = getCaptureToolsApi() }: { api?: World
     finally { setBusy(false); }
   }
   if (long) return <main className="capture-tools-window capture-long-controls"><header><h1>{words['long-screenshot']}</h1><span>{words.longFrames} {long.frames}</span></header><p className="capture-tools-muted">{words.longHint}</p>{error ? <p className="capture-tools-error" role="alert">{error}</p> : null}<footer className="capture-tools-actions"><Button disabled={busy} variant="quiet" onClick={() => void longAction('long.cancel')}>{words.longCancel}</Button><Button disabled={busy} loading={busy} onClick={() => void longAction('long.append')}>{words.longAppend}</Button><Button disabled={busy} onClick={() => void longAction('long.finish')}>{words.longFinish}</Button></footer></main>;
-  const ScreenshotEditor = source?.desktop ? DesktopScreenshotOverlay : ScreenshotStudio;
-  if (source && state) return <ScreenshotEditor key={sourceRevision + state.task} source={source} ai={state.ai} initialTask={state.task === 'ocr' || state.task === 'translate' ? state.task : 'screenshot'} onClose={close}
+  if (source && state) return <DesktopScreenshotOverlay key={sourceRevision + state.task} source={source} ai={state.ai} initialTask={state.task === 'ocr' || state.task === 'translate' ? state.task : 'screenshot'} onClose={close}
     onSave={async (dataUrl, filename) => { await request({ type: 'screenshot.save', dataUrl, filename, destination: 'library' }); }}
     onSaveFile={async (dataUrl, filename) => { await request({ type: 'screenshot.save', dataUrl, filename, destination: 'downloads' }); }}
     onCopy={async dataUrl => { await request({ type: 'screenshot.copy', dataUrl }); }}
     onAsk={ask}
+    onOpenLink={async url => { await request({ type: 'link.open', url }); }}
     onLongCapture={startLong}
   />;
   return <main className="capture-tools-window capture-tools-source-picker">

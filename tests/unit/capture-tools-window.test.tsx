@@ -3,12 +3,12 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CaptureToolsWindow } from '../../src/renderer/capture-tools/CaptureToolsWindow';
-import type { ScreenshotStudioProps } from '../../src/renderer/browser/screenshot/ScreenshotStudio';
+import type { DesktopScreenshotOverlayProps } from '../../src/renderer/capture-tools/DesktopScreenshotOverlay';
 import { LocaleProvider } from '../../src/renderer/i18n';
 import { DEFAULT_CAPTURE_TOOLS_SETTINGS, type CaptureToolsRequest, type CaptureToolsResponse, type CaptureToolsState, type WorldlineBoxCaptureToolsApi } from '../../src/shared/capture-tools';
 
-vi.mock('../../src/renderer/browser/screenshot/ScreenshotStudio', () => ({
-  ScreenshotStudio: (props: ScreenshotStudioProps) => <div data-studio-source={props.source.title}>
+vi.mock('../../src/renderer/capture-tools/DesktopScreenshotOverlay', () => ({
+  DesktopScreenshotOverlay: (props: DesktopScreenshotOverlayProps) => <div data-overlay-source={props.source.title}>
     <button onClick={() => void props.onSave('data:image/png;base64,AA==', 'capture.png')}>library</button>
     <button onClick={() => void props.onSaveFile?.('data:image/png;base64,AA==', 'capture.png')}>downloads</button>
     <button onClick={() => void props.onLongCapture?.({ x: 2, y: 4, width: 30, height: 40 })}>long</button>
@@ -37,6 +37,8 @@ function button(text: string) { return [...host.querySelectorAll<HTMLButtonEleme
 
 it('exposes separate library and Downloads saves from the global screenshot editor', async () => {
   const { request } = await mount();
+  // A source without desktop metadata still uses the single overlay component.
+  expect(host.querySelector('[data-overlay-source]')?.getAttribute('data-overlay-source')).toBe('original');
   await act(() => button('library').click());
   expect(request).toHaveBeenLastCalledWith({ type: 'screenshot.save', dataUrl: 'data:image/png;base64,AA==', filename: 'capture.png', destination: 'library' });
   await act(() => button('downloads').click());
@@ -47,14 +49,14 @@ it('passes physical crop coordinates, collects successive frames, then returns t
   const { request } = await mount();
   await act(() => button('long').click());
   expect(request).toHaveBeenLastCalledWith({ type: 'long.begin', rect: { x: 2, y: 4, width: 30, height: 40 } });
-  expect(host.querySelector('[data-studio-source]')).toBeNull();
+  expect(host.querySelector('[data-overlay-source]')).toBeNull();
   expect(host.textContent).toContain('已采集屏数 1');
   await act(() => button('添加下一屏').click());
   expect(request).toHaveBeenLastCalledWith({ type: 'long.append' });
   expect(host.textContent).toContain('已采集屏数 2');
   await act(() => button('完成拼接').click());
   expect(request).toHaveBeenLastCalledWith({ type: 'long.finish' });
-  expect(host.querySelector('[data-studio-source]')?.getAttribute('data-studio-source')).toBe('stitched');
+  expect(host.querySelector('[data-overlay-source]')?.getAttribute('data-overlay-source')).toBe('stitched');
 });
 
 it('routes selection context to its temporary assistant without requesting desktop sources or screenshots', async () => {

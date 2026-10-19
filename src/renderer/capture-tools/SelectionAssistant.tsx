@@ -1,12 +1,14 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { CAPTURE_SELECTION_MAX_BYTES, type CaptureToolsState, type WorldlineBoxCaptureToolsApi } from '../../shared/capture-tools';
+import type { CaptureAnswerUpdate } from '../../shared/capture-answer';
 import { Icon } from '../Icons';
 import { useLocale } from '../i18n';
 import { useCaptureWords } from './messages';
+import { CaptureAnswerContent } from './CaptureAnswerContent';
 import './selection-assistant.css';
 
-type Message = { role: 'user' | 'assistant'; content: string };
-type ActiveQuestion = { id: string; previous: Message[]; question: string };
+type Message = { role: 'user' | 'assistant'; content: string; reasoning?: string };
+type ActiveQuestion = { id: string; previous: Message[]; question: string; sequence: number; update?: CaptureAnswerUpdate; unsubscribe?: () => void };
 
 export function SelectionAssistant({ api, state, initialText = '', onClose }: {
   api: WorldlineBoxCaptureToolsApi;
@@ -32,6 +34,7 @@ export function SelectionAssistant({ api, state, initialText = '', onClose }: {
   const [messages, setMessages] = useState<Message[]>([]);
   const [prompt, setPrompt] = useState('');
   const [asking, setAsking] = useState(false);
+  const [answer, setAnswer] = useState<CaptureAnswerUpdate | undefined>();
   const [pasting, setPasting] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -50,21 +53,28 @@ export function SelectionAssistant({ api, state, initialText = '', onClose }: {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      if (active.current) void api.request({ type: 'ask.cancel', id: active.current.id }).catch(() => undefined);
+      if (active.current) {
+        releaseProgress(active.current);
+        void api.request({ type: 'ask.cancel', id: active.current.id }).catch(() => undefined);
+      }
       active.current = undefined;
     };
   }, [api]);
   useEffect(() => {
     const scroller = conversation.current;
     if (scroller) scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-  }, [messages, asking]);
+  }, [messages, asking, answer]);
   useEffect(() => { (initialText.trim() ? questionInput : originalInput).current?.focus(); }, [initialText]);
 
+  function releaseProgress(current: ActiveQuestion) {
+    current.unsubscribe?.(); current.unsubscribe = undefined;
+  }
   function stop() {
     const current = active.current; if (!current) return;
     active.current = undefined;
+    releaseProgress(current);
     void api.request({ type: 'ask.cancel', id: current.id }).catch(() => undefined);
-    setMessages(current.previous); setPrompt(current.question); setAsking(false); setNotice(words.selectionStopped);
+    setMessages(current.previous); setPrompt(current.question); setAsking(false); setAnswer(undefined); setNotice(words.selectionStopped);
   }
   function close() { stop(); onClose(); }
   const closeFromKeyboard = useEffectEvent(close);
@@ -95,20 +105,27 @@ export function SelectionAssistant({ api, state, initialText = '', onClose }: {
     const question = value.trim();
     if (!canSubmit || !question || active.current) return;
     if (messages.filter(item => item.role === 'user').length >= 20) { setError(words.selectionTurnLimit); return; }
-    const current: ActiveQuestion = { id: crypto.randomUUID(), previous: messages, question };
+    const current: ActiveQuestion = { id: crypto.randomUUID(), previous: messages, question, sequence: 0 };
     const next: Message[] = [...messages, { role: 'user', content: question }];
-    active.current = current; setMessages(next); setPrompt(''); setAsking(true); setError(''); setNotice(''); setExpanded(false);
+    active.current = current; setMessages(next); setPrompt(''); setAsking(true); setAnswer(undefined); setError(''); setNotice(''); setExpanded(false);
     try {
-      const response = await api.request({ type: 'selection.ask', id: current.id, selection: selection.trim(), messages: next });
+      // Listen before invoking so the first provider token cannot race IPC setup.
+      current.unsubscribe = api.onAnswerProgress?.(update => {
+        if (!mounted.current || active.current !== current || update.id !== current.id || update.sequence <= current.sequence) return;
+        current.sequence = update.sequence; current.update = { text: update.text, reasoning: update.reasoning };
+        setAnswer(current.update);
+      });
+      const response = await api.request({ type: 'selection.ask', id: current.id, selection: selection.trim(), messages: next.map(({ role, content }) => ({ role, content })) });
       if (!mounted.current || active.current !== current) return;
       if (!response.ok) throw Error(response.error);
       if (!response.text?.trim()) throw Error(words.selectionEmptyAnswer);
-      setMessages([...next, { role: 'assistant', content: response.text.trim() }]);
+      setMessages([...next, { role: 'assistant', content: response.text.trim(), reasoning: current.update?.reasoning }]);
     } catch (cause) {
       if (!mounted.current || active.current !== current) return;
       setMessages(current.previous); setPrompt(question); setError(cause instanceof Error ? cause.message : words.failed);
     } finally {
-      if (mounted.current && active.current === current) { active.current = undefined; setAsking(false); }
+      releaseProgress(current);
+      if (mounted.current && active.current === current) { active.current = undefined; setAsking(false); setAnswer(undefined); }
     }
   }
   async function copy(text: string) {
@@ -116,6 +133,12 @@ export function SelectionAssistant({ api, state, initialText = '', onClose }: {
       const response = await api.request({ type: 'selection.copy', text });
       if (!response.ok) throw Error(response.error);
       if (mounted.current) setNotice(words.selectionCopied);
+    } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : words.failed); }
+  }
+  async function openLink(url: string) {
+    try {
+      const response = await api.request({ type: 'link.open', url });
+      if (!response.ok) throw Error(response.error);
     } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : words.failed); }
   }
   async function togglePin() {
@@ -137,7 +160,7 @@ export function SelectionAssistant({ api, state, initialText = '', onClose }: {
     {!messages.length ? <nav className="selection-presets" aria-label={words.selectionEmptyTitle}>{([['sparkles', labels.explain, words.selectionExplain], ['scan-text', labels.summarize, words.selectionSummarize], ['languages', labels.translate, words.selectionTranslate]] as const).map(([icon, label, question]) => <button type="button" key={icon} aria-label={question} disabled={!canSubmit} onClick={() => void ask(question)}><Icon name={icon} size={14} />{label}</button>)}</nav> : null}
     <section ref={conversation} className="selection-conversation" aria-label={words.selectionConversation}>
       {!messages.length ? <div className="selection-empty"><Icon name="message-circle" size={17} /><p>{selection.trim() ? labels.ready : labels.empty}</p></div> : null}
-      <div className="selection-messages" aria-live="polite" aria-relevant="additions text">{messages.map((message, index) => <article className={'is-' + message.role} key={index} aria-label={message.role === 'user' ? words.selectionYou : words.selectionModel}>{message.role === 'assistant' ? <button type="button" className="selection-icon-button" aria-label={words.selectionCopy} title={words.selectionCopy} onClick={() => void copy(message.content)}><Icon name="copy" size={13} /></button> : null}<p>{message.content}</p></article>)}{asking ? <p className="selection-thinking" role="status"><Icon name="loader" size={15} />{words.selectionThinking}</p> : null}</div>
+      <div className="selection-messages" aria-live="polite" aria-relevant="additions text">{messages.map((message, index) => <article className={'is-' + message.role} key={index} aria-label={message.role === 'user' ? words.selectionYou : words.selectionModel}>{message.role === 'assistant' ? <><button type="button" className="selection-icon-button" aria-label={words.selectionCopy} title={words.selectionCopy} onClick={() => void copy(message.content)}><Icon name="copy" size={13} /></button><CaptureAnswerContent text={message.content} reasoning={message.reasoning} onOpenLink={url => void openLink(url)} /></> : <p>{message.content}</p>}</article>)}{asking ? <div className="selection-answer-draft" aria-label={words.selectionModel}><CaptureAnswerContent text={answer?.text ?? ''} reasoning={answer?.reasoning} pending onOpenLink={url => void openLink(url)} /></div> : null}</div>
     </section>
     <div className="selection-bottom">
       {unavailable || tooLong || error ? <p className="selection-error" role="alert">{error || (tooLong ? words.selectionTooLong : words.selectionConfigure)}</p> : notice ? <p className="selection-notice" role="status">{notice}</p> : null}

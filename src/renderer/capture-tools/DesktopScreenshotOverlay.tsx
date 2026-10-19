@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import type { CaptureImageSource } from '../../shared/capture-tools';
+import type { CaptureAnswerUpdate } from '../../shared/capture-answer';
 import { Icon, type IconName } from '../Icons';
 import { useLocale } from '../i18n';
 import { useDialogFocusTrap } from '../use-dialog-focus-trap';
-import type { ScreenshotMessage, ScreenshotStudioProps } from '../browser/screenshot/ScreenshotStudio';
+import type { ScreenshotConversationMessage, ScreenshotEditorProps } from '../browser/screenshot/types';
+import { CaptureAnswerContent } from './CaptureAnswerContent';
 import { commitEdit, EMPTY_HISTORY, imagePoint, integerCrop, MAX_ANNOTATIONS, rectangle, redoEdit, screenshotFilename, undoEdit, type Annotation, type Point, type Rect, type ScreenshotTool, type Size } from '../browser/screenshot/model';
 import { drawScreenshot, exportScreenshot } from '../browser/screenshot/render';
 import { screenshotMessages } from '../browser/screenshot/messages';
-import { desktopRectToPixels, moveScreenshotSelection, pixelRectToViewport, pointInRect, relativeScreenshotAnnotations, resizeScreenshotSelection, screenshotChatPosition, screenshotToolbarPosition, type ResizeHandle } from './desktop-screenshot-geometry';
+import { containScreenshotViewport, desktopRectToPixels, moveScreenshotSelection, pixelRectToViewport, pointInRect, relativeScreenshotAnnotations, resizeScreenshotSelection, screenshotChatPosition, screenshotToolbarPosition, type ResizeHandle } from './desktop-screenshot-geometry';
 import './desktop-screenshot-overlay.css';
 
-export type DesktopScreenshotOverlayProps = Omit<ScreenshotStudioProps, 'source'> & {
-  source: CaptureImageSource;
+export type DesktopScreenshotOverlayProps = ScreenshotEditorProps & {
   recording?: { onSelection(rect: Rect | undefined): void; toolbar: ReactNode; disabled?: boolean };
 };
 type Gesture = { pointer: number; start: Point; client: Point } & (
@@ -27,11 +27,11 @@ function ScreenshotIconButton({ label, icon, onClick, disabled, pressed, primary
 }
 
 /** One frozen monitor fills its native desktop bounds. Selection and editing never leave that surface. */
-export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, onCopy, ai, onAsk, initialTask = 'screenshot', onLongCapture, recording }: DesktopScreenshotOverlayProps) {
+export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, onCopy, ai, onAsk, onOpenLink, initialTask = 'screenshot', onLongCapture, recording }: DesktopScreenshotOverlayProps) {
   const { locale } = useLocale(); const zh = locale === 'zh-CN'; const words = screenshotMessages[locale];
   const [image, setImage] = useState<HTMLImageElement>(); const [failed, setFailed] = useState(false);
   const [viewport, setViewport] = useState<Size>(() => ({ width: window.innerWidth, height: window.innerHeight }));
-  const [crop, setCrop] = useState<Rect>(); const [pendingCrop, setPendingCrop] = useState<Rect>();
+  const [crop, setCrop] = useState<Rect | undefined>(() => source.desktop ? undefined : { x: 0, y: 0, width: source.width, height: source.height }); const [pendingCrop, setPendingCrop] = useState<Rect>();
   const [hover, setHover] = useState<Point>(() => {
     const desktop = source.desktop; const cursor = desktop?.cursor;
     return cursor && desktop ? { x: (cursor.x - desktop.bounds.x) / desktop.bounds.width * source.width, y: (cursor.y - desktop.bounds.y) / desktop.bounds.height * source.height } : { x: source.width / 2, y: source.height / 2 };
@@ -45,14 +45,16 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
   const [toolbarSize, setToolbarSize] = useState<Size>({ width: 740, height: 50 });
   const [chatOpen, setChatOpen] = useState(initialTask !== 'screenshot');
   const [chatSize, setChatSize] = useState<Size>({ width: 352, height: 520 });
-  const [messages, setMessages] = useState<ScreenshotMessage[]>([]); const [asking, setAsking] = useState(false);
+  const [messages, setMessages] = useState<ScreenshotConversationMessage[]>([]); const [asking, setAsking] = useState(false);
+  const [stream, setStream] = useState<CaptureAnswerUpdate>({ text: '', reasoning: '' });
+  const promptInput = useRef<HTMLTextAreaElement>(null);
   const ocrPrompt = zh ? '请提取这张截图中的全部文字，保留原有段落与表格结构。' : 'Extract all text in this screenshot, preserving paragraphs and table structure.';
   const translatePrompt = zh ? '请将这张截图中的文字翻译为中文，保留原文的段落顺序。' : 'Translate the text in this screenshot into English, preserving paragraph order.';
   const [prompt, setPrompt] = useState(initialTask === 'ocr' ? ocrPrompt : initialTask === 'translate' ? translatePrompt : '');
   const surface = useRef<HTMLDivElement>(null); const canvas = useRef<HTMLCanvasElement>(null); const toolbar = useRef<HTMLDivElement>(null);
   const chat = useRef<HTMLElement>(null); const textInput = useRef<HTMLTextAreaElement>(null); const chatEnd = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | undefined>(undefined); const mounted = useRef(true);
-  const request = useRef<{ controller: AbortController; previous: ScreenshotMessage[]; question: string } | undefined>(undefined);
+  const request = useRef<{ controller: AbortController; previous: ScreenshotConversationMessage[]; question: string; update: CaptureAnswerUpdate } | undefined>(undefined);
   const textDraftRef = useRef<TextDraft | undefined>(undefined);
   useLayoutEffect(() => { textDraftRef.current = textDraft; }, [textDraft]);
   useDialogFocusTrap(true);
@@ -84,11 +86,17 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
   }, [crop, chatOpen, settingsOpen]);
   const textX = textDraft?.at.x; const textY = textDraft?.at.y;
   useEffect(() => { if (textX !== undefined) textInput.current?.focus(); }, [textX, textY]);
-  useEffect(() => { chatEnd.current?.scrollIntoView?.({ block: 'nearest' }); }, [messages, asking]);
+  useEffect(() => { chatEnd.current?.scrollIntoView?.({ block: 'nearest' }); }, [messages, asking, stream]);
+  useLayoutEffect(() => {
+    const input = promptInput.current; if (!input) return;
+    input.style.height = 'auto'; input.style.height = `${Math.min(128, Math.max(44, input.scrollHeight))}px`;
+    input.style.overflowY = input.scrollHeight > 128 ? 'auto' : 'hidden';
+  }, [prompt, chatOpen, crop]);
   const onRecordingSelection = recording?.onSelection;
   useEffect(() => { onRecordingSelection?.(crop); }, [crop, onRecordingSelection]);
 
   const imageSize = useMemo(() => ({ width: image?.naturalWidth ?? source.width, height: image?.naturalHeight ?? source.height }), [image, source.width, source.height]);
+  const imageViewport = source.desktop ? { x: 0, y: 0, ...viewport } : containScreenshotViewport(imageSize, viewport);
   const candidates = useMemo(() => {
     const desktop = source.desktop;
     return desktop ? desktop.candidates.map(item => ({ ...item, rect: desktopRectToPixels(item.bounds, desktop.bounds, imageSize) }))
@@ -97,7 +105,8 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
   const underPointer = useMemo(() => candidates.filter(item => pointInRect(hover, item.rect)), [candidates, hover]);
   const candidate = underPointer[candidateIndex % Math.max(1, underPointer.length)];
   const selectedRect = crop ?? pendingCrop ?? candidate?.rect;
-  const displayRect = selectedRect ? pixelRectToViewport(selectedRect, imageSize, viewport) : undefined;
+  const localDisplayRect = selectedRect ? pixelRectToViewport(selectedRect, imageSize, imageViewport) : undefined;
+  const displayRect = localDisplayRect ? { ...localDisplayRect, x: localDisplayRect.x + imageViewport.x, y: localDisplayRect.y + imageViewport.y } : undefined;
   const chatPoint = displayRect ? screenshotChatPosition(displayRect, chatSize, viewport) : { x: 12, y: 12 };
   // Reserve a side for Q&A instead of letting its composer or the tools obscure each other.
   const chatRight = chatPoint.x + chatSize.width + 12;
@@ -107,7 +116,7 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
     : { x: 0, width: viewport.width };
   const localToolbarPoint = displayRect ? screenshotToolbarPosition({ ...displayRect, x: displayRect.x - toolbarArea.x }, { ...toolbarSize, width: Math.min(toolbarSize.width, toolbarArea.width - 24) }, { width: toolbarArea.width, height: viewport.height }) : { x: 12, y: 12 };
   const toolbarPoint = { x: localToolbarPoint.x + toolbarArea.x, y: localToolbarPoint.y };
-  const scale = viewport.width / imageSize.width;
+  const scale = imageViewport.width / imageSize.width;
   const textAnnotation = useCallback((value: TextDraft | undefined): Annotation | undefined => value?.value.trim()
     ? { tool: 'text', at: value.at, text: value.value.trim().slice(0, 2000), color, size: fontSize } : undefined, [color, fontSize]);
   const commitText = () => {
@@ -121,8 +130,14 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
   }, [image, crop, history.present, draft]);
 
   const close = useCallback(() => { request.current?.controller.abort(); onClose(); }, [onClose]);
+  const openLink = onOpenLink ? (url: string) => {
+    setError('');
+    void Promise.resolve().then(() => onOpenLink(url)).catch(cause => {
+      if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause));
+    });
+  } : undefined;
   function clearSelection() {
-    request.current?.controller.abort(); request.current = undefined; setAsking(false); setMessages([]); setPrompt('');
+    request.current?.controller.abort(); request.current = undefined; setAsking(false); setMessages([]); setStream({ text: '', reasoning: '' }); setPrompt('');
     gesture.current = undefined; setCrop(undefined); setPendingCrop(undefined); setDraft(undefined); setHistory(EMPTY_HISTORY);
     setCandidateIndex(0);
     setTextDraft(undefined); setTool(undefined); setSettingsOpen(false); setError(''); setNotice('');
@@ -130,10 +145,11 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
   function select(value: Rect) {
     setCrop(integerCrop(value, imageSize)); setPendingCrop(undefined); setHistory(EMPTY_HISTORY); setDraft(undefined); setTool(undefined); setError(''); setNotice('');
   }
-  const pointFor = (event: { clientX: number; clientY: number }): Point => imagePoint({ x: event.clientX, y: event.clientY }, { x: 0, y: 0, ...viewport }, imageSize);
+  const pointFor = (event: { clientX: number; clientY: number }): Point => imagePoint({ x: event.clientX, y: event.clientY }, imageViewport, imageSize);
   function startGesture(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || !image || action || recording?.disabled) return;
     if ((event.target as HTMLElement).closest('[data-screenshot-ui]')) return;
+    if (!source.desktop && !pointInRect({ x: event.clientX, y: event.clientY }, imageViewport)) return;
     event.preventDefault(); commitText(); setSettingsOpen(false); setError(''); setNotice('');
     const point = pointFor(event); const client = { x: event.clientX, y: event.clientY };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -225,22 +241,25 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
   });
   const stopAnswer = () => {
     const active = request.current; if (!active) return;
-    active.controller.abort(); request.current = undefined; setMessages(active.previous); setPrompt(active.question); setAsking(false); setNotice(words.cancelled);
+    active.controller.abort(); request.current = undefined; setMessages(active.previous); setStream({ text: '', reasoning: '' }); setPrompt(active.question); setAsking(false); setNotice(words.cancelled);
   };
   async function ask() {
     const question = prompt.trim(); if (!question || asking || !image || !crop || !ai.configured || ai.visionSupported === false) return;
     if (question.length > 4000) { setError(words.questionTooLong); return; }
     if (messages.filter(item => item.role === 'user').length >= 20) { setError(words.questionLimit); return; }
-    const active = { controller: new AbortController(), previous: messages, question }; const next: ScreenshotMessage[] = [...messages, { role: 'user', content: question }];
-    request.current = active; setMessages(next); setPrompt(''); setAsking(true); setError(''); setNotice('');
+    const active = { controller: new AbortController(), previous: messages, question, update: { text: '', reasoning: '' } }; const next: ScreenshotConversationMessage[] = [...messages, { role: 'user', content: question }];
+    request.current = active; setMessages(next); setStream(active.update); setPrompt(''); setAsking(true); setError(''); setNotice('');
     try {
-      const answer = (await onAsk({ dataUrl: exportImage({ maxSide: 1600, format: 'image/jpeg' }), messages: next, signal: active.controller.signal })).trim();
+      const answer = (await onAsk({ dataUrl: exportImage({ maxSide: 1600, format: 'image/jpeg' }), messages: next.map(({ role, content }) => ({ role, content })), signal: active.controller.signal, onUpdate: update => {
+        if (!mounted.current || active.controller.signal.aborted || request.current !== active) return;
+        active.update = { ...update }; setStream(active.update);
+      } })).trim();
       if (!mounted.current || active.controller.signal.aborted || request.current !== active) return;
-      if (!answer) throw Error(words.emptyAnswer); setMessages([...next, { role: 'assistant', content: answer }]);
+      if (!answer) throw Error(words.emptyAnswer); setMessages([...next, { role: 'assistant', content: answer, ...(active.update.reasoning ? { reasoning: active.update.reasoning } : {}) }]);
     } catch (cause) {
       if (!mounted.current || active.controller.signal.aborted || request.current !== active) return;
       setMessages(active.previous); setPrompt(question); setError(cause instanceof Error ? cause.message : String(cause));
-    } finally { if (mounted.current && request.current === active) { request.current = undefined; setAsking(false); } }
+    } finally { if (mounted.current && request.current === active) { request.current = undefined; setAsking(false); setStream({ text: '', reasoning: '' }); } }
   }
   const aiDisabledReason = !ai.configured ? words.chatUnavailable : ai.visionSupported === false ? ai.reason || words.chatNoVision : '';
   const areaButton = (kind: 'screen' | 'workarea') => {
@@ -254,7 +273,7 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
     onPointerCancel={() => { gesture.current = undefined; setDraft(undefined); setPendingCrop(undefined); }}
     onContextMenu={event => { if ((event.target as HTMLElement).closest('textarea,input')) return; event.preventDefault(); if (recording?.disabled) return; if (crop) clearSelection(); else close(); }}
     onWheel={event => { if (!crop && !gesture.current && !recording?.disabled) { event.preventDefault(); cycleCandidate(event.deltaY < 0 ? -1 : 1); } }}>
-    <img className="desktop-screenshot-surface" src={source.dataUrl} alt="" draggable={false} />
+    <img className="desktop-screenshot-surface" src={source.dataUrl} alt="" draggable={false} style={source.desktop ? undefined : { inset: 'auto', left: imageViewport.x, top: imageViewport.y, width: imageViewport.width, height: imageViewport.height, objectFit: 'contain' }} />
     {!image && <div className="desktop-screenshot-loading" role={failed ? 'alert' : 'status'}>{words[failed ? 'failed' : 'loading']}<button data-screenshot-ui type="button" onClick={close}>{words.close}</button></div>}
     {image && displayRect && selectedRect && <>
       <div className={`desktop-screenshot-selection ${crop ? 'is-committed' : 'desktop-screenshot-hover'}`} style={selectionStyle} data-pixel-crop={JSON.stringify(selectedRect)} data-candidate-id={!crop && !pendingCrop ? candidate?.id : undefined} data-candidate-kind={!crop && !pendingCrop ? candidate?.kind : undefined}>
@@ -294,7 +313,7 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
       </div>}</>}
     </div>}
     {textDraft && crop && <textarea ref={textInput} className="desktop-screenshot-text-input" data-screenshot-ui aria-label={words.text} placeholder={zh ? '输入文字' : 'Type here'} value={textDraft.value} maxLength={2000}
-      style={{ left: Math.min(textDraft.at.x * scale, viewport.width - 180), top: Math.min(textDraft.at.y / imageSize.height * viewport.height, viewport.height - 100), fontSize: Math.max(12, fontSize * scale), color }}
+      style={{ left: Math.min(imageViewport.x + textDraft.at.x * scale, viewport.width - 180), top: Math.min(imageViewport.y + textDraft.at.y / imageSize.height * imageViewport.height, viewport.height - 100), fontSize: Math.max(12, fontSize * scale), color }}
       onChange={event => setTextDraft(previous => previous ? { ...previous, value: event.target.value } : previous)} onBlur={commitText}
       onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) { event.preventDefault(); commitText(); } }} />}
     {crop && chatOpen && !recording && <aside ref={chat} className="desktop-screenshot-chat screenshot-chat" data-screenshot-ui aria-label={words.chat} style={{ left: chatPoint.x, top: chatPoint.y }}>
@@ -303,10 +322,11 @@ export function DesktopScreenshotOverlay({ source, onClose, onSave, onSaveFile, 
       {aiDisabledReason && <p className="screenshot-ai-warning" role="status">{aiDisabledReason}</p>}
       {ai.configured && ai.visionSupported === null && <p className="screenshot-chat-hint">{words.chatUnknown}</p>}
       <div className="screenshot-chat-shortcuts"><button type="button" disabled={asking || !!aiDisabledReason} onClick={() => setPrompt(ocrPrompt)}><Icon name="scan-text" size={15} />{zh ? '提取文字' : 'Extract text'}</button><button type="button" disabled={asking || !!aiDisabledReason} onClick={() => setPrompt(translatePrompt)}><Icon name="languages" size={15} />{zh ? '翻译文字' : 'Translate text'}</button></div>
-      <div className="screenshot-chat-messages" aria-live="polite" aria-relevant="additions text">{messages.map((message, index) => <article key={index} className={`is-${message.role}`}><strong>{words[message.role === 'user' ? 'user' : 'assistant']}</strong><p>{message.content}</p></article>)}{asking && <p className="screenshot-chat-thinking" role="status">{words.asking}</p>}<div ref={chatEnd} /></div>
+      <div className="screenshot-chat-messages" aria-live="polite" aria-relevant="additions text">{messages.map((message, index) => <article key={index} className={`is-${message.role}`}><strong>{words[message.role === 'user' ? 'user' : 'assistant']}</strong>{message.role === 'assistant' ? <CaptureAnswerContent text={message.content} reasoning={message.reasoning} onOpenLink={openLink} /> : <p className="screenshot-chat-user-text">{message.content}</p>}</article>)}{asking && (stream.text || stream.reasoning ? <article className="is-assistant is-streaming"><strong>{words.assistant}</strong><CaptureAnswerContent text={stream.text} reasoning={stream.reasoning} pending onOpenLink={openLink} /></article> : <p className="screenshot-chat-thinking" role="status">{words.asking}</p>)}<div ref={chatEnd} /></div>
       <form className="screenshot-chat-composer" onSubmit={event => { event.preventDefault(); void ask(); }}>
-        <textarea aria-label={words.chatPrompt} placeholder={words.chatPrompt} value={prompt} maxLength={4000} disabled={!!aiDisabledReason || asking} rows={3} onChange={event => setPrompt(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) { event.preventDefault(); void ask(); } }} />
-        <div><small>Ctrl / ⌘ + Enter</small>{asking ? <button type="button" onClick={event => { event.preventDefault(); stopAnswer(); }}><Icon name="stop" size={14} />{words.stop}</button> : <button type="submit" className="is-primary" disabled={!prompt.trim() || !!aiDisabledReason}><Icon name="send" size={15} />{words.ask}</button>}</div>
+        <div className="screenshot-chat-input-shell"><textarea ref={promptInput} aria-label={words.chatPrompt} placeholder={words.chatPrompt} value={prompt} maxLength={4000} disabled={!!aiDisabledReason || asking} rows={2} onChange={event => setPrompt(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void ask(); } }} />
+          <div className="screenshot-chat-input-actions"><small>{zh ? 'Enter 发送 · Shift + Enter 换行' : 'Enter to send · Shift + Enter for a new line'}</small>{asking ? <button type="button" aria-label={words.stop} title={words.stop} onClick={event => { event.preventDefault(); stopAnswer(); }}><Icon name="stop" size={16} /></button> : <button type="submit" className="is-primary" aria-label={words.ask} title={words.ask} disabled={!prompt.trim() || !!aiDisabledReason}><Icon name="send" size={17} /></button>}</div>
+        </div>
       </form>
     </aside>}
     {(error || notice) && <div className={`desktop-screenshot-feedback ${error ? 'is-error' : ''}`} data-screenshot-ui role={error ? 'alert' : 'status'}>{error || notice}</div>}

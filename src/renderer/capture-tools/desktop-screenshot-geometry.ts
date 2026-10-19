@@ -20,6 +20,13 @@ export function pixelRectToViewport(rect: Rect, image: Size, viewport: Size): Re
     width: rect.width / image.width * viewport.width, height: rect.height / image.height * viewport.height };
 }
 
+/** Stitched images and explicit window captures retain their pixel aspect ratio on resize. */
+export function containScreenshotViewport(image: Size, viewport: Size): Rect {
+  const scale = Math.min(viewport.width / Math.max(1, image.width), viewport.height / Math.max(1, image.height));
+  const width = image.width * scale; const height = image.height * scale;
+  return { x: (viewport.width - width) / 2, y: (viewport.height - height) / 2, width, height };
+}
+
 export type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 export function resizeScreenshotSelection(rect: Rect, handle: ResizeHandle, point: Point, image: Size): Rect {
   const left = handle.includes('w') ? point.x : rect.x;

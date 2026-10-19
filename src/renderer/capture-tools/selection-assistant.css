@@ -35,7 +35,8 @@
 .selection-messages article { position: relative; min-width: 0; padding: 7px 10px; border-radius: 10px; }
 .selection-messages article.is-user { align-self: flex-end; max-width: 92%; border-bottom-right-radius: 4px; background: color-mix(in srgb, var(--ui-content-accent) 8%, var(--ui-surface-raised)); }
 .selection-messages article.is-assistant { align-self: stretch; padding: 8px 32px 8px 10px; border: 1px solid color-mix(in srgb, var(--ui-border-subtle) 65%, transparent); background: color-mix(in srgb, var(--ui-surface-field) 45%, var(--ui-surface-raised)); }
-.selection-messages article p { margin: 0; color: var(--ui-content-primary); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.selection-messages article > p { margin: 0; color: var(--ui-content-primary); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.selection-answer-draft { min-width: 0; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--ui-surface-field) 45%, var(--ui-surface-raised)); }
 .selection-messages article .selection-icon-button { position: absolute; top: 7px; right: 6px; width: 21px; height: 21px; padding: 3px; color: var(--ui-content-tertiary); opacity: .75; }
 .selection-messages article .selection-icon-button:hover, .selection-messages article .selection-icon-button:focus-visible { opacity: 1; }
 .selection-thinking { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--ui-content-secondary); font-size: 11px; }

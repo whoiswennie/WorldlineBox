@@ -100,17 +100,12 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     const captured = (await request(tool, { type: 'screenshot.capture', sourceId: fixture.sourceId })).source!;
     expect(captured.title).toContain('WorldlineBox Capture Fixture'); expect(captured.width).toBeGreaterThan(100); expect(captured.height).toBeGreaterThan(100);
     expect((await sharp(Buffer.from(captured.dataUrl.split(',')[1]!, 'base64')).metadata()).format).toBe('png');
-    await tool.reload(); await tool.getByRole('button', { name: '使用整个可见区域', exact: true }).click();
+    await tool.reload(); await expect(tool.getByLabel('截图编辑画布')).toBeVisible();
+    await expect(tool.locator('.screenshot-studio')).toHaveCount(0);
     await tool.getByRole('button', { name: '遮盖', exact: true }).click();
     const surface = tool.getByLabel('截图编辑画布'); const bounds = await surface.boundingBox(); if (!bounds) throw Error('Missing screenshot editing canvas');
     await tool.mouse.move(bounds.x + bounds.width * .2, bounds.y + bounds.height * .2); await tool.mouse.down();
     await tool.mouse.move(bounds.x + bounds.width * .4, bounds.y + bounds.height * .4, { steps: 8 }); await tool.mouse.up();
-    await tool.getByRole('button', { name: '保存到下载目录', exact: true }).click();
-    await expect.poll(() => readdirSync(downloads).filter(file => file.endsWith('.png')).length).toBe(1);
-    const saved = path.join(downloads, readdirSync(downloads).find(file => file.endsWith('.png'))!); const savedBytes = readFileSync(saved); const meta = await sharp(savedBytes).metadata();
-    expect([meta.width, meta.height]).toEqual([captured.width, captured.height]);
-    const center = await sharp(savedBytes).extract({ left: Math.floor(captured.width * .3), top: Math.floor(captured.height * .3), width: 1, height: 1 }).removeAlpha().raw().toBuffer();
-    expect([...center]).toEqual([0, 0, 0]);
     previousClipboard = await application.evaluate(({ clipboard }) => ({ text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: clipboard.readImage().toDataURL() }));
     await tool.getByRole('button', { name: '复制图片', exact: true }).click(); await expect(tool.getByRole('status')).toContainText('已复制截图');
     const copied = await application.evaluate(({ clipboard }) => Array.from(clipboard.readImage().toPNG()));
@@ -118,6 +113,12 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     const copiedCenter = await sharp(Buffer.from(copied)).extract({ left: Math.floor(captured.width * .3), top: Math.floor(captured.height * .3), width: 1, height: 1 }).removeAlpha().raw().toBuffer(); expect([...copiedCenter]).toEqual([0, 0, 0]);
     const artifacts = path.resolve('.tools/test-output'); mkdirSync(artifacts, { recursive: true });
     await tool.screenshot({ path: path.join(artifacts, 'capture-tools-editor.png') });
+    await tool.getByRole('button', { name: '保存到下载目录', exact: true }).click(); await expect.poll(() => tool.isClosed()).toBe(true);
+    await expect.poll(() => readdirSync(downloads).filter(file => file.endsWith('.png')).length).toBe(1);
+    const saved = path.join(downloads, readdirSync(downloads).find(file => file.endsWith('.png'))!); const savedBytes = readFileSync(saved); const meta = await sharp(savedBytes).metadata();
+    expect([meta.width, meta.height]).toEqual([captured.width, captured.height]);
+    const center = await sharp(savedBytes).extract({ left: Math.floor(captured.width * .3), top: Math.floor(captured.height * .3), width: 1, height: 1 }).removeAlpha().raw().toBuffer();
+    expect([...center]).toEqual([0, 0, 0]);
 
     await request(main, { type: 'open', task: 'recording' }); tool = await toolPage(application);
     // Keep explicit window-source recording covered alongside the separate
@@ -274,6 +275,9 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     expect(delta).toBeGreaterThan(100); expect(Math.abs(delta - scrollY * firstLong.height / viewport.height)).toBeLessThan(5);
     const completed = (await request(tool, { type: 'long.finish' })).source!;
     expect([completed.width, completed.height]).toEqual([longRect.width, appended.long!.height]);
+    const longWindow = await application.browserWindow(tool); const longSize = await longWindow.evaluate(window => window.getContentSize());
+    expect(Math.abs(longSize[0]! / longSize[1]! * completed.height - completed.width)).toBeLessThan(5);
+    await expect(tool.locator('.screenshot-studio')).toHaveCount(0); await expect(tool.locator('body')).not.toContainText('截图工作台');
     const longBytes = Buffer.from(completed.dataUrl.split(',')[1]!, 'base64'); const longMetadata = await sharp(longBytes).metadata();
     expect(longMetadata).toMatchObject({ format: 'png', width: completed.width, height: completed.height });
     const firstBytes = Buffer.from(firstLong.dataUrl.split(',')[1]!, 'base64');

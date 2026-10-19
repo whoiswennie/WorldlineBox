@@ -17,6 +17,7 @@ import { CAPTURE_RECORDING_SCHEME, RecordingPreview } from './recording-preview'
 import { LongCaptureStitcher } from './long-capture';
 import { boundedSelectionText, readFocusedSelectedText } from './selected-text';
 import { answerSelectedText } from './text-answer';
+import { CAPTURE_TOOLS_ANSWER_PROGRESS, captureAnswerProgressSchema, type CaptureAnswerUpdate } from '../../shared/capture-answer';
 import { createCaptureDesktopContext, nativeCaptureRectToDisplayDip, placeCaptureRecordingControls, positionCaptureWindowInPhysicalPixels, readWindowsCaptureMonitor, readWindowsDesktopRegions, recordingBoundaryPage, recordingBoundaryRectangles } from './desktop-regions';
 
 export interface CaptureToolsServiceOptions {
@@ -26,7 +27,6 @@ export interface CaptureToolsServiceOptions {
   getModelConfig(): CompanionModelConfig;
   saveToLibrary(bytes: Uint8Array, filename: string): Promise<void>;
   getFfmpeg(): string | undefined | Promise<string | undefined>;
-  captureBrowser?(): Promise<CaptureImageSource>;
   readBrowserSelection?(): Promise<string>;
   /** Main checks custom application bindings before a global hotkey is saved. */
   validateShortcuts?(settings: CaptureToolsSettings): void;
@@ -212,6 +212,16 @@ export class CaptureToolsService {
     tool.setAlwaysOnTop(true, 'screen-saver');
     if (desktop.pixelBounds) positionCaptureWindowInPhysicalPixels(tool.getNativeWindowHandle(), desktop.pixelBounds);
   }
+  private fitToolToImage(): void {
+    const tool = this.tool, image = this.image;
+    if (!tool || tool.isDestroyed() || !image) return;
+    const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    const scale = Math.min(Math.max(1, area.width - 48) / image.width, Math.max(1, area.height - 48) / image.height);
+    const width = Math.max(Math.min(360, area.width), Math.round(image.width * scale));
+    const height = Math.max(Math.min(240, area.height), Math.round(image.height * scale));
+    tool.setMinimumSize(1, 1); tool.setResizable(true); tool.setMovable(true); tool.setAlwaysOnTop(true, 'floating');
+    tool.setBounds({ x: Math.round(area.x + (area.width - width) / 2), y: Math.round(area.y + (area.height - height) / 2), width, height }); tool.showInactive();
+  }
   private clearRecordingBoundaries(): void {
     this.recordingBoundaryGeneration++;
     const windows = [...this.recordingBoundaries]; this.recordingBoundaries.clear();
@@ -271,8 +281,48 @@ export class CaptureToolsService {
     if (parsed.data.type === 'shortcuts.capture' && !main) return { ok: false, error: '请在主窗口设置中修改快捷键。' };
     const openDownloads = parsed.data.type === 'reveal' && path.resolve(parsed.data.path) === this.downloadPath;
     if (!own && !mainActions.has(parsed.data.type) && !openDownloads) return { ok: false, error: '请在独立截图工具窗口中执行此操作。' };
-    try { await this.init(); if (this.closed || this.stopping && !flushActions.has(parsed.data.type)) throw Error('截图工具正在关闭。'); return await this.request(parsed.data); }
+    try {
+      await this.init();
+      if (own && !this.ownSender(event, this.tool)) throw Error('问答窗口已关闭。');
+      if (this.closed || this.stopping && !flushActions.has(parsed.data.type)) throw Error('截图工具正在关闭。');
+      return await this.request(parsed.data);
+    }
     catch (error) { return { ok: false, error: (error instanceof Error ? error.message : '截图操作失败。').slice(0, 2000) }; }
+  }
+  private async answer(request: Extract<CaptureToolsRequest, { type: 'screenshot.ask' | 'selection.ask' }>): Promise<CaptureToolsResponse> {
+    if (this.asks.size) throw Error('请等待当前问答完成，或先取消。');
+    const window = this.tool;
+    if (!window || window.isDestroyed()) throw Error('问答窗口已关闭。');
+    const controller = new AbortController(); this.asks.set(request.id, controller);
+    let sequence = 0, latest: CaptureAnswerUpdate = { text: '', reasoning: '' }, sent: CaptureAnswerUpdate | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const current = () => !controller.signal.aborted && this.asks.get(request.id) === controller && this.tool === window
+      && !this.closed && !this.stopping && !window.isDestroyed() && !window.webContents.isDestroyed();
+    const flush = () => {
+      if (timer) clearTimeout(timer); timer = undefined;
+      if (!current() || sent?.text === latest.text && sent?.reasoning === latest.reasoning) return;
+      const parsed = captureAnswerProgressSchema.safeParse({ id: request.id, sequence: sequence + 1, ...latest });
+      if (!parsed.success) return;
+      try { window.webContents.send(CAPTURE_TOOLS_ANSWER_PROGRESS, parsed.data); sequence++; sent = latest; }
+      catch { /* The receiving temporary window may have just closed. */ }
+    };
+    const onUpdate = (update: CaptureAnswerUpdate) => {
+      if (!current() || !captureAnswerProgressSchema.safeParse({ id: request.id, sequence: sequence + 1, ...update }).success) return;
+      latest = { text: update.text, reasoning: update.reasoning };
+      if (!sequence) flush();
+      else timer ??= setTimeout(flush, 40);
+    };
+    try {
+      const common = { config: this.options.getModelConfig(), messages: request.messages, signal: controller.signal, onUpdate };
+      const text = request.type === 'screenshot.ask' ? await answerCaptureImage({ ...common, dataUrl: request.dataUrl })
+        : await answerSelectedText({ ...common, selection: request.selection });
+      if (!current()) throw Error('问答已取消。');
+      latest = { ...latest, text }; flush();
+      return { ok: true, text, state: this.state() };
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (this.asks.get(request.id) === controller) this.asks.delete(request.id);
+    }
   }
   private async request(request: CaptureToolsRequest): Promise<CaptureToolsResponse> {
     switch (request.type) {
@@ -285,10 +335,8 @@ export class CaptureToolsService {
           if (!this.options.readBrowserSelection) throw Error('浏览器划词暂不可用，请先打开网页。');
           return this.openSelection(await this.options.readBrowserSelection());
         }
-        if (request.source === 'browser') {
-          if (!this.options.captureBrowser) throw Error('浏览器截图暂不可用，请先打开网页。');
-          return this.open(request.task, await this.options.captureBrowser(), this.options.captureBrowser);
-        }
+        // Every capture entry, including older browser requests, uses the
+        // actual desktop surface and its inline selection/editor.
         return this.open(request.task);
       }
       case 'close': await this.closeTool(); break;
@@ -296,7 +344,9 @@ export class CaptureToolsService {
       case 'screenshot.capture': {
         this.recordingResultId = undefined; this.recordingPreview.clear();
         this.provider = undefined; this.sourceId = request.sourceId ?? this.sourceId;
-        this.image = await this.captureDesktop(this.sourceId); this.fitToolToDesktop(); this.changed(); return { ok: true, source: this.image, state: this.state() };
+        this.image = await this.captureDesktop(this.sourceId);
+        if (this.image.desktop) this.fitToolToDesktop(); else if (this.task !== 'recording') this.fitToolToImage();
+        this.changed(); return { ok: true, source: this.image, state: this.state() };
       }
       case 'screenshot.copy': {
         const bytes = await this.png(request.dataUrl); const image = nativeImage.createFromBuffer(bytes); if (image.isEmpty()) throw Error('截图无法解码。'); clipboard.writeImage(image); break;
@@ -306,17 +356,11 @@ export class CaptureToolsService {
         if (request.destination === 'library') await this.options.saveToLibrary(bytes, filename);
         else { const saved = await this.savePng(bytes, filename); return { ok: true, path: saved, state: this.state() }; } break;
       }
-      case 'screenshot.ask': {
-        if (this.asks.size || this.asks.has(request.id)) throw Error('请等待当前图片问答完成，或先取消。');
-        const controller = new AbortController(); this.asks.set(request.id, controller);
-        try { const text = await answerCaptureImage({ config: this.options.getModelConfig(), dataUrl: request.dataUrl, messages: request.messages, signal: controller.signal }); return { ok: true, text, state: this.state() }; }
-        finally { this.asks.delete(request.id); }
-      }
-      case 'selection.ask': {
-        if (this.asks.size) throw Error('请等待当前问答完成，或先取消。');
-        const controller = new AbortController(); this.asks.set(request.id, controller);
-        try { const text = await answerSelectedText({ config: this.options.getModelConfig(), selection: request.selection, messages: request.messages, signal: controller.signal }); return { ok: true, text, state: this.state() }; }
-        finally { this.asks.delete(request.id); }
+      case 'screenshot.ask': case 'selection.ask': return this.answer(request);
+      case 'link.open': {
+        try { await shell.openExternal(request.url); }
+        catch { throw Error('无法打开链接，请检查系统默认浏览器。'); }
+        break;
       }
       case 'selection.clipboard': return { ok: true, text: boundedSelectionText(clipboard.readText()), state: this.state() };
       case 'selection.copy': clipboard.writeText(request.text); break;
@@ -407,7 +451,7 @@ export class CaptureToolsService {
         if (!this.long || this.busyLong) throw Error('请先完成当前画面采集。');
         this.busyLong = true;
         try { const result = await this.long.finish(); this.image = { ...result, title: '滚动截图', url: this.image?.url ?? '' };
-          this.long = undefined; this.longProvider = undefined; this.resizeTool(false); this.changed(); return { ok: true, source: this.image, state: this.state() }; }
+          this.long = undefined; this.longProvider = undefined; this.fitToolToImage(); this.changed(); return { ok: true, source: this.image, state: this.state() }; }
         finally { this.busyLong = false; }
       }
       case 'long.cancel': this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;

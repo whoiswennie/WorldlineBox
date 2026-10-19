@@ -1,4 +1,5 @@
 import { ipcRenderer } from 'electron';
+import { CAPTURE_TOOLS_ANSWER_PROGRESS, captureAnswerProgressSchema, type CaptureAnswerProgress } from '../../shared/capture-answer';
 import { CAPTURE_TOOLS_REQUEST, CAPTURE_TOOLS_CHANGED, CAPTURE_TOOLS_STOP_RECORDING, captureToolsRequestSchema, captureToolsResponseSchema, captureToolsStateSchema, type CaptureToolsRequest, type CaptureToolsState, type WorldlineBoxCaptureToolsApi } from '../../shared/capture-tools';
 
 export const captureTools: WorldlineBoxCaptureToolsApi = Object.freeze({
@@ -17,5 +18,12 @@ export const captureTools: WorldlineBoxCaptureToolsApi = Object.freeze({
   onStopRecording(listener: () => void) {
     const handler = () => listener(); ipcRenderer.on(CAPTURE_TOOLS_STOP_RECORDING, handler);
     return () => ipcRenderer.removeListener(CAPTURE_TOOLS_STOP_RECORDING, handler);
+  },
+  onAnswerProgress(listener: (update: CaptureAnswerProgress) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, input: unknown) => {
+      const parsed = captureAnswerProgressSchema.safeParse(input); if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(CAPTURE_TOOLS_ANSWER_PROGRESS, handler);
+    return () => ipcRenderer.removeListener(CAPTURE_TOOLS_ANSWER_PROGRESS, handler);
   },
 });
