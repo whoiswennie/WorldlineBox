@@ -90,6 +90,42 @@ describe.skipIf(process.platform !== 'win32')('Windows entrypoint responsibiliti
   });
 });
 
+it.skipIf(process.platform !== 'win32')('reports a failed portable download and removes a stale setup receipt', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'worldlinebox-setup-missing-tools-'));
+  const relative = path.relative(os.tmpdir(), root);
+  if (!relative.startsWith('worldlinebox-setup-missing-tools-') || path.isAbsolute(relative) || relative.includes(path.sep)) throw new Error('Unexpected cleanup target');
+  try {
+    mkdirSync(path.join(root, 'scripts'));
+    mkdirSync(path.join(root, '.tools'));
+    const state = path.join(root, '.tools/setup-state.json');
+    writeFileSync(state, '{}');
+    writeFileSync(path.join(root, 'scripts/ensure-native.mjs'), 'process.exit(0);');
+    writeFileSync(path.join(root, 'scripts/acquire-portable-tools.mjs'), 'process.exit(1);');
+    const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `
+      $ErrorActionPreference = 'Stop'
+      $projectRoot = ${quote(root)}
+      $toolsRoot = Join-Path $projectRoot '.tools'
+      $setupState = Join-Path $toolsRoot 'setup-state.json'
+      $nodeExe = ${quote(process.execPath)}
+      $ast = [System.Management.Automation.Language.Parser]::ParseFile(${quote(path.resolve('scripts/windows.ps1'))}, [ref]$null, [ref]$null)
+      $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Setup-Environment' }, $true)
+      . ([scriptblock]::Create($definition.Extent.Text))
+      function Prepare-NativeBuildTools {}
+      function Install-Dependencies {}
+      function Prepare-Electron {}
+      function Run-Npm {}
+      try { Setup-Environment } catch { Write-Output $_.Exception.Message; exit 1 }
+    `], { encoding: 'utf8', windowsHide: true, timeout: 20_000 });
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout).toContain('Portable tool acquisition failed.');
+    expect(result.stdout).toContain('docs\\developer\\portable-tools.md');
+    expect(existsSync(state)).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it('check-only native readiness never invokes a repair on a failed probe', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'worldlinebox-native-check-'));
   const relative = path.relative(os.tmpdir(), root);

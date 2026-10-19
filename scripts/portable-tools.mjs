@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { createReadStream } from 'node:fs';
-import { copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -19,25 +19,39 @@ for (let index = 3; index < process.argv.length; index += 2) {
 const targetRoot = options.has('root') ? path.resolve(options.get('root')) : root;
 
 async function hash(file) {
-  const digest = createHash('sha256');
-  for await (const chunk of createReadStream(file)) digest.update(chunk);
-  return digest.digest('hex');
+  const handle = await open(file, 'r');
+  try {
+    const digest = createHash('sha256');
+    for await (const chunk of handle.createReadStream({ autoClose: false })) digest.update(chunk);
+    return digest.digest('hex');
+  } finally { await handle.close(); }
 }
 
 async function inventory(directory, prefix = '') {
-  const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
-    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (relative === 'manifest.json') continue;
-    const file = path.join(directory, entry.name);
-    const info = await lstat(file);
-    if (info.isSymbolicLink()) throw new Error(`Portable tool payload cannot contain links: ${relative}`);
-    if (info.isDirectory()) files.push(...await inventory(file, relative));
-    else if (info.isFile()) files.push({ path: relative, size: info.size, sha256: await hash(file) });
-    else throw new Error(`Portable tool payload has unsupported entry: ${relative}`);
+  async function scan(current, currentPrefix) {
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
+      const relative = currentPrefix ? `${currentPrefix}/${entry.name}` : entry.name;
+      if (relative === 'manifest.json') continue;
+      const file = path.join(current, entry.name);
+      const info = await lstat(file);
+      if (info.isSymbolicLink()) throw new Error(`Portable tool payload cannot contain links: ${relative}`);
+      if (info.isDirectory()) await scan(file, relative);
+      else if (info.isFile()) files.push({ file, path: relative, size: info.size, sha256: '' });
+      else throw new Error(`Portable tool payload has unsupported entry: ${relative}`);
+    }
   }
-  return files;
+  await scan(directory, prefix);
+  // Preserve manifest ordering while hashing a bounded number of files at once.
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(8, files.length) }, async () => {
+    while (next < files.length) {
+      const entry = files[next++];
+      entry.sha256 = await hash(entry.file);
+    }
+  }));
+  return files.map(({ path: relative, size, sha256 }) => ({ path: relative, size, sha256 }));
 }
 
 function toolRun(directory, tool, args, expected, env) {
@@ -187,22 +201,45 @@ async function stage() {
     await mkdir(path.join(staging, 'python/Scripts'), { recursive: true });
     await writeFile(path.join(staging, 'python/Scripts/pip.cmd'), '@echo off\r\n"%~dp0..\\python.exe" -m pip %*\r\n');
     // Copy portable Git components, never an uninstaller, user config or install registry.
-    for (const component of ['cmd', 'bin', 'mingw64', 'usr', 'LICENSE.txt', 'ReleaseNotes.html']) await copy(path.join(gitSource, component), path.join(staging, 'git', component));
+    for (const component of ['cmd', 'bin', 'mingw64', 'usr', 'LICENSE.txt']) await copy(path.join(gitSource, component), path.join(staging, 'git', component));
+    // PortableGit does not include the installed edition's ReleaseNotes.html.
+    const releaseNotes = path.join(gitSource, 'ReleaseNotes.html');
+    const notes = await lstat(releaseNotes).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    if (notes) await copy(releaseNotes, path.join(staging, 'git/ReleaseNotes.html'));
     await mkdir(path.join(staging, 'git/etc'), { recursive: true });
     await writeFile(path.join(staging, 'git/etc/gitconfig'), '[core]\n\tautocrlf = false\n[http]\n\tsslBackend = openssl\n');
     for (const component of ['bin', 'doc', 'presets', 'LICENSE', 'README.txt']) await copy(path.join(ffmpegSource, component), path.join(staging, 'ffmpeg', component));
     await writeFile(path.join(staging, 'SOURCES.md'), '# Bundled command line tools\n\nThese are independent tools invoked as child processes. No system installation or global environment change is required.\n\n- Node.js 24.15.0 + npm 11.12.1: https://nodejs.org/dist/v24.15.0/ ; licenses in node/LICENSE and npm package.\n- CPython 3.13.12 + pip 25.3: https://www.python.org/downloads/release/python-31312/ ; PSF license in python/LICENSE.txt. Full Lib, ensurepip and venv are included.\n- Git for Windows 2.48.1.windows.1: https://github.com/git-for-windows/git/releases/tag/v2.48.1.windows.1 ; GPLv2 and component notices remain in git/LICENSE.txt and git/usr/share/licenses. Corresponding source distribution: https://github.com/git-for-windows/git/archive/refs/tags/v2.48.1.windows.1.tar.gz .\n- FFmpeg/ffplay/ffprobe 8.0.1 essentials: https://www.gyan.dev/ffmpeg/builds/ ; GPLv3 license and original exact build configuration are included as ffmpeg/LICENSE and ffmpeg/README.txt. Upstream source commit is https://github.com/FFmpeg/FFmpeg/commit/894da5ca7d and Gyan build/source information is https://www.gyan.dev/ffmpeg/builds/#source-code .\n\nThe LGPL media bundle used by the asset worker remains separately verified. This GPL command bundle is not a replacement for it. Public binary distribution must provide the corresponding source for Git/FFmpeg and their enabled linked components alongside the binaries as their licenses require.\n');
+    if (options.has('download-lock')) {
+      // Checkout line endings must not change the reproducible payload bytes.
+      const downloads = JSON.parse(await readFile(path.resolve(options.get('download-lock')), 'utf8'));
+      await writeFile(path.join(staging, 'DOWNLOADS.json'), `${JSON.stringify(downloads, null, 2)}\n`);
+      const sourcesFile = path.join(staging, 'SOURCES.md');
+      await writeFile(sourcesFile, `${await readFile(sourcesFile, 'utf8')}\nExact official archive URLs and SHA-256 checksums used for this reproducible bundle are recorded in DOWNLOADS.json. CPython comes from the official python.org NuGet package with its full standard library, pip and ensurepip.\n`);
+    }
     const outputs = verifyVersions(staging);
+    console.log('[portable-tools] Tool runtimes verified; hashing the complete file inventory...');
     const manifest = { format: 'worldlinebox-portable-tools-v1', platform: 'win32-x64', versions: { node: '24.15.0', npm: '11.12.1', pnpm: '11.7.0', python: '3.13.12', git: '2.48.1.windows.1', ffmpeg: '8.0.1' }, files: await inventory(staging) };
     await writeFile(path.join(staging, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+    const manifestSha256 = await hash(path.join(staging, 'manifest.json'));
+    if (options.get('locked') === 'true') {
+      const approved = JSON.parse(await readFile(lockPath, 'utf8'));
+      if (manifestSha256 !== approved.manifestSha256) throw new Error('Downloaded portable tools do not reproduce the reviewed manifest. The existing lock was not changed.');
+    }
     await mkdir(path.dirname(root), { recursive: true });
     // Never replace an existing managed payload unless its verified manifest agrees.
     try {
       await lstat(root);
       throw new Error('Portable payload already exists. Verify it, or explicitly move the owned payload before staging a reviewed replacement.');
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    await rename(staging, root);
-    await writeFile(lockPath, `${JSON.stringify({ format: 'worldlinebox-portable-tools-lock-v1', platform: 'win32-x64', manifestSha256: await hash(path.join(root, 'manifest.json')), versions: manifest.versions }, null, 2)}\n`);
+    for (let attempt = 0; ; attempt += 1) {
+      try { await rename(staging, root); break; }
+      catch (error) {
+        if (attempt === 8 || !['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) throw error;
+        await setTimeout(200 * (attempt + 1));
+      }
+    }
+    if (options.get('locked') !== 'true') await writeFile(lockPath, `${JSON.stringify({ format: 'worldlinebox-portable-tools-lock-v1', platform: 'win32-x64', manifestSha256, versions: manifest.versions }, null, 2)}\n`);
     console.log(JSON.stringify({ staged: root, files: manifest.files.length, versions: outputs }, null, 2));
   } finally {
     await safeRemoveOwned(staging, stagingParent);

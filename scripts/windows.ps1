@@ -1,6 +1,18 @@
-param([ValidateSet('Setup', 'Dev', 'Installer')][string]$Action = 'Setup')
+param(
+    [ValidateSet('Setup', 'Dev', 'Installer')][string]$Action = 'Setup',
+    [string]$Proxy = $env:WORLDLINEBOX_PROXY
+)
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+if ($Proxy) {
+    $proxyUri = $null
+    if (-not [Uri]::TryCreate($Proxy, [UriKind]::Absolute, [ref]$proxyUri) -or $proxyUri.Scheme -notin @('http', 'https')) { throw 'Proxy must be an absolute HTTP(S) proxy URL.' }
+    $env:HTTP_PROXY = $Proxy
+    $env:HTTPS_PROXY = $Proxy
+    $env:npm_config_proxy = $Proxy
+    $env:npm_config_https_proxy = $Proxy
+}
+if ($env:HTTP_PROXY -or $env:HTTPS_PROXY) { $env:NODE_USE_ENV_PROXY = '1' }
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $toolsRoot = Join-Path $projectRoot '.tools'
 $nodeVersion = (Get-Content -LiteralPath (Join-Path $projectRoot '.nvmrc') -Raw).Trim()
@@ -19,7 +31,9 @@ function Download-File([string]$Url, [string]$Destination) {
         & curl.exe --fail --location --retry 4 --output $Destination $Url
         if ($LASTEXITCODE -ne 0) { throw "Download failed: $Url" }
     } else {
-        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Destination
+        $downloadOptions = @{ UseBasicParsing = $true; Uri = $Url; OutFile = $Destination }
+        if ($Proxy) { $downloadOptions.Proxy = $Proxy }
+        Invoke-WebRequest @downloadOptions
     }
 }
 
@@ -144,14 +158,23 @@ function Prepare-NativeBuildTools {
     if (Test-Path -LiteralPath (Join-Path $pythonRoot 'python.exe')) { $env:Path = "$pythonRoot;$env:Path" }
 }
 
+function Install-Dependencies {
+    # Install the lock without compiling better-sqlite3 for the host Node ABI.
+    # It is built for Electron below; a host build can fail on ClangCL/MSVC
+    # before setup ever reaches that required rebuild. Keep the other native
+    # packages' install hooks so their bundled NAPI binaries are prepared.
+    $env:ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
+    Run-Npm @('ci', '--ignore-scripts', '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund')
+    Run-Npm @('rebuild', 'koffi', 'node-pty', '--ignore-scripts=false')
+}
+
 function Setup-Environment {
     # A failed setup must never leave a previous success receipt behind.
     if (Test-Path -LiteralPath $setupState) { Remove-Item -LiteralPath $setupState -Force }
     Write-Host '[Setup 1/6] Checking native build tools...'
     Prepare-NativeBuildTools
     Write-Host '[Setup 2/6] Installing locked npm dependencies (this may take several minutes)...'
-    $env:ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
-    Run-Npm @('ci', '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund')
+    Install-Dependencies
     Write-Host '[Setup 3/6] Preparing Electron and rebuilding only better-sqlite3...'
     Prepare-Electron -RequireArchive
     Run-Npm @('run', 'rebuild:native')
@@ -163,6 +186,12 @@ function Setup-Environment {
         Run-Npm @('run', 'media:ensure', '--', '--archive', $mediaArchive)
     } else { Run-Npm @('run', 'media:ensure') }
     Write-Host '[Setup 5/6] Verifying bundled tools and generating declarations...'
+    $portableManifest = Join-Path $projectRoot 'resources\portable-tools\win32-x64\manifest.json'
+    if (-not (Test-Path -LiteralPath $portableManifest)) {
+        Write-Host 'Downloading and staging checksum-pinned portable tools...'
+        & $nodeExe (Join-Path $projectRoot 'scripts\acquire-portable-tools.mjs')
+        if ($LASTEXITCODE -ne 0) { throw 'Portable tool acquisition failed. Check the network/proxy and see docs\developer\portable-tools.md. Setup is incomplete.' }
+    }
     & $nodeExe (Join-Path $projectRoot 'scripts\portable-tools.mjs') ensure
     if ($LASTEXITCODE -ne 0) { throw 'Bundled tool verification failed.' }
     & $nodeExe (Join-Path $projectRoot 'scripts\generate-automation-declarations.mjs')

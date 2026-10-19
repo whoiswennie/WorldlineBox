@@ -128,7 +128,7 @@ E2E 优先使用独立 `WORLDLINEBOX_E2E_USER_DATA_PATH` 或临时目录；显�
 已有用户资产、世界和 Chromium 首选项不复制或覆盖。有实例的旧存储需通过完整备份或整合包导入，
 不会直接合并绝对路径。已有目标目录时跳过自动迁移。
 
-媒体组件由 `bundle-lock.json` 中的不可变上游发布 ID 定位，下载后仍校验原有 ZIP 和清单的 SHA-256。如果 GitHub API 暂时限流，可使用 `node scripts/media-binaries.mjs acquire --archive <可信ZIP路径>` 离线导入；校验不通过时停止，不会忽略发布检查。
+媒体组件由 `bundle-lock.json` 中的固定上游发布定位。Windows 使用发布附件直链，避免首次安装依赖 GitHub API 的匿名请求配额；macOS 保留数值发布 ID 查询。下载后仍校验原有 ZIP 和清单的 SHA-256。离线环境可使用 `node scripts/media-binaries.mjs acquire --archive <可信ZIP路径>` 导入；校验不通过时停止，不会忽略发布检查。
 
 手动构建：
 

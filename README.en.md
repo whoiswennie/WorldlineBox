@@ -49,7 +49,9 @@ Double-click these files in the project root:
 - `02-Start-Development.bat`: check the existing environment and run development using the current user's `%APPDATA%\WorldlineBox` profile, shared with the installed app.
 - `03-Build-Installer.bat`: type-check, package the app and create `out/make/inno/WorldlineBoxSetup.exe`.
 
-Initial setup needs internet access. Only `01` installs dependencies, native modules and missing Python/C++ Build Tools (through winget when available). Portable tools live under `.tools/`; global Node.js is not replaced. `02` never installs dependencies or rebuilds native modules; Forge/Vite still compile the current source. `03` builds the installer. If setup is incomplete or the dependency lock changes, run `01` explicitly. Build tools, dependencies, caches and outputs are excluded from Git.
+Initial setup needs internet access. Only `01` installs dependencies, native modules and missing Python/C++ Build Tools (through winget when available). Build tools and download caches live under `.tools/`, and the bundled application tools under `resources/portable-tools/win32-x64`; global Node.js is not replaced. `02` never installs dependencies or rebuilds native modules; Forge/Vite still compile the current source. `03` builds the installer. If setup is incomplete or the dependency lock changes, run `01` explicitly. Build tools, dependencies, caches and outputs are excluded from Git.
+
+Missing bundled command-line tools are acquired from pinned official archives and checked against both archive SHA-256 and the reviewed file manifest. For an HTTP proxy, run `01-Setup-Environment.bat -Proxy http://127.0.0.1:7897`; this affects only setup and its child processes.
 
 ## Roadmap and documentation
 

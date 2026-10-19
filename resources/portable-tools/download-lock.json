@@ -1,0 +1,36 @@
+{
+  "format": "worldlinebox-portable-downloads-v1",
+  "platform": "win32-x64",
+  "archives": {
+    "node": {
+      "url": "https://nodejs.org/dist/v24.15.0/node-v24.15.0-win-x64.zip",
+      "sha256": "cc5149eabd53779ce1e7bdc5401643622d0c7e6800ade18928a767e940bb0e62",
+      "type": "zip",
+      "directory": "node-v24.15.0-win-x64"
+    },
+    "python": {
+      "url": "https://api.nuget.org/v3-flatcontainer/python/3.13.12/python.3.13.12.nupkg",
+      "sha256": "389c0228afbb3530f6cd079f5cec44139b1441dd51c85ec704f7a63f1c9f3802",
+      "type": "zip",
+      "directory": "tools"
+    },
+    "pnpm": {
+      "url": "https://registry.npmjs.org/pnpm/-/pnpm-11.7.0.tgz",
+      "sha256": "deafa7ec98a1218b6a047289b92fbe2395c1e22d3495bb711653013218ee15ee",
+      "type": "tgz",
+      "directory": "package"
+    },
+    "git": {
+      "url": "https://github.com/git-for-windows/git/releases/download/v2.48.1.windows.1/PortableGit-2.48.1-64-bit.7z.exe",
+      "sha256": "a4335111b3363871cac632be93d7466154d8eb08782ff55103866b67d6722257",
+      "type": "7z",
+      "directory": "."
+    },
+    "ffmpeg": {
+      "url": "https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-essentials_build.zip",
+      "sha256": "e2aaeaa0fdbc397d4794828086424d4aaa2102cef1fb6874f6ffd29c0b88b673",
+      "type": "zip",
+      "directory": "ffmpeg-8.0.1-essentials_build"
+    }
+  }
+}

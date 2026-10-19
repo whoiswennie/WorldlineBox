@@ -1,7 +1,7 @@
 {
   "format": "worldlinebox-portable-tools-lock-v1",
   "platform": "win32-x64",
-  "manifestSha256": "3476588e5cb935f3a72a778c08d163c6b276d6d7b3f1d73161527dade63233eb",
+  "manifestSha256": "9ec34c8e4da00ddfd383fcb54cdc07f20d9c6b79dd8f67fbb3dfba7e04e7996f",
   "versions": {
     "node": "24.15.0",
     "npm": "11.12.1",

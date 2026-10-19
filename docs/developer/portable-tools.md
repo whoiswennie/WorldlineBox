@@ -6,14 +6,26 @@
 
 开发入口的 `ensure` 仍核对每个已锁定文件，只允许额外存在由清单内 Python 标准库模块派生的 `__pycache__/*.cpython-313.pyc`，避免正常运行生成缓存后无法再次启动。显式 `verify` 与安装包验证继续要求文件树完全一致，发布副本不含这些新增缓存。
 
-首次准备构建输入执行 `npm run tools:stage`，或给脚本明确的便携发行版展开目录：
+首次运行 `01-Setup-Environment.bat` 时，缺少便携工具包会自动执行 `npm run tools:acquire`。`resources/portable-tools/download-lock.json` 固定 Node.js 官方 ZIP、CPython 官方 NuGet 包、npm Registry 的 pnpm 包、Git for Windows PortableGit 和 Gyan FFmpeg 发布包的 URL 与 SHA-256；下载缓存位于 `.tools/portable-downloads`。下载后使用同一 staging 规则构建工具目录，再核对 `tool-lock.json` 中已审查的完整清单哈希。普通获取流程不改写锁文件，不从系统 PATH 收集任意版本的程序，也不覆盖已有工具包。
+
+完整清单锁现对应上述公开发行包配方，工具版本保持原版本。已有按旧机器安装目录制作的工具包时，可先将 `resources/portable-tools/win32-x64` 移到项目外备份，再运行 `01` 获取新的可复现目录。
+
+需要代理时，可以在项目目录运行：
+
+```bat
+01-Setup-Environment.bat -Proxy http://127.0.0.1:7897
+```
+
+也可设置 `WORLDLINEBOX_PROXY`，或沿用已有的 `HTTP_PROXY` / `HTTPS_PROXY`。便携工具使用项目固定 Node.js 的流式下载器，并对连接中断执行有上限的重试，避免 Windows curl 的 Schannel 下载中断导致首次准备失败。代理只作用于该脚本及其子进程，不修改 Windows 全局代理或 npm 用户配置。
+
+维护者手动准备其他已审查的便携发行版时，仍可使用 `npm run tools:stage` 并明确指定展开目录：
 
 ```powershell
 node scripts/portable-tools.mjs stage --node C:/path/node-v24.15.0-win-x64 --python C:/path/Python313 --git C:/path/PortableGit --pnpm C:/path/pnpm --ffmpeg C:/path/ffmpeg-8.0.1-essentials_build
 node scripts/portable-tools.mjs verify
 ```
 
-当前本机离线来源为用户已有的相同版本 CPython / Git 的程序内容、工程固定的 Node 与官方 DSH 包中的 pnpm，以及用户指定的 FFmpeg 构建。准备过程只复制工具文件，不启动安装程序，不读取用户凭据，不写 Windows 安装注册表或系统 PATH。Python 只带标准库和固定 pip，排除用户额外安装的第三方模块；Git 排除卸载程序和用户系统配置。重新准备其他工具版本必须审查版本约束和新锁文件。
+默认获取流程使用上述固定的公开发行包，包含完整 CPython 标准库、pip 25.3、ensurepip 与 venv。准备便携工具的过程只解压和复制文件，不运行下载的安装器，也不读取用户凭据或修改系统 PATH。Python 排除额外第三方模块；Git 排除用户系统配置。包内的 `DOWNLOADS.json` 保留精确下载来源，`SOURCES.md` 和原组件许可证一同打包。重新准备其他工具版本必须审查版本约束和新锁文件；维护者更新下载配方后，可显式执行 `node scripts/acquire-portable-tools.mjs --promote-reviewed-sources` 生成待审查的新清单锁，此操作不会由 `01` 自动调用。
 
 `resolvePortableTools()` 在开发目录与安装包 resources 中使用同一布局，校验编译进程序的清单哈希及入口程序。`portableToolEnvironment()` 只为子进程添加工具 PATH、Git 自有 CA 和执行目录，移除外部 PYTHONHOME / PYTHONPATH；完整 CPython 通过自身路径查找标准库。没有强制设置 PYTHONHOME，实例创建的 venv 可以正常生效。
 

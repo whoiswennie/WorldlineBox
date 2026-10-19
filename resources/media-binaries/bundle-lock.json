@@ -12,7 +12,7 @@
     },
     "win32-x64": {
       "status": "ready",
-      "url": "https://api.github.com/repositories/1327651093/releases/376150770",
+      "url": "https://github.com/dolag233/Serpent-Build/releases/download/media-v0.1.2/serpent-media-win32-x64.zip",
       "sha256": "4b722ef546cb802fc05eb1baae9de6dda6721749713b05f34d4317271118cbe5",
       "size": 103539191,
       "manifestSha256": "44e47704a7af189848e4530021da814c15590e04cfa937d0cea67c82bb53faaf",

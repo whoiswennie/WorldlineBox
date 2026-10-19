@@ -34,6 +34,12 @@
 
 ## 首次构建
 
+Windows 推荐使用根目录的 `01-Setup-Environment.bat`。脚本先用 `npm ci --ignore-scripts` 安装锁定依赖，再显式执行 `koffi`、`node-pty` 的安装钩子，最后只为 Electron 构建 `better-sqlite3`。这样不会先为系统 Node 编译一个随后被替换的数据库模块，也避免其头文件选择 ClangCL 后出现 `MSB8020` 或 LLVM 库工具的参数错误。
+
+脚本会从固定 URL 和 SHA-256 的公开发行包自动准备缺失的便携工具，无需提供旧机器上的工具目录。需要代理时运行 `01-Setup-Environment.bat -Proxy http://127.0.0.1:7897`；下载、组装和完整清单校验的规则见[便携工具说明](portable-tools.md)。
+
+Windows 媒体包也由锁文件中的固定发布附件直链获取，下载后校验 ZIP、组件清单和来源；首次安装不需要通过 GitHub API 查询该附件，也不需要手动准备媒体 ZIP。
+
 ```bash
 npm ci --registry=https://registry.npmjs.org
 npm run rebuild:native
