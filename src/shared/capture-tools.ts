@@ -46,7 +46,7 @@ export type CaptureRecordingPreview = z.infer<typeof captureRecordingPreviewSche
 export const captureToolsStateSchema = z.object({ settings: captureToolsSettingsSchema, downloadPath: z.string(), task: captureToolTaskSchema,
   shortcuts: z.array(z.object({ task: captureToolTaskSchema, accelerator, registered: z.boolean(), error: z.string().optional() })),
   ai: z.object({ configured: z.boolean(), model: z.string(), visionSupported: z.boolean().nullable(), reason: z.string().optional() }),
-  recording: recordingSchema.optional(), revision: z.number().int().nonnegative(),
+  recording: recordingSchema.optional(), selectionPinned: z.boolean().optional(), revision: z.number().int().nonnegative(),
 });
 export type CaptureToolsState = z.infer<typeof captureToolsStateSchema>;
 const imageData = z.string().min(1).max(46_000_000);
@@ -55,6 +55,7 @@ const selectionText = z.string().max(CAPTURE_SELECTION_MAX_BYTES).refine(value =
 export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }), z.strictObject({ type: z.literal('context') }),
   z.strictObject({ type: z.literal('settings.save'), settings: captureToolsSettingsSchema }),
+  z.strictObject({ type: z.literal('shortcuts.capture'), active: z.boolean() }),
   z.strictObject({ type: z.literal('open'), task: captureToolTaskSchema, source: z.literal('browser').optional() }), z.strictObject({ type: z.literal('close') }),
   z.strictObject({ type: z.literal('sources.list') }),
   z.strictObject({ type: z.literal('screenshot.capture'), sourceId: z.string().max(255).optional() }),
@@ -66,6 +67,7 @@ export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('selection.ask'), id: z.string().min(1).max(100), selection: selectionText, messages: z.array(message).min(1).max(40) }),
   z.strictObject({ type: z.literal('selection.clipboard') }),
   z.strictObject({ type: z.literal('selection.copy'), text: selectionText }),
+  z.strictObject({ type: z.literal('selection.pin'), pinned: z.boolean() }),
   z.strictObject({ type: z.literal('ask.cancel'), id: z.string().max(100) }),
   z.strictObject({ type: z.literal('recording.prepare'), sourceId: z.string().min(1).max(255), format: z.enum(['mp4', 'webm', 'gif']), systemAudio: z.boolean(), microphone: z.boolean(), quality: captureRecordingQualitySchema.optional(),
     rect: z.strictObject({ x: z.number().int().nonnegative().max(32768), y: z.number().int().nonnegative().max(32768), width: z.number().int().positive().max(32768), height: z.number().int().positive().max(32768) }).optional() }),

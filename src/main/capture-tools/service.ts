@@ -36,7 +36,7 @@ export interface CaptureToolsServiceOptions {
 }
 const TASKS: CaptureToolTask[] = ['screenshot', 'recording', 'ocr', 'translate', 'long-screenshot', 'selection'];
 const IMAGE_BYTES = 32 * 1024 * 1024;
-const mainActions = new Set(['state', 'settings.save', 'open']);
+const mainActions = new Set(['state', 'settings.save', 'shortcuts.capture', 'open']);
 const flushActions = new Set(['state', 'recording.chunk', 'recording.finish', 'recording.cancel', 'recording.stop']);
 type CaptureProvider = () => Promise<CaptureImageSource>;
 export function canonicalCaptureShortcut(value: string): string {
@@ -61,6 +61,12 @@ export class CaptureToolsService {
   private scope?: Session;
   private image?: CaptureImageSource;
   private selectedText = '';
+  private selectionPinned = false;
+  private shortcutCaptureWindow?: BrowserWindow;
+  private readonly endShortcutCapture = () => this.captureShortcuts(false);
+  private readonly shortcutCaptureNavigation = (details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>) => {
+    if (details.isMainFrame && !details.isSameDocument) this.captureShortcuts(false);
+  };
   private sourceId?: string;
   private provider?: CaptureProvider;
   private long?: LongCaptureStitcher;
@@ -123,7 +129,7 @@ export class CaptureToolsService {
     try { ai = getCaptureAiState(this.options.getModelConfig()); }
     catch { ai = { configured: false, model: '', visionSupported: null, reason: '无法读取全局模型配置，请在设置中重新保存。' }; }
     return { settings: structuredClone(this.settings), downloadPath: this.downloadPath, task: this.task,
-      shortcuts: structuredClone(this.shortcuts), ai, recording: this.recordings.state(), revision: this.revision };
+      shortcuts: structuredClone(this.shortcuts), ai, recording: this.recordings.state(), selectionPinned: this.selectionPinned, revision: this.revision };
   }
   configurationChanged(): void { if (!this.closed) this.changed(); }
   private changed(): void {
@@ -136,6 +142,7 @@ export class CaptureToolsService {
   }
   private registerShortcuts(): void {
     for (const accelerator of this.registered) globalShortcut.unregister(accelerator); this.registered.clear();
+    if (this.shortcutCaptureWindow || this.closed || this.stopping) return;
     this.shortcuts = TASKS.map(task => {
       const accelerator = this.settings.shortcuts[task].trim();
       if (!accelerator) return { task, accelerator, registered: false };
@@ -148,6 +155,25 @@ export class CaptureToolsService {
       return { task, accelerator, registered, ...(!registered ? { error: '快捷键不可用或已被其他程序占用，请修改后重试。' }
         : task === 'screenshot' && this.settingsWarning ? { error: this.settingsWarning } : {}) };
     });
+  }
+  private captureShortcuts(active: boolean): void {
+    if (active) {
+      if (['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) throw Error('请先结束录屏，再修改全局快捷键。');
+      const main = this.options.getMainWindow(); if (!main || main.isDestroyed() || main.webContents.isDestroyed()) throw Error('设置窗口已关闭。');
+      if (!main.isFocused()) throw Error('请先切回主窗口，再录入快捷键。');
+      if (this.shortcutCaptureWindow) return;
+      this.shortcutCaptureWindow = main;
+      main.once('blur', this.endShortcutCapture); main.once('closed', this.endShortcutCapture);
+      main.webContents.once('render-process-gone', this.endShortcutCapture); main.webContents.once('destroyed', this.endShortcutCapture);
+      main.webContents.on('did-start-navigation', this.shortcutCaptureNavigation);
+      for (const accelerator of this.registered) globalShortcut.unregister(accelerator); this.registered.clear();
+    } else {
+      const main = this.shortcutCaptureWindow; if (!main) return;
+      this.shortcutCaptureWindow = undefined; main.removeListener('blur', this.endShortcutCapture); main.removeListener('closed', this.endShortcutCapture);
+      main.webContents.removeListener('render-process-gone', this.endShortcutCapture); main.webContents.removeListener('destroyed', this.endShortcutCapture);
+      main.webContents.removeListener('did-start-navigation', this.shortcutCaptureNavigation);
+      this.registerShortcuts(); this.changed();
+    }
   }
   private async saveSettings(value: CaptureToolsSettings): Promise<void> {
     const settings = captureToolsSettingsSchema.parse(value);
@@ -242,6 +268,7 @@ export class CaptureToolsService {
     const own = this.ownSender(event, this.tool); const main = this.ownSender(event, this.options.getMainWindow());
     if (!own && !main) return { ok: false, error: '无权访问截图工具。' };
     const parsed = captureToolsRequestSchema.safeParse(input); if (!parsed.success) return { ok: false, error: '无效的截图工具请求。' };
+    if (parsed.data.type === 'shortcuts.capture' && !main) return { ok: false, error: '请在主窗口设置中修改快捷键。' };
     const openDownloads = parsed.data.type === 'reveal' && path.resolve(parsed.data.path) === this.downloadPath;
     if (!own && !mainActions.has(parsed.data.type) && !openDownloads) return { ok: false, error: '请在独立截图工具窗口中执行此操作。' };
     try { await this.init(); if (this.closed || this.stopping && !flushActions.has(parsed.data.type)) throw Error('截图工具正在关闭。'); return await this.request(parsed.data); }
@@ -252,6 +279,7 @@ export class CaptureToolsService {
       case 'state': return { ok: true, state: this.state() };
       case 'context': return { ok: true, state: this.state(), ...(this.image ? { source: this.image } : {}), ...(this.task === 'selection' ? { text: this.selectedText } : {}) };
       case 'settings.save': await this.saveSettings(request.settings); break;
+      case 'shortcuts.capture': this.captureShortcuts(request.active); break;
       case 'open': {
         if (request.task === 'selection' && request.source === 'browser') {
           if (!this.options.readBrowserSelection) throw Error('浏览器划词暂不可用，请先打开网页。');
@@ -292,6 +320,10 @@ export class CaptureToolsService {
       }
       case 'selection.clipboard': return { ok: true, text: boundedSelectionText(clipboard.readText()), state: this.state() };
       case 'selection.copy': clipboard.writeText(request.text); break;
+      case 'selection.pin': {
+        if (this.task !== 'selection' || !this.tool || this.tool.isDestroyed()) throw Error('划词助手未打开。');
+        this.selectionPinned = request.pinned; this.tool.setAlwaysOnTop(request.pinned, 'floating'); this.changed(); break;
+      }
       case 'ask.cancel': this.asks.get(request.id)?.abort(); break;
       case 'recording.prepare': {
         const source = await this.desktopSource(request.sourceId, { width: 1, height: 1 });
@@ -502,7 +534,7 @@ export class CaptureToolsService {
     if (['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) {
       if (task === 'recording') this.stopRecording(); else throw Error('请先结束当前录屏。'); return { ok: true, state: this.state() };
     }
-    await this.closeTool(); this.task = task; this.provider = provider; this.image = image; this.sourceId = undefined; this.selectedText = selectedText;
+    await this.closeTool(); this.task = task; this.provider = provider; this.image = image; this.sourceId = undefined; this.selectedText = selectedText; this.selectionPinned = false;
     try {
       if (task !== 'selection' && !image) this.image = await this.captureDesktop();
       // Chromium and the global network policy retain sessions for the app
@@ -512,22 +544,29 @@ export class CaptureToolsService {
       if (!this.scope) { this.scope = scope; scope.protocol.handle(CAPTURE_RECORDING_SCHEME, request => this.recordingPreview.respond(request)); }
       this.configureSession(scope);
       const desktop = this.image?.desktop;
+      const cursor = screen.getCursorScreenPoint(); const area = screen.getDisplayNearestPoint(cursor).workArea;
+      const selectionWidth = Math.min(420, area.width), selectionHeight = Math.min(520, area.height);
+      const selectionBounds = { width: selectionWidth, height: selectionHeight,
+        x: Math.round(Math.max(area.x, Math.min(cursor.x + 18, area.x + area.width - selectionWidth))),
+        y: Math.round(Math.max(area.y, Math.min(cursor.y + 18, area.y + area.height - selectionHeight))) };
       const tool = new BrowserWindow({ title: task === 'selection' ? 'WorldlineBox · 划词助手' : task === 'recording' ? 'WorldlineBox · 录屏工具' : 'WorldlineBox · 截图工具',
         frame: false, thickFrame: false,
         ...(desktop ? { ...desktop.bounds, minWidth: 1, minHeight: 1, resizable: true, movable: false, enableLargerThanScreen: true,
-          skipTaskbar: true, hasShadow: false, roundedCorners: false } : { width: task === 'selection' ? 720 : 1160, height: task === 'selection' ? 760 : 780, minWidth: task === 'selection' ? 520 : 760, minHeight: task === 'selection' ? 480 : 560 }), show: false,
+          skipTaskbar: true, hasShadow: false, roundedCorners: false } : task === 'selection'
+          ? { ...selectionBounds, minWidth: Math.min(340, area.width), minHeight: Math.min(360, area.height), resizable: true, movable: true, skipTaskbar: true, hasShadow: true }
+          : { width: 1160, height: 780, minWidth: 760, minHeight: 560 }), show: false,
         autoHideMenuBar: true, backgroundColor: '#f7f8fc', webPreferences: { preload: this.options.preloadPath, additionalArguments: [CAPTURE_TOOLS_ARGUMENT],
           session: scope, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false, backgroundThrottling: false } });
       // Content protection opts this HWND out of Windows screen sharing (WDA_EXCLUDEFROMCAPTURE).
       // It made screenshot/recording controls invisible in remote clients such as Sunlogin.
       // The utility is hidden before each snapshot, so capture exclusion is unnecessary.
-      this.tool = tool; tool.setContentProtection(false); tool.setAlwaysOnTop(true, desktop ? 'screen-saver' : 'floating'); tool.removeMenu();
+      this.tool = tool; tool.setContentProtection(false); tool.setAlwaysOnTop(task !== 'selection', desktop ? 'screen-saver' : 'floating'); tool.removeMenu();
       tool.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       tool.webContents.on('will-navigate', event => event.preventDefault()); tool.webContents.on('will-attach-webview', event => event.preventDefault());
       tool.on('close', event => {
         if (!this.closed && ['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) { event.preventDefault(); this.stopRecording(); }
       });
-      tool.once('closed', () => { if (this.tool === tool) { this.tool = undefined; this.image = undefined; this.selectedText = ''; this.provider = undefined; this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
+      tool.once('closed', () => { if (this.tool === tool) { this.tool = undefined; this.image = undefined; this.selectedText = ''; this.selectionPinned = false; this.provider = undefined; this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
         this.recordingGrant = undefined; this.recordingControls = undefined; this.recordingResultId = undefined; this.recordingPreview.clear(); this.clearRecordingBoundaries(); for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.restoreApp(); } });
       tool.webContents.once('render-process-gone', () => {
         const recording = this.recordings.state(); this.recordingGrant = undefined; this.clearRecordingBoundaries(); this.restoreApp();
@@ -549,12 +588,12 @@ export class CaptureToolsService {
   private async closeTool(): Promise<void> {
     if (['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) throw Error('请先停止或取消当前录屏。');
     for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
-    this.recordingGrant = undefined; this.recordingControls = undefined; this.recordingResultId = undefined; this.recordingPreview.clear(); this.clearRecordingBoundaries(); this.selectedText = '';
+    this.recordingGrant = undefined; this.recordingControls = undefined; this.recordingResultId = undefined; this.recordingPreview.clear(); this.clearRecordingBoundaries(); this.selectedText = ''; this.selectionPinned = false;
     const tool = this.tool; if (tool && !tool.isDestroyed()) tool.destroy(); this.restoreApp();
   }
   shutdown(): Promise<void> { return this.shuttingDown ??= this.shutdownTool(); }
   private async shutdownTool(): Promise<void> {
-    this.stopping = true; this.clearRecordingBoundaries(); for (const accelerator of this.registered) globalShortcut.unregister(accelerator); this.registered.clear(); powerMonitor.removeListener('suspend', this.onSuspend);
+    this.stopping = true; this.captureShortcuts(false); this.clearRecordingBoundaries(); for (const accelerator of this.registered) globalShortcut.unregister(accelerator); this.registered.clear(); powerMonitor.removeListener('suspend', this.onSuspend);
     for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.longGeneration++; this.long?.cancel(); this.long = undefined;
     const recording = this.recordings.state();
     if (recording && ['recording', 'paused', 'finalizing'].includes(recording.status)) {

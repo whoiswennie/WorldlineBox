@@ -68,6 +68,7 @@ export type IconName =
   | "menu"
   | "palette"
   | "plus"
+  | "pin"
   | "refresh"
   | "undo"
   | "rotate-cw"
@@ -390,6 +391,7 @@ const iconPaths: Record<IconName, ReactNode> = {
   ),
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   plus: <path d="M12 5v14M5 12h14" />,
+  pin: <><path d="m16 3 5 5-4 2-3 5-2-2-4 4-1-1 4-4-2-2 5-3 2-4Z" /><path d="m8 16-5 5" /></>,
   refresh: (
     <>
       <path d="M20 7v5h-5" />

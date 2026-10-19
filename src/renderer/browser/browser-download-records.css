@@ -1,5 +1,50 @@
 .browser-download-records { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.browser-download-summary { color: var(--ui-content-secondary); font-size: 11px; }
-.browser-download-source { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-content-tertiary); font-size: 11px; }
-.browser-download-pages { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.browser-download-pages > span { color: var(--ui-content-secondary); font-size: 11px; }
+.browser-download-records .browser-download-search { padding: 10px 12px; border-radius: 11px; }
+.browser-download-filter-row { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.browser-download-filter-row > .ui-select { flex: 1; min-width: 0; }
+.browser-download-filter-row select { min-height: 32px; padding-block: 5px; font-size: 12px; border-radius: 8px; }
+.browser-download-filter-row .ui-button { flex-shrink: 0; padding: 7px; font-size: 11px; border-radius: 8px; }
+.browser-download-filter-row .ui-icon-button { width: 30px; min-width: 30px; padding: 6px; }
+.browser-download-filter-row .ui-button > svg { flex-shrink: 0; }
+.browser-download-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px 9px; color: var(--ui-content-secondary); font-size: 11px; }
+.browser-download-active-count { display: inline-flex; align-items: center; gap: 5px; }
+.browser-download-active-count i, .browser-download-status i { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: currentColor; }
+.browser-download-active-count { color: var(--ui-content-accent); }
+.browser-download-selection { display: flex; align-items: center; gap: 8px; padding: 8px; background: var(--ui-surface-field); border-radius: 9px; }
+.browser-download-selection > label { align-items: center; gap: 7px; font-size: 11px; }
+.browser-download-selection > span { flex: 1; text-align: right; color: var(--ui-content-secondary); font-size: 11px; }
+.browser-download-selection .ui-button { padding: 6px; font-size: 11px; }
+.browser-download-records input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--ui-content-accent); flex-shrink: 0; cursor: pointer; }
+.browser-download-records input[type="checkbox"]:disabled { cursor: default; opacity: .4; }
+.browser-download-records .browser-downloads { gap: 10px; }
+.browser-download-records .browser-download-row { gap: 10px; padding: 13px; border: 1px solid var(--ui-border-subtle); border-radius: 12px; background: var(--ui-surface-raised); }
+.browser-download-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.browser-download-file-icon { display: grid; place-items: center; width: 34px; height: 38px; flex: 0 0 34px; background: var(--ui-surface-field); border-radius: 9px; color: var(--ui-content-accent); }
+.browser-download-heading-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.browser-download-records .browser-download-heading-text strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; line-height: 1.45; font-weight: 550; }
+.browser-download-source { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-content-tertiary); font-size: 10px; }
+.browser-download-records .browser-download-remove { align-self: flex-start; min-width: 24px; min-height: 24px; padding: 4px; color: var(--ui-content-tertiary); border-radius: 7px; }
+.browser-download-remove:hover { color: var(--ui-content-primary); }
+.browser-download-details { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px; }
+.browser-download-records .browser-download-details > span { font-size: 10px; }
+.browser-download-records .browser-download-status { display: inline-flex; align-items: center; gap: 5px; }
+.browser-download-records .is-completed .browser-download-status { color: var(--ui-status-success-content, #2a8c61); }
+.browser-download-records .is-progressing .browser-download-status { color: var(--ui-content-accent); }
+.browser-download-records .is-interrupted .browser-download-status { color: var(--ui-status-danger-content); }
+.browser-download-records .browser-downloads progress { height: 3px; border: 0; border-radius: 3px; overflow: hidden; }
+.browser-downloads progress::-webkit-progress-bar { background: var(--ui-surface-field); border-radius: 3px; }
+.browser-downloads progress::-webkit-progress-value { background: var(--ui-content-accent); border-radius: 3px; }
+.browser-download-error { display: flex; align-items: flex-start; gap: 5px; font-size: 11px; line-height: 1.5; margin: 0; color: var(--ui-status-danger-content); overflow-wrap: anywhere; }
+.browser-download-error > svg { flex: 0 0 13px; margin-top: 2px; }
+.browser-download-row-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px; }
+.browser-download-row-footer > time { font-size: 10px; color: var(--ui-content-tertiary); }
+.browser-download-row-footer .browser-actions { gap: 1px; margin-left: auto; }
+.browser-download-row-footer .ui-button { font-size: 10px; padding: 5px 6px; border-radius: 7px; min-height: 26px; }
+.browser-download-row-footer .ui-button > svg { width: 13px; height: 13px; }
+.browser-download-records .browser-download-row-footer .ui-button__label { font-size: inherit; color: inherit; }
+.browser-download-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 35px 8px; color: var(--ui-content-tertiary); text-align: center; }
+.browser-download-empty > p { margin: 0; font-size: 12px; line-height: 1.6; }
+.browser-download-pages { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding-top: 2px; }
+.browser-download-pages .ui-button { padding: 6px; font-size: 11px; }
+.browser-download-pages > span { color: var(--ui-content-secondary); font-size: 10px; }
+.browser-download-history-note { margin: 0; color: var(--ui-content-tertiary); font-size: 10px; line-height: 1.65; }

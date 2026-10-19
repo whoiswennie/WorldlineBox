@@ -59,4 +59,13 @@ export class BrowserStore {
     this.data.history.length = Math.min(2000, this.data.history.length); this.changed();
   }
   history(query: string, offset: number, limit: number) { const needle = query.toLocaleLowerCase(); const rows = this.data.history.filter(item => (item.title + ' ' + item.url).toLocaleLowerCase().includes(needle)); return { history: rows.slice(offset, offset + Math.min(100, limit)), total: rows.length }; }
+  removeDownloadRecords(ids: readonly string[] | undefined, activeIds: ReadonlySet<string>): number {
+    const selected = ids ? new Set(ids) : undefined;
+    const before = this.data.downloads.length;
+    // History removal never touches files or live DownloadItem instances. Keep
+    // both status and live-item guards because interrupted downloads can resume.
+    this.data.downloads = this.data.downloads.filter(item => activeIds.has(item.id)
+      || item.status === 'progressing' || item.status === 'paused' || (selected && !selected.has(item.id)));
+    return before - this.data.downloads.length;
+  }
 }

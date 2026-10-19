@@ -74,7 +74,7 @@ it('preserves every existing state-specific download action and record identity'
   const { run } = await mount(values);
   const expected = [['pause', 'cancel'], ['resume', 'cancel'], ['open', 'reveal'], ['retry', 'reveal'], ['retry', 'reveal']];
   for (const [index, row] of [...host.querySelectorAll<HTMLLIElement>('.browser-downloads li')].entries()) {
-    for (const [actionIndex, control] of [...row.querySelectorAll<HTMLButtonElement>('button')].entries()) {
+    for (const [actionIndex, control] of [...row.querySelectorAll<HTMLButtonElement>('[data-download-action]')].entries()) {
       await act(() => control.click());
       expect(run).toHaveBeenLastCalledWith({ type: 'download.action', id: values[index]!.id, action: expected[index]![actionIndex] });
     }
@@ -97,4 +97,65 @@ it('localizes filters, pagination, result counts and no-match feedback in Englis
   expect(host.textContent).toContain('All statuses'); expect(host.textContent).toContain('Matching records');
   expect(button('Previous page').disabled).toBe(true); expect(button('Next page').disabled).toBe(true);
   await search('missing'); expect(host.textContent).toContain('No matching downloads.');
+});
+
+it('removes one finished record by its ID while leaving live records without removal controls', async () => {
+  const values = records(3); values[0]!.status = 'progressing'; values[1]!.status = 'paused';
+  const { run } = await mount(values);
+  const removeButtons = [...host.querySelectorAll<HTMLButtonElement>('.browser-download-remove')];
+  expect(removeButtons).toHaveLength(1);
+  await act(() => removeButtons[0]!.click());
+  expect(run).toHaveBeenCalledWith({ type: 'download.records.remove', ids: ['download-2'] });
+  expect(host.textContent).toContain('保留已下载的文件');
+  expect(names()).toHaveLength(3); // Parent state, not an optimistic local deletion, owns the records.
+});
+
+it('selects only finished records on a page, supports selection across pages, and prunes removed IDs', async () => {
+  const values = records(25); values[0]!.status = 'progressing'; values[1]!.status = 'paused';
+  const { run, render } = await mount(values);
+  await act(() => button('管理记录').click());
+  const selectPage = () => host.querySelector<HTMLInputElement>('input[aria-label="选择本页"]')!;
+  const checkboxes = [...host.querySelectorAll<HTMLInputElement>('.browser-download-checkbox')];
+  expect(checkboxes[0]!.disabled).toBe(true); expect(checkboxes[1]!.disabled).toBe(true);
+  await act(() => selectPage().click());
+  expect(host.textContent).toContain('已选择 18');
+  await act(() => button('下一页').click()); await act(() => selectPage().click());
+  expect(host.textContent).toContain('已选择 23');
+  await act(() => button('移除所选').click());
+  expect(run).toHaveBeenLastCalledWith({ type: 'download.records.remove', ids: values.slice(2).map(item => item.id) });
+  await render(values.slice(0, 2));
+  expect(host.textContent).toContain('已选择 0'); expect(button('移除所选').disabled).toBe(true);
+  expect(button('上一页').disabled).toBe(true); expect(selectPage().disabled).toBe(true);
+  const clear = host.querySelector<HTMLButtonElement>('button[aria-label="清理已结束记录"]')!;
+  expect(clear.disabled).toBe(true);
+});
+
+it('clears finished history across filters without submitting paths or affected active IDs', async () => {
+  const values = records(3); values[0]!.status = 'progressing'; const { run } = await mount(values);
+  await search('file-2');
+  await act(() => host.querySelector<HTMLButtonElement>('button[aria-label="清理已结束记录"]')!.click());
+  expect(run).toHaveBeenLastCalledWith({ type: 'download.records.clear' });
+});
+
+it('resets selected records when changing search or status and displays readable dates', async () => {
+  const values = records(2); values[1]!.startedAt = 'invalid'; const { run } = await mount(values);
+  expect(host.querySelector('time')!.getAttribute('datetime')).toBe(values[0]!.startedAt);
+  expect(host.querySelectorAll('time')).toHaveLength(1); expect(host.querySelector('time')!.textContent).toMatch(/2026.*10.*18/);
+  await act(() => button('管理记录').click());
+  await act(() => host.querySelector<HTMLInputElement>('input[aria-label="选择本页"]')!.click());
+  await search('file-0'); expect(button('移除所选').disabled).toBe(true);
+  await act(() => host.querySelector<HTMLInputElement>('input[aria-label="选择本页"]')!.click());
+  const filter = host.querySelector<HTMLSelectElement>('select')!;
+  await act(() => { filter.value = 'completed'; filter.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(button('移除所选').disabled).toBe(true); expect(run).not.toHaveBeenCalled();
+});
+
+it('keeps the chosen records and permits retry after a failed cleanup response', async () => {
+  const { run } = await mount(records(2)); run.mockResolvedValue({ ok: false, error: 'Could not save browser history' });
+  await act(() => button('管理记录').click());
+  await act(() => host.querySelector<HTMLInputElement>('input[aria-label="选择本页"]')!.click());
+  await act(() => button('移除所选').click());
+  expect(names()).toHaveLength(2); expect(host.textContent).toContain('已选择 2'); expect(button('移除所选').disabled).toBe(false);
+  run.mockResolvedValue({ ok: true }); await act(() => button('移除所选').click());
+  expect(run).toHaveBeenLastCalledWith({ type: 'download.records.remove', ids: ['download-0', 'download-1'] });
 });

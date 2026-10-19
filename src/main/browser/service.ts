@@ -278,7 +278,13 @@ export class BrowserService {
       if (isBrowserUrl(url)) tab.url = url.slice(0, 8192);
     });
     contents.on('did-redirect-navigation', (_event, url, _inPlace, mainFrame) => { if (mainFrame && isBrowserUrl(url)) tab.url = url.slice(0, 8192); });
-    contents.on('did-stop-loading', refresh);
+    contents.on('did-stop-loading', () => {
+      // An attachment starts a navigation but never replaces the document.
+      // Once it stops, display the committed page rather than the download URL.
+      const committed = contents.getURL();
+      if (isBrowserUrl(committed)) tab.url = committed.slice(0, 8192);
+      refresh();
+    });
     contents.on('page-title-updated', (_event, title) => { tab.title = (title.trim() || (tab.url === BROWSER_HOME ? '新标签页' : tab.url)).slice(0, 500); const visited = this.store.data.history.find(item => item.url === tab.url); if (visited) visited.title = tab.title; refresh(); });
     const navigated = (url: string) => { if (!isBrowserUrl(url)) return; tab.url = url.slice(0, 8192); tab.error = undefined; this.store.visit(tab.url, tab.title); refresh(); };
     contents.on('did-navigate', (_event, url) => navigated(url));
@@ -529,7 +535,14 @@ export class BrowserService {
       case 'tab.navigate': void this.load(this.active(), browserAddress(request.text, this.store.data.preferences.searchEngine)); break;
       case 'tab.action': this.act(request.action); break;
       case 'tab.zoom': { const tab = this.active(); tab.zoom = request.factor; this.ensureView(tab).webContents.setZoomFactor(request.factor); break; }
-      case 'find': { const contents = this.ensureView(this.active()).webContents; if (!request.text) contents.stopFindInPage('clearSelection'); else contents.findInPage(request.text, { forward: request.forward ?? true, findNext: request.next ?? false }); break; }
+      case 'find': {
+        const contents = this.ensureView(this.active()).webContents;
+        if (!request.text) { contents.stopFindInPage('clearSelection'); this.find = undefined; }
+        // Electron's findNext starts a NEW session when true; our next flag
+        // means advancing within the current session, so it is the inverse.
+        else contents.findInPage(request.text, { forward: request.forward ?? true, findNext: !request.next });
+        break;
+      }
       case 'bookmark.save': { const tab = this.active(); const previous = request.id ? this.store.data.bookmarks.find(item => item.id === request.id) : this.store.data.bookmarks.find(item => item.url === tab.url);
         if (request.id && !previous) throw Error('收藏不存在。');
         if (!previous && (!isBrowserUrl(tab.url) || tab.url === 'about:blank')) throw Error('当前页面不能收藏。');
@@ -544,6 +557,8 @@ export class BrowserService {
         if (request.action === 'cancel') item?.cancel();
         if (request.action === 'retry') { if (!isBrowserUrl(record.url)) throw Error('此临时下载地址已失效，请回到原页面下载。'); this.ensureView(this.active()).webContents.downloadURL(record.url); }
         if (request.action === 'reveal' || request.action === 'open') { if (!record.path || !existsSync(record.path)) throw Error('下载文件不存在。'); if (request.action === 'reveal') shell.showItemInFolder(record.path); else { if (record.status !== 'completed') throw Error('文件尚未下载完成。'); const error = await shell.openPath(record.path); if (error) throw Error(error); } } break; }
+      case 'download.records.remove': this.store.removeDownloadRecords(request.ids, new Set(this.downloads.keys())); break;
+      case 'download.records.clear': this.store.removeDownloadRecords(undefined, new Set(this.downloads.keys())); break;
       case 'data.info': this.cacheBytes = await this.scope!.getCacheSize(); break;
       case 'data.clear': {
         const origin = request.origin ? this.origin(request.origin) : undefined; if (request.origin && !origin) throw Error('站点地址无效。');
@@ -552,7 +567,7 @@ export class BrowserService {
         if (request.siteData) dataTypes.push('cookies', 'localStorage', 'indexedDB', 'serviceWorkers', 'fileSystems', 'webSQL', 'backgroundFetch');
         if (dataTypes.length) { await this.scope!.clearData({ dataTypes, ...(origin ? { origins: [origin] } : {}) }); await this.scope!.flushStorageData(); }
         if (request.history) this.store.data.history = origin ? this.store.data.history.filter(item => this.origin(item.url) !== origin) : [];
-        if (request.downloads) this.store.data.downloads = this.store.data.downloads.filter(item => this.downloads.has(item.id));
+        if (request.downloads) this.store.removeDownloadRecords(undefined, new Set(this.downloads.keys()));
         if (request.siteData) { if (origin) delete this.store.data.sitePermissions[origin]; else this.store.data.sitePermissions = {}; }
         this.cacheBytes = await this.scope!.getCacheSize(); break;
       }

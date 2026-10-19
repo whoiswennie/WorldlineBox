@@ -108,7 +108,20 @@ for (const mode of ['browser', 'desktop'] as const) test(`${mode} screenshot con
     expect(context.state!.ai).toMatchObject({ configured: true, model: 'deepseek-flash' }); expect(context.state!.ai.visionSupported).not.toBe(false);
     expect(await tool.evaluate(() => ({ keys: Object.keys((globalThis as unknown as Bridge).worldlinebox), process: typeof Reflect.get(globalThis, 'process'), require: typeof Reflect.get(globalThis, 'require') }))).toEqual({ keys: ['captureTools'], process: 'undefined', require: 'undefined' });
     expect(JSON.stringify(context)).not.toContain(KEY); expect(received).toHaveLength(0);
-    await selectAll(tool); await redact(tool, .15, .35);
+    await selectAll(tool);
+    if (mode === 'desktop') {
+      // A real desktop may already be black at the later redaction probe.
+      // Draw a visible mark through the actual tool instead of assuming the
+      // user's wallpaper/window color or substituting a generated source.
+      await tool.getByRole('button', { name: '画笔', exact: true }).click();
+      await tool.getByRole('button', { name: '标注颜色 #ffffff', exact: true }).click();
+      await tool.getByRole('slider', { name: '笔画粗细', exact: true }).press('End');
+      const bounds = await tool.getByLabel('截图编辑画布', { exact: true }).boundingBox();
+      if (!bounds) throw Error('Missing real desktop edit canvas');
+      await tool.mouse.move(bounds.x + bounds.width * .58, bounds.y + bounds.height * .6); await tool.mouse.down();
+      await tool.mouse.move(bounds.x + bounds.width * .62, bounds.y + bounds.height * .6, { steps: 8 }); await tool.mouse.up();
+    }
+    await redact(tool, .15, .35);
     await tool.getByRole('button', { name: '图片问答', exact: true }).click();
     const prompt = () => tool.getByRole('textbox', { name: '关于这张截图，想问什么？', exact: true });
     await tool.getByRole('button', { name: '提取文字', exact: true }).click(); expect(received).toHaveLength(0);

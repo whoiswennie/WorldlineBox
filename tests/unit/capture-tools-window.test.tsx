@@ -60,6 +60,6 @@ it('passes physical crop coordinates, collects successive frames, then returns t
 it('routes selection context to its temporary assistant without requesting desktop sources or screenshots', async () => {
   const { request } = await mount('selection');
   expect(host.querySelector('[data-selection-assistant]')).not.toBeNull();
-  expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="选中的文字"]')?.value).toBe('来自上下文的真实选中文字。');
+  expect(host.querySelector('.selection-source-summary')?.textContent).toBe('来自上下文的真实选中文字。');
   expect(request.mock.calls.map(([input]) => input.type)).toEqual(['context']);
 });

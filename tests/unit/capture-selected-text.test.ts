@@ -22,7 +22,8 @@ describe('native selected text boundary', () => {
     expect(args).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', expect.any(String)]);
     expect(Buffer.from(args.at(-1)!, 'base64').toString('utf16le')).toBe(WINDOWS_SELECTED_TEXT_SCRIPT);
     expect(WINDOWS_SELECTED_TEXT_SCRIPT).toContain('$pattern.GetSelection()'); expect(WINDOWS_SELECTED_TEXT_SCRIPT).toContain('.Current.IsPassword');
-    expect(WINDOWS_SELECTED_TEXT_SCRIPT).not.toMatch(/Clipboard|SendKeys|DocumentRange|ValuePattern|GetForegroundWindow|SetForegroundWindow/u);
+    expect(WINDOWS_SELECTED_TEXT_SCRIPT).not.toMatch(/Clipboard|SendKeys|DocumentRange|ValuePattern|SetForegroundWindow/u);
+    expect(WINDOWS_SELECTED_TEXT_SCRIPT).toContain('GetForegroundWindow'); expect(WINDOWS_SELECTED_TEXT_SCRIPT).toContain('RawViewWalker.GetParent');
     expect(args.join(' ')).not.toContain(text); expect(child.kill).not.toHaveBeenCalled();
   });
 

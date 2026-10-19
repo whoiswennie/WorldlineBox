@@ -43,7 +43,9 @@ it('supports temporary multi-turn context with text-only models, clears context 
   const localWrites = vi.spyOn(window.localStorage, 'setItem'), sessionWrites = vi.spyOn(window.sessionStorage, 'setItem');
   const value = fixture(); await mount(value);
   expect(value.request).not.toHaveBeenCalled();
-  expect(host.textContent).toContain('临时对话 · 关闭即清除');
+  expect(host.querySelector('.selection-heading small')?.getAttribute('title')).toBe('临时对话 · 关闭即清除');
+  expect(host.querySelector('.selection-source-summary')?.textContent).toBe('软件可以保存和整理资源。');
+  expect(host.querySelector('textarea[aria-label="选中的文字"]')).toBeNull();
   await fill('这段文字讲了什么？'); await click('发送');
   expect(host.querySelectorAll('.selection-messages article')).toHaveLength(2);
   expect(host.querySelector('textarea[aria-label="选中的文字"]')).toBeNull();
@@ -86,6 +88,7 @@ it('resets conversation when original text is edited and bounds Unicode by UTF-8
   await fill('新原文问题。'); await click('发送');
   expect(value.request).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'selection.ask', selection: '已经修改的原文。', messages: [{ role: 'user', content: '新原文问题。' }] }));
   await click('清空临时对话');
+  await act(() => host.querySelector<HTMLButtonElement>('.selection-source-summary')!.click());
   await fill('字'.repeat(11_000), '选中的文字'); await fill('这个问题不能发送。');
   expect(button('发送').disabled).toBe(true);
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('原文超过 32 KiB');
@@ -153,4 +156,73 @@ it('aborts an active question on close and discards its late answer after remoun
   await mount(value, '另一次临时选择。');
   expect(host.querySelectorAll('.selection-messages article')).toHaveLength(0);
   expect(host.textContent).not.toContain('关闭后收到的过期回答');
+});
+
+it('sends a quick action on an explicit click, preserves context for follow-ups, and never auto-sends selected text', async () => {
+  const value = fixture(); await mount(value, '当前应用中选中的原文。');
+  expect(value.request).not.toHaveBeenCalled();
+  await click('总结重点');
+  expect(value.request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: 'selection.ask', selection: '当前应用中选中的原文。', messages: [{ role: 'user', content: '总结重点' }] }));
+  expect(host.querySelectorAll('.selection-messages article')).toHaveLength(2);
+  await fill('解释其中的关键点。'); await click('发送');
+  expect(value.request).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'selection.ask', messages: [
+    { role: 'user', content: '总结重点' }, { role: 'assistant', content: '原文讨论了资源管理。' }, { role: 'user', content: '解释其中的关键点。' },
+  ] }));
+});
+
+it('makes empty selection a manual fallback and cannot send a quick action until text is provided', async () => {
+  const value = fixture(); await mount(value, '');
+  expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="选中的文字"]')?.value).toBe('');
+  expect(host.textContent).toContain('在任意应用中使用划词快捷键');
+  expect(button('解释这段文字').disabled).toBe(true);
+  expect(button('总结重点').disabled).toBe(true);
+  await fill('用户输入的真实原文。', '选中的文字'); await click('解释这段文字');
+  expect(value.request).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'selection.ask', selection: '用户输入的真实原文。' }));
+});
+
+it('only pins the window through the explicit pin action and reflects native state instead of assuming success', async () => {
+  const value = fixture(); await mount(value);
+  expect(button('保持在最前面').getAttribute('aria-pressed')).toBe('false');
+  expect(value.request).not.toHaveBeenCalled();
+  await click('保持在最前面');
+  expect(value.request).toHaveBeenLastCalledWith({ type: 'selection.pin', pinned: true });
+  expect(button('保持在最前面').getAttribute('aria-pressed')).toBe('false');
+  value.state.selectionPinned = true; await mount(value);
+  expect(button('取消置顶').getAttribute('aria-pressed')).toBe('true');
+  await click('取消置顶');
+  expect(value.request).toHaveBeenLastCalledWith({ type: 'selection.pin', pinned: false });
+});
+
+it('sends with Enter but keeps Shift+Enter and IME confirmation available to edit the draft', async () => {
+  const value = fixture(); await mount(value); await fill('第一行\n第二行');
+  const input = host.querySelector<HTMLTextAreaElement>('.selection-composer textarea')!;
+  const newline = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true });
+  const composing = new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true });
+  await act(() => { input.dispatchEvent(newline); input.dispatchEvent(composing); });
+  expect(newline.defaultPrevented).toBe(false); expect(composing.defaultPrevented).toBe(false);
+  expect(value.request).not.toHaveBeenCalled();
+  const send = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  await act(() => input.dispatchEvent(send));
+  expect(send.defaultPrevented).toBe(true);
+  expect(value.request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: 'selection.ask', messages: [{ role: 'user', content: '第一行\n第二行' }] }));
+});
+
+it('scrolls only its conversation container and returns to the top when the content fits', async () => {
+  const value = fixture(); await mount(value);
+  const scroller = host.querySelector<HTMLElement>('.selection-conversation')!;
+  let contentHeight = 540;
+  Object.defineProperties(scroller, { scrollHeight: { configurable: true, get: () => contentHeight }, clientHeight: { configurable: true, value: 250 } });
+  const scrollAncestor = vi.fn();
+  const previous = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = scrollAncestor;
+  try {
+    await fill('第一轮问题'); await click('发送');
+    expect(scroller.scrollTop).toBe(290);
+    expect(host.querySelector('.selection-messages article strong')).toBeNull();
+    contentHeight = 180;
+    await fill('第二轮问题'); await click('发送');
+    expect(host.querySelectorAll('.selection-messages article')).toHaveLength(4);
+    expect(scroller.scrollTop).toBe(0);
+    expect(scrollAncestor).not.toHaveBeenCalled();
+  } finally { HTMLElement.prototype.scrollIntoView = previous; }
 });

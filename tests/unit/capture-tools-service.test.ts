@@ -183,6 +183,22 @@ describe('isolated capture tools authorization and settings', () => {
 });
 
 describe('temporary selected text assistant', () => {
+  it('opens a small normal window near the pointer, keeps the main app visible and pins only by explicit owned request', async () => {
+    const { service, main } = await fixture(); await service.openSelection('Foreground selected text'); const tool = mock.windows.at(-1) as BrowserWindow;
+    expect(main.isVisible()).toBe(true); expect(service.state().selectionPinned).toBe(false);
+    expect((tool as unknown as { options: unknown }).options).toMatchObject({ x: 38, y: 48, width: 420, height: 520, minWidth: 340, minHeight: 360, resizable: true, frame: false });
+    expect(tool.setAlwaysOnTop).toHaveBeenCalledWith(false, 'floating');
+    for (const actor of [event(main), event(tool, {} as Electron.WebFrameMain), event(new BrowserWindow({}))]) {
+      expect((await service.handle(actor, { type: 'selection.pin', pinned: true })).ok).toBe(false);
+    }
+    expect((await service.handle(event(tool), { type: 'selection.pin', pinned: true })).ok).toBe(true);
+    expect(tool.setAlwaysOnTop).toHaveBeenLastCalledWith(true, 'floating'); expect(service.state().selectionPinned).toBe(true);
+    expect((await service.handle(event(tool), { type: 'selection.pin', pinned: false })).ok).toBe(true);
+    expect(tool.setAlwaysOnTop).toHaveBeenLastCalledWith(false, 'floating');
+    await service.handle(event(tool), { type: 'close' }); await service.openSelection('New session');
+    expect(service.state().selectionPinned).toBe(false);
+  });
+
   it('reads native selection before changing tool focus and ignores a background main window browser selection', async () => {
     const { service, main, tool, readBrowserSelection } = await fixture();
     expect(main.isFocused()).toBe(false);
@@ -217,6 +233,71 @@ describe('temporary selected text assistant', () => {
     await service.handle(event(tool), { type: 'close' }); await service.openSelection('');
     const next = mock.windows.at(-1) as BrowserWindow; const context = await service.handle(event(next), { type: 'context' }); expect(context.ok && context.text).toBe('');
     expect(await readdir(root)).toEqual([]);
+  });
+});
+
+describe('global shortcut key capture lifecycle', () => {
+  async function focusedFixture() {
+    const value = await fixture(); (value.main as unknown as { focused: boolean }).focused = true; return value;
+  }
+  it('rejects a delayed capture request after the main window has already lost focus', async () => {
+    const { service, main } = await fixture(); expect(main.isFocused()).toBe(false);
+    vi.mocked(globalShortcut.unregister).mockClear();
+    expect(await service.handle(event(main), { type: 'shortcuts.capture', active: true })).toMatchObject({ ok: false, error: expect.stringContaining('切回主窗口') });
+    expect(globalShortcut.unregister).not.toHaveBeenCalled(); expect(main.listenerCount('blur')).toBe(0);
+    expect(main.webContents.listenerCount('render-process-gone')).toBe(0);
+  });
+
+  it.each(['render-process-gone', 'destroyed'] as const)('restores shortcuts when focused main contents emit %s without a window blur', async reason => {
+    const { service, main } = await focusedFixture();
+    await service.handle(event(main), { type: 'shortcuts.capture', active: true }); vi.mocked(globalShortcut.register).mockClear();
+    const revision = service.state().revision;
+    main.webContents.emit(reason);
+    expect(main.isFocused()).toBe(true); expect(globalShortcut.register).toHaveBeenCalledTimes(6);
+    expect(service.state().revision).toBeGreaterThan(revision);
+    expect(main.webContents.send).toHaveBeenLastCalledWith('worldlinebox:capture-tools:changed', expect.objectContaining({ shortcuts: expect.arrayContaining([expect.objectContaining({ task: 'screenshot', registered: true })]) }));
+    for (const name of ['render-process-gone', 'destroyed', 'did-start-navigation']) expect(main.webContents.listenerCount(name)).toBe(0);
+    expect(main.listenerCount('blur')).toBe(0); expect(main.listenerCount('closed')).toBe(0);
+  });
+
+  it('ignores iframe and same-document navigation but restores on a main document reload and removes all listeners', async () => {
+    const { service, main } = await focusedFixture(); await service.handle(event(main), { type: 'shortcuts.capture', active: true }); vi.mocked(globalShortcut.register).mockClear();
+    main.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+    main.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+    expect(globalShortcut.register).not.toHaveBeenCalled(); expect(main.webContents.listenerCount('did-start-navigation')).toBe(1);
+    main.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false }); expect(globalShortcut.register).toHaveBeenCalledTimes(6);
+    for (const name of ['render-process-gone', 'destroyed', 'did-start-navigation']) expect(main.webContents.listenerCount(name)).toBe(0);
+    await service.handle(event(main), { type: 'shortcuts.capture', active: true }); expect(main.webContents.listenerCount('did-start-navigation')).toBe(1);
+    await service.shutdown();
+    for (const name of ['render-process-gone', 'destroyed', 'did-start-navigation']) expect(main.webContents.listenerCount(name)).toBe(0);
+  });
+
+  it('suspends only owned shortcuts from the main frame, keeps them suspended while saving and restores on blur', async () => {
+    const { service, main, tool } = await focusedFixture();
+    expect((await service.handle(event(tool), { type: 'shortcuts.capture', active: true })).ok).toBe(false);
+    expect((await service.handle(event(main, {} as Electron.WebFrameMain), { type: 'shortcuts.capture', active: true })).ok).toBe(false);
+    vi.mocked(globalShortcut.unregister).mockClear(); vi.mocked(globalShortcut.register).mockClear();
+    expect((await service.handle(event(main), { type: 'shortcuts.capture', active: true })).ok).toBe(true);
+    expect(globalShortcut.unregister).toHaveBeenCalledTimes(6);
+    expect(globalShortcut.unregister).not.toHaveBeenCalledWith('Another applications shortcut');
+    const settings = structuredClone(DEFAULT_CAPTURE_TOOLS_SETTINGS); settings.shortcuts.selection = 'Control+Alt+F11';
+    expect((await service.handle(event(main), { type: 'settings.save', settings })).ok).toBe(true); expect(globalShortcut.register).not.toHaveBeenCalled();
+    main.emit('blur');
+    expect(globalShortcut.register).toHaveBeenCalledWith('Control+Alt+F11', expect.any(Function));
+    expect(service.state().shortcuts.find(value => value.task === 'selection')).toMatchObject({ accelerator: 'Control+Alt+F11', registered: true });
+    expect(main.listenerCount('blur')).toBe(0); expect(main.listenerCount('closed')).toBe(0);
+  });
+
+  it('restores shortcut registration when the setting ends, refuses suspension during recording and removes listeners on shutdown', async () => {
+    const { service, main, tool } = await focusedFixture();
+    await service.handle(event(main), { type: 'shortcuts.capture', active: true });
+    await service.handle(event(main), { type: 'shortcuts.capture', active: false }); expect(main.listenerCount('blur')).toBe(0);
+    const recording = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false });
+    expect(recording.ok).toBe(true);
+    expect(await service.handle(event(main), { type: 'shortcuts.capture', active: true })).toMatchObject({ ok: false, error: expect.stringContaining('先结束录屏') });
+    if (recording.ok && recording.id) await service.handle(event(tool), { type: 'recording.cancel', id: recording.id });
+    await service.handle(event(main), { type: 'shortcuts.capture', active: true }); expect(main.listenerCount('blur')).toBe(1);
+    await service.shutdown(); expect(main.listenerCount('blur')).toBe(0); expect(main.listenerCount('closed')).toBe(0);
   });
 });
 

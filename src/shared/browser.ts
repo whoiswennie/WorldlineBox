@@ -43,6 +43,8 @@ export const browserRequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('history'), query: z.string().max(200).default(''), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(50) }),
   z.object({ type: z.literal('preferences.save'), preferences: browserPreferencesSchema }),
   z.object({ type: z.literal('download.action'), id, action: z.enum(['pause', 'resume', 'cancel', 'reveal', 'open', 'retry']) }),
+  z.object({ type: z.literal('download.records.remove'), ids: z.array(id).min(1).max(200) }).strict(),
+  z.object({ type: z.literal('download.records.clear') }).strict(),
   z.object({ type: z.literal('data.info') }),
   z.object({ type: z.literal('data.clear'), cache: z.boolean(), siteData: z.boolean(), history: z.boolean(), downloads: z.boolean(), origin: z.string().max(8192).optional() }),
   z.object({ type: z.literal('permission'), id, allow: z.boolean(), remember: z.boolean().default(false) }),

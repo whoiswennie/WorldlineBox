@@ -78,7 +78,7 @@ test('selected browser text opens an isolated temporary assistant with two-turn 
     expect(await web.evaluate(() => typeof Reflect.get(globalThis, 'worldlinebox'))).toBe('undefined');
     await main.getByRole('button', { name: '划词助手', exact: true }).click(); let tool = await toolPage(application);
     expect((await request(tool, { type: 'context' })).text).toBe(PASSAGE);
-    await expect(tool.getByRole('textbox', { name: '选中的文字', exact: true })).toHaveValue(PASSAGE);
+    await expect(tool.locator('.selection-source-summary')).toHaveText(PASSAGE);
     expect((await request(tool, { type: 'state' })).state!.ai).toMatchObject({ configured: true, model: 'deepseek-v4-pro', visionSupported: false });
     expect(received).toHaveLength(0);
     expect(await tool.evaluate(() => Object.keys((globalThis as unknown as Bridge).worldlinebox))).toEqual(['captureTools']);
@@ -111,7 +111,7 @@ test('selected browser text opens an isolated temporary assistant with two-turn 
     });
     const passageBounds = await web.locator('#passage').boundingBox(); if (!passageBounds) throw Error('Missing selected passage bounds');
     await web.mouse.click(passageBounds.x + 12, passageBounds.y + 12, { button: 'right' }); tool = await toolPage(application);
-    await expect(tool.locator('.selection-messages article')).toHaveCount(0); await expect(tool.getByRole('textbox', { name: '选中的文字', exact: true })).toHaveValue(PASSAGE);
+    await expect(tool.locator('.selection-messages article')).toHaveCount(0); await expect(tool.locator('.selection-source-summary')).toHaveText(PASSAGE);
     expect(received).toHaveLength(3); // two answered requests plus the cancelled request
     await tool.getByRole('button', { name: '关闭', exact: true }).click(); await expect.poll(() => tool.isClosed()).toBe(true);
 
