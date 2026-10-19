@@ -37,6 +37,20 @@ async function fill(value: string, label = '关于这张截图，想问什么？
 async function pointer(type: string, x: number, y: number) { await act(() => container.querySelector('canvas')!.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: y, pointerId: 1, button: 0 }))); }
 
 describe('screenshot studio interactions', () => {
+  it('keeps compact icon actions accessible through labels and tooltips', async () => {
+    await render({ ...props(), onSaveFile: vi.fn(async () => undefined) });
+    await click('使用整个可见区域');
+    for (const label of ['重选区域', '图片问答', '复制图片', '保存到下载目录', '保存到资源库', '关闭截图']) {
+      const action = button(label);
+      expect(action.getAttribute('aria-label')).toBe(label); expect(action.title).toBe(label);
+      expect(action.textContent).toBe(''); expect(action.querySelector('svg')).not.toBeNull();
+    }
+    expect(container.querySelectorAll('.screenshot-tool-group button')).toHaveLength(8);
+    for (const action of container.querySelectorAll<HTMLButtonElement>('.screenshot-tool-group button')) {
+      expect(action.getAttribute('aria-label')).toBe(action.title); expect(action.title).not.toBe(''); expect(action.textContent).toBe('');
+    }
+    expect(button('撤销').getAttribute('aria-label')).toBe('撤销'); expect(button('重做').title).toContain('Ctrl+Shift+Z');
+  });
   it('crops reverse drags and exports pixel coordinates with newly drawn redaction', async () => {
     const value = props(); await render(value);
     await pointer('pointerdown', 400, 300); await pointer('pointermove', 100, 100); await pointer('pointerup', 100, 100);

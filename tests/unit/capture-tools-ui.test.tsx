@@ -28,7 +28,7 @@ async function mount(element: React.ReactNode) {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(() => root.render(<LocaleProvider initialPreference="zh-CN">{element}</LocaleProvider>));
 }
-function button(text: string) { return [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text)!; }
+function button(text: string) { return [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === text || item.textContent === text)!; }
 
 it('loads global defaults and saves microphone changes without changing shortcut bindings', async () => {
   const { api, request } = bridge();
@@ -85,7 +85,7 @@ it('streams recording chunks in order and waits for the last chunk before saving
   vi.stubGlobal('navigator', { languages: ['zh-CN'], mediaDevices: { getDisplayMedia: vi.fn() } });
   const cleanup = vi.fn();
   const track = new EventTarget();
-  vi.spyOn(media, 'desktopRecordingMedia').mockResolvedValue({ stream: { getAudioTracks: () => [] } as unknown as MediaStream, display: { getVideoTracks: () => [track] } as unknown as MediaStream, cleanup, missingSystemAudio: false, hasSystemAudio: false, hasMicrophone: false });
+  vi.spyOn(media, 'desktopRecordingMedia').mockResolvedValue({ stream: { getAudioTracks: () => [], getVideoTracks: () => [{ getSettings: () => ({ width: 1920, height: 1080 }) }] } as unknown as MediaStream, display: { getVideoTracks: () => [track] } as unknown as MediaStream, cleanup, missingSystemAudio: false, hasSystemAudio: false, hasMicrophone: false });
   const snapshot = state();
   const recorded: number[][] = [];
   const { api, request } = bridge(snapshot);
@@ -99,7 +99,7 @@ it('streams recording chunks in order and waits for the last chunk before saving
   await act(() => button('开始录制').click());
   const recorder = recorders[0]!;
   expect(host.querySelector('.capture-recorder')?.classList.contains('is-active')).toBe(true);
-  expect(host.querySelector('fieldset')?.hidden).toBe(true);
+  expect(host.querySelector('fieldset')).toBeNull();
   let release!: (value: ArrayBuffer) => void;
   const first = { size: 2, arrayBuffer: () => new Promise<ArrayBuffer>(resolve => { release = resolve; }) } as Blob;
   await act(() => { recorder.ondataavailable?.({ data: first }); recorder.ondataavailable?.({ data: new Blob([new Uint8Array([2])]) }); });
@@ -128,7 +128,7 @@ it('preserves the recoverable WebM after conversion fails and reports actual aud
   }
   vi.stubGlobal('MediaRecorder', FakeRecorder);
   vi.stubGlobal('navigator', { languages: ['zh-CN'], mediaDevices: { getDisplayMedia: vi.fn() } });
-  vi.spyOn(media, 'desktopRecordingMedia').mockResolvedValue({ stream: { getAudioTracks: () => [] } as unknown as MediaStream,
+  vi.spyOn(media, 'desktopRecordingMedia').mockResolvedValue({ stream: { getAudioTracks: () => [], getVideoTracks: () => [{ getSettings: () => ({ width: 1920, height: 1080 }) }] } as unknown as MediaStream,
     display: { getVideoTracks: () => [new EventTarget()] } as unknown as MediaStream, cleanup: vi.fn(), missingSystemAudio: true, hasSystemAudio: false, hasMicrophone: false });
   const snapshot = state();
   const recoveryPath = 'C:\\Downloads\\.WorldlineBox-Recording-recover.webm.part';
@@ -156,6 +156,54 @@ it('preserves the recoverable WebM after conversion fails and reports actual aud
   expect(request).toHaveBeenLastCalledWith({ type: 'reveal', path: recoveryPath });
 });
 
+it('mutes and restores already granted system and microphone tracks from the floating recording controls', async () => {
+  class FakeRecorder {
+    static isTypeSupported() { return true; }
+    state = 'inactive'; onstop?: () => void;
+    start() { this.state = 'recording'; }
+    stop() { this.state = 'inactive'; this.onstop?.(); }
+  }
+  vi.stubGlobal('MediaRecorder', FakeRecorder);
+  vi.stubGlobal('navigator', { languages: ['zh-CN'], mediaDevices: { getDisplayMedia: vi.fn() } });
+  const system = vi.fn(), microphone = vi.fn();
+  vi.spyOn(media, 'desktopRecordingMedia').mockResolvedValue({ stream: { getAudioTracks: () => [], getVideoTracks: () => [{ getSettings: () => ({ width: 1920, height: 1080 }) }] } as unknown as MediaStream,
+    display: { getVideoTracks: () => [new EventTarget()] } as unknown as MediaStream, cleanup: vi.fn(), missingSystemAudio: false, hasSystemAudio: true, hasMicrophone: true,
+    setSystemAudioEnabled: system, setMicrophoneEnabled: microphone });
+  const snapshot = state(); const { api, request } = bridge(snapshot);
+  request.mockImplementation(async input => input.type === 'sources.list'
+    ? { ok: true, sources: [{ id: 'screen:0', name: '屏幕 1', displayId: '0', kind: 'screen', thumbnail: '' }] }
+    : { ok: true, id: 'live-audio', state: snapshot });
+  await mount(<RecorderPanel api={api} state={snapshot} onClose={() => undefined} />);
+  await act(() => button('开始录制').click());
+  const toggle = (label: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+  await act(() => toggle('录制系统声音').click()); expect(system).toHaveBeenLastCalledWith(false); expect(microphone).not.toHaveBeenCalled();
+  await act(() => toggle('录制麦克风').click()); expect(microphone).toHaveBeenLastCalledWith(false);
+  await act(() => toggle('录制系统声音').click()); expect(system).toHaveBeenLastCalledWith(true);
+  expect(request.mock.calls.filter(([input]) => input.type === 'recording.prepare')).toHaveLength(1);
+  await act(() => button('停止并保存').click());
+});
+
+it('honors a tray or global stop while desktop media permission is still pending', async () => {
+  const constructed = vi.fn();
+  vi.stubGlobal('MediaRecorder', class { constructor() { constructed(); } });
+  vi.stubGlobal('navigator', { languages: ['zh-CN'], mediaDevices: { getDisplayMedia: vi.fn() } });
+  let resolveMedia!: (value: media.DesktopRecordingMedia) => void;
+  const cleanup = vi.fn();
+  vi.spyOn(media, 'desktopRecordingMedia').mockImplementation(() => new Promise(resolve => { resolveMedia = resolve; }));
+  const snapshot = state(); const { api, request } = bridge(snapshot);
+  request.mockImplementation(async input => input.type === 'sources.list'
+    ? { ok: true, sources: [{ id: 'screen:0', name: '屏幕 1', displayId: '0', kind: 'screen', thumbnail: '' }] }
+    : { ok: true, id: 'pending-desktop', state: snapshot });
+  await mount(<RecorderPanel api={api} state={snapshot} onClose={() => undefined} />);
+  await act(() => button('开始录制').click());
+  const stop = vi.mocked(api.onStopRecording).mock.calls.at(-1)![0];
+  await act(() => stop());
+  expect(request.mock.calls.some(([input]) => input.type === 'recording.cancel' && input.id === 'pending-desktop')).toBe(true);
+  await act(async () => resolveMedia({ stream: {} as MediaStream, display: {} as MediaStream, cleanup, missingSystemAudio: false, hasSystemAudio: false, hasMicrophone: false }));
+  expect(constructed).not.toHaveBeenCalled(); expect(cleanup).toHaveBeenCalledOnce();
+  expect(host.textContent).toContain('录制已取消'); expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
 it('does not cancel accepted recording data when a disk failure is still publishing its recovery state', async () => {
   const recorders: FakeRecorder[] = [];
   class FakeRecorder {
@@ -170,7 +218,7 @@ it('does not cancel accepted recording data when a disk failure is still publish
   }
   vi.stubGlobal('MediaRecorder', FakeRecorder);
   vi.stubGlobal('navigator', { languages: ['zh-CN'], mediaDevices: { getDisplayMedia: vi.fn() } });
-  vi.spyOn(media, 'desktopRecordingMedia').mockResolvedValue({ stream: { getAudioTracks: () => [] } as unknown as MediaStream,
+  vi.spyOn(media, 'desktopRecordingMedia').mockResolvedValue({ stream: { getAudioTracks: () => [], getVideoTracks: () => [{ getSettings: () => ({ width: 1920, height: 1080 }) }] } as unknown as MediaStream,
     display: { getVideoTracks: () => [new EventTarget()] } as unknown as MediaStream, cleanup: vi.fn(), missingSystemAudio: false, hasSystemAudio: false, hasMicrophone: false });
   const snapshot = state();
   snapshot.recording = { id: 'disk-failure', status: 'recording', format: 'mp4', bytes: 1024, startedAt: '' };

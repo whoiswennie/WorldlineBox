@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { CaptureDesktopSource, CaptureImageSource, CaptureToolsRequest, CaptureToolsResponse, CaptureToolsState, WorldlineBoxCaptureToolsApi } from '../../shared/capture-tools';
 import { ScreenshotStudio, type ScreenshotAsk } from '../browser/screenshot/ScreenshotStudio';
+import { DesktopScreenshotOverlay } from './DesktopScreenshotOverlay';
 import type { Rect } from '../browser/screenshot/model';
 import { Button, Select } from '../ui';
 import { RecorderPanel } from './RecorderPanel';
@@ -66,7 +67,7 @@ export function CaptureToolsWindow({ api = getCaptureToolsApi() }: { api?: World
     } finally { signal.removeEventListener('abort', abort); }
   }
   function close() { void request({ type: 'close' }).catch(cause => setError(cause instanceof Error ? cause.message : words.failed)); }
-  if (state?.task === 'recording' && api) return <RecorderPanel api={api} state={state} onClose={close} />;
+  if (state?.task === 'recording' && api) return <RecorderPanel api={api} state={state} source={source} onSourceChange={next => { setSource(next); setSourceRevision(value => value + 1); }} onClose={close} />;
   if (state?.task === 'selection' && api) return <SelectionAssistant key={sourceRevision + state.task} api={api} state={state} initialText={selectedText} onClose={close} />;
   async function startLong(rect: Rect) {
     setError('');
@@ -86,7 +87,8 @@ export function CaptureToolsWindow({ api = getCaptureToolsApi() }: { api?: World
     finally { setBusy(false); }
   }
   if (long) return <main className="capture-tools-window capture-long-controls"><header><h1>{words['long-screenshot']}</h1><span>{words.longFrames} {long.frames}</span></header><p className="capture-tools-muted">{words.longHint}</p>{error ? <p className="capture-tools-error" role="alert">{error}</p> : null}<footer className="capture-tools-actions"><Button disabled={busy} variant="quiet" onClick={() => void longAction('long.cancel')}>{words.longCancel}</Button><Button disabled={busy} loading={busy} onClick={() => void longAction('long.append')}>{words.longAppend}</Button><Button disabled={busy} onClick={() => void longAction('long.finish')}>{words.longFinish}</Button></footer></main>;
-  if (source && state) return <ScreenshotStudio key={sourceRevision + state.task} source={source} ai={state.ai} initialTask={state.task === 'ocr' || state.task === 'translate' ? state.task : 'screenshot'} onClose={close}
+  const ScreenshotEditor = source?.desktop ? DesktopScreenshotOverlay : ScreenshotStudio;
+  if (source && state) return <ScreenshotEditor key={sourceRevision + state.task} source={source} ai={state.ai} initialTask={state.task === 'ocr' || state.task === 'translate' ? state.task : 'screenshot'} onClose={close}
     onSave={async (dataUrl, filename) => { await request({ type: 'screenshot.save', dataUrl, filename, destination: 'library' }); }}
     onSaveFile={async (dataUrl, filename) => { await request({ type: 'screenshot.save', dataUrl, filename, destination: 'downloads' }); }}
     onCopy={async dataUrl => { await request({ type: 'screenshot.copy', dataUrl }); }}

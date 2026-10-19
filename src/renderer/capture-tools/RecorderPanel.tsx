@@ -1,10 +1,12 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
-import { CAPTURE_GIF_LIMIT_SECONDS, CAPTURE_VIDEO_LIMIT_SECONDS, type CaptureDesktopSource, type CaptureToolsSettings, type CaptureToolsState, type WorldlineBoxCaptureToolsApi } from '../../shared/capture-tools';
+import { CAPTURE_GIF_LIMIT_SECONDS, CAPTURE_VIDEO_LIMIT_SECONDS, type CaptureDesktopSource, type CaptureImageSource, type CaptureToolsSettings, type CaptureToolsState, type WorldlineBoxCaptureToolsApi } from '../../shared/capture-tools';
 import { Icon } from '../Icons';
 import { Button, Select } from '../ui';
 import { RecordingRegionPicker } from './RecordingRegionPicker';
 import { useCaptureWords } from './messages';
-import { desktopRecordingMedia, recordingClock, recordingMimeType, type CaptureRegion } from './recording-media';
+import { desktopRecordingMedia, recordingBitrate, recordingClock, recordingMimeType, recordingOutputSize, type CaptureRegion } from './recording-media';
+import type { Rect } from '../browser/screenshot/model';
+import { DesktopScreenshotOverlay } from './DesktopScreenshotOverlay';
 
 type Phase = 'idle' | 'preparing' | 'recording' | 'paused' | 'finalizing' | 'saved' | 'failed' | 'cancelled';
 type Session = {
@@ -12,9 +14,10 @@ type Session = {
   pausedAt?: number; pausedTotal: number; cancelled: boolean; queuedBytes: number; failed?: Error;
   done: Promise<void>; settle(): void;
   finalizing: boolean;
+  setSystemAudioEnabled?(enabled: boolean): void; setMicrophoneEnabled?(enabled: boolean): void;
 };
 
-export function RecorderPanel({ api, state, onClose }: { api: WorldlineBoxCaptureToolsApi; state: CaptureToolsState; onClose(): void }) {
+export function RecorderPanel({ api, state, onClose, source: desktopSource, onSourceChange }: { api: WorldlineBoxCaptureToolsApi; state: CaptureToolsState; onClose(): void; source?: CaptureImageSource; onSourceChange?(source: CaptureImageSource): void }) {
   const words = useCaptureWords();
   const [sources, setSources] = useState<CaptureDesktopSource[]>([]);
   const [sourceId, setSourceId] = useState('');
@@ -28,13 +31,20 @@ export function RecorderPanel({ api, state, onClose }: { api: WorldlineBoxCaptur
   const [savedPath, setSavedPath] = useState('');
   const [recordingId, setRecordingId] = useState('');
   const [capturedAudio, setCapturedAudio] = useState({ system: false, microphone: false });
+  const [enabledAudio, setEnabledAudio] = useState({ system: false, microphone: false });
   const [loadingSources, setLoadingSources] = useState(false);
+  const [capturingSource, setCapturingSource] = useState(false);
+  const [selectedRect, setSelectedRect] = useState<Rect>();
+  const [overlayRevision, setOverlayRevision] = useState(0);
+  const [controlsPrepared, setControlsPrepared] = useState(false);
+  const [awaitingMedia, setAwaitingMedia] = useState(false);
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const session = useRef<Session | undefined>(undefined);
   const alive = useRef(true);
   const preparing = useRef<{ aborted: boolean; id?: string } | undefined>(undefined);
   const source = sources.find(item => item.id === sourceId);
   const active = phase === 'recording' || phase === 'paused';
-  const locked = active || phase === 'preparing' || phase === 'finalizing';
+  const locked = active || phase === 'preparing' || phase === 'finalizing' || awaitingMedia;
   const revealPath = phase === 'failed' && state.recording?.id === recordingId && state.recording.path ? state.recording.path : savedPath;
 
   async function loadSources() {
@@ -44,7 +54,7 @@ export function RecorderPanel({ api, state, onClose }: { api: WorldlineBoxCaptur
       if (!alive.current) return;
       if (!result.ok) { setError(result.error); return; }
       const next = result.sources ?? []; setSources(next);
-      setSourceId(previous => next.some(item => item.id === previous) ? previous : next[0]?.id ?? '');
+      setSourceId(previous => next.some(item => item.id === previous) ? previous : next.find(item => item.kind === 'screen' && item.displayId === desktopSource?.desktop?.displayId)?.id ?? next[0]?.id ?? '');
     } catch { if (alive.current) setError(words.failed); }
     finally { if (alive.current) setLoadingSources(false); }
   }
@@ -68,7 +78,16 @@ export function RecorderPanel({ api, state, onClose }: { api: WorldlineBoxCaptur
   }
   function stop() {
     const running = session.current;
-    if (!running || running.recorder.state === 'inactive') return;
+    if (!running) {
+      const pending = preparing.current;
+      if (pending) {
+        pending.aborted = true;
+        if (pending.id) void api.request({ type: 'recording.cancel', id: pending.id }).catch(() => undefined);
+        if (alive.current) { setPhase('cancelled'); setNotice(words.recordingCancelled); }
+      }
+      return;
+    }
+    if (running.recorder.state === 'inactive') return;
     if (alive.current) setPhase('finalizing');
     running.recorder.stop();
   }
@@ -132,26 +151,36 @@ export function RecorderPanel({ api, state, onClose }: { api: WorldlineBoxCaptur
 
   async function start() {
     if (!sourceId || locked) return;
+    if (desktopSource?.desktop && source?.kind !== 'window' && !selectedRect) { setError(words.recordingNoSelection); return; }
     if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) { setError(words.missingMediaRecorder); return; }
-    setPhase('preparing'); setError(''); setNotice(''); setSavedPath(''); setElapsed(0); setCapturedAudio({ system: false, microphone: false });
+    setPhase('preparing'); setAwaitingMedia(true); setControlsPrepared(false); setError(''); setNotice(''); setSavedPath(''); setElapsed(0); setCapturedAudio({ system: false, microphone: false });
     const pending = { aborted: false, id: undefined as string | undefined }; preparing.current = pending;
     let media: Awaited<ReturnType<typeof desktopRecordingMedia>> | undefined;
     try {
-      const prepared = await api.request({ type: 'recording.prepare', sourceId, format: options.format, systemAudio: options.format !== 'gif' && options.systemAudio, microphone: options.format !== 'gif' && options.microphone });
+      const overlayCrop = desktopSource?.desktop && source?.kind !== 'window' ? selectedRect : undefined;
+      const prepared = await api.request({ type: 'recording.prepare', sourceId, format: options.format, systemAudio: options.format !== 'gif' && options.systemAudio, microphone: options.format !== 'gif' && options.microphone, quality: options.quality, ...(overlayCrop ? { rect: overlayCrop } : {}) });
       if (!prepared.ok) throw Error(prepared.error);
       if (!prepared.id) throw Error(words.failed);
       setRecordingId(prepared.id);
+      setControlsPrepared(true);
       pending.id = prepared.id;
       if (pending.aborted) throw Error('cancelled');
-      media = await desktopRecordingMedia({ systemAudio: options.format !== 'gif' && options.systemAudio, microphone: options.format !== 'gif' && options.microphone, ...(regionEnabled ? { region } : {}) });
+      const crop = overlayCrop && desktopSource ? { x: overlayCrop.x / desktopSource.width, y: overlayCrop.y / desktopSource.height, width: overlayCrop.width / desktopSource.width, height: overlayCrop.height / desktopSource.height } : regionEnabled ? region : undefined;
+      const isFull = crop && crop.x === 0 && crop.y === 0 && crop.width === 1 && crop.height === 1;
+      const desktop = desktopSource?.desktop;
+      media = await desktopRecordingMedia({ systemAudio: options.format !== 'gif' && options.systemAudio, microphone: options.format !== 'gif' && options.microphone, quality: options.quality,
+        ...(crop && !isFull ? { region: crop } : {}), ...(desktop && source?.kind !== 'window' ? { sourceSize: { width: desktop.pixelBounds?.width ?? Math.round(desktop.bounds.width * desktop.scaleFactor), height: desktop.pixelBounds?.height ?? Math.round(desktop.bounds.height * desktop.scaleFactor) } } : {}) });
       if (pending.aborted || !alive.current) throw Error('cancelled');
       if (media.missingSystemAudio) setNotice(words.missingAudio);
       setCapturedAudio({ system: media.hasSystemAudio, microphone: media.hasMicrophone });
+      setEnabledAudio({ system: media.hasSystemAudio, microphone: media.hasMicrophone });
       const mimeType = recordingMimeType(value => MediaRecorder.isTypeSupported(value), media.stream.getAudioTracks().length > 0);
-      const recorder = new MediaRecorder(media.stream, { ...(mimeType ? { mimeType } : {}), videoBitsPerSecond: options.format === 'gif' ? 2_000_000 : 6_000_000 });
+      const encodedSize = media.stream.getVideoTracks()[0]?.getSettings();
+      const recorder = new MediaRecorder(media.stream, { ...(mimeType ? { mimeType } : {}), videoBitsPerSecond: options.format === 'gif' ? 2_000_000 : recordingBitrate(encodedSize?.width ?? 1920, encodedSize?.height ?? 1080) });
       let settle!: () => void;
       const done = new Promise<void>(resolve => { settle = resolve; });
-      const running: Session = { id: prepared.id, recorder, cleanup: media.cleanup, queue: Promise.resolve(), sequence: 0, started: performance.now(), pausedTotal: 0, cancelled: false, queuedBytes: 0, done, settle, finalizing: false };
+      const running: Session = { id: prepared.id, recorder, cleanup: media.cleanup, queue: Promise.resolve(), sequence: 0, started: performance.now(), pausedTotal: 0, cancelled: false, queuedBytes: 0, done, settle, finalizing: false,
+        setSystemAudioEnabled: media.setSystemAudioEnabled, setMicrophoneEnabled: media.setMicrophoneEnabled };
       session.current = running;
       recorder.ondataavailable = event => {
         if (!event.data.size || running.cancelled || running.failed) return;
@@ -184,11 +213,11 @@ export function RecorderPanel({ api, state, onClose }: { api: WorldlineBoxCaptur
       media?.cleanup();
       if (pending.id) await api.request({ type: 'recording.cancel', id: pending.id }).catch(() => undefined);
       if (alive.current) {
-        const message = cause instanceof Error ? cause.message : words.failed;
+        const message = pending.aborted ? 'cancelled' : cause instanceof Error ? cause.message : words.failed;
         setError(message === 'microphone' ? words.micDenied : message === 'display' || (cause instanceof DOMException && cause.name === 'NotAllowedError') ? words.captureDenied : message === 'cancelled' ? '' : message);
         setPhase(message === 'cancelled' ? 'cancelled' : 'failed');
       }
-    } finally { if (preparing.current === pending) preparing.current = undefined; }
+    } finally { if (preparing.current === pending) { preparing.current = undefined; if (alive.current) setAwaitingMedia(false); } }
   }
 
   async function pause() {
@@ -214,22 +243,73 @@ export function RecorderPanel({ api, state, onClose }: { api: WorldlineBoxCaptur
     if (preparing.current) { preparing.current.aborted = true; if (preparing.current.id) await api.request({ type: 'recording.cancel', id: preparing.current.id }); }
     setPhase('cancelled'); return true;
   }
+  async function selectDesktopSource(id: string) {
+    if (locked) return;
+    setLoadingSources(true); setCapturingSource(true); setError('');
+    try {
+      const next = await api.request({ type: 'screenshot.capture', sourceId: id });
+      if (!next.ok) throw Error(next.error);
+      if (!next.source) throw Error(words.failed);
+      setSourceId(id); setSelectedRect(undefined); setOverlayRevision(value => value + 1);
+      setControlsPrepared(false); setPhase('idle'); onSourceChange?.(next.source);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : words.failed); }
+    finally { setLoadingSources(false); setCapturingSource(false); }
+  }
+  const qualityOptions = [
+    { value: 'original', label: words.qualityOriginal }, { value: '1080p', label: words.quality1080 }, { value: '720p', label: words.quality720 },
+  ];
+  function toggleAudio(kind: 'system' | 'microphone') {
+    const enabled = !enabledAudio[kind];
+    if (kind === 'system') session.current?.setSystemAudioEnabled?.(enabled); else session.current?.setMicrophoneEnabled?.(enabled);
+    setEnabledAudio(previous => ({ ...previous, [kind]: enabled }));
+  }
   const phaseLabel = phase === 'recording' ? words.live : phase === 'paused' ? words.paused : phase === 'preparing' ? words.preparing : phase === 'finalizing' ? words.finalizing : phase === 'saved' ? words.recordingSaved : phase === 'failed' ? words.recordingFailed : phase === 'cancelled' ? words.recordingCancelled : words.ready;
+  if (active || phase === 'finalizing' || phase === 'preparing' && controlsPrepared) return <main className={'capture-tools-window capture-recorder capture-recorder-floating' + (active ? ' is-active' : '')} data-capture-recorder>
+    <div className={'capture-recording-status is-' + phase} role="status"><span /><strong>{phaseLabel}</strong><time aria-label={words.elapsed}>{recordingClock(elapsed)}</time></div>
+    <div className="capture-recorder-floating-actions"><div className="capture-recording-audio"><span><button type="button" title={words.systemAudio} aria-label={words.systemAudio} aria-pressed={enabledAudio.system} disabled={!active || !capturedAudio.system} onClick={() => toggleAudio('system')}><Icon name={enabledAudio.system ? 'volume' : 'volume-off'} size={17} /><span className="capture-audio-description">{words.systemAudio}: {enabledAudio.system ? '✓' : '—'}</span></button></span><span><button type="button" title={words.microphone} aria-label={words.microphone} aria-pressed={enabledAudio.microphone} disabled={!active || !capturedAudio.microphone} onClick={() => toggleAudio('microphone')}><Icon name="microphone" size={17} /><span className="capture-audio-description">{words.microphone}: {enabledAudio.microphone ? '✓' : '—'}</span></button></span></div>
+      <Button size="sm" iconName={phase === 'paused' ? 'play' : 'pause'} variant="quiet" aria-label={phase === 'paused' ? words.resume : words.pause} title={phase === 'paused' ? words.resume : words.pause} disabled={!active} onClick={() => void pause()} /><Button size="sm" iconName="stop" aria-label={words.stop} title={words.stop} disabled={!active} onClick={stop} />
+      <Button size="sm" iconName="close" variant="quiet" aria-label={words.cancel} title={words.cancel} disabled={phase === 'finalizing'} onClick={() => void cancel()} />
+    </div>
+    {notice ? <small className="capture-recorder-floating-notice" role="status" title={notice}><Icon name="info" size={13} /><span className="capture-audio-description">{notice}</span></small> : null}
+  </main>;
+  if (desktopSource?.desktop && (phase === 'idle' || phase === 'preparing' && !controlsPrepared)) {
+    const desktop = desktopSource.desktop;
+    const physical = selectedRect ? recordingOutputSize(selectedRect.width / desktopSource.width * (desktop.pixelBounds?.width ?? desktop.bounds.width * desktop.scaleFactor),
+      selectedRect.height / desktopSource.height * (desktop.pixelBounds?.height ?? desktop.bounds.height * desktop.scaleFactor), options.quality) : undefined;
+    const toolbar = <div className="desktop-recording-toolbar" data-desktop-recording-toolbar>
+      <fieldset disabled={locked || loadingSources}>
+        <label title={words.format}><select aria-label={words.format} value={options.format} onChange={event => setOptions({ ...options, format: event.target.value as CaptureToolsSettings['format'] })}>{['mp4', 'webm', 'gif'].map(value => <option key={value} value={value}>{value.toUpperCase()}</option>)}</select></label>
+        <label title={words.quality}><select aria-label={words.quality} value={options.quality} onChange={event => setOptions({ ...options, quality: event.target.value as CaptureToolsSettings['quality'] })}>{qualityOptions.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+        <span className="desktop-screenshot-separator" />
+        <label className="desktop-recording-audio-toggle" title={words.systemAudio}><input type="checkbox" aria-label={words.systemAudio} disabled={options.format === 'gif'} checked={options.systemAudio && options.format !== 'gif'} onChange={event => setOptions({ ...options, systemAudio: event.target.checked })} /><Icon name={options.systemAudio && options.format !== 'gif' ? 'volume' : 'volume-off'} size={17} /></label>
+        <label className="desktop-recording-audio-toggle" title={words.microphone}><input type="checkbox" aria-label={words.microphone} disabled={options.format === 'gif'} checked={options.microphone && options.format !== 'gif'} onChange={event => setOptions({ ...options, microphone: event.target.checked })} /><Icon name="microphone" size={17} /></label>
+        <Button iconName="fit-window" variant="quiet" aria-label={words.source} title={words.source} aria-expanded={sourceMenuOpen} onClick={() => setSourceMenuOpen(previous => !previous)} />
+        {sourceMenuOpen && <label className="desktop-recording-source"><select aria-label={words.source} value={sourceId} onChange={event => { setSourceMenuOpen(false); void selectDesktopSource(event.target.value); }}>{sources.map(item => <option key={item.id} value={item.id}>{(item.kind === 'screen' ? words.screen : words.window) + ' · ' + item.name}</option>)}</select></label>}
+        <span className="desktop-screenshot-separator" />
+        <Button iconName="close" variant="quiet" aria-label={words.close} title={words.close} onClick={onClose} />
+        <Button iconName="video" className="is-primary" aria-label={words.start} title={words.start} disabled={!sourceId || !selectedRect} loading={phase === 'preparing'} onClick={() => void start()} />
+      </fieldset>
+      <div className="desktop-recording-hint"><span>{physical ? `${physical.width} × ${physical.height} · 30 fps` : words.recordingNoSelection}</span><span className="desktop-recording-info" tabIndex={0} aria-label={`${options.format === 'gif' ? words.gifHint : words.videoHint} ${words.recordingHiddenControls}`} title={`${options.format === 'gif' ? words.gifHint : words.videoHint}\n${words.recordingHiddenControls}`}><Icon name="info" size={14} /></span></div>
+      {error ? <p role="alert" className="capture-tools-error">{error}</p> : null}
+    </div>;
+    return <DesktopScreenshotOverlay key={overlayRevision} source={desktopSource} ai={state.ai} onClose={() => { if (!locked) onClose(); }}
+      recording={{ onSelection: setSelectedRect, toolbar, disabled: locked || capturingSource }} onSave={async () => undefined} onCopy={async () => undefined} onAsk={async () => ''} />;
+  }
   return <main className={'capture-tools-window capture-recorder' + (active ? ' is-active' : '')} data-capture-recorder>
-    <header><div><Icon name="fit-window" size={21} /><h1>{words.recording}</h1></div><Button iconName="close" variant="quiet" aria-label={words.close} disabled={phase === 'finalizing'} onClick={() => { if (locked) void cancel().then(ok => { if (ok) onClose(); }); else onClose(); }} /></header>
+    <header><div><Icon name="fit-window" size={21} /><h1>{words.recording}</h1></div><Button iconName="close" variant="quiet" aria-label={words.close} onClick={() => { if (locked) void cancel().then(ok => { if (ok) onClose(); }); else onClose(); }} /></header>
     <div className="capture-recorder-body">
       <div className={'capture-recording-status is-' + phase} role="status"><span /><strong>{phaseLabel}</strong><time aria-label={words.elapsed}>{recordingClock(elapsed)}</time></div>
       {error ? <p className="capture-tools-error" role="alert">{error}</p> : null}
       {notice ? <p className="capture-tools-muted" role="status">{notice}</p> : null}
       {active ? <div className="capture-recording-audio"><span><Icon name="music" size={13} />{words.systemAudio}: {capturedAudio.system ? '✓' : '—'}</span><span>{words.microphone}: {capturedAudio.microphone ? '✓' : '—'}</span></div> : null}
-      <fieldset disabled={locked} hidden={active}><div className="capture-source-heading"><Select label={words.source} value={sourceId} onValueChange={value => { setSourceId(value); setRegion({ x: 0, y: 0, width: 1, height: 1 }); }} options={sources.map(item => ({ value: item.id, label: (item.kind === 'screen' ? words.screen : words.window) + ' · ' + item.name }))} /><Button iconName="refresh" variant="quiet" aria-label={words.refresh} loading={loadingSources} onClick={() => void loadSources()} /></div>
+      <fieldset disabled={locked} hidden={active}><div className="capture-source-heading"><Select label={words.source} value={sourceId} onValueChange={value => { if (sources.find(item => item.id === value)?.kind === 'screen') void selectDesktopSource(value); else { setSourceId(value); setRegion({ x: 0, y: 0, width: 1, height: 1 }); } }} options={sources.map(item => ({ value: item.id, label: (item.kind === 'screen' ? words.screen : words.window) + ' · ' + item.name }))} /><Button iconName="refresh" variant="quiet" aria-label={words.refresh} loading={loadingSources} onClick={() => void loadSources()} /></div>
         {!sources.length && !loadingSources ? <p className="capture-tools-muted">{words.sourcesEmpty}</p> : null}
         {source ? <><label className="capture-option"><input type="checkbox" checked={regionEnabled} onChange={event => setRegionEnabled(event.target.checked)} />{words.region}</label><RecordingRegionPicker thumbnail={source.thumbnail} enabled={regionEnabled} value={region} onChange={setRegion} /></> : null}
-        <div className="capture-recording-options"><Select label={words.format} value={options.format} options={['mp4', 'webm', 'gif'].map(value => ({ value, label: value.toUpperCase() }))} onValueChange={value => setOptions({ ...options, format: value as CaptureToolsSettings['format'] })} /><div><label className="capture-option"><input type="checkbox" disabled={options.format === 'gif'} checked={options.systemAudio && options.format !== 'gif'} onChange={event => setOptions({ ...options, systemAudio: event.target.checked })} />{words.systemAudio}</label><label className="capture-option"><input type="checkbox" disabled={options.format === 'gif'} checked={options.microphone && options.format !== 'gif'} onChange={event => setOptions({ ...options, microphone: event.target.checked })} />{words.microphone}</label></div></div>
+        <div className="capture-recording-options"><Select label={words.format} value={options.format} options={['mp4', 'webm', 'gif'].map(value => ({ value, label: value.toUpperCase() }))} onValueChange={value => setOptions({ ...options, format: value as CaptureToolsSettings['format'] })} /><Select label={words.quality} value={options.quality} options={qualityOptions} onValueChange={value => setOptions({ ...options, quality: value as CaptureToolsSettings['quality'] })} /><div><label className="capture-option"><input type="checkbox" disabled={options.format === 'gif'} checked={options.systemAudio && options.format !== 'gif'} onChange={event => setOptions({ ...options, systemAudio: event.target.checked })} />{words.systemAudio}</label><label className="capture-option"><input type="checkbox" disabled={options.format === 'gif'} checked={options.microphone && options.format !== 'gif'} onChange={event => setOptions({ ...options, microphone: event.target.checked })} />{words.microphone}</label></div></div>
       </fieldset>
       <p className="capture-tools-muted" hidden={active}>{options.format === 'gif' ? words.gifHint : words.videoHint}</p>
       {revealPath ? <div className="capture-tools-location"><span title={revealPath}>{revealPath}</span><Button iconName="folder" size="sm" onClick={() => void api.request({ type: 'reveal', path: revealPath })}>{words.reveal}</Button></div> : null}
     </div>
-    <footer className="capture-tools-actions">{active ? <><Button variant="quiet" onClick={() => void cancel()}>{words.cancel}</Button><Button iconName={phase === 'paused' ? 'chevron-right' : 'stop'} variant="quiet" onClick={() => void pause()}>{phase === 'paused' ? words.resume : words.pause}</Button><Button iconName="save" onClick={stop}>{words.stop}</Button></> : <Button disabled={!source || locked} loading={phase === 'preparing' || phase === 'finalizing'} iconName="fit-window" onClick={() => void start()}>{phase === 'saved' ? words.recordAgain : words.start}</Button>}</footer>
+    <footer className="capture-tools-actions"><Button disabled={!source || locked} loading={phase === 'preparing'} iconName="fit-window" onClick={() => { if (desktopSource?.desktop && phase !== 'preparing') void selectDesktopSource(sourceId); else void start(); }}>{phase === 'saved' || desktopSource?.desktop ? words.recordAgain : words.start}</Button></footer>
   </main>;
 }

@@ -4,13 +4,15 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserWindow, clipboard, desktopCapturer, globalShortcut, session, shell, type IpcMainInvokeEvent } from 'electron';
-import { CaptureToolsService, canonicalCaptureShortcut } from '../../src/main/capture-tools/service';
+import { CaptureToolsService, canonicalCaptureShortcut, type CaptureToolsServiceOptions } from '../../src/main/capture-tools/service';
 import { CAPTURE_TOOLS_STOP_RECORDING, DEFAULT_CAPTURE_TOOLS_SETTINGS, type CaptureImageSource, type CaptureToolsSettings } from '../../src/shared/capture-tools';
 import { readFocusedSelectedText } from '../../src/main/capture-tools/selected-text';
 import { answerSelectedText } from '../../src/main/capture-tools/text-answer';
 import type * as SelectedText from '../../src/main/capture-tools/selected-text';
+import type * as DesktopRegions from '../../src/main/capture-tools/desktop-regions';
+import { positionCaptureWindowInPhysicalPixels, readWindowsCaptureMonitor } from '../../src/main/capture-tools/desktop-regions';
 
-const mock = vi.hoisted(() => ({ windows: [] as unknown[], png: Buffer.alloc(0), scope: {} as Record<string, unknown>, callbacks: new Map<string, () => void>() }));
+const mock = vi.hoisted(() => ({ windows: [] as unknown[], png: Buffer.alloc(0), scope: {} as Record<string, unknown>, callbacks: new Map<string, () => void>(), boundaryLoad: undefined as (() => Promise<void>) | undefined }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
   let nextId = 0;
@@ -23,7 +25,9 @@ vi.mock('electron', async () => {
     hide() { this.visible = false; } show() { this.visible = true; } showInactive() { this.visible = true; } focus() {}
     destroy() { this.destroyed = true; this.visible = false; this.emit('closed'); }
     getMediaSourceId() { return 'window:' + this.id + ':0'; }
-    setMinimumSize = vi.fn(); setSize = vi.fn(); setContentProtection = vi.fn(); setAlwaysOnTop = vi.fn(); removeMenu = vi.fn();
+    getNativeWindowHandle() { const output = Buffer.alloc(8); output.writeBigUInt64LE(BigInt(this.id)); return output; }
+    loadURL = vi.fn(async () => { await mock.boundaryLoad?.(); });
+    setMinimumSize = vi.fn(); setSize = vi.fn(); setBounds = vi.fn(); setResizable = vi.fn(); setMovable = vi.fn(); setContentProtection = vi.fn(); setAlwaysOnTop = vi.fn(); setIgnoreMouseEvents = vi.fn(); setShape = vi.fn(); moveTop = vi.fn(); removeMenu = vi.fn();
   }
   const scope = { setPermissionCheckHandler: (fn: unknown) => { mock.scope.check = fn; }, setPermissionRequestHandler: (fn: unknown) => { mock.scope.permission = fn; }, setDisplayMediaRequestHandler: (fn: unknown) => { mock.scope.display = fn; } };
   const image = { isEmpty: () => false, toPNG: () => mock.png, toDataURL: () => 'data:image/png;base64,' + mock.png.toString('base64') };
@@ -32,26 +36,30 @@ vi.mock('electron', async () => {
     desktopCapturer: { getSources: vi.fn(async () => [{ id: 'screen:1:0', name: 'Screen', display_id: '1', thumbnail: image }]) },
     session: { fromPartition: vi.fn(() => scope) }, nativeImage: { createFromBuffer: () => image }, clipboard: { writeImage: vi.fn(), readText: vi.fn(() => 'Clipboard selection'), writeText: vi.fn() },
     shell: { showItemInFolder: vi.fn(), openPath: vi.fn(async () => '') }, powerMonitor: new EventEmitter(),
-    screen: { getCursorScreenPoint: () => ({ x: 0, y: 0 }), getDisplayNearestPoint: () => ({ id: 1 }), getAllDisplays: () => [{ size: { width: 2160, height: 1354 }, scaleFactor: 1 }] },
+    screen: { getCursorScreenPoint: () => ({ x: 20, y: 30 }),
+      getDisplayNearestPoint: () => ({ id: 1, size: { width: 2160, height: 1354 }, bounds: { x: 0, y: 0, width: 2160, height: 1354 }, workArea: { x: 0, y: 0, width: 2160, height: 1314 }, scaleFactor: 1 }),
+      getAllDisplays: () => [{ id: 1, size: { width: 2160, height: 1354 }, bounds: { x: 0, y: 0, width: 2160, height: 1354 }, workArea: { x: 0, y: 0, width: 2160, height: 1314 }, scaleFactor: 1 }],
+      screenToDipRect: (_window: unknown, rect: unknown) => rect, dipToScreenRect: (_window: unknown, rect: unknown) => rect },
   };
 });
 vi.mock('../../src/main/capture-tools/visual-answer', () => ({ getCaptureAiState: () => ({ configured: true, model: 'vision-test', visionSupported: true }),
   answerCaptureImage: vi.fn(async () => 'Answer from image') }));
 vi.mock('../../src/main/capture-tools/text-answer', () => ({ answerSelectedText: vi.fn(async () => 'Answer from selected text') }));
 vi.mock('../../src/main/capture-tools/selected-text', async importOriginal => ({ ...await importOriginal<typeof SelectedText>(), readFocusedSelectedText: vi.fn(async () => 'Native selected text') }));
+vi.mock('../../src/main/capture-tools/desktop-regions', async importOriginal => ({ ...await importOriginal<typeof DesktopRegions>(), readWindowsCaptureMonitor: vi.fn(() => undefined), positionCaptureWindowInPhysicalPixels: vi.fn(() => true), readWindowsDesktopRegions: vi.fn(() => ({ available: true, windows: [{ id: 'window:123', name: 'External editor', bounds: { x: 100, y: 100, width: 800, height: 600 } }] })) }));
 const roots: string[] = [];
 const services: CaptureToolsService[] = [];
-beforeEach(async () => { mock.windows.length = 0; mock.scope = {}; mock.callbacks.clear(); vi.clearAllMocks(); mock.png = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#123456' } }).png().toBuffer(); });
+beforeEach(async () => { mock.windows.length = 0; mock.scope = {}; mock.callbacks.clear(); mock.boundaryLoad = undefined; vi.clearAllMocks(); mock.png = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#123456' } }).png().toBuffer(); });
 afterEach(async () => { for (const service of services.splice(0)) await service.shutdown(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 function event(window: BrowserWindow, frame = window.webContents.mainFrame) { return { sender: window.webContents, senderFrame: frame } as IpcMainInvokeEvent; }
-async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => void) {
+async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => void, onStateChanged?: CaptureToolsServiceOptions['onStateChanged']) {
   const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-capture-service-')); roots.push(root);
   const main = new BrowserWindow({}); const saveToLibrary = vi.fn<() => Promise<void>>(async () => undefined);
   const source: CaptureImageSource = { dataUrl: 'data:image/png;base64,' + mock.png.toString('base64'), width: 64, height: 64, title: 'Provided browser', url: 'https://actual.example/page' };
   const captureBrowser = vi.fn(async () => source);
   const readBrowserSelection = vi.fn(async () => 'Actual browser selection');
   const service = new CaptureToolsService({ root, downloadPath: path.join(root, 'Downloads'), getMainWindow: () => main, preloadPath: 'minimal-preload.js', loadWindow: async () => undefined,
-    getModelConfig: () => ({ apiFormat: 'openai_chat', model: 'vision-test', apiKey: 'SECRET' }), saveToLibrary, getFfmpeg: () => undefined, captureBrowser, readBrowserSelection, validateShortcuts });
+    getModelConfig: () => ({ apiFormat: 'openai_chat', model: 'vision-test', apiKey: 'SECRET' }), saveToLibrary, getFfmpeg: () => undefined, captureBrowser, readBrowserSelection, validateShortcuts, onStateChanged });
   services.push(service); await service.init(); await service.open('screenshot', source, captureBrowser);
   const tool = mock.windows.at(-1) as BrowserWindow;
   return { service, root, main, tool, source, saveToLibrary, captureBrowser, readBrowserSelection };
@@ -121,6 +129,41 @@ describe('isolated capture tools authorization and settings', () => {
     expect(opened.ok && opened.source?.title).toBe('Provided browser'); expect(captureBrowser).toHaveBeenCalledTimes(1); expect(desktopCapturer.getSources).not.toHaveBeenCalled();
   });
 
+  it('opens a real screen as a frameless display overlay including the taskbar and remains remotely capturable', async () => {
+    const { service, main } = await fixture();
+    const response = await service.open('screenshot');
+    const tool = mock.windows.at(-1) as BrowserWindow;
+    expect(response.ok && response.source?.desktop).toMatchObject({ displayId: '1', bounds: { x: 0, y: 0, width: 2160, height: 1354 },
+      workArea: { x: 0, y: 0, width: 2160, height: 1314 }, cursor: { x: 20, y: 30 }, windowSnapping: true });
+    expect(response.ok && response.source?.desktop?.candidates.map(candidate => candidate.kind)).toEqual(['window', 'workarea', 'screen']);
+    expect((tool as unknown as { options: unknown }).options).toMatchObject({ frame: false, thickFrame: false, resizable: true, movable: false, skipTaskbar: true, enableLargerThanScreen: true,
+      x: 0, y: 0, width: 2160, height: 1354, minWidth: 1, minHeight: 1 });
+    expect(tool.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 2160, height: 1354 });
+    expect(tool.setContentProtection).toHaveBeenCalledWith(false); expect(tool.setContentProtection).not.toHaveBeenCalledWith(true);
+    expect(main.isVisible()).toBe(false);
+    await service.handle(event(tool), { type: 'close' }); expect(main.isVisible()).toBe(true);
+  });
+
+  it('keeps every utility type remotely visible, including selection and recording controls', async () => {
+    const { service } = await fixture();
+    for (const task of ['selection', 'recording', 'ocr', 'translate', 'long-screenshot'] as const) {
+      await service.open(task); const tool = mock.windows.at(-1) as BrowserWindow;
+      expect(tool.setContentProtection).toHaveBeenCalledWith(false); expect(tool.setContentProtection).not.toHaveBeenCalledWith(true);
+      if (task === 'recording') expect((await service.handle(event(tool), { type: 'context' })).ok).toBe(true);
+    }
+  });
+
+  it('requests exact rcMonitor pixels and corrects native overlay placement instead of resampling rounded DIP sizes', async () => {
+    const { service } = await fixture();
+    const native = { bounds: { x: 0, y: 0, width: 2560, height: 1600 }, workArea: { x: 0, y: 0, width: 2560, height: 1528 } };
+    vi.mocked(readWindowsCaptureMonitor).mockReturnValueOnce(native);
+    const response = await service.open('screenshot');
+    const tool = mock.windows.at(-1) as BrowserWindow;
+    expect(response.ok && response.source?.desktop?.pixelBounds).toEqual(native.bounds);
+    expect(desktopCapturer.getSources).toHaveBeenLastCalledWith(expect.objectContaining({ thumbnailSize: { width: 2560, height: 1600 } }));
+    expect(positionCaptureWindowInPhysicalPixels).toHaveBeenLastCalledWith(tool.getNativeWindowHandle(), native.bounds);
+  });
+
   it('reuses one ephemeral session across repeated tool windows while rejecting their previous owners', async () => {
     const { service, source, captureBrowser } = await fixture();
     const scope = vi.mocked(session.fromPartition).mock.results[0]!.value;
@@ -178,6 +221,111 @@ describe('temporary selected text assistant', () => {
 });
 
 describe('desktop recording grants', () => {
+  it('shows one transparent click-through canvas for outside-crop range borders and destroys it on stop/cancel', async () => {
+    const { service } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
+    const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false,
+      rect: { x: 8, y: 8, width: 32, height: 32 } });
+    if (!prepared.ok || !prepared.id) throw Error('No prepared regional recording');
+    const lines = (mock.windows as BrowserWindow[]).filter(window => (window as unknown as { options: { title?: string } }).options.title === 'WorldlineBox · 录制范围');
+    expect(lines).toHaveLength(1);
+    for (const line of lines) {
+      expect((line as unknown as { options: unknown }).options).toMatchObject({ x: 0, y: 0, width: 2160, height: 1354,
+        frame: false, thickFrame: false, focusable: false, hasShadow: false, skipTaskbar: true, transparent: true, backgroundColor: '#00000000',
+        webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true, backgroundThrottling: false } });
+      const prefs = (line as unknown as { options: { webPreferences: Record<string, unknown> } }).options.webPreferences;
+      expect(prefs).not.toHaveProperty('preload');
+      const url = vi.mocked(line.loadURL).mock.calls[0]![0]; expect(url).toMatch(/^data:text\/html;charset=utf-8,/);
+      expect(decodeURIComponent(url.split(',').slice(1).join(','))).toContain('Content-Security-Policy');
+      expect(line.setContentProtection).toHaveBeenCalledWith(false); expect(line.setIgnoreMouseEvents).toHaveBeenCalledWith(true);
+      expect(line.setAlwaysOnTop).toHaveBeenCalledWith(true, 'screen-saver'); expect(line.moveTop).toHaveBeenCalled();
+      expect((await service.handle(event(line), { type: 'state' })).ok).toBe(false);
+    }
+    service.stopRecording(); expect(lines.every(window => window.isDestroyed())).toBe(true);
+    expect(tool.webContents.send).toHaveBeenCalledWith(CAPTURE_TOOLS_STOP_RECORDING);
+    await service.handle(event(tool), { type: 'recording.cancel', id: prepared.id });
+  });
+
+  it.each(['stop', 'cancel', 'load-rejection'] as const)('does not resurrect a range overlay if %s occurs while its page is loading', async action => {
+    const { service } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
+    let release!: () => void, reject!: (error: Error) => void;
+    mock.boundaryLoad = () => new Promise<void>((resolve, fail) => { release = resolve; reject = fail; });
+    const preparing = service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false,
+      rect: { x: 8, y: 8, width: 32, height: 32 } });
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    const overlay = mock.windows.at(-1) as BrowserWindow;
+    const id = service.state().recording!.id;
+    if (action === 'cancel') await service.handle(event(tool), { type: 'recording.cancel', id });
+    else service.stopRecording();
+    if (action === 'load-rejection') reject(Error('Window destroyed while loading')); else release();
+    await preparing;
+    expect(overlay.isDestroyed()).toBe(true); expect(overlay.isVisible()).toBe(false); expect(overlay.moveTop).not.toHaveBeenCalled();
+    if (action !== 'cancel') await service.handle(event(tool), { type: 'recording.cancel', id });
+  });
+
+  it('cleans range borders on renderer loss and excludes them from capture sources', async () => {
+    const { service } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
+    const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false,
+      rect: { x: 8, y: 8, width: 32, height: 32 } });
+    if (!prepared.ok || !prepared.id) throw Error('No prepared regional recording');
+    const lines = (mock.windows as BrowserWindow[]).filter(window => (window as unknown as { options: { title?: string } }).options.title === 'WorldlineBox · 录制范围');
+    const listed = await desktopCapturer.getSources({ types: ['screen'] });
+    vi.mocked(desktopCapturer.getSources).mockResolvedValueOnce([...listed, { ...listed[0]!, id: lines[0]!.getMediaSourceId(), name: 'Recording border' }]);
+    const response = await service.handle(event(tool), { type: 'sources.list' });
+    expect(response.ok && response.sources?.some(source => source.name === 'Recording border')).toBe(false);
+    tool.webContents.emit('render-process-gone'); expect(lines.every(window => window.isDestroyed())).toBe(true);
+  });
+  it.each(['recording.cancel', 'recording.finish', 'shutdown'] as const)('cleans every native range border on %s', async action => {
+    const { service } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
+    const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false,
+      rect: { x: 8, y: 8, width: 32, height: 32 } });
+    if (!prepared.ok || !prepared.id) throw Error('No prepared regional recording');
+    const lines = (mock.windows as BrowserWindow[]).filter(window => (window as unknown as { options: { title?: string } }).options.title === 'WorldlineBox · 录制范围');
+    expect(lines).toHaveLength(1);
+    if (action === 'recording.cancel') expect((await service.handle(event(tool), { type: action, id: prepared.id })).ok).toBe(true);
+    else {
+      let shuttingDown: Promise<void> | undefined;
+      if (action === 'shutdown') {
+        shuttingDown = service.shutdown(); expect(lines.every(window => window.isDestroyed())).toBe(true);
+      }
+      expect((await service.handle(event(tool), { type: 'recording.chunk', id: prepared.id, sequence: 0, chunk: Buffer.from('1a45dfa3010203040506', 'hex') })).ok).toBe(true);
+      expect((await service.handle(event(tool), { type: 'recording.finish', id: prepared.id })).ok).toBe(true);
+      await shuttingDown;
+    }
+    expect(lines.every(window => window.isDestroyed())).toBe(true);
+  });
+  it('keeps recording chunks and cancellation working if a tray observer fails', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const observer = vi.fn(() => { throw Error('A destroyed tray cannot update'); });
+      const { service } = await fixture(undefined, observer); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
+      const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false });
+      if (!prepared.ok || !prepared.id) throw Error('Recording did not prepare');
+      expect((await service.handle(event(tool), { type: 'recording.chunk', id: prepared.id, sequence: 0, chunk: Buffer.from('1a45dfa3010203040506', 'hex') })).ok).toBe(true);
+      expect((await service.handle(event(tool), { type: 'recording.cancel', id: prepared.id })).ok).toBe(true);
+      expect(observer).toHaveBeenCalled(); expect(warning).toHaveBeenCalledWith('[WorldlineBox capture] Status observer failed.');
+    } finally { warning.mockRestore(); }
+  });
+  it('moves the controller wholly outside a regional recording before granting the stream', async () => {
+    const { service } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
+    const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false,
+      rect: { x: 0, y: 0, width: 32, height: 32 } });
+    expect(prepared.ok && prepared.recordingControls).toMatchObject({ hidden: false, bounds: { width: 320, height: 44 } });
+    expect(tool.isVisible()).toBe(true);
+    if (!prepared.ok || !prepared.id || !prepared.recordingControls?.bounds) throw Error('No regional controller');
+    expect(prepared.recordingControls.bounds.y).toBeGreaterThanOrEqual(677);
+    expect(tool.setBounds).toHaveBeenLastCalledWith(prepared.recordingControls.bounds);
+    await service.handle(event(tool), { type: 'recording.cancel', id: prepared.id });
+  });
+
+  it('hides a controller for full monitor recording and restores it after stopping instead of excluding it from sharing', async () => {
+    const { service, main } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
+    const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false });
+    expect(prepared.ok && prepared.recordingControls).toEqual({ hidden: true }); expect(tool.isVisible()).toBe(false); expect(main.isVisible()).toBe(false);
+    if (!prepared.ok || !prepared.id) throw Error('No prepared recording');
+    await service.handle(event(tool), { type: 'recording.cancel', id: prepared.id });
+    expect(tool.isVisible()).toBe(true); expect(main.isVisible()).toBe(true);
+    expect(tool.setContentProtection).not.toHaveBeenCalledWith(true);
+  });
   it('permits Electron 43 empty-media desktop preflight only for a fresh owned main-frame grant', async () => {
     const { service } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
     const check = (contents: unknown, details: Record<string, unknown>) => { const reply = vi.fn(); handler('permission')(contents, 'media', reply, details); return reply; };

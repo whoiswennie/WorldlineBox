@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { copyFile, mkdir, open, rm, stat, type FileHandle } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { CAPTURE_GIF_LIMIT_SECONDS, CAPTURE_VIDEO_LIMIT_SECONDS, type CaptureRecordingState } from '../../shared/capture-tools';
+import { CAPTURE_GIF_LIMIT_SECONDS, CAPTURE_VIDEO_LIMIT_SECONDS, type CaptureRecordingQuality, type CaptureRecordingState } from '../../shared/capture-tools';
 
 export const MAX_RECORDING_CHUNK_BYTES = 16 * 1024 * 1024;
 export const MAX_RECORDING_PENDING_BYTES = 32 * 1024 * 1024;
@@ -14,6 +14,7 @@ interface RecordingSession {
   queue: Promise<void>; started: number; deadline?: ReturnType<typeof setTimeout>; fallback?: ReturnType<typeof setTimeout>;
   process?: ChildProcess; finishing?: Promise<{ path: string }>; closed: boolean; cancelled: boolean; committing: boolean;
   prefix: Buffer;
+  quality?: CaptureRecordingQuality;
 }
 export interface RecordingStoreOptions {
   downloadPath: string;
@@ -22,9 +23,10 @@ export interface RecordingStoreOptions {
   onLimit?(id: string): void;
 }
 /** Fixed arguments only. Inputs and outputs are owned files, never shell text. */
-export function recordingConversionArgs(input: string, output: string, format: 'mp4' | 'gif'): string[] {
+export function recordingConversionArgs(input: string, output: string, format: 'mp4' | 'gif', quality?: CaptureRecordingQuality): string[] {
   const common = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-protocol_whitelist', 'file,pipe', '-i', input];
-  return format === 'mp4' ? [...common, '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libopenh264', '-b:v', '6M', '-pix_fmt', 'yuv420p',
+  const bitrate = quality === 'original' ? '16M' : quality === '1080p' ? '8M' : quality === '720p' ? '4M' : '6M';
+  return format === 'mp4' ? [...common, '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libopenh264', '-b:v', bitrate, '-pix_fmt', 'yuv420p',
     '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-f', 'mp4', output]
     : [...common, '-t', String(CAPTURE_GIF_LIMIT_SECONDS), '-an', '-filter_complex',
       'fps=12,scale=min(960\\,iw):-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3',
@@ -55,7 +57,7 @@ export class RecordingStore {
     // the recoverable source is exposed separately through the reveal action.
     session.state.error = error instanceof Error ? error.message.slice(0, 1000) : '录屏保存失败。'; this.publish(session);
   }
-  async prepare(format: Format): Promise<string> {
+  async prepare(format: Format, quality?: CaptureRecordingQuality): Promise<string> {
     if (this.stopping || this.preparing || this.session && ['recording', 'paused', 'finalizing'].includes(this.session.state.status)) throw Error('请先结束当前录屏。');
     if (!['mp4', 'webm', 'gif'].includes(format)) throw Error('录屏格式无效。');
     this.preparing = true;
@@ -67,7 +69,7 @@ export class RecordingStore {
       if (this.stopping) { await handle.close(); await rm(input, { force: true }); throw Error('录屏工具正在关闭。'); }
       const started = Date.now();
       const session: RecordingSession = { state: { id, format, status: 'recording', bytes: 0, startedAt: new Date(started).toISOString() },
-        handle, input, sequence: 0, pendingBytes: 0, queue: Promise.resolve(), started, closed: false, cancelled: false, committing: false, prefix: Buffer.alloc(0) };
+        handle, input, sequence: 0, pendingBytes: 0, queue: Promise.resolve(), started, closed: false, cancelled: false, committing: false, prefix: Buffer.alloc(0), quality };
       this.session = session;
       session.deadline = setTimeout(() => {
         if (!['recording', 'paused'].includes(session.state.status)) return;
@@ -160,7 +162,7 @@ export class RecordingStore {
   }
   private convert(session: RecordingSession, ffmpeg: string, output: string, format: 'mp4' | 'gif'): Promise<void> {
     return new Promise((resolve, reject) => {
-      const child = spawn(ffmpeg, recordingConversionArgs(session.input, output, format), { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      const child = spawn(ffmpeg, recordingConversionArgs(session.input, output, format, session.quality), { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
       session.process = child;
       // Drain stderr without retaining arbitrary amounts of process output.
       child.stderr?.resume();

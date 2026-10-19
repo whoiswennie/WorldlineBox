@@ -26,10 +26,11 @@ async function request(page: Page, input: CaptureToolsRequest) {
 async function toolPage(application: ElectronApplication): Promise<Page> {
   await expect.poll(() => application.windows().some(page => page.url().includes('window=capture-tools')), { timeout: 15000 }).toBe(true);
   const tool = application.windows().find(page => page.url().includes('window=capture-tools'))!;
-  await expect(tool.getByRole('dialog', { name: '截图工作台', exact: true })).toBeVisible(); return tool;
+  await expect(tool.locator('.screenshot-studio, .desktop-screenshot-overlay')).toBeVisible(); return tool;
 }
 async function redact(tool: Page, from: number, to: number) {
-  await tool.getByRole('button', { name: '遮盖', exact: true }).click();
+  const redact = tool.getByRole('button', { name: '遮盖', exact: true });
+  if (await redact.getAttribute('aria-pressed') !== 'true') await redact.click();
   const bounds = await tool.getByLabel('截图编辑画布', { exact: true }).boundingBox(); if (!bounds) throw Error('Missing real screenshot canvas');
   await tool.mouse.move(bounds.x + bounds.width * from, bounds.y + bounds.height * from); await tool.mouse.down();
   await tool.mouse.move(bounds.x + bounds.width * to, bounds.y + bounds.height * to, { steps: 6 }); await tool.mouse.up();
@@ -55,7 +56,7 @@ function cleanup(root: string) {
 // Real packaged app, browser WebContentsView capture, edited Canvas pixels and
 // Main HTTP inference. Only the external provider is replaced by a local server.
 // eslint-disable-next-line no-empty-pattern
-test('browser screenshot conversation sends edited pixels and temporary two-turn history, cancels and clears safely', async ({}, testInfo) => {
+for (const mode of ['browser', 'desktop'] as const) test(`${mode} screenshot conversation sends edited pixels and temporary two-turn history, cancels and clears safely`, async ({}, testInfo) => {
   test.setTimeout(150000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-screenshot-qa-')); const profile = path.join(root, 'profile');
   const received: Wire[] = []; let slowAborted = 0; let lateAttempt = 0; let authenticated = 0;
@@ -96,12 +97,18 @@ test('browser screenshot conversation sends edited pixels and temporary two-turn
     await expect.poll(() => application!.context().pages().some(page => page.url() === origin + '/screenshot')).toBe(true);
     const web = application.context().pages().find(page => page.url() === origin + '/screenshot')!; await expect(web.getByRole('heading')).toHaveText('Real browser screenshot fixture');
     expect(await web.evaluate(() => typeof Reflect.get(globalThis, 'worldlinebox'))).toBe('undefined');
-    await main.locator('.browser-toolbar').getByRole('button', { name: '截图', exact: true }).click(); let tool = await toolPage(application);
-    const context = await request(tool, { type: 'context' }); expect(context.source?.url).toBe(origin + '/screenshot'); expect(context.source?.title).toBe('Screenshot conversation fixture');
+    // The browser toolbar uses the new desktop overlay; the explicit page
+    // source remains an independently covered compatibility route.
+    const openScreenshot = async () => { if (mode === 'desktop') await main.locator('.browser-toolbar').getByRole('button', { name: '截图', exact: true }).click(); else await request(main, { type: 'open', task: 'screenshot', source: 'browser' }); };
+    const selectAll = async (page: Page) => page.getByRole('button', { name: mode === 'desktop' ? '使用整个屏幕' : '使用整个可见区域', exact: true }).click();
+    await openScreenshot(); let tool = await toolPage(application);
+    const context = await request(tool, { type: 'context' });
+    if (mode === 'browser') { expect(context.source?.url).toBe(origin + '/screenshot'); expect(context.source?.title).toBe('Screenshot conversation fixture'); }
+    else { expect(context.source?.url).toBe(''); expect(context.source?.desktop).toBeTruthy(); }
     expect(context.state!.ai).toMatchObject({ configured: true, model: 'deepseek-flash' }); expect(context.state!.ai.visionSupported).not.toBe(false);
     expect(await tool.evaluate(() => ({ keys: Object.keys((globalThis as unknown as Bridge).worldlinebox), process: typeof Reflect.get(globalThis, 'process'), require: typeof Reflect.get(globalThis, 'require') }))).toEqual({ keys: ['captureTools'], process: 'undefined', require: 'undefined' });
     expect(JSON.stringify(context)).not.toContain(KEY); expect(received).toHaveLength(0);
-    await tool.getByRole('button', { name: '使用整个可见区域', exact: true }).click(); await redact(tool, .15, .35);
+    await selectAll(tool); await redact(tool, .15, .35);
     await tool.getByRole('button', { name: '图片问答', exact: true }).click();
     const prompt = () => tool.getByRole('textbox', { name: '关于这张截图，想问什么？', exact: true });
     await tool.getByRole('button', { name: '提取文字', exact: true }).click(); expect(received).toHaveLength(0);
@@ -114,7 +121,7 @@ test('browser screenshot conversation sends edited pixels and temporary two-turn
     expect(received).toHaveLength(2); expect(received[1]!.messages.map(item => item.role)).toEqual(['system', 'user', 'assistant', 'user']);
     expect(received[1]!.messages[1]!.content).toBe(FIRST); expect(received[1]!.messages[2]!.content).toBe(ANSWER_ONE);
     expect(received[1]).not.toHaveProperty('previous_response_id'); expect(received[1]).not.toHaveProperty('conversation');
-    const imageTwo = imageOf(received[1]!); expect(imageTwo).not.toBe(imageOne); expect((await pixel(imageTwo, .6)).every(value => value <= 5)).toBe(true);
+    const imageTwo = imageOf(received[1]!); expect(imageTwo === imageOne, 'The second request must include the newly edited pixels').toBe(false); expect((await pixel(imageTwo, .6)).every(value => value <= 5)).toBe(true);
     for (const page of [main, web, tool]) for (const secret of [FIRST, SECOND, ANSWER_ONE, ANSWER_TWO, KEY]) expect(await storage(page)).not.toContain(secret);
     mkdirSync('.tools/test-output', { recursive: true }); await tool.screenshot({ path: '.tools/test-output/screenshot-conversation-two-turn.png' });
     await prompt().fill(CANCEL); await tool.getByRole('button', { name: '发送', exact: true }).click(); await expect.poll(() => received.length).toBe(3);
@@ -124,14 +131,14 @@ test('browser screenshot conversation sends edited pixels and temporary two-turn
     await prompt().fill('清空后的新问题。SCQA-FRESH-67291'); await tool.getByRole('button', { name: '发送', exact: true }).click(); await expect(tool.locator('.screenshot-chat-messages article.is-assistant')).toHaveCount(1);
     expect(received).toHaveLength(4); expect(received[3]!.messages.map(item => item.role)).toEqual(['system', 'user']); expect(JSON.stringify(received[3])).not.toContain(FIRST); expect(JSON.stringify(received[3])).not.toContain(CANCEL);
     await tool.getByRole('button', { name: '关闭截图', exact: true }).click(); await expect.poll(() => tool.isClosed()).toBe(true);
-    await main.locator('.browser-toolbar').getByRole('button', { name: '截图', exact: true }).click(); tool = await toolPage(application);
-    await tool.getByRole('button', { name: '使用整个可见区域', exact: true }).click(); await tool.getByRole('button', { name: '图片问答', exact: true }).click(); await expect(tool.locator('.screenshot-chat-messages article')).toHaveCount(0); await expect(prompt()).toHaveValue(''); expect(received).toHaveLength(4);
+    await openScreenshot(); tool = await toolPage(application);
+    await selectAll(tool); await tool.getByRole('button', { name: '图片问答', exact: true }).click(); await expect(tool.locator('.screenshot-chat-messages article')).toHaveCount(0); await expect(prompt()).toHaveValue(''); expect(received).toHaveLength(4);
     expect(JSON.stringify(await request(tool, { type: 'context' }))).not.toContain(FIRST);
     for (const secret of [FIRST, SECOND, CANCEL, ANSWER_ONE, ANSWER_TWO, KEY]) expect(await storage(tool)).not.toContain(secret);
     await tool.getByRole('button', { name: '关闭截图', exact: true }).click(); await expect.poll(() => tool.isClosed()).toBe(true);
     expect(authenticated).toBe(4); await application.close(); application = undefined;
     const logs = path.join(profile, 'logs'); if (existsSync(logs)) for (const name of readdirSync(logs)) if (name.endsWith('.log')) { const text = readFileSync(path.join(logs, name), 'utf8'); for (const secret of [FIRST, SECOND, CANCEL, ANSWER_ONE, ANSWER_TWO, KEY]) expect(text).not.toContain(secret); }
-    const evidence = { realPackagedBrowserScreenshot: Boolean(process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE), currentEditedPixels: true, genuineMainHttpRequests: received.length, selectedModel: 'deepseek-flash', twoTurnHistory: true, cancelledConnection: slowAborted, noAutomaticRetry: true, clearStartsFreshHistory: true, closeStartsEmptySession: true, noChatInStorageOrAppLogs: true, keyOnlyInMainHttpHeader: true };
+    const evidence = { mode, packaged: Boolean(process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE), desktopOverlayFromBrowserToolbar: mode === 'desktop', currentEditedPixels: true, genuineMainHttpRequests: received.length, selectedModel: 'deepseek-flash', twoTurnHistory: true, cancelledConnection: slowAborted, noAutomaticRetry: true, clearStartsFreshHistory: true, closeStartsEmptySession: true, noChatInStorageOrAppLogs: true, keyOnlyInMainHttpHeader: true };
     console.log('SCREENSHOT_CONVERSATION_E2E_RESULT', JSON.stringify(evidence)); await testInfo.attach('screenshot-conversation-evidence', { body: JSON.stringify(evidence), contentType: 'application/json' });
   } catch (cause) { failed = true; throw cause; }
   finally {

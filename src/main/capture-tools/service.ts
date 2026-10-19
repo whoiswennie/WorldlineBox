@@ -7,7 +7,7 @@ import { app, BrowserWindow, clipboard, desktopCapturer, globalShortcut, ipcMain
 import { CAPTURE_TOOLS_ARGUMENT, CAPTURE_TOOLS_CHANGED, CAPTURE_TOOLS_REQUEST, CAPTURE_TOOLS_STOP_RECORDING,
   DEFAULT_CAPTURE_TOOLS_SETTINGS, captureToolsRequestSchema, captureToolsSettingsSchema, type CaptureDesktopSource,
   type CaptureImageSource, type CaptureToolsRequest, type CaptureToolsResponse, type CaptureToolsSettings,
-  type CaptureToolsState, type CaptureToolTask } from '../../shared/capture-tools';
+  type CaptureRecordingControls, type CaptureScreenRect, type CaptureToolsState, type CaptureToolTask } from '../../shared/capture-tools';
 import type { CompanionModelConfig } from '../companions/model';
 import { atomicJson, readJson } from '../dsh/files';
 import { safeCaptureFilename } from '../browser/capture-download';
@@ -16,6 +16,7 @@ import { RecordingStore } from './recording-store';
 import { LongCaptureStitcher } from './long-capture';
 import { boundedSelectionText, readFocusedSelectedText } from './selected-text';
 import { answerSelectedText } from './text-answer';
+import { createCaptureDesktopContext, nativeCaptureRectToDisplayDip, placeCaptureRecordingControls, positionCaptureWindowInPhysicalPixels, readWindowsCaptureMonitor, readWindowsDesktopRegions, recordingBoundaryPage, recordingBoundaryRectangles } from './desktop-regions';
 
 export interface CaptureToolsServiceOptions {
   getMainWindow(): BrowserWindow | null | undefined;
@@ -28,6 +29,7 @@ export interface CaptureToolsServiceOptions {
   readBrowserSelection?(): Promise<string>;
   /** Main checks custom application bindings before a global hotkey is saved. */
   validateShortcuts?(settings: CaptureToolsSettings): void;
+  onStateChanged?(state: CaptureToolsState): void;
   root?: string;
   downloadPath?: string;
 }
@@ -77,6 +79,9 @@ export class CaptureToolsService {
   private asks = new Map<string, AbortController>();
   private terminalListeners = new Set<() => void>();
   private recordingGrant?: { source: DesktopCapturerSource; id: string; systemAudio: boolean; microphone: boolean; videoUsed: boolean; desktopPreflightUsed: boolean; microphoneUsed: boolean };
+  private recordingControls?: CaptureRecordingControls;
+  private recordingBoundaries = new Set<BrowserWindow>();
+  private recordingBoundaryGeneration = 0;
   private readonly onSuspend = () => {
     const recording = this.recordings.state(); if (!recording || !['recording', 'paused'].includes(recording.status)) return;
     this.stopRecording(); const timer = setTimeout(() => {
@@ -92,7 +97,7 @@ export class CaptureToolsService {
     this.recordings = new RecordingStore({ downloadPath: this.downloadPath, getFfmpeg: options.getFfmpeg,
       changed: state => {
         if (state.path) this.rememberFile(state.path);
-        if (['saved', 'failed', 'cancelled'].includes(state.status)) { this.recordingGrant = undefined; this.restoreApp(); this.resizeTool(false); for (const listener of this.terminalListeners) listener(); }
+        if (['saved', 'failed', 'cancelled'].includes(state.status)) { this.recordingGrant = undefined; this.recordingControls = undefined; this.clearRecordingBoundaries(); this.restoreApp(); this.resizeTool(false); for (const listener of this.terminalListeners) listener(); }
         this.changed();
       }, onLimit: () => this.stopRecording() });
   }
@@ -120,6 +125,8 @@ export class CaptureToolsService {
   configurationChanged(): void { if (!this.closed) this.changed(); }
   private changed(): void {
     this.revision++; const state = this.state();
+    try { this.options.onStateChanged?.(state); }
+    catch { console.warn('[WorldlineBox capture] Status observer failed.'); }
     for (const window of [this.options.getMainWindow(), this.tool]) if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
       try { window.webContents.send(CAPTURE_TOOLS_CHANGED, state); } catch { /* A closing renderer does not invalidate a saved capture. */ }
     }
@@ -149,15 +156,74 @@ export class CaptureToolsService {
   }
   private hideApp(exceptSourceId?: string): void {
     if (!this.settings.hideApp) return;
-    for (const window of BrowserWindow.getAllWindows()) if (window !== this.tool && !window.isDestroyed() && window.isVisible() && window.getMediaSourceId() !== exceptSourceId) { this.hidden.add(window); window.hide(); }
+    for (const window of BrowserWindow.getAllWindows()) if (window !== this.tool && !this.recordingBoundaries.has(window) && !window.isDestroyed() && window.isVisible() && window.getMediaSourceId() !== exceptSourceId) { this.hidden.add(window); window.hide(); }
   }
   private restoreApp(): void {
     for (const window of this.hidden) if (!window.isDestroyed()) window.showInactive(); this.hidden.clear();
   }
   private resizeTool(compact: boolean): void {
     const tool = this.tool; if (!tool || tool.isDestroyed()) return;
-    tool.setMinimumSize(compact ? 420 : 760, compact ? 210 : 560);
-    tool.setSize(compact ? 460 : 1160, compact ? 250 : 780);
+    if (compact && this.recordingControls) return;
+    const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    tool.setAlwaysOnTop(true, 'floating'); tool.setResizable(!compact); tool.setMovable(true);
+    tool.setMinimumSize(Math.min(compact ? 420 : 760, area.width), Math.min(compact ? 210 : 560, area.height));
+    const width = Math.min(compact ? 460 : 1160, area.width), height = Math.min(compact ? 250 : 780, area.height);
+    tool.setBounds({ x: Math.round(area.x + (area.width - width) / 2), y: Math.round(area.y + (area.height - height) / 2), width, height });
+    tool.showInactive();
+  }
+  private fitToolToDesktop(): void {
+    const tool = this.tool, desktop = this.image?.desktop;
+    if (!tool || tool.isDestroyed() || !desktop) return;
+    // setFullScreen/maximize can exclude the taskbar or move to another monitor.
+    // A plain frameless window fills the captured display's exact DIP bounds.
+    // A non-resizable HWND reports its cached rounded size as WM_GETMINMAXINFO
+    // limits and clamps exact physical SetWindowPos calls by one pixel at 150%.
+    // thickFrame:false keeps native resize borders absent for this overlay.
+    tool.setMinimumSize(1, 1); tool.setResizable(true); tool.setMovable(false); tool.setBounds(desktop.bounds);
+    tool.setAlwaysOnTop(true, 'screen-saver');
+    if (desktop.pixelBounds) positionCaptureWindowInPhysicalPixels(tool.getNativeWindowHandle(), desktop.pixelBounds);
+  }
+  private clearRecordingBoundaries(): void {
+    this.recordingBoundaryGeneration++;
+    const windows = [...this.recordingBoundaries]; this.recordingBoundaries.clear();
+    for (const window of windows) if (!window.isDestroyed()) window.destroy();
+  }
+  private async showRecordingBoundaries(capturePixels: CaptureScreenRect, display: Electron.Display, physicalDisplay: CaptureScreenRect, id: string): Promise<void> {
+    this.clearRecordingBoundaries();
+    const rectangles = recordingBoundaryRectangles(capturePixels, 2, physicalDisplay);
+    if (!rectangles.length) return;
+    const generation = this.recordingBoundaryGeneration;
+    let window: BrowserWindow | undefined;
+    const current = () => generation === this.recordingBoundaryGeneration && !this.closed && !this.stopping
+      && this.recordings.state()?.id === id && ['recording', 'paused'].includes(this.recordings.state()?.status ?? '');
+    try {
+      // A monitor-sized alpha surface avoids Chromium's native minimum size
+      // for tiny HWNDs. Only the outside-crop canvas strokes are opaque.
+      window = new BrowserWindow({ title: 'WorldlineBox · 录制范围', ...display.bounds, show: false,
+        frame: false, thickFrame: false, transparent: true, backgroundColor: '#00000000',
+        hasShadow: false, roundedCorners: false, resizable: true, movable: false, minWidth: 1, minHeight: 1,
+        skipTaskbar: true, focusable: false, enableLargerThanScreen: true,
+        webPreferences: { ...(this.scope ? { session: this.scope } : {}), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false, backgroundThrottling: false } });
+      this.recordingBoundaries.add(window);
+      window.setContentProtection(false); window.setIgnoreMouseEvents(true); window.setAlwaysOnTop(true, 'screen-saver'); window.removeMenu();
+      window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      window.webContents.on('will-navigate', event => event.preventDefault()); window.webContents.on('will-attach-webview', event => event.preventDefault());
+      window.webContents.on('render-process-gone', () => { if (current()) this.stopRecording(); });
+      const discard = () => { if (window) { this.recordingBoundaries.delete(window); if (!window.isDestroyed()) window.destroy(); } };
+      const fit = () => { if (window && process.platform === 'win32' && !positionCaptureWindowInPhysicalPixels(window.getNativeWindowHandle(), physicalDisplay)) throw Error('Unable to position recording boundary.'); };
+      await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(recordingBoundaryPage(physicalDisplay, rectangles.map(rect => rect.bounds))));
+      if (!current() || window.isDestroyed()) { discard(); return; }
+      fit(); window.showInactive(); fit(); window.moveTop();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      if (!current() || window.isDestroyed()) { discard(); return; }
+      fit();
+    } catch (error) {
+      const active = current();
+      if (window) { this.recordingBoundaries.delete(window); if (!window.isDestroyed()) window.destroy(); }
+      // A load rejected because stop/cancel destroyed its window is expected.
+      // It must neither resurrect this overlay nor clear a newer recording.
+      if (active) throw error;
+    }
   }
   private rememberFile(filename: string): void {
     this.knownFiles.add(path.resolve(filename)); if (this.knownFiles.size > 100) this.knownFiles.delete(this.knownFiles.values().next().value!);
@@ -198,7 +264,7 @@ export class CaptureToolsService {
       case 'sources.list': return { ok: true, sources: await this.sources(), state: this.state() };
       case 'screenshot.capture': {
         this.provider = undefined; this.sourceId = request.sourceId ?? this.sourceId;
-        this.image = await this.captureDesktop(this.sourceId); this.changed(); return { ok: true, source: this.image, state: this.state() };
+        this.image = await this.captureDesktop(this.sourceId); this.fitToolToDesktop(); this.changed(); return { ok: true, source: this.image, state: this.state() };
       }
       case 'screenshot.copy': {
         const bytes = await this.png(request.dataUrl); const image = nativeImage.createFromBuffer(bytes); if (image.isEmpty()) throw Error('截图无法解码。'); clipboard.writeImage(image); break;
@@ -225,13 +291,43 @@ export class CaptureToolsService {
       case 'ask.cancel': this.asks.get(request.id)?.abort(); break;
       case 'recording.prepare': {
         const source = await this.desktopSource(request.sourceId, { width: 1, height: 1 });
-        const id = await this.recordings.prepare(request.format);
+        const displays = screen.getAllDisplays();
+        const display = displays.find(candidate => String(candidate.id) === source.display_id) ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+        let capture = { ...display.bounds };
+        if (source.id.startsWith('screen:') && request.rect) {
+          const image = this.image;
+          if (!image?.desktop || this.sourceId !== source.id) throw Error('屏幕选择已变更，请重新框选录制区域。');
+          const rect = request.rect;
+          if (rect.x + rect.width > image.width || rect.y + rect.height > image.height) throw Error('录制区域超出了所选屏幕。');
+          capture = { x: display.bounds.x + rect.x / image.width * display.bounds.width, y: display.bounds.y + rect.y / image.height * display.bounds.height,
+            width: rect.width / image.width * display.bounds.width, height: rect.height / image.height * display.bounds.height };
+        }
+        const controls = placeCaptureRecordingControls({ ...(source.id.startsWith('screen:') ? { capture } : {}), displayId: String(display.id), displays });
+        const id = await this.recordings.prepare(request.format, request.quality);
         this.recordingGrant = { source, id, systemAudio: request.systemAudio && request.format !== 'gif', microphone: request.microphone && request.format !== 'gif', videoUsed: false, desktopPreflightUsed: false, microphoneUsed: false };
-        this.hideApp(source.id); return { ok: true, id, state: this.state() };
+        this.recordingControls = controls;
+        this.hideApp(source.id);
+        const tool = this.tool;
+        if (tool && !tool.isDestroyed()) {
+          tool.hide(); tool.setAlwaysOnTop(true, 'screen-saver'); tool.setResizable(true); tool.setMinimumSize(280, 44); tool.setMovable(false);
+          if (controls.bounds) { tool.setBounds(controls.bounds); tool.setResizable(false); tool.showInactive(); tool.moveTop(); }
+        }
+        if (source.id.startsWith('screen:')) {
+          const physicalDisplay = this.image?.desktop?.displayId === String(display.id) && this.image.desktop.pixelBounds
+            ? this.image.desktop.pixelBounds : process.platform === 'win32' ? screen.dipToScreenRect(null, display.bounds) : { x: display.bounds.x * display.scaleFactor, y: display.bounds.y * display.scaleFactor, width: display.bounds.width * display.scaleFactor, height: display.bounds.height * display.scaleFactor };
+          const capturePixels = { x: physicalDisplay.x + (capture.x - display.bounds.x) / display.bounds.width * physicalDisplay.width,
+            y: physicalDisplay.y + (capture.y - display.bounds.y) / display.bounds.height * physicalDisplay.height,
+            width: capture.width / display.bounds.width * physicalDisplay.width, height: capture.height / display.bounds.height * physicalDisplay.height };
+          try { await this.showRecordingBoundaries(capturePixels, display, physicalDisplay, id); }
+          catch { await this.recordings.cancel(id); throw Error('无法显示录制范围边界，请重新开始录制。'); }
+        }
+        // Remove the selection overlay before granting Chromium the live stream.
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return { ok: true, id, recordingControls: controls, state: this.state() };
       }
       case 'recording.chunk': await this.recordings.append(request.id, request.sequence, request.chunk); if (request.sequence === 0) this.resizeTool(true); break;
-      case 'recording.finish': { const result = await this.recordings.finish(request.id); return { ok: true, path: result.path, state: this.state() }; }
-      case 'recording.cancel': await this.recordings.cancel(request.id); break;
+      case 'recording.finish': { this.clearRecordingBoundaries(); const result = await this.recordings.finish(request.id); return { ok: true, path: result.path, state: this.state() }; }
+      case 'recording.cancel': this.clearRecordingBoundaries(); await this.recordings.cancel(request.id); break;
       case 'recording.pause': this.recordings.pause(request.id, request.paused); break;
       case 'recording.stop': this.stopRecording(); break;
       case 'reveal': {
@@ -265,7 +361,8 @@ export class CaptureToolsService {
           this.long = undefined; this.longProvider = undefined; this.resizeTool(false); this.changed(); return { ok: true, source: this.image, state: this.state() }; }
         finally { this.busyLong = false; }
       }
-      case 'long.cancel': this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined; this.resizeTool(false); break;
+      case 'long.cancel': this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
+        if (this.image?.desktop) this.fitToolToDesktop(); else this.resizeTool(false); break;
     }
     return { ok: true, state: this.state() };
   }
@@ -288,14 +385,15 @@ export class CaptureToolsService {
   }
   private async sources(): Promise<CaptureDesktopSource[]> {
     const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 360, height: 220 }, fetchWindowIcons: false });
-    return sources.filter(source => source.id !== this.tool?.getMediaSourceId()).slice(0, 200).map(source => ({ id: source.id, name: source.name.slice(0, 500),
+    const excluded = new Set([this.tool?.getMediaSourceId(), ...[...this.recordingBoundaries].filter(window => !window.isDestroyed()).map(window => window.getMediaSourceId())]);
+    return sources.filter(source => !excluded.has(source.id)).slice(0, 200).map(source => ({ id: source.id, name: source.name.slice(0, 500),
       displayId: source.display_id, thumbnail: source.thumbnail.isEmpty() ? '' : source.thumbnail.toDataURL(), kind: source.id.startsWith('screen:') ? 'screen' : 'window' }));
   }
   private async desktopSource(id: string | undefined, thumbnailSize: { width: number; height: number }): Promise<DesktopCapturerSource> {
     const sources = await desktopCapturer.getSources({ types: id?.startsWith('window:') ? ['window'] : ['screen'], thumbnailSize, fetchWindowIcons: false });
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
     const source = id ? sources.find(source => source.id === id) : sources.find(source => source.display_id === String(display.id)) ?? sources.find(source => source.id.startsWith('screen:'));
-    if (!source || source.id === this.tool?.getMediaSourceId()) throw Error('所选屏幕或窗口已关闭，请重新选择。'); return source;
+    if (!source || source.id === this.tool?.getMediaSourceId() || [...this.recordingBoundaries].some(window => !window.isDestroyed() && source.id === window.getMediaSourceId())) throw Error('所选屏幕或窗口已关闭，请重新选择。'); return source;
   }
   private async captureDesktop(id?: string): Promise<CaptureImageSource> {
     if (this.captureBusy) throw Error('正在截图，请稍后。'); this.captureBusy = true;
@@ -304,15 +402,28 @@ export class CaptureToolsService {
       if (visible) tool!.hide(); this.hideApp(id);
       // Let the compositor remove the utility before taking the desktop image.
       await new Promise(resolve => setTimeout(resolve, 120));
-      const displays = screen.getAllDisplays(); const windowSource = id?.startsWith('window:');
-      const width = Math.min(windowSource ? 2048 : 4096, Math.max(1, ...displays.map(display => Math.ceil(display.size.width * display.scaleFactor))));
-      const height = Math.min(windowSource ? 1280 : 4096, Math.max(1, ...displays.map(display => Math.ceil(display.size.height * display.scaleFactor))));
-      const source = await this.desktopSource(id, { width, height });
+      const displays = screen.getAllDisplays();
+      const selected = await this.desktopSource(id, { width: 1, height: 1 });
+      const windowSource = selected.id.startsWith('window:');
+      const cursor = screen.getCursorScreenPoint();
+      const display = displays.find(candidate => String(candidate.id) === selected.display_id) ?? screen.getDisplayNearestPoint(cursor);
+      const approximatePixels = !windowSource && process.platform === 'win32' ? screen.dipToScreenRect(null, display.bounds) : {
+        x: Math.round(display.bounds.x * display.scaleFactor), y: Math.round(display.bounds.y * display.scaleFactor),
+        width: Math.round(display.size.width * display.scaleFactor), height: Math.round(display.size.height * display.scaleFactor),
+      };
+      const nativeMonitor = !windowSource ? readWindowsCaptureMonitor(approximatePixels) : undefined;
+      const physicalDisplay = nativeMonitor?.bounds ?? approximatePixels;
+      const width = windowSource ? 2048 : physicalDisplay.width, height = windowSource ? 1280 : physicalDisplay.height;
+      if (width * height > 40_000_000 || width > 32768 || height > 32768) throw Error('屏幕画面过大，请选择较小的窗口。');
+      const source = await this.desktopSource(selected.id, { width, height });
       if (source.thumbnail.isEmpty()) throw Error('无法读取屏幕画面，请检查系统屏幕录制权限。');
       const bytes = source.thumbnail.toPNG(); const size = await sharp(bytes, { limitInputPixels: 40_000_000 }).metadata();
       if (!size.width || !size.height || size.width * size.height > 40_000_000 || bytes.length > IMAGE_BYTES) throw Error('屏幕画面过大，请选择较小的窗口。');
       this.sourceId = source.id;
-      return { dataUrl: 'data:image/png;base64,' + bytes.toString('base64'), width: size.width, height: size.height, title: source.name.slice(0, 500), url: '' };
+      const desktop = !windowSource ? createCaptureDesktopContext({ display, cursor, native: readWindowsDesktopRegions(),
+        ...(nativeMonitor ? { nativeMonitor } : {}),
+        screenToDipRect: rect => nativeCaptureRectToDisplayDip(rect, physicalDisplay, display.bounds) }) : undefined;
+      return { dataUrl: 'data:image/png;base64,' + bytes.toString('base64'), width: size.width, height: size.height, title: source.name.slice(0, 500), url: '', ...(desktop ? { desktop } : {}) };
     } finally { this.captureBusy = false; if (visible && tool && !tool.isDestroyed()) tool.show(); }
   }
   private configureSession(scope: Session): void {
@@ -339,7 +450,7 @@ export class CaptureToolsService {
       callback({ video: grant.source, ...(request.audioRequested && grant.systemAudio && process.platform === 'win32' ? { audio: 'loopback' as const } : {}) });
     });
   }
-  private stopRecording(): void { if (this.tool && !this.tool.isDestroyed()) this.tool.webContents.send(CAPTURE_TOOLS_STOP_RECORDING); }
+  stopRecording(): void { this.clearRecordingBoundaries(); if (this.tool && !this.tool.isDestroyed()) this.tool.webContents.send(CAPTURE_TOOLS_STOP_RECORDING); }
   private async focusedSelection(): Promise<string> {
     const main = this.options.getMainWindow();
     if (main && !main.isDestroyed() && main.isFocused() && this.options.readBrowserSelection) {
@@ -367,41 +478,55 @@ export class CaptureToolsService {
     }
     await this.closeTool(); this.task = task; this.provider = provider; this.image = image; this.sourceId = undefined; this.selectedText = selectedText;
     try {
-      if (task !== 'recording' && task !== 'selection' && !image) this.image = await this.captureDesktop();
+      if (task !== 'selection' && !image) this.image = await this.captureDesktop();
       // Chromium and the global network policy retain sessions for the app
       // lifetime. One memory-only partition avoids accumulating proxy observers
       // and caches each time the screenshot editor is opened and closed.
       const scope = this.scope ?? session.fromPartition('worldlinebox-capture-tools', { cache: false }); this.scope = scope; this.configureSession(scope);
-      const tool = new BrowserWindow({ title: task === 'selection' ? 'WorldlineBox · 划词助手' : 'WorldlineBox · 截图工具',
-        width: task === 'selection' ? 720 : 1160, height: task === 'selection' ? 760 : 780, minWidth: task === 'selection' ? 520 : 760, minHeight: task === 'selection' ? 480 : 560, show: false,
+      const desktop = this.image?.desktop;
+      const tool = new BrowserWindow({ title: task === 'selection' ? 'WorldlineBox · 划词助手' : task === 'recording' ? 'WorldlineBox · 录屏工具' : 'WorldlineBox · 截图工具',
+        frame: false, thickFrame: false,
+        ...(desktop ? { ...desktop.bounds, minWidth: 1, minHeight: 1, resizable: true, movable: false, enableLargerThanScreen: true,
+          skipTaskbar: true, hasShadow: false, roundedCorners: false } : { width: task === 'selection' ? 720 : 1160, height: task === 'selection' ? 760 : 780, minWidth: task === 'selection' ? 520 : 760, minHeight: task === 'selection' ? 480 : 560 }), show: false,
         autoHideMenuBar: true, backgroundColor: '#f7f8fc', webPreferences: { preload: this.options.preloadPath, additionalArguments: [CAPTURE_TOOLS_ARGUMENT],
-          session: scope, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false } });
-      this.tool = tool; tool.setContentProtection(true); tool.setAlwaysOnTop(true, 'floating'); tool.removeMenu();
+          session: scope, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false, backgroundThrottling: false } });
+      // Content protection opts this HWND out of Windows screen sharing (WDA_EXCLUDEFROMCAPTURE).
+      // It made screenshot/recording controls invisible in remote clients such as Sunlogin.
+      // The utility is hidden before each snapshot, so capture exclusion is unnecessary.
+      this.tool = tool; tool.setContentProtection(false); tool.setAlwaysOnTop(true, desktop ? 'screen-saver' : 'floating'); tool.removeMenu();
       tool.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       tool.webContents.on('will-navigate', event => event.preventDefault()); tool.webContents.on('will-attach-webview', event => event.preventDefault());
       tool.on('close', event => {
         if (!this.closed && ['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) { event.preventDefault(); this.stopRecording(); }
       });
       tool.once('closed', () => { if (this.tool === tool) { this.tool = undefined; this.image = undefined; this.selectedText = ''; this.provider = undefined; this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
-        this.recordingGrant = undefined; for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.restoreApp(); } });
+        this.recordingGrant = undefined; this.recordingControls = undefined; this.clearRecordingBoundaries(); for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.restoreApp(); } });
       tool.webContents.once('render-process-gone', () => {
-        const recording = this.recordings.state(); this.recordingGrant = undefined; this.restoreApp();
+        const recording = this.recordings.state(); this.recordingGrant = undefined; this.clearRecordingBoundaries(); this.restoreApp();
         if (recording && ['recording', 'paused'].includes(recording.status)) void this.recordings.finish(recording.id).catch(() => undefined);
         if (!tool.isDestroyed()) tool.destroy();
       });
-      await this.options.loadWindow(tool); if (this.closed || tool.isDestroyed()) throw Error('截图窗口已关闭。'); tool.show(); tool.focus(); this.changed();
+      await this.options.loadWindow(tool); if (this.closed || tool.isDestroyed()) throw Error('截图窗口已关闭。'); tool.show(); tool.focus(); this.fitToolToDesktop();
+      // Windows can apply Electron's cached rounded DIP rectangle during the
+      // first show. Correct it after that native event turn, while the tool
+      // still belongs to this open operation.
+      if (this.image?.desktop) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        if (this.closed || tool.isDestroyed()) throw Error('截图窗口已关闭。'); this.fitToolToDesktop();
+      }
+      this.changed();
       return { ok: true, state: this.state(), ...(this.image ? { source: this.image } : {}), ...(task === 'selection' ? { text: this.selectedText } : {}) };
     } catch (error) { this.restoreApp(); if (this.tool && !this.tool.isDestroyed()) this.tool.destroy(); throw error; }
   }
   private async closeTool(): Promise<void> {
     if (['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) throw Error('请先停止或取消当前录屏。');
     for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
-    this.recordingGrant = undefined; this.selectedText = '';
+    this.recordingGrant = undefined; this.recordingControls = undefined; this.clearRecordingBoundaries(); this.selectedText = '';
     const tool = this.tool; if (tool && !tool.isDestroyed()) tool.destroy(); this.restoreApp();
   }
   shutdown(): Promise<void> { return this.shuttingDown ??= this.shutdownTool(); }
   private async shutdownTool(): Promise<void> {
-    this.stopping = true; for (const accelerator of this.registered) globalShortcut.unregister(accelerator); this.registered.clear(); powerMonitor.removeListener('suspend', this.onSuspend);
+    this.stopping = true; this.clearRecordingBoundaries(); for (const accelerator of this.registered) globalShortcut.unregister(accelerator); this.registered.clear(); powerMonitor.removeListener('suspend', this.onSuspend);
     for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.longGeneration++; this.long?.cancel(); this.long = undefined;
     const recording = this.recordings.state();
     if (recording && ['recording', 'paused', 'finalizing'].includes(recording.status)) {

@@ -7,20 +7,35 @@ export const CAPTURE_VIDEO_LIMIT_SECONDS = 7200;
 export const CAPTURE_GIF_LIMIT_SECONDS = 60;
 export const CAPTURE_SELECTION_MAX_BYTES = 32 * 1024;
 export const CAPTURE_SELECTION_DEFAULT_SHORTCUT = 'CommandOrControl+Alt+Shift+D';
+export const captureRecordingQualitySchema = z.enum(['original', '1080p', '720p']);
+export type CaptureRecordingQuality = z.infer<typeof captureRecordingQualitySchema>;
 export const captureToolTaskSchema = z.enum(['screenshot', 'recording', 'ocr', 'translate', 'long-screenshot', 'selection']);
 export type CaptureToolTask = z.infer<typeof captureToolTaskSchema>;
 const accelerator = z.string().max(100);
 export const captureToolsSettingsSchema = z.strictObject({
   shortcuts: z.strictObject({ screenshot: accelerator, recording: accelerator, ocr: accelerator, translate: accelerator, 'long-screenshot': accelerator,
     selection: accelerator.default(CAPTURE_SELECTION_DEFAULT_SHORTCUT) }),
-  hideApp: z.boolean(), systemAudio: z.boolean(), microphone: z.boolean(), format: z.enum(['mp4', 'webm', 'gif']),
+  hideApp: z.boolean(), systemAudio: z.boolean(), microphone: z.boolean(), format: z.enum(['mp4', 'webm', 'gif']), quality: captureRecordingQualitySchema.default('original'),
 });
 export type CaptureToolsSettings = z.infer<typeof captureToolsSettingsSchema>;
 export const DEFAULT_CAPTURE_TOOLS_SETTINGS: CaptureToolsSettings = {
   shortcuts: { screenshot: 'CommandOrControl+Alt+Shift+S', recording: 'CommandOrControl+Alt+Shift+R', ocr: 'CommandOrControl+Alt+Shift+O', translate: 'CommandOrControl+Alt+Shift+T', 'long-screenshot': 'CommandOrControl+Alt+Shift+L', selection: CAPTURE_SELECTION_DEFAULT_SHORTCUT },
-  hideApp: true, systemAudio: true, microphone: false, format: 'mp4',
+  hideApp: true, systemAudio: true, microphone: false, format: 'mp4', quality: 'original',
 };
-export const captureSourceSchema = z.object({ dataUrl: z.string().max(46_000_000), width: z.number().int().positive().max(32768), height: z.number().int().positive().max(32768), title: z.string().max(500), url: z.string().max(8192) });
+/** Desktop geometry is absolute Electron DIP; image width/height remain pixels. */
+export const captureScreenRectSchema = z.object({ x: z.number().finite(), y: z.number().finite(), width: z.number().positive().max(32768), height: z.number().positive().max(32768) });
+export type CaptureScreenRect = z.infer<typeof captureScreenRectSchema>;
+export const captureDesktopRegionSchema = z.object({ id: z.string().max(100), kind: z.enum(['window', 'workarea', 'screen']), name: z.string().max(500), bounds: captureScreenRectSchema });
+export type CaptureDesktopRegion = z.infer<typeof captureDesktopRegionSchema>;
+export const captureDesktopContextSchema = z.object({ displayId: z.string().max(100), bounds: captureScreenRectSchema, workArea: captureScreenRectSchema,
+  pixelBounds: captureScreenRectSchema.optional(), pixelWorkArea: captureScreenRectSchema.optional(),
+  scaleFactor: z.number().positive().max(8), cursor: z.object({ x: z.number().finite(), y: z.number().finite() }),
+  windowSnapping: z.boolean(), candidates: z.array(captureDesktopRegionSchema).max(258),
+});
+export type CaptureDesktopContext = z.infer<typeof captureDesktopContextSchema>;
+export const captureRecordingControlsSchema = z.object({ hidden: z.boolean(), bounds: captureScreenRectSchema.optional() });
+export type CaptureRecordingControls = z.infer<typeof captureRecordingControlsSchema>;
+export const captureSourceSchema = z.object({ dataUrl: z.string().max(46_000_000), width: z.number().int().positive().max(32768), height: z.number().int().positive().max(32768), title: z.string().max(500), url: z.string().max(8192), desktop: captureDesktopContextSchema.optional() });
 export type CaptureImageSource = z.infer<typeof captureSourceSchema>;
 export const desktopSourceSchema = z.object({ id: z.string().max(255), name: z.string().max(500), displayId: z.string().max(100), thumbnail: z.string().max(2_000_000), kind: z.enum(['screen', 'window']) });
 export type CaptureDesktopSource = z.infer<typeof desktopSourceSchema>;
@@ -50,7 +65,8 @@ export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('selection.clipboard') }),
   z.strictObject({ type: z.literal('selection.copy'), text: selectionText }),
   z.strictObject({ type: z.literal('ask.cancel'), id: z.string().max(100) }),
-  z.strictObject({ type: z.literal('recording.prepare'), sourceId: z.string().min(1).max(255), format: z.enum(['mp4', 'webm', 'gif']), systemAudio: z.boolean(), microphone: z.boolean() }),
+  z.strictObject({ type: z.literal('recording.prepare'), sourceId: z.string().min(1).max(255), format: z.enum(['mp4', 'webm', 'gif']), systemAudio: z.boolean(), microphone: z.boolean(), quality: captureRecordingQualitySchema.optional(),
+    rect: z.strictObject({ x: z.number().int().nonnegative().max(32768), y: z.number().int().nonnegative().max(32768), width: z.number().int().positive().max(32768), height: z.number().int().positive().max(32768) }).optional() }),
   z.strictObject({ type: z.literal('recording.chunk'), id: z.string().max(100), sequence: z.number().int().nonnegative(), chunk: z.instanceof(Uint8Array).refine(value => value.byteLength > 0 && value.byteLength <= 16 * 1024 * 1024) }),
   z.strictObject({ type: z.literal('recording.finish'), id: z.string().max(100) }),
   z.strictObject({ type: z.literal('recording.cancel'), id: z.string().max(100) }),
@@ -59,7 +75,7 @@ export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('reveal'), path: z.string().min(1).max(8192) }),
 ]);
 export type CaptureToolsRequest = z.infer<typeof captureToolsRequestSchema>;
-export const captureToolsResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), state: captureToolsStateSchema.optional(), source: captureSourceSchema.optional(), sources: z.array(desktopSourceSchema).optional(), long: z.object({ frames: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), id: z.string().optional(), path: z.string().optional(), text: z.string().optional() }), z.object({ ok: z.literal(false), error: z.string().max(2000) })]);
+export const captureToolsResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), state: captureToolsStateSchema.optional(), source: captureSourceSchema.optional(), sources: z.array(desktopSourceSchema).optional(), recordingControls: captureRecordingControlsSchema.optional(), long: z.object({ frames: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), id: z.string().optional(), path: z.string().optional(), text: z.string().optional() }), z.object({ ok: z.literal(false), error: z.string().max(2000) })]);
 export type CaptureToolsResponse = z.infer<typeof captureToolsResponseSchema>;
 export interface WorldlineBoxCaptureToolsApi {
   request(request: CaptureToolsRequest): Promise<CaptureToolsResponse>;

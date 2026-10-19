@@ -46,6 +46,10 @@ export function ScreenshotStudio({ source, onClose, onSave, onSaveFile, saveLabe
   const [chatOpen, setChatOpen] = useState(initialTask !== 'screenshot');
   const ocrPrompt = locale === 'zh-CN' ? '请提取这张截图中的全部文字，保留原有段落与表格结构。' : 'Extract all text in this screenshot, preserving paragraphs and table structure.';
   const translatePrompt = locale === 'zh-CN' ? '请将这张截图中的文字翻译为中文，保留原文的段落顺序。' : 'Translate the text in this screenshot into English, preserving paragraph order.';
+  const extractLabel = locale === 'zh-CN' ? '提取文字' : 'Extract text';
+  const translateLabel = locale === 'zh-CN' ? '翻译文字' : 'Translate text';
+  const downloadLabel = locale === 'zh-CN' ? '保存到下载目录' : 'Save to downloads';
+  const longLabel = locale === 'zh-CN' ? '滚动长截图' : 'Scrolling screenshot';
   const [prompt, setPrompt] = useState(initialTask === 'ocr' ? ocrPrompt : initialTask === 'translate' ? translatePrompt : '');
   const [messages, setMessages] = useState<ScreenshotMessage[]>([]); const [asking, setAsking] = useState(false);
   const canvas = useRef<HTMLCanvasElement>(null); const stage = useRef<HTMLDivElement>(null); const chatEnd = useRef<HTMLDivElement>(null);
@@ -192,23 +196,23 @@ export function ScreenshotStudio({ source, onClose, onSave, onSaveFile, saveLabe
       <header className="screenshot-header">
         <div className="screenshot-heading"><div className="screenshot-heading-icon"><Icon name="camera" size={21} /></div><div><h2 id="screenshot-title">{t('title')}</h2><span title={source.title}>{source.title || t('viewport')}</span></div></div>
         <div className="screenshot-header-actions">
-          {phase === 'edit' && <><button type="button" onClick={() => { setPhase('select'); setSelection(crop); }}><Icon name="crop" size={17} />{t('crop')}</button>
-            <button type="button" aria-pressed={chatOpen} onClick={() => setChatOpen(value => !value)}><Icon name="sparkles" size={17} />{t('chatToggle')}</button>
-            <button type="button" disabled={!!action} onClick={() => void perform('copy')}><Icon name="copy" size={16} />{t('copy')}</button>
-            {onSaveFile && <button type="button" disabled={!!action} onClick={() => void perform('file')}><Icon name="download" size={16} />{locale === 'zh-CN' ? '保存到下载目录' : 'Save to downloads'}</button>}
-            <button type="button" className="is-primary" disabled={!!action} onClick={() => void perform('save')}><Icon name="save" size={16} />{saveLabel ?? t('save')}</button></>}
+          {phase === 'edit' && <><button type="button" className="screenshot-icon-button" aria-label={t('crop')} title={t('crop')} onClick={() => { setPhase('select'); setSelection(crop); }}><Icon name="crop" size={18} /></button>
+            <button type="button" className="screenshot-icon-button" aria-label={t('chatToggle')} title={t('chatToggle')} aria-pressed={chatOpen} onClick={() => setChatOpen(value => !value)}><Icon name="sparkles" size={18} /></button>
+            <button type="button" className="screenshot-icon-button" aria-label={t('copy')} title={t('copy')} disabled={!!action} onClick={() => void perform('copy')}><Icon name="copy" size={18} /></button>
+            {onSaveFile && <button type="button" className="screenshot-icon-button" aria-label={downloadLabel} title={downloadLabel} disabled={!!action} onClick={() => void perform('file')}><Icon name="download" size={18} /></button>}
+            <button type="button" className="screenshot-icon-button is-primary" aria-label={saveLabel ?? t('save')} title={saveLabel ?? t('save')} disabled={!!action} onClick={() => void perform('save')}><Icon name="save" size={18} /></button></>}
           <button type="button" className="screenshot-icon-button" aria-label={t('close')} title={t('close')} onClick={close}><Icon name="close" size={18} /></button>
         </div>
       </header>
       <div className="screenshot-body">
         <div className="screenshot-workspace">
           {phase === 'edit' && <div className="screenshot-toolbar" role="toolbar" aria-label={t('title')}>
-            <div className="screenshot-tool-group">{TOOLS.map(item => <button key={item} type="button" title={t(item)} aria-label={t(item)} aria-pressed={tool === item} onClick={() => setTool(item)}><Icon name={TOOL_ICONS[item]} size={21} /><small>{t(item)}</small></button>)}</div>
+            <div className="screenshot-tool-group">{TOOLS.map(item => <button key={item} type="button" title={t(item)} aria-label={t(item)} aria-pressed={tool === item} onClick={() => setTool(item)}><Icon name={TOOL_ICONS[item]} size={20} /></button>)}</div>
             <div className="screenshot-tool-settings">
               {tool !== 'redact' && tool !== 'mosaic' && <label title={t('color')}><input type="color" value={color} aria-label={t('color')} onChange={event => setColor(event.target.value)} /></label>}
-              <label>{tool === 'text' ? t('fontSize') : t('size')}<input type="range" min={tool === 'text' ? 12 : 2} max={tool === 'text' ? 100 : 18} value={tool === 'text' ? fontSize : size} aria-label={tool === 'text' ? t('fontSize') : t('size')} onChange={event => tool === 'text' ? setFontSize(Number(event.target.value)) : setSize(Number(event.target.value))} /></label>
-              <button type="button" disabled={!history.past.length} onClick={() => setHistory(undoEdit)} title={`${t('undo')} (Ctrl+Z)`}><Icon name="undo" size={16} /><span>{t('undo')}</span></button>
-              <button type="button" disabled={!history.future.length} onClick={() => setHistory(redoEdit)} title={`${t('redo')} (Ctrl+Shift+Z)`}><Icon name="redo" size={16} /><span>{t('redo')}</span></button>
+              <label title={tool === 'text' ? t('fontSize') : t('size')}><Icon name={tool === 'text' ? 'type' : 'pen-tool'} size={15} /><input type="range" min={tool === 'text' ? 12 : 2} max={tool === 'text' ? 100 : 18} value={tool === 'text' ? fontSize : size} aria-label={tool === 'text' ? t('fontSize') : t('size')} onChange={event => tool === 'text' ? setFontSize(Number(event.target.value)) : setSize(Number(event.target.value))} /></label>
+              <button type="button" aria-label={t('undo')} disabled={!history.past.length} onClick={() => setHistory(undoEdit)} title={`${t('undo')} (Ctrl+Z)`}><Icon name="undo" size={17} /></button>
+              <button type="button" aria-label={t('redo')} disabled={!history.future.length} onClick={() => setHistory(redoEdit)} title={`${t('redo')} (Ctrl+Shift+Z)`}><Icon name="redo" size={17} /></button>
               <button type="button" disabled={!history.present.length} onClick={() => setHistory(previous => commitEdit(previous, []))} title={t('reset')} aria-label={t('reset')}><Icon name="trash" size={16} /></button>
             </div>
           </div>}
@@ -222,10 +226,10 @@ export function ScreenshotStudio({ source, onClose, onSave, onSaveFile, saveLabe
           </div>
           <footer className="screenshot-footer">
             {phase === 'select' ? <><span>{selection && selection.width >= 2 && selection.height >= 2 ? `${Math.round(selection.width)} × ${Math.round(selection.height)} px` : t('select')}</span><div>
-              {onLongCapture && <button type="button" disabled={!image || !!action} onClick={() => void perform('long')}><Icon name="fit-window" size={17} />{locale === 'zh-CN' ? '滚动长截图' : 'Scrolling screenshot'}</button>}
-              <button type="button" disabled={!image} onClick={() => confirmCrop({ x: 0, y: 0, width: imageSize.width, height: imageSize.height })}>{t('full')}</button>
-              <button type="button" className="is-primary" disabled={!image || !selection || selection.width < 2 || selection.height < 2} onClick={() => selection && confirmCrop(selection)}>{t('confirm')}</button></div></>
-              : <><span title={t('dimensions')}>{crop.width} × {crop.height} px</span><span className="screenshot-edit-help">{t('editHelp')}</span><label>{t('zoom')}<select aria-label={t('zoom')} value={zoom} onChange={event => setZoom(event.target.value === 'fit' ? 'fit' : Number(event.target.value))}><option value="fit">{t('fit')}</option>{[0.25, 0.5, 0.75, 1, 1.5, 2, 3].map(value => <option key={value} value={value}>{value * 100}%</option>)}</select></label></>}
+              {onLongCapture && <button type="button" className="screenshot-icon-button" aria-label={longLabel} title={longLabel} disabled={!image || !!action} onClick={() => void perform('long')}><Icon name="fit-window" size={18} /></button>}
+              <button type="button" className="screenshot-icon-button" aria-label={t('full')} title={t('full')} disabled={!image} onClick={() => confirmCrop({ x: 0, y: 0, width: imageSize.width, height: imageSize.height })}><Icon name="fullscreen" size={18} /></button>
+              <button type="button" className="screenshot-icon-button is-primary" aria-label={t('confirm')} title={t('confirm')} disabled={!image || !selection || selection.width < 2 || selection.height < 2} onClick={() => selection && confirmCrop(selection)}><Icon name="check" size={18} /></button></div></>
+              : <><span title={t('dimensions')}>{crop.width} × {crop.height} px</span><span className="screenshot-edit-help" role="note" aria-label={t('editHelp')} title={t('editHelp')}><Icon name="info" size={16} /></span><label title={t('zoom')}><Icon name="fit-window" size={16} /><select aria-label={t('zoom')} value={zoom} onChange={event => setZoom(event.target.value === 'fit' ? 'fit' : Number(event.target.value))}><option value="fit">{t('fit')}</option>{[0.25, 0.5, 0.75, 1, 1.5, 2, 3].map(value => <option key={value} value={value}>{value * 100}%</option>)}</select></label></>}
           </footer>
           {(error || notice) && <div className={`screenshot-feedback ${error ? 'is-error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice}</div>}
         </div>
@@ -234,11 +238,11 @@ export function ScreenshotStudio({ source, onClose, onSave, onSaveFile, saveLabe
           <p className="screenshot-chat-hint">{t('chatHint')}</p>
           {aiDisabledReason && <p className="screenshot-ai-warning" role="status">{aiDisabledReason}</p>}
           {ai.configured && ai.visionSupported === null && <p className="screenshot-chat-hint">{t('chatUnknown')}</p>}
-          <div className="screenshot-chat-shortcuts"><button type="button" disabled={asking || !!aiDisabledReason} onClick={() => setPrompt(ocrPrompt)}><Icon name="scan-text" size={15} />{locale === 'zh-CN' ? '提取文字' : 'Extract text'}</button><button type="button" disabled={asking || !!aiDisabledReason} onClick={() => setPrompt(translatePrompt)}><Icon name="languages" size={15} />{locale === 'zh-CN' ? '翻译文字' : 'Translate text'}</button></div>
+          <div className="screenshot-chat-shortcuts"><button type="button" className="screenshot-icon-button" aria-label={extractLabel} title={extractLabel} disabled={asking || !!aiDisabledReason} onClick={() => setPrompt(ocrPrompt)}><Icon name="scan-text" size={18} /></button><button type="button" className="screenshot-icon-button" aria-label={translateLabel} title={translateLabel} disabled={asking || !!aiDisabledReason} onClick={() => setPrompt(translatePrompt)}><Icon name="languages" size={18} /></button></div>
           <div className="screenshot-chat-messages" aria-live="polite" aria-relevant="additions text">{messages.map((message, index) => <article key={index} className={`is-${message.role}`}><strong>{t(message.role === 'user' ? 'user' : 'assistant')}</strong><p>{message.content}</p></article>)}{asking && <p className="screenshot-chat-thinking" role="status">{t('asking')}</p>}<div ref={chatEnd} /></div>
           <form className="screenshot-chat-composer" onSubmit={event => { event.preventDefault(); void ask(); }}>
             <textarea aria-label={t('chatPrompt')} placeholder={t('chatPrompt')} value={prompt} maxLength={4000} disabled={!!aiDisabledReason || asking} rows={3} onChange={event => setPrompt(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) { event.preventDefault(); void ask(); } }} />
-            <div><small>Ctrl / ⌘ + Enter</small>{asking ? <button type="button" onClick={event => { event.preventDefault(); stopAnswer(); }}><Icon name="stop" size={14} />{t('stop')}</button> : <button type="submit" className="is-primary" disabled={!prompt.trim() || !!aiDisabledReason}><Icon name="send" size={15} />{t('ask')}</button>}</div>
+            <div><small>Ctrl / ⌘ + Enter</small>{asking ? <button type="button" className="screenshot-icon-button" aria-label={t('stop')} title={t('stop')} onClick={event => { event.preventDefault(); stopAnswer(); }}><Icon name="stop" size={16} /></button> : <button type="submit" className="screenshot-icon-button is-primary" aria-label={t('ask')} title={t('ask')} disabled={!prompt.trim() || !!aiDisabledReason}><Icon name="send" size={17} /></button>}</div>
           </form>
         </aside>}
       </div>

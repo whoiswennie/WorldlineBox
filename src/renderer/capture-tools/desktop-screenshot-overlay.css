@@ -1,0 +1,125 @@
+.desktop-screenshot-overlay {
+  position: fixed; inset: 0; z-index: 2000; overflow: hidden; isolation: isolate;
+  color: #202938; background: #11151c; font-family: var(--font-ui, system-ui, sans-serif);
+  user-select: none; touch-action: none; -webkit-app-region: no-drag;
+}
+.desktop-screenshot-surface { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.desktop-screenshot-overlay.is-selecting, .desktop-screenshot-overlay.has-tool { cursor: crosshair; }
+.desktop-screenshot-overlay.is-editing:not(.has-tool) .desktop-screenshot-selection { cursor: move; }
+.desktop-screenshot-selection {
+  position: absolute; z-index: 1;
+  box-shadow: 0 0 0 99999px #0b12275c; pointer-events: none;
+}
+.desktop-screenshot-selection::after { content: ''; position: absolute; inset: 0; border: 1px solid #69a3ea; pointer-events: none; }
+.desktop-screenshot-selection.is-committed { pointer-events: auto; }
+.desktop-screenshot-selection-canvas { display: block; width: 100%; height: 100%; }
+.desktop-screenshot-dimensions {
+  position: absolute; z-index: 2; display: flex; align-items: center; gap: 10px; max-width: min(420px, calc(100vw - 16px));
+  box-sizing: border-box; padding: 5px 8px; border-radius: 5px; background: #17243ee8; color: #fff;
+  font-size: 11px; line-height: 16px; pointer-events: none; box-shadow: 0 1px 6px #0002;
+}
+.desktop-screenshot-dimensions strong { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-size: 11px; font-weight: 600; }
+.desktop-screenshot-dimensions span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; opacity: .8; }
+.desktop-screenshot-resize { position: absolute; z-index: 3; width: 8px; height: 8px; background: #fff; border: 1.5px solid #338dff; border-radius: 2px; box-sizing: border-box; box-shadow: 0 1px 3px #102b5a33; }
+.desktop-screenshot-resize.is-nw { left: -4px; top: -4px; cursor: nwse-resize; }
+.desktop-screenshot-resize.is-ne { right: -4px; top: -4px; cursor: nesw-resize; }
+.desktop-screenshot-resize.is-sw { left: -4px; bottom: -4px; cursor: nesw-resize; }
+.desktop-screenshot-resize.is-se { right: -4px; bottom: -4px; cursor: nwse-resize; }
+.desktop-screenshot-resize.is-n { left: calc(50% - 4px); top: -4px; cursor: ns-resize; }
+.desktop-screenshot-resize.is-s { left: calc(50% - 4px); bottom: -4px; cursor: ns-resize; }
+.desktop-screenshot-resize.is-w { left: -4px; top: calc(50% - 4px); cursor: ew-resize; }
+.desktop-screenshot-resize.is-e { right: -4px; top: calc(50% - 4px); cursor: ew-resize; }
+.desktop-screenshot-overlay button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 34px; height: 34px;
+  padding: 6px; box-sizing: border-box; border: 1px solid transparent; border-radius: 7px; background: transparent;
+  color: #546077; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.desktop-screenshot-overlay button:hover:not(:disabled) { color: #4166e6; background: #eef2ff; }
+.desktop-screenshot-overlay button:focus-visible, .desktop-screenshot-overlay input:focus-visible, .desktop-screenshot-overlay textarea:focus-visible { outline: 2px solid #7189ff; outline-offset: 2px; }
+.desktop-screenshot-overlay button:disabled { opacity: .36; cursor: default; }
+.desktop-screenshot-overlay button[aria-pressed="true"] { border-color: #c7d3ff; color: #536df0; background: #eef1ff; }
+.desktop-screenshot-overlay button.is-primary { background: #6378ed; color: #fff; }
+.desktop-screenshot-overlay button.is-primary:hover:not(:disabled) { color: #fff; background: #5269e4; }
+.desktop-screenshot-guide {
+  position: absolute; z-index: 5; left: 50%; bottom: 28px; transform: translateX(-50%); max-width: calc(100vw - 24px);
+  display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 13px 12px 16px;
+  border: 1px solid #ffffffd9; border-radius: 13px; background: #fffffff5; box-shadow: 0 8px 36px #1524423d; cursor: default;
+}
+.desktop-screenshot-guide > div:first-child { display: grid; align-items: center; grid-template-columns: 22px auto; column-gap: 10px; row-gap: 5px; }
+.desktop-screenshot-guide > div:first-child > .icon { grid-row: 1 / 3; color: #687ef1; }
+.desktop-screenshot-guide strong { font-size: 13px; line-height: 18px; font-weight: 600; white-space: nowrap; }
+.desktop-screenshot-guide span { color: #8290a3; font-size: 11px; white-space: nowrap; }
+.desktop-screenshot-guide-actions { display: flex; align-items: center; gap: 5px; }
+.desktop-screenshot-guide-actions button { padding: 7px 9px; background: #f4f6fb; }
+.desktop-screenshot-guide-actions button > span { font-size: 12px; color: #536077; }
+.desktop-screenshot-toolbar {
+  position: absolute; z-index: 10; max-width: calc(100vw - 24px); box-sizing: border-box; padding: 6px;
+  border: 1px solid #ffffffeb; border-radius: 11px; background: #fffffff7; box-shadow: 0 7px 30px #0b163440;
+  cursor: default; touch-action: auto;
+}
+.desktop-screenshot-toolbar-row, .desktop-screenshot-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; }
+.desktop-screenshot-toolbar-row { max-width: calc(100vw - 38px); }
+.desktop-screenshot-tools { gap: 2px; }
+.desktop-screenshot-toolbar button > .icon { flex-shrink: 0; }
+.desktop-screenshot-separator { align-self: center; height: 22px; border-left: 1px solid #e3e7f0; margin: 0 3px; }
+.desktop-screenshot-brush-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 5px; padding: 8px 6px 2px; border-top: 1px solid #e8ecf3; font-size: 11px; }
+.desktop-screenshot-brush-settings > span { color: #768296; min-width: 32px; }
+.desktop-screenshot-colors { display: flex; align-items: center; gap: 5px; }
+.desktop-screenshot-colors > button { min-width: 18px; width: 18px; height: 18px; padding: 0; border: 2px solid #fff; background: var(--swatch); border-radius: 50%; box-shadow: 0 0 0 1px #dce1eb; }
+.desktop-screenshot-colors > button:hover:not(:disabled), .desktop-screenshot-colors > button[aria-pressed="true"] { background: var(--swatch); border-color: #fff; box-shadow: 0 0 0 2px #8498fd; }
+.desktop-screenshot-colors > input { width: 21px; height: 21px; padding: 2px; border: 1px solid #dce2ee; border-radius: 5px; background: #fff; cursor: pointer; }
+.desktop-screenshot-colors > input::-webkit-color-swatch-wrapper { padding: 0; }
+.desktop-screenshot-colors > input::-webkit-color-swatch { border: 0; border-radius: 2px; }
+.desktop-screenshot-brush-settings > label { display: flex; align-items: center; gap: 7px; color: #768296; }
+.desktop-screenshot-brush-settings input[type="range"] { width: 75px; accent-color: #6c80f5; }
+.desktop-screenshot-brush-settings output { min-width: 18px; font-variant-numeric: tabular-nums; }
+.desktop-screenshot-brush-settings > small { color: #8d98aa; font-size: 11px; }
+.desktop-screenshot-text-input {
+  position: absolute; z-index: 8; min-width: 160px; width: min(340px, 60vw); min-height: 78px; max-height: 35vh;
+  box-sizing: border-box; padding: 6px; margin: 0; border: 1px dashed #637dff; border-radius: 3px; resize: both;
+  background: #ffffffb8; line-height: 1.35; font-family: system-ui, sans-serif; font-weight: 600;
+}
+.desktop-screenshot-chat.screenshot-chat {
+  position: absolute; z-index: 9; display: flex; flex-direction: column; width: min(352px, calc(100vw - 24px));
+  height: min(520px, calc(100vh - 24px)); min-height: 0; max-height: calc(100vh - 24px); box-sizing: border-box;
+  overflow: hidden; border: 1px solid #ffffffdb; border-radius: 13px; background: #fffffff7;
+  color: #263349; box-shadow: 0 9px 40px #10233d45; cursor: default; touch-action: auto;
+}
+.desktop-screenshot-chat > header { display: flex; align-items: flex-start; justify-content: space-between; padding: 14px 13px 8px; gap: 8px; }
+.desktop-screenshot-chat > header > div:last-child { display: flex; gap: 3px; }
+.desktop-screenshot-chat > header h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 5px; font-size: 13px; }
+.desktop-screenshot-chat > header h3 > .icon { color: #697def; }
+.desktop-screenshot-chat > header span { font-size: 10px; color: #8b97aa; }
+.desktop-screenshot-chat .screenshot-chat-hint { margin: 3px 14px 9px; color: #8190a5; font-size: 11px; line-height: 1.7; }
+.desktop-screenshot-chat .screenshot-chat-shortcuts { display: flex; gap: 6px; padding: 0 13px 10px; }
+.desktop-screenshot-chat .screenshot-chat-shortcuts button { height: 29px; padding: 4px 8px; border-color: #e2e7f0; font-size: 11px; }
+.desktop-screenshot-chat .screenshot-chat-messages { flex: 1; min-height: 60px; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid #e8ecf3; padding: 10px 13px 4px; }
+.desktop-screenshot-chat .screenshot-chat-messages article { background: #f1f4f9; margin-bottom: 10px; padding: 10px 11px; border-radius: 10px; }
+.desktop-screenshot-chat .screenshot-chat-messages article.is-user { margin-left: 18px; background: #eaf0ff; }
+.desktop-screenshot-chat .screenshot-chat-messages article strong { font-size: 10px; color: #8895aa; }
+.desktop-screenshot-chat .screenshot-chat-messages article p { margin: 4px 0 0; white-space: pre-wrap; user-select: text; overflow-wrap: anywhere; font-size: 12px; color: #30405b; line-height: 1.8; }
+.desktop-screenshot-chat .screenshot-chat-composer { padding: 10px; border-top: 1px solid #e8ecf3; }
+.desktop-screenshot-chat .screenshot-chat-composer > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 7px; }
+.desktop-screenshot-chat .screenshot-chat-composer textarea { width: 100%; min-height: 70px; max-height: 150px; padding: 9px 10px; border: 1px solid #e2e7f0; border-radius: 8px; background: #f5f7fb; color: #36445e; font: inherit; font-size: 12px; line-height: 1.6; resize: vertical; }
+.desktop-screenshot-chat .screenshot-chat-composer small { color: #93a0b3; }
+.desktop-screenshot-chat .screenshot-chat-composer button { height: 29px; padding: 5px 9px; }
+.desktop-screenshot-chat .screenshot-ai-warning { background: #f5f0e4; color: #876722; }
+.desktop-screenshot-feedback {
+  position: absolute; z-index: 20; top: 18px; left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px);
+  box-sizing: border-box; border: 1px solid #ffffffb3; border-radius: 9px; padding: 9px 14px; background: #effbf5f5; color: #23764f;
+  box-shadow: 0 4px 20px #14203c29; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere;
+}
+.desktop-screenshot-feedback.is-error { background: #fff0f1f5; color: #b74455; }
+.desktop-screenshot-loading { position: absolute; z-index: 25; inset: 0; display: flex; align-items: center; justify-content: center; gap: 16px; background: #10192bd4; color: white; font-size: 14px; }
+.desktop-screenshot-loading button { color: white; border-color: #ffffff45; }
+@media (max-width: 850px) {
+  .desktop-screenshot-guide { flex-wrap: wrap; justify-content: center; gap: 10px; bottom: 15px; }
+  .desktop-screenshot-guide > div:first-child > span { white-space: normal; line-height: 1.5; }
+  .desktop-screenshot-guide strong { font-size: 12px; }
+  .desktop-screenshot-toolbar-row { gap: 2px; }
+  .desktop-screenshot-toolbar-row button { min-width: 30px; width: 30px; height: 32px; }
+  .desktop-screenshot-toolbar-row .icon { width: 18px; height: 18px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .desktop-screenshot-overlay button { transition: color .12s, background-color .12s, border-color .12s; }
+}

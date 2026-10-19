@@ -6,11 +6,13 @@ import type { AppLocale } from "../shared/native-dialog-i18n";
 type WindowsTrayOptions = {
   getMainWindow: () => BrowserWindow | undefined;
   onQuit: () => void;
+  onStopRecording?: () => void;
   locale: AppLocale;
 };
 
 export type WindowsTrayController = {
   updateLocale: (locale: AppLocale) => void;
+  updateRecording: (active: boolean) => void;
   destroy: () => void;
 };
 
@@ -43,8 +45,11 @@ export function createWindowsTray(
 
   const tray = new Tray(image.resize({ width: 16, height: 16 }));
   tray.setToolTip("WorldlineBox");
+  let currentLocale = options.locale;
+  let recording = false;
 
   const rebuildMenu = (locale: AppLocale): void => {
+    currentLocale = locale;
     const labels = menuLabels(locale);
     tray.setContextMenu(
       Menu.buildFromTemplate([
@@ -52,6 +57,11 @@ export function createWindowsTray(
           label: labels.show,
           click: () => restoreMainWindow(options.getMainWindow),
         },
+        ...(options.onStopRecording ? [{
+          label: locale === "zh-CN" ? "停止录屏并保存" : "Stop recording and save",
+          enabled: recording,
+          click: options.onStopRecording,
+        }] : []),
         { type: "separator" },
         { label: labels.quit, click: options.onQuit },
       ]),
@@ -64,6 +74,7 @@ export function createWindowsTray(
 
   return {
     updateLocale: rebuildMenu,
+    updateRecording: active => { if (recording === active) return; recording = active; rebuildMenu(currentLocale); },
     destroy: () => tray.destroy(),
   };
 }

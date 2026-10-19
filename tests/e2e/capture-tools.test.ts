@@ -119,6 +119,9 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     await tool.screenshot({ path: path.join(artifacts, 'capture-tools-editor.png') });
 
     await request(main, { type: 'open', task: 'recording' }); tool = await toolPage(application);
+    // Keep explicit window-source recording covered alongside the separate
+    // real-monitor region-overlay scenario.
+    await request(tool, { type: 'screenshot.capture', sourceId: fixture.sourceId }); await tool.reload();
     await expect(tool.getByRole('combobox', { name: '选择屏幕或窗口', exact: true })).toBeVisible();
     await expect.poll(() => tool.locator('select option').allTextContents()).toContain('窗口 · WorldlineBox Capture Fixture');
     await tool.getByRole('combobox', { name: '选择屏幕或窗口', exact: true }).selectOption(fixture.sourceId);

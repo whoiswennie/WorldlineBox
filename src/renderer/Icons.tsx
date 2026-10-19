@@ -16,6 +16,11 @@ export type IconName =
   | "send"
   | "camera"
   | "video"
+  | "microphone"
+  | "volume"
+  | "volume-off"
+  | "pause"
+  | "play"
   | "users"
   | "message-circle"
   | "activity"
@@ -113,6 +118,11 @@ const iconPaths: Record<IconName, ReactNode> = {
   send: <><path d="m21 3-7 18-4-7-7-4L21 3ZM10 14 21 3" /></>,
   camera: <><path d="M14 4h-4L8 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-4Z" /><circle cx="12" cy="13" r="4" /></>,
   video: <><rect x="2" y="5" width="14" height="14" rx="2" /><path d="m16 10 6-4v12l-6-4Z" /></>,
+  microphone: <><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></>,
+  volume: <><path d="m11 5-6 4H2v6h3l6 4V5ZM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14" /></>,
+  "volume-off": <><path d="m11 5-6 4H2v6h3l6 4V5ZM16 9l6 6M22 9l-6 6" /></>,
+  pause: <><rect x="5" y="4" width="4" height="16" rx="1" /><rect x="15" y="4" width="4" height="16" rx="1" /></>,
+  play: <path d="m7 4 14 8-14 8V4Z" />,
   users: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M22 21v-2a4 4 0 0 0-3-3.87" /><circle cx="9" cy="7" r="4" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>,
   'message-circle': <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z" />,
   music: <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>,

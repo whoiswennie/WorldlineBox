@@ -126,4 +126,8 @@ it('keeps FFmpeg input paths as argument values and uses conservative fixed conv
   const args = recordingConversionArgs('C:\\test path\\clip;name.webm', 'C:\\result file.mp4.part', 'mp4');
   expect(args).toContain('C:\\test path\\clip;name.webm'); expect(args).toContain('libopenh264'); expect(args).toContain('aac'); expect(args).toContain('-n');
   const gif = recordingConversionArgs('input', 'output', 'gif'); expect(gif).toContain('60'); expect(gif.join(' ')).toContain('fps=12'); expect(gif.join(' ')).toContain('960');
+  for (const [quality, bitrate] of [['original', '16M'], ['1080p', '8M'], ['720p', '4M']] as const) {
+    const preset = recordingConversionArgs('input', 'output', 'mp4', quality);
+    expect(preset[preset.indexOf('-b:v') + 1]).toBe(bitrate);
+  }
 });

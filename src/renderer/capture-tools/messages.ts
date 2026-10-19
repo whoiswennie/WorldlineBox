@@ -12,6 +12,10 @@ const zh = {
   longHint: '滚动目标应用后点击“添加下一屏”，保持窗口位置与区域不变。', longAppend: '添加下一屏', longFinish: '完成拼接', longCancel: '取消长截图', longFrames: '已采集屏数',
   recordingSourcePreserved: '原始 WebM 录制文件已保留，可定位文件后重新转换。', recordingCheckDownloads: '请在下载目录中检查原始录制文件。',
   recordingPartialPreserved: '已保留可用的部分录制内容，请定位文件检查。',
+  quality: '录制画质', qualityOriginal: '原画质', quality1080: '高清 1080p', quality720: '标清 720p',
+  recordingOverlayHint: '单击选择窗口，或拖动框选录制区域。Tab / 滚轮切换选区，Esc 取消。',
+  recordingHiddenControls: '选区外没有足够空间时会收起控制条；使用录屏快捷键或托盘“停止录屏并保存”结束。',
+  recordingSelect: '重新框选', recordingNoSelection: '请先点击或拖动选择录制区域。',
   selectionTemporary: '临时对话 · 关闭即清除', selectionOriginal: '选中的文字', selectionPaste: '粘贴剪贴板', selectionPlaceholder: '选中的文字会显示在这里，也可以直接输入或点击粘贴。', selectionEditHint: '修改原文会重置本次临时对话。最多 32 KiB。', selectionTooLong: '原文超过 32 KiB，请缩短后再发送。', selectionReset: '原文已修改，临时对话已重置。',
   selectionConversation: '临时划词对话', selectionEmptyTitle: '围绕这段文字，继续聊聊', selectionEmptyHint: '解释、总结、翻译，或提出自己的问题。对话只保留在当前窗口。', selectionSummarize: '总结重点', selectionExplain: '解释这段文字', selectionTranslate: '翻译成中文', selectionPrompt: '关于这段文字，想问什么？', selectionYou: '你', selectionModel: '模型', selectionThinking: '正在思考…', selectionSend: '发送', selectionStop: '停止回答', selectionStopped: '已停止回答，可修改问题后继续。', selectionClear: '清空临时对话', selectionCopy: '复制回答', selectionCopied: '回答已复制', selectionConfigure: '请先在设置中配置全局 LLM 服务。划词问答可使用纯文字模型。', selectionTurnLimit: '本次临时对话已达到 20 轮，请清空后继续。', selectionEmptyAnswer: '模型没有返回可显示的回答，请重试。',
 };
@@ -27,6 +31,10 @@ const en: typeof zh = {
   longHint: 'Scroll the target app, then add the next frame. Keep its window position and the capture region unchanged.', longAppend: 'Add next frame', longFinish: 'Finish stitching', longCancel: 'Cancel long screenshot', longFrames: 'Captured frames',
   recordingSourcePreserved: 'The original WebM recording has been kept. Show the file to convert it again later.', recordingCheckDownloads: 'Check the Downloads folder for the original recording file.',
   recordingPartialPreserved: 'Available recording content has been kept. Show the file to inspect it.',
+  quality: 'Recording quality', qualityOriginal: 'Original', quality1080: 'HD 1080p', quality720: 'SD 720p',
+  recordingOverlayHint: 'Click a window or drag to select a recording region. Tab / wheel cycles regions; Esc cancels.',
+  recordingHiddenControls: 'When there is no room outside the capture, controls hide. Stop with the recording shortcut or the tray’s “Stop recording and save”.',
+  recordingSelect: 'Select another region', recordingNoSelection: 'Click or drag to select a recording region first.',
   selectionTemporary: 'Temporary chat · Cleared when closed', selectionOriginal: 'Selected text', selectionPaste: 'Paste clipboard', selectionPlaceholder: 'Your selected text appears here. You can also type or paste it.', selectionEditHint: 'Editing the original text resets this temporary conversation. Up to 32 KiB.', selectionTooLong: 'The original text exceeds 32 KiB. Shorten it before sending.', selectionReset: 'Original text changed. The temporary conversation has been reset.',
   selectionConversation: 'Temporary selection conversation', selectionEmptyTitle: 'Explore this text', selectionEmptyHint: 'Explain, summarize, translate, or ask your own question. This conversation stays in the current window.', selectionSummarize: 'Summarize key points', selectionExplain: 'Explain this text', selectionTranslate: 'Translate into English', selectionPrompt: 'What would you like to ask about this text?', selectionYou: 'You', selectionModel: 'Model', selectionThinking: 'Thinking…', selectionSend: 'Send', selectionStop: 'Stop response', selectionStopped: 'Response stopped. Edit your question to continue.', selectionClear: 'Clear temporary conversation', selectionCopy: 'Copy answer', selectionCopied: 'Answer copied', selectionConfigure: 'Configure a global LLM service in Settings first. Text-only models work for selection questions.', selectionTurnLimit: 'This temporary conversation has reached 20 turns. Clear it to continue.', selectionEmptyAnswer: 'The model returned no visible answer. Try again.',
 };

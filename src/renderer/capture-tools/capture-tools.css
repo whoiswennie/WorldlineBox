@@ -56,3 +56,38 @@
 .capture-long-controls > header span { color: var(--ui-content-secondary); font-size: 11px; }
 .capture-long-controls > p { padding: 0 16px; margin-top: 10px; font-size: 11px; }
 .capture-long-controls > footer { padding: 13px 16px; margin-top: auto; flex-wrap: wrap; }
+.desktop-recording-toolbar { display: flex; flex-direction: column; gap: 5px; padding: 1px; max-width: min(650px, calc(100vw - 48px)); }
+.desktop-recording-toolbar fieldset { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0; margin: 0; border: 0; min-width: 0; }
+.desktop-recording-toolbar label { display: flex; align-items: center; gap: 6px; color: #536077; font-size: 11px; }
+.desktop-recording-toolbar label > span { white-space: nowrap; }
+.desktop-recording-toolbar select { max-width: 145px; height: 30px; padding: 3px 6px; border: 1px solid #e1e6f0; border-radius: 6px; background: #f7f9fc; color: #28364d; font: inherit; font-size: 12px; }
+.desktop-recording-toolbar .desktop-recording-audio-toggle { position: relative; justify-content: center; width: 34px; height: 34px; border: 1px solid transparent; border-radius: 7px; box-sizing: border-box; cursor: pointer; }
+.desktop-recording-audio-toggle input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; margin: 0; cursor: inherit; }
+.desktop-recording-audio-toggle:has(input:checked) { color: #536df0; background: #eef1ff; border-color: #c7d3ff; }
+.desktop-recording-audio-toggle:has(input:focus-visible) { outline: 2px solid #7189ff; outline-offset: 2px; }
+.desktop-recording-audio-toggle:has(input:disabled) { opacity: .36; cursor: default; }
+.desktop-recording-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 5px; color: #8b96a7; font-size: 10px; line-height: 1.5; }
+.desktop-recording-hint > span { font-variant-numeric: tabular-nums; }
+.desktop-recording-info { display: inline-flex; cursor: help; border-radius: 3px; }
+.capture-recorder-floating { box-sizing: border-box; flex-direction: row; align-items: center; justify-content: center; gap: 6px; padding: 5px 6px; border: 1px solid var(--ui-border-subtle); }
+.capture-recorder-floating-notice { display: flex; align-items: center; color: var(--ui-content-secondary); }
+.capture-recorder-floating .capture-recording-status { -webkit-app-region: no-drag; line-height: 19px; }
+.capture-recorder-floating .capture-recording-status { flex: 1; min-width: 0; gap: 6px; }
+.capture-recorder-floating .capture-recording-status > strong { display: none; }
+.capture-recorder-floating .capture-recording-status time { margin-left: 3px; }
+.capture-recorder-floating .capture-recording-status time { font-size: 16px; }
+.capture-recorder-floating-actions { display: flex; align-items: center; gap: 6px; }
+.capture-recorder-floating-actions > .capture-recording-audio { flex: 1; min-width: 0; gap: 6px; }
+.capture-recorder-floating-actions > .capture-recording-audio span { white-space: nowrap; }
+.capture-recorder-floating-actions > .ui-button { flex-shrink: 0; width: 28px; height: 28px; min-width: 28px; padding: 0; gap: 0; }
+.capture-recorder-floating-actions > .ui-button .ui-button__label:empty { display: none; }
+.capture-recorder-floating .capture-recording-audio button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; width: 27px; height: 27px; padding: 3px; border: 0; border-radius: 5px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.capture-recorder-floating .capture-recording-audio button:hover:not(:disabled) { background: var(--ui-surface-field); }
+.capture-audio-description { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.capture-recorder-floating .capture-recording-audio button[aria-pressed="false"] { color: var(--ui-content-tertiary); }
+.capture-recorder-floating .capture-recording-audio button:disabled { cursor: default; }
+@media (max-width: 310px) {
+  .capture-recorder-floating-actions, .capture-recorder-floating-actions > .capture-recording-audio { gap: 4px; }
+  .capture-recorder-floating .capture-recording-status > span, .capture-recorder-floating-notice { display: none; }
+  .capture-recorder-floating .capture-recording-status { gap: 0; }
+}
