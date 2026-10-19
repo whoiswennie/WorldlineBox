@@ -41,6 +41,8 @@ export const desktopSourceSchema = z.object({ id: z.string().max(255), name: z.s
 export type CaptureDesktopSource = z.infer<typeof desktopSourceSchema>;
 const recordingSchema = z.object({ id: z.string(), status: z.enum(['recording', 'paused', 'finalizing', 'saved', 'failed', 'cancelled']), format: z.enum(['mp4', 'webm', 'gif']), bytes: z.number().nonnegative(), startedAt: z.string(), path: z.string().optional(), error: z.string().optional() });
 export type CaptureRecordingState = z.infer<typeof recordingSchema>;
+export const captureRecordingPreviewSchema = z.object({ url: z.string().max(8192), mimeType: z.enum(['video/mp4', 'video/webm', 'image/gif']), name: z.string().max(500), bytes: z.number().int().nonnegative() });
+export type CaptureRecordingPreview = z.infer<typeof captureRecordingPreviewSchema>;
 export const captureToolsStateSchema = z.object({ settings: captureToolsSettingsSchema, downloadPath: z.string(), task: captureToolTaskSchema,
   shortcuts: z.array(z.object({ task: captureToolTaskSchema, accelerator, registered: z.boolean(), error: z.string().optional() })),
   ai: z.object({ configured: z.boolean(), model: z.string(), visionSupported: z.boolean().nullable(), reason: z.string().optional() }),
@@ -72,10 +74,12 @@ export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('recording.cancel'), id: z.string().max(100) }),
   z.strictObject({ type: z.literal('recording.pause'), id: z.string().max(100), paused: z.boolean() }),
   z.strictObject({ type: z.literal('recording.stop') }),
+  z.strictObject({ type: z.literal('recording.preview'), id: z.string().min(1).max(100) }),
+  z.strictObject({ type: z.literal('recording.open'), id: z.string().min(1).max(100) }),
   z.strictObject({ type: z.literal('reveal'), path: z.string().min(1).max(8192) }),
 ]);
 export type CaptureToolsRequest = z.infer<typeof captureToolsRequestSchema>;
-export const captureToolsResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), state: captureToolsStateSchema.optional(), source: captureSourceSchema.optional(), sources: z.array(desktopSourceSchema).optional(), recordingControls: captureRecordingControlsSchema.optional(), long: z.object({ frames: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), id: z.string().optional(), path: z.string().optional(), text: z.string().optional() }), z.object({ ok: z.literal(false), error: z.string().max(2000) })]);
+export const captureToolsResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), state: captureToolsStateSchema.optional(), source: captureSourceSchema.optional(), sources: z.array(desktopSourceSchema).optional(), recordingControls: captureRecordingControlsSchema.optional(), preview: captureRecordingPreviewSchema.optional(), long: z.object({ frames: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), id: z.string().optional(), path: z.string().optional(), text: z.string().optional() }), z.object({ ok: z.literal(false), error: z.string().max(2000) })]);
 export type CaptureToolsResponse = z.infer<typeof captureToolsResponseSchema>;
 export interface WorldlineBoxCaptureToolsApi {
   request(request: CaptureToolsRequest): Promise<CaptureToolsResponse>;

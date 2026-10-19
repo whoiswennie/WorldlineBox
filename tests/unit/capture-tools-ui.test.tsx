@@ -109,7 +109,10 @@ it('streams recording chunks in order and waits for the last chunk before saving
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
   expect(recorded).toEqual([[0, 1], [2], [3]]);
   expect(request.mock.calls.filter(([input]) => input.type === 'recording.chunk').map(([input]) => input.type === 'recording.chunk' ? input.sequence : -1)).toEqual([0, 1, 2]);
-  expect(request).toHaveBeenLastCalledWith({ type: 'recording.finish', id: 'recording-a' });
+  const finished = request.mock.calls.findIndex(([input]) => input.type === 'recording.finish');
+  expect(finished).toBeGreaterThan(-1);
+  expect(request.mock.calls.slice(finished + 1).some(([input]) => input.type === 'recording.chunk')).toBe(false);
+  expect(request).toHaveBeenLastCalledWith({ type: 'recording.preview', id: 'recording-a' });
   expect(cleanup).toHaveBeenCalledOnce();
   expect(host.textContent).toContain('录制已保存');
 });
@@ -151,7 +154,7 @@ it('preserves the recoverable WebM after conversion fails and reports actual aud
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
   expect(request.mock.calls.some(([input]) => input.type === 'recording.cancel')).toBe(false);
   expect(host.textContent).toContain('原始 WebM 录制文件已保留');
-  expect(host.textContent).toContain(recoveryPath);
+  expect(host.querySelector('h1')?.getAttribute('title')).toBe(recoveryPath);
   await act(() => button('查看文件').click());
   expect(request).toHaveBeenLastCalledWith({ type: 'reveal', path: recoveryPath });
 });
@@ -240,6 +243,6 @@ it('does not cancel accepted recording data when a disk failure is still publish
   expect(request.mock.calls.some(([input]) => input.type === 'recording.finish')).toBe(true);
   expect(request.mock.calls.some(([input]) => input.type === 'recording.cancel')).toBe(false);
   expect(reads).toBeGreaterThan(1);
-  expect(host.textContent).toContain(recoveryPath);
+  expect(host.querySelector('h1')?.getAttribute('title')).toBe(recoveryPath);
   expect(host.textContent).toContain('原始 WebM 录制文件已保留');
 });

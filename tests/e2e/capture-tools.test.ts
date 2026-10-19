@@ -6,6 +6,7 @@ import sharp from 'sharp';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { CaptureToolsRequest, CaptureToolsResponse, WorldlineBoxCaptureToolsApi } from '../../src/shared/capture-tools';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { expectRecordingPlayback } from './recording-preview-helpers';
 
 type Bridge = { worldlinebox: { captureTools: WorldlineBoxCaptureToolsApi } };
 async function raw(page: Page, input: CaptureToolsRequest): Promise<CaptureToolsResponse> {
@@ -188,6 +189,20 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     await tool.waitForTimeout(400); await tool.getByRole('button', { name: '继续', exact: true }).click();
     await tool.waitForTimeout(1500); await tool.getByRole('button', { name: '停止并保存', exact: true }).click();
     await expect(tool.locator('.capture-recording-status')).toHaveClass(/is-saved/u, { timeout: 60000 });
+    const playback = await expectRecordingPlayback(tool);
+    const resultWindow = await application.browserWindow(tool);
+    const resultBounds = await resultWindow.evaluate(window => window.getBounds());
+    await resultWindow.evaluate(window => window.setSize(640, 420));
+    await expect.poll(() => tool.evaluate(() => innerWidth)).toBe(640);
+    const compactLayout = await tool.locator('.capture-recording-result').evaluate(element => ({
+      fits: element.scrollWidth <= element.clientWidth,
+      stage: element.querySelector('.capture-result-stage')!.getBoundingClientRect().height,
+      footerBottom: element.querySelector('footer')!.getBoundingClientRect().bottom, viewport: innerHeight,
+    }));
+    expect(compactLayout.fits).toBe(true); expect(compactLayout.stage).toBeGreaterThan(100);
+    expect(compactLayout.footerBottom).toBeLessThanOrEqual(compactLayout.viewport);
+    await resultWindow.evaluate((window, bounds) => window.setBounds(bounds), resultBounds);
+    await tool.screenshot({ path: path.resolve('artifacts/recording-result-preview.png') });
     const recording = (await request(main, { type: 'state' })).state!.recording!;
     expect(recording.path).toBeTruthy(); expect(path.dirname(recording.path!)).toBe(downloads); expect(recording.path).toMatch(/\.mp4$/u);
     const ffprobe = path.resolve('resources/ffmpeg/win32-x64/ffprobe.exe'); const ffmpeg = path.resolve('resources/ffmpeg/win32-x64/ffmpeg.exe');
@@ -211,17 +226,21 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     await tool.screenshot({ path: path.join(artifacts, 'capture-tools-recording-saved.png') });
     // A second real session covers the crop canvas, no-audio GIF branch,
     // recording restart, and FFmpeg's animated-image conversion together.
+    expect(playback.width).toBe(inspected.streams.find(stream => stream.codec_type === 'video')!.width);
+    await tool.getByRole('button', { name: '再次录制', exact: true }).click();
     await tool.getByRole('combobox', { name: '输出格式', exact: true }).selectOption('gif');
     await expect(tool.getByLabel('录制系统声音', { exact: true })).not.toBeChecked();
     await expect(tool.getByLabel('录制系统声音', { exact: true })).toBeDisabled();
     await tool.getByLabel('仅录制选定区域', { exact: true }).check();
     for (const [name, value] of [['左侧 %', '25'], ['顶部 %', '25'], ['宽度 %', '50'], ['高度 %', '50']]) await tool.getByRole('spinbutton', { name, exact: true }).fill(value!);
-    await tool.getByRole('button', { name: '再次录制', exact: true }).click();
+    await tool.getByRole('button', { name: '开始录制', exact: true }).click();
     await expect(tool.locator('.capture-recording-status')).toHaveClass(/is-recording/u, { timeout: 15000 });
     const gifTracks = await tool.evaluate(() => Reflect.get(globalThis, '__captureTrackProbe') as { video: number; audio: number; requestedAudio: boolean });
     expect(gifTracks).toEqual({ video: 1, audio: 0, requestedAudio: false });
     await tool.waitForTimeout(2200); await tool.getByRole('button', { name: '停止并保存', exact: true }).click();
     await expect(tool.locator('.capture-recording-status')).toHaveClass(/is-saved/u, { timeout: 60000 });
+    const gifPreview = tool.locator('.capture-result-stage > img');
+    await expect.poll(() => gifPreview.evaluate(image => (image as HTMLImageElement).naturalWidth), { timeout: 15000 }).toBeGreaterThan(0);
     const gifRecording = (await request(main, { type: 'state' })).state!.recording!; expect(gifRecording.path).toMatch(/\.gif$/u);
     const gifProbe = spawnSync(ffprobe, ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,width,height,nb_frames', '-show_entries', 'format=duration', '-of', 'json', gifRecording.path!], { windowsHide: true, encoding: 'utf8', timeout: 15000 });
     expect(gifProbe.status, gifProbe.stderr).toBe(0);

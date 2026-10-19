@@ -23,8 +23,9 @@ export interface RecordingStoreOptions {
   onLimit?(id: string): void;
 }
 /** Fixed arguments only. Inputs and outputs are owned files, never shell text. */
-export function recordingConversionArgs(input: string, output: string, format: 'mp4' | 'gif', quality?: CaptureRecordingQuality): string[] {
+export function recordingConversionArgs(input: string, output: string, format: Format, quality?: CaptureRecordingQuality): string[] {
   const common = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-protocol_whitelist', 'file,pipe', '-i', input];
+  if (format === 'webm') return [...common, '-map', '0:v:0', '-map', '0:a?', '-c', 'copy', '-f', 'webm', output];
   const bitrate = quality === 'original' ? '16M' : quality === '1080p' ? '8M' : quality === '720p' ? '4M' : '6M';
   return format === 'mp4' ? [...common, '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libopenh264', '-b:v', bitrate, '-pix_fmt', 'yuv420p',
     '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-f', 'mp4', output]
@@ -135,8 +136,11 @@ export class RecordingStore {
       const format = session.state.format;
       let source = session.input;
       if (this.stopping) throw Error('应用退出，原始 WebM 已保留。');
-      if (format !== 'webm') {
-        const ffmpeg = await this.options.getFfmpeg(); if (!ffmpeg) throw Error('缺少 FFmpeg，原始录屏已保留，可稍后重新转换。');
+      const ffmpeg = await this.options.getFfmpeg();
+      if (format !== 'webm' || ffmpeg) {
+        if (!ffmpeg) throw Error('缺少 FFmpeg，原始录屏已保留，可稍后重新转换。');
+        // MediaRecorder emits a live WebM without a duration/seek index. A
+        // stream copy finalizes that index without changing recorded pixels.
         converted = path.join(path.dirname(session.input), '.WorldlineBox-Converted-' + session.state.id + '.' + format + '.part');
         await this.convert(session, ffmpeg, converted, format); source = converted;
       }
@@ -160,7 +164,7 @@ export class RecordingStore {
       await this.fail(session, error); throw error;
     }
   }
-  private convert(session: RecordingSession, ffmpeg: string, output: string, format: 'mp4' | 'gif'): Promise<void> {
+  private convert(session: RecordingSession, ffmpeg: string, output: string, format: Format): Promise<void> {
     return new Promise((resolve, reject) => {
       const child = spawn(ffmpeg, recordingConversionArgs(session.input, output, format, session.quality), { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
       session.process = child;

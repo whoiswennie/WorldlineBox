@@ -13,6 +13,7 @@ import { atomicJson, readJson } from '../dsh/files';
 import { safeCaptureFilename } from '../browser/capture-download';
 import { answerCaptureImage, getCaptureAiState } from './visual-answer';
 import { RecordingStore } from './recording-store';
+import { CAPTURE_RECORDING_SCHEME, RecordingPreview } from './recording-preview';
 import { LongCaptureStitcher } from './long-capture';
 import { boundedSelectionText, readFocusedSelectedText } from './selected-text';
 import { answerSelectedText } from './text-answer';
@@ -76,6 +77,8 @@ export class CaptureToolsService {
   private revision = 0;
   private hidden = new Set<BrowserWindow>();
   private knownFiles = new Set<string>();
+  private readonly recordingPreview = new RecordingPreview();
+  private recordingResultId?: string;
   private asks = new Map<string, AbortController>();
   private terminalListeners = new Set<() => void>();
   private recordingGrant?: { source: DesktopCapturerSource; id: string; systemAudio: boolean; microphone: boolean; videoUsed: boolean; desktopPreflightUsed: boolean; microphoneUsed: boolean };
@@ -97,7 +100,7 @@ export class CaptureToolsService {
     this.recordings = new RecordingStore({ downloadPath: this.downloadPath, getFfmpeg: options.getFfmpeg,
       changed: state => {
         if (state.path) this.rememberFile(state.path);
-        if (['saved', 'failed', 'cancelled'].includes(state.status)) { this.recordingGrant = undefined; this.recordingControls = undefined; this.clearRecordingBoundaries(); this.restoreApp(); this.resizeTool(false); for (const listener of this.terminalListeners) listener(); }
+        if (['saved', 'failed', 'cancelled'].includes(state.status)) { this.recordingGrant = undefined; this.recordingControls = undefined; this.clearRecordingBoundaries(); this.restoreApp(); this.resizeTool(false, true); for (const listener of this.terminalListeners) listener(); }
         this.changed();
       }, onLimit: () => this.stopRecording() });
   }
@@ -161,13 +164,13 @@ export class CaptureToolsService {
   private restoreApp(): void {
     for (const window of this.hidden) if (!window.isDestroyed()) window.showInactive(); this.hidden.clear();
   }
-  private resizeTool(compact: boolean): void {
+  private resizeTool(compact: boolean, result = false): void {
     const tool = this.tool; if (!tool || tool.isDestroyed()) return;
     if (compact && this.recordingControls) return;
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     tool.setAlwaysOnTop(true, 'floating'); tool.setResizable(!compact); tool.setMovable(true);
-    tool.setMinimumSize(Math.min(compact ? 420 : 760, area.width), Math.min(compact ? 210 : 560, area.height));
-    const width = Math.min(compact ? 460 : 1160, area.width), height = Math.min(compact ? 250 : 780, area.height);
+    tool.setMinimumSize(Math.min(compact ? 420 : result ? 640 : 760, area.width), Math.min(compact ? 210 : result ? 420 : 560, area.height));
+    const width = Math.min(compact ? 460 : result ? 1040 : 1160, area.width), height = Math.min(compact ? 250 : result ? 740 : 780, area.height);
     tool.setBounds({ x: Math.round(area.x + (area.width - width) / 2), y: Math.round(area.y + (area.height - height) / 2), width, height });
     tool.showInactive();
   }
@@ -263,6 +266,7 @@ export class CaptureToolsService {
       case 'close': await this.closeTool(); break;
       case 'sources.list': return { ok: true, sources: await this.sources(), state: this.state() };
       case 'screenshot.capture': {
+        this.recordingResultId = undefined; this.recordingPreview.clear();
         this.provider = undefined; this.sourceId = request.sourceId ?? this.sourceId;
         this.image = await this.captureDesktop(this.sourceId); this.fitToolToDesktop(); this.changed(); return { ok: true, source: this.image, state: this.state() };
       }
@@ -303,7 +307,7 @@ export class CaptureToolsService {
             width: rect.width / image.width * display.bounds.width, height: rect.height / image.height * display.bounds.height };
         }
         const controls = placeCaptureRecordingControls({ ...(source.id.startsWith('screen:') ? { capture } : {}), displayId: String(display.id), displays });
-        const id = await this.recordings.prepare(request.format, request.quality);
+        const id = await this.recordings.prepare(request.format, request.quality); this.recordingResultId = undefined; this.recordingPreview.clear();
         this.recordingGrant = { source, id, systemAudio: request.systemAudio && request.format !== 'gif', microphone: request.microphone && request.format !== 'gif', videoUsed: false, desktopPreflightUsed: false, microphoneUsed: false };
         this.recordingControls = controls;
         this.hideApp(source.id);
@@ -330,6 +334,19 @@ export class CaptureToolsService {
       case 'recording.cancel': this.clearRecordingBoundaries(); await this.recordings.cancel(request.id); break;
       case 'recording.pause': this.recordings.pause(request.id, request.paused); break;
       case 'recording.stop': this.stopRecording(); break;
+      case 'recording.preview': {
+        const recording = this.recordings.state();
+        if (!recording || recording.id !== request.id || !recording.path || !this.knownFiles.has(path.resolve(recording.path))) throw Error('找不到此录屏文件。');
+        const preview = await this.recordingPreview.prepare(recording); this.recordingResultId = recording.id;
+        return { ok: true, preview, state: this.state() };
+      }
+      case 'recording.open': {
+        const recording = this.recordings.state();
+        if (!recording || recording.id !== request.id || !recording.path || !this.knownFiles.has(path.resolve(recording.path))) throw Error('找不到此录屏文件。');
+        await this.recordingPreview.prepare(recording);
+        if (await shell.openPath(recording.path)) throw Error('无法启动系统播放器，请尝试定位文件后打开。');
+        break;
+      }
       case 'reveal': {
         const filename = path.resolve(request.path);
         if (filename === this.downloadPath) { await mkdir(this.downloadPath, { recursive: true }); const error = await shell.openPath(filename); if (error) throw Error('无法打开截图保存目录。'); break; }
@@ -428,9 +445,18 @@ export class CaptureToolsService {
   }
   private configureSession(scope: Session): void {
     const activeGrant = () => this.recordingGrant && ['recording', 'paused'].includes(this.recordings.state()?.status ?? '') ? this.recordingGrant : undefined;
-    scope.setPermissionCheckHandler((contents, permission, _origin, details) => contents === this.tool?.webContents && details.isMainFrame
-      && permission === 'media' && !!activeGrant()?.microphone && !activeGrant()?.microphoneUsed && details.mediaType === 'audio');
+    const ownsResult = (contents: Electron.WebContents | null, isMainFrame: boolean) => {
+      const tool = this.tool, recording = this.recordings.state();
+      return !!tool && !tool.isDestroyed() && !tool.webContents.isDestroyed() && contents === tool.webContents && isMainFrame
+        && this.task === 'recording' && !!recording?.path && this.recordingResultId === recording.id
+        && (recording.status === 'saved' || recording.status === 'failed' && recording.path.endsWith('.webm.part'))
+        && this.knownFiles.has(path.resolve(recording.path));
+    };
+    scope.setPermissionCheckHandler((contents, permission, _origin, details) => permission === 'fullscreen' ? ownsResult(contents, details.isMainFrame)
+      : contents === this.tool?.webContents && details.isMainFrame && permission === 'media'
+        && !!activeGrant()?.microphone && !activeGrant()?.microphoneUsed && details.mediaType === 'audio');
     scope.setPermissionRequestHandler((contents, permission, callback, details) => {
+      if (permission === 'fullscreen') { callback(ownsResult(contents, details.isMainFrame)); return; }
       const media = details as Electron.MediaAccessPermissionRequest;
       const grant = activeGrant();
       // Electron 43 sends getDisplayMedia's preflight as mediaTypes: [] before
@@ -482,7 +508,9 @@ export class CaptureToolsService {
       // Chromium and the global network policy retain sessions for the app
       // lifetime. One memory-only partition avoids accumulating proxy observers
       // and caches each time the screenshot editor is opened and closed.
-      const scope = this.scope ?? session.fromPartition('worldlinebox-capture-tools', { cache: false }); this.scope = scope; this.configureSession(scope);
+      const scope = this.scope ?? session.fromPartition('worldlinebox-capture-tools', { cache: false });
+      if (!this.scope) { this.scope = scope; scope.protocol.handle(CAPTURE_RECORDING_SCHEME, request => this.recordingPreview.respond(request)); }
+      this.configureSession(scope);
       const desktop = this.image?.desktop;
       const tool = new BrowserWindow({ title: task === 'selection' ? 'WorldlineBox · 划词助手' : task === 'recording' ? 'WorldlineBox · 录屏工具' : 'WorldlineBox · 截图工具',
         frame: false, thickFrame: false,
@@ -500,7 +528,7 @@ export class CaptureToolsService {
         if (!this.closed && ['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) { event.preventDefault(); this.stopRecording(); }
       });
       tool.once('closed', () => { if (this.tool === tool) { this.tool = undefined; this.image = undefined; this.selectedText = ''; this.provider = undefined; this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
-        this.recordingGrant = undefined; this.recordingControls = undefined; this.clearRecordingBoundaries(); for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.restoreApp(); } });
+        this.recordingGrant = undefined; this.recordingControls = undefined; this.recordingResultId = undefined; this.recordingPreview.clear(); this.clearRecordingBoundaries(); for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.restoreApp(); } });
       tool.webContents.once('render-process-gone', () => {
         const recording = this.recordings.state(); this.recordingGrant = undefined; this.clearRecordingBoundaries(); this.restoreApp();
         if (recording && ['recording', 'paused'].includes(recording.status)) void this.recordings.finish(recording.id).catch(() => undefined);
@@ -521,7 +549,7 @@ export class CaptureToolsService {
   private async closeTool(): Promise<void> {
     if (['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) throw Error('请先停止或取消当前录屏。');
     for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
-    this.recordingGrant = undefined; this.recordingControls = undefined; this.clearRecordingBoundaries(); this.selectedText = '';
+    this.recordingGrant = undefined; this.recordingControls = undefined; this.recordingResultId = undefined; this.recordingPreview.clear(); this.clearRecordingBoundaries(); this.selectedText = '';
     const tool = this.tool; if (tool && !tool.isDestroyed()) tool.destroy(); this.restoreApp();
   }
   shutdown(): Promise<void> { return this.shuttingDown ??= this.shutdownTool(); }
@@ -541,5 +569,6 @@ export class CaptureToolsService {
     if (this.ipcRegistered) { ipcMain.removeHandler(CAPTURE_TOOLS_REQUEST); this.ipcRegistered = false; }
     const tool = this.tool; if (tool && !tool.isDestroyed()) tool.destroy(); this.restoreApp();
     this.scope?.setDisplayMediaRequestHandler(null); this.scope?.setPermissionRequestHandler(null); this.scope?.setPermissionCheckHandler(null);
+    this.recordingResultId = undefined; this.recordingPreview.clear(); this.scope?.protocol.unhandle(CAPTURE_RECORDING_SCHEME);
   }
 }

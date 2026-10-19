@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import { expectRecordingPlayback } from './recording-preview-helpers';
 import type { CaptureToolsRequest, CaptureToolsResponse, WorldlineBoxCaptureToolsApi } from '../../src/shared/capture-tools';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
@@ -367,6 +368,8 @@ test('the real monitor screenshot is edited in place and regional recording cont
     }
     await tool.getByRole('button', { name: '停止并保存', exact: true }).click();
     await expect(tool.locator('.capture-recording-status')).toHaveClass(/is-saved/u, { timeout: 60000 });
+    const actualPlayback = await expectRecordingPlayback(tool);
+    expect(actualPlayback).toMatchObject(outputSize);
     expect(await nativeRecordingBorders(application)).toHaveLength(0);
     const recording = (await request(main, { type: 'state' })).state!.recording!;
     expect(recording.path).toBeTruthy(); expect(path.dirname(recording.path!)).toBe(downloads); expect(recording.path).toMatch(/\.mp4$/u);
@@ -422,6 +425,7 @@ test('the real monitor screenshot is edited in place and regional recording cont
       (stop.click as () => void)();
     });
     await expect(tool.locator('.capture-recording-status')).toHaveClass(/is-saved/u, { timeout: 60000 });
+    await expectRecordingPlayback(tool);
     const fullRecording = (await request(main, { type: 'state' })).state!.recording!;
     expect(fullRecording.format).toBe('webm'); expect(fullRecording.path).toMatch(/\.webm$/u);
     const scaledProbe = spawnSync(ffprobe, ['-v', 'error', '-show_entries', 'stream=codec_type,width,height', '-of', 'json', fullRecording.path!],

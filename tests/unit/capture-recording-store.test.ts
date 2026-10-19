@@ -107,17 +107,19 @@ const ffmpeg = process.env.WORLDLINEBOX_FFMPEG_PATH ?? path.resolve('resources/f
 const ffprobe = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
 const run = promisify(execFile);
 describe.skipIf(!existsSync(ffmpeg) || !existsSync(ffprobe))('bundled FFmpeg recording conversions', () => {
-  it.each(['mp4', 'gif'] as const)('produces a decodable %s from real MediaRecorder-compatible WebM', async format => {
+  it.each(['mp4', 'gif', 'webm'] as const)('produces a decodable, seekable %s from real MediaRecorder-compatible WebM', async format => {
     const downloadPath = await directory(); const input = path.join(downloadPath, 'source.webm');
     await run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-f', 'lavfi', '-i', 'testsrc2=size=96x64:rate=10',
-      ...(format === 'mp4' ? ['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-c:a', 'libopus'] : ['-an']),
-      '-t', '0.6', '-c:v', 'libvpx', '-b:v', '100k', input], { windowsHide: true, timeout: 20_000 });
+      ...(format !== 'gif' ? ['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-c:a', 'libopus'] : ['-an']),
+      '-t', '0.6', '-c:v', 'libvpx', '-b:v', '100k', '-live', '1', input], { windowsHide: true, timeout: 20_000 });
     const bytes = await readFile(input); const store = new RecordingStore({ downloadPath, getFfmpeg: () => ffmpeg, changed: vi.fn() });
     const id = await store.prepare(format); await store.append(id, 0, bytes); const result = await store.finish(id);
-    const probe = await run(ffprobe, ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,width,height', '-of', 'json', result.path], { windowsHide: true, timeout: 20_000 });
+    const probe = await run(ffprobe, ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,width,height:format=duration', '-of', 'json', result.path], { windowsHide: true, timeout: 20_000 });
     const streams = JSON.parse(probe.stdout).streams as { codec_type: string; codec_name: string; width?: number; height?: number }[];
-    const stream = streams.find(value => value.codec_type === 'video')!; expect(stream.codec_name).toBe(format === 'mp4' ? 'h264' : 'gif'); expect(stream.width).toBe(96); expect(stream.height).toBe(64);
-    if (format === 'mp4') expect(streams.find(value => value.codec_type === 'audio')?.codec_name).toBe('aac'); else expect(streams.some(value => value.codec_type === 'audio')).toBe(false);
+    const stream = streams.find(value => value.codec_type === 'video')!; expect(stream.codec_name).toBe(format === 'mp4' ? 'h264' : format === 'webm' ? 'vp8' : 'gif'); expect(stream.width).toBe(96); expect(stream.height).toBe(64);
+    expect(Number(JSON.parse(probe.stdout).format?.duration)).toBeGreaterThan(0);
+    if (format === 'gif') expect(streams.some(value => value.codec_type === 'audio')).toBe(false);
+    else expect(streams.find(value => value.codec_type === 'audio')?.codec_name).toBe(format === 'mp4' ? 'aac' : 'opus');
     expect((await readdir(downloadPath)).filter(name => name.endsWith('.part'))).toEqual([]); await store.shutdown();
   });
 });
@@ -126,6 +128,7 @@ it('keeps FFmpeg input paths as argument values and uses conservative fixed conv
   const args = recordingConversionArgs('C:\\test path\\clip;name.webm', 'C:\\result file.mp4.part', 'mp4');
   expect(args).toContain('C:\\test path\\clip;name.webm'); expect(args).toContain('libopenh264'); expect(args).toContain('aac'); expect(args).toContain('-n');
   const gif = recordingConversionArgs('input', 'output', 'gif'); expect(gif).toContain('60'); expect(gif.join(' ')).toContain('fps=12'); expect(gif.join(' ')).toContain('960');
+  const webm = recordingConversionArgs('input', 'output', 'webm'); expect(webm[webm.indexOf('-c') + 1]).toBe('copy'); expect(webm).not.toContain('-b:v');
   for (const [quality, bitrate] of [['original', '16M'], ['1080p', '8M'], ['720p', '4M']] as const) {
     const preset = recordingConversionArgs('input', 'output', 'mp4', quality);
     expect(preset[preset.indexOf('-b:v') + 1]).toBe(bitrate);

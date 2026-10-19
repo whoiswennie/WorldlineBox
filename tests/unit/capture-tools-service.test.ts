@@ -29,7 +29,7 @@ vi.mock('electron', async () => {
     loadURL = vi.fn(async () => { await mock.boundaryLoad?.(); });
     setMinimumSize = vi.fn(); setSize = vi.fn(); setBounds = vi.fn(); setResizable = vi.fn(); setMovable = vi.fn(); setContentProtection = vi.fn(); setAlwaysOnTop = vi.fn(); setIgnoreMouseEvents = vi.fn(); setShape = vi.fn(); moveTop = vi.fn(); removeMenu = vi.fn();
   }
-  const scope = { setPermissionCheckHandler: (fn: unknown) => { mock.scope.check = fn; }, setPermissionRequestHandler: (fn: unknown) => { mock.scope.permission = fn; }, setDisplayMediaRequestHandler: (fn: unknown) => { mock.scope.display = fn; } };
+  const scope = { protocol: { handle: vi.fn((_scheme: string, fn: unknown) => { mock.scope.preview = fn; }), unhandle: vi.fn() }, setPermissionCheckHandler: (fn: unknown) => { mock.scope.check = fn; }, setPermissionRequestHandler: (fn: unknown) => { mock.scope.permission = fn; }, setDisplayMediaRequestHandler: (fn: unknown) => { mock.scope.display = fn; } };
   const image = { isEmpty: () => false, toPNG: () => mock.png, toDataURL: () => 'data:image/png;base64,' + mock.png.toString('base64') };
   return { BrowserWindow: Window, app: { getPath: () => 'unused' }, ipcMain: { handle: vi.fn(), removeHandler: vi.fn() },
     globalShortcut: { register: vi.fn((key: string, callback: () => void) => { mock.callbacks.set(key, callback); return true; }), unregister: vi.fn() },
@@ -221,6 +221,57 @@ describe('temporary selected text assistant', () => {
 });
 
 describe('desktop recording grants', () => {
+  it.each(['saved', 'failed'] as const)('permits native player fullscreen only for an owned %s recording result main frame', async status => {
+    const { service, main, tool: previous } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
+    const permitted = (contents: unknown, isMainFrame = true) => {
+      const check = handler('check')(contents, 'fullscreen', '', { isMainFrame });
+      const reply = vi.fn(); handler('permission')(contents, 'fullscreen', reply, { isMainFrame });
+      expect(reply).toHaveBeenCalledWith(check); return check;
+    };
+    expect(permitted(tool.webContents)).toBe(false);
+    const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false });
+    if (!prepared.ok || !prepared.id) throw Error('Recording did not prepare'); const id = prepared.id;
+    expect(permitted(tool.webContents)).toBe(false);
+    await service.handle(event(tool), { type: 'recording.chunk', id, sequence: 0, chunk: status === 'saved' ? Buffer.from('1a45dfa3010203040506', 'hex') : Buffer.from([0x1a]) });
+    const finished = await service.handle(event(tool), { type: 'recording.finish', id }); expect(finished.ok).toBe(status === 'saved');
+    expect(permitted(tool.webContents)).toBe(false);
+    const result = await service.handle(event(tool), { type: 'recording.preview', id }); expect(result.ok).toBe(true);
+    expect(permitted(tool.webContents)).toBe(true);
+    for (const contents of [main.webContents, previous.webContents, {}, null]) expect(permitted(contents)).toBe(false);
+    expect(permitted(tool.webContents, false)).toBe(false);
+    expect(handler('check')(tool.webContents, 'media', '', { isMainFrame: true, mediaType: 'video' })).toBe(false);
+    expect((await service.handle(event(tool), { type: 'screenshot.capture' })).ok).toBe(true);
+    expect(permitted(tool.webContents)).toBe(false);
+    await service.open('screenshot'); const screenshot = mock.windows.at(-1) as BrowserWindow;
+    expect(permitted(tool.webContents)).toBe(false); expect(permitted(screenshot.webContents)).toBe(false);
+    expect((await service.handle(event(screenshot), { type: 'recording.preview', id })).ok).toBe(true);
+    expect(permitted(screenshot.webContents)).toBe(false);
+  });
+  it('allows result playback and system opening only for the owned tool frame and revokes URLs before another capture', async () => {
+    const { service, main } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
+    const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false });
+    if (!prepared.ok || !prepared.id) throw Error('Recording did not prepare'); const id = prepared.id;
+    expect((await service.handle(event(tool), { type: 'recording.preview', id })).ok).toBe(false);
+    const bytes = Buffer.from('1a45dfa3010203040506', 'hex');
+    await service.handle(event(tool), { type: 'recording.chunk', id, sequence: 0, chunk: bytes });
+    const finished = await service.handle(event(tool), { type: 'recording.finish', id }); expect(finished.ok).toBe(true);
+    for (const type of ['recording.preview', 'recording.open']) {
+      expect((await service.handle(event(main), { type, id })).ok).toBe(false);
+      expect((await service.handle(event(tool, {} as Electron.WebFrameMain), { type, id })).ok).toBe(false);
+      expect((await service.handle(event(tool), { type, id: 'unknown' })).ok).toBe(false);
+    }
+    const result = await service.handle(event(tool), { type: 'recording.preview', id });
+    if (!result.ok || !result.preview) throw Error('No recording preview');
+    expect(result.preview).toMatchObject({ mimeType: 'video/webm', bytes: bytes.length });
+    const respond = mock.scope.preview as (request: Request) => Promise<Response>;
+    const range = await respond(new Request(result.preview.url, { headers: { Range: 'bytes=1-3' } }));
+    expect(range.status).toBe(206); expect(Buffer.from(await range.arrayBuffer())).toEqual(bytes.subarray(1, 4));
+    expect((await service.handle(event(tool), { type: 'recording.open', id })).ok).toBe(true);
+    expect(shell.openPath).toHaveBeenCalledWith(finished.ok && finished.path);
+    const next = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false });
+    expect((await respond(new Request(result.preview.url))).status).toBe(404);
+    if (next.ok && next.id) await service.handle(event(tool), { type: 'recording.cancel', id: next.id });
+  });
   it('shows one transparent click-through canvas for outside-crop range borders and destroys it on stop/cancel', async () => {
     const { service } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
     const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false,

@@ -38,5 +38,9 @@ export function worldlineboxProtocolSchemes() {
       scheme: 'worldlinebox-companion',
       privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
     },
+    {
+      scheme: 'worldlinebox-capture',
+      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
+    },
   ];
 }

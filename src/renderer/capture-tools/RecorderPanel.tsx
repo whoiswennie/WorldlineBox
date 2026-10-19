@@ -7,6 +7,7 @@ import { useCaptureWords } from './messages';
 import { desktopRecordingMedia, recordingBitrate, recordingClock, recordingMimeType, recordingOutputSize, type CaptureRegion } from './recording-media';
 import type { Rect } from '../browser/screenshot/model';
 import { DesktopScreenshotOverlay } from './DesktopScreenshotOverlay';
+import { RecordingResult } from './RecordingResult';
 
 type Phase = 'idle' | 'preparing' | 'recording' | 'paused' | 'finalizing' | 'saved' | 'failed' | 'cancelled';
 type Session = {
@@ -264,6 +265,9 @@ export function RecorderPanel({ api, state, onClose, source: desktopSource, onSo
     setEnabledAudio(previous => ({ ...previous, [kind]: enabled }));
   }
   const phaseLabel = phase === 'recording' ? words.live : phase === 'paused' ? words.paused : phase === 'preparing' ? words.preparing : phase === 'finalizing' ? words.finalizing : phase === 'saved' ? words.recordingSaved : phase === 'failed' ? words.recordingFailed : phase === 'cancelled' ? words.recordingCancelled : words.ready;
+  if (phase === 'saved' || phase === 'failed' || phase === 'cancelled') return <RecordingResult key={recordingId + phase} api={api} id={recordingId}
+    path={revealPath === state.downloadPath ? '' : revealPath} elapsed={elapsed} status={phase} error={error} notice={notice}
+    onClose={onClose} onAgain={() => { if (desktopSource?.desktop) void selectDesktopSource(sourceId); else { setPhase('idle'); setError(''); setNotice(''); setSavedPath(''); } }} />;
   if (active || phase === 'finalizing' || phase === 'preparing' && controlsPrepared) return <main className={'capture-tools-window capture-recorder capture-recorder-floating' + (active ? ' is-active' : '')} data-capture-recorder>
     <div className={'capture-recording-status is-' + phase} role="status"><span /><strong>{phaseLabel}</strong><time aria-label={words.elapsed}>{recordingClock(elapsed)}</time></div>
     <div className="capture-recorder-floating-actions"><div className="capture-recording-audio"><span><button type="button" title={words.systemAudio} aria-label={words.systemAudio} aria-pressed={enabledAudio.system} disabled={!active || !capturedAudio.system} onClick={() => toggleAudio('system')}><Icon name={enabledAudio.system ? 'volume' : 'volume-off'} size={17} /><span className="capture-audio-description">{words.systemAudio}: {enabledAudio.system ? '✓' : '—'}</span></button></span><span><button type="button" title={words.microphone} aria-label={words.microphone} aria-pressed={enabledAudio.microphone} disabled={!active || !capturedAudio.microphone} onClick={() => toggleAudio('microphone')}><Icon name="microphone" size={17} /><span className="capture-audio-description">{words.microphone}: {enabledAudio.microphone ? '✓' : '—'}</span></button></span></div>
@@ -310,6 +314,6 @@ export function RecorderPanel({ api, state, onClose, source: desktopSource, onSo
       <p className="capture-tools-muted" hidden={active}>{options.format === 'gif' ? words.gifHint : words.videoHint}</p>
       {revealPath ? <div className="capture-tools-location"><span title={revealPath}>{revealPath}</span><Button iconName="folder" size="sm" onClick={() => void api.request({ type: 'reveal', path: revealPath })}>{words.reveal}</Button></div> : null}
     </div>
-    <footer className="capture-tools-actions"><Button disabled={!source || locked} loading={phase === 'preparing'} iconName="fit-window" onClick={() => { if (desktopSource?.desktop && phase !== 'preparing') void selectDesktopSource(sourceId); else void start(); }}>{phase === 'saved' || desktopSource?.desktop ? words.recordAgain : words.start}</Button></footer>
+    <footer className="capture-tools-actions"><Button disabled={!source || locked} loading={phase === 'preparing'} iconName="fit-window" onClick={() => { if (desktopSource?.desktop && phase !== 'preparing') void selectDesktopSource(sourceId); else void start(); }}>{desktopSource?.desktop ? words.recordAgain : words.start}</Button></footer>
   </main>;
 }

@@ -16,7 +16,7 @@ describe("worldlinebox protocol privileges", () => {
     expect(WORLDLINEBOX_PROTOCOL_PRIVILEGES.supportFetchAPI).toBe(true);
 
     const schemes = worldlineboxProtocolSchemes();
-    expect(schemes).toHaveLength(3);
+    expect(schemes).toHaveLength(4);
     expect(schemes[0]?.scheme).toBe("worldlinebox");
     expect(schemes[0]?.privileges.stream).toBe(true);
     expect(schemes[1]?.scheme).toBe(WORLDLINEBOX_PLUGIN_PROTOCOL_SCHEME);
@@ -24,5 +24,7 @@ describe("worldlinebox protocol privileges", () => {
     expect(schemes[2]?.scheme).toBe('worldlinebox-companion');
     expect(schemes[2]?.privileges.secure).toBe(true);
     expect(schemes[2]?.privileges.stream).toBe(true);
+    expect(schemes[3]?.scheme).toBe('worldlinebox-capture');
+    expect(schemes[3]?.privileges).toMatchObject({ secure: true, stream: true, supportFetchAPI: true });
   });
 });
