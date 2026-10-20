@@ -168,6 +168,26 @@ function Install-Dependencies {
     Run-Npm @('rebuild', 'koffi', 'node-pty', '--ignore-scripts=false')
 }
 
+function Test-PortableToolsCurrent {
+    $manifest = Join-Path $projectRoot 'resources\portable-tools\win32-x64\manifest.json'
+    $lock = Join-Path $projectRoot 'resources\portable-tools\tool-lock.json'
+    if (-not (Test-Path -LiteralPath $manifest) -or -not (Test-Path -LiteralPath $lock)) { return $false }
+    try {
+        $approved = Get-Content -LiteralPath $lock -Raw | ConvertFrom-Json
+        return $approved.manifestSha256 -match '^[a-f0-9]{64}$' -and (File-Sha256 $manifest) -eq $approved.manifestSha256
+    } catch { return $false }
+}
+
+function Prepare-PortableTools {
+    if (-not (Test-PortableToolsCurrent)) {
+        Write-Host 'Preparing the current checksum-pinned portable tools; any previous payload will be backed up...'
+        & $nodeExe (Join-Path $projectRoot 'scripts\acquire-portable-tools.mjs') --repair
+        if ($LASTEXITCODE -ne 0) { throw 'Portable tool acquisition failed. Check the network/proxy and see docs\developer\portable-tools.md. Setup is incomplete; any previous payload is preserved.' }
+    }
+    & $nodeExe (Join-Path $projectRoot 'scripts\portable-tools.mjs') ensure
+    if ($LASTEXITCODE -ne 0) { throw 'Bundled tool verification failed.' }
+}
+
 function Setup-Environment {
     # A failed setup must never leave a previous success receipt behind.
     if (Test-Path -LiteralPath $setupState) { Remove-Item -LiteralPath $setupState -Force }
@@ -186,14 +206,7 @@ function Setup-Environment {
         Run-Npm @('run', 'media:ensure', '--', '--archive', $mediaArchive)
     } else { Run-Npm @('run', 'media:ensure') }
     Write-Host '[Setup 5/6] Verifying bundled tools and generating declarations...'
-    $portableManifest = Join-Path $projectRoot 'resources\portable-tools\win32-x64\manifest.json'
-    if (-not (Test-Path -LiteralPath $portableManifest)) {
-        Write-Host 'Downloading and staging checksum-pinned portable tools...'
-        & $nodeExe (Join-Path $projectRoot 'scripts\acquire-portable-tools.mjs')
-        if ($LASTEXITCODE -ne 0) { throw 'Portable tool acquisition failed. Check the network/proxy and see docs\developer\portable-tools.md. Setup is incomplete.' }
-    }
-    & $nodeExe (Join-Path $projectRoot 'scripts\portable-tools.mjs') ensure
-    if ($LASTEXITCODE -ne 0) { throw 'Bundled tool verification failed.' }
+    Prepare-PortableTools
     & $nodeExe (Join-Path $projectRoot 'scripts\generate-automation-declarations.mjs')
     if ($LASTEXITCODE -ne 0) { throw 'Automation API generation failed.' }
     & $nodeExe (Join-Path $projectRoot 'scripts\verify-ufbx-wasm.mjs')
@@ -215,6 +228,9 @@ function Require-PreparedEnvironment {
     }
     foreach ($required in @('node_modules\electron\dist\electron.exe', 'node_modules\.bin\electron-forge.cmd')) {
         if (-not (Test-Path -LiteralPath (Join-Path $projectRoot $required))) { throw "Missing $required. Run 01-Setup-Environment.bat first." }
+    }
+    if (-not (Test-PortableToolsCurrent)) {
+        throw 'Bundled tools changed or are missing. Run 01-Setup-Environment.bat to update the verified tools. This startup script does not download or replace them.'
     }
 }
 

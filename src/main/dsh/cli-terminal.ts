@@ -27,6 +27,16 @@ const ENV_KEYS = new Set(['DSH_HOME', 'DSH_AGENTS_HOME', 'DSH_DESKTOP_NODE_EXECU
   'PYTHONPYCACHEPREFIX', 'PIP_CACHE_DIR', 'UV_CACHE_DIR', 'PLAYWRIGHT_BROWSERS_PATH', 'PUPPETEER_CACHE_DIR',
   'GIT_CONFIG_GLOBAL', 'HISTFILE', 'NODE_REPL_HISTORY', 'NO_COLOR', 'FORCE_COLOR']);
 
+/** ConPTY receives this plain object directly; Windows aliases must not compete. */
+export function managedTerminalEnvironment(base: NodeJS.ProcessEnv, commandDirectory: string): NodeJS.ProcessEnv {
+  const inheritedPath = Object.entries(base).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? '';
+  const env = { ...base };
+  for (const key of Object.keys(env)) if (/^(PATH$|ELECTRON_|PSModulePath$|WORLDLINEBOX_DSH_CLI_CONTEXT$)/i.test(key)) delete env[key];
+  env.PATH = `${commandDirectory}${path.delimiter}${inheritedPath}`;
+  env.PSModulePath = path.join(env.SystemRoot ?? process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
+  return env;
+}
+
 export interface DshCliSelection {
   instance: DshInstance; plan: RuntimeLaunchPlan; env: NodeJS.ProcessEnv; workspacePath: string;
   routingPatch: string; runtimeVersion?: string; nativeCli?: string; nativeArgs?: string[];
@@ -328,11 +338,7 @@ export class DshCliTerminal {
     const sessionDirectory = path.join(this.directory, 'sessions', id);
     await this.ensureOwnedDirectory(sessionDirectory);
     const contextFile = path.join(sessionDirectory, 'context.json'); await atomicJson(contextFile, pinned);
-    const selectedPath = Object.entries(selection.env).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? '';
-    const env: NodeJS.ProcessEnv = { ...selection.env, PATH: `${this.bin}${path.delimiter}${selectedPath}` };
-    for (const key of Object.keys(env)) if (/^(ELECTRON_|PSModulePath$)/i.test(key)) delete env[key];
-    const systemRoot = env.SystemRoot ?? process.env.SystemRoot ?? 'C:\\Windows';
-    env.PSModulePath = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
+    const env = managedTerminalEnvironment(selection.env, this.bin);
     env.WORLDLINEBOX_DSH_CLI_CONTEXT = contextFile;
     const session: TerminalSession = {id,instanceId:selection.instance.id,runtimeVersion:pinned.runtimeVersion,
       status:'running',cwd:selection.workspacePath,output:'',outputOffset:0,outputRevision:0,cols:80,rows:24,transport:'conpty'};

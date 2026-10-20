@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { publishPortableTools } from './publish-portable-tools.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(projectRoot, 'resources/portable-tools/win32-x64');
 const lockPath = path.join(projectRoot, 'resources/portable-tools/tool-lock.json');
+const reviewedManifestPath = path.join(projectRoot, 'resources/portable-tools/manifests/win32-x64.json');
 const command = process.argv[2] ?? 'verify';
 const options = new Map();
 for (let index = 3; index < process.argv.length; index += 2) {
@@ -25,6 +26,12 @@ async function hash(file) {
     for await (const chunk of handle.createReadStream({ autoClose: false })) digest.update(chunk);
     return digest.digest('hex');
   } finally { await handle.close(); }
+}
+
+async function reviewedLock() {
+  const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+  if (await hash(reviewedManifestPath) !== lock.manifestSha256) throw new Error('The Git-tracked portable inventory does not match tool-lock.json. Restore the matching repository files before preparing tools.');
+  return lock;
 }
 
 async function inventory(directory, prefix = '') {
@@ -96,7 +103,7 @@ function verifyVersions(directory) {
 
 async function verify(directory, allowDevelopmentCaches = false) {
   if (process.platform !== 'win32' || process.arch !== 'x64') return;
-  const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+  const lock = await reviewedLock();
   if (await hash(path.join(directory, 'manifest.json')) !== lock.manifestSha256) throw new Error('Portable tool manifest does not match the committed tool lock. Run tools:stage with reviewed sources.');
   const manifest = JSON.parse(await readFile(path.join(directory, 'manifest.json'), 'utf8'));
   const actual = await inventory(directory);
@@ -117,7 +124,7 @@ async function verify(directory, allowDevelopmentCaches = false) {
 
 async function prepareRelease() {
   if (process.platform !== 'win32' || process.arch !== 'x64') return;
-  const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+  const lock = await reviewedLock();
   if (await hash(path.join(root, 'manifest.json')) !== lock.manifestSha256) throw new Error('Portable tool manifest differs from its source lock.');
   const manifest = JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8'));
   const actual = await inventory(root); const byPath = new Map(actual.map(file => [file.path, file]));
@@ -168,6 +175,8 @@ async function safeRemoveOwned(directory, parent) {
 
 async function stage() {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('This portable tool bundle targets Windows x64.');
+  const replaceExisting = options.get('replace-existing') === 'true';
+  if (replaceExisting && options.get('locked') !== 'true') throw new Error('Replacing portable tools requires the committed manifest lock.');
   const nodeSource = path.resolve(options.get('node') ?? path.join(projectRoot, '.tools/node-v24.15.0-win-x64'));
   const pythonSource = path.resolve(options.get('python') ?? process.env.WORLDLINEBOX_PYTHON_SOURCE ?? path.join(process.env.LOCALAPPDATA ?? '', 'Programs/Python/Python313'));
   const gitSource = path.resolve(options.get('git') ?? process.env.WORLDLINEBOX_GIT_SOURCE ?? 'C:/Program Files/Git');
@@ -223,23 +232,16 @@ async function stage() {
     await writeFile(path.join(staging, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
     const manifestSha256 = await hash(path.join(staging, 'manifest.json'));
     if (options.get('locked') === 'true') {
-      const approved = JSON.parse(await readFile(lockPath, 'utf8'));
+      const approved = await reviewedLock();
       if (manifestSha256 !== approved.manifestSha256) throw new Error('Downloaded portable tools do not reproduce the reviewed manifest. The existing lock was not changed.');
     }
-    await mkdir(path.dirname(root), { recursive: true });
-    // Never replace an existing managed payload unless its verified manifest agrees.
-    try {
-      await lstat(root);
-      throw new Error('Portable payload already exists. Verify it, or explicitly move the owned payload before staging a reviewed replacement.');
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    for (let attempt = 0; ; attempt += 1) {
-      try { await rename(staging, root); break; }
-      catch (error) {
-        if (attempt === 8 || !['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) throw error;
-        await setTimeout(200 * (attempt + 1));
-      }
+    const publication = await publishPortableTools(projectRoot, staging, replaceExisting);
+    if (publication.backup) console.log(`[portable-tools] Previous payload preserved at ${publication.backup}`);
+    if (options.get('locked') !== 'true') {
+      await mkdir(path.dirname(reviewedManifestPath), { recursive: true });
+      await copyFile(path.join(root, 'manifest.json'), reviewedManifestPath);
+      await writeFile(lockPath, `${JSON.stringify({ format: 'worldlinebox-portable-tools-lock-v1', platform: 'win32-x64', manifestSha256, versions: manifest.versions }, null, 2)}\n`);
     }
-    if (options.get('locked') !== 'true') await writeFile(lockPath, `${JSON.stringify({ format: 'worldlinebox-portable-tools-lock-v1', platform: 'win32-x64', manifestSha256, versions: manifest.versions }, null, 2)}\n`);
     console.log(JSON.stringify({ staged: root, files: manifest.files.length, versions: outputs }, null, 2));
   } finally {
     await safeRemoveOwned(staging, stagingParent);
@@ -252,6 +254,7 @@ if (command === 'manifest') {
   const current = JSON.parse(await readFile(path.join(targetRoot, 'manifest.json'), 'utf8'));
   current.files = await inventory(targetRoot);
   await writeFile(path.join(targetRoot, 'manifest.json'), `${JSON.stringify(current, null, 2)}\n`);
+  await copyFile(path.join(targetRoot, 'manifest.json'), reviewedManifestPath);
   const lock = JSON.parse(await readFile(lockPath, 'utf8'));
   lock.manifestSha256 = await hash(path.join(targetRoot, 'manifest.json'));
   await writeFile(lockPath, `${JSON.stringify(lock, null, 2)}\n`);

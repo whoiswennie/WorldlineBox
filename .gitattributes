@@ -3,3 +3,5 @@
 # 因此整个目录标记为 -text（不做换行符转换）。
 resources/ufbx/* -text
 *.bat text eol=crlf
+# Reviewed tool inventory is hashed byte-for-byte on every operating system.
+resources/portable-tools/manifests/*.json text eol=lf

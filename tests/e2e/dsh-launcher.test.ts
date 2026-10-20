@@ -46,10 +46,16 @@ test('official CLI switches private environments without starting a Host and kee
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-dsh-cli-e2e-'));
   // Reproduce a Windows path alias without changing the physical directory name.
   await mkdir(path.join(root, 'user-data'));
-  const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], env: electronLaunchEnv({
+  const foreignCommands = path.join(root, 'foreign-commands'); await mkdir(foreignCommands);
+  await writeFile(path.join(foreignCommands, 'dsh.cmd'), '@echo off\r\necho WRONG_DSH_COMMAND\r\nexit /b 7\r\n');
+  const environment = electronLaunchEnv({
     WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_DSH_SILENT: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'USER-DATA'), WORLDLINEBOX_E2E_DSH_DIRECTORY: source,
     NPM_CONFIG_CACHE: 'C:\\foreign-cache', PNPM_CONFIG_STORE_DIR: 'C:\\foreign-store', OPENAI_API_KEY: 'fixture-must-not-inherit',
-  }) });
+  });
+  const inheritedPath = Object.entries(environment).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? '';
+  for (const key of Object.keys(environment)) if (key.toUpperCase() === 'PATH') delete environment[key];
+  environment.Path = `${foreignCommands}${path.delimiter}${inheritedPath}`;
+  const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], env: environment });
   try {
     const page = await application.firstWindow();
     await expect(page.locator('[data-dsh-launcher] .launcher-titlebar-heading')).toBeVisible();
@@ -65,17 +71,27 @@ test('official CLI switches private environments without starting a Host and kee
       expect(selected.sharedData!.workspacePath).toBe(await realpath(selected.sharedData!.workspacePath));
       await complete(page, { type: 'terminal.clear' });
       await complete(page, { type: 'terminal.open' });
-      await complete(page, { type: 'terminal.input', text: "[Console]::WriteLine('PROBE_HOME='+$env:DSH_HOME); [Console]::WriteLine('PROBE_CWD='+[Environment]::CurrentDirectory); [Console]::WriteLine('PROBE_CACHE='+$env:npm_config_cache); [Console]::WriteLine('PROBE_SECRET_ABSENT='+[string]::IsNullOrEmpty($env:OPENAI_API_KEY)); dsh --version\r" });
-      await expect.poll(async () => (await state(page)).cli?.output.split(/\r?\n/).map(line => line.trim()), { timeout: 45_000 }).toContain('0.2.0-rc.2');
+      await complete(page, { type: 'terminal.input', text: "[Console]::WriteLine('PROBE_HOME='+$env:DSH_HOME); [Console]::WriteLine('PROBE_CWD='+[Environment]::CurrentDirectory); [Console]::WriteLine('PROBE_CACHE='+$env:npm_config_cache); [Console]::WriteLine('PROBE_SECRET_ABSENT='+[string]::IsNullOrEmpty($env:OPENAI_API_KEY)); [Console]::WriteLine('PROBE_PINNED_CONTEXT='+$env:WORLDLINEBOX_DSH_CLI_CONTEXT); [Console]::WriteLine('PROBE_COMMAND_PATH='+(Get-Command dsh | Select-Object -First 1).Source); dsh --version; [Console]::WriteLine('PROBE_DSH_EXIT='+$LASTEXITCODE)\r" });
+      await expect.poll(async () => (await state(page)).cli?.output.split(/\r?\n/).find(line => line.startsWith('PROBE_PINNED_CONTEXT=')), { timeout: 10_000 }).toBeTruthy();
+      const probe = (await state(page)).cli!.output.split(/\r?\n/).find(line => line.startsWith('PROBE_PINNED_CONTEXT='))!.slice('PROBE_PINNED_CONTEXT='.length);
+      const active = (await state(page)).cli!;
+      expect(path.relative(path.join(root, 'user-data', 'dsh-launcher', 'cli', 'sessions'), probe).split(path.sep)).toEqual([active.activeTerminalId, 'context.json']);
+      await expect.poll(async () => (await state(page)).cli?.output.split(/\r?\n/).find(line => line.startsWith('PROBE_COMMAND_PATH=')), { timeout: 10_000 }).toBeTruthy();
+      const command = (await state(page)).cli!.output.split(/\r?\n/).find(line => line.startsWith('PROBE_COMMAND_PATH='))!.slice('PROBE_COMMAND_PATH='.length);
+      expect(path.resolve(command).toLowerCase()).toBe(path.resolve(active.commandPath).toLowerCase());
+      await expect.poll(async () => (await state(page)).cli?.output, { timeout: 45_000 }).toContain('0.2.0-rc.2');
+      await expect.poll(async () => (await state(page)).cli?.output, { timeout: 45_000 }).toMatch(/\bPROBE_DSH_EXIT=0\b/);
       const output = (await state(page)).cli!.output;
       expect(output).toContain(`PROBE_HOME=${instance.homePath}`);
       expect(output).toContain(`PROBE_CWD=${selected.sharedData!.workspacePath}`);
       expect(output).toContain('PROBE_SECRET_ABSENT=True');
       expect(output).toContain(path.join(path.dirname(instance.homePath), 'cache', 'npm'));
       expect(output).not.toMatch(/foreign-cache|foreign-store|fixture-must-not-inherit/);
+      expect(output).not.toContain('WRONG_DSH_COMMAND');
       expect((await state(page)).instances.every(value => value.status === 'stopped')).toBe(true);
       await complete(page, { type: 'terminal.close' });
     }
+    console.log('MANAGED_CLI_TOOLCHAIN_RESULT', JSON.stringify({ realOfficialRuntime: true, privateInstances: 2, singleNativePath: true, inheritedForeignCommandIgnored: true, managedCommandResolved: true, pinnedContextsVerified: true, nativeVersion: '0.2.0-rc.2', nativeExitCode: 0, noHostStarted: true }));
   } finally {
     await application.close();
     if (path.dirname(path.resolve(root)) === path.resolve(tmpdir()) && path.basename(root).startsWith('worldlinebox-dsh-cli-e2e-')) await rm(root, { recursive: true, force: true });

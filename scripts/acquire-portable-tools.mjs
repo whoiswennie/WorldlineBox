@@ -92,7 +92,9 @@ async function acquire() {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Portable acquisition requires Windows x64.');
   setGlobalProxyFromEnv();
   const args = process.argv.slice(2);
-  if (args.some(arg => arg !== '--promote-reviewed-sources')) throw new Error('Unknown portable acquisition argument.');
+  if (args.some(arg => !['--promote-reviewed-sources', '--repair'].includes(arg))) throw new Error('Unknown portable acquisition argument.');
+  const repair = args.includes('--repair');
+  if (repair && args.includes('--promote-reviewed-sources')) throw new Error('Repair must use the committed manifest lock.');
   const lock = JSON.parse(await readFile(downloadLock, 'utf8'));
   if (lock.format !== 'worldlinebox-portable-downloads-v1' || lock.platform !== 'win32-x64') throw new Error('Invalid portable download lock.');
   const sources = Object.entries(lock.archives);
@@ -103,11 +105,13 @@ async function acquire() {
       throw new Error('Invalid portable archive source.');
     }
   }
-  // Refuse to replace an existing bundle, including an incomplete/untrusted one.
+  // Only explicit repair may replace an existing bundle, after the complete new
+  // payload has reproduced the committed lock. Publication preserves a backup.
   const target = path.join(projectRoot, 'resources/portable-tools/win32-x64');
   try {
-    await lstat(target);
-    throw new Error('Portable payload already exists. Run tools:verify or explicitly move it before acquiring a replacement.');
+    const existing = await lstat(target);
+    if (!repair) throw new Error('Portable payload already exists. Run tools:verify or acquire with --repair.');
+    if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error('Refusing to replace a linked or invalid portable payload.');
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await mkdir(cache, { recursive: true });
   await mkdir(stagingParent, { recursive: true });
@@ -126,6 +130,7 @@ async function acquire() {
       stageArgs.push(`--${name}`, path.join(directory, source.directory));
     }
     if (!args.includes('--promote-reviewed-sources')) stageArgs.push('--locked', 'true');
+    if (repair) stageArgs.push('--replace-existing', 'true');
     console.log('[portable-tools] Staging the pinned tool versions and verifying their runtime behavior...');
     await run(process.execPath, stageArgs);
   } finally {

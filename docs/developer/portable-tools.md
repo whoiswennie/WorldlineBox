@@ -2,13 +2,17 @@
 
 安装包携带 Node.js 24.15.0、npm 11.12.1、pnpm 11.7.0、CPython 3.13.12（完整标准库、pip 25.3、ensurepip、venv）、Git for Windows 2.48.1、FFmpeg / ffplay / ffprobe 8.0.1 essentials。Node 24 满足 DSH 官方 `^22.19 || >=24` 的运行约束；构建工程仍使用自身固定的 Node 24。
 
-工具内容位于 `resources/portable-tools/win32-x64`，属于忽略的二进制构建输入。`resources/portable-tools/tool-lock.json` 是可审查的清单哈希锁；清单记录所有文件大小和 SHA-256。Forge 打包前按原锁清单导出至 `.tools/portable-release/<构建 ID>/resources`，逐项核对原文件及导出文件的字节，再实际运行各工具。开发目录额外生成的缓存保留在原处，不更新锁文件，也不进入安装包。最终包验证再次检查完整文件树；缺失或改变任一已锁定文件仍会使打包失败。
+工具内容位于 `resources/portable-tools/win32-x64`，属于忽略的二进制构建输入。`resources/portable-tools/manifests/win32-x64.json` 是纳入 Git 的完整逐文件清单，记录 10181 个文件的相对路径、大小和 SHA-256；`resources/portable-tools/tool-lock.json` 锁定其精确字节摘要，`download-lock.json` 固定公开下载来源。普通 clone 会取得这三份元数据和获取脚本，不依赖维护者电脑的安装目录。清单固定 LF 行尾，Windows checkout 不会使摘要漂移。Forge 打包前按原锁清单导出至 `.tools/portable-release/<构建 ID>/resources`，逐项核对原文件及导出文件的字节，再实际运行各工具。开发目录额外生成的缓存保留在原处，不更新锁文件，也不进入安装包。最终包验证再次检查完整文件树；缺失或改变任一已锁定文件仍会使打包失败。
 
 开发入口的 `ensure` 仍核对每个已锁定文件，只允许额外存在由清单内 Python 标准库模块派生的 `__pycache__/*.cpython-313.pyc`，避免正常运行生成缓存后无法再次启动。显式 `verify` 与安装包验证继续要求文件树完全一致，发布副本不含这些新增缓存。
 
-首次运行 `01-Setup-Environment.bat` 时，缺少便携工具包会自动执行 `npm run tools:acquire`。`resources/portable-tools/download-lock.json` 固定 Node.js 官方 ZIP、CPython 官方 NuGet 包、npm Registry 的 pnpm 包、Git for Windows PortableGit 和 Gyan FFmpeg 发布包的 URL 与 SHA-256；下载缓存位于 `.tools/portable-downloads`。下载后使用同一 staging 规则构建工具目录，再核对 `tool-lock.json` 中已审查的完整清单哈希。普通获取流程不改写锁文件，不从系统 PATH 收集任意版本的程序，也不覆盖已有工具包。
+运行 `01-Setup-Environment.bat` 时，缺少便携工具包或本地清单与当前 Git 版本的锁不匹配，会自动准备当前版本工具。`resources/portable-tools/download-lock.json` 固定 Node.js 官方 ZIP、CPython 官方 NuGet 包、npm Registry 的 pnpm 包、Git for Windows PortableGit 和 Gyan FFmpeg 发布包的 URL 与 SHA-256；下载缓存位于 `.tools/portable-downloads`。下载后使用同一 staging 规则构建工具目录，再核对 `tool-lock.json` 中已审查的完整清单哈希。普通获取流程不改写锁文件，不从系统 PATH 收集任意版本的程序。
 
-完整清单锁现对应上述公开发行包配方，工具版本保持原版本。已有按旧机器安装目录制作的工具包时，可先将 `resources/portable-tools/win32-x64` 移到项目外备份，再运行 `01` 获取新的可复现目录。
+`git pull` 不会更新被忽略的二进制工具目录。若拉取后清单锁变化，`02` 开发启动与 `03` 打包会在打开应用之前提示运行 `01`，不再让用户进入启动器不可用的页面。只需更新工具而无需重新安装 npm 依赖时，可使用固定 Node 运行 `scripts/acquire-portable-tools.mjs --repair`，或在 Node 环境中运行 `npm run tools:repair`。
+
+显式修复先在独立临时目录下载、校验完整工具包和运行版本探针；只有新清单完全匹配已提交的锁后才替换本地目录。旧包保留在 `.tools/portable-tool-backups/bundle-*/win32-x64`，替换失败会恢复旧目录。下载、解压或校验失败不移动旧目录，不自动提升锁，也不修改实例及用户数据。普通 `tools:acquire` 继续拒绝覆盖已有目录，`--repair` 与 `--promote-reviewed-sources` 不能合用。
+
+可运行 `npm run tools:test-reproduction` 验证工具目录的独立重建：脚本在临时工作区复制仓库清单、获取脚本及已锁定的 npm 解压依赖，从缓存中经 SHA-256 复核的发行包（缺失时重新下载）重建完整目录，执行所有版本探针并逐文件校验，最后确认没有改写锁。它不复制当前工具目录，不修改应用数据，结束时移除自身临时工作区。此验收专门验证工具获取与重建，不替代整套 npm 环境准备或安装包构建。
 
 需要代理时，可以在项目目录运行：
 

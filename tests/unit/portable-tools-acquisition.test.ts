@@ -25,9 +25,9 @@ describe.skipIf(process.platform !== 'win32')('portable tool acquisition', () =>
     writeFileSync('stage-arguments.json', JSON.stringify(process.argv.slice(2)));
     process.exit(${exitCode});
   `);
-  const run = (preload = false) => spawnSync(process.execPath, [
+  const run = (preload = false, args: string[] = []) => spawnSync(process.execPath, [
     ...(preload ? ['--import', pathToFileURL(path.join(root, 'fetch-preload.mjs')).href] : []),
-    'scripts/acquire-portable-tools.mjs',
+    'scripts/acquire-portable-tools.mjs', ...args,
   ], {
     cwd: root, encoding: 'utf8', windowsHide: true, timeout: 20_000,
   });
@@ -69,6 +69,42 @@ describe.skipIf(process.platform !== 'win32')('portable tool acquisition', () =>
     for (const name of ['node', 'python', 'pnpm', 'git', 'ffmpeg']) expect(args).toContain(`--${name}`);
     expect(readFileSync(path.join(root, 'resources/portable-tools/tool-lock.json'), 'utf8')).toBe(approved);
     expect(readdirSync(path.join(root, '.tools/portable-acquisition'))).toEqual([]);
+  });
+
+  it('requires explicit repair to replace an existing payload', () => {
+    mkdirSync(path.join(root, 'resources/portable-tools/win32-x64'));
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--repair');
+    expect(existsSync(path.join(root, 'stage-arguments.json'))).toBe(false);
+  });
+
+  it('requests locked repair and leaves the old payload untouched until verified staging finishes', () => {
+    const target = path.join(root, 'resources/portable-tools/win32-x64');
+    mkdirSync(target); writeFileSync(path.join(target, 'old.txt'), 'preserve old tools');
+    const result = run(false, ['--repair']);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const args: string[] = JSON.parse(readFileSync(path.join(root, 'stage-arguments.json'), 'utf8'));
+    expect(args.slice(-4)).toEqual(['--locked', 'true', '--replace-existing', 'true']);
+    expect(readFileSync(path.join(target, 'old.txt'), 'utf8')).toBe('preserve old tools');
+    expect(readFileSync(path.join(root, 'resources/portable-tools/tool-lock.json'), 'utf8')).toBe(approved);
+  });
+
+  it('preserves the previous payload and lock when repair staging fails', () => {
+    const target = path.join(root, 'resources/portable-tools/win32-x64');
+    mkdirSync(target); writeFileSync(path.join(target, 'old.txt'), 'preserve old tools');
+    stage(42);
+    const result = run(false, ['--repair']);
+    expect(result.status).toBe(1);
+    expect(readFileSync(path.join(target, 'old.txt'), 'utf8')).toBe('preserve old tools');
+    expect(readFileSync(path.join(root, 'resources/portable-tools/tool-lock.json'), 'utf8')).toBe(approved);
+  });
+
+  it('never promotes a new lock during repair', () => {
+    const result = run(false, ['--repair', '--promote-reviewed-sources']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Repair must use the committed manifest lock');
+    expect(existsSync(path.join(root, 'stage-arguments.json'))).toBe(false);
   });
 
   it('rejects an unsafe ZIP before staging and preserves the reviewed lock', () => {

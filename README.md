@@ -263,7 +263,7 @@ WorldlineBox 资产插件与 DSH 原生插件属于不同协议，分别在各�
 项目使用自己的固定 Node.js 和 Inno Setup，不要求替换系统版本。
 环境缺失或依赖锁变化时重新运行 `01`，不要把 `02` 或 `03` 当作依赖安装脚本。
 
-源码不提交大型便携二进制。干净检出首次运行 `01` 时，会按固定官方发行包 URL 和 SHA-256 自动获取缺失工具，再核对完整文件清单；不会从任意系统路径拼装发布环境。需要代理时运行 `01-Setup-Environment.bat -Proxy http://127.0.0.1:7897`，详情见[便携工具说明](docs/developer/portable-tools.md)。
+完整的[逐文件工具清单](resources/portable-tools/manifests/win32-x64.json)、版本锁、下载来源与获取脚本均纳入 Git 管理。大型工具二进制由 `01` 按固定官方发行包 URL 和 SHA-256 获取，再核对完整清单，不依赖旧机器的安装目录。`git pull` 后如果工具锁变化，`02` 和 `03` 会在启动前提示运行 `01`；更新先验证新包，再切换目录并保留旧包备份。只修复工具可运行 `npm run tools:repair`。需要代理时运行 `01-Setup-Environment.bat -Proxy http://127.0.0.1:7897`，详情见[便携工具说明](docs/developer/portable-tools.md)。
 媒体组件的在线恢复与可信离线导入方式见[构建与打包](docs/developer/build-packaging.md)。
 
 正常开发版与安装版共享 `%APPDATA%\WorldlineBox`；DSH 存储位于其 `dsh-launcher` 子目录。

@@ -51,7 +51,7 @@ Double-click these files in the project root:
 
 Initial setup needs internet access. Only `01` installs dependencies, native modules and missing Python/C++ Build Tools (through winget when available). Build tools and download caches live under `.tools/`, and the bundled application tools under `resources/portable-tools/win32-x64`; global Node.js is not replaced. `02` never installs dependencies or rebuilds native modules; Forge/Vite still compile the current source. `03` builds the installer. If setup is incomplete or the dependency lock changes, run `01` explicitly. Build tools, dependencies, caches and outputs are excluded from Git.
 
-Missing bundled command-line tools are acquired from pinned official archives and checked against both archive SHA-256 and the reviewed file manifest. For an HTTP proxy, run `01-Setup-Environment.bat -Proxy http://127.0.0.1:7897`; this affects only setup and its child processes.
+The complete [portable tool inventory](resources/portable-tools/manifests/win32-x64.json), version/hash locks, download recipe and acquisition scripts are tracked in Git. Large executable payloads are reconstructed from checksum-pinned official archives. After a pull changes the tool lock, `02` and `03` stop before launching and direct you to `01`, which verifies a replacement before swapping it in and preserves the old payload in `.tools/portable-tool-backups`. For tool-only repair, use `npm run tools:repair`. For an HTTP proxy, run `01-Setup-Environment.bat -Proxy http://127.0.0.1:7897`; this affects only setup and its child processes.
 
 ## Roadmap and documentation
 

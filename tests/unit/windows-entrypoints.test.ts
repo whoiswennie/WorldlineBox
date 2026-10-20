@@ -31,6 +31,9 @@ describe.skipIf(process.platform !== 'win32')('Windows entrypoint responsibiliti
     const lock = '{}';
     write('package-lock.json', lock);
     lockHash = createHash('sha256').update(lock).digest('hex');
+    const manifest = '{"fixture":"reviewed tools"}';
+    write('resources/portable-tools/win32-x64/manifest.json', manifest);
+    write('resources/portable-tools/tool-lock.json', JSON.stringify({ manifestSha256: createHash('sha256').update(manifest).digest('hex') }));
     state = write('.tools/setup-state.json', '{}');
     receipt();
     const nodeDirectory = path.join('.tools', `node-v${nodeVersion}-win-x64`);
@@ -81,6 +84,20 @@ describe.skipIf(process.platform !== 'win32')('Windows entrypoint responsibiliti
     }
     receipt();
   });
+  it('rejects stale tools after git pull before opening the app or building an installer', () => {
+    const toolLock = path.join(root, 'resources/portable-tools/tool-lock.json');
+    const original = readFileSync(toolLock);
+    writeFileSync(toolLock, JSON.stringify({ manifestSha256: '0'.repeat(64) }));
+    try {
+      for (const action of ['Dev', 'Installer'] as const) {
+        const result = run(action);
+        expect(result.status, result.stdout + result.stderr).toBe(1);
+        expect(result.stdout).toContain('Bundled tools changed or are missing.');
+        expect(result.stdout).toContain('01-Setup-Environment.bat');
+        expect(existsSync(trace)).toBe(false);
+      }
+    } finally { writeFileSync(toolLock, original); }
+  });
   it('fails without downloading Node when the portable Node is missing', () => {
     rmSync(path.join(root, '.tools', `node-v${nodeVersion}-win-x64`, 'node.exe'));
     const result = run('Dev');
@@ -109,8 +126,10 @@ it.skipIf(process.platform !== 'win32')('reports a failed portable download and 
       $setupState = Join-Path $toolsRoot 'setup-state.json'
       $nodeExe = ${quote(process.execPath)}
       $ast = [System.Management.Automation.Language.Parser]::ParseFile(${quote(path.resolve('scripts/windows.ps1'))}, [ref]$null, [ref]$null)
-      $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Setup-Environment' }, $true)
-      . ([scriptblock]::Create($definition.Extent.Text))
+      foreach ($name in @('Test-PortableToolsCurrent', 'Prepare-PortableTools', 'Setup-Environment')) {
+        $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+        . ([scriptblock]::Create($definition.Extent.Text))
+      }
       function Prepare-NativeBuildTools {}
       function Install-Dependencies {}
       function Prepare-Electron {}

@@ -24,6 +24,8 @@
     "media:manifest": "node scripts/media-binaries.mjs manifest",
     "media:verify": "node scripts/media-binaries.mjs verify",
     "tools:stage": "node scripts/portable-tools.mjs stage",
+    "tools:repair": "node scripts/acquire-portable-tools.mjs --repair",
+    "tools:test-reproduction": "node scripts/test-portable-tools-reproduction.mjs",
     "tools:acquire": "node scripts/acquire-portable-tools.mjs",
     "tools:verify": "node scripts/portable-tools.mjs verify",
     "extension:build": "node scripts/build-extension.mjs",

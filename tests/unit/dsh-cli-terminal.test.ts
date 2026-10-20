@@ -6,7 +6,8 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Script } from 'node:vm';
-import { DshCliTerminal, activeDshCliUses, externalShimSource, maskDshTerminalOutput, withDshCliExclusive, type DshCliSelection } from '../../src/main/dsh/cli-terminal';
+import { createRequire } from 'node:module';
+import { DshCliTerminal, activeDshCliUses, externalShimSource, managedTerminalEnvironment, maskDshTerminalOutput, withDshCliExclusive, type DshCliSelection } from '../../src/main/dsh/cli-terminal';
 import { inventoryTree } from '../../src/main/dsh/files';
 import { instanceEnvironment } from '../../src/main/dsh/instance-process';
 import { compatibilityContract } from '../../src/main/dsh/runtime-compatibility';
@@ -93,6 +94,26 @@ async function waitGone(pid:number){const deadline=Date.now()+15_000;while(alive
 async function ownedParentPid(pid:number){const executable=path.join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');return Number((await promisify(execFile)(executable,['-NoLogo','-NoProfile','-NonInteractive','-Command',`[Console]::Write((Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').ParentProcessId)`],{windowsHide:true,timeout:10_000})).stdout.trim());}
 
 describe('managed CLI entrypoint', () => {
+  it('passes one canonical PATH and a fresh pinned context to the native terminal', () => {
+    const base = { Path: 'C:\\previous-tools', ELECTRON_RUN_AS_NODE: '1', psMODULEpath: 'C:\\previous-modules', worldlinebox_dsh_cli_context: 'C:\\previous-context', KEEP: 'value' };
+    const env = managedTerminalEnvironment(base, 'C:\\current-launcher\\cli\\bin');
+    expect(Object.keys(env).filter(key => key.toUpperCase() === 'PATH')).toEqual(['PATH']);
+    expect(env.PATH).toBe(`C:\\current-launcher\\cli\\bin${path.delimiter}C:\\previous-tools`);
+    expect(Object.keys(env).some(key => /^ELECTRON_|^WORLDLINEBOX_DSH_CLI_CONTEXT$/i.test(key))).toBe(false);
+    expect(env.KEEP).toBe('value');
+    expect(base.Path).toBe('C:\\previous-tools');
+  });
+  it.skipIf(process.platform !== 'win32')('resolves the current managed command before an inherited global command in a real PowerShell', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-cli-test-env-')); roots.push(root);
+    const managed = path.join(root, 'managed'); const foreign = path.join(root, 'foreign');
+    await mkdir(managed); await mkdir(foreign);
+    await writeFile(path.join(managed, 'dsh.cmd'), '@echo off\r\necho current\r\n');
+    await writeFile(path.join(foreign, 'dsh.cmd'), '@echo off\r\necho foreign\r\n');
+    const env = managedTerminalEnvironment({ ...process.env, Path: foreign, PATH: foreign }, managed);
+    const shell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
+    const result = await promisify(execFile)(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "[Console]::Write((Get-Command dsh -CommandType Application | Select-Object -First 1).Source)"], { env, windowsHide: true, timeout: 10_000 });
+    expect(result.stdout.trim().toLowerCase()).toBe(path.join(managed, 'dsh.cmd').toLowerCase());
+  });
   it.skipIf(process.platform !== 'win32' || !existsSync(path.resolve('resources/portable-tools/win32-x64/manifest.json')))('lets the DSH CLI and its child tools resolve the bundled toolchain by command name', async () => {
     const tools = await resolvePortableTools({ appPath: process.cwd(), resourcesPath: process.cwd() });
     const { root, selections, terminal } = await setup('desktop-cli-web-v1', async () => tools);
@@ -112,6 +133,18 @@ describe('managed CLI entrypoint', () => {
     expect(() => new Script(externalShimSource('C:\\managed', 'C:\\managed\\cli\\context.json', 'C:\\app\\koffi.cjs'))).not.toThrow();
     expect(maskDshTerminalOutput('api_key="secret with spaces"\nauthorization=Bearer xyz\n\x1b[31mpassword: hidden\x1b[0m')).not.toMatch(/secret with spaces|xyz|hidden/);
     expect(maskDshTerminalOutput('proxy=https://fixture-user:fixture-pass@example.org/')).not.toMatch(/fixture-user|fixture-pass/);
+  });
+  it.skipIf(process.platform !== 'win32')('accepts pinned contexts through a Windows root casing alias', async () => {
+    const { root, selections, terminal } = await setup();
+    const pinned = await terminal.pinContext(selections[0]!);
+    try {
+      const aliasRoot = root.toUpperCase();
+      const source = (await readFile(path.join(root, 'cli/shim.cjs'), 'utf8'))
+        .replace(`const ROOT=${JSON.stringify(root)},`, `const ROOT=${JSON.stringify(aliasRoot)},`);
+      const sandbox = { require: createRequire(import.meta.url), Buffer, process: { env: { WORLDLINEBOX_DSH_CLI_CONTEXT: pinned.contextFile } }, readPinnedContext: undefined as undefined | (() => Promise<{ instanceId: string }>) };
+      new Script(`${source.slice(0, source.indexOf('main().catch('))}\nglobalThis.readPinnedContext=context;`).runInNewContext(sandbox);
+      expect((await sandbox.readPinnedContext!()).instanceId).toBe(selections[0]!.instance.id);
+    } finally { await pinned.dispose(); await terminal.close(); }
   });
   it.skipIf(process.platform !== 'win32')('dynamically selects the exact registered version without starting a Host or persisting credentials', async () => {
     const { root, selections, terminal } = await setup();

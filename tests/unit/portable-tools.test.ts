@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +19,18 @@ afterEach(() => {
 });
 
 describe('application-owned portable tools', () => {
+  it('keeps the complete reproducible tool inventory in Git with its pinned hash', () => {
+    const bytes = readFileSync(path.join(projectRoot, 'resources/portable-tools/manifests/win32-x64.json'));
+    const lock = JSON.parse(readFileSync(path.join(projectRoot, 'resources/portable-tools/tool-lock.json'), 'utf8'));
+    const manifest = JSON.parse(bytes.toString('utf8'));
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(lock.manifestSha256);
+    expect(manifest.versions).toEqual(lock.versions);
+    expect(manifest.files.length).toBeGreaterThan(1000);
+    for (const executable of ['node/node.exe', 'python/python.exe', 'pnpm/bin/pnpm.cjs', 'git/cmd/git.exe', 'ffmpeg/bin/ffmpeg.exe']) {
+      expect(manifest.files).toContainEqual(expect.objectContaining({ path: executable, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }));
+    }
+  });
+
   it('refuses an absent application payload even if unrelated commands exist on PATH', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-tools-test-'));
     roots.push(root);
