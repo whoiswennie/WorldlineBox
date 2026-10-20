@@ -73,6 +73,12 @@ export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreen
   }, [api, accept, setCapture]);
   const ready = state !== undefined;
   useEffect(() => {
+    if (!active || !api) return;
+    let cancelled = false;
+    void api.request({ type: 'state' }).then(response => { if (!cancelled && response.ok && response.state) accept(response.state); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [active, api, accept]);
+  useEffect(() => {
     if (!api || !viewport.current) return;
     let previous = ''; let frame = 0;
     const update = () => {
@@ -118,6 +124,7 @@ export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreen
   }, [active, run, tab, state?.tabs, state?.activeTabId]);
   const togglePanel = (next: Panel) => {
     setPanel(current => current === next ? undefined : next); setNotice('');
+    if (next === 'ai') void run({ type: 'state' });
     if (next === 'settings' && state) { setPreferences({ ...state.preferences }); void run({ type: 'data.info' }); }
     if (next === 'capture') void runCapture({ type: 'state' });
   };

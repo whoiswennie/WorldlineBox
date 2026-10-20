@@ -62,8 +62,8 @@ test('native browser agent completes a real page workflow, keeps multi-turn cont
     const run = async (request: BrowserRequest) => shell.evaluate(request => (globalThis as unknown as Bridge).worldlinebox.browser.request(request), request);
     await shell.getByRole('button', { name: '浏览器 AI', exact: true }).click();
     const field = shell.getByRole('textbox', { name: '与浏览器 AI 对话' });
-    // Refresh config after saving it, then let the real model/tool request loop run.
-    await run({ type: 'data.info' }); await expect(shell.locator('.browser-ai-chat-toolbar')).toContainText('native-browser-test-model');
+    // Opening the sidebar refreshes the global model config without a manual reload.
+    await expect(shell.locator('.browser-ai-chat-toolbar')).toContainText('native-browser-test-model');
     await field.fill('打开测试网页，填写查询并运行，然后静音这个标签页。'); await field.press('Enter');
     await expect(shell.locator('.browser-ai-approval')).toBeVisible();
     expect(round).toBe(4); await run({ type: 'tab.zoom', factor: 1.25 });
