@@ -151,10 +151,14 @@ export class BrowserAiService {
     try {
       if (task.mode === 'search' || task.mode === 'fetch') {
         task.stage = task.mode === 'search' ? '搜索网页' : '抓取网页正文'; this.changed();
-        await this.tool(task, task.mode === 'search' ? 'browser_search' : 'browser_fetch', task.mode === 'search' ? { query: task.query, count: 8 } : { url: task.query }, signal);
+        const result = await this.tool(task, task.mode === 'search' ? 'browser_search' : 'browser_fetch', task.mode === 'search' ? { query: task.query, count: 8 } : { url: task.query }, signal);
         signal.throwIfAborted();
-        if (task.mode === 'fetch') await this.hooks.showResults(task.tabId, task.query, task.sources.slice(-1));
-        task.answer = task.mode === 'search' ? `找到 ${task.sources.length} 个来源。可在左侧打开结果，或继续让 AI 比较、核实与分析。` : '网页正文已抓取，可展开来源阅读，或让 AI 继续分析。';
+        if (task.mode === 'fetch') {
+          const fetched = task.sources.find(source => source.id === (result as BrowserAiSource).id);
+          if (!fetched) throw Error('抓取来源已失效，请重新抓取。');
+          await this.hooks.showResults(task.tabId, task.query, [fetched]);
+        }
+        task.answer = task.mode === 'search' ? `找到 ${Array.isArray(result) ? result.length : 0} 个来源。可在左侧打开结果，或继续让 AI 比较、核实与分析。` : '网页正文已抓取，可展开来源阅读，或让 AI 继续分析。';
       } else {
         const config = this.model(); if (!config) throw Error('全局模型暂不可用。');
         const instruction = task.mode === 'page' ? `请先观察并阅读用户当前网页，然后完成：${task.query}` : task.query;

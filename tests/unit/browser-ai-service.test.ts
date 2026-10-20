@@ -64,6 +64,20 @@ it('supports tools-only search without any global model and returns an honest mi
   await expect(service.handle({ type: 'ai.start', tabId: 'tab1', mode: 'page', query: 'Analyze' })).rejects.toThrow('全局模型'); await service.shutdown();
 });
 
+it('shows the requested source on repeated fetches and reports only the latest search count', async () => {
+  const fetchFn: typeof fetch = vi.fn(async (url, init) => String(url).endsWith('/tools/search') ? new Response('{"results":[]}')
+    : new Response(JSON.stringify({ title: JSON.parse(String(init?.body)).url, content: 'Actual fetched page body. '.repeat(500) })));
+  const { service, hooks } = await fixture(fetchFn, { getConfig: undefined }); await service.handle({ type: 'ai.key.save', key: 'search-test-key' });
+  for (const url of ['https://example.com/a', 'https://example.com/b', 'https://example.com/a']) {
+    await service.handle({ type: 'ai.start', tabId: 'tab1', mode: 'fetch', query: url }); await done(service);
+    expect(vi.mocked(hooks.showResults).mock.calls.at(-1)![2][0]!.url).toBe(url);
+    expect(vi.mocked(hooks.showResults).mock.calls.at(-1)![2][0]!.content.length).toBeGreaterThan(9000);
+  }
+  expect(service.state().task!.sources).toHaveLength(2);
+  await service.handle({ type: 'ai.start', tabId: 'tab1', mode: 'search', query: 'no fresh results' }); await done(service);
+  expect(service.state().task!.answer).toContain('找到 0 个来源'); await service.shutdown();
+});
+
 it('requires a matching action confirmation and cancellation clears pending work without orphan tool history', async () => {
   let count = 0; let confirmed = false;
   const fetchFn: typeof fetch = vi.fn(async () => ++count === 1 ? sse('', { name: 'browser_click', arguments: '{"tabId":"tab1","ref":"e1"}' }) : sse('Declined as requested.'));

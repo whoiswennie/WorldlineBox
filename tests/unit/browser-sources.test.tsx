@@ -4,8 +4,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BrowserSourceCard, BrowserSources } from '../../src/renderer/browser/BrowserSourceCard';
 import { BrowserToolTrace } from '../../src/renderer/browser/BrowserToolTrace';
+import { BrowserStartPage } from '../../src/renderer/browser/BrowserStartPage';
+import { browserStateSchema } from '../../src/shared/browser';
 import type { BrowserAiSource } from '../../src/shared/browser-ai';
 vi.mock('../../src/renderer/browser/BrowserMarkdown', () => ({ BrowserMarkdown: ({ text }: { text: string }) => <div data-source-body>{text}</div> }));
+vi.mock('../../src/renderer/i18n', () => ({ useLocale: () => ({ locale: 'zh-CN' }), useT: () => (key: string) => key }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root; let host: HTMLDivElement;
 afterEach(async () => { await act(() => root?.unmount()); host?.remove(); });
@@ -32,4 +35,13 @@ it('presents human-readable browser progress while keeping raw parameters in clo
   expect(host.querySelector('.browser-tool-heading')?.textContent).toContain('搜索网页');
   expect(host.querySelector('li > p')?.textContent).toBe('Electron site:electronjs.org lang:en');
   expect(host.querySelector<HTMLDetailsElement>('.browser-tool-technical')?.open).toBe(false);
+});
+
+it('shows direct search/fetch failures on the start page without requiring the chat sidebar', async () => {
+  const state = browserStateSchema.parse({ tabs: [], bookmarks: [], downloads: [], historyCount: 0, preferences: {}, permissions: [], fullscreen: false, revision: 0,
+    ai: { config: { hasSearchKey: true, keySource: 'browser', hasModel: false, model: '', apiFormat: '', contextTokens: 16000 }, task: {
+      id: 'failed-fetch', tabId: 'tab1', mode: 'fetch', query: 'https://example.com/', status: 'failed', stage: '暂时无法继续', sources: [], answer: '',
+      error: '此网页没有可提取的正文。', warnings: [], updatedAt: '', messages: [], tools: [], contextBytes: 0, contextTokensUsed: 0, compacted: 0 } } });
+  await mount(<BrowserStartPage state={state} navigate={vi.fn()} start={vi.fn()} settings={vi.fn()} />);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('此网页没有可提取的正文。');
 });

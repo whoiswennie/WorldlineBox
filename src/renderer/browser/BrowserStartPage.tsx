@@ -33,6 +33,7 @@ export function BrowserStartPage({ state, navigate, start, settings }: { state: 
         </div><div className="browser-start-search-note"><span>{mode === 'research' ? zh ? '全局模型 · 可多轮追问 · 实际工具执行' : 'Global model · Follow-up chat · Real tools'
           : mode === 'fetch' ? zh ? 'DeepSeek Fetch · Markdown 正文' : 'DeepSeek Fetch · Markdown content' : mode === 'search' ? zh ? 'DeepSeek Search · 支持站点、语言与日期筛选语法' : 'DeepSeek Search · Domain, language and date operators' : zh ? '使用浏览器默认搜索引擎' : 'Uses your default search engine'}</span><kbd>Enter ↵</kbd></div>
       </form>
+      {state.ai?.task?.error && ['search', 'fetch'].includes(state.ai.task.mode) ? <p className="browser-ai-error" role="alert">{state.ai.task.error}</p> : null}
       {!page ? <div className="browser-start-features"><article><Icon name="search" size={19} /><strong>{zh ? '找到可信来源' : 'Find the source'}</strong><p>{zh ? '筛选站点与时间，搜索结果可以直接打开。' : 'Filter domains and dates. Open real results.'}</p></article>
           <article><Icon name="file-text" size={19} /><strong>{zh ? '把网页读清楚' : 'Read with clarity'}</strong><p>{zh ? '提取正文、整理要点，区分摘要与原文。' : 'Extract content and distinguish snippets from pages.'}</p></article>
           <article><Icon name="sparkles" size={19} /><strong>{zh ? '边浏览，边思考' : 'Think as you browse'}</strong><p>{zh ? '右侧 AI 可以操作网页，执行过程清晰可见。' : 'The sidebar assistant acts on real pages, visibly.'}</p></article></div> :
