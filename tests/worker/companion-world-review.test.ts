@@ -11,7 +11,7 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('202
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-review-')); roots.push(root);
-  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), ['alice', 'bob'].map(id => ({ id, name: id, persona: '尊重彼此边界。', description: '', model: '', avatar: 'sister' as const, proactive: true }))); stores.add(store);
+  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), ['alice', 'bob'].map(id => ({ id, name: id, persona: '尊重彼此边界。', description: '', model: '', avatar: 'sister' as const, active: true, proactive: true }))); stores.add(store);
   const alice = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, bob = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
   const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
@@ -93,8 +93,8 @@ describe('independent world cross-layer regression review', () => {
   });
   it('rejects a pending autonomous response if the NPC speech it observed is forgotten before completion', () => {
     const f = fixture(), secret = 'WITHDRAWN_PEER_FACT_9183';
-    f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'move', destinationId: 'commons' } }); advance(f.store, 30000);
-    f.store.request({ type: 'world.tool', ...f.bob, arguments: { action: 'move', destinationId: 'commons' } }); advance(f.store, 30000);
+    f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'travel', targetSceneId: 'park' } }); advance(f.store, 30000);
+    f.store.request({ type: 'world.tool', ...f.bob, arguments: { action: 'travel', targetSceneId: 'park' } }); advance(f.store, 30000);
     const sourceEvent = f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'social', targetCompanionId: 'bob', kind: 'talk', text: secret } }).world!.events.find(event => event.text === secret)!;
     const job = f.store.request({ type: 'social.job.claim' }).socialJob!;
     expect(job.companionId).toBe('bob');

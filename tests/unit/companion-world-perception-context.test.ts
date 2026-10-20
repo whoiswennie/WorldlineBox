@@ -21,7 +21,7 @@ function fixture(): CompanionWorldSnapshot {
     facing: 'south', frame: 0, activity: 'idle', activityStartedAtReal: now, artAction: 'idle', locomotion: 'walk', movementSpeed: 2.4,
     state: { energy: 7, mood: 'low', expression: 'reserved', affect: { pleasure: -.9, arousal: .9, dominance: -.7 }, thermalComfort: .2 },
     destinationId: companionId === 'self' ? 'self_desk' : 'PRIVATE_PEER_PLAN', route: [{ sceneId: 'home_far', x: 777, y: 888 }], routinePhase: 'awake' }));
-  const ownHome = createCompanionWorldHome('self', 0), foreignHome = createCompanionWorldHome('far', 1);
+  const ownHome = createCompanionWorldHome('self'), foreignHome = createCompanionWorldHome('far');
   foreignHome.objects[0] = { ...foreignHome.objects[0]!, id: 'UNSEEN_PRIVATE_FURNITURE', name: 'UNSEEN_PRIVATE_FURNITURE' };
   const bench = { ...ownHome.objects.find(object => object.kind === 'chair')!, sceneId: ownHome.id, firstObservedAt: old, lastObservedAt: now, visible: true };
   return { settings: { revision: 1, mode: 'realtime', timeZone: 'UTC', dayDurationMinutes: 20 },
@@ -50,28 +50,38 @@ function checkBoundary(world: ReturnType<typeof companionModelWorld>) {
     'PRIVATE_WORK_REASON', 'PRIVATE_VISIT_REASON', 'PRIVATE_ROOM_EVENT', 'snow']) expect(text).not.toContain(secret);
   expect(world!.actors.map(actor => actor.companionId)).toEqual(['self', 'near']);
   expect(world!.actors[1]).toEqual({ companionId: 'near', sceneId: 'home_self', position: { x: 5, y: 4 }, activity: 'walking', lastObservedAt: now, visible: true });
-  expect(world!.perception!.people[1]).toMatchObject({ companionId: 'remembered', position: { x: 7, y: 4 }, lastObservedAt: old, visible: false });
-  expect(world!.residents).toContainEqual({ companionId: 'far', name: 'far' });
+  expect(world!.perception!.people.some(person => person.companionId === 'remembered')).toBe(false);
+  expect(world!.residents.some(person => person.companionId === 'far')).toBe(false);
   expect(world!.scenes.find(scene => scene.id === 'home_far')!.objects).toEqual([]);
   expect(world!.relationships).toEqual([{ companionId: 'self', targetCompanionId: 'near', affinity: 60, trust: 55, interactions: 2, updatedAt: old }]);
-  expect(world!.environment).toMatchObject({ temperature: 21, light: .4, weather: 'rain', weatherObservedAtVirtual: old });
+  expect(world!.environment).toMatchObject({ temperature: 21, light: .4, temperatureLocation: 'indoors', weatherStatus: 'remembered',
+    lastWeatherObservation: { weather: 'rain', weatherObservedAtVirtual: old, weatherLabel: '下雨' } });
+  expect(world!.environment).not.toHaveProperty('weather');
   expect(world!.clock.virtualNow).toBe(now);
 }
 
-it('projects only actual local perception, own state and public addresses while preserving stale evidence', () => {
+it('projects present local perception and learned entries while leaving past observations to explicit queries', () => {
   const world = fixture(), projected = companionModelWorld(world, 'self'); checkBoundary(projected);
   expect(projected!.actors[0]).toMatchObject({ state: world.actors[0]!.state });
   expect(companionModelWorld(projected, 'self')).toEqual(projected);
   expect(JSON.parse(buildCompanionContext(modelInput(world)).user).world).toEqual(projected);
+});
+it('uses the same canonical weather label when currently observed, without exposing unseen global weather', () => {
+  const world = fixture(); world.perception!.environment.weather = 'cloudy';
+  world.perception!.environment.weatherObservedAtVirtual = world.perception!.environment.time;
+  world.perception!.environment.weatherObservedAtReal = world.perception!.observedAtReal;
+  const projected = companionModelWorld(world, 'self')!;
+  expect(projected.environment).toMatchObject({ weather: 'cloudy', weatherStatus: 'current', weatherLabel: '多云', temperature: 21 });
+  expect(projected.clock).toMatchObject({ virtualNow: now, timeZone: 'UTC', mode: 'realtime' });
+  expect(JSON.stringify(projected)).not.toContain('snow'); expect(companionModelWorld(projected, 'self')).toEqual(projected);
 });
 
 it('does not refresh remembered people or objects from their changed authoritative state', () => {
   const world = fixture(); world.perception!.objects[0]!.visible = false; world.perception!.objects[0]!.lastObservedAt = old;
   world.perception!.visibleObjectIds = [];
   const result = companionModelWorld(world, 'self')!;
-  expect(result.perception!.people[1]).toMatchObject({ position: { x: 7, y: 4 }, lastObservedAt: old, visible: false });
-  expect(result.scenes[0]!.objects[0]).toMatchObject({ lastObservedAt: old, visible: false });
-  expect(result.scenes[0]!.objects[0]).not.toHaveProperty('occupantId'); expect(result.scenes[0]!.objects[0]).not.toHaveProperty('reservedBy');
+  expect(result.perception!.people.some(person => person.companionId === 'remembered')).toBe(false);
+  expect(result.scenes[0]!.objects).toEqual([]);
 });
 
 it('keeps never-observed weather unknown and fails closed on missing or another character perception', () => {

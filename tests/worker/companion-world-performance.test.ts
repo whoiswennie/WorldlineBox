@@ -15,7 +15,7 @@ it.runIf(process.env.COMPANION_WORLD_STRESS === '1')('keeps 50k events and 100k 
   const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '压力验证', description: '', model: '', avatar: 'sister', proactive: false }));
   let store: CompanionsStore | undefined;
   try {
-    store = new CompanionsStore(filename, seeds); const world = store.request({ type: 'world.snapshot' }).world!;
+    store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); const world = store.request({ type: 'world.snapshot' }).world!;
     store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
     const conversation = store.openPrivate('alice'), source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: '合成压力测试来源。' });
     store.close(); store = undefined;
@@ -26,7 +26,7 @@ it.runIf(process.env.COMPANION_WORLD_STRESS === '1')('keeps 50k events and 100k 
       for (let index = 0; index < 50000; index++) event.run('pressure_event_' + index, JSON.stringify({ id: 'pressure_event_' + index, sequence: index + 1, kind: 'audit', actorId: 'alice', at: source.createdAt, realAt: source.createdAt, text: '合成虚拟审计事件。', simulation: true }));
       for (let index = 0; index < 100000; index++) work.run('pressure_work_' + index, 'alice', 'ended', JSON.stringify({ workId: 'pressure_work_' + index, companionId: 'alice', conversationId: conversation.id, sourceMessageId: source.id, kind: 'chat', status: 'ended', urgent: false, fixed: false }));
     })(); database.close();
-    store = new CompanionsStore(filename, seeds);
+    store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true })));
     const start = Date.now(), measured = performance.now();
     for (let index = 1; index <= 100000; index++) {
       vi.setSystemTime(start + index * 10);

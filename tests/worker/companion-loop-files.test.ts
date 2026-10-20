@@ -11,7 +11,7 @@ afterEach(() => {
   for (const store of stores) store.close(); stores.clear();
   for (const root of roots.splice(0)) { if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldlinebox-loop-files-')) throw new Error('Unexpected loop file cleanup.'); rmSync(root, { recursive: true, force: true }); }
 });
-function open(file: string) { const store = new CompanionsStore(file, [seed]); stores.add(store); return store; }
+function open(file: string) { const store = new CompanionsStore(file, [{ ...seed, active: true }]); stores.add(store); return store; }
 it('attaches real registered tool snapshots to one durable bubble, idempotently across restart', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-loop-files-')); roots.push(root);
   const filename = path.join(root, 'messages.sqlite'), store = open(filename), room = store.openPrivate('alice');

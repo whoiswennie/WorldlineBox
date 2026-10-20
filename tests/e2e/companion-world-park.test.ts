@@ -66,9 +66,9 @@ function seedClock(profile: string, virtualAt: number) {
 async function parkReady(page: Page) {
   const canvas = page.locator('canvas');
   await expect(canvas).toHaveAttribute('data-world-view', 'park');
-  await expect(canvas).toHaveAttribute('data-world-scene', 'commons');
+  await expect(canvas).toHaveAttribute('data-world-scene', 'park');
   await expect(canvas).toHaveAttribute('data-world-ready', 'true');
-  await expect(page.getByRole('combobox', { name: '观测地点', exact: true })).toHaveValue('commons:park');
+  await expect(page.getByRole('combobox', { name: '观测地点', exact: true })).toHaveValue('park');
 }
 
 // Actual Electron/Three draws, host movement and SQLite; only the chat model is
@@ -102,10 +102,10 @@ test('observes a real public park, physical bench use and bounded multiwindow re
     const started = await launch(profile); application = started.application; const main = started.page;
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('No park fixture port.');
     await main.evaluate(async baseUrl => { await (window as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', model: 'park-fixture', baseUrl, apiKey: 'fixture-park-key' }); }, 'http://127.0.0.1:' + address.port);
-    const initial = (await request(main, { type: 'world.snapshot' })).world!, commons = initial.scenes.find(scene => scene.id === 'commons')!, bench = commons.objects.find(object => object.id === 'commons_bench')!;
+    const initial = (await request(main, { type: 'world.snapshot' })).world!, commons = initial.scenes.find(scene => scene.id === 'park')!, bench = commons.objects.find(object => object.id === 'park_bench')!;
     expect(initial.environment.weather).toBe('clear'); expect(initial.clock.daylight).toBe(true);
     expect(commons.objects.filter(object => object.kind === 'fountain')).toHaveLength(1); expect(commons.objects.find(object => object.kind === 'fountain')!.blocking).toBe(true);
-    expect(commons.objects.filter(object => object.kind === 'lamp')).toHaveLength(6);
+    expect(commons.objects.filter(object => object.kind === 'lamp')).toHaveLength(4);
     const nearest = initial.scenes.filter(scene => scene.kind === 'home' && scene.ownerId).sort((a, b) => Math.hypot(a.origin.x + 10 - bench.anchor.x, a.origin.y + 16 - bench.anchor.y) - Math.hypot(b.origin.x + 10 - bench.anchor.x, b.origin.y + 16 - bench.anchor.y))[0]!;
     const companionId = nearest.ownerId!, conversation = (await request(main, { type: 'conversation.open', companionId })).conversation!, scope = { companionId, conversationId: conversation.id };
     const chatter = (await request(main, { type: 'conversation.open', companionId: 'deepseek-sister' })).conversation!;
@@ -123,13 +123,12 @@ test('observes a real public park, physical bench use and bounded multiwindow re
     expect(rememberedHomeIds.length).toBeGreaterThan(0);
     await main.locator('[data-application-module="companions"]').click();
     await main.locator('[data-companion-conversation="' + chatter.id + '"]').click();
-    const a = await observer(application, main, { sceneId: 'commons' }); a.on('pageerror', error => errors.push(error.message));
-    await expect(a.getByRole('img', { name: '伙伴街区地图，家庭与真实出行路线', exact: true })).toBeVisible();
-    await a.getByRole('button', { name: '进入公共花园', exact: true }).click(); await parkReady(a);
+    const a = await observer(application, main, { sceneId: 'park' }); a.on('pageerror', error => errors.push(error.message));
+    await parkReady(a);
     await a.getByRole('button', { name: '收起生活面板', exact: true }).click();
     await a.screenshot({ path: path.join(output, 'verified-public-park-day.png') });
     await a.getByRole('button', { name: '显示生活面板', exact: true }).click();
-    const b = await observer(application, main, { sceneId: 'commons', view: 'park' }, 1); b.on('pageerror', error => errors.push(error.message)); await parkReady(b);
+    const b = await observer(application, main, { sceneId: 'park' }, 1); b.on('pageerror', error => errors.push(error.message)); await parkReady(b);
     const home = await observer(application, main, { companionId: 'deepseek-sister' }, 2); home.on('pageerror', error => errors.push(error.message));
     await expect(home.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
     const idle = await Promise.all([a, b].map(page => frames(page, 2200)));
@@ -138,7 +137,7 @@ test('observes a real public park, physical bench use and bounded multiwindow re
     for (const result of idle) { expect(result.visibility).toBe('visible'); expect(result.warmFrames).toBeGreaterThan(25); expect(result.frames).toBeLessThan(76); expect(result.p95Ms).toBeLessThan(100); }
     await request(main, { type: 'world.tool', ...scope, arguments: { action: 'move', destinationId: bench.id } });
     const actor = async () => (await request(main, { type: 'world.snapshot' })).world!.actors.find(actor => actor.companionId === companionId)!;
-    await expect.poll(async () => (await actor()).sceneId, { timeout: 25_000 }).toBe('commons');
+    await expect.poll(async () => (await actor()).sceneId, { timeout: 25_000 }).toBe('park');
     await expect.poll(async () => {
       const actual = await actor(), raw = await a.locator('canvas').getAttribute('data-world-park-bounds'); if (!raw) return false;
       const bounds = JSON.parse(raw) as { x: number; y: number; width: number; height: number };
@@ -186,10 +185,10 @@ test('observes a real public park, physical bench use and bounded multiwindow re
     await nativeA.evaluate(window => { window.restore(); window.showInactive(); });
     await expect.poll(async () => (await a.evaluate(() => (window as unknown as Bridge).worldlinebox.companionWorld.context())).context!.visible).toBe(true);
     const before = (await frames(a, 1600)).metrics;
-    for (const destination of ['home_deepseek-sister', 'commons', 'commons:park', 'home_gpt', 'commons:park']) {
+    for (const destination of ['home_deepseek-sister', 'park', 'park', 'home_gpt', 'park']) {
       await a.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(destination);
-      if (destination === 'commons:park') await parkReady(a);
-      else if (destination !== 'commons') await expect(a.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
+      if (destination === 'park') await parkReady(a);
+      else if (destination !== 'park') await expect(a.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
     }
     await expect.poll(async () => Number(await a.locator('canvas').getAttribute('data-world-loaded-actors'))).toBeGreaterThan(0);
     const after = (await frames(a, 1800)).metrics;
@@ -218,7 +217,7 @@ test('renders park daytime, night lighting and real world rain without leaking s
     for (const condition of conditions) {
       seedClock(profile, climateDate(condition.weather, condition.hour)); const started = await launch(profile); application = started.application; const main = started.page;
       const actual = (await request(main, { type: 'world.snapshot' })).world!; expect(actual.environment.weather).toBe(condition.weather); expect(actual.clock.daylight).toBe(condition.hour === 12);
-      const park = await observer(application, main, { sceneId: 'commons', view: 'park' }); await parkReady(park);
+      const park = await observer(application, main, { sceneId: 'park' }); await parkReady(park);
       await park.evaluate(value => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: value })), condition.theme); await park.reload(); await parkReady(park);
       await expect(park.locator('html')).toHaveAttribute('data-theme', condition.theme);
       await expect(park.getByLabel('世界环境', { exact: true })).toContainText(condition.weather === 'rain' ? '下雨' : '晴朗');
@@ -248,7 +247,7 @@ test('every resident receives a probability rule and a triggered long walk physi
     mkdirSync(output, { recursive: true }); const bootstrap = await launch(profile); application = bootstrap.application;
     await request(bootstrap.page, { type: 'world.snapshot' }); await application.close(); application = undefined;
     seedClock(profile, climateDate('clear', 12)); const started = await launch(profile); application = started.application; const main = started.page;
-    const initial = (await request(main, { type: 'world.snapshot' })).world!, commons = initial.scenes.find(scene => scene.id === 'commons')!, bench = commons.objects.find(object => object.kind === 'bench')!;
+    const initial = (await request(main, { type: 'world.snapshot' })).world!, commons = initial.scenes.find(scene => scene.id === 'park')!, bench = commons.objects.find(object => object.kind === 'bench')!;
     const nearest = initial.scenes.filter(scene => scene.kind === 'home' && scene.ownerId).sort((a, b) => Math.hypot(a.origin.x + 10 - bench.anchor.x, a.origin.y + 16 - bench.anchor.y) - Math.hypot(b.origin.x + 10 - bench.anchor.x, b.origin.y + 16 - bench.anchor.y))[0]!;
     const companionId = nearest.ownerId!, defaults: Array<{ companionId: string; rules: unknown[] }> = []; diagnosticPage = main; diagnosticOwner = companionId;
     // The rule exists for every resident, but unrelated probabilistic activity
@@ -264,8 +263,8 @@ test('every resident receives a probability rule and a triggered long walk physi
     await request(main, { type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', wakeAt: '00:00', sleepAt: '23:59', meals: [], habits: [] } });
     const before = (await request(main, { type: 'world.snapshot' })).world!;
     await request(main, { type: 'world.configure', expectedRevision: before.settings.revision, patch: { mode: 'compressed', dayDurationMinutes: 20 } });
-    const park = await observer(application, main, { sceneId: 'commons', view: 'park' }); await parkReady(park);
-    const map = await observer(application, main, { sceneId: 'commons' }, 1);
+    const park = await observer(application, main, { sceneId: 'park' }); await parkReady(park);
+    const map = await observer(application, main, { sceneId: 'park' }, 1);
     const now = (await request(main, { type: 'world.snapshot' })).world!;
     const minute = Math.floor(now.clock.hour * 60);
     const rule = (await request(main, { type: 'life-rule.create', companionId, clientId: 'park-e2e-long-walk', rule: {
@@ -278,7 +277,7 @@ test('every resident receives a probability rule and a triggered long walk physi
     await expect.poll(async () => (await sample()).actor.parkWalk?.stage, { timeout: 30_000, intervals: [250] }).toBe('travelling');
     const departure = await sample(); expect(departure.actor.parkWalk!.participatedMinutes).toBe(0);
     await expect.poll(async () => { const { actor } = await sample(); return actor.parkWalk?.stage === 'strolling' && actor.activity === 'walking'; }, { timeout: 60_000, intervals: [250] }).toBe(true);
-    const entry = await sample(); expect(entry.actor.sceneId).toBe('commons'); expect(entry.actor.activity).toBe('walking'); expect(entry.actor.route.length).toBeGreaterThan(0);
+    const entry = await sample(); expect(entry.actor.sceneId).toBe('park'); expect(entry.actor.activity).toBe('walking'); expect(entry.actor.route.length).toBeGreaterThan(0);
     await expect(park.locator('[data-world-actor="' + companionId + '"]')).toContainText('散步');
     await expect(park.locator('[data-world-actor-id="' + companionId + '"]')).toHaveAttribute('data-world-behavior', /散步/);
     await expect(map.locator('[data-world-map-actor="' + companionId + '"]')).toBeVisible();
@@ -293,7 +292,7 @@ test('every resident receives a probability rule and a triggered long walk physi
     const occurrences = (await request(main, { type: 'life-rule.list', companionId })).lifeOccurrences!.filter(occurrence => occurrence.ruleId === rule.id);
     expect(occurrences).toHaveLength(1); expect(occurrences[0]!.status).toBe('done'); expect(occurrences[0]!.attempts).toBe(1);
     const active = samples.filter(sample => sample.actor.parkWalk?.stage === 'strolling'); expect(active.length).toBeGreaterThan(10);
-    for (const sample of active) expect(sample.actor.sceneId).toBe('commons');
+    for (const sample of active) expect(sample.actor.sceneId).toBe('park');
     let maximumDistance = 0;
     for (let index = 1; index < samples.length; index++) {
       const prior = samples[index - 1]!, next = samples[index]!; if (prior.actor.sceneId !== next.actor.sceneId) continue;

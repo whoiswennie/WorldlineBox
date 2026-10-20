@@ -12,6 +12,7 @@ import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePat
 
 interface SocialFixture { fixtureKind: string; virtualDay: string; previousDay: string; privateId: string; groupId: string; firstId: string; latestId: string; privateFact: string }
 interface WorkFixture { fixtureKind: string; conversationId: string; actions: CompanionAction[]; orders: CompanionWorkOrder[]; other: CompanionAction }
+interface ScaleFixture { fixtureKind: string; relationshipCount: number }
 function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-social-observer-')) throw new Error('Unexpected social observation fixture cleanup.'); rmSync(resolved, { recursive: true, force: true }); }
 async function fixture(root: string) {
   const nativeSqlite = createRequire(path.resolve('package.json')).resolve('better-sqlite3').replaceAll('\\', '/');
@@ -19,7 +20,7 @@ async function fixture(root: string) {
     outDir: path.join(root, 'seed'), emptyOutDir: true, lib: { entry: path.resolve('tests/e2e/fixtures/companion-observation-fixture.ts'), formats: ['cjs'], fileName: () => 'seed.cjs' },
     rollupOptions: { external: id => id === nativeSqlite || id.startsWith('node:') || builtinModules.includes(id) },
   } });
-  return <T,>(mode: 'social' | 'actions') => {
+  return <T,>(mode: 'social' | 'actions' | 'social-scale') => {
     const output = path.join(root, mode + '.json');
     const seeded = spawnSync(resolveElectronExecutablePath(), [path.join(root, 'seed/seed.cjs'), path.join(root, 'profile'), mode, output], {
       cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, windowsHide: true, encoding: 'utf8', timeout: 30000,
@@ -40,12 +41,39 @@ test('observes durable peer conversations by virtual date and keeps concurrent o
     const seed = await fixture(root), social = seed<SocialFixture>('social');
     application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(),
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'software' }) });
-    const page = await application.firstWindow(), native = await application.browserWindow(page);
+    const page = await application.firstWindow(); await page.addInitScript(() => { Object.defineProperty(document, 'hidden', { get: () => false }); }); const native = await application.browserWindow(page);
     await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 900); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
     page.on('pageerror', error => errors.push(error.message));
     await page.locator('[data-application-module="companions"]').click();
     await page.getByRole('button', { name: '打开伙伴社交观察', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '伙伴社交观察', exact: true }); await expect(dialog).toBeVisible();
+    // Hidden native window is a fixture detail; the observer is visible in the app under test.
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+    await expect(dialog.locator('[data-social-center="deepseek-flash"]')).toBeVisible();
+    await dialog.getByRole('combobox', { name: '社交图谱中心伙伴' }).selectOption('deepseek-sister');
+    await expect(dialog.locator('[data-social-node="user"]')).toBeVisible();
+    await expect(dialog.getByText('实时同步', { exact: true })).toBeVisible();
+    await expect(dialog.locator('[data-social-event]').first()).toBeVisible();
+    const letter = dialog.locator('[data-social-node="user"] .companion-avatar-letter');
+    await expect(letter).toHaveText('我');
+    const avatarCenter = await letter.evaluate(element => { const a = element.parentElement!.getBoundingClientRect(), b = element.getBoundingClientRect(); return { x: Math.abs(a.x + a.width / 2 - b.x - b.width / 2), y: Math.abs(a.y + a.height / 2 - b.y - b.height / 2) }; });
+    expect(avatarCenter.x).toBeLessThanOrEqual(1); expect(avatarCenter.y).toBeLessThanOrEqual(1);
+    await dialog.getByRole('button', { name: '放大社交图谱', exact: true }).click(); await expect(dialog.locator('.social-map-controls')).toContainText('110%');
+    await dialog.getByRole('button', { name: '复位社交图谱', exact: true }).click(); await expect(dialog.locator('.social-map-controls')).toContainText('100%');
+    const clockBefore = await dialog.locator('.social-live-clock').innerText();
+    await expect.poll(async () => dialog.locator('.social-live-clock').innerText(), { timeout: 7000 }).not.toBe(clockBefore);
+    const graphArtifacts = path.resolve('.tools/test-output/companions'); mkdirSync(graphArtifacts, { recursive: true });
+    await page.screenshot({ path: path.join(graphArtifacts, 'verified-social-graph-live-light.png') });
+    await native.evaluate(window => window.setSize(1000, 800));
+    await page.screenshot({ path: path.join(graphArtifacts, 'verified-social-graph-live-compact.png') });
+    const cardOverlap = await dialog.locator('.social-graph-person .companion-avatar, .social-ego').evaluateAll(elements => {
+      const boxes = elements.map(element => element.getBoundingClientRect());
+      return boxes.some((a, i) => boxes.some((b, j) => i !== j && Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1));
+    }); expect(cardOverlap).toBe(false);
+    const graphBounds = await dialog.evaluate(element => ({ width: element.clientWidth, scroll: element.scrollWidth, height: element.clientHeight, scrollHeight: element.scrollHeight }));
+    expect(graphBounds.scroll).toBeLessThanOrEqual(graphBounds.width + 1); expect(graphBounds.scrollHeight).toBeLessThanOrEqual(graphBounds.height + 1);
+    await native.evaluate(window => window.setSize(1440, 900));
+    await dialog.getByRole('tab', { name: '往来记录', exact: true }).click();
     await expect(dialog.getByLabel('社交记录日期', { exact: true })).toHaveValue(social.virtualDay);
     await expect(dialog.locator('[data-social-conversation]')).toHaveCount(20);
     await dialog.locator('[data-social-conversation="' + social.privateId + '"]').click();
@@ -109,8 +137,9 @@ test('observes durable peer conversations by virtual date and keeps concurrent o
     await page.screenshot({ path: path.join(artifacts, 'verified-companion-social-light.png') });
     await page.evaluate(key => localStorage.setItem(key, JSON.stringify({ version: 1, theme: 'dark' })), THEME_PREF_KEY);
     await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '打开伙伴社交观察', exact: true }).click();
-    await dialog.locator('[data-social-conversation="' + social.groupId + '"]').click(); await dialog.getByRole('combobox', { name: '社交聊天观察视角' }).selectOption('gemini');
+    await dialog.getByRole('tab', { name: '往来记录', exact: true }).click(); await dialog.locator('[data-social-conversation="' + social.groupId + '"]').click(); await dialog.getByRole('combobox', { name: '社交聊天观察视角' }).selectOption('gemini');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await dialog.getByRole('tab', { name: '实时图谱', exact: true }).click(); await dialog.getByRole('combobox', { name: '社交图谱中心伙伴' }).selectOption('deepseek-sister'); await expect(dialog.locator('[data-social-node="user"]')).toBeVisible(); await page.screenshot({ path: path.join(artifacts, 'verified-social-graph-live-dark.png') }); await dialog.getByRole('tab', { name: '往来记录', exact: true }).click();
     expect(await dialog.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(lightBackground);
     await page.screenshot({ path: path.join(artifacts, 'verified-companion-social-dark.png') });
     await dialog.getByRole('button', { name: '关闭社交观察', exact: true }).click();
@@ -150,4 +179,55 @@ test('observes durable peer conversations by virtual date and keeps concurrent o
     writeFileSync(path.join(artifacts, 'verified-companion-social-observation.json'), JSON.stringify(report, null, 2));
     await testInfo.attach('read-only-observation-fixture', { body: JSON.stringify(report), contentType: 'application/json' });
   } finally { await application?.close().catch(() => undefined); cleanup(root); }
+});
+// eslint-disable-next-line no-empty-pattern
+test('explores 20,000 real stored relationships through aggregates, bounded pages and exact search', async ({}) => {
+  test.setTimeout(120000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-social-observer-'));
+  let application: ElectronApplication | undefined;
+  try {
+    const seed = await fixture(root), data = seed<ScaleFixture>('social-scale');
+    application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'software' }) });
+    const page = await application.firstWindow(), native = await application.browserWindow(page);
+    await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 900); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+    await page.locator('[data-application-module="companions"]').click();
+    await page.getByRole('button', { name: '打开伙伴社交观察', exact: true }).click();
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+    const dialog = page.getByRole('dialog', { name: '伙伴社交观察', exact: true });
+    await dialog.getByRole('combobox', { name: '社交图谱中心伙伴' }).selectOption('deepseek-flash');
+    const diagnostic = await page.evaluate(async () => { const start = performance.now(), result = await (window as unknown as { worldlinebox: { companions: WorldlineBoxCompanionsApi } }).worldlinebox.companions.request({ type: 'social.graph', companionId: 'deepseek-flash' }); return { ok: result.ok, error: result.error, total: result.socialGraph?.total, elapsedMs: Math.round(performance.now() - start) }; });
+    writeFileSync(path.resolve('.tools/social-large-diagnostic.json'), JSON.stringify(diagnostic));
+    expect(diagnostic.error).toBeUndefined();
+    await expect(dialog.locator('.social-map-metrics').first()).toContainText(data.relationshipCount.toLocaleString(), { timeout: 15000 });
+    await expect(dialog.locator('[data-social-cluster="dormant"]')).toBeVisible();
+    await expect(dialog.locator('[data-social-node]')).toHaveCount(0);
+    await expect(dialog.getByText('这条实际来信来自当前画布之外的关系对象。', { exact: true })).toBeVisible();
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
+    await page.screenshot({ path: path.join(artifacts, 'verified-social-graph-large-overview.png') });
+    await dialog.locator('[data-social-cluster="dormant"]').click();
+    await expect.poll(() => dialog.locator('[data-social-node]').count(), { timeout: 15000 }).toBeGreaterThan(0);
+    expect(await dialog.locator('[data-social-node]').count()).toBeLessThanOrEqual(40);
+    const firstIds = await dialog.locator('[data-social-node]').evaluateAll(elements => elements.map(element => element.getAttribute('data-social-node')));
+    await dialog.locator('.social-explorer-pagination').getByRole('button', { name: '下一批', exact: true }).click();
+    await expect.poll(async () => dialog.locator('[data-social-node]').first().getAttribute('data-social-node'), { timeout: 15000 }).not.toBe(firstIds[0]);
+    const nextIds = await dialog.locator('[data-social-node]').evaluateAll(elements => elements.map(element => element.getAttribute('data-social-node')));
+    expect(nextIds.length).toBe(firstIds.length); expect(nextIds.some(id => firstIds.includes(id))).toBe(false);
+    await page.screenshot({ path: path.join(artifacts, 'verified-social-graph-large-neighborhood.png') });
+    await dialog.getByRole('searchbox', { name: '搜索全部社交关系', exact: true }).fill('scale_19999');
+    await expect(dialog.locator('[data-social-node]')).toHaveCount(1, { timeout: 15000 });
+    await expect(dialog.locator('[data-social-result="scale_19999"]')).toBeVisible();
+    await dialog.getByRole('button', { name: '收起关系目录', exact: true }).click();
+    await dialog.locator('[data-social-node="scale_19999"]').click();
+    await dialog.getByRole('button', { name: '以她为中心', exact: true }).click();
+    await expect(dialog.locator('[data-social-center="scale_19999"]')).toBeVisible();
+    await expect(dialog.locator('[data-social-node="deepseek-flash"]')).toBeVisible();
+    await dialog.getByRole('button', { name: '返回上一中心', exact: true }).click();
+    await expect(dialog.locator('[data-social-cluster="dormant"]')).toBeVisible();
+    const before = await dialog.locator('.social-live-clock').innerText();
+    await expect.poll(async () => dialog.locator('.social-live-clock').innerText(), { timeout: 10000 }).not.toBe(before);
+    const steady = await page.evaluate(async () => { const start = performance.now(); const result = await (window as unknown as { worldlinebox: { companions: WorldlineBoxCompanionsApi } }).worldlinebox.companions.request({ type: 'social.graph', companionId: 'deepseek-flash' }); return { ok: result.ok, total: result.socialGraph?.total, elapsedMs: Math.round(performance.now() - start) }; });
+    writeFileSync(path.resolve('.tools/social-large-diagnostic.json'), JSON.stringify({ initial: diagnostic, steady }));
+    expect(steady.ok).toBe(true);
+    expect(await dialog.locator('option').count()).toBeLessThan(100);
+  } finally { await application?.close(); cleanup(root); }
 });

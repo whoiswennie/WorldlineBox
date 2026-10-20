@@ -1,13 +1,12 @@
 import { expect, it, vi } from 'vitest';
 import { Mesh, Points, type MeshStandardMaterial } from 'three';
-import { createCompanionWorldCommons, createCompanionWorldHome } from '../../src/shared/companion-world-engine';
+import { createCompanionWorldPark, createCompanionWorldHome } from '../../src/shared/companion-world-engine';
 import { companionWorldParkLayout } from '../../src/shared/companion-world-park';
 import { createWorldParkModel } from '../../src/renderer/companions/world/world-park-model';
 
 it('batches the real park furniture, bounds animated water and releases every resource', () => {
-  const homes = Array.from({ length: 15 }, (_, index) => createCompanionWorldHome('resident_' + index, index));
-  const commons = createCompanionWorldCommons(homes), model = createWorldParkModel(commons), expected = companionWorldParkLayout(commons)!;
-  expect(model.bounds).toEqual(expected); expect(model.stats.furnitureCount).toBe(12);
+  const commons = createCompanionWorldPark(), model = createWorldParkModel(commons), expected = companionWorldParkLayout(commons)!;
+  expect(model.bounds).toEqual(expected); expect(model.stats.furnitureCount).toBe(10);
   expect(model.stats.drawCalls).toBeLessThanOrEqual(9); expect(model.stats.triangles).toBeGreaterThan(5000); expect(model.stats.triangles).toBeLessThan(55000);
   expect(model.stats.waterParticles).toBe(216); expect(model.animate(1000)).toBe(true);
   expect(model.group.children.every(child => (child instanceof Mesh || child instanceof Points) && !child.matrixAutoUpdate)).toBe(true);
@@ -26,6 +25,6 @@ it('batches the real park furniture, bounds animated water and releases every re
 });
 
 it('never invents a park or furniture inside a private home', () => {
-  const model = createWorldParkModel(createCompanionWorldHome('resident', 0));
+  const model = createWorldParkModel(createCompanionWorldHome('resident'));
   expect(model.bounds).toBeUndefined(); expect(model.stats.drawCalls).toBe(0); expect(model.group.children).toHaveLength(0); model.dispose();
 });

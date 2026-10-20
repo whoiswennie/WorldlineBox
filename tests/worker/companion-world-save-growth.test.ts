@@ -17,7 +17,7 @@ afterEach(() => {
 });
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-save-growth-')); roots.push(root);
-  const filename = path.join(root, 'messages.sqlite'), store = new CompanionsStore(filename, seeds); connections.add(store);
+  const filename = path.join(root, 'messages.sqlite'), store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); connections.add(store);
   const scopes = Object.fromEntries(seeds.map(seed => [seed.id, { companionId: seed.id, conversationId: store.openPrivate(seed.id).id }]));
   const settings = store.request({ type: 'world.snapshot' }).world!.settings;
   store.request({ type: 'world.configure', expectedRevision: settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
@@ -53,13 +53,13 @@ it('retains the full visit audit but only active permission and recent settled v
   expect(world.visits.find(value => value.id === left.id)?.status).toBe('left');
   expect(world.visits.some(value => value.id === deniedIds[0])).toBe(false);
   // The retained permission must still authorize actual physical entry.
-  f.store.request({ type: 'world.tool', ...f.bob, arguments: { action: 'share_address', recipientIds: ['alice'] } });
+  f.store.request({ type: 'world.tool', ...f.bob, arguments: { action: 'share_entrance', recipientIds: ['alice'] } });
   f.store.request({ type: 'social.job.claim' }); vi.setSystemTime(Date.now() + 1600); f.store.request({ type: 'world.tick' }); const delivery = f.store.request({ type: 'social.job.claim' });
   if (delivery.socialJob) { vi.setSystemTime(Date.now() + 1600); f.store.request({ type: 'world.tick' }); f.store.request({ type: 'social.job.complete', id: delivery.socialJob.id, leaseToken: delivery.socialJob.leaseToken!, text: null }); }
   vi.setSystemTime(Date.now() + 6000); f.store.request({ type: 'world.tick' });
-  f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'navigate', targetCompanionId: 'bob' } });
+  f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'travel', targetSceneId: 'home_' + 'bob' } });
   vi.setSystemTime(Date.now() + 30000); f.store.request({ type: 'world.tick' });
-  f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'enter', targetCompanionId: 'bob' } });
+  f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'travel', targetSceneId: 'home_' + 'bob' } });
   vi.setSystemTime(Date.now() + 30000); f.store.request({ type: 'world.tick' });
   expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(value => value.companionId === 'alice')!.sceneId).toBe('home_bob');
   close(f.store);
@@ -69,7 +69,7 @@ it('retains the full visit audit but only active permission and recent settled v
   const history = (id: string) => JSON.parse(String(record(db.prepare('SELECT data FROM companion_world_visit_records WHERE id=?').get(id)).data));
   expect(history(expired.id).status).toBe('expired'); expect(history(deniedIds[0]!).response).toBe('本次不方便：0'); expect(history(left.id).status).toBe('left');
   close(db);
-  const reopened = new CompanionsStore(f.filename, seeds); connections.add(reopened);
+  const reopened = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); connections.add(reopened);
   const restored = reopened.request({ type: 'world.snapshot' }).world!;
   expect(restored.visits).toHaveLength(102); expect(restored.visits.find(value => value.id === allowed.id)?.status).toBe('allowed');
   expect(restored.actors.find(value => value.companionId === 'alice')!.sceneId).toBe('home_bob');
@@ -107,7 +107,7 @@ it('keeps one hot clock anchor through hundreds of edits while historical real/v
     const a = checkpoints[index]!, b = checkpoints[index + 1]!, mid = (a.real + b.real) / 2, virtual = a.virtual + (mid - a.real) * a.speed;
     expect(clock.virtualAt(mid)).toBe(virtual); expect(clock.realAt(virtual, mid)).toBe(mid);
   }
-  close(db); const reopened = new CompanionsStore(f.filename, seeds); connections.add(reopened);
+  close(db); const reopened = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); connections.add(reopened);
   expect(reopened.request({ type: 'world.snapshot' }).world!.clock.virtualNow).toBe(world.clock.virtualNow);
 }, 30000);
 
@@ -116,7 +116,7 @@ it('rolls back a visit decision and its event when its durable history cannot be
   close(f.store);
   const db = new Sqlite(f.filename); connections.add(db);
   db.exec("CREATE TRIGGER fail_visit_archive BEFORE INSERT ON companion_world_visit_records WHEN NEW.status='denied' BEGIN SELECT RAISE(ABORT,'synthetic disk write failure'); END"); close(db);
-  const reopened = new CompanionsStore(f.filename, seeds); connections.add(reopened);
+  const reopened = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); connections.add(reopened);
   const before = reopened.request({ type: 'world.snapshot' }).world!;
   expect(() => reopened.request({ type: 'world.tool', ...f.bob, arguments: { action: 'respond', requestId: pending.id, decision: 'deny', reason: '这次拒绝必须与存档一起提交。' } })).toThrow();
   const after = reopened.request({ type: 'world.snapshot' }).world!;

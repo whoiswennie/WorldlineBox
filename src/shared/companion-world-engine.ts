@@ -14,12 +14,13 @@ export const companionWorldVirtualAt = (anchor: CompanionWorldClockAnchor, setti
 export const companionWorldRealAt = (anchor: CompanionWorldClockAnchor, settings: CompanionWorldSettings, virtualAt: number): number => settings.mode === 'realtime' ? virtualAt : anchor.realAt + (virtualAt - anchor.virtualAt) / companionWorldSpeed(settings);
 
 /** The same anchors and solid footprints drive rendering, pathfinding and interactions. */
-export function createCompanionWorldHome(ownerId: string, slot: number): CompanionWorldScene {
-  const houseSlot = slot < 15 ? slot : slot + 3; // Reserve three permanent lots for the public garden.
+export function companionWorldHomeFootprint(ownerId: string) {
+  return { ownerId, width: 20, depth: 16, origin: { x: 0, y: 0 } };
+}
+export function createCompanionWorldHome(ownerId: string): CompanionWorldScene {
   const object = (suffix: string, kind: CompanionWorldScene['objects'][number]['kind'], name: string, x: number, y: number, width: number, depth: number, ax: number, ay: number, blocking = true) =>
     ({ id: ownerId + '_' + suffix, kind, name, position: { x, y }, width, depth, anchor: { x: ax, y: ay }, blocking });
-  return { id: 'home_' + ownerId, kind: 'home', ownerId, name: '小屋', width: 20, depth: 16,
-    origin: { x: 4 + houseSlot % 6 * 24, y: 4 + Math.floor(houseSlot / 6) * 22 }, door: { x: 10, y: 15 }, objects: [
+  return { id: 'home_' + ownerId, kind: 'home', ...companionWorldHomeFootprint(ownerId), name: '小屋', door: { x: 10, y: 15 }, portals: [{ id: 'entrance', direction: 'both', position: { x: 10, y: 15 } }], objects: [
       object('desk', 'desk', '书桌', 2, 2, 5, 2, 4, 4),
       object('computer', 'computer', '电脑', 4, 2, 1, 1, 4, 4, false),
       object('chair', 'chair', '电脑椅', 4, 4, 1, 1, 4, 4, false),
@@ -31,24 +32,18 @@ export function createCompanionWorldHome(ownerId: string, slot: number): Compani
       object('door', 'door', '房门', 10, 15, 1, 1, 10, 15, false),
     ] };
 }
-export function createCompanionWorldCommons(homes: CompanionWorldScene[]): CompanionWorldScene {
-  const farY = Math.max(68, ...homes.map(home => home.origin.y + 20));
-  return { id: 'commons', kind: 'commons', name: '伙伴街区', width: 152, depth: farY + 6, origin: { x: 0, y: 0 }, door: { x: 10, y: 20 }, objects: [
-    { id: 'commons_bench', kind: 'bench', name: '公园长椅', position: { x: 105, y: 61 }, width: 3, depth: 1, anchor: { x: 106, y: 62 }, blocking: true },
-    { id: 'commons_bench_east', kind: 'bench', name: '花园长椅', position: { x: 135, y: 61 }, width: 3, depth: 1, anchor: { x: 136, y: 62 }, blocking: true },
-    { id: 'commons_tree', kind: 'tree', name: '街区的树', position: { x: 112, y: 57 }, width: 2, depth: 2, anchor: { x: 112, y: 59 }, blocking: true },
-    { id: 'commons_tree_west', kind: 'tree', name: '花园的树', position: { x: 95, y: 52 }, width: 2, depth: 2, anchor: { x: 95, y: 54 }, blocking: true },
-    { id: 'commons_tree_east', kind: 'tree', name: '花园的树', position: { x: 135, y: 50 }, width: 2, depth: 2, anchor: { x: 135, y: 52 }, blocking: true },
-    { id: 'commons_fountain', kind: 'fountain', name: '花园喷泉', position: { x: 118, y: 52 }, width: 4, depth: 4, anchor: { x: 119, y: 56 }, blocking: true },
-    ...[{ x: 93, y: 46 }, { x: 116, y: 46 }, { x: 140, y: 46 }, { x: 93, y: 66 }, { x: 116, y: 66 }, { x: 140, y: 66 }].map((position, index) =>
-      ({ id: 'commons_lamp_' + (index + 1), kind: 'lamp' as const, name: '花园路灯', position, width: 1, depth: 1, anchor: { x: position.x, y: position.y + 1 }, blocking: true })),
-    ...homes.map(home => ({ id: home.ownerId + '_entrance', kind: 'door' as const, name: '小屋入口',
-      position: { x: home.origin.x + 10, y: home.origin.y + 16 }, width: 1, depth: 1,
-      anchor: { x: home.origin.x + 10, y: home.origin.y + 16 }, blocking: false })),
-    ...homes.map(home => ({ id: home.ownerId + '_building', kind: 'building' as const, name: '小屋建筑',
-      position: { ...home.origin }, width: home.width, depth: home.depth,
-      anchor: { x: home.origin.x + 10, y: home.origin.y + 16 }, blocking: true })),
-  ] };
+/** Public destinations have their own local space; no houses, streets or global placement. */
+export function createCompanionWorldPark(): CompanionWorldScene {
+  const object = (id: string, kind: CompanionWorldScene['objects'][number]['kind'], name: string, x: number, y: number, width = 1, depth = 1) =>
+    ({ id, kind, name, position: { x, y }, width, depth, anchor: { x, y: y + depth }, blocking: true });
+  return { id: 'park', kind: 'park', name: '公共花园', width: 56, depth: 36, origin: { x: 0, y: 0 }, door: { x: 28, y: 34 },
+    portals: [{ id: 'entrance', direction: 'both', position: { x: 28, y: 34 } }], objects: [
+      object('park_bench', 'bench', '花园长椅', 18, 24, 3), object('park_bench_east', 'bench', '树下长椅', 42, 24, 3),
+      object('park_tree_west', 'tree', '花园的树', 8, 8, 2, 2), object('park_tree_east', 'tree', '花园的树', 42, 8, 2, 2),
+      object('park_tree_north', 'tree', '花园的树', 26, 4, 2, 2), object('park_fountain', 'fountain', '花园喷泉', 26, 14, 4, 4),
+      ...[{ x: 3, y: 5 }, { x: 50, y: 5 }, { x: 3, y: 30 }, { x: 50, y: 30 }].map((position, index) => object('park_lamp_' + index, 'lamp', '花园路灯', position.x, position.y)),
+      { id: 'park_exit', kind: 'door', name: '花园出入口', position: { x: 28, y: 34 }, anchor: { x: 28, y: 34 }, width: 1, depth: 1, blocking: false },
+    ] };
 }
 export function companionWorldCellWalkable(scene: CompanionWorldScene, point: WorldPoint): boolean {
   const x = Math.round(point.x), y = Math.round(point.y);
@@ -87,23 +82,11 @@ export function findCompanionWorldPath(scene: CompanionWorldScene, from: WorldPo
   }
   return undefined;
 }
+/** A path is always local. Cross-scene travel is a host portal operation, never a coordinate route. */
 export function routeCompanionWorldActor(scenes: CompanionWorldScene[], actor: CompanionWorldActor, sceneId: string, destination: WorldPoint, mayEnter: (owner: string) => boolean, escapeObstructedStart = false): WorldWaypoint[] | undefined {
-  const current = scenes.find(scene => scene.id === actor.sceneId), target = scenes.find(scene => scene.id === sceneId), commons = scenes.find(scene => scene.kind === 'commons');
-  if (!current || !target || !commons || target.ownerId && target.ownerId !== actor.companionId && !mayEnter(target.ownerId)) return undefined;
-  if (current.id === target.id) return findCompanionWorldPath(current, actor.position, destination, escapeObstructedStart);
-  const route: WorldWaypoint[] = []; let outside = actor.position;
-  if (current.kind === 'home') {
-    const first = findCompanionWorldPath(current, actor.position, current.door, escapeObstructedStart); if (!first) return undefined;
-    route.push(...first); outside = { x: current.origin.x + 10, y: current.origin.y + 16 }; route.push({ ...outside, sceneId: commons.id });
-  }
-  const entrance = target.kind === 'home' ? { x: target.origin.x + 10, y: target.origin.y + 16 } : destination;
-  const street = findCompanionWorldPath(commons, outside, entrance, current.kind === 'commons' && escapeObstructedStart); if (!street) return undefined;
-  route.push(...street);
-  if (target.kind === 'home') {
-    route.push({ ...target.door, sceneId: target.id });
-    const last = findCompanionWorldPath(target, target.door, destination); if (!last) return undefined; route.push(...last);
-  }
-  return route;
+  const scene = scenes.find(scene => scene.id === sceneId);
+  if (!scene || actor.sceneId !== scene.id || scene.ownerId && !mayEnter(scene.ownerId)) return undefined;
+  return findCompanionWorldPath(scene, actor.position, destination, escapeObstructedStart);
 }
 export function advanceCompanionWorldActor(actor: CompanionWorldActor, elapsedMs: number): { actor: CompanionWorldActor; usedMs: number; arrived: boolean } {
   const next = structuredClone(actor); let distance = Math.max(0, elapsedMs) / 1000 * actor.movementSpeed, used = 0;
@@ -113,9 +96,7 @@ export function advanceCompanionWorldActor(actor: CompanionWorldActor, elapsedMs
     const length = crossing ? 1 : Math.hypot(dx, dy);
     if (!crossing && length < 0.000001) { next.position = { x: waypoint.x, y: waypoint.y }; next.route.shift(); continue; }
     const walked = Math.min(distance, length);
-    // A portal joins the same doorway in two coordinate systems. It consumes no
-    // street distance; each complete exterior path is still walked physically.
-    if (crossing) { next.sceneId = waypoint.sceneId; next.position = { x: waypoint.x, y: waypoint.y }; next.route.shift(); continue; }
+    if (crossing) throw new Error('局部路径不能跨场景，必须通过场景出入口通行。');
     next.facing = Math.abs(dx) > Math.abs(dy) ? dx > 0 ? 'east' : 'west' : dy > 0 ? 'south' : 'north';
     next.position.x += dx / length * walked; next.position.y += dy / length * walked;
     used += walked / actor.movementSpeed * 1000; distance -= walked;

@@ -120,6 +120,7 @@ export class CompanionLifeEventStore {
   private observe(world: CompanionWorldSnapshot): void {
     const real = Date.parse(world.clock.realNow), now = Date.parse(world.clock.virtualNow);
     for (const resident of world.residents) {
+      if (resident.active === false) continue;
       try { this.defaults(resident.companionId); } catch { continue; }
       const allowed = this.owner(resident.companionId).proactive;
       for (const rule of this.rules(resident.companionId)) {

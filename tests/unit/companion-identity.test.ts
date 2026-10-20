@@ -11,6 +11,16 @@ function message(id: string, sequence: number, authorId: string, content: string
 function input(): CompanionReplyInput { return { companion: role, conversation: { id: 'room', kind: 'private', title: '小肥鱼', memberIds: [role.id], unread: 0, muted: false, pinned: false, updatedAt: '2026-10-15T00:00:00Z', lastMessage: '' },
   messages: [message('wrong_history', 1, role.id, '姐姐，我已经帮你看好了。'), message('actual_player', 2, 'user', '我正在和谁说话？')], memories: [], members, identityDirectory: members };
 }
+it('includes already sent replies after the old source for proactive opportunities without reopening that request', () => {
+  const value = input(), source = value.messages[1]!, sent = message('already_sent', 3, role.id, '我已经联系过姐姐了，等她回复。');
+  const proactive = buildCompanionContext({ ...value, sourceMessage: source, proactive: true, messages: [...value.messages, sent] });
+  expect(JSON.parse(proactive.user).messages.map((row: { id: string }) => row.id)).toContain(sent.id);
+  expect(JSON.parse(proactive.user).identity.authorization.playerRequestMessageId).toBeNull();
+  expect(JSON.parse(proactive.user).event).toBe('proactive_opportunity');
+  const requested = buildCompanionContext({ ...value, sourceMessage: source, messages: [...value.messages, sent],
+    taskRequest: { sourceMessageId: source.id, prompt: source.content } });
+  expect(JSON.parse(requested.user).messages.map((row: { id: string }) => row.id)).not.toContain(sent.id);
+});
 it('pins the actual player and authored sibling separately from mistaken historical assistant addresses', () => {
   const value = input(), context = buildCompanionContext({ ...value, taskRequest: { sourceMessageId: 'actual_player', prompt: value.messages[1]!.content } });
   const identity = JSON.parse(context.user).identity;

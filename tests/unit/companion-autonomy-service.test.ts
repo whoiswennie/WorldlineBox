@@ -15,7 +15,7 @@ function deferred<T>() { let resolve!: (value: T) => void; const promise = new P
 async function until(predicate: () => boolean) { for (let index = 0; index < 100; index++) { if (predicate()) return; await new Promise<void>(resolve => setImmediate(resolve)); } expect(predicate()).toBe(true); }
 function response(value: unknown) { return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } }); }
 function fixture() {
-  const root = mkdtempSync(path.join(tmpdir(), 'companion-autonomy-')); roots.push(root); const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds); stores.add(store);
+  const root = mkdtempSync(path.join(tmpdir(), 'companion-autonomy-')); roots.push(root); const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const snapshot = store.request({ type: 'world.snapshot' }).world!; store.request({ type: 'world.configure', expectedRevision: snapshot.settings.revision, patch: { timeZone: 'UTC' } });
   const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
   const request = vi.fn(async (command: CompanionStorageCommand) => store.request(command));
@@ -60,6 +60,7 @@ it('dispatches an external order through one actual action, waits for its result
 it('keeps another resident life clock advancing while both cognition slots wait on actual work', async () => {
   const f = fixture(), completion = deferred<void>(); releases.push(() => completion.resolve());
   const carol = f.store.createCompanion({ name: 'Carol', description: '', persona: '友好', model: '', avatar: 'flash', proactive: true });
+  f.store.setCompanionActive(carol.id, true);
   for (const rule of f.store.request({ type: 'life-rule.list', companionId: carol.id }).lifeRules!) {
     f.store.request({ type: 'life-rule.update', companionId: carol.id, id: rule.id, expectedRevision: rule.revision,
       rule: { title: rule.title, enabled: false, action: rule.action, startMinute: rule.startMinute, endMinute: rule.endMinute, probability: rule.probability, targetId: rule.targetId } });

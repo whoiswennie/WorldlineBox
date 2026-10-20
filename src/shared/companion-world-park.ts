@@ -5,7 +5,7 @@ export interface CompanionWorldParkPoint { x: number; y: number }
 export interface CompanionWorldParkBounds { x: number; y: number; width: number; height: number }
 /** A view over the existing public scene, with the same furniture and collision grid. */
 export function companionWorldParkLayout(scene: CompanionWorldScene) {
-  if (scene.kind !== 'commons') return undefined;
+  if (scene.kind !== 'park') return undefined;
   const objects = scene.objects.filter(object => object.kind === 'tree' || object.kind === 'bench');
   if (!objects.length) return undefined;
   const left = Math.max(0, Math.min(...objects.map(object => object.position.x)) - 7);
@@ -20,9 +20,6 @@ export function companionWorldParkLayout(scene: CompanionWorldScene) {
 export function companionWorldParkContains(bounds: CompanionWorldParkBounds, point: CompanionWorldParkPoint): boolean {
   return point.x >= bounds.x && point.y >= bounds.y && point.x <= bounds.x + bounds.width && point.y <= bounds.y + bounds.height;
 }
-
-/** The observer camera key is local UI state; it is never an authoritative scene id. */
-export const companionWorldParkViewId = (sceneId: string): string => `${sceneId}:park`;
 
 /** The hazard and physical host share one outdoor safety gate. */
 export function companionWorldParkSuitable(environment: Pick<CompanionWorldSnapshot['environment'], 'weather' | 'outdoorTemperature'>, energy?: number): boolean {

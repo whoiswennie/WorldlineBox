@@ -23,7 +23,7 @@ import { CompanionScheduleService } from './schedule-service';
 import { CompanionReplyStream } from './reply-stream';
 import { CompanionWorldService } from './world-service';
 import { generateCompanionWorldAttention } from './world-model';
-import { authorizeCompanionMessage } from './social-model';
+import { authorizeCompanionContact } from './social-model';
 import { CompanionPublicProfiles } from './public-profiles';
 import { companionAttachmentResponse } from './attachment-response';
 import { cropCompanionAvatar } from './avatar-crop';
@@ -85,6 +85,7 @@ export class CompanionService {
   private readonly resetReplyControllers = new WeakSet<AbortController>();
   private readonly attentionJobs = new Map<string, Promise<void>>();
   private readonly attentionControllers = new Map<string, AbortController>();
+  private readonly dormantCompanions = new Set<string>();
   private readonly resettingCompanions = new Set<string>();
   private readonly resetCleanupJobs = new Map<string, Promise<void>>();
   private readonly fileReadJobs = new Map<string, Set<Promise<unknown>>>();
@@ -110,12 +111,13 @@ export class CompanionService {
       configFor: companion => this.configFor(companion),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), report: options.report,
-      busy: () => [...this.activities.values()].some(activity => activity.status === 'thinking'), blocked: id => this.resettingCompanions.has(id) });
+      busy: () => [...this.activities.values()].some(activity => activity.status === 'thinking'), blocked: id => this.resettingCompanions.has(id) || this.dormantCompanions.has(id) });
     this.world = new CompanionWorldService({ request: command => this.call(command), configFor: companion => this.configFor(companion),
       profiles: input => this.profiles.prepare(input),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), wakeWaiting: () => { void this.pumpQueue(); }, report: options.report,
-      blocked: id => this.resettingCompanions.has(id), tickLife: () => this.autonomy.tick() });
+      beginPriority: (owner, room, source) => this.beginPriority(owner, room, source), endPriority: id => this.endPriority(id),
+      blocked: id => this.resettingCompanions.has(id) || this.dormantCompanions.has(id), tickLife: () => this.autonomy.tick() });
     this.autonomy = new CompanionAutonomyService({ request: command => this.call(command), configFor: companion => this.configFor(companion),
       profiles: input => this.profiles.prepare(input),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
@@ -131,7 +133,7 @@ export class CompanionService {
           sourceMessageId: order.sourceMessageId, title: order.title.slice(0, 120), prompt: `这是用户实际发布并已受理的工作单。只执行该工作及下列真实来源的限制；不从历史聊天添加任务。\n工作目标：${order.instruction}\n用户来源资料（不得扩大授权）：\n${sources.map(source => source.message?.content ?? '[已不可用]').join('\n\n')}` },
         undefined, [], { workOrderId: order.id }, signal);
         const action = result.actions?.find(action => action.workOrderId === order.id); if (!action) throw new Error('工作尚未登记实际执行。'); return action;
-      }, resume: id => this.resumeAction(id), wait: id => this.actionJobs.get(id), blocked: id => this.resettingCompanions.has(id),
+      }, resume: id => this.resumeAction(id), wait: id => this.actionJobs.get(id), blocked: id => this.resettingCompanions.has(id) || this.dormantCompanions.has(id),
       changed: () => this.changed(), report: options.report });
     this.schedules = new CompanionScheduleService({ request: command => this.call(command),
       activity: {
@@ -154,7 +156,7 @@ export class CompanionService {
           title: schedule.title.slice(0, 120), prompt: `这是用户已正式设置的定时任务，本次计划时间为 ${occurrence.scheduledAt}，时区 ${schedule.timeZone}。只执行下列已授权目标与限制；不得从旧聊天和其他日程添加工作，不得扩大重复任务范围。\n\n当前任务目标：\n${schedule.prompt}\n\n用户实际授权记录（时间顺序的引用资料，只提取本任务目标与限制；较新的明确修改只替换它明确改变的部分，单纯改时间不会取消只读、禁止写入等限制）：\n${sourceText}` }, undefined, [], { scheduleOccurrenceId: occurrence.id });
         return result.actions!.find(action => action.scheduleOccurrenceId === occurrence.id)!;
       }, resume: id => this.resumeAction(id), wait: id => this.actionJobs.get(id),
-      changed: () => this.changed(), wakeWaiting: () => { void this.pumpQueue(); }, report: options.report, blocked: id => this.resettingCompanions.has(id) });
+      changed: () => this.changed(), wakeWaiting: () => { void this.pumpQueue(); }, report: options.report, blocked: id => this.resettingCompanions.has(id) || this.dormantCompanions.has(id) });
     this.activityTasks = new CompanionActivityTaskService({ request: command => this.call(command), configFor: role => this.configFor(role),
       profiles: input => this.profiles.prepare(input), fetchFn: (url, init) => net.fetch(url instanceof URL ? url.toString() : url, { ...init, credentials: 'omit' }),
       excludedIds: () => [...new Set([...this.resettingCompanions, ...[...this.activities.values()].map(activity => activity.companionId)])],
@@ -162,9 +164,11 @@ export class CompanionService {
     this.initialization = this.storage.start().then(async () => {
       await this.call({ type: 'action.interrupt-pending' });
       await this.call({ type: 'work-order.interrupt-pending' });
+      await this.call({ type: 'interruption.recover' });
       await this.call({ type: 'work.interrupt-running' });
       await this.call({ type: 'activity.recover' });
       await this.call({ type: 'schedule.recover-activities' });
+      for (const companion of (await this.call({ type: 'state' })).state?.companions ?? []) if (companion.active === false) this.dormantCompanions.add(companion.id);
       await this.restoreResets();
     });
     void this.initialization.catch(options.report);
@@ -237,6 +241,8 @@ export class CompanionService {
       case 'state': {
         const response = await this.call(request);
         if (response.state) {
+          this.dormantCompanions.clear();
+          for (const role of response.state.companions) if (role.active === false) this.dormantCompanions.add(role.id);
           const works = (await this.call({ type: 'work.list', unfinishedOnly: true })).works ?? [];
           response.state.queue = works.filter(work => !['done', 'cancelled'].includes(work.status));
           response.state.companions = response.state.companions.map(companion => {
@@ -267,11 +273,27 @@ export class CompanionService {
             }
             const offline = !connected || !!unavailable && !companion.activeCount;
             return { ...companion, ...(companion.llm ? { llm: { ...companion.llm, hasKey: connected } } : {}),
-              availability: reset ? 'waiting' as const : offline ? 'offline' as const : companion.availability,
-              availabilityReason: reset ? reset.status === 'failed' ? '伙伴重置已暂停，请查看进度' : '伙伴正在重置' : offline ? unavailable?.reason ?? (companion.llm ? '此伙伴尚未保存模型服务密钥' : '尚未配置全局模型服务') : companion.availabilityReason };
+              availability: companion.active === false ? 'dormant' as const : reset ? 'waiting' as const : offline ? 'offline' as const : companion.availability,
+              availabilityReason: companion.active === false ? '伙伴已休眠，虚拟生活与后台活动已暂停；请手动激活。' : reset ? reset.status === 'failed' ? '伙伴重置已暂停，请查看进度' : '伙伴正在重置' : offline ? unavailable?.reason ?? (companion.llm ? '此伙伴尚未保存模型服务密钥' : '尚未配置全局模型服务') : companion.availabilityReason };
           }));
         }
         return response;
+      }
+      case 'companion.set-active': {
+        if (this.resettingCompanions.has(request.id)) throw new Error('伙伴正在停止，请稍后重试。');
+        this.resettingCompanions.add(request.id);
+        let activated = false;
+        try {
+          const result = await this.call(request);
+          activated = request.active;
+          if (request.active) this.dormantCompanions.delete(request.id);
+          else { this.dormantCompanions.add(request.id); await this.stopCompanion(request.id); }
+          return result;
+        } finally {
+          this.resettingCompanions.delete(request.id);
+          this.changed();
+          if (activated) { void this.pumpQueue(); this.memory.schedule(0); this.schedules.wake(); }
+        }
       }
       case 'companion.create': case 'companion.update': {
         const companion = { ...request.companion, model: '' };
@@ -282,6 +304,7 @@ export class CompanionService {
         const result = await this.call(request.type === 'companion.create'
           ? { type: 'companion.create', companion } : { type: 'companion.update', id: request.id, companion, expectedRevision: request.expectedRevision });
         const id = request.type === 'companion.update' ? request.id : result.companion?.id;
+        if (result.companion?.active === false && id) this.dormantCompanions.add(id);
         if (id && companion.llm && request.apiKey !== undefined) await this.credentials.save(id, request.apiKey.trim());
         const old = previous?.companions.find(role => role.id === id);
         if (old && (old.persona !== companion.persona || JSON.stringify(old.llm) !== JSON.stringify(companion.llm) || request.apiKey !== undefined)) {
@@ -312,6 +335,16 @@ export class CompanionService {
         } });
         if (response.inserted) {
           this.changed();
+          if (request.priority === 'urgent' && response.message) {
+            const source = response.message, state = (await this.call({ type: 'state', includeHidden: true })).state;
+            const room = state?.conversations.find(room => room.id === source.conversationId);
+            if (source.content.trim()) for (const companionId of room?.memberIds ?? []) {
+              await this.call({ type: 'world.attention.record', companionId, conversationId: source.conversationId, sourceMessageId: source.id,
+                sourceChecksum: createHash('sha256').update(source.content).digest('hex'), urgency: 'urgent', confidence: 1,
+                evidence: [source.content], reason: '玩家明确选择紧急打扰，优先处理这条真实消息。' });
+              this.assessedAttention.add(companionId + ':' + source.id);
+            }
+          }
           if (guide) await this.handle({ type: 'message.guide', id: response.message!.id, targetSourceMessageId: request.targetSourceMessageId });
           else await this.launchReply(response.message?.conversationId ?? request.conversationId, false, 'auto', false, response.message?.id);
         }
@@ -499,7 +532,7 @@ export class CompanionService {
         }
         const response = await this.call(request);
         if (!['messages', 'message.get', 'message.search', 'memory.list', 'memory.search', 'memory.browse', 'memory.inspect', 'memory.sources.search', 'memory.sources.filter', 'memory.records.filter', 'memory.read', 'memory.status', 'actions', 'actions.page', 'action.get',
-          'schedule.list', 'state.get', 'state.inspect', 'routine.get', 'world.snapshot', 'world.observe', 'social.conversations', 'social.messages', 'social.days', 'work-order.list', 'life-rule.list'].includes(request.type)) this.changed();
+          'schedule.list', 'state.get', 'state.inspect', 'routine.get', 'world.status', 'world.snapshot', 'world.observe', 'social.conversations', 'social.messages', 'social.days', 'social.flow', 'social.graph', 'work-order.list', 'life-rule.list'].includes(request.type)) this.changed();
         return response;
       }
     }
@@ -602,9 +635,23 @@ export class CompanionService {
     }
     await this.pumpQueue();
   }
+  private async beginPriority(companionId: string, conversationId: string, sourceMessageId: string): Promise<string | undefined> {
+    const interruption = (await this.call({ type: 'interruption.begin', companionId, conversationId, sourceMessageId })).interruption;
+    if (!interruption) return undefined;
+    for (const order of interruption.orders) {
+      this.autonomy.cancelOrder(order.id);
+      if (order.actionId) {
+        const action = (await this.call({ type: 'action.get', id: order.actionId })).action;
+        if (action && ['queued', 'running'].includes(action.status)) { await this.handle({ type: 'action.terminate', id: action.id }); await this.actionJobs.get(action.id); }
+      }
+      await this.autonomy.drainOrder(order.id);
+    }
+    this.changed(); return interruption.id;
+  }
+  private async endPriority(id: string | undefined): Promise<void> { if (id) { await this.call({ type: 'interruption.end', id }); this.changed(); } }
   private async assessAttention(companionId: string, sourceMessageId: string): Promise<void> {
     const key = companionId + ':' + sourceMessageId;
-    if (this.closed || this.resettingCompanions.has(companionId) || this.assessedAttention.has(key)) return;
+    if (this.closed || this.resettingCompanions.has(companionId) || this.dormantCompanions.has(companionId) || this.assessedAttention.has(key)) return;
     const existing = this.attentionJobs.get(key); if (existing) return existing;
     const controller = new AbortController();
     this.attentionControllers.set(key, controller);
@@ -652,11 +699,14 @@ export class CompanionService {
             this.replyControllers.delete(controller); this.replyOwners.delete(controller); this.replies.delete(work.id);
             try {
               if (this.resetReplyControllers.has(controller)) return;
-              const loop = (await this.call({ type: 'loop.get', sourceMessageId: work.sourceMessageId, companionId: work.companionId })).loop;
+              const loop = (await this.call({ type: 'loop.get', sourceMessageId: work.sourceMessageId, companionId: work.companionId,
+                ...(work.proactive ? { proactiveWorkId: work.id } : {}) })).loop;
               await this.call({ type: 'work.status', id: work.id, status: loop?.status === 'done' ? 'done' : 'interrupted' });
-              const others = (await this.call({ type: 'work.list', sourceMessageId: work.sourceMessageId })).works ?? [];
-              await this.call({ type: 'reply.checkpoint.status', conversationId: work.conversationId, sourceMessageId: work.sourceMessageId,
-                status: others.some(item => item.status === 'running' || item.status === 'queued') ? 'pending' : others.some(item => item.status === 'interrupted') ? 'interrupted' : 'done' });
+              if (!work.proactive) {
+                const others = (await this.call({ type: 'work.list', sourceMessageId: work.sourceMessageId })).works ?? [];
+                await this.call({ type: 'reply.checkpoint.status', conversationId: work.conversationId, sourceMessageId: work.sourceMessageId,
+                  status: others.some(item => item.status === 'running' || item.status === 'queued') ? 'pending' : others.some(item => item.status === 'interrupted') ? 'interrupted' : 'done' });
+              }
             } finally { this.changed(); if (!this.closed) void this.pumpQueue(); }
           }).catch(this.options.report);
         this.replies.set(work.id, { controller, promise });
@@ -665,6 +715,7 @@ export class CompanionService {
     finally { this.pumping = false; resolveIdle(); if (this.pumpAgain && !this.closed) void this.pumpQueue(); }
   }
   private async configFor(companion: Companion): Promise<CompanionModelConfig> {
+    if (companion.active === false || this.dormantCompanions.has(companion.id)) throw new CompanionModelError('CONFIG', '伙伴已休眠，请在联系人资料中手动激活。');
     if (companion.llm) {
       try { return { ...companion.llm, apiKey: await this.credentials.get(companion.id) }; }
       catch (error) { throw new CompanionModelError('CONFIG', publicError(error)); }
@@ -698,12 +749,13 @@ export class CompanionService {
       const key = workId ?? userMessage.id + ':' + id;
       const worldWork = worldWorkId('chat', key);
       const loopKey = userMessage.id + ':' + id + (proactive ? ':' + workId : '');
-      const checkpoint: CompanionLoopCheckpoint = (!proactive ? (await this.call({ type: 'loop.get', sourceMessageId: userMessage.id, companionId: id })).loop : undefined)
-        ?? { conversationId, sourceMessageId: userMessage.id, companionId: id, status: 'running', turns: [], supplements: [] };
+      const proactiveWorkId = proactive ? workId ?? createHash('sha256').update(loopKey).digest('hex') : undefined;
+      const checkpoint: CompanionLoopCheckpoint = (await this.call({ type: 'loop.get', sourceMessageId: userMessage.id, companionId: id, proactiveWorkId })).loop
+        ?? { conversationId, sourceMessageId: userMessage.id, companionId: id, proactiveWorkId, status: 'running', turns: [], supplements: [] };
       if (checkpoint.status === 'done') return;
       if (!checkpoint.messageId) {
         const appended = await this.call({ type: 'message.append', message: { conversationId, authorId: id, content: '', loopStep: 0,
-          replyToId: userMessage.id, clientId: 'loop-' + createHash('sha256').update(loopKey).digest('hex') } });
+          ...(proactive ? {} : { replyToId: userMessage.id }), clientId: 'loop-' + createHash('sha256').update(loopKey).digest('hex') } });
         checkpoint.messageId = appended.message!.id;
         await this.call({ type: 'loop.save', checkpoint });
       }
@@ -720,20 +772,31 @@ export class CompanionService {
           reason => updateActivity('waiting', reason));
       };
       updateActivity('waiting', '消息已收到，正在确认当前活动');
-      let connection: string | undefined;
+      let connection: string | undefined, interruptionId: string | undefined;
       try {
         if (!proactive) await this.assessAttention(id, userMessage.id);
+        if (!proactive) interruptionId = await this.beginPriority(id, conversationId, userMessage.id);
         await phoneReady();
+        // An unsolicited opportunity observes the conversation now, rather than the
+        // old user-source cursor used to preserve an explicitly queued request.
+        const replyMessages = proactive ? (await this.call({ type: 'messages', conversationId, limit: 50 })).messages ?? [] : messages;
+        if (proactive && !checkpoint.context) {
+          if (replyMessages.findLast(message => message.authorId === 'user')?.id !== userMessage.id) {
+            checkpoint.status = 'done'; await this.call({ type: 'loop.save', checkpoint }); return;
+          }
+          checkpoint.contextThroughSequence = replyMessages.at(-1)?.sequence ?? userMessage.sequence;
+        }
         updateActivity('thinking', '正在读取相关记忆');
         const config = await this.configFor(companion);
         connection = connectionIdentity(config);
-        const recalled = await this.memory.recall({ companion, conversation, messages, currentMessage: userMessage,
+        const recalled = await this.memory.recall({ companion, conversation, messages: replyMessages, currentMessage: userMessage,
+          beforeSequence: checkpoint.contextThroughSequence,
           referencedMessage: reference?.conversationId === conversationId ? reference : undefined, config, signal: controller.signal });
         const memories = recalled.memories;
         let step = checkpoint.turns.length ? checkpoint.turns.length - 1 : 0;
         if (!checkpoint.context) {
-          checkpoint.context = buildCompanionContext({ companion, conversation, messages, memories,
-            sourceMessage: userMessage, identityDirectory: state?.companions.map(role => ({ id: role.id, name: role.name })), addressedCompanionIds: speakers,
+          checkpoint.context = buildCompanionContext({ companion, conversation, messages: replyMessages, memories,
+            sourceMessage: userMessage, identityDirectory: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name })), addressedCompanionIds: speakers,
             memorySources: recalled.sources, memoryRecall: recalled, proactive, agentLoop: true,
             taskRequest: proactive ? undefined : { sourceMessageId: userMessage.id, prompt: userMessage.content,
               ...(reference?.conversationId === conversationId ? { replyReference: { id: reference.id, authorId: reference.authorId, content: reference.content } } : {}) },
@@ -768,8 +831,8 @@ export class CompanionService {
                 stream = new CompanionReplyStream({ checkpoint, step,
                   publish: event => this.publishReplyStream(event), save: () => this.call({ type: 'loop.save', checkpoint }) });
                 updateActivity('thinking', retry ? '模型连接重试中' : '正在生成回复');
-                reply = await generateCompanionReply({ companion, conversation, messages, memories, proactive, ...profiles, fileInputs,
-                  sourceMessage: userMessage, identityDirectory: state?.companions.map(role => ({ id: role.id, name: role.name })), addressedCompanionIds: speakers,
+                reply = await generateCompanionReply({ companion, conversation, messages: replyMessages, memories, proactive, ...profiles, fileInputs,
+                  sourceMessage: userMessage, identityDirectory: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name })), addressedCompanionIds: speakers,
                   members: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name, description: role.description })) }, config, controller.signal,
                   { loop: true, ...inference, toolImages, onTextDelta: stream.onTextDelta,
                     fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
@@ -809,7 +872,7 @@ export class CompanionService {
           await this.call({ type: 'loop.save', checkpoint }); this.changed();
           if (!turn.calls.length) {
             checkpoint.status = 'done'; await this.call({ type: 'loop.save', checkpoint });
-            await this.call({ type: 'reply.checkpoint.complete', conversationId, sourceMessageId: userMessage.id, companionId: id });
+            if (!proactive) await this.call({ type: 'reply.checkpoint.complete', conversationId, sourceMessageId: userMessage.id, companionId: id });
             if (proactive && turn.text) {
               const clock = (await this.call({ type: 'world.clock' })).worldClock;
               await this.call({ type: 'proactive.record', companionId: id, lastUserMessageId: userMessage.id, sentAt: new Date().toISOString(),
@@ -961,7 +1024,7 @@ export class CompanionService {
           this.unavailableCompanions.set(id, { connection, reason: publicError(error).slice(0, 500) });
         }
         if (!controller.signal.aborted && !this.closed) await this.call({ type: 'message.append', message: { conversationId, authorId: 'system', kind: 'notice', status: 'failed', content: publicError(error) } });
-      } finally { await this.world.end(id, worldWork); this.activeLoops.delete(loopKey); this.activities.delete(key); this.memory.schedule(); this.changed(); }
+      } finally { await this.world.end(id, worldWork); await this.endPriority(interruptionId); this.activeLoops.delete(loopKey); this.activities.delete(key); this.memory.schedule(); this.changed(); }
     }));
 
   }
@@ -994,7 +1057,7 @@ export class CompanionService {
     });
   }
   private async memoryBoundary(checkpoint: CompanionLoopCheckpoint, sourceSequence: number): Promise<number> {
-    let boundary = sourceSequence;
+    let boundary = Math.max(sourceSequence, checkpoint.proactiveWorkId ? checkpoint.contextThroughSequence ?? sourceSequence : sourceSequence);
     for (const supplement of checkpoint.supplements) {
       const message = (await this.call({ type: 'message.get', id: supplement.id })).message;
       if (message?.conversationId === checkpoint.conversationId) boundary = Math.max(boundary, message.sequence);
@@ -1146,7 +1209,7 @@ export class CompanionService {
       }
       if (name === 'world') {
         const args = companionWorldArgumentsSchema.parse(input);
-        const sourceMessageId = requestMessageIds.at(-1);
+        const sourceMessageId = currentPlayerRequest ? requestMessageIds.at(-1) : undefined;
         if (args.action === 'message' || args.action === 'social') {
           const recipientIds = args.action === 'message' ? args.recipientIds : args.recipientIds ?? (args.targetCompanionId ? [args.targetCompanionId] : []);
           if (!currentPlayerRequest) throw new Error('自主聊天不能沿用旧玩家消息分享私人内容。');
@@ -1154,25 +1217,43 @@ export class CompanionService {
           const state = (await this.call({ type: 'state' })).state;
           const owner = state?.companions.find(member => member.id === scope.companionId);
           const recipients = state?.companions.filter(member => recipientIds.includes(member.id)).map(member => ({ id: member.id, name: member.name })) ?? [];
-          if (!source || !owner || new Set(recipientIds).size !== recipientIds.length || recipients.length !== recipientIds.length || recipientIds.includes(owner.id)
-            || !await authorizeCompanionMessage({ source, recipients, text: args.text }, await this.configFor(owner), signal,
-              { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) })) throw new Error('向其他伙伴发送内容需要本次玩家明确的收件人和分享要求。');
+          if (!source || !owner || new Set(recipientIds).size !== recipientIds.length || recipients.length !== recipientIds.length || recipientIds.includes(owner.id)) throw new Error('本次联系的来源或收件人无效。');
+          const contact = await authorizeCompanionContact({ source, recipients, text: args.text }, await this.configFor(owner), signal,
+            { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
+          if (!contact.allowed) throw new Error('拟发内容或收件人超出了本次联系目标。请收敛为你自己的必要问候或邀约并自行重试，不转发玩家私人信息；无需玩家改口或提供消息模板。');
           this.assertReplyActive(signal);
+          const current = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [source.id] })).memorySources?.find(message => message.id === source.id && message.content === source.content);
+          if (!current) throw new Error('本次联系的原委托已更新或撤回。');
+          if (args.action === 'message' && contact.intent === 'visit') {
+            const visit = recipientIds.length === 1 ? await this.call({ type: 'activity.visit.ensure', ...scope, sourceMessageId: source.id,
+              targetId: recipientIds[0]!, initialMessage: { text: args.text, urgent: args.urgent, clientId: 'native_' + createHash('sha256').update(callIdentity).digest('hex').slice(0, 48) } })
+              : await this.call({ type: 'activity.start', ...scope, sourceMessageId: source.id, title: '前往拜访伙伴', goal: source.content,
+                clientId: 'visit_group_' + createHash('sha256').update(scope.companionId + ':' + source.id).digest('hex') });
+            this.changed(); return visit;
+          }
           const peer = (await this.call({ type: 'social.conversation.ensure', companionId: owner.id,
             memberIds: [owner.id, ...recipientIds] })).socialConversation;
           this.assertReplyActive(signal);
           if (!peer) throw new Error('伙伴通信会话当前不可用。');
           const sent = await this.call({ type: 'social.send', companionId: owner.id, conversationId: peer.id, channel: args.action === 'social' ? 'face_to_face' : 'phone',
-            content: args.text, authorizationMessageId: source.id, clientId: 'native_' + createHash('sha256').update(callIdentity).digest('hex').slice(0, 48) });
+            content: args.text, ...(args.action === 'message' ? { urgent: args.urgent } : {}), authorizationMessageId: source.id, clientId: 'native_' + createHash('sha256').update(callIdentity).digest('hex').slice(0, 48) });
           this.changed(); return sent;
         }
-        const result = await this.call({ type: 'world.tool', ...scope, beforeSequence, ...(sourceMessageId ? { sourceMessageId } : {}), arguments: args });
-        if (currentPlayerRequest && args.action === 'visit' && result.ok) {
-          const source = sourceMessageId ? (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [sourceMessageId] })).memorySources?.find(message => message.id === sourceMessageId && message.authorId === 'user') : undefined;
-          const visit = result.world?.visits.find(visit => visit.guestId === scope.companionId && visit.hostId === args.targetCompanionId && visit.sourceMessageId === source?.id && visit.reason === args.reason && ['requested', 'allowed'].includes(visit.status));
-          if (source) await this.call({ type: 'social.delegation.record', ...scope, sourceMessageId: source.id,
-            recipientIds: [args.targetCompanionId], sharedText: args.reason, ...(visit ? { visitId: visit.id } : {}) });
+        if (currentPlayerRequest && args.action === 'visit') {
+          const source = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [...requestMessageIds] })).memorySources?.filter(message => message.authorId === 'user').at(-1);
+          const state = (await this.call({ type: 'state' })).state;
+          const owner = state?.companions.find(member => member.id === scope.companionId), target = state?.companions.find(member => member.id === args.targetCompanionId);
+          if (!source || !owner || !target || target.id === owner.id) throw new Error('拜访需要本轮真实原委托和另一位有效伙伴。');
+          const contact = await authorizeCompanionContact({ source, recipients: [{ id: target.id, name: target.name }], text: args.reason }, await this.configFor(owner), signal,
+            { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
+          if (!contact.allowed || contact.intent !== 'visit') throw new Error('原请求没有要求本人到场拜访，不能把普通消息扩大为出行。');
+          this.assertReplyActive(signal);
+          const current = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [source.id] })).memorySources?.find(message => message.id === source.id && message.content === source.content);
+          if (!current) throw new Error('拜访原委托已更新或撤回。');
+          const continuation = await this.call({ type: 'activity.visit.ensure', ...scope, sourceMessageId: source.id, targetId: target.id });
+          this.changed(); return continuation;
         }
+        const result = await this.call({ type: 'world.tool', ...scope, beforeSequence, ...(sourceMessageId ? { sourceMessageId } : {}), arguments: args });
         this.changed(); return result;
       }
       if (name === 'state') {
@@ -1237,6 +1318,7 @@ export class CompanionService {
       const args = JSON.parse(serialized);
       let command: CompanionStorageCommand;
       switch (name) {
+        case 'memory.world_query': command = { type: name, ...companionMemoryToolArgumentsSchemas[name].parse(args), ...scope }; break;
         case 'memory.search': command = { type: name, ...companionMemoryToolArgumentsSchemas[name].parse(args), ...scope }; break;
         case 'memory.read': command = { type: name, ...companionMemoryToolArgumentsSchemas[name].parse(args), ...scope }; break;
         case 'memory.record': command = { type: name, ...companionMemoryToolArgumentsSchemas[name].parse(args), ...scope }; break;
@@ -1263,6 +1345,7 @@ export class CompanionService {
   }
   private async launchAction(request: Extract<CompanionsRequest, { type: 'action.run' }>, queuedBehind?: Promise<unknown>, waitForActionIds: string[] = [], association?: Pick<CompanionAction, 'parentMessageId' | 'toolCallId' | 'loopStep' | 'scheduleOccurrenceId' | 'workOrderId'>, signal?: AbortSignal): Promise<CompanionsResponse> {
     if (this.closed) throw new Error('伙伴服务正在关闭，暂不启动新任务。');
+    if (this.dormantCompanions.has(request.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (this.resettingCompanions.has(request.companionId)) throw new Error('伙伴正在重置，暂不启动新任务。');
     this.assertReplyActive(signal);
     const source = (await this.call({ type: 'memory.sources.filter', companionId: request.companionId,
@@ -1270,18 +1353,21 @@ export class CompanionService {
     this.assertReplyActive(signal);
     if (!source || source.authorId !== 'user') throw new Error('现实任务需要真实可见的玩家委托，伙伴社交消息不授予执行权限。');
     const files = source.attachments.length ? await this.visibleFiles(JSON.stringify({ conversation: { id: request.conversationId }, messages: [{ id: source.id, attachments: source.attachments }] })) : [];
+    if (this.dormantCompanions.has(request.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (this.resettingCompanions.has(request.companionId)) throw new Error('伙伴正在停止，暂不启动新任务。');
     const response = await this.call({ type: 'action.create', action: { conversationId: request.conversationId,
       companionId: request.companionId, sourceMessageId: request.sourceMessageId, title: request.title, status: 'queued', stage: '正在准备能力环境', events: [], ...association },
       checkpoint: { prompt: request.prompt + (files.length ? '\n\n当前玩家消息附带的真实文件（路径是资料，不授予额外任务）：\n' + JSON.stringify(files) : ''), supplements: [], waitForActionIds } });
     if (!response.action) throw new Error('无法登记这件事。');
     const action = response.action;
+    if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不启动新任务。');
     if (this.actionJobs.has(action.id) || ['succeeded', 'failed', 'cancelled'].includes(action.status)) return { ok: true, actions: [action] };
     if (action.status === 'interrupted') return this.resumeAction(action.id);
     if (!association?.parentMessageId) await this.call({ type: 'message.append', message: { conversationId: action.conversationId, authorId: action.companionId,
       kind: 'action', content: action.title, actionId: action.id, replyToId: action.sourceMessageId,
       ...(association?.scheduleOccurrenceId ? { clientId: `schedule-action-${association.scheduleOccurrenceId}` } : {}) } });
+    if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不启动新任务。');
     this.changed();
     const waiting = new AbortController();
@@ -1314,6 +1400,7 @@ export class CompanionService {
     return { ok: true, actions: (await this.call({ type: 'actions', conversationId: action.conversationId })).actions };
   }
   private async deliverInput(action: CompanionAction, content: string, mode: 'steer' | 'queue', messageId: string) {
+    if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不接收任务补充。');
     try {
       await this.call({ type: 'checkpoint.input', id: action.id, input: { id: messageId, content, mode } });
@@ -1339,7 +1426,8 @@ export class CompanionService {
     try {
       const action = (await this.call({ type: 'action.get', id })).action;
       if (!action || !['interrupted', 'cancelled', 'failed'].includes(action.status)) throw new Error('这条任务无需恢复。');
-      if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不恢复任务。');
+      if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
+    if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不恢复任务。');
       const dsh = this.options.dsh();
       if (!dsh) throw new Error('能力执行环境不可用。');
       if (action.taskId) await dsh.requestTask({ type: 'task.result', taskId: action.taskId });
@@ -1351,7 +1439,8 @@ export class CompanionService {
       if (checkpoint.execution?.sessionId) checkpoint = { ...checkpoint, execution: { ...checkpoint.execution, status: 'interrupted' } };
       await this.call({ type: 'checkpoint.save', id, checkpoint });
       const resumed = (await this.call({ type: 'action.resume', id })).action!;
-      if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不恢复任务。');
+      if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
+    if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不恢复任务。');
       const prompt = checkpoint.execution?.sessionId
         ? '继续原会话中被中断的任务。先核对已完成的文件和实际状态，只完成剩余目标，禁止盲目重复已完成或结果未知的外部动作。恢复前的完整目标供核对：\n' + checkpoint.prompt
         : checkpoint.prompt;
@@ -1582,7 +1671,7 @@ export class CompanionService {
         if (prepared === 'withdrawn') return;
         if (prepared === 'changed') continue;
         const reply = await generateCompanionReply({ companion, conversation, messages: messages.some(message => message.id === source.id) ? messages : [source, ...messages], memories: recalled.memories,
-          ...profiles, sourceMessage: source, identityDirectory: state?.companions.map(role => ({ id: role.id, name: role.name })),
+          ...profiles, sourceMessage: source, identityDirectory: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name })),
           world: await this.world.observe(scope), runtimeState: (await this.call({ type: 'state.get', ...scope, beforeSequence: source.sequence })).runtimeState,
           memorySources: recalled.sources, memoryRecall: recalled,
           actionResult: { id: action.id, title: action.title, status, sourceMessageId: action.sourceMessageId,
@@ -1619,9 +1708,11 @@ export class CompanionService {
       if (hour < 9 || hour >= 22) return;
       const state = (await this.call({ type: 'state' })).state;
       for (const companion of state?.companions ?? []) {
-        if (!companion.proactive) continue;
+        if (companion.active === false || !companion.proactive) continue;
         const conversation = state?.conversations.find(value => value.kind === 'private' && value.memberIds.includes(companion.id));
-        if (!conversation || conversation.muted || this.replies.has(conversation.id)) continue;
+        if (!conversation || conversation.muted) continue;
+        const work = (await this.call({ type: 'work.list', unfinishedOnly: true })).works ?? [];
+        if (work.some(item => item.companionId === companion.id || item.conversationId === conversation.id)) continue;
         const dynamic = (await this.call({ type: 'state.get', companionId: companion.id, conversationId: conversation.id })).runtimeState;
         // Own state governs unsolicited contact, while ordinary requested
         // replies and fixed schedule promises retain their normal execution.
@@ -1642,7 +1733,7 @@ export class CompanionService {
           || proactive?.date === date && proactive.count >= dailyLimit) continue;
         try { await this.configFor(companion); } catch { continue; }
         await this.call({ type: 'proactive.attempt', companionId: companion.id, at: now.toISOString() });
-        await this.launchReply(conversation.id, true);
+        await this.launchReply(conversation.id, true, 'auto', false, user.id);
       }
     } catch (error) { if (!this.closed) this.options.report(error); }
     finally { this.proactiveBusy = false; }

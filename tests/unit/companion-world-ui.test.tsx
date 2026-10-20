@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Companion, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import type { CompanionWorldSnapshot } from '../../src/shared/companion-world';
-import { createCompanionWorldCommons, createCompanionWorldHome } from '../../src/shared/companion-world-engine';
+import { createCompanionWorldPark, createCompanionWorldHome } from '../../src/shared/companion-world-engine';
 import { CompanionWorld } from '../../src/renderer/companions/world/CompanionWorld';
 import { createWorldViewport } from '../../src/renderer/companions/world/world-engine';
 import { WORLD_OBSERVER_PREFERENCES_KEY, readWorldObserverPreferences, saveWorldObserverPreferences } from '../../src/renderer/companions/world/world-observer-preferences';
@@ -20,41 +20,27 @@ afterEach(async () => { await act(() => root?.unmount()); container?.remove(); r
 const at = '2026-10-14T08:00:00.000Z';
 const companions: Companion[] = BUILTIN_COMPANIONS.slice(0, 2).map(item => ({ ...item, builtin: true, createdAt: at }));
 const first = companions[0]!, second = companions[1]!;
-function world(): CompanionWorldSnapshot { return { settings: { revision: 4, mode: 'compressed', dayDurationMinutes: 20, timeZone: 'Asia/Shanghai' }, clock: { realNow: at, virtualNow: at, hour: 16, day: 10, daylight: true, speed: 72 }, environment: { weather: 'clear', light: .7, outdoorTemperature: 21.5, indoorTemperature: 22.2 }, scenes: [createCompanionWorldHome(first.id, 0), createCompanionWorldHome(second.id, 1)], actors: [{ companionId: first.id, homeSceneId: 'home_' + first.id, sceneId: 'home_' + first.id, position: { x: 5.3, y: 4 }, facing: 'west', frame: 1, activity: 'walking', activityStartedAtReal: at, artAction: 'walk', locomotion: 'walk', movementSpeed: 2.4, state: { energy: 75, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: .1, dominance: .1 }, thermalComfort: .9 }, route: [{ sceneId: 'home_' + first.id, x: 4, y: 4 }], routinePhase: 'awake' }], visits: [{ id: 'visit', guestId: second.id, hostId: first.id, status: 'requested', reason: '想一起喝杯茶', createdAt: at, expiresAt: '2026-10-14T09:00:00.000Z' }], works: [{ workId: 'work', companionId: first.id, kind: 'action', status: 'moving', computerId: first.id + '_computer', reason: '先走到自己的电脑前' }], events: [], relationships: [], residents: companions.map(item => ({ companionId: item.id, name: item.name, homeSceneId: "home_" + item.id })), lastEventSequence: 0, backlog: false }; }
+function world(): CompanionWorldSnapshot { return { settings: { revision: 4, mode: 'compressed', dayDurationMinutes: 20, timeZone: 'Asia/Shanghai' }, clock: { realNow: at, virtualNow: at, hour: 16, day: 10, daylight: true, speed: 72 }, environment: { weather: 'clear', light: .7, outdoorTemperature: 21.5, indoorTemperature: 22.2 }, scenes: [createCompanionWorldHome(first.id), createCompanionWorldHome(second.id)], actors: [{ companionId: first.id, homeSceneId: 'home_' + first.id, sceneId: 'home_' + first.id, position: { x: 5.3, y: 4 }, facing: 'west', frame: 1, activity: 'walking', activityStartedAtReal: at, artAction: 'walk', locomotion: 'walk', movementSpeed: 2.4, state: { energy: 75, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: .1, dominance: .1 }, thermalComfort: .9 }, route: [{ sceneId: 'home_' + first.id, x: 4, y: 4 }], routinePhase: 'awake' }], visits: [{ id: 'visit', guestId: second.id, hostId: first.id, status: 'requested', reason: '想一起喝杯茶', createdAt: at, expiresAt: '2026-10-14T09:00:00.000Z' }], works: [{ workId: 'work', companionId: first.id, kind: 'action', status: 'moving', computerId: first.id + '_computer', reason: '先走到自己的电脑前' }], events: [], relationships: [], residents: companions.map(item => ({ companionId: item.id, name: item.name, homeSceneId: "home_" + item.id })), lastEventSequence: 0, backlog: false }; }
 function apiFor(get: () => CompanionWorldSnapshot, config?: (input: CompanionsRequest) => CompanionsResponse): WorldlineBoxCompanionsApi { return { request: vi.fn(async input => input.type === 'world.snapshot' ? { ok: true, world: get() } : config?.(input) ?? { ok: true, world: get() }), onChanged: vi.fn(() => () => undefined), onReplyStream: vi.fn(() => () => undefined) }; }
 async function mount(api: WorldlineBoxCompanionsApi, initialCompanionId: string | null = first.id) { vi.useFakeTimers(); container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); await act(async () => root!.render(<CompanionWorld api={api} companions={companions} initialCompanionId={initialCompanionId ?? undefined} onClose={vi.fn()} />)); }
 function button(label: string) { const found = [...container!.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === label || item.textContent === label); if (!found) throw new Error('No button ' + label); return found; }
 async function click(label: string) { await act(async () => button(label).click()); }
 
-it('pauses the three-dimensional renderer while observing the real neighborhood map and reopens the selected home', async () => {
-  const snapshot = world(); snapshot.scenes.unshift(createCompanionWorldCommons(snapshot.scenes));
-  saveWorldObserverPreferences({ sceneId: 'commons', views: {} });
-  await mount(apiFor(() => snapshot), null);
-  expect(container!.querySelector('[data-world-map-ready]')).not.toBeNull();
-  expect(view.update).not.toHaveBeenCalled(); expect(view.setActive).toHaveBeenLastCalledWith(false);
-  await click('观察' + second.name + '的小屋');
-  expect(container!.querySelector('[data-world-map-ready]')).toBeNull();
-  expect(view.update.mock.calls.at(-1)?.[1].id).toBe('home_' + second.id);
-  expect(view.setActive).toHaveBeenLastCalledWith(true);
-});
-
-it('enters the real public park as an independent view and remembers its camera without moving actors', async () => {
-  const snapshot = world(); snapshot.scenes.unshift(createCompanionWorldCommons(snapshot.scenes));
-  saveWorldObserverPreferences({ sceneId: 'commons', views: {} });
+it('selects independent scenes directly and remembers the park camera without a neighborhood map', async () => {
+  const snapshot = world(); snapshot.scenes.push(createCompanionWorldPark());
+  saveWorldObserverPreferences({ sceneId: 'park', views: {} });
   const api = apiFor(() => snapshot); await mount(api, null);
-  await click('进入公共花园');
   expect(container!.querySelector('[data-world-map-ready]')).toBeNull();
-  expect(view.update).toHaveBeenLastCalledWith(snapshot, snapshot.scenes[0], companions, 'park');
+  expect(view.update).toHaveBeenLastCalledWith(snapshot, snapshot.scenes.at(-1), companions);
   expect(view.setActive).toHaveBeenLastCalledWith(true);
-  const camera = { position: { x: 130, y: 40, z: 80 }, target: { x: 115, y: 0, z: 55 }, zoom: .8 };
+  const camera = { position: { x: 30, y: 40, z: 50 }, target: { x: 28, y: 0, z: 18 }, zoom: .8 };
   view.getView.mockReturnValue(camera);
   await act(async () => vi.mocked(createWorldViewport).mock.calls.at(-1)![3]?.());
-  expect(readWorldObserverPreferences().views['commons:park']).toEqual(camera);
-  expect(readWorldObserverPreferences().sceneId).toBe('commons:park');
-  await click('返回街区地图');
-  expect(container!.querySelector('[data-world-map-ready]')).not.toBeNull();
-  expect(view.setActive).toHaveBeenLastCalledWith(false);
-  await click('进入公共花园');
+  expect(readWorldObserverPreferences().views.park).toEqual(camera);
+  const location = container!.querySelector<HTMLSelectElement>('[aria-label="观测地点"]')!;
+  await act(() => { location.value = 'home_' + second.id; location.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(view.update.mock.calls.at(-1)?.[1].id).toBe('home_' + second.id);
+  await act(() => { location.value = 'park'; location.dispatchEvent(new Event('change', { bubbles: true })); });
   expect(view.restoreView).toHaveBeenLastCalledWith(camera, undefined);
   expect(vi.mocked(api.request).mock.calls.every(([input]) => input.type === 'world.snapshot')).toBe(true);
 });
@@ -112,6 +98,20 @@ it('stops polling and releases the renderer when the world closes', async () => 
   expect(view.dispose).toHaveBeenCalledOnce(); await act(async () => vi.advanceTimersByTimeAsync(10_000)); expect(api.request).toHaveBeenCalledTimes(1);
 });
 
+it('never creates a renderer for a dormant home and disposes its resources immediately when the resident is suspended', async () => {
+  const snapshot = world(), full = world();
+  snapshot.residents[0]!.active = false;
+  snapshot.actors = []; snapshot.scenes = snapshot.scenes.filter(scene => scene.ownerId !== first.id);
+  const api = apiFor(() => structuredClone(snapshot)); await mount(api);
+  expect(container!.textContent).toContain('虚拟世界未加载');
+  expect(createWorldViewport).not.toHaveBeenCalled(); expect(view.update).not.toHaveBeenCalled();
+  snapshot.residents[0]!.active = true; snapshot.scenes = full.scenes; snapshot.actors = full.actors;
+  await act(() => vi.advanceTimersByTimeAsync(1000)); expect(createWorldViewport).toHaveBeenCalledOnce();
+  snapshot.residents[0]!.active = false; snapshot.actors = []; snapshot.scenes = snapshot.scenes.filter(scene => scene.ownerId !== first.id);
+  await act(() => vi.advanceTimersByTimeAsync(1000)); expect(view.dispose).toHaveBeenCalledOnce();
+  expect(container!.querySelector('canvas')).toBeNull(); expect(container!.textContent).toContain('虚拟世界未加载');
+});
+
 it('keeps world observation nonmodal, opens another scene window and collapses its inspector', async () => {
   const open = vi.fn(); await mount(apiFor(world));
   await act(async () => root!.render(<CompanionWorld api={apiFor(world)} companions={companions} visibleWindowCount={3} initialCompanionId={first.id} onClose={vi.fn()} onOpenWindow={open} />));
@@ -126,7 +126,7 @@ it('describes actual physical behavior before work promises and distinguishes de
   const snapshot = world(), actor = snapshot.actors[0]!;
   const status = (patch: Partial<typeof actor>, works = snapshot.works) => worldActorStatus({ ...actor, ...patch }, { ...snapshot, works }, companions);
   expect(status({ locomotion: 'run' }).label).toBe('跑向自己的电脑');
-  expect(status({ sceneId: 'commons', locomotion: 'run' }).label).toBe('赶回家里的电脑前');
+  expect(status({ sceneId: 'park', locomotion: 'run' }).label).toBe('赶回家里的电脑前');
   expect(status({ activity: 'sleeping' }, [{ ...snapshot.works[0]!, status: 'waiting' }])).toMatchObject({ label: '正在睡觉', kind: 'sleep', detail: '有事项等醒来后处理' });
   expect(status({ activity: 'eating' }, [{ ...snapshot.works[0]!, status: 'waiting' }]).label).toBe('正在用餐');
   expect(status({ activity: 'seating' }, [{ ...snapshot.works[0]!, status: 'seating' }]).label).toBe('正在电脑前坐稳');

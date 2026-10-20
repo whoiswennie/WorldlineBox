@@ -86,11 +86,6 @@ export class CompanionWorldWindowManager {
     const response = await this.world();
     if (!response.ok || !response.world || input.sceneId && !response.world.scenes.some(scene => scene.id === input.sceneId)
       || input.companionId && !response.world.residents.some(resident => resident.companionId === input.companionId)) return { ok: false, error: '观察地点或伙伴不存在。' };
-    if (input.view === 'park') {
-      const commons = response.world.scenes.find(scene => scene.kind === 'commons');
-      if (!commons || input.companionId || input.sceneId && input.sceneId !== commons.id) return { ok: false, error: '公共花园属于街区。' };
-      input = { sceneId: commons.id, view: 'park' };
-    }
     if (this.disposed || !this.mayOpen(event)) return { ok: false, error: '世界窗口的打开请求已经结束。' };
     let slot = 0; while ([...this.entries].some(entry => entry.slot === slot)) slot++;
     const window = this.options.createWindow({ width: 1280, height: 850, minWidth: 720, minHeight: 520, show: false,

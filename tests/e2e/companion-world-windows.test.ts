@@ -131,8 +131,8 @@ test('native observer windows share one world, preserve independent cameras and 
       await a.screenshot({ path: path.join(visualOutput, 'world-header-' + theme + '.png') });
     }
     await nativeA.evaluate(window => window.setSize(1440, 900));
-    await a.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('commons');
-    await expect(a.getByRole('img', { name: '伙伴街区地图，家庭与真实出行路线', exact: true })).toBeVisible();
+    await a.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('park');
+    await expect(a.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
     await expect(a.locator('[data-world-map-garden]')).toContainText('公共花园');
     expect(await a.locator('.world-map-tree circle').count()).toBeGreaterThanOrEqual(9);
     expect(await a.locator('.world-map-bench').count()).toBe(2);
@@ -142,7 +142,7 @@ test('native observer windows share one world, preserve independent cameras and 
     const moved = await main.evaluate(async () => {
       const api = (window as unknown as Bridge).worldlinebox.companions!;
       const current = (await api.request({ type: 'world.snapshot' })).world!;
-      const entrance = current.scenes.find(scene => scene.id === 'commons')!.objects.find(object => object.id === 'deepseek-flash_entrance')!;
+      const entrance = current.scenes.find(scene => scene.id === 'park')!.objects.find(object => object.id === 'deepseek-flash_entrance')!;
       return api.request({ type: 'world.tool', companionId: 'deepseek-sister', conversationId: 'private-deepseek-sister', arguments: { action: 'move', destinationId: entrance.id } });
     });
     expect(moved.ok, moved.error).toBe(true);
@@ -153,11 +153,11 @@ test('native observer windows share one world, preserve independent cameras and 
     await expect.poll(async () => {
       const world = (await main.evaluate(() => (window as unknown as Bridge).worldlinebox.companions!.request({ type: 'world.snapshot' }))).world!;
       const actual = world.actors.find(actor => actor.companionId === 'deepseek-sister')!;
-      if (actual.sceneId !== 'commons' || actual.route.length) return false;
+      if (actual.sceneId !== 'park' || actual.route.length) return false;
       return await mapActor.getAttribute('data-world-position') === `${actual.position.x},${actual.position.y}`;
     }, { timeout: 50000, intervals: [500] }).toBe(true);
     for (const theme of ['light', 'dark']) {
-      await observerTheme(a, theme, 'commons');
+      await observerTheme(a, theme, 'park');
       await a.screenshot({ path: path.join(visualOutput, 'world-neighborhood-' + theme + '.png') });
     }
     const homeward = await main.evaluate(() => (window as unknown as Bridge).worldlinebox.companions!.request({ type: 'world.tool', companionId: 'deepseek-sister', conversationId: 'private-deepseek-sister', arguments: { action: 'move', destinationId: 'home_deepseek-sister' } }));

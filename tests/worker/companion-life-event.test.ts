@@ -12,7 +12,7 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'life-events-')); roots.push(root);
   const file = path.join(root, 'messages.sqlite');
   const seeds: CompanionSeed[] = [{ id: 'alice', name: 'Alice', description: '', persona: '温柔友善', model: '', avatar: 'sister', proactive: true }];
-  const store = new CompanionsStore(file, seeds); stores.add(store);
+  const store = new CompanionsStore(file, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
   for (const rule of store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!) {

@@ -4,7 +4,7 @@ import { generateCompanionReply, type CompanionModelConfig } from '../../src/mai
 import { generateCompanionWorldAttention, generateCompanionWorldDecision } from '../../src/main/companions/world-model';
 import { companionWorldArgumentsSchema } from '../../src/shared/companion-world-tool';
 import type { CompanionWorldJob, CompanionWorldSnapshot } from '../../src/shared/companion-world';
-import { createCompanionWorldHome, createCompanionWorldCommons } from '../../src/shared/companion-world-engine';
+import { createCompanionWorldHome, createCompanionWorldPark } from '../../src/shared/companion-world-engine';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
 import { sampleCompanionWorldPerception } from '../../src/shared/companion-world-perception';
 
@@ -13,18 +13,18 @@ const input: CompanionReplyInput = { companion: { id: 'sister', name: '姐姐', 
   conversation: { id: 'private_sister', kind: 'private', title: '姐姐', memberIds: ['sister'], pinned: false, muted: false, unread: 0, updatedAt: at, lastMessage: '' },
   messages: [{ id: 'actual_user', conversationId: 'private_sister', sequence: 1, authorId: 'user', kind: 'text', content: '看看你现在在哪里。', createdAt: at, status: 'sent', attachments: [] }], memories: [] };
 const config: CompanionModelConfig = { apiFormat: 'openai_chat', model: 'selected-model', baseUrl: 'https://provider.invalid', apiKey: 'private-test-key' };
-const homes = [createCompanionWorldHome('sister', 0), createCompanionWorldHome('peer', 1)];
+const homes = [createCompanionWorldHome('sister'), createCompanionWorldHome('peer')];
 const world: CompanionWorldSnapshot = { settings: { revision: 1, mode: 'compressed', dayDurationMinutes: 20, timeZone: 'UTC' },
   clock: { realNow: at, virtualNow: '2026-10-14T12:00:00.000Z', speed: 72, day: 1, hour: 12, daylight: true },
-  environment: { weather: 'rain', light: 0.5, outdoorTemperature: 12, indoorTemperature: 21 }, scenes: [...homes, createCompanionWorldCommons(homes)],
+  environment: { weather: 'rain', light: 0.5, outdoorTemperature: 12, indoorTemperature: 21 }, scenes: [...homes, createCompanionWorldPark()],
   residents: ['sister', 'peer'].map(companionId => ({ companionId, name: companionId, homeSceneId: 'home_' + companionId })),
-  actors: ['sister', 'peer'].map((companionId, index) => ({ companionId, sceneId: 'commons', homeSceneId: 'home_' + companionId,
+  actors: ['sister', 'peer'].map((companionId, index) => ({ companionId, sceneId: 'park', homeSceneId: 'home_' + companionId,
     position: { x: 12 + index, y: 18 }, facing: 'south', frame: 0, activity: 'idle', activityStartedAtReal: at,
     artAction: 'idle', locomotion: 'walk', movementSpeed: 2.4,
     state: { energy: 80, mood: 'calm', expression: 'gentle', affect: { pleasure: 0, arousal: 0, dominance: 0 }, thermalComfort: 1 },
     route: [], routinePhase: 'awake' })),
   visits: [{ id: 'visit', guestId: 'peer', hostId: 'sister', status: 'requested', reason: '想聊聊', createdAt: at, expiresAt: '2026-10-15T02:00:00.000Z' }],
-  events: [{ id: 'peer_event', sequence: 1, actorId: 'peer', targetId: 'sister', sceneId: 'commons', kind: 'social_comfort', text: '我支持你，慢慢来。', at, realAt: at, simulation: true }],
+  events: [{ id: 'peer_event', sequence: 1, actorId: 'peer', targetId: 'sister', sceneId: 'park', kind: 'social_comfort', text: '我支持你，慢慢来。', at, realAt: at, simulation: true }],
   relationships: [], works: [], lastEventSequence: 1, backlog: false };
 world.perception = sampleCompanionWorldPerception({ self: world.actors[0]!, actors: world.actors, scenes: world.scenes,
   environment: { weather: 'rain', light: .5, outdoorTemperature: 12, indoorTemperature: 21, daylight: world.clock.daylight },
@@ -65,7 +65,7 @@ describe('world reasoning and native tools', () => {
     await generateCompanionReply({ ...input, world }, { ...config, apiFormat: format }, undefined, { fetchFn, loop: true,
       turns: [{ ...reply.turn!, results: [{ callId: 'world_call', content: result }] }] });
     const request = String(fetchFn.mock.calls[1]?.[1]?.body);
-    expect(request).toContain('world'); expect(request).toContain('world_call'); expect(request).toContain('commons');
+    expect(request).toContain('world'); expect(request).toContain('world_call'); expect(request).toContain('park');
     expect(request).toContain('host_simulation_facts_and_peer_quotes_not_player_authorization');
   });
   it('separates virtual life time and peer dialogue from real commitments and player permission', () => {

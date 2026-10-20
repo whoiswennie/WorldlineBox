@@ -18,7 +18,7 @@ import { worldAdvanceFrameClock, worldAnimationWakeDelay, worldArrivalPresentati
 
 interface ActorView { group: Group; sprite: Sprite; shadow: Mesh; actor: CompanionWorldActor; path: Array<{ x: number; y: number }>; changedAt: number; duration: number; texture?: Texture; textureKey?: string; action?: WorldArtAction; animation?: { duration: number; playback: 'loop' | 'transition' }; applyFrame?: (frame: 0 | 1 | 2) => boolean; pose?: 'ground' | 'seat' | 'bed'; missingAction?: boolean; epoch: number; appliedFrame?: number; appliedMirrored?: boolean; labelPosition?: string }
 export interface WorldViewportEngine {
-  update(snapshot: CompanionWorldSnapshot, scene: CompanionWorldScene, companions: CompanionWorldContact[], view?: 'park'): void;
+  update(snapshot: CompanionWorldSnapshot, scene: CompanionWorldScene, companions: CompanionWorldContact[]): void;
   setActive(active: boolean): void;
   setVisibleWindowCount(count: number): void;
   reset(): void;
@@ -186,7 +186,7 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     invalidate();
     if (weather) { scene.remove(weather); weatherGeometry?.dispose(); weatherMaterial?.dispose(); weather = undefined; weatherGeometry = undefined; weatherMaterial = undefined; }
     precipitation = undefined;
-    if (!currentScene || currentScene.kind !== 'commons' || kind !== 'rain' && kind !== 'snow') return;
+    if (!currentScene || currentScene.kind !== 'park' || kind !== 'rain' && kind !== 'snow') return;
     precipitation = kind;
     const rain = kind === 'rain', count = rain ? 320 : 240, stride = rain ? 6 : 3;
     const positions = new Float32Array(count * stride); const w = parkBounds?.width ?? currentScene.width, d = parkBounds?.height ?? currentScene.depth;
@@ -202,9 +202,9 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     // initial all-zero heights or recompute a bounding sphere every frame.
     weather.frustumCulled = false; scene.add(weather);
   }
-  function update(snapshot: CompanionWorldSnapshot, selectedScene: CompanionWorldScene, companions: CompanionWorldContact[], view?: 'park') {
+  function update(snapshot: CompanionWorldSnapshot, selectedScene: CompanionWorldScene, companions: CompanionWorldContact[]) {
     if (disposed) return;
-    const viewId = selectedScene.id + (view === 'park' ? ':park' : '');
+    const viewId = selectedScene.id;
     const sceneChanged = roomId !== viewId;
     const scenePreparation = sceneChanged ? preparation.begin() : undefined;
     const weatherChanged = latest?.environment.weather !== snapshot.environment.weather;
@@ -216,8 +216,8 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
       container.setAttribute('aria-busy', 'true'); renderer.domElement.dataset.worldReady = 'false';
       actors.forEach(removeActor); actors.clear(); clearTextures();
       if (room) { scene.remove(room.group); room.dispose(); }
-      parkBounds = view === 'park' ? companionWorldParkLayout(selectedScene) : undefined;
-      room = parkBounds ? createWorldParkModel(selectedScene) : createWorldRoomModel(selectedScene, snapshot.scenes); roomId = viewId; scene.add(room.group); reset();
+      parkBounds = selectedScene.kind === 'park' ? companionWorldParkLayout(selectedScene) : undefined;
+      room = parkBounds ? createWorldParkModel(selectedScene) : createWorldRoomModel(selectedScene); roomId = viewId; scene.add(room.group); reset();
       renderer.domElement.dataset.worldView = parkBounds ? 'park' : 'home'; renderer.domElement.dataset.worldScene = selectedScene.id;
       if (parkBounds) renderer.domElement.dataset.worldParkBounds = JSON.stringify(parkBounds); else delete renderer.domElement.dataset.worldParkBounds;
       practicalLights.clear();

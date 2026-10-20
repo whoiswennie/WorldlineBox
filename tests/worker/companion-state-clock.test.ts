@@ -17,7 +17,7 @@ function configure(store: CompanionsStore, mode: 'compressed' | 'realtime', time
 }
 function fixture(timeZone = 'UTC') {
   const folder = mkdtempSync(path.join(tmpdir(), 'companion-state-clock-')); folders.push(folder);
-  const filename = path.join(folder, 'messages.sqlite'), store = new CompanionsStore(filename, seeds); stores.add(store);
+  const filename = path.join(folder, 'messages.sqlite'), store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   configure(store, 'compressed', timeZone);
   const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
   return { store, scope, filename };

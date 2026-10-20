@@ -18,7 +18,7 @@ afterEach(async () => {
 });
 function fixture(fetchFn: typeof fetch, asleep = true) {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-service-')); roots.push(root);
-  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds); stores.add(store);
+  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const alice = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, bob = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
   const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });

@@ -156,12 +156,13 @@ export class CompanionResetStore {
       ['companion_life_rules', 'companion_id=?', [id]],
       ['metadata', 'key=?', ['life-rules-initialized/' + id]],
       ['metadata', 'key=?', ['life-park-walk-initialized/' + id]],
-      ...['companion_schedules', 'companion_state_interactions', 'companion_appraisal_sources', 'companion_state_appraisals', 'companion_state_events', 'companion_routine_interruptions', 'companion_routine_audit', 'companion_routine_work', 'companion_routines', 'companion_runtime_states', 'companion_world_occupancy', 'companion_world_attention', 'companion_world_work_records', 'companion_world_dream_watermark', 'companion_world_jobs', 'companion_social_jobs', 'companion_social_outbox', 'companion_social_budget', 'companion_social_communication', 'companion_social_delegations', 'companion_social_notifications', 'companion_work_queue', 'proactive_state'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
+      ...['companion_schedules', 'companion_state_interactions', 'companion_appraisal_sources', 'companion_state_appraisals', 'companion_state_events', 'companion_routine_interruptions', 'companion_routine_audit', 'companion_routine_work', 'companion_routines', 'companion_runtime_states', 'companion_world_occupancy', 'companion_world_attention', 'companion_focus_interruptions', 'companion_world_work_records', 'companion_world_dream_watermark', 'companion_world_jobs', 'companion_social_jobs', 'companion_social_outbox', 'companion_social_budget', 'companion_social_communication', 'companion_social_delegations', 'companion_social_notifications', 'companion_work_queue', 'proactive_state'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
+      ['companion_social_interruptions', 'companion_id=? OR author_id=?', [id, id]],
       ['companion_world_peer_appraisals', 'companion_id=? OR target_id=?', [id, id]],
       ['companion_world_visit_records', 'guest_id=? OR host_id=?', [id, id]],
       ['companion_world_perceptions', 'companion_id=?', [id]],
       ['companion_activity_tasks', 'companion_id=?', [id]],
-      ['companion_world_addresses', 'companion_id=? OR target_id=?', [id, id]],
+      ['companion_world_suspended', 'companion_id=?', [id]],
       ...['actorId', 'targetId', 'privateOwner'].map(field => ['companion_world_events', `json_extract(data,'$.${field}')=?`, [id]] as [string, string, unknown[]]),
     ];
   }
@@ -241,7 +242,7 @@ export class CompanionResetStore {
     if (!found.length) return 0;
     const stage = 'SELECT message_id FROM companion_reset_messages WHERE job_id=?';
     const removeMetadata = this.db.prepare('DELETE FROM metadata WHERE key IN(SELECT ?||message_id FROM companion_reset_messages WHERE job_id=?)');
-    for (const prefix of ['message-loop/', 'message-memory-evidence/', 'message-published-after/', 'reply-source/']) removeMetadata.run(prefix, job.id);
+    for (const prefix of ['message-loop/', 'message-memory-evidence/', 'message-published-after/', 'reply-source/', 'memory-world-observation/', 'scene-entry-source/']) removeMetadata.run(prefix, job.id);
     this.db.prepare(`DELETE FROM companion_social_budget WHERE message_id IN(${stage})`).run(job.id);
     this.db.prepare(`DELETE FROM messages WHERE id IN(${stage})`).run(job.id);
     this.db.prepare('DELETE FROM companion_reset_messages WHERE job_id=?').run(job.id);

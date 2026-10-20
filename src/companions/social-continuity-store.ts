@@ -9,7 +9,8 @@ type Scope = { companionId: string; conversationId: string };
 type Delegation = { id: string; companionId: string; conversationId: string; sourceMessageId: string; checksum: string; intent: 'visit' | 'message';
   recipientIds: string[]; sharedText: string; visitId?: string; lastVisitStatus?: string; createdAt: string };
 type ResponseSource = { messageId: string; conversationId: string; checksum: string };
-type Notice = CompanionSocialNotification & { sourceChecksum: string; evidenceChecksum?: string; resultMessageId?: string; responseSource?: ResponseSource };
+type Notice = CompanionSocialNotification & { sourceChecksum: string; evidenceChecksum?: string; resultMessageId?: string; responseSource?: ResponseSource;
+  batchIds?: string[]; dialogueChecksum?: string; eventWatermark?: number };
 type Visit = { id: string; guestId: string; hostId: string; status: string; sourceMessageId?: string; conversationId?: string; reason: string; response?: string; responseSourceMessageId?: string; responseConversationId?: string };
 const row = (value: unknown) => value as Row;
 const parse = <T>(value: unknown): T => JSON.parse(String(value)) as T;
@@ -184,21 +185,68 @@ export class CompanionSocialContinuityStore {
       .run(notice.status, lease ?? null, notice.attempts, JSON.stringify(notice), notice.id);
   }
   private publicNotice(notice: Notice): CompanionSocialNotification {
-    const { sourceChecksum: _source, evidenceChecksum: _evidence, resultMessageId: _result, responseSource: _response, ...result } = notice;
-    void _source; void _evidence; void _result; void _response; return result;
+    const { sourceChecksum: _source, evidenceChecksum: _evidence, resultMessageId: _result, responseSource: _response,
+      batchIds: _batch, dialogueChecksum: _dialogue, eventWatermark: _watermark, ...result } = notice;
+    void _source; void _evidence; void _result; void _response; void _batch; void _dialogue; void _watermark; return result;
+  }
+  private eventWatermark(originId: string): number {
+    return Number(row(this.db.prepare('SELECT COALESCE(MAX(rowid),0) AS ordinal FROM companion_social_notifications WHERE origin_id=?').get(originId)).ordinal);
+  }
+  /** The reporting actor's actual player room, never a peer's private transcript. */
+  private dialogue(notice: Notice): CompanionMessage[] {
+    const source = this.message(notice.sourceMessageId);
+    // Keep causal progress even if an unrelated long conversation has pushed it
+    // out of the recent page; never reconstruct it from a model's cached summary.
+    const reported = (this.db.prepare("SELECT DISTINCT m.id,m.sequence FROM companion_social_notifications n JOIN messages m ON m.id=json_extract(n.data,'$.resultMessageId') WHERE n.origin_id=? AND n.status='done' AND m.conversation_id=? ORDER BY m.sequence DESC LIMIT 10")
+      .all(notice.origin.id, notice.conversationId) as Row[]).map(value => String(value.id));
+    const recent = (this.db.prepare('SELECT id FROM messages WHERE conversation_id=? AND sequence>? ORDER BY sequence DESC LIMIT 50')
+      .all(notice.conversationId, source.sequence) as Row[]).map(value => String(value.id));
+    const ids = [...new Set([...reported, ...recent])].slice(0, 50);
+    return this.visible({ companionId: notice.companionId, conversationId: notice.conversationId }, ids).filter(message => message.conversationId === notice.conversationId && message.status === 'sent'
+      && !message.isReplyDraft && !message.replyDraft).sort((a, b) => a.sequence - b.sequence);
+  }
+  private batch(notice: Notice): Notice[] {
+    return (notice.batchIds ?? [notice.id]).flatMap(id => {
+      const found = this.db.prepare('SELECT data FROM companion_social_notifications WHERE id=?').get(id);
+      return found ? [parse<Notice>(row(found).data)] : [];
+    });
+  }
+  private defer(notices: Notice[]): CompanionStorageResponse {
+    for (const notice of notices) {
+      notice.status = this.validNotice(notice) ? 'pending' : 'cancelled'; delete notice.leaseToken; this.save(notice);
+    }
+    return { ok: true, socialPending: true };
   }
   claim(): CompanionStorageResponse {
     return this.db.transaction(() => {
       this.observeVisits(); if (this.backlog()) return { ok: true };
-      const values = this.db.prepare("SELECT data FROM companion_social_notifications WHERE status='pending' OR status IN('running','failed') AND lease_until<=? ORDER BY created_at,id LIMIT 32").all(iso()) as Row[];
+      const values = this.db.prepare("SELECT data FROM companion_social_notifications WHERE status='pending' OR status IN('running','failed') AND lease_until<=? ORDER BY created_at,rowid LIMIT 32").all(iso()) as Row[];
       for (const value of values) {
         const notice = parse<Notice>(value.data);
+        if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(notice.companionId)) continue;
         if (!this.validNotice(notice)) { notice.status = 'cancelled'; delete notice.leaseToken; this.save(notice); continue; }
         if (!this.ready(notice.companionId) || companionPlayerPhoneBusy(this.db, notice.companionId) || this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())
           || this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing'").get(notice.companionId, iso())
           || this.db.prepare("SELECT 1 FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())) continue;
-        notice.status = 'running'; notice.attempts++; notice.leaseToken = hash([notice.id, notice.attempts, Date.now()]).slice(0, 48);
-        this.save(notice, new Date(Date.now() + 180000).toISOString()); return { ok: true, socialNotification: this.publicNotice(notice) };
+        // Collapse already waiting facts for the same delegation into one coherent report.
+        const siblings = this.db.prepare("SELECT data FROM companion_social_notifications WHERE origin_id=? AND id!=? AND (status='pending' OR status IN('running','failed') AND lease_until<=?) ORDER BY created_at,rowid LIMIT 15")
+          .all(notice.origin.id, notice.id, iso()) as Row[];
+        const batch = [notice];
+        for (const sibling of siblings) {
+          const candidate = parse<Notice>(sibling.data);
+          if (candidate.companionId === notice.companionId && candidate.conversationId === notice.conversationId && this.validNotice(candidate)) batch.push(candidate);
+          else { candidate.status = 'cancelled'; delete candidate.leaseToken; this.save(candidate); }
+        }
+        const token = hash([notice.id, notice.attempts + 1, Date.now()]).slice(0, 48), until = new Date(Date.now() + 180000).toISOString();
+        for (const item of batch) {
+          item.status = 'running'; item.attempts++; item.leaseToken = token;
+          delete item.batchIds; delete item.events; delete item.dialogue; delete item.dialogueChecksum; delete item.eventWatermark; this.save(item, until);
+        }
+        notice.batchIds = batch.map(item => item.id);
+        notice.events = batch.map(({ kind, eventId, peerConversationId, evidence }) => ({ kind, eventId, peerConversationId, evidence }));
+        notice.dialogue = this.dialogue(notice); notice.dialogueChecksum = hash(notice.dialogue);
+        notice.eventWatermark = this.eventWatermark(notice.origin.id);
+        this.save(notice, until); return { ok: true, socialNotification: this.publicNotice(notice) };
       }
       return { ok: true };
     }).immediate();
@@ -207,21 +255,35 @@ export class CompanionSocialContinuityStore {
     return this.db.transaction(() => {
       const found = this.db.prepare('SELECT * FROM companion_social_notifications WHERE id=?').get(input.id);
       if (!found) throw new Error('这次后续回报已经失效。'); const value = row(found), notice = parse<Notice>(value.data);
-      if (notice.status === 'done' && notice.resultMessageId) return { ok: true, message: this.message(notice.resultMessageId) };
+      if (notice.status === 'done') return { ok: true, ...(notice.resultMessageId ? { message: this.message(notice.resultMessageId) } : {}) };
       if (notice.status !== 'running' || notice.leaseToken !== input.leaseToken || Date.parse(String(value.lease_until)) < Date.now()
         || !this.validNotice(notice)) throw new Error('后续回报的来源或租约已经变化。');
-      if (this.backlog() || !this.ready(notice.companionId) || companionPlayerPhoneBusy(this.db, notice.companionId)) { notice.status = 'pending'; delete notice.leaseToken; this.save(notice); return { ok: true, socialPending: true }; }
-      const message = this.append({ conversationId: notice.conversationId, authorId: notice.companionId, content: input.text,
+      const batch = this.batch(notice);
+      if (batch.length !== (notice.batchIds?.length ?? 1) || batch.some(item => item.status !== 'running' || item.leaseToken !== notice.leaseToken)) throw new Error('后续回报的批次租约已经变化。');
+      // A player reply, activity result, withdrawal or other report may land during inference.
+      // Rebuild from the new dialogue instead of committing an isolated stale answer.
+      if (batch.some(item => !this.validNotice(item)) || this.backlog() || !this.ready(notice.companionId) || companionPlayerPhoneBusy(this.db, notice.companionId)
+        || notice.eventWatermark !== undefined && this.eventWatermark(notice.origin.id) !== notice.eventWatermark
+        || notice.dialogueChecksum !== undefined && notice.dialogueChecksum !== hash(this.dialogue(notice))) return this.defer(batch);
+      const message = input.text === null ? undefined : this.append({ conversationId: notice.conversationId, authorId: notice.companionId, content: input.text,
         replyToId: notice.sourceMessageId, clientId: 'notice_' + notice.id });
-      notice.status = 'done'; delete notice.leaseToken; notice.resultMessageId = message.id; this.save(notice);
+      for (const item of batch) {
+        item.status = 'done'; delete item.leaseToken; item.resultMessageId = message?.id;
+        delete item.dialogue; delete item.dialogueChecksum; delete item.events; delete item.batchIds; delete item.eventWatermark; this.save(item);
+      }
       return { ok: true, message };
     }).immediate();
   }
   fail(input: Extract<CompanionStorageCommand, { type: 'social.notification.fail' }>): void {
-    const found = this.db.prepare('SELECT data FROM companion_social_notifications WHERE id=?').get(input.id); if (!found) return;
-    const notice = parse<Notice>(row(found).data); if (notice.status !== 'running' || notice.leaseToken !== input.leaseToken) return;
-    notice.status = this.validNotice(notice) ? 'failed' : 'cancelled'; delete notice.leaseToken;
-    this.save(notice, new Date(Date.now() + Math.min(900000, 10000 * 2 ** Math.min(notice.attempts, 7))).toISOString());
+    this.db.transaction(() => {
+      const found = this.db.prepare('SELECT data FROM companion_social_notifications WHERE id=?').get(input.id); if (!found) return;
+      const notice = parse<Notice>(row(found).data); if (notice.status !== 'running' || notice.leaseToken !== input.leaseToken) return;
+      for (const item of this.batch(notice)) {
+        if (item.status !== 'running' || item.leaseToken !== input.leaseToken) continue;
+        item.status = this.validNotice(item) ? 'failed' : 'cancelled'; delete item.leaseToken;
+        this.save(item, new Date(Date.now() + Math.min(900000, 10000 * 2 ** Math.min(item.attempts, 7))).toISOString());
+      }
+    }).immediate();
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {

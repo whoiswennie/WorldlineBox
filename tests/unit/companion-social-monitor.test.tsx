@@ -28,6 +28,7 @@ function fixture() { return vi.fn(async (input: CompanionsRequest): Promise<Comp
 async function mount(request = fixture(), onClose = vi.fn()) {
   vi.useFakeTimers(); container = document.createElement('div'); document.body.append(container); root = createRoot(container);
   await act(async () => root!.render(<CompanionSocialMonitor companions={companions} request={request} onClose={onClose} onOpenUrl={vi.fn()} />));
+  await click('往来记录');
   await act(async () => vi.advanceTimersByTimeAsync(300)); return { request, onClose };
 }
 async function click(label: string) { const button = [...container!.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === label || item.textContent === label)!; await act(async () => button.click()); }
@@ -71,7 +72,7 @@ it('shows recoverable read errors and closes observation without affecting any p
   const request = vi.fn(async (): Promise<CompanionsResponse> => ({ ok: false, error: '暂时读不到社交记录' }));
   const closed = vi.fn(); await mount(request, closed);
   expect(container!.querySelector('[role="alert"]')!.textContent).toContain('暂时读不到');
-  await click('重试'); expect(request).toHaveBeenCalledTimes(2);
+  await click('重试'); expect(request).toHaveBeenCalledTimes(3);
   await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
   expect(closed).toHaveBeenCalledOnce();
 });

@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { companionWorldObservationSchema } from './companion-knowledge';
+import { companionContactReceiptSchema } from './companion-contact';
 import { activityPublicCommands, activityTaskSchema } from './companion-activity-task';
 import { dshRecordOverviewSchema, dshRecordQuerySchema, dshRecordPageSchema } from './dsh-task-record';
 import { dshExecutionAccessModeSchema } from './dsh-access';
@@ -8,8 +10,8 @@ import { companionMemorySchema, companionMemoryPageSchema, companionMemoryStatus
 import { companionSchedulePublicCommands, companionScheduleSchema, companionScheduleOccurrenceSchema } from './companion-schedule';
 import { companionStatePublicCommands, companionRuntimeStateSchema } from './companion-state';
 import { companionRoutinePublicCommands, companionRoutineSchema, companionRoutineRuntimeSchema } from './companion-routine';
-import { companionWorldPublicCommands, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema } from './companion-world';
-import { companionSocialPublicCommands, companionSocialConversationPageSchema, companionSocialMessagePageSchema, companionSocialDaysSchema } from './companion-social';
+import { companionWorldPublicCommands, companionWorldStatusSchema, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema } from './companion-world';
+import { companionSocialPublicCommands, companionSocialConversationPageSchema, companionSocialMessagePageSchema, companionSocialDaysSchema, companionSocialFlowPageSchema, companionSocialGraphSchema } from './companion-social';
 import { playerProfileCommands, playerProfileSchema } from './companion-profile';
 import { companionAvatarCropRequestSchema } from './companion-avatar-crop';
 import { companionResetCommands, companionResetSchema } from './companion-reset';
@@ -34,11 +36,11 @@ export const companionSchema = z.object({
   id: companionIdSchema, name: z.string().trim().min(1).max(60),
   description: z.string().max(500), persona: z.string().min(1).max(12000),
   model: z.string().max(160), avatar: z.enum(COMPANION_AVATAR_IDS),
-  builtin: z.boolean(), proactive: z.boolean(), createdAt: z.string(),
+  builtin: z.boolean(), proactive: z.boolean(), active: z.boolean().optional(), createdAt: z.string(),
   llm: companionLlmSchema.optional(),
   avatarAttachmentId: companionIdSchema.optional(),
   appearanceAttachmentId: companionIdSchema.optional(), revision: z.number().int().positive().optional(),
-  availability: z.enum(['ready', 'working', 'waiting', 'offline']).optional(), availabilityReason: z.string().max(500).optional(), activeCount: z.number().int().nonnegative().optional(), queuedCount: z.number().int().nonnegative().optional(),
+  availability: z.enum(['ready', 'working', 'waiting', 'offline', 'dormant']).optional(), availabilityReason: z.string().max(500).optional(), activeCount: z.number().int().nonnegative().optional(), queuedCount: z.number().int().nonnegative().optional(),
 });
 export type Companion = z.infer<typeof companionSchema>;
 export const conversationSchema = z.object({
@@ -56,6 +58,7 @@ export const messageSchema = z.object({
   createdAt: z.string(), worldCreatedAt: z.string().optional(), replyToId: companionIdSchema.optional(),
   status: z.enum(['sent', 'failed']), actionId: companionIdSchema.optional(),
   attachments: z.array(attachmentSchema).max(10),
+  worldObservation: companionWorldObservationSchema.optional(),
   memoryEvidenceOnly: z.boolean().optional(),
   isReplyDraft: z.boolean().optional(), replyDraft: companionLoopDraftSchema.optional(),
   segments: z.array(z.object({ text: z.string().max(65536), actionIds: z.array(companionIdSchema).max(16) })).max(64).optional(),
@@ -143,6 +146,7 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('companion.add-builtin'), templateId: z.enum(COMPANION_TEMPLATE_IDS) }),
   z.strictObject({ type: z.literal('companion.create'), companion: companionDraftSchema, apiKey: z.string().max(8192).optional() }),
   z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, expectedRevision: z.number().int().positive().optional(), apiKey: z.string().max(8192).optional() }),
+  z.strictObject({ type: z.literal('companion.set-active'), id: companionIdSchema, active: z.boolean(), expectedRevision: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('companion.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('conversation.open'), companionId: companionIdSchema }),
   z.strictObject({ type: z.literal('conversation.create-group'), title: z.string().trim().max(100).default(''), memberIds: z.array(companionIdSchema).min(1).max(20) }),
@@ -153,7 +157,7 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   companionMessagesQuerySchema.extend({ type: z.literal('messages') }).strict(),
   z.strictObject({ type: z.literal('message.get'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('message.send'), conversationId: companionIdSchema, content: z.string().max(16000), replyToId: companionIdSchema.optional(), attachmentIds: z.array(companionIdSchema).max(10).optional(), clientId: companionIdSchema,
-    targetSourceMessageId: companionIdSchema.optional(),
+    targetSourceMessageId: companionIdSchema.optional(), priority: z.enum(['normal', 'urgent']).optional(),
     delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']).optional(), targetActionId: companionIdSchema.optional() }),
   companionSearchQuerySchema.extend({ type: z.literal('message.search') }).strict(),
   z.strictObject({ type: z.literal('reply.retry'), conversationId: companionIdSchema }),
@@ -206,10 +210,15 @@ export const companionsResponseSchema = z.object({
   runtimeState: companionRuntimeStateSchema.optional(),
   routine: companionRoutineSchema.optional(),
   routineRuntime: companionRoutineRuntimeSchema.optional(),
+  worldKnowledge: z.object({ category: z.enum(['contacts', 'scenes', 'social', 'observations']), observedAt: z.iso.datetime(), observedAtVirtual: z.iso.datetime(), internalized: z.literal(false), items: z.array(z.record(z.string(), z.unknown())).max(20), hasMore: z.boolean().optional(), evidenceMessageId: companionIdSchema }).optional(),
+  worldStatus: companionWorldStatusSchema.optional(),
+  socialRecipients: z.array(companionContactReceiptSchema).max(20).optional(),
   world: companionWorldSnapshotSchema.optional(),
   worldWork: companionWorldWorkSchema.optional(),
   worldJob: companionWorldJobSchema.optional(),
   socialConversationPage: companionSocialConversationPageSchema.optional(),
+  socialGraph: companionSocialGraphSchema.optional(),
+  socialFlowPage: companionSocialFlowPageSchema.optional(),
   socialMessagePage: companionSocialMessagePageSchema.optional(),
   socialDays: companionSocialDaysSchema.optional(),
 });

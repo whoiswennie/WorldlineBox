@@ -30,3 +30,5 @@
 .companion-secondary-button:hover:not(:disabled) { background: var(--ui-surface-hover); }
 .companion-danger-button { background: #cc5665; color: white; }
 .companion-text-danger { background: transparent; border: 0; color: #c86472; padding: 7px; font-size: 12px; }
+
+.companion-avatar-letter { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 0; margin: 0; font: inherit; line-height: 1; text-align: center; font-variant: normal; }

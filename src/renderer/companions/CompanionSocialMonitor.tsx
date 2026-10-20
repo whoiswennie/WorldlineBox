@@ -1,3 +1,4 @@
+import type { PlayerProfile } from '../../shared/companion-profile';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Companion, CompanionMessage, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../shared/companions';
 import type { CompanionSocialConversationPage, CompanionSocialDays, CompanionSocialMessage, CompanionSocialMessagePage } from '../../shared/companion-social';
@@ -7,6 +8,7 @@ import { useDialogFocusTrap } from '../use-dialog-focus-trap';
 import { Avatar } from './CompanionVisuals';
 import { CompanionMessageBubble } from './CompanionMessageBubble';
 import { CompanionReplyStreamStore } from './reply-stream';
+import { CompanionSocialGraph } from './CompanionSocialGraph';
 import './companion-social.css';
 
 type Request = (input: CompanionsRequest) => Promise<CompanionsResponse | undefined>;
@@ -19,16 +21,17 @@ function dayStep(day: string, amount: number) { const date = new Date(day + 'T12
 function useSearch(value: string) { const [search, setSearch] = useState(value); useEffect(() => { const timer = setTimeout(() => setSearch(value.trim()), 250); return () => clearTimeout(timer); }, [value]); return search; }
 
 /** Read-only view over the same durable peer messages; observation never creates a player participant. */
-export function CompanionSocialMonitor({ companions, request, api, onClose, onOpenUrl }: {
-  companions: Companion[]; request: Request; api?: WorldlineBoxCompanionsApi; onClose(): void; onOpenUrl(url: string): void;
+export function CompanionSocialMonitor({ playerProfile, companions, request, api, onClose, onOpenUrl, initialCompanionId, initialConversationId }: {
+  playerProfile?: PlayerProfile; initialCompanionId?: string; initialConversationId?: string; companions: Companion[]; request: Request; api?: WorldlineBoxCompanionsApi; onClose(): void; onOpenUrl(url: string): void;
 }) {
   useDialogFocusTrap(true, '伙伴社交观察');
-  const [day, setDay] = useState<string>();
-  const [owner, setOwner] = useState(''), [query, setQuery] = useState(''), [messageQuery, setMessageQuery] = useState('');
+  const [view, setView] = useState<'graph' | 'records'>('graph');
+  const [day, setDay] = useState<string | undefined>(initialConversationId ? '' : undefined);
+  const [owner, setOwner] = useState(initialCompanionId ?? ''), [query, setQuery] = useState(''), [messageQuery, setMessageQuery] = useState('');
   const search = useSearch(query), messageSearch = useSearch(messageQuery);
   const [days, setDays] = useState<CompanionSocialDays>();
   const [conversations, setConversations] = useState<CompanionSocialConversationPage>();
-  const [conversationId, setConversationId] = useState<string>();
+  const [conversationId, setConversationId] = useState<string | undefined>(initialConversationId);
   const [perspective, setPerspective] = useState('');
   const [messages, setMessages] = useState<CompanionSocialMessagePage>();
   const [conversationCursors, setConversationCursors] = useState<(ConversationCursor | undefined)[]>([undefined]);
@@ -50,11 +53,13 @@ export function CompanionSocialMonitor({ companions, request, api, onClose, onOp
   const before = position?.before, around = position?.around;
   const resetList = useCallback(() => { setConversationCursors([undefined]); setConversationPage(0); setConversationId(undefined); setConversations(undefined); setMessages(undefined); setListLoading(true); }, []);
   const resetMessages = useCallback(() => { followLatest.current = true; loadedMessages.current = undefined; setNewMessages(false); setMessageCursors([undefined]); setMessagePage(0); setMessages(undefined); setNotice(''); }, []);
-  useEffect(() => { void Promise.resolve().then(() => { resetList(); resetMessages(); }); }, [search, resetList, resetMessages]);
+  const firstSearch = useRef(true);
+  useEffect(() => { if (firstSearch.current) { firstSearch.current = false; return; } void Promise.resolve().then(() => { resetList(); resetMessages(); }); }, [search, resetList, resetMessages]);
   useEffect(() => { void Promise.resolve().then(resetMessages); }, [messageSearch, conversationId, resetMessages]);
   useEffect(() => { const key = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); }; document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key); }, [onClose]);
   useEffect(() => { let timer: ReturnType<typeof setTimeout> | undefined; const remove = api?.onChanged(() => { clearTimeout(timer); timer = setTimeout(() => setRevision(value => value + 1), 400); }); return () => { remove?.(); clearTimeout(timer); }; }, [api]);
   useEffect(() => {
+    if (view !== 'records') return;
     let cancelled = false;
     void request({ type: 'social.days', ...(owner ? { companionId: owner } : {}), ...(day ? { month: day.slice(0, 7) } : {}), ...(search ? { query: search } : {}) }).then(result => {
       if (cancelled) return;
@@ -62,9 +67,9 @@ export function CompanionSocialMonitor({ companions, request, api, onClose, onOp
       else { setListError(result?.error ?? '社交日历读取失败。'); setListLoading(false); }
     });
     return () => { cancelled = true; };
-  }, [request, owner, day, search, revision]);
+  }, [request, owner, day, search, revision, view]);
   useEffect(() => {
-    if (day === undefined) return;
+    if (view !== 'records' || day === undefined) return;
     let cancelled = false;
     void request({ type: 'social.conversations', ...(owner ? { companionId: owner } : {}), ...(day ? { day } : {}), ...(search ? { query: search } : {}), ...(cursor ? { before: cursor } : {}), limit: 20 }).then(result => {
       if (cancelled) return;
@@ -74,9 +79,9 @@ export function CompanionSocialMonitor({ companions, request, api, onClose, onOp
       setConversationId(current => result.socialConversationPage!.items.some(item => item.id === current) ? current : result.socialConversationPage!.items[0]?.id);
     });
     return () => { cancelled = true; };
-  }, [request, day, owner, search, cursor, revision]);
+  }, [request, day, owner, search, cursor, revision, view]);
   useEffect(() => {
-    if (!conversationId || day === undefined) return;
+    if (view !== 'records' || !conversationId || day === undefined) return;
     let cancelled = false;
     void Promise.resolve().then(() => { if (!cancelled) setMessageLoading(true); });
     void request({ type: 'social.messages', conversationId, ...(day ? { day } : {}), ...(messageSearch ? { query: messageSearch } : {}), ...(before ? { before } : {}), ...(around ? { around } : {}), limit: 50 }).then(result => {
@@ -93,7 +98,7 @@ export function CompanionSocialMonitor({ companions, request, api, onClose, onOp
       } else if (!before && !messageSearch) requestAnimationFrame(() => { if (!cancelled && messageList.current) messageList.current.scrollTop = messageList.current.scrollHeight; });
     });
     return () => { cancelled = true; };
-  }, [request, conversationId, day, messageSearch, before, around, revision]);
+  }, [request, conversationId, day, messageSearch, before, around, revision, view]);
   function selectConversation(id: string) { if (id === conversationId) { setRevision(value => value + 1); return; } resetMessages(); setConversationId(id); setMessageQuery(''); setPerspective(''); }
   function selectDay(value: string) { if (value === day) { setRevision(current => current + 1); return; } resetList(); resetMessages(); setDay(value); }
   function showLatest() { followLatest.current = true; setNewMessages(false); setMessageCursors([undefined]); setMessagePage(0); setRevision(value => value + 1); }
@@ -102,7 +107,8 @@ export function CompanionSocialMonitor({ companions, request, api, onClose, onOp
   const sectionDay = (message: { virtualCreatedAt: string }) => new Intl.DateTimeFormat('en-CA', { timeZone: messages?.timeZone ?? days?.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(message.virtualCreatedAt));
   const preview = (message: CompanionMessage | undefined) => message ? (message.content || '一段新的对话').replace(/\s+/g, ' ').slice(0, 100) : '还没有新的消息';
   return <div className="companions-task-backdrop"><section className="companions-social-monitor" role="dialog" aria-modal="true" aria-label="伙伴社交观察">
-    <header><div><small>LIFE BETWEEN COMPANIONS</small><h2>她们之间的小日常</h2><p>{day ? day + ' · ' + (daySummary ? `${daySummary.messageCount} 条交流 · ${daySummary.conversationCount} 个会话` : '按天回看') : '所有日期'}{days && ` · 世界时区 ${days.timeZone}`}</p></div><button className="companion-icon-button" aria-label="关闭社交观察" onClick={onClose}><Icon name="close" /></button></header>
+    <header><div><small>COMPANION SOCIAL OBSERVATORY</small><h2>社交实况</h2><p>{view === 'graph' ? '以伙伴为中心，观察真实的关系与正在发生的往来' : day ? day + ' · ' + (daySummary ? `${daySummary.messageCount} 条交流 · ${daySummary.conversationCount} 个会话` : '按天回看') : '所有日期'}</p></div><div className="social-observer-header-actions"><div className="social-observer-tabs" role="tablist" aria-label="社交观察视图"><button role="tab" aria-selected={view === 'graph'} onClick={() => setView('graph')}><Icon name="network" />实时图谱</button><button role="tab" aria-selected={view === 'records'} onClick={() => setView('records')}><Icon name="archive" />往来记录</button></div><button className="companion-icon-button" aria-label="关闭社交观察" onClick={onClose}><Icon name="close" /></button></div></header>
+    {view === 'graph' ? <CompanionSocialGraph playerProfile={playerProfile} companions={companions} initialCompanionId={initialCompanionId} request={request} api={api} onHistory={(id, owner) => { resetList(); resetMessages(); setOwner(owner); setDay(''); setConversationId(id); setView('records'); }} /> :
     <div className="companions-social-body"><aside className="companions-social-conversations"><div className="companions-social-filters">
       <div className="companions-social-day"><button aria-label="前一天的社交记录" disabled={!day} onClick={() => selectDay(dayStep(day!, -1))}><Icon name="chevron-left" /></button><input type="date" aria-label="社交记录日期" value={day ?? ''} onChange={event => selectDay(event.target.value)} /><button aria-label="后一天的社交记录" disabled={!day} onClick={() => selectDay(dayStep(day!, 1))}><Icon name="chevron" /></button></div>
       <div className="companions-social-day-links"><button onClick={() => { if (days) selectDay(days.observedDay); }}>今天</button><button onClick={() => selectDay('')}>所有日期</button></div>
@@ -117,6 +123,6 @@ export function CompanionSocialMonitor({ companions, request, api, onClose, onOp
         const replied = messages.items.find(row => row.message.id === message.replyToId)?.message;
         const date = sectionDay(item), previous = messages.items[index - 1];
         return <div key={message.id}>{(!previous || sectionDay(previous) !== date) && <div className="companions-date-divider">{date}</div>}<article className={'companions-message' + (message.authorId === viewpoint ? ' is-own' : '')} data-social-message={message.id} data-social-author={message.authorId} data-social-message-channel={item.channel ?? 'unknown'} tabIndex={-1}><Avatar companion={author} showPresence={false} /><div className="companions-message-body"><div className="companions-message-author"><span title={message.authorId}>{author.name}</span><time dateTime={item.virtualCreatedAt} title={'世界时间 ' + item.virtualCreatedAt + '\n现实记录 ' + companionTimestamp(message.createdAt)}>{new Date(item.virtualCreatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: messages.timeZone })}</time><ChannelBadge channel={item.channel} /></div>{!!item.recipientIds.length && <small className="companions-social-recipient">对 {item.recipientIds.map(companionName).join('、')} 说</small>}<CompanionMessageBubble message={message} replied={replied} quoteAuthor={replied ? companionName(replied.authorId) : undefined} actions={[]} now={Date.parse(message.createdAt)} streamStore={streamStore} interrupted={false} onOpenAction={() => undefined} onOpenUrl={onOpenUrl} onOpenAttachment={() => setNotice('伙伴社交记录中的附件只读。')} onLocateQuote={locateQuote} onStreamLayout={() => undefined} /></div></article></div>;
-      })}</div><footer className="companions-social-chat-footer"><button disabled={!messages?.hasMore || !messages.nextCursor || messageLoading} onClick={() => { followLatest.current = true; setMessageCursors(value => [...value.slice(0, messagePage + 1), { before: messages!.nextCursor }]); setMessagePage(value => value + 1); }}>更早的消息</button><span>第 {messagePage + 1} 页 · 每页 50 条</span><button disabled={!messagePage || messageLoading} onClick={() => { followLatest.current = true; setMessagePage(value => value - 1); }}>较新的消息</button></footer><p className="companions-social-observation"><Icon name="eye" />这是伙伴之间的交流记录。观察不会加入会话，也不会授予她们玩家的电脑操作权限。</p></> : <div className="companions-social-welcome"><Icon name="users" /><h3>生活里，也有彼此</h3><p>选择一段伙伴私聊或群聊，回看她们在这一天遇见时的交谈，以及通过手机发出的消息。</p></div>}</main></div>
+      })}</div><footer className="companions-social-chat-footer"><button disabled={!messages?.hasMore || !messages.nextCursor || messageLoading} onClick={() => { followLatest.current = true; setMessageCursors(value => [...value.slice(0, messagePage + 1), { before: messages!.nextCursor }]); setMessagePage(value => value + 1); }}>更早的消息</button><span>第 {messagePage + 1} 页 · 每页 50 条</span><button disabled={!messagePage || messageLoading} onClick={() => { followLatest.current = true; setMessagePage(value => value - 1); }}>较新的消息</button></footer><p className="companions-social-observation"><Icon name="eye" />这是伙伴之间的交流记录。观察不会加入会话，也不会授予她们玩家的电脑操作权限。</p></> : <div className="companions-social-welcome"><Icon name="users" /><h3>生活里，也有彼此</h3><p>选择一段伙伴私聊或群聊，回看她们在这一天遇见时的交谈，以及通过手机发出的消息。</p></div>}</main></div>}
   </section></div>;
 }

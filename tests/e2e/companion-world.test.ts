@@ -36,14 +36,14 @@ test('restores observer scene, camera and follow choice after closing and restar
     let worldPage = await openCompanionWorldWindow(application, page);
     let world = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
     await expect(world.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
-    await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('commons');
+    await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('park');
     await world.getByRole('button', { name: '向右旋转世界', exact: true }).click();
     await world.getByRole('button', { name: '放大世界', exact: true }).click();
     const camera = await world.locator('canvas').getAttribute('data-world-camera'); expect(camera).toBeTruthy();
     await world.getByRole('button', { name: '关闭伙伴世界', exact: true }).click();
     worldPage = await openCompanionWorldWindow(application, page);
     world = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
-    await expect(world.locator('.companion-world-view')).toHaveAttribute('data-world-scene', 'commons');
+    await expect(world.locator('.companion-world-view')).toHaveAttribute('data-world-scene', 'park');
     await expect(world.locator('canvas')).toHaveAttribute('data-world-camera', /position/);
     const restoredCamera = JSON.parse((await world.locator('canvas').getAttribute('data-world-camera'))!), savedCamera = JSON.parse(camera!);
     expect(restoredCamera.zoom).toBeCloseTo(savedCamera.zoom, 6);
@@ -107,7 +107,7 @@ test('observes real homes, host-driven bedtime and movement, camera controls and
     const renderMetrics = () => scene.locator('canvas').evaluate(element => Object.fromEntries(Object.entries((element as HTMLCanvasElement).dataset).filter(([key]) => ['worldFps', 'worldDrawCalls', 'worldTriangles', 'worldTextures', 'worldGeometries', 'worldFrames'].includes(key)).map(([key, value]) => [key, Number(value)])));
     await expect.poll(async () => (await renderMetrics()).worldFrames ?? 0).toBeGreaterThan(2);
     const beforeSwitch = await renderMetrics();
-    for (const destination of ['home_gemini', 'home_kimi', 'home_deepseek-sister', 'commons', 'home_deepseek-sister']) {
+    for (const destination of ['home_gemini', 'home_kimi', 'home_deepseek-sister', 'park', 'home_deepseek-sister']) {
       await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(destination); await expect(scene).toHaveAttribute('data-world-scene', destination);
     }
     await expect.poll(async () => (await renderMetrics()).worldFrames ?? 0, { timeout: 15_000 }).toBeGreaterThan((beforeSwitch.worldFrames ?? 0) + 2);
@@ -123,8 +123,8 @@ test('observes real homes, host-driven bedtime and movement, camera controls and
     await settings.getByRole('radio').nth(1).check(); await settings.getByRole('button', { name: '保存世界设置', exact: true }).click(); await expect(settings).toHaveCount(0);
     await expect.poll(async () => (await request(page, { type: 'world.snapshot' })).world!.settings.mode).toBe('realtime');
     await expect(world).toContainText('跟随现实时间');
-    await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('commons');
-    await expect(scene).toHaveAttribute('data-world-scene', 'commons');
+    await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('park');
+    await expect(scene).toHaveAttribute('data-world-scene', 'park');
     await worldPage.screenshot({ path: path.join(artifacts, 'verified-companion-world-neighborhood.png') });
     await world.getByRole('button', { name: '关闭伙伴世界', exact: true }).click(); await expect.poll(() => worldPage.isClosed()).toBe(true);
     await application.close(); application = undefined;
@@ -164,7 +164,7 @@ test('measures the normal GPU renderer with movement, orbit and bounded scene re
     await world.getByRole('button', { name: '向右旋转世界', exact: true }).click(); await world.getByRole('button', { name: '放大世界', exact: true }).click();
     await expect.poll(async () => (await metrics()).worldFrames ?? 0).toBeGreaterThan(home.worldFrames! + 8);
     const orbit = await metrics();
-    for (const destination of ['home_gpt', 'home_kimi', 'commons', 'home_deepseek-sister']) { await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(destination); await expect(world.locator('.companion-world-view')).toHaveAttribute('data-world-scene', destination); }
+    for (const destination of ['home_gpt', 'home_kimi', 'park', 'home_deepseek-sister']) { await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(destination); await expect(world.locator('.companion-world-view')).toHaveAttribute('data-world-scene', destination); }
     await expect.poll(async () => (await metrics()).worldFrames ?? 0).toBeGreaterThan(orbit.worldFrames! + 2);
     const returned = await metrics();
     expect(returned.worldTextures).toBeLessThanOrEqual(8); expect(returned.worldGeometries).toBeLessThanOrEqual(26);
@@ -227,7 +227,7 @@ test('renders daylight, night and rain from actual persisted world clock fixture
   try {
     const bootstrap = await launch(profile); application = bootstrap.application; await request(bootstrap.page, { type: 'world.snapshot' }); await application.close(); application = undefined;
     const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
-    const conditions = [{ weather: 'clear', hour: 12, scene: 'home_deepseek-sister', file: 'verified-companion-world-day.png' }, { weather: 'clear', hour: 0, scene: 'home_deepseek-sister', file: 'verified-companion-world-night.png' }, { weather: 'rain', hour: 12, scene: 'commons', file: 'verified-companion-world-rain.png' }] as const;
+    const conditions = [{ weather: 'clear', hour: 12, scene: 'home_deepseek-sister', file: 'verified-companion-world-day.png' }, { weather: 'clear', hour: 0, scene: 'home_deepseek-sister', file: 'verified-companion-world-night.png' }, { weather: 'rain', hour: 12, scene: 'park', file: 'verified-companion-world-rain.png' }] as const;
     for (const condition of conditions) {
       seedWorldClock(profile, environmentDate(condition.weather, condition.hour));
       const started = await launch(profile); application = started.application; const page = started.page;
@@ -238,9 +238,9 @@ test('renders daylight, night and rain from actual persisted world clock fixture
       await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(condition.scene);
       await expect(world.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
       await expect(world.getByLabel('世界环境')).toContainText(condition.weather === 'rain' ? '下雨' : '晴朗');
-      if (condition.scene !== 'commons') await expect.poll(async () => Number(await world.locator('canvas').getAttribute('data-world-loaded-actors'))).toBeGreaterThan(0);
+      if (condition.scene !== 'park') await expect.poll(async () => Number(await world.locator('canvas').getAttribute('data-world-loaded-actors'))).toBeGreaterThan(0);
       // Homes redraw on pose/light changes; visible rain remains continuous.
-      await expect.poll(async () => Number(await world.locator('canvas').getAttribute('data-world-frames'))).toBeGreaterThan(condition.scene === 'commons' ? 12 : 2);
+      await expect.poll(async () => Number(await world.locator('canvas').getAttribute('data-world-frames'))).toBeGreaterThan(condition.scene === 'park' ? 12 : 2);
       await worldPage.screenshot({ path: path.join(artifacts, condition.file) });
       await application.close(); application = undefined;
     }

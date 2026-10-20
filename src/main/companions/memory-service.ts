@@ -68,10 +68,10 @@ export class CompanionMemoryService {
 
   async recall(input: {
     companion: Companion; conversation: CompanionConversation; messages: readonly CompanionMessage[];
-    currentMessage: CompanionMessage; referencedMessage?: CompanionMessage; config: CompanionModelConfig; signal?: AbortSignal;
+    currentMessage: CompanionMessage; referencedMessage?: CompanionMessage; beforeSequence?: number; config: CompanionModelConfig; signal?: AbortSignal;
   }): Promise<CompanionMemoryRecall> {
     const { companion, conversation, currentMessage, signal } = input;
-    const scope = { companionId: companion.id, conversationId: conversation.id, beforeSequence: currentMessage.sequence };
+    const scope = { companionId: companion.id, conversationId: conversation.id, beforeSequence: input.beforeSequence ?? currentMessage.sequence };
     const allowed = (await this.options.request({ type: 'memory.sources.filter', ...scope,
       ids: [...new Set([...input.messages.map(message => message.id), currentMessage.id,
         ...(input.referencedMessage ? [input.referencedMessage.id] : [])])] })).memorySources ?? [];
@@ -130,7 +130,7 @@ export class CompanionMemoryService {
       this.deferredSince ??= Date.now();
       if (Date.now() - this.deferredSince < 15_000) { this.again = true; return; }
     } else this.deferredSince = undefined;
-    const state = (await this.options.request({ type: 'state', includeHidden: true })).state;
+    const state = (await this.options.request({ type: 'state', includeConversations: false, activeOnly: true })).state;
     if (!state) return;
     let processed = 0;
     for (const companion of state.companions) {
@@ -151,7 +151,8 @@ export class CompanionMemoryService {
       let settled!: () => void;
       this.controllerSettled = new Promise(resolve => { settled = resolve; });
       try {
-        const conversation = state.conversations.find(item => item.id === job.conversationId);
+        const context = (await this.options.request({ type: 'state', includeHidden: true, activeOnly: true, conversationId: job.conversationId })).state;
+        const conversation = context?.conversations.find(item => item.id === job.conversationId);
         if (!conversation || !conversation.memberIds.includes(companion.id)) throw new Error('记忆来源聊天已不可访问。');
         let sources: CompanionMessage[] = [];
         for (const id of job.sourceMessageIds) {

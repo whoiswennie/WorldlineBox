@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionInteractionSchema, companionContactReceiptSchema } from './companion-contact';
 import { companionWorldArgumentsSchema } from './companion-world-tool';
 import { companionMemoryCandidateSchema } from './companion-memory';
 import { COMPANION_WORLD_ART_ACTIONS } from './companion-world-actions';
@@ -12,7 +13,8 @@ export const companionWorldSettingsSchema = z.object({ revision: z.number().int(
   dayDurationMinutes: z.number().min(5).max(1440), timeZone: z.string().min(1).max(100) });
 export const companionWorldFurnitureSchema = z.object({ id, kind: z.enum(['bed', 'desk', 'computer', 'chair', 'kitchen', 'dining', 'sofa', 'habit', 'door', 'tree', 'bench', 'building', 'fountain', 'lamp']),
   name: z.string(), position: point, width: z.number().positive(), depth: z.number().positive(), anchor: point, blocking: z.boolean(), occupantId: id.optional(), reservedBy: id.optional() });
-export const companionWorldSceneSchema = z.object({ id, kind: z.enum(['home', 'commons']), name: z.string(), ownerId: id.optional(),
+export const companionWorldSceneSchema = z.object({ id, kind: z.enum(['home', 'park']), name: z.string(), ownerId: id.optional(),
+  portals: z.array(z.object({ id, direction: z.enum(['entry', 'exit', 'both']), position: point })).min(1).optional(),
   width: z.number().positive(), depth: z.number().positive(), origin: point, door: point, objects: z.array(companionWorldFurnitureSchema) });
 export const companionWorldActorSchema = z.object({ companionId: id, sceneId: id, position: point, homeSceneId: id,
   facing: z.enum(['north', 'east', 'south', 'west']), frame: z.union([z.literal(0), z.literal(1), z.literal(2)]),
@@ -23,12 +25,13 @@ export const companionWorldActorSchema = z.object({ companionId: id, sceneId: id
   locomotion: z.enum(['walk', 'run']), movementSpeed: z.number().positive(),
   state: z.object({ energy: z.number().min(0).max(100), mood: z.enum(['calm', 'bright', 'focused', 'tired', 'low']),
     expression: z.enum(['gentle', 'direct', 'playful', 'reserved']), affect: z.object({ pleasure: z.number().min(-1).max(1), arousal: z.number().min(-1).max(1), dominance: z.number().min(-1).max(1) }), thermalComfort: z.number().min(0).max(1) }),
+  travel: z.object({ targetSceneId: id, exitId: id, entryId: id }).optional(),
   route: z.array(z.object({ sceneId: id, x: z.number(), y: z.number() })), destinationId: id.optional(), furnitureId: id.optional(),
   routinePhase: z.enum(['awake', 'sleeping', 'eating', 'resting', 'habit']), activityLabel: z.string().optional(),
   parkWalk: z.object({ stage: z.enum(['travelling', 'strolling', 'returning']), durationMinutes: z.number().positive(), participatedMinutes: z.number().nonnegative() }).optional(),
   communication: z.object({ channel: z.enum(['phone', 'face_to_face']), phase: z.enum(['notification', 'typing', 'responding', 'speaking', 'listening']), conversationId: id, recipientIds: z.array(id).max(20), untilReal: z.iso.datetime() }).optional() });
 export const companionWorldVisitSchema = z.object({ id, guestId: id, hostId: id, status: z.enum(['requested', 'allowed', 'denied', 'left', 'expired']),
-  reason: z.string(), response: z.string().optional(), createdAt: z.iso.datetime(), expiresAt: z.iso.datetime(), sourceMessageId: id.optional(), conversationId: id.optional() });
+  reason: z.string(), response: z.string().optional(), createdAt: z.iso.datetime(), expiresAt: z.iso.datetime(), sourceMessageId: id.optional(), conversationId: id.optional(), destination: z.object({ sceneId: id, entryId: id }).optional() });
 export const companionWorldEventSchema = z.object({ id, sequence: z.number().int().positive(), at: z.iso.datetime(), realAt: z.iso.datetime(),
   kind: z.string(), actorId: id.optional(), targetId: id.optional(), sceneId: id.optional(), text: z.string(), simulation: z.literal(true),
   sourceMessageId: id.optional(), conversationId: id.optional(),
@@ -47,9 +50,8 @@ export const companionWorldSnapshotSchema = z.object({
   clock: z.object({ realNow: z.iso.datetime(), virtualNow: z.iso.datetime(), speed: z.number().positive(), day: z.number().int(), hour: z.number().min(0).max(24), daylight: z.boolean() }),
   environment: z.object({ weather: z.enum(['clear', 'cloudy', 'rain', 'snow']).optional(), light: z.number().min(0).max(1), outdoorTemperature: z.number().optional(), indoorTemperature: z.number().optional() }),
   scenes: z.array(companionWorldSceneSchema), actors: z.array(companionWorldActorSchema), visits: z.array(companionWorldVisitSchema),
-  residents: z.array(z.object({ companionId: id, name: z.string(), homeSceneId: id.optional() })),
+  residents: z.array(z.object({ companionId: id, name: z.string(), active: z.boolean().optional(), homeSceneId: id.optional() })),
   knownAddresses: z.array(companionHomeAddressSchema).optional(),
-  homeMemory: companionWorldSceneSchema.optional(),
   events: z.array(companionWorldEventSchema), relationships: z.array(companionWorldRelationshipSchema), works: z.array(companionWorldWorkSchema),
   lastEventSequence: z.number().int().nonnegative(), backlog: z.boolean(),
   perception: companionWorldPerceptionSchema.optional(),
@@ -66,6 +68,10 @@ export type CompanionWorldSnapshot = z.infer<typeof companionWorldSnapshotSchema
 export const companionWorldTimeSchema = z.object({ realNow: z.iso.datetime(), virtualNow: z.iso.datetime(),
   timeZone: z.string(), mode: z.enum(['compressed', 'realtime']), speed: z.number().positive(), backlog: z.boolean(),
   elapsed: z.array(z.object({ realAt: z.iso.datetime(), milliseconds: z.number().nonnegative() })).max(10).optional() });
+export const companionWorldStatusSchema = z.object({ clock: companionWorldTimeSchema,
+  environment: companionWorldSnapshotSchema.shape.environment.optional(),
+  contacts: z.array(companionContactReceiptSchema).max(20), interactions: z.array(companionInteractionSchema).max(60) });
+export type CompanionWorldStatus = z.infer<typeof companionWorldStatusSchema>;
 export type CompanionWorldTime = z.infer<typeof companionWorldTimeSchema>;
 export type CompanionWorldScope = { companionId: string; conversationId: string; beforeSequence?: number };
 export type CompanionWorldOccupancy = { start: number; end: number; phase: 'sleeping' | 'eating' | 'resting' | 'habit'; habitId?: string; habitKind?: 'rest' | 'exercise' | 'study' | 'leisure' | 'custom' };
@@ -75,6 +81,7 @@ export const companionWorldPublicCommands = [
   z.strictObject({ type: z.literal('world.configure'), expectedRevision: z.number().int().positive(), patch: companionWorldSettingsSchema.omit({ revision: true }).partial() }),
   scope.extend({ type: z.literal('world.observe') }).strict(),
   scope.extend({ type: z.literal('world.tool'), sourceMessageId: id.optional(), arguments: companionWorldArgumentsSchema }).strict(),
+  z.strictObject({ type: z.literal('world.status'), companionIds: z.array(id).max(20) }),
 ] as const;
 export const companionWorldStorageCommands = [
   ...companionWorldPublicCommands,

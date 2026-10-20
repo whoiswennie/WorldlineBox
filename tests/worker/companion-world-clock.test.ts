@@ -9,7 +9,7 @@ const roots: string[] = [], stores = new Set<CompanionsStore>();
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '友善', description: '', model: '', avatar: 'sister', proactive: false }));
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T10:00:00Z'); });
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
-function open(file: string) { const store = new CompanionsStore(file, seeds); stores.add(store); return store; }
+function open(file: string) { const store = new CompanionsStore(file, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); return store; }
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-clock-')); roots.push(root);
   const file = path.join(root, 'messages.sqlite'), store = open(file), settings = store.request({ type: 'world.clock' }).worldClock!;

@@ -6,7 +6,7 @@ vi.mock('electron', () => ({ ipcRenderer: { invoke: vi.fn(), on: vi.fn(), remove
 afterEach(() => vi.clearAllMocks());
 it('validates the narrow observer API without exposing mutation, conversation, model or execution bridges', async () => {
   vi.mocked(ipcRenderer.invoke).mockResolvedValue({ ok: true });
-  await companionWorld.open({ sceneId: 'commons' }); expect(ipcRenderer.invoke).toHaveBeenCalledWith(COMPANION_WORLD_WINDOW_CHANNEL, { type: 'open', sceneId: 'commons' });
+  await companionWorld.open({ sceneId: 'park' }); expect(ipcRenderer.invoke).toHaveBeenCalledWith(COMPANION_WORLD_WINDOW_CHANNEL, { type: 'open', sceneId: 'park' });
   await expect(companionWorld.request({ type: 'message.send', content: 'unauthorized' } as never)).rejects.toThrow();
   expect(() => companionWorld.open({ sceneId: '../private' })).toThrow();
   expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);

@@ -127,8 +127,10 @@ export class CompanionWorkOrderStore {
     return this.db.transaction(() => {
       const at = iso(), args: unknown[] = [at]; if (companionId) args.push(companionId);
       const candidates = this.db.prepare(`SELECT id FROM companion_work_orders o WHERE (status='accepted' OR status='running' AND lease_until<=?) ${companionId ? 'AND companion_id=?' : ''}
+        AND NOT EXISTS(SELECT 1 FROM companion_focus_interruptions i WHERE i.companion_id=o.companion_id AND i.status='active'
+          AND NOT EXISTS(SELECT 1 FROM json_each(o.data,'$.authorizationSourceMessageIds') s WHERE s.value=json_extract(i.data,'$.sourceMessageId')))
         AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=o.companion_id AND r.status!='completed')
-        AND EXISTS(SELECT 1 FROM companions p WHERE p.id=o.companion_id AND p.deleted_at IS NULL)
+        AND EXISTS(SELECT 1 FROM companions p WHERE p.id=o.companion_id AND p.deleted_at IS NULL AND json_extract(p.data,'$.active')=1)
         AND NOT EXISTS(SELECT 1 FROM actions a WHERE a.id=o.action_id AND a.status IN('queued','running'))
         AND NOT EXISTS(SELECT 1 FROM companion_work_orders other WHERE other.companion_id=o.companion_id AND other.id!=o.id AND other.status='running' AND (other.lease_until>? OR EXISTS(SELECT 1 FROM actions a WHERE a.id=other.action_id AND a.status IN('queued','running')))) ORDER BY ordinal LIMIT 100`).all(...args, at);
       for (const found of candidates) {

@@ -17,12 +17,12 @@ export function companionAppearance(companion: Pick<Companion, 'avatar' | 'appea
     : companion.builtin && companion.id ? companionAppearanceImages[companion.id] : undefined;
 }
 
-export function Avatar({ companion, large = false, showPresence = true }: { companion?: Pick<Companion, 'name' | 'avatar' | 'avatarAttachmentId'> & Partial<Pick<Companion, 'availability' | 'availabilityReason'>>; large?: boolean; showPresence?: boolean }) {
+export function Avatar({ companion, large = false, showPresence = true }: { companion?: Pick<Companion, 'name' | 'avatar' | 'avatarAttachmentId'> & Partial<Pick<Companion, 'id' | 'availability' | 'availabilityReason'>>; large?: boolean; showPresence?: boolean }) {
   const localImage = companion?.avatarAttachmentId ? `worldlinebox-companion://attachment/${encodeURIComponent(companion.avatarAttachmentId)}` : undefined;
   const image = companion ? companionPortrait(companion) : undefined;
   const squareImage = !!image;
   const presence = showPresence ? companion?.availability : undefined;
-  return <span className={`companion-avatar${large ? ' is-large' : ''}${image ? ' has-image' : ''}${squareImage ? ' has-square-image' : ''}${localImage ? ' has-local-image' : ''}`} aria-hidden="true" title={presence ? COMPANION_PRESENCE_LABELS[presence] + (companion?.availabilityReason ? ' · ' + companion.availabilityReason : '') : undefined} style={image ? { backgroundImage: `url("${image}")` } as CSSProperties : undefined}>{image ? '' : companion?.name.slice(0, 1) || '我'}{presence && <i className="companion-avatar-presence" data-status={presence} />}</span>;
+  return <span className={`companion-avatar${large ? ' is-large' : ''}${image ? ' has-image' : ''}${squareImage ? ' has-square-image' : ''}${localImage ? ' has-local-image' : ''}`} aria-hidden="true" title={presence ? COMPANION_PRESENCE_LABELS[presence] + (companion?.availabilityReason ? ' · ' + companion.availabilityReason : '') : undefined} style={image ? { backgroundImage: `url("${image}")` } as CSSProperties : undefined}>{!image && <span className="companion-avatar-letter">{companion?.name.slice(0, 1) || '我'}</span>}{presence && <i className="companion-avatar-presence" data-status={presence} />}</span>;
 }
 
 export function ChatGlyph({ name }: { name: 'chat' | 'contacts' | 'smile' | 'attach' | 'image' | 'reply' | 'send' | 'group' | 'pin' | 'bell' | 'more' }) {

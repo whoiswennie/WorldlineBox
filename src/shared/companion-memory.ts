@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionWorldQuerySchema } from './companion-knowledge';
 import { companionStateProposalSchema } from './companion-state';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
@@ -9,7 +10,7 @@ export const companionMemoryTagSchema = z.object({
   aliases: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
 });
 export const companionMemorySourceSchema = z.object({
-  messageId: id, conversationId: id, sequence: z.number().int().positive(), authorId: id,
+  sourceType: z.enum(['message', 'world_observation']).optional(), messageId: id, conversationId: id, sequence: z.number().int().positive(), authorId: id,
   revision: z.number().int().positive(), checksum: z.string().max(128), createdAt: z.string(), worldCreatedAt: z.string().optional(),
   publishedAfterSequence: z.number().int().nonnegative().optional(),
 });
@@ -78,6 +79,7 @@ export const companionMemoryForgetSchema = companionMemoryScopeSchema.extend({
   persistent: z.boolean().default(false), requestMessageId: id.optional(),
 });
 export const companionMemoryPublicCommands = [
+  companionMemoryScopeSchema.merge(companionWorldQuerySchema).extend({ type: z.literal('memory.world_query') }).strict(),
   companionMemorySearchSchema.extend({ type: z.literal('memory.search') }).strict(),
   companionMemorySearchSchema.extend({ type: z.literal('memory.browse') }).strict(),
   companionMemorySearchSchema.extend({ type: z.literal('memory.sources.search') }).strict(),

@@ -11,7 +11,7 @@ import { recordUrgentAttention } from '../helpers/companion-world-fixture';
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '认真而尊重用户', description: '', model: '', avatar: 'sister', proactive: false }));
 const stores = new Set<CompanionsStore>(), folders: string[] = [];
 const time = '2026-10-14T08:00:00.000Z';
-function open(filename: string) { const store = new CompanionsStore(filename, seeds); stores.add(store); return store; }
+function open(filename: string) { const store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); return store; }
 function close(store: CompanionsStore) { store.close(); stores.delete(store); }
 function fixture() {
   const folder = mkdtempSync(path.join(tmpdir(), 'companion-schedule-')); folders.push(folder);

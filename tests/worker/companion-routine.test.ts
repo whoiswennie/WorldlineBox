@@ -10,7 +10,7 @@ const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, perso
 const stores = new Set<CompanionsStore>(), folders: string[] = [];
 function fixture() {
   const folder = mkdtempSync(path.join(tmpdir(), 'companion-routine-')); folders.push(folder);
-  const store = new CompanionsStore(path.join(folder, 'messages.sqlite'), seeds); stores.add(store);
+  const store = new CompanionsStore(path.join(folder, 'messages.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   return { store, filename: path.join(folder, 'messages.sqlite'), scope: { companionId: 'alice', conversationId: store.openPrivate('alice').id } };
@@ -142,7 +142,7 @@ describe('persistent virtual routine source and clock behavior', () => {
     vi.setSystemTime(lastObservedAt); store.request({ type: 'state.get', ...scope });
     store.close(); stores.delete(store);
     vi.setSystemTime('2026-10-16T11:00:00Z');
-    const reopened = new CompanionsStore(filename, seeds); stores.add(reopened); reopened.interruptPendingActions();
+    const reopened = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); reopened.interruptPendingActions();
     expect(reopened.getAction(action.id).status).toBe('interrupted'); expect(reopened.getAction(action.id).result).toBeUndefined();
     const pending = reopened.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(order => order.actionId === action.id)!;
     expect(pending.status).toBe('accepted'); expect(pending.result).toBeUndefined();

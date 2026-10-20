@@ -12,7 +12,7 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('202
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) { if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('companion-social-review-')) throw new Error('Unexpected social review cleanup.'); rmSync(root, { recursive: true, force: true }); } vi.useRealTimers(); });
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-social-review-')); roots.push(root);
-  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds); stores.add(store);
+  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const id of ids) { const scope = { companionId: id, conversationId: store.openPrivate(id).id }, routine = store.request({ type: 'routine.get', ...scope }).routine!;

@@ -14,7 +14,7 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('202
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) { if (!root.startsWith(path.join(tmpdir(), 'companion-social-store-'))) throw new Error('Unexpected fixture path.'); rmSync(root, { recursive: true, force: true }); } vi.useRealTimers(); });
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-social-store-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
-  const store = new CompanionsStore(filename, seeds); stores.add(store); const world = store.request({ type: 'world.snapshot' }).world!;
+  const store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const seed of seeds) { const scope = { companionId: seed.id, conversationId: store.openPrivate(seed.id).id }, routine = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', wakeAt: '07:00', sleepAt: '23:00', meals: [], habits: [] } }); }
@@ -69,7 +69,7 @@ it('recovers a sleeping sender outbox after restart and cancels a withdrawn priv
   const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '把这句公开问候发送给Bob。', replyDirective: 'none' });
   const input = { type: 'social.send', companionId: 'alice', conversationId: pair.id, content: '早上好。', channel: 'phone', clientId: 'after_restart', authorizationMessageId: source.id } as const;
   expect(f.store.request(input).socialPending).toBe(true); f.store.close(); stores.delete(f.store);
-  const store = new CompanionsStore(f.filename, seeds); stores.add(store); const latest = store.request({ type: 'routine.get', ...scope }).routine!;
+  const store = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); const latest = store.request({ type: 'routine.get', ...scope }).routine!;
   store.request({ type: 'routine.configure', ...scope, expectedRevision: latest.revision, patch: { sleepAt: '23:00', wakeAt: '07:00' } }); advance(store, 12000);
   expect(store.request(input).socialPending).toBe(true); advance(store, 1300); const delivered = store.request(input).socialMessage!;
   expect(delivered.message.authorId).toBe('alice'); expect(JSON.stringify(delivered)).not.toContain(source.id);
@@ -155,7 +155,7 @@ it('dispatches current user-authorized phone messages behind an exhausted autono
     const response = store.request({ type: 'social.job.claim' });
     if (response.socialMessage?.message.content === authorized.content) delivered = response.socialMessage;
     if (response.socialJob) complete(store, response.socialJob, null);
-    if (round === 0) { store.close(); stores.delete(store); store = new CompanionsStore(f.filename, seeds); stores.add(store); }
+    if (round === 0) { store.close(); stores.delete(store); store = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); }
   }
   expect(delivered?.message.content).toBe(authorized.content);
   const history = store.request({ type: 'social.messages', conversationId: pair.id }).socialMessagePage!;
@@ -163,11 +163,11 @@ it('dispatches current user-authorized phone messages behind an exhausted autono
 });
 it('claims a later phone reply after an older face-to-face chain loses its physical meeting', () => {
   const { store } = fixture(), alice = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, bob = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
-  store.request({ type: 'world.tool', ...alice, arguments: { action: 'move', destinationId: 'commons' } }); advance(store, 30000);
-  store.request({ type: 'world.tool', ...bob, arguments: { action: 'move', destinationId: 'commons' } }); advance(store, 30000);
+  store.request({ type: 'world.tool', ...alice, arguments: { action: 'travel', targetSceneId: 'park' } }); advance(store, 30000);
+  store.request({ type: 'world.tool', ...bob, arguments: { action: 'travel', targetSceneId: 'park' } }); advance(store, 30000);
   store.request({ type: 'world.tool', ...alice, arguments: { action: 'social', targetCompanionId: 'bob', text: '现场谈论一本书。', kind: 'talk' } });
-  store.request({ type: 'world.tool', ...alice, arguments: { action: 'move', destinationId: 'home_alice' } });
-  store.request({ type: 'world.tool', ...bob, arguments: { action: 'move', destinationId: 'home_bob' } }); advance(store, 30000);
+  store.request({ type: 'world.tool', ...alice, arguments: { action: 'travel', targetSceneId: 'home_alice' } });
+  store.request({ type: 'world.tool', ...bob, arguments: { action: 'travel', targetSceneId: 'home_bob' } }); advance(store, 30000);
   const pair = room(store), phone = { type: 'social.send', companionId: 'alice', conversationId: pair.id, channel: 'phone', content: '各自回家后，手机继续聊。', clientId: 'later_phone' } as const;
   // The earlier scene conversation spent the first initiation; allow the ordinary virtual cooldown.
   advance(store, 6 * 3600000 + 1); store.request(phone); advance(store, 1300); const sent = store.request(phone).socialMessage!;

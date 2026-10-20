@@ -1,6 +1,8 @@
 import { expect, it, vi } from 'vitest';
 import { authorizeCompanionMessage, generateCompanionSocialReply } from '../../src/main/companions/social-model';
 import { generateCompanionSocialNotification } from '../../src/main/companions/social-notification-model';
+import { generateCompanionVisitSpeech } from '../../src/main/companions/visit-speech-model';
+import type { CompanionActivityTask } from '../../src/shared/companion-activity-task';
 import type { Companion, CompanionConversation, CompanionMessage } from '../../src/shared/companions';
 import type { CompanionSocialJob } from '../../src/shared/companion-social';
 import type { CompanionSocialNotification, CompanionSocialOrigin } from '../../src/shared/companion-social';
@@ -22,6 +24,29 @@ const input = () => ({ companion, conversation, source, messages: [source], job,
     people: [], objects: [], visibleObjectIds: [], visibleCompanionIds: [] },
 } as CompanionWorldSnapshot });
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
+it.each(['phone', 'face_to_face'] as const)('composes ordinary %s visit speech from actual peer facts without importing the private planner or reauthorizing it', async channel => {
+  const task: CompanionActivityTask = { id: 'task', companionId: companion.id, conversationId: 'private_flash', sourceMessageId: 'user_request',
+    title: 'PRIVATE_TITLE', goal: 'PRIVATE_USER_REQUEST', status: 'running', step: 9, attempts: 1, createdAt: source.createdAt,
+    updatedAt: source.createdAt, deadline: source.createdAt, stage: 'PRIVATE_STAGE', visitTargetId: source.authorId,
+    visitArrivedAt: source.createdAt, visitInteractionAt: source.createdAt,
+    history: [{ step: 1, at: source.createdAt, action: 'message', result: 'PRIVATE_PLANNING_RESULT', ok: false }] };
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    expect(data.purpose).toBe('visit_peer_speech'); expect(data.channel).toBe(channel);
+    expect(data.progress).toEqual({ arrived: true, exchangedInPerson: true });
+    expect(data.messages).toEqual([{ authorId: source.authorId, content: source.content, sequence: source.sequence }]);
+    expect(JSON.stringify(data)).not.toMatch(/PRIVATE_|UNSENT_|OTHER_PEER/); expect(request.tools).toBeUndefined();
+    return response({ text: '姐姐，我们已经见面啦，坐一会儿吧。' });
+  });
+  expect(await generateCompanionVisitSpeech({ companion, target: members[1]!, channel, task, world: input().world,
+    peerConversationId: conversation.id, messages: [source, { ...source, authorId: 'user', content: 'PRIVATE_PLAYER_DATA' },
+      { ...source, authorId: companion.id, conversationId: 'private_flash', content: 'PRIVATE_SELF_REPLY' },
+      { ...source, authorId: 'friend', content: 'OTHER_PEER' }, { ...source, isReplyDraft: true, content: 'UNSENT_DRAFT' }] },
+  config, undefined, { fetchFn })).toContain('见面');
+  await expect(generateCompanionVisitSpeech({ companion, target: members[2]!, channel, task, world: input().world, messages: [] }, config,
+    undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
 it('provides actual peer identity and bounded turn budget without execution tools or later/user messages', async () => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
@@ -120,10 +145,25 @@ it('reports one committed peer event to the actual original player without impor
     expect(payload.identity.currentReply.author.id).toBe(companion.id); expect(payload.origin.initiatorId).toBe('user');
     expect(payload.confirmedEvent).toEqual({ eventId: notification.eventId, kind: 'peer_reply', evidence: notification.evidence });
     expect(payload.continuation).toEqual({ solicited: true, mayGrantExternalExecution: false }); expect(request.tools).toBeUndefined();
+    expect(payload.world.clock).toMatchObject({ virtualNow: source.createdAt, timeZone: 'UTC' });
+    expect(payload.world.environment).toMatchObject({ weatherStatus: 'unknown', temperature: 21, temperatureLocation: 'indoors' });
+    expect(payload.world.environment.weather).toBeUndefined();
     expect(JSON.stringify(payload)).not.toContain('PRIVATE_USER_HISTORY');
     return response({ text: '朋友回复说可以来玩，我还没有到她家。', eventId: notification.eventId, initiatorId: 'user' });
   });
   const value = { companion, conversation: playerRoom, source: player, notification, world: input().world, members };
   await expect(generateCompanionSocialNotification(value, config, undefined, { fetchFn })).resolves.toContain('还没有到');
   await expect(generateCompanionSocialNotification(value, config, undefined, { fetchFn: async () => response({ text: '错误来源不得接入', eventId: notification.eventId, initiatorId: 'deepseek-sister' }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  const prior = { ...player, id: 'already_reported', authorId: companion.id, sequence: player.sequence + 1, content: '朋友说可以来玩，我还没有过去。' };
+  const followup = { ...notification, eventId: 'tea_reply', evidence: { authorId: 'friend', messageId: 'tea_reply', text: '我再翻翻茶放哪了。' },
+    dialogue: [prior, { ...prior, id: 'foreign_private', conversationId: 'other_private', content: 'FOREIGN_PRIVATE_SECRET' },
+      { ...prior, id: 'draft', isReplyDraft: true, content: 'UNFINISHED_DRAFT' }] };
+  await expect(generateCompanionSocialNotification({ ...value, notification: followup }, config, undefined, { fetchFn: async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), payload = JSON.parse(request.messages[1].content);
+    expect(payload.dialogue).toEqual([expect.objectContaining({ id: prior.id, content: prior.content })]);
+    expect(payload.confirmedEvents).toEqual([{ eventId: 'tea_reply', kind: 'peer_reply', evidence: followup.evidence }]);
+    expect(JSON.stringify(payload)).not.toMatch(/FOREIGN_PRIVATE_SECRET|UNFINISHED_DRAFT/);
+    expect(request.messages[0].content).toContain('text=null');
+    return response({ text: null, eventId: followup.eventId, initiatorId: 'user' });
+  } })).resolves.toBeNull();
 });

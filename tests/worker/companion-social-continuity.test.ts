@@ -21,7 +21,7 @@ afterEach(() => {
 function advance(store: CompanionsStore, ms: number) { vi.setSystemTime(Date.now() + ms); store.request({ type: 'world.tick' }); }
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-social-continuity-')); roots.push(root);
-  const filename = path.join(root, 'messages.sqlite'), store = new CompanionsStore(filename, seeds); stores.add(store);
+  const filename = path.join(root, 'messages.sqlite'), store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const id of ids) {
@@ -48,6 +48,85 @@ function replied(f: ReturnType<typeof fixture>, content = '好呀，等你过来
   const reply = f.store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: content }).socialMessage!;
   return { job, reply };
 }
+function secondReply(f: ReturnType<typeof fixture>, text = '我再找点茶，找到了再告诉你。') {
+  const owner = f.store.request({ type: 'social.job.claim' }).socialJob!;
+  expect(owner.companionId).toBe('deepseek-flash'); advance(f.store, 1300);
+  f.store.request({ type: 'social.job.complete', id: owner.id, leaseToken: owner.leaseToken!, text: '好，我知道了。' });
+  const peer = f.store.request({ type: 'social.job.claim' }).socialJob!;
+  expect(peer.companionId).toBe('phoebe'); advance(f.store, 1300);
+  return f.store.request({ type: 'social.job.complete', id: peer.id, leaseToken: peer.leaseToken!, text }).socialMessage!.message;
+}
+it('coalesces waiting replies from one delegation, commits one bubble and consumes every event exactly once', () => {
+  const f = fixture(), { reply } = replied(f), second = secondReply(f);
+  const claimed = f.store.request({ type: 'social.notification.claim' }), notice = claimed.socialNotification!;
+  expect(companionStorageResponseSchema.safeParse(claimed).success).toBe(true);
+  expect(notice.events?.map(event => event.eventId)).toEqual([reply.message.id, second.id]);
+  const command = { type: 'social.notification.complete' as const, id: notice.id, leaseToken: notice.leaseToken!, text: '菲比说可以去玩，还会找点茶。' };
+  const sent = f.store.request(command).message!;
+  expect(f.store.request(command).message!.id).toBe(sent.id);
+  expect(f.store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
+  expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.filter(message => message.authorId === 'deepseek-flash')).toHaveLength(1);
+});
+it('regenerates against a late peer correction instead of publishing an obsolete invitation first', () => {
+  const f = fixture(); replied(f, '可以来玩。');
+  const owner = f.store.request({ type: 'social.job.claim' }).socialJob!; advance(f.store, 1300);
+  f.store.request({ type: 'social.job.complete', id: owner.id, leaseToken: owner.leaseToken!, text: '我准备一下。' });
+  const peer = f.store.request({ type: 'social.job.claim' }).socialJob!;
+  const earlier = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(earlier.events).toHaveLength(1); advance(f.store, 1300);
+  f.store.request({ type: 'social.job.complete', id: peer.id, leaseToken: peer.leaseToken!, text: '临时有事，现在不方便来了，改天约吧。' });
+  expect(f.store.request({ type: 'social.notification.complete', id: earlier.id, leaseToken: earlier.leaseToken!, text: '菲比说可以过去玩。' }).socialPending).toBe(true);
+  const latest = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(latest.events).toHaveLength(2); expect(latest.events?.at(-1)?.evidence.text).toContain('临时有事');
+  f.store.request({ type: 'social.notification.complete', id: latest.id, leaseToken: latest.leaseToken!, text: '菲比刚临时有事，我们改天约。' });
+  expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.filter(message => message.authorId === 'deepseek-flash').map(message => message.content)).toEqual(['菲比刚临时有事，我们改天约。']);
+});
+it('passes the initial reply and already delivered progress into the next report, with no peer private history', () => {
+  const f = fixture();
+  const initial = f.store.appendMessage({ conversationId: f.playerRoom.id, authorId: 'deepseek-flash', content: '我先问问她方便不方便。' });
+  replied(f);
+  const first = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(first.dialogue?.map(message => message.id)).toEqual([initial.id]);
+  const sent = f.store.request({ type: 'social.notification.complete', id: first.id, leaseToken: first.leaseToken!, text: '菲比说有空，可以过去一起玩。' }).message!;
+  const second = secondReply(f);
+  const next = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(next.events?.map(event => event.eventId)).toEqual([second.id]);
+  expect(next.dialogue?.map(message => message.id)).toEqual([initial.id, sent.id]);
+  expect(next.dialogue?.every(message => message.conversationId === f.playerRoom.id)).toBe(true);
+  expect(JSON.stringify(next.dialogue)).not.toContain('PRIVATE_USER_DETAIL');
+  for (let index = 0; index < 55; index++) f.store.appendMessage({ conversationId: f.playerRoom.id, authorId: 'user', content: `其它话题 ${index}`, replyDirective: 'none' });
+  expect(f.store.request({ type: 'social.notification.complete', id: next.id, leaseToken: next.leaseToken!, text: '基于过期上下文的回报' }).socialPending).toBe(true);
+  const afterLongChat = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(afterLongChat.dialogue?.map(message => message.id)).toContain(sent.id);
+  expect(afterLongChat.dialogue).toHaveLength(50);
+});
+it('discards a stale report after the dialogue changes and can durably consume a redundant update without a bubble', () => {
+  const f = fixture(); replied(f); const notice = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  const other = f.store.appendMessage({ conversationId: f.playerRoom.id, authorId: 'deepseek-flash', content: '菲比已经答应了，我们稍后见。' });
+  expect(f.store.request({ type: 'social.notification.complete', id: notice.id, leaseToken: notice.leaseToken!, text: '菲比回话了，她答应了。' }).socialPending).toBe(true);
+  expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.map(message => message.content)).not.toContain('菲比回话了，她答应了。');
+  const fresh = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(fresh.dialogue?.map(message => message.id)).toContain(other.id);
+  const done = { type: 'social.notification.complete' as const, id: fresh.id, leaseToken: fresh.leaseToken!, text: null };
+  expect(f.store.request(done).message).toBeUndefined(); expect(f.store.request(done).message).toBeUndefined();
+  f.store.close(); stores.delete(f.store);
+  const reopened = new CompanionsStore(f.filename, seeds); stores.add(reopened);
+  expect(reopened.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
+  expect(reopened.messages({ conversationId: f.playerRoom.id }).messages.filter(message => message.authorId === 'deepseek-flash')).toHaveLength(1);
+});
+it('releases every fact in a failed batch for a single retry after restart', () => {
+  const f = fixture(); replied(f); secondReply(f);
+  const notice = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  f.store.request({ type: 'social.notification.fail', id: notice.id, leaseToken: notice.leaseToken!, error: '网络暂时中断' });
+  expect(f.store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
+  f.store.close(); stores.delete(f.store);
+  const restarted = new CompanionsStore(f.filename, seeds); stores.add(restarted); advance(restarted, 20001);
+  const retry = restarted.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(retry.events).toEqual(notice.events); expect(retry.leaseToken).not.toBe(notice.leaseToken);
+  expect(() => restarted.request({ type: 'social.notification.complete', id: notice.id, leaseToken: notice.leaseToken!, text: '迟到结果' })).toThrow('租约');
+  restarted.request({ type: 'social.notification.complete', id: retry.id, leaseToken: retry.leaseToken!, text: '一起玩并准备茶。' });
+  expect(restarted.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
+});
 it.each([false, true])('records genuine peer work atomically with the real publisher and receiver decision accept=%s, without player authority', accept => {
   const f = fixture(), content = '请帮我读一下我写的海边散文，整理三条修改建议。';
   const { reply } = replied(f, content), job = f.store.request({ type: 'social.job.claim' }).socialJob!;
@@ -112,6 +191,7 @@ it.each(['forget', 'reset'] as const)('blocks an already claimed result after or
 });
 it('does not return a claimed event to a deleted custom owner', () => {
   const f = fixture(), owner = f.store.createCompanion({ name: '独立伙伴', description: '', persona: '友好', model: '', avatar: 'custom', proactive: false });
+  f.store.setCompanionActive(owner.id, true);
   const room = f.store.openPrivate(owner.id), routine = f.store.request({ type: 'routine.get', companionId: owner.id, conversationId: room.id }).routine!;
   f.store.request({ type: 'routine.configure', companionId: owner.id, conversationId: room.id, expectedRevision: routine.revision,
     patch: { timeZone: 'UTC', wakeAt: '07:00', sleepAt: '23:00', meals: [], habits: [] } }); advance(f.store, 10000);

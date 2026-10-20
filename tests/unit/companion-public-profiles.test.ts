@@ -36,7 +36,7 @@ afterEach(async () => {
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'companion-public-profiles-')); roots.push(root);
   const managed = path.join(root, 'profile'), appPath = path.join(root, 'app'); await mkdir(managed); await mkdir(appPath);
-  const store = new CompanionsStore(path.join(managed, 'messages.sqlite'), seeds); stores.add(store);
+  const store = new CompanionsStore(path.join(managed, 'messages.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const request = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => store.request(command);
   const loader = new CompanionPublicProfiles({ root: managed, appPath, request });
   return { root, managed, appPath, store, request, loader, conversation: store.openPrivate('alice') };

@@ -12,7 +12,7 @@ const seeds: CompanionSeed[] = [
   { id: 'bob', name: '伙伴乙', description: '', persona: '认真', model: '', avatar: 'sister', proactive: false },
 ];
 const stores = new Set<CompanionsStore>(), folders: string[] = [];
-function open(filename: string) { const store = new CompanionsStore(filename, seeds); stores.add(store); return store; }
+function open(filename: string) { const store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); return store; }
 function fixture() {
   const folder = mkdtempSync(path.join(tmpdir(), 'companion-memory-')); folders.push(folder);
   const filename = path.join(folder, 'companions.db'), store = open(filename);

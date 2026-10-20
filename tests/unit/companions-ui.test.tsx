@@ -57,6 +57,7 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
         state = { ...state, companions: state.companions.map(item => item.id === input.id ? { ...item, ...input.companion } : item) };
         return { ok: true, companion: state.companions.find(item => item.id === input.id) };
       }
+      case 'companion.set-active': { state = { ...state, companions: state.companions.map(role => role.id === input.id ? { ...role, active: input.active } : role) }; return { ok: true, companion: state.companions.find(role => role.id === input.id) }; }
       case 'companion.delete': state = { ...state, companions: state.companions.filter(item => item.id !== input.id) }; return { ok: true };
       case 'companion.add-builtin': {
         const template = sisters.find(item => item.avatar === input.templateId)!;
@@ -636,4 +637,19 @@ it('shows real waiting and generation stages before reply text exists and allows
   expect(progress.querySelector('.companions-typing.is-waiting')).not.toBeNull();
   await click('取消回复');
   expect(f.api.request).toHaveBeenCalledWith({ type: 'reply.cancel', conversationId: 'private-sister' });
+});
+
+
+it('exposes explicit activation in contacts and preserves dormancy when opening a private conversation', async () => {
+  const f = fixture({ companions: sisters.map(role => ({ ...role, active: role.id === 'deepseek-flash' })) });
+  await mount(f.api);
+  expect(container!.textContent).toContain('伙伴已休眠');
+  expect(f.request.mock.calls.some(([input]) => input.type === 'companion.set-active')).toBe(false);
+  await click('联系人');
+  expect(container!.textContent).toContain('虚拟世界未加载');
+  await click('激活伙伴');
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.set-active', id: 'deepseek-sister', active: true }));
+  expect(container!.textContent).toContain('已激活');
+  await click('让伙伴休眠');
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.set-active', id: 'deepseek-sister', active: false }));
 });

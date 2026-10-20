@@ -14,7 +14,7 @@ afterEach(() => { vi.restoreAllMocks(); for (const store of stores) store.close(
 
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-atomic-events-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
-  const store = new CompanionsStore(filename, [{ id: 'alice', name: 'Alice', persona: '喜欢散步，认真生活。', description: '', model: '', avatar: 'sister', proactive: true }]); stores.add(store);
+  const store = new CompanionsStore(filename, [{ id: 'alice', name: 'Alice', persona: '喜欢散步，认真生活。', description: '', model: '', avatar: 'sister', active: true, proactive: true }]); stores.add(store);
   const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
   const routine = store.request({ type: 'routine.get', ...scope }).routine!;

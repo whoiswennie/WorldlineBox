@@ -10,7 +10,7 @@ const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, perso
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-15T10:00:00Z'); });
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 function fixture() {
-  const root = mkdtempSync(path.join(tmpdir(), 'companion-phone-')); roots.push(root); const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds); stores.add(store);
+  const root = mkdtempSync(path.join(tmpdir(), 'companion-phone-')); roots.push(root); const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const settings = store.request({ type: 'world.snapshot' }).world!.settings; store.request({ type: 'world.configure', expectedRevision: settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const id of ['alice', 'bob']) { const scope = { companionId: id, conversationId: store.openPrivate(id).id }, initial = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: initial.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } }); }
@@ -26,7 +26,7 @@ function routine(f: ReturnType<typeof fixture>, kind: 'rest' | 'study') {
 }
 it.each(['resting', 'habit', 'walking'] as const)('sends peer phone messages while %s, using the real phone pose and preserving the route/activity', activity => {
   const f = fixture();
-  if (activity === 'walking') { f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: 'commons' } }); advance(f.store, 2000); }
+  if (activity === 'walking') { f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: 'alice_computer' } }); advance(f.store, 2000); }
   else routine(f, activity === 'resting' ? 'rest' : 'study');
   const before = actor(f.store); expect(before.activity).toBe(activity);
   expect(f.store.request({ type: 'routine.get', ...f.scope }).routine!.runtime.canRespond).toBe(true);

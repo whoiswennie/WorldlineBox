@@ -78,7 +78,8 @@ export class CompanionStateStore {
       const state = this.load(id), found = row(this.db.prepare('SELECT energy_clock FROM companion_runtime_states WHERE companion_id=?').get(id));
       const elapsedAffect = this.clock.elapsedVirtual(Date.parse(state.updatedAt), now);
       const previous = Number(found.energy_clock);
-      if (now > previous) {
+      const active = !!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(id);
+      if (now > previous && active) {
         if (elapsedAffect) state.affect = decayCompanionAffect(state.affect, elapsedAffect);
         state.energy = this.advanceEnergy(id, previous, now, state.energy, this.busy(id));
         state.mood = deriveCompanionMood(state.affect, state.energy, this.busy(id));

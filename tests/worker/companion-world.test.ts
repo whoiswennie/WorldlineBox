@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
-import { companionWorldCellWalkable, createCompanionWorldHome, createCompanionWorldCommons, findCompanionWorldPath } from '../../src/shared/companion-world-engine';
+import { companionWorldCellWalkable, createCompanionWorldHome, createCompanionWorldPark, findCompanionWorldPath } from '../../src/shared/companion-world-engine';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
 import { CompanionWorldStore } from '../../src/companions/world-store';
@@ -14,7 +14,7 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('202
 afterEach(() => { vi.restoreAllMocks(); for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 function fixture(mode: 'compressed' | 'realtime' = 'compressed') {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
-  const store = new CompanionsStore(filename, seeds); stores.add(store);
+  const store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const alice = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, bob = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
   const initial = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode, timeZone: 'UTC' } });
@@ -34,8 +34,8 @@ function allowVisit(f: ReturnType<typeof fixture>) {
   const requested = tool(f.store, f.alice, { action: 'visit', targetCompanionId: 'bob', reason: '一起看书' });
   const visit = requested.visits.find(visit => visit.guestId === 'alice')!;
   tool(f.store, f.bob, { action: 'respond', requestId: visit.id, decision: 'allow', reason: '欢迎来做客' });
-  tool(f.store, f.alice, { action: 'navigate', targetCompanionId: 'bob' }); advance(f.store, 40000);
-  tool(f.store, f.alice, { action: 'enter', targetCompanionId: 'bob' }); advance(f.store, 8000);
+  tool(f.store, f.alice, { action: 'travel', targetSceneId: 'home_' + 'bob' }); advance(f.store, 40000);
+  tool(f.store, f.alice, { action: 'travel', targetSceneId: 'home_' + 'bob' }); advance(f.store, 8000);
   return visit;
 }
 
@@ -60,38 +60,38 @@ describe('one authoritative companion world', () => {
     const later = advance(f.store, 20 * 60000); expect(Date.parse(later.clock.virtualNow) - Date.parse(first.clock.virtualNow)).toBe(86400000);
     const changed = f.store.request({ type: 'world.configure', expectedRevision: compressed.settings.revision, patch: { mode: 'realtime' } }).world!;
     expect(changed.clock.virtualNow).toBe(new Date().toISOString()); const real = advance(f.store, 60000); expect(Date.parse(real.clock.virtualNow) - Date.parse(changed.clock.virtualNow)).toBe(60000);
-    f.store.close(); stores.delete(f.store); const reopened = new CompanionsStore(f.filename, seeds); stores.add(reopened);
+    f.store.close(); stores.delete(f.store); const reopened = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened);
     expect(reopened.request({ type: 'world.snapshot' }).world!.clock.virtualNow).toBe(real.clock.virtualNow);
   });
   it('uses the exact same furniture footprints for collision and reachable adjacent interaction anchors', () => {
-    const home = createCompanionWorldHome('alice', 0), route = findCompanionWorldPath(home, { x: 10, y: 13 }, { x: 4, y: 4 })!;
+    const home = createCompanionWorldHome('alice'), route = findCompanionWorldPath(home, { x: 10, y: 13 }, { x: 4, y: 4 })!;
     expect(route.length).toBeGreaterThan(10); expect(route.every(point => companionWorldCellWalkable(home, point))).toBe(true);
     expect(findCompanionWorldPath(home, { x: 10, y: 13 }, { x: 3, y: 2 })).toBeUndefined();
     for (const object of home.objects) expect(companionWorldCellWalkable(home, object.anchor)).toBe(true);
-    const commons = createCompanionWorldCommons([home]);
-    expect(companionWorldCellWalkable(commons, { x: 10, y: 10 })).toBe(false);
+    const commons = createCompanionWorldPark();
+    expect(companionWorldCellWalkable(commons, { x: 8, y: 8 })).toBe(false);
     expect(companionWorldCellWalkable(commons, { x: 14, y: 20 })).toBe(true);
-    const exterior = findCompanionWorldPath(commons, { x: 2, y: 10 }, { x: 26, y: 10 })!;
+    const exterior = findCompanionWorldPath(commons, { x: 2, y: 9 }, { x: 26, y: 9 })!;
     expect(exterior.length).toBeGreaterThan(24); expect(exterior.every(point => companionWorldCellWalkable(commons, point))).toBe(true);
   });
-  it('requires explicit host consent and walks every exterior path before entering another house', () => {
+  it('requires explicit host consent and crosses scene portals after walking to the local exit', () => {
     const f = fixture();
-    expect(() => tool(f.store, f.alice, { action: 'move', destinationId: 'home_bob' })).toThrow('enter');
+    expect(() => tool(f.store, f.alice, { action: 'move', destinationId: 'home_bob' })).toThrow('travel');
     const visit = tool(f.store, f.alice, { action: 'visit', targetCompanionId: 'bob', reason: '拜访' }).visits[0]!;
     expect(() => tool(f.store, f.alice, { action: 'respond', requestId: visit.id, decision: 'allow', reason: '自己批准' })).toThrow('房主');
     advance(f.store, 40000); expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.sceneId).toBe('home_alice');
     tool(f.store, f.bob, { action: 'respond', requestId: visit.id, decision: 'allow', reason: '欢迎' });
     shareWorldAddress(f.store, f.bob, 'alice', ms => advance(f.store, ms));
-    tool(f.store, f.alice, { action: 'navigate', targetCompanionId: 'bob' });
+    tool(f.store, f.alice, { action: 'travel', targetSceneId: 'home_' + 'bob' });
     const moving = advance(f.store, 100); expect(moving.actors.find(actor => actor.companionId === 'alice')!.activity).toBe('walking');
-    advance(f.store, 40000); expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.sceneId).toBe('commons');
-    tool(f.store, f.alice, { action: 'enter', targetCompanionId: 'bob' });
+    advance(f.store, 40000); expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.sceneId).toBe('home_bob');
+    tool(f.store, f.alice, { action: 'travel', targetSceneId: 'home_' + 'bob' });
     const arrived = advance(f.store, 8000); expect(arrived.actors.find(actor => actor.companionId === 'alice')!.sceneId).toBe('home_bob');
   });
   it('persists partial physical movement and resumes it after a restart without teleporting or fake completed work', () => {
     const f = fixture(); tool(f.store, f.alice, { action: 'move', destinationId: 'alice_computer' }); const partial = advance(f.store, 500);
     const actor = partial.actors.find(actor => actor.companionId === 'alice')!; expect(actor.route.length).toBeGreaterThan(0); expect(actor.position).not.toEqual({ x: 4, y: 4 });
-    f.store.close(); stores.delete(f.store); const reopened = new CompanionsStore(f.filename, seeds); stores.add(reopened);
+    f.store.close(); stores.delete(f.store); const reopened = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened);
     const same = reopened.request({ type: 'world.observe', ...f.alice }).world!.actors.find(actor => actor.companionId === 'alice')!; expect(same.position).toEqual(actor.position);
     const arrived = advance(reopened, 12000).actors.find(actor => actor.companionId === 'alice')!; expect(arrived.position).toEqual({ x: 4, y: 4 }); expect(arrived.route).toEqual([]);
   });
@@ -128,7 +128,7 @@ describe('one authoritative companion world', () => {
     f.store.request({ type: 'world.work.begin', ...f.bob, kind: 'action', workId: 'host_work', sourceMessageId: hostSource.id });
     const returning = f.store.request({ type: 'world.work.begin', ...f.alice, kind: 'action', workId: 'return_home', sourceMessageId: user.id, urgent: true }).worldWork!;
     expect(returning.computerId).toBe('alice_computer'); expect(returning.status).toBe('moving');
-    expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.route.some(point => point.sceneId === 'commons')).toBe(true);
+    expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.travel?.targetSceneId).toBe('home_alice');
   });
   it('shares virtual routine time with the rendered world and routes sleep and meals to their real furniture', () => {
     vi.setSystemTime('2026-10-14T02:00:00Z');

@@ -9,6 +9,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../share
 import type { CompanionStateProposal } from '../shared/companion-state';
 import { companionSearchMatch, companionSearchTokens, normalizeCompanionSearch } from '../shared/companion-search';
 import type { CompanionConnection } from './store';
+import { companionHomeAddressSchema } from '../shared/companion-world-address';
 
 type Row = Record<string, string | number | null>;
 const asRow = (value: unknown): Row => value as Row;
@@ -103,10 +104,19 @@ export class CompanionMemoryStore {
     }).immediate();
   }
 
+  private observedBy(scope: Scope, source: { messageId: string; sequence: number }): boolean {
+    if (scope.beforeSequence === undefined || source.sequence <= scope.beforeSequence) return true;
+    const saved = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + source.messageId);
+    if (!saved) return false;
+    const observation = decode<{ companionId: string; forConversationId: string; throughSequence?: number }>(asRow(saved).value);
+    return observation.companionId === scope.companionId && observation.forConversationId === scope.conversationId
+      && observation.throughSequence !== undefined && observation.throughSequence <= scope.beforeSequence;
+  }
   private source(row: Row) {
+    const observation = this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('memory-world-observation/' + row.id);
     const publication = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + row.id);
     const worldTime = this.db.prepare('SELECT world_at FROM companion_message_times WHERE message_id=?').get(row.id);
-    return { messageId: String(row.id), conversationId: String(row.conversation_id), sequence: Number(row.sequence),
+    return { sourceType: observation ? 'world_observation' as const : 'message' as const, messageId: String(row.id), conversationId: String(row.conversation_id), sequence: Number(row.sequence),
       authorId: String(row.author_id), revision: Number(row.revision ?? 1), checksum: checksum(String(row.content)), createdAt: String(row.created_at),
       ...(worldTime ? { worldCreatedAt: String(asRow(worldTime).world_at) } : {}),
       ...(publication ? { publishedAfterSequence: Number(asRow(publication).value) } : {}) };
@@ -160,6 +170,9 @@ export class CompanionMemoryStore {
   }
 
   private isFormal(row: Row): boolean {
+    const observation = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + row.id);
+    if (observation) return row.author_id === 'system' && row.kind === 'notice'
+      && decode<{ checksum: string }>(asRow(observation).value).checksum === checksum(String(row.content));
     if (row.status !== 'sent' || row.author_id === 'system' || row.kind === 'notice') return false;
     if (row.kind === 'action') {
       const action = row.action_id ? this.db.prepare('SELECT data,status FROM actions WHERE id=?').get(row.action_id) : undefined;
@@ -175,6 +188,8 @@ export class CompanionMemoryStore {
 
   /** Called by message append in its transaction; never enqueue streaming drafts. */
   enqueueMessage(messageId: string, finalizedLoop = false): void {
+    // A queried observation is evidence, never an automatic long-term memory job.
+    if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('memory-world-observation/' + messageId)) return;
     const value = this.db.prepare('SELECT * FROM messages WHERE id=?').get(messageId);
     if (!value) return;
     const row = asRow(value);
@@ -219,7 +234,7 @@ export class CompanionMemoryStore {
       const now = Date.now();
       this.db.prepare("UPDATE memory_jobs SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(now);
       const found = this.db.prepare(`SELECT j.* FROM memory_jobs j JOIN companions c ON c.id=j.companion_id
-        WHERE j.status IN ('pending','failed') AND j.next_attempt<=? AND j.attempts<8 AND c.deleted_at IS NULL
+        WHERE j.status IN ('pending','failed') AND j.next_attempt<=? AND j.attempts<8 AND c.deleted_at IS NULL AND json_extract(c.data,'$.active')=1
         AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=j.companion_id AND r.status!='completed')
         ${companionId ? 'AND j.companion_id=?' : ''} ORDER BY j.ordinal LIMIT 1`).get(...(companionId ? [now, companionId] : [now]));
       if (!found) return;
@@ -301,16 +316,25 @@ export class CompanionMemoryStore {
 
   private sourceVisible(scope: Scope, source: Row): boolean {
     const conversation = this.requireScope(scope);
+    const observationRow = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + source.id);
+    const observation = observationRow ? decode<{ companionId: string; forConversationId: string; throughSequence?: number; sources: Array<{ id: string; conversationId: string; checksum: string }> }>(asRow(observationRow).value) : undefined;
+    if (observation && (observation.companionId !== scope.companionId || observation.forConversationId !== scope.conversationId && source.conversation_id !== scope.conversationId
+      || observation.sources.some(reference => {
+        const original = this.db.prepare('SELECT * FROM messages WHERE id=?').get(reference.id);
+        return !original || checksum(String(asRow(original).content)) !== reference.checksum || !this.sourceVisible({ companionId: scope.companionId, conversationId: reference.conversationId }, asRow(original));
+      }))) return false;
+    const currentObservation = !!observation && observation.forConversationId === scope.conversationId
+      && (scope.beforeSequence === undefined || observation.throughSequence !== undefined && observation.throughSequence <= scope.beforeSequence);
     if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(source.author_id)
       || this.db.prepare("SELECT 1 FROM companion_reset_rooms s JOIN companion_reset_jobs j ON j.id=s.job_id WHERE s.conversation_id=? AND j.status!='completed' LIMIT 1").get(source.conversation_id)
       || this.db.prepare('SELECT 1 FROM companion_reset_messages WHERE message_id=? LIMIT 1').get(source.id)) return false;
     const reset = this.db.prepare('SELECT through_sequence FROM companion_reset_boundaries WHERE companion_id=?').get(scope.companionId);
     if (reset && Number(source.sequence) <= Number(asRow(reset).through_sequence)) return false;
     if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(scope.companionId)) return false;
-    if (scope.beforeSequence !== undefined && Number(source.sequence) > scope.beforeSequence) return false;
+    if (!currentObservation && scope.beforeSequence !== undefined && Number(source.sequence) > scope.beforeSequence) return false;
     const publication = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + source.id);
     if (scope.beforeSequence !== undefined && publication && scope.beforeSequence <= Number(asRow(publication).value)) return false;
-    if (conversation.kind === 'group' && source.conversation_id !== scope.conversationId) return false;
+    if (!currentObservation && conversation.kind === 'group' && source.conversation_id !== scope.conversationId) return false;
     if (!this.db.prepare('SELECT 1 FROM memory_observers WHERE message_id=? AND companion_id=?').get(source.id, scope.companionId)) return false;
     if (!this.isFormal(source)) return false;
     return !this.sourceForgotten(scope, source);
@@ -351,14 +375,14 @@ export class CompanionMemoryStore {
     const conversation = this.requireScope(scope);
     if (memory.companionId !== scope.companionId || ['forgotten', 'invalid'].includes(memory.status ?? 'active')) return false;
     if (conversation.kind === 'group' && memory.sourceConversationId !== scope.conversationId) return false;
-    if (scope.beforeSequence !== undefined && !memory.sources?.some(source => source.sequence <= scope.beforeSequence!)) return false;
+    if (scope.beforeSequence !== undefined && !memory.sources?.some(source => this.observedBy(scope, source))) return false;
     if (this.blocked(scope, memory)) return false;
     for (const dependency of asRows(this.db.prepare('SELECT source_memory_id,source_version FROM memory_dependencies WHERE memory_id=?').all(memory.id))) {
       const source = this.load(String(dependency.source_memory_id));
       if (source.status !== 'active' || source.version !== Number(dependency.source_version)) return false;
     }
     if (!memory.sources?.length || memory.epistemicStatus === 'unverified') return false;
-    const observedSources = scope.beforeSequence === undefined ? memory.sources : memory.sources.filter(source => source.sequence <= scope.beforeSequence!
+    const observedSources = scope.beforeSequence === undefined ? memory.sources : memory.sources.filter(source => this.observedBy(scope, source)
       && (source.publishedAfterSequence === undefined || source.publishedAfterSequence < scope.beforeSequence!));
     if (!observedSources.length || !observedSources.every(source => {
       const found = this.db.prepare('SELECT * FROM messages WHERE id=?').get(source.messageId);
@@ -426,6 +450,20 @@ export class CompanionMemoryStore {
         if (!source || !String(source.content).includes(evidence.quote)) throw new Error('记忆证据不是来源消息中的原文。');
       }
       if (sources.some(source => !candidate.evidence.some(evidence => evidence.sourceMessageId === source.messageId))) throw new Error('每个记忆来源都需要可核验的原文证据。');
+      if (candidate.factKey === 'scene_entry') {
+        const address = companionHomeAddressSchema.parse(JSON.parse(candidate.value ?? '{}'));
+        const shared = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('scene-entry-source/' + address.sourceMessageId);
+        const canonical = shared ? decode<{ address: unknown; recipients: string[] }>(asRow(shared).value) : undefined;
+        const original = canonical && companionHomeAddressSchema.parse(canonical.address);
+        const citesOriginal = sources.some(source => source.messageId === address.sourceMessageId || (() => {
+          const receipt = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + source.messageId);
+          return receipt && decode<{ sources: Array<{ id: string }> }>(asRow(receipt).value).sources.some(item => item.id === address.sourceMessageId);
+        })());
+        if (!original || !canonical?.recipients.includes(scope.companionId) || !citesOriginal || candidate.subject !== original.companionId
+          || address.source !== 'owner_shared' || address.companionId !== original.companionId || address.homeSceneId !== original.homeSceneId
+          || address.entrance.sceneId !== original.entrance.sceneId || address.entrance.portalId !== original.entrance.portalId
+          || address.sourceConversationId !== original.sourceConversationId) throw new Error('场景入口记忆必须来自房主实际分享且当前可见的入口凭证。');
+      }
       if (['fact', 'preference', 'agreement'].includes(candidate.kind) && (!candidate.subject || !candidate.factKey)) throw new Error('事实和约定需要主体与事实键。');
       if (candidate.kind === 'reflection' && candidate.epistemicStatus !== 'subjective') throw new Error('伙伴感想必须标记为主观。');
       if (candidate.kind === 'reflection' && candidate.subject !== scope.companionId) throw new Error('伙伴感想必须属于当前伙伴视角。');

@@ -573,3 +573,64 @@ button.companions-message-link:hover { text-decoration-color: currentColor; }
 .companions-activity-panel button { border: 1px solid var(--ui-border-subtle); border-radius: 8px; padding: 6px 10px; background: var(--ui-surface-raised); color: var(--ui-content-secondary); }
 
 .companions-draft-attachments .companions-draft-image { width: 34px; height: 34px; flex-shrink: 0; object-fit: cover; border-radius: 6px; }
+.companions-chat { container-type: inline-size; container-name: companion-chat; }
+.companions-chat-header { gap: 20px; }
+.companions-chat-header .companions-chat-identity { flex: 1; min-width: 0; }
+.companions-header-actions { align-items: center; flex-shrink: 0; gap: 3px; }
+.companions-chat-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; min-width: 0; }
+.companions-chat-header .companions-chat-meta > p { margin: 0; max-width: 250px; min-width: 0; }
+.companions-world-status { display: inline-flex; align-items: center; gap: 12px; }
+.companions-world-clock { display: inline-flex; flex-shrink: 0; align-items: center; gap: 6px; padding-left: 12px; border-left: 1px solid var(--ui-border-subtle); color: var(--ui-content-tertiary); font-size: 11px; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.companions-world-clock > svg { width: 12px; height: 12px; }
+.companions-world-clock > time { display: inline-flex; align-items: center; gap: 6px; }
+.companions-world-weather { display: inline-flex; align-items: center; gap: 5px; margin-left: 3px; padding-left: 9px; border-left: 1px solid var(--ui-border-subtle); }
+.companions-world-weather > span:first-child { font-size: 13px; }
+.companions-world-weather-temperature { font-variant-numeric: tabular-nums; }
+.companions-world-clock strong { color: var(--ui-content-secondary); font-size: inherit; font-weight: 500; }
+.companions-world-clock-date { margin-left: 2px; }
+.companions-header-actions .companions-world-activity { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--ui-content-secondary); cursor: pointer; }
+.companions-header-actions .companions-world-activity[data-engaged="true"] { width: auto; max-width: 150px; padding-inline: 9px; background: color-mix(in srgb, var(--companion-blue) 7%, transparent); color: var(--companion-blue); }
+.companions-world-activity > svg { width: 17px; height: 17px; flex-shrink: 0; }
+.companions-world-activity > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 18px; }
+.companions-header-actions .companions-world-activity:hover { background: var(--ui-surface-hover); }
+.companions-world-activity:focus-visible { outline: 2px solid var(--companion-blue); outline-offset: 2px; }
+:root[data-platform="windows"] .companions-chat-layout.has-panel .companions-chat-header { padding-right: 24px; }
+@container companion-chat (max-width: 860px) {
+  .companions-chat-meta > p { display: none; }
+  .companions-world-clock { padding-left: 0; border: 0; }
+  .companions-world-weather-temperature { display: none; }
+}
+@container companion-chat (max-width: 680px) {
+  .companions-chat-header { gap: 12px; }
+  .companions-chat-header .companions-chat-meta > p { max-width: 180px; }
+  .companions-world-clock { padding-left: 0; border: 0; }
+  .companions-world-clock-date { display: none; }
+  .companions-world-clock-caption { display: none; }
+  .companions-world-weather-temperature { display: none; }
+  .companions-header-actions .companions-world-activity[data-engaged="true"] { width: 28px; max-width: 28px; padding: 0; }
+  .companions-header-actions .companions-world-activity > span { display: none; }
+}
+@container companion-chat (max-width: 480px) {
+  .companions-chat-header { padding-left: 16px; gap: 8px; }
+  .companions-chat-meta > p { display: none; }
+  .companions-header-actions { gap: 0; }
+  .companions-header-actions .companions-world-activity[data-engaged="true"] { width: 25px; max-width: 25px; }
+  .companions-header-actions .companion-icon-button { width: 25px; }
+}
+.companions-activation { display: grid; gap: 14px; container: companion-life / inline-size; }
+.companions-activation-heading { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+.companions-profile-body .companions-activation-heading h3 { margin: 0; line-height: 24px; }
+.companions-activation-status { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border-radius: 6px; background: color-mix(in srgb, var(--ui-content-tertiary) 8%, transparent); color: var(--ui-content-secondary); font-size: 11px; line-height: 20px; white-space: nowrap; }
+.companions-activation-status::before { content: ''; width: 5px; height: 5px; flex-shrink: 0; border-radius: 50%; background: var(--ui-content-tertiary); }
+.companions-activation-status[data-status="ready"]::before { background: #35ae87; }
+.companions-activation .companions-subtle { margin: 0; line-height: 1.75; }
+.companions-activation-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; width: min(100%, 352px); }
+.companions-activation-actions > button { box-sizing: border-box; width: 100%; height: 40px; min-height: 40px; margin: 0; padding: 9px 14px; border-radius: 8px; font-size: 13px; line-height: 20px; white-space: nowrap; }
+.companions-activation-actions > button > svg { width: 16px; height: 16px; flex-shrink: 0; }
+@container companion-life (max-width: 350px) {
+  .companions-activation-actions { grid-template-columns: 1fr; width: 100%; }
+}
+.companions-dormant-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 28px; color: var(--ui-content-secondary); font-size: 13px; }
+.companions-dormant-note button { border: 0; background: transparent; color: var(--companion-blue); cursor: pointer; }
+.companions-availability[data-status="dormant"], .companions-presence-label[data-status="dormant"] { color: #90939d; }
+.companion-avatar-presence[data-status="dormant"] { background: #a1a5ae; }

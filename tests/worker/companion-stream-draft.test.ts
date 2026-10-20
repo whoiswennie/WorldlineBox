@@ -8,7 +8,7 @@ import { companionLoopCheckpointSchema, type CompanionLoopCheckpoint } from '../
 
 const seeds: CompanionSeed[] = [{ id: 'alice', name: '甲', description: '', persona: '认真', model: '', avatar: 'sister', proactive: false }];
 const stores = new Set<CompanionsStore>(), folders: string[] = [];
-function open(filename: string) { const store = new CompanionsStore(filename, seeds); stores.add(store); return store; }
+function open(filename: string) { const store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); return store; }
 function close(store: CompanionsStore) { store.close(); stores.delete(store); }
 function fixture() {
   const folder = mkdtempSync(path.join(tmpdir(), 'companion-stream-')); folders.push(folder);

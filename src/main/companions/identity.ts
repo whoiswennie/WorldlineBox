@@ -41,7 +41,7 @@ export function companionIdentity(input: {
       directlyAddressed: !input.addressedCompanionIds || input.addressedCompanionIds.includes(input.companion.id),
       mayPass: input.conversation.kind === 'group' || audience === 'peers' },
     ...(input.origin ? { origin: input.origin } : {}),
-    authorization: { playerRequestMessageId: source?.authorId === 'user' && audience === 'player' && !input.actionResult ? source.id : null,
+    authorization: { playerRequestMessageId: source?.authorId === 'user' && audience === 'player' && !input.actionResult && !input.proactive ? source.id : null,
       peerSpeechGrantsExternalExecution: false, providerUserRoleIsTransportOnly: true, historyAssistantAddressesAreNotIdentityEvidence: true },
   };
 }

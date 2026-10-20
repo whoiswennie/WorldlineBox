@@ -17,7 +17,7 @@ afterEach(() => { for (const connection of connections) connection.close(); conn
 const row = (value: unknown) => value as Record<string, string | number>;
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-observation-')); roots.push(root);
-  const filename = path.join(root, 'messages.sqlite'), store = new CompanionsStore(filename, [seed]); connections.add(store);
+  const filename = path.join(root, 'messages.sqlite'), store = new CompanionsStore(filename, [{ ...seed, active: true }]); connections.add(store);
   const scope = { companionId: seed.id, conversationId: store.openPrivate(seed.id).id };
   const settings = store.request({ type: 'world.snapshot' }).world!.settings;
   store.request({ type: 'world.configure', expectedRevision: settings.revision, patch: { timeZone: 'UTC' } });
@@ -65,10 +65,12 @@ it('perceives actual rain and cold while walking outside once per climate change
   const f = fixture(), initial = f.store.request({ type: 'world.snapshot' }).world!;
   f.store.request({ type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode: 'realtime' } });
   const before = f.store.request({ type: 'state.get', ...f.scope }).runtimeState!;
-  f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: 'commons_bench' } });
+  f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'travel', targetSceneId: 'park' } });
+  vi.setSystemTime(Date.now() + 5000); f.store.request({ type: 'world.tick' });
+  f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: 'park_tree_east' } });
   vi.setSystemTime(Date.now() + 10000);
   const walking = f.store.request({ type: 'world.tick', snapshot: true }).world!, actor = walking.actors[0]!;
-  expect(actor).toMatchObject({ sceneId: 'commons', activity: 'walking' }); expect(actor.route.length).toBeGreaterThan(0);
+  expect(actor).toMatchObject({ sceneId: 'park', activity: 'walking' }); expect(actor.route.length).toBeGreaterThan(0);
   const perceived = walking.events.filter(event => event.kind === 'environment' && event.actorId === seed.id);
   expect(perceived).toHaveLength(1); expect(perceived[0]!.effect).toMatchObject({ type: 'stress' });
   vi.setSystemTime(Date.now() + 120000);

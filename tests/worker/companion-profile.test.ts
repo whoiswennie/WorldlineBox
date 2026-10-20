@@ -10,7 +10,7 @@ import { playerProfileDraftSchema } from '../../src/shared/companion-profile';
 const seed: CompanionSeed = { id: 'alice', name: 'Alice', description: '', persona: '独立且尊重边界。', model: '', avatar: 'sister', proactive: false };
 const roots: string[] = [], stores = new Set<CompanionsStore>();
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) { if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith('companion-profile-')) throw new Error('Unexpected fixture root.'); rmSync(root, { recursive: true, force: true }); } });
-function open(filename: string) { const store = new CompanionsStore(filename, [seed]); stores.add(store); return store; }
+function open(filename: string) { const store = new CompanionsStore(filename, [{ ...seed, active: true }]); stores.add(store); return store; }
 function fixture() { const root = mkdtempSync(path.join(tmpdir(), 'companion-profile-')); roots.push(root); const filename = path.join(root, 'messages.sqlite'); return { filename, store: open(filename) }; }
 function close(store: CompanionsStore) { store.close(); stores.delete(store); }
 function image(store: CompanionsStore, id: string, mime = 'image/png') { store.request({ type: 'attachment.register', stored: { attachment: { id, name: id + '.png', mime, size: 128 }, relativePath: 'attachments/' + id + '.png' } }); }

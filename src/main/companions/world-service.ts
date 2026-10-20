@@ -18,6 +18,8 @@ interface WorldServiceOptions {
   changed(): void;
   wakeWaiting(): void;
   report(error: unknown): void;
+  beginPriority?(owner: string, room: string, source: string): Promise<string | undefined>;
+  endPriority?(id: string | undefined): Promise<void>;
   blocked?(companionId: string): boolean;
   tickLife?(): void | Promise<void>;
   profiles?(input: { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>;
@@ -106,9 +108,10 @@ export class CompanionWorldService {
   }
   private async processSocial(job: CompanionSocialJob, signal: AbortSignal): Promise<void> {
     if (!job.leaseToken) return;
-    const leaseToken = job.leaseToken;
+    const leaseToken = job.leaseToken; let interruptionId: string | undefined;
     try {
-      const state = (await this.options.request({ type: 'state', includeHidden: true })).state;
+      if (job.urgent) interruptionId = await this.options.beginPriority?.(job.companionId, job.conversationId, job.sourceMessageId);
+      const state = (await this.options.request({ type: 'state', includeHidden: true, conversationId: job.conversationId })).state;
       const companion = state?.companions.find(member => member.id === job.companionId);
       const conversation = state?.conversations.find(room => room.id === job.conversationId && room.memberIds.includes(job.companionId));
       if (!companion || !conversation) throw new Error('伙伴通信会话不存在。');
@@ -135,12 +138,12 @@ export class CompanionWorldService {
     } catch (error) {
       await this.options.request({ type: 'social.job.fail', id: job.id, leaseToken,
         error: error instanceof CompanionModelError ? error.message : '伙伴通信稍后继续。' });
-    }
+    } finally { await this.options.endPriority?.(interruptionId); }
   }
   private async processNotification(notification: CompanionSocialNotification, signal: AbortSignal): Promise<void> {
     if (!notification.leaseToken) return; const leaseToken = notification.leaseToken;
     try {
-      const state = (await this.options.request({ type: 'state', includeHidden: true })).state;
+      const state = (await this.options.request({ type: 'state', includeHidden: true, conversationId: notification.conversationId })).state;
       const companion = state?.companions.find(member => member.id === notification.companionId);
       const conversation = state?.conversations.find(room => room.id === notification.conversationId && room.memberIds.includes(notification.companionId));
       if (!companion || !conversation) throw cancelled();
@@ -148,9 +151,11 @@ export class CompanionWorldService {
       const source = (await this.options.request({ type: 'memory.sources.filter', ...scope, ids: [notification.sourceMessageId] })).memorySources?.[0];
       const world = await this.observe(scope);
       if (!source || source.authorId !== 'user' || !world) throw cancelled();
+      const activityTask = (await this.options.request({ type: 'activity.list', ...scope, limit: 20 })).activityTasks?.find(task => task.sourceMessageId === source.id);
       const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, audience: 'player', sourceAuthorId: 'user' });
-      const text = await generateCompanionSocialNotification({ companion, conversation, source, notification, world, ...profiles,
-        members: state!.companions.map(member => ({ id: member.id, name: member.name })) }, await this.options.configFor(companion), signal,
+      const participants = new Set([companion.id, notification.origin.initiatorId, notification.evidence.authorId, ...(notification.events?.map(event => event.evidence.authorId) ?? [])]);
+      const text = await generateCompanionSocialNotification({ companion, conversation, source, notification, world, activityTask, ...profiles,
+        members: state!.companions.filter(member => participants.has(member.id)).map(member => ({ id: member.id, name: member.name })) }, await this.options.configFor(companion), signal,
       { fetchFn: this.options.fetchFn });
       if (signal.aborted || this.closed) throw cancelled();
       await this.options.request({ type: 'social.notification.complete', id: notification.id, leaseToken, text });
@@ -163,7 +168,7 @@ export class CompanionWorldService {
     const { id: jobId, leaseToken, kind, companionId } = job;
     if (!leaseToken) return;
     try {
-      const state = (await this.options.request({ type: 'state', includeHidden: true })).state;
+      const state = (await this.options.request({ type: 'state', includeHidden: true, conversationId: job.conversationId })).state;
       const companion = state?.companions.find(companion => companion.id === companionId);
       const conversation = state?.conversations.find(conversation => conversation.id === job.conversationId && conversation.memberIds.includes(companionId));
       if (!companion || !conversation) throw new Error('伙伴世界认知范围不可访问。');
@@ -173,19 +178,21 @@ export class CompanionWorldService {
       if (kind === 'decision') {
         const routine = (await this.options.request({ type: 'routine.get', ...scope })).routine;
         const runtime = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
-        const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, audience: 'peers', directory: true,
+        const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, audience: 'peers', directory: false,
           sourceAuthorId: world.events.findLast(event => event.targetId === companion.id && event.actorId !== companion.id)?.actorId });
         const decision = await generateCompanionWorldDecision({ companion, world, job,
           ...profiles, routine, ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression,
             affect: runtime.affect, focus: runtime.focus, busy: world.works.some(work => work.companionId === companion.id && work.status !== 'ended') } } : {}),
-          members: state!.companions.map(member => ({ id: member.id, name: member.name, description: member.description })) }, config, signal, { fetchFn: this.options.fetchFn });
+          members: state!.companions.filter(member => member.id === companion.id || world.perception?.visibleCompanionIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) }, config, signal, { fetchFn: this.options.fetchFn });
         if (signal.aborted || this.closed) throw cancelled();
-        if (decision.task) {
-          if (decision.action) throw new Error('本轮只能创建持续行动目标或执行一个原子动作。');
+        const task = decision.task ?? (decision.action?.action === 'query' ? { title: '查询并核实世界资料',
+          goal: `按需查询外部资料：${JSON.stringify(decision.action)}。查询动机：${decision.reason}。根据实际结果判断是否需要内化；如需记住，先搜索已有记忆，再引用查询凭证进行记录或整理。` } : undefined);
+        if (task) {
+          if (decision.task && decision.action) throw new Error('本轮只能创建持续行动目标或执行一个原子动作。');
           await this.options.request({ type: 'activity.start', companionId: companion.id, conversationId: 'world_' + companion.id,
-            clientId: 'world_activity_' + job.id, title: decision.task.title, goal: decision.task.goal });
+            clientId: 'world_activity_' + job.id, title: task.title, goal: task.goal });
         }
-        await this.options.request({ type: 'world.job.complete', id: jobId, leaseToken, ...(decision.action ? { action: decision.action } : {}),
+        await this.options.request({ type: 'world.job.complete', id: jobId, leaseToken, ...(decision.action && !task ? { action: decision.action } : {}),
           appraisals: decision.appraisals.map(({ quote: _quote, ...appraisal }) => { void _quote; return appraisal; }), sourceMemoryIds: [] });
       } else await this.dream(job, leaseToken, companion, conversation, config, signal);
     } catch (error) {

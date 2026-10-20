@@ -13,6 +13,7 @@ afterEach(async () => {
 });
 
 it('shows completed replies during sustained changes when IPC reads take longer than one change interval', async () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();
   const at = '2026-10-16T07:43:25.000Z', companion = { ...BUILTIN_COMPANIONS[0]!, builtin: true, createdAt: at };
   const room = { id: 'refresh-private', kind: 'private' as const, title: companion.name, memberIds: [companion.id], pinned: false, muted: false, unread: 0, updatedAt: at, lastMessage: '你累吗' };
@@ -38,7 +39,8 @@ it('shows completed replies during sustained changes when IPC reads take longer 
   slow = true; messages = [source, reply];
   const changes = setInterval(() => changed?.(), 10);
   try {
-    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    // One 500ms coalescing window plus the deliberately slow IPC round trips.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(container.querySelector('[data-companion-messages]')!.textContent).toContain(reply.content);
   } finally { clearInterval(changes); await act(async () => { await vi.advanceTimersByTimeAsync(100); }); }
 });

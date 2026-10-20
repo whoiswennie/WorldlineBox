@@ -9,7 +9,9 @@ export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), r
 // the actual request instead of imposing a hidden global character quota.
 const companionLoopContextSchema = z.object({ system: z.string(), user: z.string() });
 export const companionLoopDraftSchema = z.strictObject({ step: z.number().int().min(0).max(63), attemptId: id, text: z.string().max(65536) });
-export const companionLoopCheckpointSchema = z.object({ conversationId: id, sourceMessageId: id, companionId: id, messageId: id.optional(), status: z.enum(['running', 'done']), context: companionLoopContextSchema.optional(), turns: z.array(companionLoopTurnSchema).max(64),
+export const companionLoopCheckpointSchema = z.object({ conversationId: id, sourceMessageId: id, companionId: id, messageId: id.optional(),
+  proactiveWorkId: id.optional(), contextThroughSequence: z.number().int().positive().optional(),
+  status: z.enum(['running', 'done']), context: companionLoopContextSchema.optional(), turns: z.array(companionLoopTurnSchema).max(64),
   draft: companionLoopDraftSchema.optional(), supplements: z.array(z.object({ id, content: z.string().max(16000) })).max(100).default([]) })
   .superRefine((checkpoint, context) => {
     if (checkpoint.draft && (checkpoint.status !== 'running' || checkpoint.draft.step !== checkpoint.turns.length)) context.addIssue({ code: 'custom', path: ['draft'], message: '流式草稿必须属于当前尚未完成的循环步骤。' });

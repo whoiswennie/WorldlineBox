@@ -19,6 +19,7 @@ it('persists a FIFO queue, admits at most 20 globally and 5 per role, and refill
   const roles = [f.store.openPrivate('deepseek-sister'), f.store.openPrivate('deepseek-flash')];
   for (let index = 0; index < 2; index++) {
     const role = f.store.createCompanion({ name: '队列角色' + index, persona: '队列验收', description: '', model: '', avatar: 'custom', proactive: false });
+    f.store.setCompanionActive(role.id, true);
     roles.push(f.store.openPrivate(role.id));
   }
   for (let round = 0; round < 7; round++) for (const [index, conversation] of roles.entries()) {
@@ -55,7 +56,7 @@ function fixture() {
   return { databasePath, store };
 }
 function open(filename: string): CompanionsStore {
-  const store = new CompanionsStore(filename, seeds);
+  const store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true })));
   stores.push(store);
   return store;
 }

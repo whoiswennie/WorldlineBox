@@ -118,7 +118,7 @@ export function sampleCompanionWorldPerception(input: SampleCompanionWorldPercep
   if (![self.position.x, self.position.y, environment.light, environment.outdoorTemperature, environment.indoorTemperature].every(Number.isFinite)) throw new Error('伙伴感知位置或环境无效。');
   const observedAtReal = atIso(input.realAt), observedAtVirtual = atIso(input.virtualAt);
   const previous = input.previous?.companionId === self.companionId ? input.previous : undefined;
-  const awake = self.activity !== 'sleeping', outdoors = scene.kind === 'commons', canSee = lineOfSight(scene, self.position);
+  const awake = self.activity !== 'sleeping', outdoors = scene.kind === 'park', canSee = lineOfSight(scene, self.position);
   let light = clamp(environment.light, 0, 1);
   if (!outdoors) light = Math.max(.65, light);
   else if (!environment.daylight) for (const lamp of scene.objects.filter(object => object.kind === 'lamp')) {

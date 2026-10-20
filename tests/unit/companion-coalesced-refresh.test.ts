@@ -59,3 +59,20 @@ it('disposes before starting or while in flight without performing any late trai
   inFlight.dispose(); await inFlight.trigger(); wait.resolve(); await pending;
   expect(read).toHaveBeenCalledTimes(1);
 });
+
+it('bounds reads and concurrency during 40,000 continuous updates, catches up, and releases pending timers', async () => {
+  vi.useFakeTimers();
+  try {
+    let version = 0, displayed = 0, active = 0, peak = 0;
+    const read = vi.fn(async () => { const snapshot = version; peak = Math.max(peak, ++active); await new Promise(resolve => setTimeout(resolve, 30)); displayed = snapshot; active--; });
+    const refresh = createCoalescedRefresh(read, undefined, 500), pending = refresh.trigger();
+    for (let batch = 0; batch < 400; batch++) {
+      for (let event = 0; event < 100; event++) { version++; void refresh.trigger(); }
+      await vi.advanceTimersByTimeAsync(25);
+    }
+    await vi.advanceTimersByTimeAsync(600); await pending;
+    expect(displayed).toBe(40000); expect(peak).toBe(1); expect(read.mock.calls.length).toBeLessThanOrEqual(22);
+    void refresh.trigger(); await vi.advanceTimersByTimeAsync(1); refresh.dispose(); await vi.advanceTimersByTimeAsync(1000);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
+});

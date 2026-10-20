@@ -15,7 +15,7 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('202
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 function fixture(positions?: Array<{ x: number; y: number }>, proactive = false) {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-perception-')); roots.push(root); const filename = path.join(root, 'messages.sqlite'), roles = seeds.map(seed => ({ ...seed, proactive }));
-  let store = new CompanionsStore(filename, roles); stores.add(store);
+  let store = new CompanionsStore(filename, roles.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const role of roles) {
@@ -26,10 +26,10 @@ function fixture(positions?: Array<{ x: number; y: number }>, proactive = false)
     store.close(); stores.delete(store); const db = new Sqlite(filename);
     try {
       const saved = db.prepare('SELECT data FROM companion_world WHERE id=1').get() as { data: string }, state = JSON.parse(saved.data) as { actors: Array<Record<string, unknown>> };
-      state.actors.forEach((actor, index) => Object.assign(actor, { sceneId: 'commons', position: positions[index], route: [], activity: 'idle' }));
+      state.actors.forEach((actor, index) => Object.assign(actor, { sceneId: 'park', position: positions[index], route: [], activity: 'idle' }));
       db.prepare('UPDATE companion_world SET data=? WHERE id=1').run(JSON.stringify(state)); db.prepare('DELETE FROM companion_world_perceptions').run();
     } finally { db.close(); }
-    store = new CompanionsStore(filename, roles); stores.add(store);
+    store = new CompanionsStore(filename, roles.map(seed => ({ ...seed, active: true }))); stores.add(store);
   }
   store.request({ type: 'world.snapshot' });
   return { store, filename, roles, scope: { companionId: 'alice', conversationId: store.openPrivate('alice').id } };
@@ -89,10 +89,10 @@ describe('authoritative continuous subjective perception', () => {
   });
 
   it('keeps a departed peer at the last observed position instead of remotely refreshing their current body or private room', () => {
-    const f = fixture([{ x: 100, y: 62 }, { x: 103, y: 62 }]);
+    const f = fixture([{ x: 14, y: 25 }, { x: 17, y: 25 }]);
     expect(observe(f).perception!.visibleCompanionIds).toContain('bob');
     const bob = { companionId: 'bob', conversationId: f.store.openPrivate('bob').id };
-    f.store.request({ type: 'world.tool', ...bob, arguments: { action: 'move', destinationId: 'commons_tree_east' } });
+    f.store.request({ type: 'world.tool', ...bob, arguments: { action: 'move', destinationId: 'park_tree_east' } });
     let perception = observe(f).perception!;
     for (let step = 0; step < 20 && perception.visibleCompanionIds.includes('bob'); step++) { advance(f.store, 1000); perception = observe(f).perception!; }
     const last = perception.people.find(person => person.companionId === 'bob')!; expect(last.visible).toBe(false);
@@ -119,11 +119,11 @@ describe('authoritative continuous subjective perception', () => {
   });
 
   it('restores bounded knowledge and samples only the reached present without fabricating sightings along an offline route', () => {
-    const f = fixture(); f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: 'commons_bench' } });
+    const f = fixture(); f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'travel', targetSceneId: 'park' } });
     const before = records(f.filename), stoppedAt = Date.now(); f.store.close(); stores.delete(f.store); vi.setSystemTime(stoppedAt + 120000);
     const reopened = new CompanionsStore(f.filename, f.roles); stores.add(reopened);
     const subjective = reopened.request({ type: 'world.observe', ...f.scope }).world!, after = records(f.filename);
-    expect(subjective.perception!.sceneId).toBe('commons');
+    expect(subjective.perception!.sceneId).toBe('park');
     expect(subjective.perception!.objects.some(object => object.id === 'bob_building')).toBe(false);
     expect(after.every(row => row.samples <= before.find(previous => previous.companion_id === row.companion_id)!.samples + 1)).toBe(true);
     expect(after.every(row => { const value = JSON.parse(row.data) as CompanionWorldPerception; return value.objects.length <= 256 && value.people.length <= 64; })).toBe(true);
@@ -147,7 +147,7 @@ describe('authoritative continuous subjective perception', () => {
   });
 
   it('does not accumulate encounter probability for two nearby bodies hidden behind a real tree', () => {
-    const f = fixture([{ x: 111, y: 57 }, { x: 114, y: 57 }], true);
+    const f = fixture([{ x: 41, y: 9 }, { x: 44, y: 9 }], true);
     expect(observe(f).perception!.visibleCompanionIds).not.toContain('bob');
     for (let step = 0; step < 30; step++) advance(f.store, 1000);
     expect(read<unknown[]>(f.filename, 'SELECT * FROM companion_world_encounters')).toEqual([]);
@@ -203,12 +203,12 @@ describe('authoritative continuous subjective perception', () => {
     expect(f.store.request({ type: 'life-event.complete', id: claimed.id, leaseToken: claimed.leaseToken! }).lifeOccurrence!.status).toBe('active');
     let world = f.store.request({ type: 'world.snapshot' }).world!, subject = world.actors.find(actor => actor.companionId === 'alice')!;
     expect(subject).toMatchObject({ sceneId: 'home_alice', parkWalk: { stage: 'travelling', participatedMinutes: 0 } });
-    for (let step = 0; step < 60 && subject.sceneId === 'home_alice'; step++) {
-      expect(subject.parkWalk?.stage).toBe('travelling'); world = advance(f.store, 500); subject = world.actors.find(actor => actor.companionId === 'alice')!;
+    for (let step = 0; step < 60 && subject.sceneId === 'home_alice' && subject.parkWalk?.stage === 'travelling'; step++) {
+      expect(['travelling', 'returning']).toContain(subject.parkWalk?.stage); world = advance(f.store, 500); subject = world.actors.find(actor => actor.companionId === 'alice')!;
     }
-    expect(subject.sceneId).toBe('commons'); world = advance(f.store, 500); subject = world.actors.find(actor => actor.companionId === 'alice')!;
+    expect(world.events.some(event => event.kind === 'park_walk_interrupted' && event.sceneId === 'park')).toBe(true); world = advance(f.store, 500); subject = world.actors.find(actor => actor.companionId === 'alice')!;
     expect(subject.parkWalk).toMatchObject({ stage: 'returning', participatedMinutes: 0 });
-    expect(world.events.find(event => event.kind === 'park_walk_interrupted')).toMatchObject({ sceneId: 'commons', text: expect.stringContaining('散步0分钟') });
+    expect(world.events.find(event => event.kind === 'park_walk_interrupted')).toMatchObject({ sceneId: 'park', text: expect.stringContaining('散步0分钟') });
     expect(world.events.some(event => ['park_walk_enter', 'park_walk_relax', 'park_walk_complete'].includes(event.kind))).toBe(false);
     for (let step = 0; step < 60 && subject.parkWalk; step++) { world = advance(f.store, 500); subject = world.actors.find(actor => actor.companionId === 'alice')!; }
     expect(subject.parkWalk).toBeUndefined(); expect(subject.sceneId).toBe('home_alice');
@@ -216,13 +216,13 @@ describe('authoritative continuous subjective perception', () => {
   });
 
   it('clears reset knowledge in bounded cleanup and starts the restored companion with fresh local awareness', async () => {
-    const f = fixture([{ x: 106, y: 62 }, { x: 108, y: 62 }]); expect(knowledge(f.filename).visibleObjectIds).toContain('commons_bench');
+    const f = fixture([{ x: 18, y: 26 }, { x: 20, y: 26 }]); expect(knowledge(f.filename).visibleObjectIds).toContain('park_bench');
     const job = f.store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
     f.store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: job.id });
     for (let step = 0; step < 1000 && f.store.request({ type: 'companion.reset.status', id: 'alice' }).reset!.status !== 'completed'; step++) await f.store.advanceReset();
     expect(f.store.request({ type: 'companion.reset.status', id: 'alice' }).reset!.status).toBe('completed');
     expect(records(f.filename).some(row => row.companion_id === 'alice')).toBe(false);
-    const fresh = observe(f).perception!; expect(fresh.sceneId).toBe('home_alice'); expect(fresh.objects.some(object => object.id === 'commons_bench')).toBe(false);
+    const fresh = observe(f).perception!; expect(fresh.sceneId).toBe('home_alice'); expect(fresh.objects.some(object => object.id === 'park_bench')).toBe(false);
     expect(fresh.people.some(person => person.companionId === 'bob')).toBe(false);
   });
 });

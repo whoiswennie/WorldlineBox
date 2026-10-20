@@ -12,7 +12,7 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('202
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-computer-transition-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
-  const store = new CompanionsStore(filename, [seed]); stores.add(store);
+  const store = new CompanionsStore(filename, [{ ...seed, active: true }]); stores.add(store);
   const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
   const routine = store.request({ type: 'routine.get', ...scope }).routine!;
@@ -76,7 +76,7 @@ describe('one authoritative computer seating transition', () => {
   it('terminates a stopped process seating on restart and creates a fresh identity only for an actual resumed request', () => {
     const f = fixture(), first = begin(f, 'restart'), id = first.started.behavior!.id;
     advance(f.store, 500); f.store.close(); stores.delete(f.store);
-    const reopened = new CompanionsStore(f.filename, [seed]); stores.add(reopened);
+    const reopened = new CompanionsStore(f.filename, [{ ...seed, active: true }]); stores.add(reopened);
     let world = reopened.request({ type: 'world.snapshot' }).world!;
     expect(subject(world).transitionEndsAtReal).toBeUndefined(); expect(phases(world, id)).toEqual(['started', 'interrupted']);
     world = advance(reopened, 5000); expect(subject(world).activity).not.toBe('working'); expect(phases(world, id)).not.toContain('completed');

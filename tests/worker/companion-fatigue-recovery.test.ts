@@ -12,7 +12,7 @@ const seed: CompanionSeed = { id: 'alice', name: 'Alice', persona: '认真生活
 const seeds: CompanionSeed[] = [seed, { ...seed, id: 'bob', name: 'Bob' }];
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-16T10:00:00Z'); });
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
-function open(file: string) { const store = new CompanionsStore(file, seeds); stores.add(store); return store; }
+function open(file: string) { const store = new CompanionsStore(file, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); return store; }
 function setSavedEnergy(file: string, energy: number) {
   const Database = BetterSqlite3 as { new(filename: string): CompanionConnection }, db = new Database(file);
   const record = db.prepare('SELECT data FROM companion_runtime_states WHERE companion_id=?').get('alice') as { data: string };
@@ -107,8 +107,9 @@ it('leaves a foreign recovery sofa at the actual permission expiry and only resu
   const visit = requested.visits.find(visit => visit.guestId === 'alice' && visit.hostId === 'bob')!;
   f.store.request({ type: 'world.tool', ...bob, arguments: { action: 'respond', requestId: visit.id, decision: 'allow', reason: '欢迎来玩' } });
   advance(f.store, Date.parse(visit.expiresAt) - Date.now() - 120000);
-  f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'navigate', targetCompanionId: 'bob' } }); advance(f.store, 40000);
-  f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'enter', targetCompanionId: 'bob' } }); advance(f.store, 8000);
+  f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'travel', targetSceneId: 'home_' + 'bob' } }); advance(f.store, 40000);
+  f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'travel', targetSceneId: 'home_' + 'bob' } }); advance(f.store, 8000);
+  f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', position: { x: 8, y: 12 } } }); advance(f.store, 3000);
   f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: 'bob_sofa' } }); advance(f.store, 10000);
   f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'interact', furnitureId: 'bob_sofa', interaction: 'rest' } }); advance(f.store, 10000);
   expect(actor(snapshot(f.store))).toMatchObject({ sceneId: 'home_bob', activity: 'resting', furnitureId: 'bob_sofa' });
@@ -119,7 +120,7 @@ it('leaves a foreign recovery sofa at the actual permission expiry and only resu
   world = advance(resumed, 1); const leaving = actor(world);
   expect(world.visits.find(item => item.id === visit.id)?.status).toBe('expired');
   expect(leaving).toMatchObject({ sceneId: 'home_bob', activity: 'standingUp', position: before.position, destinationId: 'alice_sofa' });
-  expect(leaving.route.at(-1)?.sceneId).toBe('home_alice');
+  expect(leaving.travel?.targetSceneId).toBe('home_alice'); expect(leaving.route.every(point => point.sceneId === 'home_bob')).toBe(true);
   const walking = actor(advance(resumed, 2500)); expect(walking.state.energy).toBeLessThanOrEqual(leaving.state.energy);
   expect(walking.activity).not.toBe('resting'); expect(walking.destinationId).toBe('alice_sofa');
   const home = actor(advance(resumed, 60000)); expect(home).toMatchObject({ sceneId: 'home_alice', activity: 'resting', furnitureId: 'alice_sofa' });

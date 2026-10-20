@@ -10,9 +10,9 @@ const Sqlite = BetterSqlite3 as { new(filename: string): CompanionConnection }, 
 const seeds: CompanionSeed[] = ['alice', 'bob', 'carol'].map(id => ({ id, name: id, persona: '喜欢自然交流', description: '', model: '', avatar: 'sister', proactive: true }));
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T10:00:00Z'); });
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
-function fixture(positions = [{ x: 106, y: 62 }, { x: 108, y: 62 }, { x: 107, y: 64 }]) {
+function fixture(positions = [{ x: 18, y: 26 }, { x: 20, y: 26 }, { x: 19, y: 28 }]) {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-encounter-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
-  let store = new CompanionsStore(filename, seeds); stores.add(store);
+  let store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const first = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: first.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
   for (const role of seeds) {
@@ -22,10 +22,10 @@ function fixture(positions = [{ x: 106, y: 62 }, { x: 108, y: 62 }, { x: 107, y:
   store.close(); stores.delete(store); const db = new Sqlite(filename);
   try {
     const saved = db.prepare('SELECT data FROM companion_world WHERE id=1').get() as { data: string }, data = JSON.parse(saved.data) as { actors: Array<Record<string, unknown>> };
-    for (let index = 0; index < data.actors.length; index++) Object.assign(data.actors[index]!, { sceneId: 'commons', position: positions[index], route: [], activity: 'idle' });
+    for (let index = 0; index < data.actors.length; index++) Object.assign(data.actors[index]!, { sceneId: 'park', position: positions[index], route: [], activity: 'idle' });
     db.prepare('UPDATE companion_world SET data=? WHERE id=1').run(JSON.stringify(data));
   } finally { db.close(); }
-  store = new CompanionsStore(filename, seeds); stores.add(store); return store;
+  store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); return store;
 }
 function advance(store: CompanionsStore, ms: number) { vi.setSystemTime(Date.now() + ms); return store.request({ type: 'world.tick', snapshot: true }).world!; }
 function encounter(store: CompanionsStore): CompanionWorldJob {
@@ -68,7 +68,7 @@ describe('durable real face-to-face encounters', () => {
   });
 
   it('validates every group pair, never turns separated or busy actors into a face-to-face conversation, and rejects late speech after work starts', () => {
-    const store = fixture([{ x: 107, y: 62 }, { x: 103, y: 62 }, { x: 111, y: 62 }]), scope = { companionId: 'alice', conversationId: 'world_alice' };
+    const store = fixture([{ x: 22, y: 28 }, { x: 18, y: 28 }, { x: 26, y: 28 }]), scope = { companionId: 'alice', conversationId: 'world_alice' };
     expect(() => store.request({ type: 'world.tool', ...scope, arguments: { action: 'social', recipientIds: ['bob', 'carol'], kind: 'talk', text: '我们一起聊聊吧。' } })).toThrow('5格');
     const room = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
     const sent = store.request({ type: 'social.send', companionId: 'alice', conversationId: room.id, channel: 'phone', content: '碰巧遇到你，聊一会儿吧。', clientId: 'auto-promote-face' }).socialMessage!;

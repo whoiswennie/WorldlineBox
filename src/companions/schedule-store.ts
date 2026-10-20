@@ -199,7 +199,7 @@ export class CompanionScheduleStore {
       }
       // Reuse interrupted executions and expired dispatches; a live action never gets a competing lease.
       const resumable = rows(this.db.prepare(`SELECT o.data FROM companion_schedule_occurrences o JOIN companion_schedules s ON s.id=o.schedule_id
-        LEFT JOIN actions a ON a.id=o.action_id WHERE s.status='active' AND (o.scheduled_at<=? OR json_extract(o.data,'$.forced')=1 OR o.action_id IS NOT NULL) AND
+        LEFT JOIN actions a ON a.id=o.action_id WHERE s.status='active' AND EXISTS(SELECT 1 FROM companions p WHERE p.id=s.companion_id AND json_extract(p.data,'$.active')=1) AND (o.scheduled_at<=? OR json_extract(o.data,'$.forced')=1 OR o.action_id IS NOT NULL) AND
         NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=s.companion_id AND r.status!='completed') AND
         (o.status='pending' OR (o.status='dispatching' AND o.lease_until<=?) OR (o.status='running' AND a.status='interrupted')) ORDER BY o.scheduled_at,o.id LIMIT 20`).all(worldNow, now));
       let occurrence: CompanionScheduleOccurrence | undefined, schedule: CompanionSchedule | undefined;
@@ -209,7 +209,7 @@ export class CompanionScheduleStore {
         occurrence = candidate; schedule = owner; break;
       }
       if (!occurrence) {
-        const due = rows(this.db.prepare(`SELECT s.data FROM companion_schedules s WHERE s.status='active' AND s.next_run_at<=? AND (s.deferred_until IS NULL OR s.deferred_until<=?)
+        const due = rows(this.db.prepare(`SELECT s.data FROM companion_schedules s WHERE s.status='active' AND EXISTS(SELECT 1 FROM companions p WHERE p.id=s.companion_id AND json_extract(p.data,'$.active')=1) AND s.next_run_at<=? AND (s.deferred_until IS NULL OR s.deferred_until<=?)
           AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=s.companion_id AND r.status!='completed')
           AND NOT EXISTS(SELECT 1 FROM companion_schedule_occurrences o WHERE o.schedule_id=s.id AND o.status IN ('pending','dispatching','running')) ORDER BY s.next_run_at,s.id LIMIT 20`).all(worldNow, now));
         for (const item of due) {

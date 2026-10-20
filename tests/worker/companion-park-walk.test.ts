@@ -16,7 +16,7 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('202
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-park-walk-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
-  const store = new CompanionsStore(filename, seeds); stores.add(store);
+  const store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
   for (const companionId of seeds.map(seed => seed.id)) {
@@ -50,7 +50,7 @@ describe('persistent physical park walks', () => {
     expect(actor(world).parkWalk).toMatchObject({ stage: 'travelling', participatedMinutes: 0 });
     expect(world.events.some(event => event.kind === 'park_walk_relax')).toBe(false);
     world = untilStrolling(f.store);
-    const commons = world.scenes.find(scene => scene.kind === 'commons')!, garden = companionWorldParkLayout(commons)!;
+    const commons = world.scenes.find(scene => scene.kind === 'park')!, garden = companionWorldParkLayout(commons)!;
     expect(actor(world).route.every(point => point.sceneId === commons.id && companionWorldCellWalkable(commons, point) && companionWorldParkContains(garden, point))).toBe(true);
     const source = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '你今天在做什么？' });
     f.store.request({ type: 'world.work.begin', ...f.scope, workId: 'phone_pause', kind: 'chat', sourceMessageId: source.id });
@@ -60,7 +60,7 @@ describe('persistent physical park walks', () => {
     f.store.request({ type: 'world.work.end', companionId: 'alice', workId: 'phone_pause' });
     world = advance(f.store, 4000); expect(actor(world).parkWalk!.participatedMinutes).toBeGreaterThan(progress);
     const saved = actor(world); f.store.close(); stores.delete(f.store);
-    const reopened = new CompanionsStore(f.filename, seeds); stores.add(reopened);
+    const reopened = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened);
     world = reopened.request({ type: 'world.snapshot' }).world!;
     expect(actor(world).parkWalk).toEqual(saved.parkWalk); expect(actor(world).position).toEqual(saved.position); expect(actor(world).route).toEqual(saved.route);
     for (let index = 0; index < 120 && actor(world).parkWalk; index++) world = advance(reopened, 1000);
@@ -97,21 +97,21 @@ describe('persistent physical park walks', () => {
     expect(world.events.some(event => event.kind === 'park_walk_complete' || event.kind === 'park_walk_relax')).toBe(false);
   });
 
-  it('repairs old saved routes crossing new furniture and physically exits a newly occupied footprint without teleporting', () => {
-    for (const position of [{ x: 115, y: 54 }, { x: 120, y: 54 }]) {
+  it('repairs saved local routes crossing furniture and physically exits a newly occupied footprint without teleporting', () => {
+    for (const position of [{ x: 24, y: 14 }, { x: 27, y: 14 }]) {
       const f = fixture(); f.store.close(); stores.delete(f.store);
       const db = new Sqlite(f.filename);
       try {
         const saved = db.prepare('SELECT data FROM companion_world WHERE id=1').get() as { data: string }, state = JSON.parse(saved.data) as { actors: Array<Record<string, unknown>> };
         const subject = state.actors.find(actor => actor.companionId === 'alice')!;
-        Object.assign(subject, { sceneId: 'commons', position, route: [{ sceneId: 'commons', x: 120, y: 54 }, { sceneId: 'commons', x: 123, y: 54 }], destinationId: 'commons', arrivalActivity: 'idle', activity: 'walking' });
+        Object.assign(subject, { sceneId: 'park', position, route: [{ sceneId: 'park', x: 27, y: 14 }, { sceneId: 'park', x: 33, y: 14 }], destinationId: 'park', arrivalActivity: 'idle', activity: 'walking' });
         db.prepare('UPDATE companion_world SET data=? WHERE id=1').run(JSON.stringify(state));
       } finally { db.close(); }
-      const reopened = new CompanionsStore(f.filename, seeds); stores.add(reopened);
+      const reopened = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened);
       let world = reopened.request({ type: 'world.snapshot' }).world!, previous = actor(world).position;
       expect(previous).toEqual(position);
       expect(world.events.some(event => event.kind === 'route_replanned')).toBe(true);
-      const commons = world.scenes.find(scene => scene.kind === 'commons')!;
+      const commons = world.scenes.find(scene => scene.kind === 'park')!;
       let outside = companionWorldCellWalkable(commons, position);
       for (const point of actor(world).route) {
         if (companionWorldCellWalkable(commons, point)) outside = true;
@@ -121,23 +121,24 @@ describe('persistent physical park walks', () => {
         world = advance(reopened, 500); const actual = actor(world).position;
         expect(Math.hypot(actual.x - previous.x, actual.y - previous.y)).toBeLessThanOrEqual(1.201); previous = actual;
       }
-      expect(actor(world).position).toEqual({ x: 123, y: 54 }); expect(actor(world).route).toEqual([]);
+      expect(actor(world).position).toEqual({ x: 33, y: 14 }); expect(actor(world).route).toEqual([]);
     }
   });
 
   it('reserves one real bench while approaching, holds it while seated and releases only after standing', () => {
     const f = fixture(), bob = { companionId: 'bob', conversationId: f.store.openPrivate('bob').id };
     const move = (scope: typeof bob, destinationId: string) => f.store.request({ type: 'world.tool', ...scope, arguments: { action: 'move', destinationId } }).world!;
-    let world = move(f.scope, 'commons_bench');
-    const bench = () => f.store.request({ type: 'world.snapshot' }).world!.scenes.find(scene => scene.kind === 'commons')!.objects.find(object => object.id === 'commons_bench')!;
+    for (const scope of [f.scope, bob]) { f.store.request({ type: 'world.tool', ...scope, arguments: { action: 'travel', targetSceneId: 'park' } }); advance(f.store, 5000); }
+    let world = move(f.scope, 'park_bench');
+    const bench = () => f.store.request({ type: 'world.snapshot' }).world!.scenes.find(scene => scene.kind === 'park')!.objects.find(object => object.id === 'park_bench')!;
     expect(bench().reservedBy).toBe('alice'); expect(bench().occupantId).toBeUndefined();
-    expect(() => move(bob, 'commons_bench')).toThrow('长椅');
+    expect(() => move(bob, 'park_bench')).toThrow('长椅');
     for (let index = 0; index < 120 && actor(world).route.length; index++) world = advance(f.store, 1000);
-    f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'interact', furnitureId: 'commons_bench', interaction: 'rest' } });
+    f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'interact', furnitureId: 'park_bench', interaction: 'rest' } });
     advance(f.store, 1500); expect(bench().occupantId).toBe('alice');
-    expect(() => move(bob, 'commons_bench')).toThrow('长椅');
-    world = move(f.scope, 'home_alice'); expect(actor(world).activity).toBe('standingUp'); expect(bench().occupantId).toBe('alice');
+    expect(() => move(bob, 'park_bench')).toThrow('长椅');
+    world = f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'leave' } }).world!; expect(actor(world).activity).toBe('standingUp'); expect(bench().occupantId).toBe('alice');
     advance(f.store, 1500); expect(bench().reservedBy).toBeUndefined();
-    move(bob, 'commons_bench'); expect(bench().reservedBy).toBe('bob');
+    move(bob, 'park_bench'); expect(bench().reservedBy).toBe('bob');
   });
 });

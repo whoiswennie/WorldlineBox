@@ -106,7 +106,7 @@ function fixture(dsh: DshLauncher, publish = false, prepareComputer = true) {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companion-service-'));
   roots.push(root);
   const databasePath = path.join(root, 'companions', 'messages.sqlite');
-  const store = new CompanionsStore(databasePath, seeds);
+  const store = new CompanionsStore(databasePath, seeds.map(seed => ({ ...seed, active: true })));
   stores.add(store);
   const conversation = store.openPrivate('sister');
   const world = store.request({ type: 'world.snapshot' }).world!;
@@ -256,6 +256,7 @@ describe('CompanionService owner process stop boundary', () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), requestTask));
     await f.service.handle({ type: 'state' });
     const custom = f.store.createCompanion({ name: '独立伙伴', description: '', persona: '安静友好', model: '', avatar: 'flash', proactive: false });
+    f.store.setCompanionActive(custom.id, true);
     const room = f.store.openPrivate(custom.id);
     keepAwake(f.store, custom.id, room.id);
     const source = f.store.appendMessage({ conversationId: room.id, authorId: 'user', content: '这份委托和资料要保留。' });
@@ -302,6 +303,7 @@ describe('CompanionService owner process stop boundary', () => {
     for (const taskId of ['owner-slow', 'owner-reject']) f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id,
       sourceMessageId: f.source.id, title: taskId, status: 'running', taskId });
     const other = f.store.createCompanion({ name: '另一个伙伴', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+    f.store.setCompanionActive(other.id, true);
     const otherRoom = f.store.openPrivate(other.id), otherSource = f.store.appendMessage({ conversationId: otherRoom.id, authorId: 'user', content: '另一位伙伴的委托。' });
     const otherAction = f.store.createAction({ companionId: other.id, conversationId: otherRoom.id,
       sourceMessageId: otherSource.id, title: '别人的任务', status: 'running', taskId: 'different-owner' });
@@ -322,6 +324,7 @@ describe('CompanionService owner process stop boundary', () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), requestTask));
     await f.service.handle({ type: 'state' });
     const custom = f.store.createCompanion({ name: '待删除伙伴', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+    f.store.setCompanionActive(custom.id, true);
     const room = f.store.openPrivate(custom.id), source = f.store.appendMessage({ conversationId: room.id, authorId: 'user', content: '保存这条任务来源。' });
     const action = f.store.createAction({ companionId: custom.id, conversationId: room.id, sourceMessageId: source.id,
       title: '保留既有证据的任务', status: 'running', taskId: 'credential-owner-process' });
@@ -701,7 +704,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     expect(new Set(ids).size).toBe(2);
     expect(f.store.request({ type: 'messages', conversationId: f.conversation.id, limit: 50 }).messages?.filter(message => ids.includes(message.id))).toHaveLength(2);
     await closeService(f.service);
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const restarted = startService(f.root, fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
     await restarted.handle({ type: 'state' }); await vi.advanceTimersByTimeAsync(5_000);
     expect(reopened.request({ type: 'schedule.list', companionId: 'sister', conversationId: f.conversation.id, includeHistory: true }).scheduleOccurrences).toHaveLength(2);
@@ -807,7 +810,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     expect(f.store.request({ type: 'schedule.list', companionId: 'sister', conversationId: f.conversation.id }).schedules![0]!.nextRunAt).toBeUndefined();
   });
 
-  it('queues ordinary sleeping chat, wakes for an actual urgent request, and resumes the older chat only at normal wake time', async () => {
+  it.each([false, true])('queues ordinary sleeping chat and wakes for urgent contact, explicit priority=%s', async explicit => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
     const routine = (await f.service.handle({ type: 'routine.get', companionId: 'sister', conversationId: f.conversation.id })).routine!;
     await f.service.handle({ type: 'routine.configure', companionId: 'sister', conversationId: f.conversation.id,
@@ -823,16 +826,17 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(transport.fetch).not.toHaveBeenCalled();
     expect(f.store.request({ type: 'work.list', sourceMessageId: ordinary.id }).works?.[0]?.status).toBe('queued');
-    const urgent = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '醒醒，有件紧急的事需要你帮忙。', clientId: 'actual-urgent' })).message!;
+    const urgentText = explicit ? '请先帮我处理这件事。' : '醒醒，有件紧急的事需要你帮忙。';
+    const urgent = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: urgentText, ...(explicit ? { priority: 'urgent' as const } : {}), clientId: 'actual-urgent' })).message!;
     await vi.advanceTimersByTimeAsync(12000); // Finish any actual wake, turn, walk and sit transitions.
     await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: urgent.id }).works?.[0]?.status).toBe('done'), { timeout: 5000 });
-    expect(observed).toEqual(['醒醒，有件紧急的事需要你帮忙。']);
+    expect(observed).toEqual([urgentText]);
     expect(f.store.request({ type: 'work.list', sourceMessageId: ordinary.id }).works?.[0]?.status).toBe('queued');
     await vi.advanceTimersByTimeAsync(10000); // Returning to bed is physical movement, not an immediate phase label.
     expect((await f.service.handle({ type: 'routine.get', companionId: 'sister', conversationId: f.conversation.id })).routine?.runtime.phase).toBe('sleeping');
     vi.setSystemTime('2026-10-13T03:00:00Z'); await vi.advanceTimersByTimeAsync(12_000);
     await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: ordinary.id }).works?.[0]?.status).toBe('done'), { timeout: 5000 });
-    expect(observed).toEqual(['醒醒，有件紧急的事需要你帮忙。', '有空时陪我聊聊吧。']);
+    expect(observed).toEqual([urgentText, '有空时陪我聊聊吧。']);
   });
 
   it('reports offline on an observed authentication failure and clears that observation after the connection changes', async () => {
@@ -840,7 +844,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     const f = fixture(dsh);
     let configured = false; let apiKey = 'original-test-key';
     await closeService(f.service);
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const service = new CompanionService({ userData: f.root, workerPath: 'mocked-worker', window: () => undefined,
       getConfig: () => ({ apiFormat: 'openai_chat', model: 'selected-model', baseUrl: 'https://provider.invalid', apiKey }), hasConfig: () => configured,
       dsh: () => dsh, report: vi.fn() }); services.add(service);
@@ -873,7 +877,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     expect(f.store.request({ type: 'work.list' }).works?.find(work => work.id === 'group-queue')?.status).toBe('cancelled');
     expect(f.store.state().conversations.some(room => room.id === group.id)).toBe(false);
     await closeService(f.service);
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const restarted = startService(f.root, fakeDsh(() => ({ tasks: [], operations: [] }), requestTask));
     await restarted.handle({ type: 'state' }); await vi.advanceTimersByTimeAsync(1000);
     expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(1);
@@ -894,7 +898,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     await vi.waitFor(() => expect(f.store.listAction()[0]?.sessionId).toBe('session-original'), { timeout: 5000 });
     const id = f.store.listAction()[0]!.id;
     await closeService(f.service);
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const restarted = startService(f.root, dsh);
     await restarted.handle({ type: 'action.resume', id });
     await vi.waitFor(() => expect(reopened.getAction(id).status).toBe('succeeded'), { timeout: 5000 });
@@ -911,12 +915,13 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true });
     const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), requestTask), f = fixture(dsh);
     const flash = f.store.createCompanion({ name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false });
+    f.store.setCompanionActive(flash.id, true);
     keepAwake(f.store, flash.id, f.store.openPrivate(flash.id).id);
     const group = f.store.createConversation('', ['sister', flash.id]);
     await f.service.handle({ type: 'message.send', conversationId: group.id, content: '大家聊聊今天的心情吧。', clientId: 'group-recovery-source', delivery: 'chat' });
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 12000 });
     const closing = closeService(f.service); pending.resolve(modelResponse('这条未完成的回复不应写入。')); await closing;
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const restarted = startService(f.root, dsh);
     expect((await restarted.handle({ type: 'state' })).state?.recoveries).toEqual([expect.objectContaining({ completedIds: ['sister'], status: 'interrupted' })]);
     transport.fetch.mockImplementation(async () => modelResponse('妹妹继续之前的话题。'));
@@ -989,7 +994,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     expect(transport.fetch).not.toHaveBeenCalled();
     await closeService(f.service);
 
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const restarted = startService(f.root, dsh);
     const actions = await restarted.handle({ type: 'actions', conversationId: f.conversation.id });
     expect(actions.actions).toHaveLength(1);
@@ -1014,7 +1019,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     const closing = closeService(f.service);
     feedback.resolve(modelResponse('工作的结果已经写好了。'));
     await closing;
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened);
     expect(reopened.getAction(completed.id)).toMatchObject({ status: 'succeeded', result: '真实完成结果', finishedAt: completed.finishedAt });
     reopened.interruptPendingActions();
     expect(reopened.getAction(completed.id).status).toBe('succeeded');
@@ -1092,7 +1097,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     await vi.waitFor(() => expect(f.store.listAction()[0]?.status).toBe('running'), { timeout: 5000 });
     await f.service.handle({ type: 'action.cancel', id: f.store.listAction()[0]!.id });
     await closeService(f.service);
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened);
     expect(reopened.listAction()[0]?.status).toBe('cancelled');
     expect(transport.fetch).not.toHaveBeenCalled();
   });
@@ -1146,7 +1151,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     expect(JSON.stringify(f.store.listAction())).not.toContain('PRIVATE_DSH_THINKING_BODY');
     await closeService(f.service);
 
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const restarted = startService(f.root, dsh);
     const persisted = await restarted.handle({ type: 'actions', conversationId: f.conversation.id });
     expect(persisted.actions?.[0]).toMatchObject({ status: 'succeeded', stage: '图片查看结束', events: [
@@ -1188,6 +1193,31 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     expect(f.store.listAction()).toEqual([]); expect(requestTask).not.toHaveBeenCalled(); await closeService(f.service);
   });
 
+  it('keeps proactive context through already sent replies and preserves the original request checkpoint', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn()));
+    const role = f.store.state().companions[0]!; f.store.updateCompanion(role.id, { ...role, proactive: true });
+    const prior = f.store.appendMessage({ conversationId: f.conversation.id, authorId: role.id, content: '之前的整理已经结束，结果在这里。', replyDirective: 'none' });
+    const original = { conversationId: f.conversation.id, companionId: role.id, sourceMessageId: f.source.id, messageId: prior.id,
+      status: 'done' as const, turns: [{ text: prior.content, rawText: prior.content, calls: [] }], supplements: [] };
+    f.store.request({ type: 'loop.save', checkpoint: original });
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      expect(data.messages.some((message: { id: string; content: string }) => message.id === prior.id && message.content === prior.content)).toBe(true);
+      expect(data.event).toBe('proactive_opportunity'); expect(data.taskRequest).toBeUndefined();
+      expect(data.identity.authorization.playerRequestMessageId).toBeNull();
+      return modelResponse('刚刚听到一首新歌，想分享给你。');
+    });
+    f.store.request({ type: 'work.enqueue', work: { id: 'proactive_context', companionId: role.id, conversationId: f.conversation.id,
+      sourceMessageId: f.source.id, proactive: true, status: 'queued', createdAt: fixedTime, updatedAt: fixedTime } });
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.waitFor(() => expect(f.store.request({ type: 'work.list' }).works?.find(work => work.id === 'proactive_context')?.status).toBe('done'));
+    expect(f.store.request({ type: 'loop.get', sourceMessageId: f.source.id, companionId: role.id }).loop).toEqual(original);
+    const proactive = f.store.request({ type: 'loop.get', sourceMessageId: f.source.id, companionId: role.id, proactiveWorkId: 'proactive_context' }).loop!;
+    expect(proactive.contextThroughSequence).toBeGreaterThanOrEqual(prior.sequence);
+    expect(f.store.getMessage(proactive.messageId!).replyToId).toBeUndefined();
+    expect(transport.fetch).toHaveBeenCalledOnce(); await closeService(f.service);
+  });
+
 
 });
 
@@ -1198,6 +1228,19 @@ function capabilityResponse(text: string, tasks: Array<{ title: string; prompt: 
     { headers: { 'Content-Type': 'application/json' } });
 }
 describe('one durable bubble per source and native multi-step main loop', () => {
+  it('processes one retried player submission only once while generating and after completion', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn())), pending = deferred<Response>();
+    transport.fetch.mockImplementation(() => pending.promise);
+    const command = { type: 'message.send' as const, conversationId: f.conversation.id, content: '你去找妹妹玩吧。', clientId: 'same_submission' };
+    const first = (await f.service.handle(command)).message!;
+    await vi.advanceTimersByTimeAsync(500); await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledOnce());
+    expect((await f.service.handle(command)).message!.id).toBe(first.id);
+    pending.resolve(modelResponse('我先问问她有没有空。'));
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: first.id, companionId: 'sister' }).loop?.status).toBe('done'));
+    expect((await f.service.handle(command)).message!.id).toBe(first.id);
+    const related = f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'sister' && message.replyToId === first.id);
+    expect(related).toHaveLength(1); expect(transport.fetch).toHaveBeenCalledOnce(); await closeService(f.service);
+  });
   it('keeps weather and queued clock requests in separate loops while the current computer work finishes first', async () => {
     const jobs: DshTaskRecord[] = [];
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => {
@@ -1253,7 +1296,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     const snapshot = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!.context!;
     for (let i = 0; i < 150; i++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '后来的其他消息 ' + i });
     const closing = closeService(f.service); pending.resolve(modelResponse('已停止的回复')); await closing;
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const restarted = startService(f.root, dsh);
     transport.fetch.mockImplementation(async (_url, init) => {
       const body = JSON.parse(String(init?.body));
@@ -1302,7 +1345,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     expect(bubble.content).toBe('我查到三个来源。');
     const body = JSON.parse(String(transport.fetch.mock.calls[0]![1]?.body));
     expect(body.tools.map((item: { function: { name: string } }) => item.function.name)).toEqual([
-      'dsh', 'dsh_record', 'memory_search', 'memory_read', 'memory_record', 'memory_revise', 'memory_organize', 'memory_forget',
+      'dsh', 'dsh_record', 'memory_world_query', 'memory_search', 'memory_read', 'memory_record', 'memory_revise', 'memory_organize', 'memory_forget',
       'schedule', 'state',
       'routine', 'world', 'activity', 'work', 'life_rule',
       'read_file', 'read_image', 'send_file',
@@ -1374,7 +1417,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     for (let index = 0; index < 7; index++) ids.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '重启队列' + index, clientId: 'restart-queue-' + index })).message!.id);
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(5), { timeout: 5000 });
     await closeService(f.service);
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     transport.fetch.mockReset(); transport.fetch.mockImplementation(async () => modelResponse('自动继续未开始的排队消息。'));
     const restarted = startService(f.root, dsh);
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 5000 });
@@ -1396,6 +1439,36 @@ describe('CompanionService native work and life management', () => {
       return modelResponseForJson({ allowed: true, confidence: .98, sourceMessageId: data.source.id, tool: data.tool, action: data.action, targetId: data.targetId, evidence: [data.source.content] });
     });
   }
+  it.each(['visit', 'message'] as const)('retains the full user intent=%s when the first native action is only a phone message', async intent => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const target = f.store.createCompanion({ name: '妹妹', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: intent === 'visit' ? '你去找妹妹玩吧。' : '你发消息问问妹妹有空吗。', replyDirective: 'none' });
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      expect(data.purpose).toBe('world_message_authorization'); expect(data.intentRules).toContain('完整目标');
+      return modelResponseForJson({ allowed: true, confidence: .99, evidence: [source.content], reason: '当前明确请求。', intent });
+    });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id }, args = { action: 'message', recipientIds: [target.id], text: '现在方便吗？' };
+    const sent = await native(f.service, 'world', args, scope, [source.id], 'native_phone_visit', source.sequence);
+    expect(sent.ok).toBe(true); expect(sent.socialPending).toBe(true);
+    expect(sent.activityTask?.visitTargetId).toBe(intent === 'visit' ? target.id : undefined);
+    expect(f.store.request({ type: 'activity.list', ...scope }).activityTasks).toHaveLength(intent === 'visit' ? 1 : 0);
+    await closeService(f.service);
+  });
+  it.each(['visit', 'message'] as const)('checks a direct native visit against the real user goal=%s before retaining movement', async intent => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const target = f.store.createCompanion({ name: '妹妹', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: intent === 'visit' ? '去找妹妹玩吧。' : '给妹妹发一句问好就行，不用过去。', replyDirective: 'none' });
+    transport.fetch.mockResolvedValue(modelResponseForJson({ allowed: true, intent, confidence: .99, evidence: [source.content], reason: '明确的原始目标。' }));
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const result = await native(f.service, 'world', { action: 'visit', targetCompanionId: target.id, reason: '现在方便来找你玩吗？' }, scope, [source.id], 'direct_visit', source.sequence);
+    expect(result.ok).toBe(intent === 'visit');
+    expect(f.store.request({ type: 'activity.list', ...scope }).activityTasks).toHaveLength(intent === 'visit' ? 1 : 0);
+    expect(f.store.request({ type: 'world.snapshot' }).world!.scenes.some(scene => scene.ownerId === target.id)).toBe(false);
+    await closeService(f.service);
+  });
   it('binds native work and life writes to the exact current human and keeps creation retries idempotent', async () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
     await f.service.handle({ type: 'state' }); authorize();

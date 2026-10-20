@@ -7,7 +7,7 @@ export function worldWorkLabel(work: CompanionWorldWork) {
   return work.kind === 'chat' ? { waiting: '等方便时回复聊天', moving: '正在准备看消息', seating: '正在准备回复', ready: '正在回复聊天', ended: '这次聊天已结束' }[work.status] : WORLD_WORK_LABELS[work.status];
 }
 export const WORLD_VISIT_LABELS: Record<CompanionWorldVisit['status'], string> = { requested: '等待对方回应', allowed: '已获准拜访', denied: '对方暂不方便', left: '拜访已结束', expired: '邀请已过期' };
-export const WORLD_WEATHER_LABELS = { clear: '晴朗', cloudy: '多云', rain: '下雨', snow: '下雪' } as const;
+export { COMPANION_WEATHER_LABELS as WORLD_WEATHER_LABELS } from '../../../shared/companion-weather';
 export interface WorldActorStatus {
   label: string;
   detail?: string;

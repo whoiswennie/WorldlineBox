@@ -1,3 +1,4 @@
+import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
 import { z } from 'zod';
 import { activityStorageCommands } from './companion-activity-task';
 
@@ -78,7 +79,7 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
-  ...activityStorageCommands,
+  ...activityStorageCommands, ...companionInterruptionCommands,
   ...playerProfileCommands,
   ...companionResetCommands,
   ...companionWorkOrderStorageCommands,
@@ -87,7 +88,8 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('companion.reset.cleanup-failed'), id: companionIdSchema, jobId: companionIdSchema, error: z.string().max(1000) }),
   z.strictObject({ type: z.literal('companion.task-ids'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('companion.task.track'), id: companionIdSchema, companionId: companionIdSchema, taskId: companionIdSchema }),
-  z.strictObject({ type: z.literal('state'), includeHidden: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('state'), includeHidden: z.boolean().optional(), includeConversations: z.boolean().optional(), activeOnly: z.boolean().optional(), conversationId: companionIdSchema.optional() }),
+  z.strictObject({ type: z.literal('companion.set-active'), id: companionIdSchema, active: z.boolean(), expectedRevision: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('companion.create'), companion: companionDraftSchema }),
   z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, expectedRevision: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('companion.delete'), id: companionIdSchema }),
@@ -123,7 +125,7 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('checkpoint.input'), id: companionIdSchema, input: z.strictObject({ id: companionIdSchema, content: z.string().max(16000), mode: z.enum(['steer', 'queue']) }) }),
   z.strictObject({ type: z.literal('action.resume'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('reply.checkpoint.get'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema.optional() }),
-  z.strictObject({ type: z.literal('loop.get'), sourceMessageId: companionIdSchema, companionId: companionIdSchema }),
+  z.strictObject({ type: z.literal('loop.get'), sourceMessageId: companionIdSchema, companionId: companionIdSchema, proactiveWorkId: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('loop.save'), checkpoint: companionLoopCheckpointSchema }),
   z.strictObject({ type: z.literal('work.enqueue'), work: companionWorkSchema, resume: z.boolean().optional() }),
   z.strictObject({ type: z.literal('work.claim') }),
@@ -145,6 +147,7 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
 ]);
 export type CompanionStorageCommand = z.input<typeof companionStorageCommandSchema>;
 export const companionStorageResponseSchema = companionsResponseSchema.extend({
+  interruption: companionInterruptionSchema.optional(),
   inserted: z.boolean().optional(),
   storedAttachment: storedCompanionAttachmentSchema.optional(),
   fileToolResult: fileToolResultSchema.optional(),

@@ -1,4 +1,4 @@
-import { BoxGeometry, BufferGeometry, CanvasTexture, CatmullRomCurve3, Color, CylinderGeometry, ExtrudeGeometry, Float32BufferAttribute, Group, Mesh, MeshStandardMaterial, PlaneGeometry, Shape, SphereGeometry, SRGBColorSpace, TorusGeometry, TubeGeometry, Vector3, type Material } from 'three';
+import { BoxGeometry, BufferGeometry, CanvasTexture, CatmullRomCurve3, Color, CylinderGeometry, Float32BufferAttribute, Group, Mesh, MeshStandardMaterial, PlaneGeometry, SphereGeometry, SRGBColorSpace, TorusGeometry, TubeGeometry, Vector3, type Material } from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { CompanionWorldScene } from '../../../shared/companion-world';
@@ -9,7 +9,7 @@ type Surface = 'plaster' | 'ivory' | 'wood' | 'oak' | 'darkWood' | 'sage' | 'blu
 const COLORS: Record<Surface, string> = { plaster: '#f0e7dc', ivory: '#fff9ed', wood: '#bf8f67', oak: '#e5c7a0', darkWood: '#765442', sage: '#94bda9', blue: '#829fbf', linen: '#f3e8d4', rose: '#d4a4a0', metal: '#4c5a62', screen: '#7fb8be', glass: '#bbdfdf', soil: '#9b7e65', leaf: '#608d72', grass: '#a9c29d', path: '#ddd4c2', tile: '#d2ded1', light: '#ffe5ab' };
 
 /** This is a view of the host's footprints, never a second collision or furniture model. */
-export function createWorldRoomModel(scene: CompanionWorldScene, neighborhood: CompanionWorldScene[] = []) {
+export function createWorldRoomModel(scene: CompanionWorldScene) {
   const group = new Group();
   const buckets = new Map<Surface, BufferGeometry[]>();
   const resources: { geometry: BufferGeometry[]; materials: Material[]; textures: CanvasTexture[] } = { geometry: [], materials: [], textures: [] };
@@ -161,32 +161,6 @@ export function createWorldRoomModel(scene: CompanionWorldScene, neighborhood: C
     plant(.1, 13.8, 1.15); plant(18.7, .1, .95);
     box('wood', -.35, 1.5, 5.7, .12, 1.25, 1.0); box('ivory', -.26, 1.5, 5.7, .05, 1.08, .83);
     box('rose', -.22, 1.57, 5.7, .035, .35, .42);
-  } else {
-    box('grass', scene.width / 2, -.3, scene.depth / 2, scene.width + 5, .5, scene.depth + 5);
-    for (let x = 26; x < scene.width; x += 24) { box('linen', x, -.012, scene.depth / 2, 4.35, .05, scene.depth); box('path', x, .005, scene.depth / 2, 4, .05, scene.depth); }
-    for (let z = 23; z < scene.depth; z += 22) { box('linen', scene.width / 2, -.01, z, scene.width, .055, 4.35); box('path', scene.width / 2, .012, z, scene.width, .06, 4); }
-    // The reserved park is described by actual trees/benches; paving is walkable decoration.
-    const parkObjects = scene.objects.filter(object => object.kind === 'tree' || object.kind === 'bench');
-    if (parkObjects.length) {
-      const minX = Math.min(...parkObjects.map(object => object.position.x)) - 3, maxX = Math.max(...parkObjects.map(object => object.position.x + object.width)) + 3, minZ = Math.min(...parkObjects.map(object => object.position.y)) - 3, maxZ = Math.max(...parkObjects.map(object => object.position.y + object.depth)) + 3;
-      box('tile', (minX + maxX) / 2, .023, (minZ + maxZ) / 2, maxX - minX, .04, maxZ - minZ, .15);
-      part(new CylinderGeometry(1, 1, .03, 48), 'path', (minX + maxX) / 2, .047, (minZ + maxZ) / 2, (maxX - minX) / 2 - 1, 1, (maxZ - minZ) / 2 - 1);
-    }
-    for (const [index, home] of neighborhood.filter(item => item.kind === 'home').entries()) {
-      const x = home.origin.x + home.width / 2 - .5, z = home.origin.y + home.depth / 2 - .5;
-      const facade = (['plaster', 'ivory', 'linen'] as const)[index % 3]!, roofColor = (['sage', 'blue', 'rose'] as const)[index % 3]!;
-      box(facade, x, 1.8, z, home.width, 3.6, home.depth);
-      const profile = new Shape(); profile.moveTo(-home.depth / 2 - .35, 0); profile.lineTo(0, 3.2); profile.lineTo(home.depth / 2 + .35, 0); profile.closePath();
-      const roof = new ExtrudeGeometry(profile, { depth: home.width + .7, bevelEnabled: false }); roof.rotateY(Math.PI / 2); roof.translate(-(home.width + .7) / 2, 0, 0);
-      part(roof, roofColor, x, 3.62, z);
-      box('plaster', x - home.width / 2 + 3, 5.0, z - 2.2, 1.2, 3.2, 1.2); box('ivory', x - home.width / 2 + 3, 6.6, z - 2.2, 1.4, .2, 1.4);
-      box('wood', home.origin.x + home.door.x, 1.1, home.origin.y + home.depth - .4, 1.7, 2.2, .12);
-      box('path', home.origin.x + home.door.x, .035, home.origin.y + home.depth + 1, 1.7, .035, 2.4);
-      box('metal', home.origin.x + home.door.x + 1.7, 2.4, home.origin.y + home.depth - .36, .4, .65, .25); ball('light', home.origin.x + home.door.x + 1.7, 2.4, home.origin.y + home.depth - .2, .12, .22, .08);
-      cylinder('ivory', home.origin.x + home.door.x + .5, 1.1, home.origin.y + home.depth - .3, .06, .1);
-      for (const dx of [-5.5, 5.5]) { box('wood', x + dx, 2.0, home.origin.y + home.depth - .4, 2.9, 1.7, .12); box('glass', x + dx, 2.0, home.origin.y + home.depth - .3, 2.6, 1.4, .08); box('ivory', x + dx, 2.0, home.origin.y + home.depth - .24, .1, 1.4, .08); box('ivory', x + dx, 2.0, home.origin.y + home.depth - .24, 2.6, .08, .08); }
-      plant(home.origin.x + 1, home.origin.y + home.depth + .6, 1.1);
-    }
   }
   scene.objects.forEach(furniture);
   for (const [surface, geometries] of buckets) {

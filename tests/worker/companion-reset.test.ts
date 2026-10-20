@@ -13,7 +13,7 @@ const roots: string[] = [], stores = new Set<CompanionsStore>();
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) {
   if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith('companion-reset-')) throw new Error('Unexpected reset fixture cleanup.'); rmSync(root, { recursive: true, force: true });
 } });
-function open(file: string) { const store = new CompanionsStore(file, seeds); stores.add(store); return store; }
+function open(file: string) { const store = new CompanionsStore(file, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); return store; }
 function close(store: CompanionsStore) { store.close(); stores.delete(store); }
 function fixture() { const root = mkdtempSync(path.join(tmpdir(), 'companion-reset-')); roots.push(root); const file = path.join(root, 'messages.sqlite'), store = open(file); return { root, file, store, room: store.openPrivate('alice') }; }
 async function finish(store: CompanionsStore, id = 'alice', max = 20000) {

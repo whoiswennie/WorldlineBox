@@ -58,7 +58,7 @@ function fixture(customSeeds = seeds) {
   const testNow = Date.now(); vi.setSystemTime(testNow - 10_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-memory-service-')); roots.push(root);
   const databasePath = path.join(root, 'companions', 'messages.sqlite');
-  const store = new CompanionsStore(databasePath, customSeeds); stores.add(store);
+  const store = new CompanionsStore(databasePath, customSeeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const conversation = store.openPrivate('sister');
   const world = store.request({ type: 'world.snapshot' }).world!;
   store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
@@ -321,7 +321,7 @@ describe('automatic companion memory through the main service and real SQLite', 
     expect(checkpoint.supplements[0]?.id).toBe(supplement.id);
     await closeService(f.service);
     resolvePending(textResponse(`未发送的旧回复 ${secret}`));
-    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const request = reopened.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: requestWithdrawn ? '请忘掉刚才地址、核对请求与补充的地址。' : '请忘掉旧地址和补充的地址，保留当前核对请求。', replyDirective: 'none' });
     expect(reopened.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id,
       sourceMessageIds: [old.id, ...(requestWithdrawn ? [source.id] : []), supplement.id], requestMessageId: request.id }).forgottenCount).toBeGreaterThan(0);

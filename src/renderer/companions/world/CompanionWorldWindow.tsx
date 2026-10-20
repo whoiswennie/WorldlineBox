@@ -31,8 +31,8 @@ export function CompanionWorldWindow() {
   } : undefined, [bridge]);
   return <main className="companion-world-window" data-world-observer-key={context?.observerKey}>
     {error || !bridge ? <p role="alert">{error || '世界窗口桥接不可用。'}</p> : !context ? <StartupScreen title="正在打开伙伴世界" detail="读取真实世界状态与观察窗口设置" stage="连接伙伴世界" /> :
-      <CompanionWorld api={api} companions={context.companions} initialCompanionId={context.companionId} initialSceneId={context.sceneId} initialView={context.view}
+      <CompanionWorld api={api} companions={context.companions} initialCompanionId={context.companionId} initialSceneId={context.sceneId}
         observerKey={context.observerKey} visibleWindowCount={context.visibleWindowCount} active={context.visible && documentVisible}
-        onClose={() => { void bridge.control('close'); }} onOpenWindow={(sceneId, view) => { void bridge.open({ sceneId, view }); }} />}
+        onClose={() => { void bridge.control('close'); }} onOpenWindow={sceneId => { void bridge.open({ sceneId }); }} />}
   </main>;
 }

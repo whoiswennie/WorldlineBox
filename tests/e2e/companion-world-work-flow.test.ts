@@ -178,7 +178,7 @@ test('phone chat streams from a friends sofa while only native DSH execution req
     await expect(page.locator('[data-companion-messages]')).toContainText(provider.finalText);
     await expect.poll(async () => (await snapshot(page)).works.filter(work => work.companionId === guestId).length).toBe(0);
     expect(actor(await snapshot(page)).sceneId).toBe('home_' + hostId);
-    await modal.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('commons');
+    await modal.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('park');
     const source = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: urgent, clientId: randomUUID() })).message!;
     let streetCaptured = false, sawStand = false, sawRun = false;
     await expect.poll(async () => {
@@ -186,7 +186,7 @@ test('phone chat streams from a friends sofa while only native DSH execution req
       sawStand ||= current.activity === 'standingUp'; sawRun ||= current.activity === 'walking' && current.locomotion === 'run';
       const execution = await executorState(application!);
       if (!world.works.some(work => work.companionId === guestId && work.kind === 'action' && work.status === 'ready')) expect(execution.calls.filter(call => call.type === 'task.run')).toHaveLength(0);
-      if (current.sceneId === 'commons' && current.activity === 'walking' && !streetCaptured) {
+      if (current.sceneId === 'park' && current.activity === 'walking' && !streetCaptured) {
         await expect(modal.locator('[data-world-actor="' + guestId + '"]')).toBeVisible();
         await worldPage.screenshot({ path: path.join(artifacts, 'verified-world-urgent-running-home.png') }); streetCaptured = true;
       }
@@ -212,7 +212,7 @@ test('phone chat streams from a friends sofa while only native DSH execution req
     await expect.poll(async () => { const value = actor(await snapshot(page)); return value.sceneId === 'home_' + hostId && !value.route.length && value.activity === 'idle'; }, { timeout: 40000 }).toBe(true);
     await sitAtFriendsSofa();
     const cancelled = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: cancelledUrgent, clientId: randomUUID() })).message!;
-    await expect.poll(async () => { const world = await snapshot(page), value = actor(world); samples.push({ at: Date.now(), label: 'cancelled_journey', actor: value, works: world.works }); return value.sceneId === 'commons' && value.activity === 'walking'; }, { timeout: 25000, intervals: [200] }).toBe(true);
+    await expect.poll(async () => { const world = await snapshot(page), value = actor(world); samples.push({ at: Date.now(), label: 'cancelled_journey', actor: value, works: world.works }); return value.sceneId === 'park' && value.activity === 'walking'; }, { timeout: 25000, intervals: [200] }).toBe(true);
     expect(provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === cancelled.id)).toHaveLength(1);
     expect((await executorState(application)).calls.filter(call => call.type === 'task.run')).toHaveLength(1);
     await request(page, { type: 'reply.cancel', conversationId: guestRoom.id });
@@ -265,7 +265,7 @@ test('world save resumes an actual route, peer relationship and visit after proc
     // large expanding map. This leaves a real route back to the host's home.
     await shareWorldHomeAddress(page, 'huan-white', [guestId, hostId]);
     for (const scope of [guestScope, hostScope]) await request(page, { type: 'world.tool', ...scope, arguments: { action: 'move', destinationId: 'huan-white_entrance' } });
-    await expect.poll(async () => { const world = await snapshot(page); return [guestId, hostId].every(id => actor(world, id).sceneId === 'commons' && !actor(world, id).route.length); }, { timeout: 30000 }).toBe(true);
+    await expect.poll(async () => { const world = await snapshot(page); return [guestId, hostId].every(id => actor(world, id).sceneId === 'park' && !actor(world, id).route.length); }, { timeout: 30000 }).toBe(true);
     const social = (await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'social', targetCompanionId: hostId, kind: 'greet', text: '这是存档验收中真实发生的伙伴问候。' } })).world!;
     const peerEvent = social.events.find(event => event.actorId === guestId && event.kind === 'social_talk')!;
     const speech = (await request(page, { type: 'message.get', id: peerEvent.sourceMessageId! })).message!;
@@ -273,7 +273,7 @@ test('world save resumes an actual route, peer relationship and visit after proc
     const visit = (await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'visit', targetCompanionId: hostId, reason: '问候后得到许可再去做客。' } })).world!.visits.find(visit => visit.guestId === guestId)!;
     await request(page, { type: 'world.tool', ...hostScope, arguments: { action: 'respond', requestId: visit.id, decision: 'allow', reason: '欢迎有空时来。' } });
     await shareWorldHomeAddress(page, hostId, [guestId]);
-    await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'navigate', targetCompanionId: hostId } });
+    await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'travel', targetSceneId: 'home_' + hostId } });
     await expect.poll(async () => actor(await snapshot(page)).route.length, { timeout: 10000 }).toBeGreaterThan(10);
     const saved = await snapshot(page), savedActor = actor(saved), savedRelation = saved.relationships.find(relation => relation.companionId === guestId && relation.targetCompanionId === hostId)!;
     // One actual greeting and the owner's separately delivered address share.
@@ -295,9 +295,9 @@ test('world save resumes an actual route, peer relationship and visit after proc
     expect(restoredActor.sceneId === 'home_' + guestId && restoredActor.position.x === 10 && restoredActor.position.y === 13).toBe(false);
     // Restoring a street route and an entry permit still cannot imply entering.
     if (restoredActor.destinationId) expect(restoredActor.destinationId).toBe(hostId + '_entrance');
-    else expect(restoredActor.sceneId).toBe('commons');
+    else expect(restoredActor.sceneId).toBe('park');
     expect(restoredActor.sceneId).not.toBe('home_' + hostId);
-    expect(restoredActor.route.every(point => point.sceneId === 'commons')).toBe(true);
+    expect(restoredActor.route.every(point => point.sceneId === 'park')).toBe(true);
     expect(restoredActor.activity).not.toBe('working');
     expect(restored.works).toHaveLength(0);
     await page.waitForTimeout(1500);
@@ -308,7 +308,7 @@ test('world save resumes an actual route, peer relationship and visit after proc
     const worldPage = await openCompanionWorldWindow(application, page);
     const modal = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
     await modal.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(restoredActor.sceneId);
-    if (restoredActor.sceneId === 'commons') await expect(modal.locator('[data-world-map-ready]')).toHaveAttribute('data-world-map-ready', 'true');
+    if (restoredActor.sceneId === 'park') await expect(modal.locator('[data-world-map-ready]')).toHaveAttribute('data-world-map-ready', 'true');
     else await expect(modal.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
     await worldPage.screenshot({ path: path.join(artifacts, 'verified-world-save-restart.png') });
     await modal.getByRole('button', { name: '关闭伙伴世界', exact: true }).click();
