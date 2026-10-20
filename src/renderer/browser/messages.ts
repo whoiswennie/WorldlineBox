@@ -1,4 +1,6 @@
 export const browserZh = {
+  ai: '浏览器 AI', aiResize: '调整 AI 侧栏宽度',
+  muteTab: '静音此标签页', unmuteTab: '恢复页面声音', duplicateTab: '复制标签页', savePage: '另存网页', printPage: '打印网页',
   tabAudible: '正在播放声音', tabMuted: '标签页已静音',
   openExternal: '在默认浏览器中打开', openSignInSite: '在默认浏览器打开原网站', signInTitle: '使用支持的浏览器登录', signInHint: 'Google 会限制嵌入式浏览器登录。可在默认浏览器继续使用网站；登录状态分别保存。',
   failureDetails: '技术详情',
@@ -38,6 +40,8 @@ export const browserZh = {
   permission: { media: '摄像头或麦克风', geolocation: '位置', notifications: '通知', 'clipboard-read': '读取剪贴板', pointerLock: '锁定鼠标', keyboardLock: '锁定键盘', 'storage-access': '站点存储' },
 };
 export const browserEn = {
+  ai: 'Browser AI', aiResize: 'Resize AI sidebar',
+  muteTab: 'Mute tab', unmuteTab: 'Unmute tab', duplicateTab: 'Duplicate tab', savePage: 'Save page as', printPage: 'Print page',
   tabAudible: 'Playing audio', tabMuted: 'Tab muted',
   openExternal: 'Open in default browser', openSignInSite: 'Open original site in default browser', signInTitle: 'Sign in with a supported browser', signInHint: 'Google restricts sign-in in embedded browsers. Continue using the site in your default browser; sign-in sessions are separate.',
   failureDetails: 'Technical details',

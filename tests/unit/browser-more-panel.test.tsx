@@ -34,7 +34,9 @@ it('dispatches supported tab actions and opens find without duplicating the glob
   const { run, onFind } = await mount();
   for (const [label, request] of [
     ['恢复关闭的标签页', { type: 'tab.restore' }], ['固定标签页', { type: 'tab.action', action: 'pin' }],
-    ['静音此标签页', { type: 'tab.action', action: 'mute' }], ['全屏', { type: 'tab.action', action: 'fullscreen' }],
+    ['静音此标签页', { type: 'tab.mute', id: 'current-tab', muted: true }], ['全屏', { type: 'tab.action', action: 'fullscreen' }],
+    ['复制标签页', { type: 'tab.command', id: 'current-tab', command: 'duplicate' }],
+    ['另存网页', { type: 'page.save' }], ['打印网页', { type: 'page.print' }],
     ['开发者工具', { type: 'tab.action', action: 'devtools' }],
     ['在默认浏览器中打开', { type: 'tab.openExternal', source: 'page' }],
   ] as const) {
@@ -42,7 +44,7 @@ it('dispatches supported tab actions and opens find without duplicating the glob
     expect(browserRequestSchema.safeParse(request).success).toBe(true);
   }
   await act(() => button('在页面中查找').click());
-  expect(onFind).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledTimes(6);
+  expect(onFind).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledTimes(9);
   expect(host.textContent).not.toContain('全局网络设置');
   expect(host.querySelector('.browser-more-current strong')?.textContent).toBe('参考资料');
   expect(host.querySelector('.browser-more-current')?.getAttribute('title')).toBe('https://example.test/resources');
@@ -58,7 +60,7 @@ it('reflects actual pin/mute state in accessible pressed states and changed acti
   expect(host.querySelector('.browser-more-current strong')?.textContent).toBe('<script>not markup</script>');
   expect(host.querySelector('script')).toBeNull();
   await act(() => button('取消固定标签页').click()); expect(run).toHaveBeenLastCalledWith({ type: 'tab.action', action: 'pin' });
-  await act(() => button('恢复页面声音').click()); expect(run).toHaveBeenLastCalledWith({ type: 'tab.action', action: 'mute' });
+  await act(() => button('恢复页面声音').click()); expect(run).toHaveBeenLastCalledWith({ type: 'tab.mute', id: 'current-tab', muted: false });
 });
 
 it('clamps zoom steps at protocol limits and avoids floating point drift', async () => {
@@ -80,7 +82,7 @@ it('clamps zoom steps at protocol limits and avoids floating point drift', async
 it('blocks all tab-dependent actions without an active tab while keeping restore usable', async () => {
   const { run, onFind, render } = await mount(); await render(undefined);
   expect(host.querySelector('.browser-more-current')).toBeNull();
-  for (const label of ['固定标签页', '静音此标签页', '在页面中查找', '全屏', '开发者工具', '缩小页面', '放大页面', '重置为 100%', '在默认浏览器中打开']) {
+  for (const label of ['固定标签页', '静音此标签页', '复制标签页', '另存网页', '打印网页', '在页面中查找', '全屏', '开发者工具', '缩小页面', '放大页面', '重置为 100%', '在默认浏览器中打开']) {
     expect(button(label).disabled).toBe(true); await act(() => button(label).click());
   }
   expect(run).not.toHaveBeenCalled(); expect(onFind).not.toHaveBeenCalled();

@@ -11,6 +11,13 @@ import { BrowserCaptureHost, type BrowserCaptureHooks, type BrowserCaptureSource
 import { formatBrowserLoadError, shouldIgnoreBrowserLoadError } from '../../shared/browser-load-error';
 import { BrowserTextDrafts, browserTextTitle, readBrowserTextSelection } from './text-selection';
 import { externalBrowserUrl, isRestrictedBrowserSignIn } from '../../shared/browser-compatibility';
+import { browserTabShortcut } from '../../shared/browser-shortcuts';
+import { setTimeout as delay } from 'node:timers/promises';
+import { BrowserAiService } from './ai-service';
+import { BrowserPageController } from './page-controller';
+import type { CompanionModelConfig } from '../companions/model';
+import type { BrowserAgentToolName } from '../../shared/browser-agent-tools';
+import { browserAiRequestSchema, type BrowserAiSource } from '../../shared/browser-ai';
 
 const MAX_LIVE_PAGES = 8;
 export class BrowserService {
@@ -38,12 +45,31 @@ export class BrowserService {
   private readonly textVersions = new Map<string, number>();
   private readonly textDrafts = new BrowserTextDrafts();
   private readonly selectionFrames = new Map<string, { frame: Electron.WebFrameMain; url: string; documentId: string }>();
-  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>, private readonly fullscreenShortcut?: (input: Electron.Input) => boolean) {
+  private readonly ai: BrowserAiService;
+  private readonly pages = new BrowserPageController(id => this.navigationVersions.get(id) ?? 0);
+  private readonly searchPages = new Map<string, { query: string; sources: BrowserAiSource[] }>();
+  private agentClosingTab?: string;
+  private aiSearchTabId?: string;
+  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>, private readonly fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => CompanionModelConfig) {
     this.store = new BrowserStore(root, error => { this.error = '浏览器配置保存失败：' + String(error).slice(0, 600); this.changed(false); });
+    this.ai = new BrowserAiService(root, { getConfig: getModelConfig, changed: () => this.changed(false), hasTab: id => this.store.data.tabs.some(tab => tab.id === id),
+      context: () => ({ activeTabId: this.store.data.activeTabId, tabCount: this.store.data.tabs.length,
+        tabs: [...this.store.data.tabs].sort((a, b) => Number(b.id === this.store.data.activeTabId) - Number(a.id === this.store.data.activeTabId)).slice(0, 8)
+          .map(({ id, title, url, muted, pinned, loading }) => ({ id, title: title.slice(0, 120), url: url.length <= 1500 ? url : '[长地址请通过 browser_tabs 查询]', muted, pinned, loading })) }),
+      tool: (name, input, signal, confirm) => this.agentTool(name, input, signal, confirm),
+      showResults: async (id, query, sources) => {
+        let tab = this.store.data.tabs.find(item => item.id === id);
+        if (!tab || tab.url !== BROWSER_HOME || tab.nativeBlank) tab = this.store.data.tabs.find(item => item.id === this.aiSearchTabId && item.url === BROWSER_HOME && !item.nativeBlank);
+        if (!tab) tab = this.addTab(BROWSER_HOME); else if (tab.id !== this.store.data.activeTabId) this.select(tab.id);
+        this.aiSearchTabId = tab.id;
+        this.searchPages.set(tab.id, { query, sources: structuredClone([...sources]) });
+        tab.title = '搜索 · ' + query.slice(0, 100); this.layout(); this.changed();
+      } });
   }
   private init(): Promise<void> { return this.initialization ??= this.initialize(); }
   private async initialize(): Promise<void> {
     await this.store.init();
+    await this.ai.init();
     this.scope = session.fromPartition('persist:worldlinebox-browser');
     await (await getApplicationNetwork()).attachSession(this.scope);
     if (this.captureHooks) {
@@ -198,6 +224,7 @@ export class BrowserService {
       downloads: structuredClone(this.store.data.downloads), historyCount: this.store.data.history.length, preferences: { ...this.store.data.preferences },
       permissions: [...this.pendingPermissions].map(([id, value]) => ({ id, origin: value.origin, permission: value.permission })),
       fullscreen: this.fullscreen, revision: this.revision, find: this.find, cacheBytes: this.cacheBytes, error: this.error, capture: this.capture?.state(),
+      ai: { ...this.ai.state(), page: this.searchPages.get(this.store.data.activeTabId ?? '') },
       ...(isRestrictedBrowserSignIn(this.store.data.tabs.find(tab => tab.id === this.store.data.activeTabId)?.url ?? '')
         ? { signIn: { provider: 'google' as const, siteUrl: this.signInSources.get(this.store.data.activeTabId!) } } : {}) };
   }
@@ -272,7 +299,7 @@ export class BrowserService {
       const entries = contents.navigationHistory.getAllEntries(); const index = contents.navigationHistory.getActiveIndex();
       const start = Math.max(0, Math.min(index - 14, entries.length - 30));
       if (entries.length && entries.every(entry => isBrowserUrl(entry.url))) this.store.data.navigation[tab.id] = { entries: entries.slice(start, start + 30).map(entry => ({ url: entry.url.slice(0, 8192), title: entry.title.slice(0, 500) })), index: index - start };
-      tab.audible = contents.isCurrentlyAudible(); tab.zoom = contents.getZoomFactor(); this.layout(); this.changed();
+      tab.audible = contents.isCurrentlyAudible(); this.layout(); this.changed();
     };
     contents.on('did-start-loading', () => { tab.error = undefined; refresh(); });
     contents.on('did-start-navigation', (_event, url, inPlace, mainFrame) => {
@@ -290,7 +317,7 @@ export class BrowserService {
       if (isBrowserUrl(committed)) tab.url = committed.slice(0, 8192);
       refresh();
     });
-    contents.on('page-title-updated', (_event, title) => { tab.title = (title.trim() || (tab.url === BROWSER_HOME ? '新标签页' : tab.url)).slice(0, 500); const visited = this.store.data.history.find(item => item.url === tab.url); if (visited) visited.title = tab.title; refresh(); });
+    contents.on('page-title-updated', (_event, title) => { tab.title = (tab.url === BROWSER_HOME && this.searchPages.has(tab.id) ? '搜索 · ' + this.searchPages.get(tab.id)!.query.slice(0, 100) : title.trim() || (tab.url === BROWSER_HOME ? '新标签页' : tab.url)).slice(0, 500); const visited = this.store.data.history.find(item => item.url === tab.url); if (visited) visited.title = tab.title; refresh(); });
     const navigated = (url: string) => { if (!isBrowserUrl(url)) return; tab.url = url.slice(0, 8192); tab.error = undefined; this.store.visit(tab.url, tab.title); refresh(); };
     contents.on('did-navigate', (_event, url) => navigated(url));
     contents.on('did-navigate-in-page', (_event, url, mainFrame) => { if (mainFrame) navigated(url); });
@@ -301,6 +328,8 @@ export class BrowserService {
     };
     contents.on('media-started-playing', refreshMedia); contents.on('media-paused', refreshMedia);
     contents.on('audio-state-changed', refreshMedia);
+    contents.on('did-finish-load', () => { if (!contents.isDestroyed()) contents.setZoomFactor(tab.zoom); });
+    contents.on('zoom-changed', (_event, direction) => { tab.zoom = Math.max(.25, Math.min(5, Math.round((tab.zoom + (direction === 'in' ? .1 : -.1)) * 100) / 100)); contents.setZoomFactor(tab.zoom); this.changed(); });
     contents.on('found-in-page', (_event, result) => { if (tab.id === this.store.data.activeTabId) { this.find = { matches: result.matches, activeMatchOrdinal: result.activeMatchOrdinal }; this.changed(false); } });
     contents.on('did-fail-load', (_event, code, description, url, mainFrame) => {
       if (mainFrame && !shouldIgnoreBrowserLoadError(code, description) && url === tab.url) {
@@ -411,6 +440,7 @@ export class BrowserService {
   }
   private destroyView(id: string): void {
     const entry = this.views.get(id); if (!entry) return;
+    this.pages.forget(entry.view.webContents.id);
     this.invalidateText(id); this.capture?.cancelTab(id); this.owner?.contentView.removeChildView(entry.view); this.views.delete(id); this.navigationVersions.delete(id); this.textVersions.delete(id);
     if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
     const tab = this.store.data.tabs.find(item => item.id === id); if (tab) { tab.discarded = true; tab.loading = false; }
@@ -424,7 +454,7 @@ export class BrowserService {
     if (this.store.data.tabs.length >= 50) throw Error('最多保留 50 个标签页，请先关闭部分页面。');
     if (!isBrowserUrl(url)) throw Error('无效的网页地址。');
     const previous = this.store.data.activeTabId;
-    const tab = newBrowserTab(url); this.store.data.tabs.push(tab);
+    const tab = newBrowserTab(url); if (popupOptions && url === BROWSER_HOME) tab.nativeBlank = true; this.store.data.tabs.push(tab);
     if (!background || popupOptions) {
       if (!background) { this.invalidateText(); this.store.data.activeTabId = tab.id; }
       try { this.ensureView(tab, navigate, popupOptions, protectedTab); } catch (error) { this.destroyView(tab.id); this.store.data.tabs = this.store.data.tabs.filter(item => item.id !== tab.id); this.store.data.activeTabId = previous; this.layout(); throw error; }
@@ -445,6 +475,7 @@ export class BrowserService {
     for (const key of Object.keys(this.store.data.navigation)) if (!retained.has(key)) delete this.store.data.navigation[key];
     this.destroyView(id);
     this.signInSources.delete(id);
+    this.searchPages.delete(id); if (this.agentClosingTab !== id) this.ai.closedTab(id);
     if (!this.store.data.tabs.length) this.addTab();
     else if (this.store.data.activeTabId === id) this.select(this.store.data.tabs[Math.min(index, this.store.data.tabs.length - 1)]!.id);
     this.layout(); this.changed();
@@ -455,7 +486,8 @@ export class BrowserService {
     const bounds = this.fullscreen ? { x: 0, y: 0, width: size.width, height: size.height } : { x: Math.min(this.bounds.x, size.width), y: Math.min(this.bounds.y, size.height),
       width: Math.max(0, Math.min(this.bounds.width, size.width - this.bounds.x)), height: Math.max(0, Math.min(this.bounds.height, size.height - this.bounds.y)) };
     for (const [id, entry] of this.views) {
-      const visible = this.visible && id === this.store.data.activeTabId && bounds.width > 0 && bounds.height > 0 && !this.store.data.tabs.find(tab => tab.id === id)?.error;
+      const tab = this.store.data.tabs.find(tab => tab.id === id);
+      const visible = this.visible && id === this.store.data.activeTabId && bounds.width > 0 && bounds.height > 0 && !tab?.error && (tab?.url !== BROWSER_HOME || tab.nativeBlank === true);
       // Reapplying native bounds/visibility during media and subframe events
       // needlessly invalidates the compositor's video surface.
       if (visible) {
@@ -467,10 +499,11 @@ export class BrowserService {
   }
   private shortcut(key: string, ctrl: boolean, shift: boolean, alt: boolean): boolean {
     const lower = key.toLowerCase();
+    const request = browserTabShortcut(key, ctrl, shift, alt, this.store.data.tabs, this.store.data.activeTabId);
+    if (request) { void this.handle(request).catch(error => this.reportPageError(error)); return true; }
     if (ctrl && ['l', 'f'].includes(lower)) { this.getWindow()?.webContents.send(BROWSER_FOCUS, lower === 'l' ? 'address' : 'find'); return true; }
     if (ctrl && lower === 't') { if (shift) this.restore(); else this.addTab(); return true; }
     if (ctrl && lower === 'w') { this.closeTab(this.active().id); return true; }
-    if (ctrl && lower === 'tab') { const tabs = this.store.data.tabs; const index = tabs.findIndex(item => item.id === this.store.data.activeTabId); this.select(tabs[(index + (shift ? tabs.length - 1 : 1)) % tabs.length]!.id); return true; }
     if ((ctrl && lower === 'r') || key === 'F5') { this.act('reload'); return true; }
     if (alt && ['ArrowLeft', 'ArrowRight'].includes(key)) { this.act(key === 'ArrowLeft' ? 'back' : 'forward'); return true; }
     if (key === 'F11' && !this.fullscreenShortcut) { this.act('fullscreen'); return true; }
@@ -486,17 +519,143 @@ export class BrowserService {
     } catch (error) { this.store.data.closedTabs.unshift(tab); throw error; }
   }
   private act(action: Extract<BrowserRequest, { type: 'tab.action' }>['action']): void {
-    const tab = this.active(); const contents = this.ensureView(tab).webContents;
+    const tab = this.active();
+    if (action === 'mute') { this.setMuted(tab.id, !tab.muted); return; }
+    if (action === 'pin') { this.tabCommand(tab.id, 'pin'); return; }
+    const contents = this.ensureView(tab).webContents;
     if (action === 'back' && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
     if (action === 'forward' && contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward();
     if (action === 'reload') { if (tab.discarded) void this.load(tab, tab.url); else contents.reload(); }
     if (action === 'stop') contents.stop();
     if (action === 'home') void this.load(tab, this.store.data.preferences.homepage);
-    if (action === 'mute') { tab.muted = !tab.muted; contents.setAudioMuted(tab.muted); }
-    if (action === 'pin') { tab.pinned = !tab.pinned; this.store.data.tabs.sort((a, b) => Number(b.pinned) - Number(a.pinned)); }
     if (action === 'fullscreen') this.owner?.setFullScreen(!this.owner.isFullScreen());
     if (action === 'devtools') contents.openDevTools({ mode: 'detach' });
     this.changed();
+  }
+  private requireTab(id: string): BrowserTab {
+    const tab = this.store.data.tabs.find(item => item.id === id);
+    if (!tab) throw Error('标签页已关闭，请重试。');
+    return tab;
+  }
+  private setMuted(id: string, muted: boolean): void {
+    const tab = this.requireTab(id);
+    // Updating an unloaded/background tab must not create or select a page.
+    const contents = this.views.get(id)?.view.webContents;
+    if (contents && !contents.isDestroyed()) contents.setAudioMuted(muted);
+    tab.muted = muted; this.changed();
+  }
+  private tabCommand(id: string, command: Extract<BrowserRequest, { type: 'tab.command' }>['command']): void {
+    const tab = this.requireTab(id);
+    if (command === 'reload') this.ensureView(tab).webContents.reload();
+    if (command === 'pin') { tab.pinned = !tab.pinned; this.store.data.tabs.sort((a, b) => Number(b.pinned) - Number(a.pinned)); }
+    if (command === 'duplicate') {
+      const navigation = this.store.data.navigation[id];
+      const copy = this.addTab(tab.url, false, false);
+      copy.title = tab.title; copy.zoom = tab.zoom; copy.muted = tab.muted; copy.pinned = tab.pinned;
+      const search = this.searchPages.get(tab.id); if (search) this.searchPages.set(copy.id, structuredClone(search));
+      const tabs = this.store.data.tabs; tabs.splice(tabs.indexOf(copy), 1); tabs.splice(tabs.indexOf(tab) + 1, 0, copy);
+      if (navigation) this.store.data.navigation[copy.id] = structuredClone(navigation);
+      const contents = this.ensureView(copy, false).webContents;
+      contents.setZoomFactor(copy.zoom); contents.setAudioMuted(copy.muted); this.restoreNavigation(copy, contents);
+    }
+    if (command === 'closeOthers' || command === 'closeRight') {
+      const tabs = this.store.data.tabs;
+      const closing = tabs.filter((item, index) => item.id !== id && !item.pinned && (command === 'closeOthers' || index > tabs.indexOf(tab))).map(item => item.id);
+      // Select the survivor once; closing a batch must not load intermediate tabs.
+      if (closing.includes(this.store.data.activeTabId!)) this.select(id);
+      for (const closingId of closing) this.closeTab(closingId);
+    }
+    this.layout(); this.changed();
+  }
+  private tabContextMenu(id: string, locale: 'zh-CN' | 'en'): void {
+    const tab = this.requireTab(id); const owner = this.attachOwner();
+    const zh = locale === 'zh-CN';
+    const command = (value: Extract<BrowserRequest, { type: 'tab.command' }>['command']) => () => this.pageAction(() => this.tabCommand(id, value));
+    const tabs = this.store.data.tabs; const index = tabs.indexOf(tab);
+    Menu.buildFromTemplate([
+      { id: 'browser-tab-reload', label: zh ? '重新加载标签页' : 'Reload tab', click: command('reload') },
+      { id: 'browser-tab-duplicate', label: zh ? '复制标签页' : 'Duplicate tab', enabled: tabs.length < 50, click: command('duplicate') },
+      { type: 'separator' },
+      { id: 'browser-tab-pin', label: zh ? (tab.pinned ? '取消固定标签页' : '固定标签页') : (tab.pinned ? 'Unpin tab' : 'Pin tab'), click: command('pin') },
+      { id: 'browser-tab-mute', label: zh ? '静音此标签页' : 'Mute tab', type: 'checkbox', checked: tab.muted,
+        click: item => this.pageAction(() => this.setMuted(id, item.checked)) },
+      { type: 'separator' },
+      { id: 'browser-tab-close', label: zh ? '关闭标签页' : 'Close tab', click: () => this.pageAction(() => this.closeTab(id)) },
+      { id: 'browser-tab-close-others', label: zh ? '关闭其他标签页' : 'Close other tabs', enabled: tabs.some(item => item.id !== id && !item.pinned), click: command('closeOthers') },
+      { id: 'browser-tab-close-right', label: zh ? '关闭右侧标签页' : 'Close tabs to the right', enabled: tabs.slice(index + 1).some(item => !item.pinned), click: command('closeRight') },
+      { type: 'separator' },
+      { id: 'browser-tab-restore', label: zh ? '恢复关闭的标签页' : 'Reopen closed tab', enabled: this.store.data.closedTabs.length > 0, click: () => this.pageAction(() => this.restore()) },
+    ]).popup({ window: owner });
+  }
+  private async savePage(): Promise<void> {
+    const tab = this.active(); const contents = this.ensureView(tab).webContents;
+    const filename = [...tab.title].map(char => char.charCodeAt(0) < 32 ? '_' : char).join('').replace(/[<>:"/\\|?*]/g, '_').replace(/[. ]+$/, '').slice(0, 100) || 'webpage';
+    const selected = await dialog.showSaveDialog(this.attachOwner(), { title: '保存网页', defaultPath: filename + '.mhtml', filters: [{ name: '网页存档', extensions: ['mhtml'] }] });
+    if (selected.canceled || !selected.filePath) return;
+    if (contents.isDestroyed() || !this.store.data.tabs.includes(tab)) throw Error('标签页已关闭，无法保存网页。');
+    await contents.savePage(selected.filePath, 'MHTML');
+  }
+  private async waitForPage(tab: BrowserTab, signal: AbortSignal): Promise<void> {
+    const contents = this.ensureView(tab).webContents;
+    await delay(80, undefined, { signal });
+    while (!contents.isDestroyed() && contents.isLoadingMainFrame()) await delay(80, undefined, { signal });
+    signal.throwIfAborted(); if (contents.isDestroyed()) throw Error('页面已关闭。'); if (tab.error) throw Error(tab.error);
+  }
+  private async agentTool(name: BrowserAgentToolName, input: Record<string, unknown>, signal: AbortSignal, confirm: (description: string) => Promise<boolean>): Promise<unknown> {
+    signal.throwIfAborted();
+    if (name === 'browser_tabs') return this.store.data.tabs.map(tab => ({ ...tab, active: tab.id === this.store.data.activeTabId }));
+    if (name === 'browser_history') return this.store.history(String(input.query ?? ''), Number(input.offset ?? 0), Number(input.limit ?? 15));
+    if (name === 'browser_bookmarks') {
+      if (input.action === 'list') return { bookmarks: this.store.data.bookmarks.slice(Number(input.offset), Number(input.offset) + Number(input.limit)), total: this.store.data.bookmarks.length };
+      if (input.action === 'remove') { if (!input.id || !this.store.data.bookmarks.some(bookmark => bookmark.id === input.id)) throw Error('请提供实际存在的收藏 ID。'); await this.handle({ type: 'bookmark.remove', id: String(input.id) }); }
+      else await this.handle({ type: 'bookmark.save', title: String(input.title || this.active().title), folder: String(input.folder ?? '') });
+      return { success: true };
+    }
+    if (name === 'browser_downloads') return this.store.data.downloads.slice(0, 30).map(({ id, filename, status, received, total }) => ({ id, filename, status, received, total }));
+    if (name === 'browser_download_action') { await this.handle({ type: 'download.action', id: String(input.id), action: input.action as 'pause' | 'resume' | 'cancel' }); return { success: true }; }
+    if (name === 'browser_wait') { await delay(Number(input.ms), undefined, { signal }); return { waited: Number(input.ms) }; }
+    if (name === 'browser_navigate') {
+      const url = browserAddress(String(input.url));
+      if (input.newTab) { const tab = this.addTab(url); await this.waitForPage(tab, signal); return { tabId: tab.id, url: tab.url, title: tab.title }; }
+      const tab = input.tabId ? this.requireTab(String(input.tabId)) : this.active(); this.select(tab.id);
+      const loading = this.load(tab, url); const contents = this.ensureView(tab).webContents;
+      const cancel = () => { if (!contents.isDestroyed()) contents.stop(); }; signal.addEventListener('abort', cancel, { once: true });
+      try { await loading; await this.waitForPage(tab, signal); } finally { signal.removeEventListener('abort', cancel); }
+      return { tabId: tab.id, url: tab.url, title: tab.title };
+    }
+    const tab = input.tabId ? this.requireTab(String(input.tabId)) : this.active();
+    if (name === 'browser_tab') {
+      const action = String(input.action);
+      if (action === 'close') { this.agentClosingTab = tab.id; try { this.closeTab(tab.id); } finally { this.agentClosingTab = undefined; } }
+      else if (action === 'select') this.select(tab.id);
+      else if (action === 'mute' || action === 'unmute') this.setMuted(tab.id, action === 'mute');
+      else if (action === 'duplicate' || action === 'pin' || action === 'reload') this.tabCommand(tab.id, action);
+      else { this.select(tab.id); this.act(action as 'back' | 'forward'); }
+      return { success: true, activeTabId: this.store.data.activeTabId };
+    }
+    if (tab.url === BROWSER_HOME && !tab.nativeBlank) {
+      if (name === 'browser_observe' || name === 'browser_read') return { title: tab.title, url: tab.url, internal: true, results: this.searchPages.get(tab.id), note: 'Native start/search page. Use browser_navigate on a result URL to view the real website.' };
+      throw Error('这是原生新标签页，请先打开网页。');
+    }
+    this.select(tab.id); const contents = this.ensureView(tab).webContents; await this.waitForPage(tab, signal);
+    if (name === 'browser_page') {
+      if (input.action === 'zoom') { if (typeof input.factor !== 'number') throw Error('请指定缩放比例。'); await this.handle({ type: 'tab.zoom', factor: input.factor }); }
+      if (input.action === 'fullscreen') this.attachOwner().setFullScreen(true);
+      if (input.action === 'exitFullscreen') this.attachOwner().setFullScreen(false);
+      if (input.action === 'save') await this.handle({ type: 'page.save' });
+      if (input.action === 'print') await this.handle({ type: 'page.print' });
+      return { requested: true, note: ['save', 'print'].includes(String(input.action)) ? 'Native user dialog; do not claim the user saved/printed until they confirm.' : undefined };
+    }
+    if (name === 'browser_screenshot') { await this.saveScreenshot((await contents.capturePage()).toPNG(), 'webpage-' + Date.now() + '.png'); return { savedToAssetLibrary: true }; }
+    if (name === 'browser_observe') return { tabId: tab.id, ...await this.pages.observe(tab.id, contents, { query: String(input.query), offset: Number(input.offset), limit: Number(input.limit) }) as Record<string, unknown> };
+    if (name === 'browser_read') return { tabId: tab.id, ...await this.pages.read(tab.id, contents, Number(input.offset), Number(input.length)) };
+    if (name === 'browser_scroll') return this.pages.scroll(contents, String(input.direction), Number(input.pixels));
+    if (name === 'browser_key') { contents.focus(); return this.pages.key(contents, String(input.key), confirm, signal); }
+    if (name === 'browser_find') { await this.handle({ type: 'find', text: String(input.text) }); return { requested: true, text: input.text }; }
+    if (['browser_click', 'browser_fill', 'browser_select', 'browser_hover'].includes(name)) {
+      contents.focus(); return this.pages.act(tab.id, contents, name.slice('browser_'.length) as 'click' | 'fill' | 'select' | 'hover', input, confirm, signal);
+    }
+    throw Error('此浏览器工具暂不可用。');
   }
   private resolvePermission(id: string, allow: boolean, remember: boolean): void {
     const pending = this.pendingPermissions.get(id); if (!pending) return;
@@ -548,6 +707,8 @@ export class BrowserService {
   }
   async handle(request: BrowserRequest): Promise<BrowserResponse> {
     await this.init(); this.error = undefined;
+    const ai = browserAiRequestSchema.safeParse(request);
+    if (ai.success) { await this.ai.handle(ai.data); return { ok: true, state: this.state() }; }
     switch (request.type) {
       case 'activate': this.ensureView(this.active()); break;
       case 'state': break;
@@ -556,6 +717,17 @@ export class BrowserService {
       case 'tab.select': this.select(request.id); break;
       case 'tab.close': this.closeTab(request.id); break;
       case 'tab.restore': this.restore(); break;
+      case 'tab.mute': this.setMuted(request.id, request.muted); return { ok: true, state: this.state() };
+      case 'tab.command': this.tabCommand(request.id, request.command); return { ok: true, state: this.state() };
+      case 'tab.contextMenu': this.tabContextMenu(request.id, request.locale); return { ok: true };
+      case 'page.save': await this.savePage(); break;
+      case 'page.print': {
+        const contents = this.ensureView(this.active()).webContents;
+        // Always display the native print dialog; never silently select a printer.
+        contents.print({ printBackground: true }, (success, reason) => {
+          if (!success && reason !== 'cancelled') this.reportPageError(Error('打印失败：' + reason));
+        }); break;
+      }
       case 'tab.navigate': void this.load(this.active(), browserAddress(request.text, this.store.data.preferences.searchEngine)); break;
       case 'tab.action': this.act(request.action); break;
       case 'tab.openExternal': {
@@ -607,6 +779,8 @@ export class BrowserService {
   }
   async shutdown(): Promise<void> {
     await this.initialization?.catch(() => undefined);
+    await this.ai.shutdown();
+    this.searchPages.clear(); this.aiSearchTabId = undefined;
     this.invalidateText();
     await this.capture?.shutdown();
     if (this.preloadRegistration) { this.scope?.unregisterPreloadScript(this.preloadRegistration); this.preloadRegistration = undefined; }
@@ -617,18 +791,18 @@ export class BrowserService {
   }
 }
 
-export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean): { shutdown(): Promise<void>; closeLibrary(libraryId: string): void; captureViewport(): Promise<CaptureImageSource>; selectedText(): Promise<string>; saveScreenshot(bytes: Uint8Array, filename: string): Promise<void> } {
+export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => CompanionModelConfig): { shutdown(): Promise<void>; closeLibrary(libraryId: string): void; captureViewport(): Promise<CaptureImageSource>; selectedText(): Promise<string>; saveScreenshot(bytes: Uint8Array, filename: string): Promise<void> } {
   let browser: BrowserService | undefined;
   ipcMain.handle(BROWSER_REQUEST, async (event, input: unknown): Promise<BrowserResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问浏览器。' };
     const request = browserRequestSchema.safeParse(input); if (!request.success) return { ok: false, error: '无效的浏览器请求。' };
-    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).handle(request.data); }
+    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).handle(request.data); }
     catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
   });
   ipcMain.handle(BROWSER_CAPTURE_REQUEST, async (event, input: unknown): Promise<BrowserCaptureResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问资产采集。' };
     const parsed = browserCaptureRequestSchema.safeParse(input); if (!parsed.success) return { ok: false, error: '无效的采集请求。' };
-    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).captureRequest(parsed.data); }
+    try { return await (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).captureRequest(parsed.data); }
     catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) }; }
   });
   ipcMain.handle(BROWSER_CAPTURE_CONTENT_REQUEST, (event, input: unknown): Promise<BrowserCaptureContentResponse> | BrowserCaptureContentResponse => {
@@ -636,7 +810,7 @@ export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undef
   });
   ipcMain.on(BROWSER_CAPTURE_SELECTION_STATE, (event, value: unknown) => browser?.captureSelectionState(event, value));
   return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId),
-    captureViewport: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).captureViewport(),
-    selectedText: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).selectedText(),
-    saveScreenshot: (bytes, filename) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut)).saveScreenshot(bytes, filename) };
+    captureViewport: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).captureViewport(),
+    selectedText: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).selectedText(),
+    saveScreenshot: (bytes, filename) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).saveScreenshot(bytes, filename) };
 }

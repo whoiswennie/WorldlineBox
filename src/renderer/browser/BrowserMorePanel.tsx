@@ -15,7 +15,7 @@ export function BrowserMorePanel({ tab, run, onFind, b }: {
       out: 'Zoom out', into: 'Zoom in', reset: 'Reset to 100%', current: 'Current tab' };
   const action = (value: Extract<BrowserRequest, { type: 'tab.action' }>['action']) => () => void run({ type: 'tab.action', action: value });
   const row = (icon: IconName, label: string, click: () => void, hint?: string, pressed?: boolean, disabled = false) => <button type="button"
-    className="browser-more-action" onClick={click} disabled={disabled} aria-pressed={pressed}>
+    className="browser-more-action" onClick={click} disabled={disabled} aria-label={label} aria-pressed={pressed}>
     <Icon name={icon} size={17} /><span>{label}</span>{hint ? <kbd>{hint}</kbd> : null}{pressed ? <Icon name="check" size={14} /> : null}
   </button>;
   const zoom = tab?.zoom ?? 1;
@@ -23,8 +23,9 @@ export function BrowserMorePanel({ tab, run, onFind, b }: {
     {tab ? <div className="browser-more-current" title={tab.url}><span><Icon name="globe" size={18} /></span><div><small>{words.current}</small><strong>{tab.title}</strong></div></div> : null}
     <section aria-label={words.page}><h3>{words.page}</h3>
       {row('undo', b('restore'), () => void run({ type: 'tab.restore' }), `${command}+Shift+T`)}
+      {row('copy', b('duplicateTab'), () => tab && void run({ type: 'tab.command', id: tab.id, command: 'duplicate' }), undefined, undefined, !tab)}
       {row('pin', tab?.pinned ? words.pinned : words.pin, action('pin'), undefined, tab?.pinned, !tab)}
-      {row(tab?.muted ? 'volume-off' : 'volume', tab?.muted ? words.unmute : words.mute, action('mute'), undefined, tab?.muted, !tab)}
+      {row(tab?.muted ? 'volume-off' : 'volume', tab?.muted ? words.unmute : words.mute, () => tab && void run({ type: 'tab.mute', id: tab.id, muted: !tab.muted }), `${command}+M`, tab?.muted, !tab)}
       {row('search', b('find'), onFind, `${command}+F`, undefined, !tab)}
     </section>
     <section aria-label={words.display}><h3>{words.display}</h3>
@@ -36,6 +37,8 @@ export function BrowserMorePanel({ tab, run, onFind, b }: {
       {row('fullscreen', b('fullscreen'), action('fullscreen'), undefined, undefined, !tab)}
     </section>
     <section aria-label={words.tools}><h3>{words.tools}</h3>
+      {row('save', b('savePage'), () => void run({ type: 'page.save' }), `${command}+S`, undefined, !tab)}
+      {row('printer', b('printPage'), () => void run({ type: 'page.print' }), `${command}+P`, undefined, !tab)}
       {row('globe', b('openExternal'), () => void run({ type: 'tab.openExternal', source: 'page' }), undefined, undefined, !tab || !/^https?:\/\//.test(tab.url))}
       {row('code', b('devtools'), action('devtools'), undefined, undefined, !tab)}
     </section>

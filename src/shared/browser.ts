@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { browserCaptureStateSchema, type BrowserCaptureRequest, type BrowserCaptureResponse } from './browser-capture';
+import { browserAiConfigSchema, browserAiRequests, browserAiTaskSchema, browserAiSourceSchema } from './browser-ai';
 export const BROWSER_REQUEST = 'worldlinebox:browser:request';
 export const BROWSER_CHANGED = 'worldlinebox:browser:changed';
 export const BROWSER_FOCUS = 'worldlinebox:browser:focus';
@@ -12,7 +13,7 @@ export const BROWSER_DEFAULT_BOOKMARKS = [
 ] as const;
 const id = z.string().min(1).max(100);
 export const browserTabSchema = z.object({ id, url: z.string().max(8192), title: z.string().max(500), pinned: z.boolean(), muted: z.boolean(), zoom: z.number().min(.25).max(5),
-  loading: z.boolean(), canGoBack: z.boolean(), canGoForward: z.boolean(), audible: z.boolean().optional(), discarded: z.boolean().optional(), error: z.string().max(1000).optional() });
+  loading: z.boolean(), canGoBack: z.boolean(), canGoForward: z.boolean(), audible: z.boolean().optional(), discarded: z.boolean().optional(), nativeBlank: z.boolean().optional(), error: z.string().max(1000).optional() });
 export const browserBookmarkSchema = z.object({ id, url: z.string().max(8192), title: z.string().max(500), folder: z.string().max(100), createdAt: z.string() });
 export const browserHistorySchema = z.object({ id, url: z.string().max(8192), title: z.string().max(500), visitedAt: z.string() });
 export const browserDownloadSchema = z.object({ id, url: z.string().max(8192), filename: z.string().max(500), path: z.string().max(8192),
@@ -24,17 +25,23 @@ export const browserStateSchema = z.object({ tabs: z.array(browserTabSchema).max
   downloads: z.array(browserDownloadSchema).max(200), historyCount: z.number().int().min(0), preferences: browserPreferencesSchema,
   permissions: z.array(browserPermissionSchema).max(10), fullscreen: z.boolean(), revision: z.number().int().min(0),
   find: z.object({ matches: z.number(), activeMatchOrdinal: z.number() }).optional(), cacheBytes: z.number().min(0).optional(), error: z.string().optional(),
-  capture: browserCaptureStateSchema.optional(), signIn: z.object({ provider: z.literal('google'), siteUrl: z.string().max(8192).optional() }).optional() });
+  capture: browserCaptureStateSchema.optional(), signIn: z.object({ provider: z.literal('google'), siteUrl: z.string().max(8192).optional() }).optional(),
+  ai: z.object({ config: browserAiConfigSchema, task: browserAiTaskSchema.optional(), page: z.object({ query: z.string().max(8000), sources: z.array(browserAiSourceSchema).max(20) }).optional() }).optional() });
 export type BrowserState = z.infer<typeof browserStateSchema>;
 export type BrowserTab = z.infer<typeof browserTabSchema>;
 export type BrowserDownload = z.infer<typeof browserDownloadSchema>;
 export type BrowserBookmark = z.infer<typeof browserBookmarkSchema>;
 export type BrowserHistory = z.infer<typeof browserHistorySchema>;
 export const browserRequestSchema = z.discriminatedUnion('type', [
+  ...browserAiRequests,
   z.object({ type: z.literal('activate') }), z.object({ type: z.literal('state') }),
   z.object({ type: z.literal('layout'), visible: z.boolean(), bounds: z.object({ x: z.number().int().min(0), y: z.number().int().min(0), width: z.number().int().min(0).max(20000), height: z.number().int().min(0).max(20000) }) }),
   z.object({ type: z.literal('tab.new'), url: z.string().max(8192).optional(), background: z.boolean().optional() }),
   z.object({ type: z.literal('tab.select'), id }), z.object({ type: z.literal('tab.close'), id }), z.object({ type: z.literal('tab.restore') }),
+  z.object({ type: z.literal('tab.mute'), id, muted: z.boolean() }).strict(),
+  z.object({ type: z.literal('tab.command'), id, command: z.enum(['reload', 'duplicate', 'pin', 'closeOthers', 'closeRight']) }).strict(),
+  z.object({ type: z.literal('tab.contextMenu'), id, locale: z.enum(['zh-CN', 'en']) }).strict(),
+  z.object({ type: z.literal('page.save') }).strict(), z.object({ type: z.literal('page.print') }).strict(),
   z.object({ type: z.literal('tab.navigate'), text: z.string().min(1).max(8192) }),
   z.object({ type: z.literal('tab.action'), action: z.enum(['back', 'forward', 'reload', 'stop', 'home', 'pin', 'mute', 'fullscreen', 'devtools']) }),
   z.object({ type: z.literal('tab.openExternal'), source: z.enum(['page', 'signInSite']).default('page') }).strict(),

@@ -1,0 +1,32 @@
+.browser-markdown { min-width: 0; max-width: 100%; overflow-wrap: anywhere; user-select: text; font-size: 12px; line-height: 1.85; color: var(--ui-content-primary); }
+.browser-markdown > :first-child { margin-top: 0; }.browser-markdown > :last-child { margin-bottom: 0; }
+.browser-markdown p { margin: .7em 0; white-space: normal; }
+.browser-markdown :is(h1,h2,h3,h4,h5,h6) { margin: 1.3em 0 .6em; font-weight: 600; line-height: 1.55; letter-spacing: -.015em; }
+.browser-markdown h1 { font-size: 1.5em; }.browser-markdown h2 { font-size: 1.3em; }.browser-markdown h3 { font-size: 1.15em; }.browser-markdown :is(h4,h5,h6) { font-size: 1.05em; }
+.browser-markdown :is(ul,ol) { margin: .7em 0; padding-left: 1.65em; }.browser-markdown li { margin: .3em 0; }.browser-markdown li > p { margin: .3em 0; }
+.browser-markdown .task-list-item { list-style: none; }.browser-markdown .task-list-item > input { margin: 0 .5em 0 -1.4em; accent-color: #688c7a; }
+.browser-markdown strong { font-weight: 600; }.browser-markdown del { color: var(--ui-content-tertiary); }
+.browser-markdown blockquote { margin: 1em 0; padding: 1px 13px; border-left: 2px solid #8daa99; color: var(--ui-content-secondary); background: #83a18e09; }
+.browser-markdown hr { margin: 1.4em 0; border: 0; border-top: 1px solid var(--ui-border-subtle); }
+.browser-markdown code { padding: .15em .35em; border-radius: 4px; background: var(--ui-surface-field); font: .93em/1.6 'Cascadia Code', Consolas, monospace; }
+.browser-markdown-link { display: inline; border: 0; background: transparent; padding: 0; color: var(--ui-content-accent); font: inherit; line-height: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.browser-markdown-link:hover { text-decoration-thickness: 2px; }
+.browser-markdown-link.browser-citation { display: inline-grid; place-items: center; min-width: 17px; height: 17px; box-sizing: border-box; padding: 0 4px; margin: 0 2px; border: 1px solid #83a18d25; border-radius: 5px; background: #7d9e8610; color: #648273; font-size: 9px; line-height: 1; vertical-align: 1px; text-decoration: none; font-variant-numeric: tabular-nums; }
+.browser-markdown-link.browser-citation:hover { background: #7d9e8625; border-color: #83a18d50; }
+.browser-markdown-table { overflow-x: auto; max-width: 100%; margin: 1em 0; border: 1px solid var(--ui-border-subtle); border-radius: 8px; scrollbar-width: thin; }
+.browser-markdown table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: .95em; }
+.browser-markdown :is(th,td) { padding: 8px 11px; text-align: left; border-bottom: 1px solid var(--ui-border-subtle); border-right: 1px solid var(--ui-border-subtle); }
+.browser-markdown th { background: var(--ui-surface-field); font-weight: 550; }.browser-markdown tr:last-child td { border-bottom: 0; }.browser-markdown :is(th,td):last-child { border-right: 0; }
+.browser-markdown :is(.companions-code-block,.companions-diagram) { min-width: 0; margin: 1em 0; border: 1px solid var(--ui-border-subtle); border-radius: 9px; overflow: hidden; background: var(--ui-surface-canvas); }
+.browser-markdown :is(.companions-code-block,.companions-diagram) > figcaption { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 11px; background: var(--ui-surface-field); border-bottom: 1px solid var(--ui-border-subtle); color: var(--ui-content-secondary); font-size: 9px; }
+.browser-markdown figcaption > button { padding: 2px 6px; border: 0; background: transparent; color: var(--ui-content-secondary); border-radius: 4px; font: inherit; cursor: pointer; }
+.browser-markdown figcaption > button:hover { background: var(--ui-surface-raised); }
+.browser-markdown pre { max-width: 100%; overflow: auto; margin: 0; padding: 13px; scrollbar-width: thin; }
+.browser-markdown pre code { padding: 0; background: transparent; white-space: pre; overflow-wrap: normal; font-size: 11px; line-height: 1.7; }
+.browser-markdown .hljs-keyword, .browser-markdown .hljs-literal { color: #9966b1; }.browser-markdown .hljs-string, .browser-markdown .hljs-attr { color: #578a6f; }.browser-markdown .hljs-title, .browser-markdown .hljs-number { color: #aa7e45; }.browser-markdown .hljs-built_in { color: #588aaf; }.browser-markdown .hljs-comment { color: var(--ui-content-tertiary); font-style: italic; }
+.browser-markdown .companions-diagram-svg { padding: 15px; overflow: auto; max-height: 480px; scrollbar-width: thin; }
+.browser-markdown .companions-diagram-svg > svg { display: block; max-width: 100%; height: auto; margin: auto; }
+.browser-markdown .companions-diagram > p { padding: 12px; font-size: 11px; color: var(--ui-content-tertiary); }.browser-markdown .companions-diagram .companions-code-block { margin: 10px; }
+.browser-markdown .katex-display { max-width: 100%; overflow: auto; padding: 4px 0; scrollbar-width: thin; }
+.browser-markdown [data-footnotes] { margin-top: 24px; border-top: 1px solid var(--ui-border-subtle); color: var(--ui-content-secondary); font-size: 10px; }
+.browser-markdown [data-footnote-ref] { text-decoration: none; color: var(--ui-content-accent); }

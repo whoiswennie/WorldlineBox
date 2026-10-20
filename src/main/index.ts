@@ -4522,7 +4522,7 @@ async function startApplication(): Promise<void> {
   browserService = registerBrowserIpc(() => mainWindow, browserCaptureHooks, async text => { if (!captureToolsService) throw Error('划词助手暂不可用。'); await captureToolsService.openSelection(text); }, input => matchesActionShortcut(
     'window.toggle-fullscreen', { key: input.key, code: input.code, ctrlKey: input.control, metaKey: input.meta, altKey: input.alt, shiftKey: input.shift },
     shortcutPlatformFromProcess(process.platform), readShortcutBindingsSnapshot(),
-  ));
+  ), () => { const config = loadAiConfig(); return { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: config.hasKey ? getDecryptedApiKey() : '' }; });
   try {
     const { CaptureToolsService: ToolsService } = await import('./capture-tools/service');
     captureToolsService = new ToolsService({ getMainWindow: () => mainWindow ?? null,

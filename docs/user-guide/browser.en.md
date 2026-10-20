@@ -1,6 +1,6 @@
 # Built-in browser
 
-The Browser module provides its own Chromium browsing session. It opens a blank home page and creates the web process when first used. Tabs and pages stay available when you switch to Launcher, Companions, or Assets.
+The Browser module provides its own Chromium browsing session. Its native start page offers web search, AI research, Markdown fetching and browsing without loading external sites on startup. Bookmarks stay in the toolbar and management panel, without duplicating cards below the start-page search. Tabs and pages stay available when you switch to Launcher, Companions, or Assets.
 
 ## Tabs, bookmarks, and downloads
 
@@ -11,6 +11,22 @@ History supports search and 50 records per page, with matching counts and page n
 Cookies and site storage use a dedicated persistent session. Switching modules does not clear sign-ins; websites may still expire their own sessions. Browser settings can clear cache, cookies/site data, history, or download records for the current site or all sites. Clearing download records keeps the files and active downloads.
 
 Common shortcuts: Ctrl+L for the address bar, Ctrl+T for a new tab, Ctrl+W to close, Ctrl+Shift+T to restore, Ctrl+Tab to switch, Ctrl+F to find, Ctrl+R to reload, and Ctrl+plus/minus/0 to zoom. Esc exits website fullscreen; F11 toggles window fullscreen.
+
+The tab audio button independently mutes/unmutes its native audio output, including background tabs. Right-click any tab for mute, duplicate, pin, reload, close others/right, and restore. Batch closing retains pinned tabs. Muting survives reload and session restoration. Middle-click closes tabs; Ctrl+M toggles audio, Ctrl+1–8 selects a tab, Ctrl+9 selects the last, and Ctrl+PageUp/PageDown switches. Ctrl+S saves MHTML through a native dialog; Ctrl+P opens the native print dialog.
+
+## Native AI search and browser conversation
+
+Browser Settings has a dedicated, OS-encrypted DeepSeek Search/Fetch key independent of the global model. Without a browser key, only an official DeepSeek global endpoint/key can supply search credentials. Test or remove the dedicated key without changing global model settings. Search/fetch use the [official DeepSeek tool APIs](https://api-docs.deepseek.com/guides/search/); planning, conversation and analysis use the configured global model.
+
+Use **Web search** for structured results without a chat model, **Fetch & read** for public-page Markdown, **AI research** for native model/tool rounds, or **Browse** for normal browsing. Search supports `site:`, `OR`, `-site:`, excluded terms/phrases, exact quotes, `lang:`, `after:` and `before:` within 128 Unicode characters. Remote fetch does not receive browser cookies; local/private and credential-bearing URLs are rejected. Analyze a signed-in page by explicitly asking the assistant to read the rendered page instead.
+
+The AI toolbar button opens/closes the sidebar. Drag its divider or use the arrow keys to resize. The composer grows with text; Enter sends and Shift+Enter adds a line, with IME composition preserved. Answers support CommonMark, GFM tables/tasks/footnotes, math, highlighted copyable code and sanitized Mermaid. Diagrams render after streaming completes and retain source on errors. Links open through explicit clicks, and model images never fetch automatically.
+
+Reference cards show the source title, site, excerpt and provenance: search result, fetched page or live browser read. Numbered citations open their exact source. Full source content renders only after clicking Read content. Tool steps use readable labels; raw arguments and responses remain inside collapsed technical details.
+
+The dedicated tool set covers search/fetch/cached-source pagination, tabs/navigation, grounded page observation/read/click/hover/fill/select, keyboard/scroll/find, bookmarks/history, bounded download actions, zoom/fullscreen, native save/print dialogs and saving page screenshots to a writable asset library. It exposes no terminal, arbitrary JavaScript, cookies, browser keys, or arbitrary filesystem access. Actions that submit forms/messages or change sensitive state show a specific confirmation. Sensitive fields and CAPTCHA are handled directly by the user. A cross-origin embedded page can be opened by its public URL in another tab.
+
+Chat, source bodies and tool records are temporary, kept only in memory and never written to a conversation database or session file. Closing the app clears them; New conversation clears them immediately. Only the encrypted key and preferences such as context budget and sidebar width persist. The 8,192–32,768 token budget includes instructions, tools, evidence and history, while reserving output capacity. Earlier history is compacted at complete call/result boundaries; source caches, messages and action records are bounded. Long pages use pagination. Each turn is limited to 18 model iterations, 28 executed tools and five minutes. Stopping preserves actions already performed. Search, fetch and model analysis run only on user requests.
 
 ## Website sign-in and the default browser
 

@@ -9,6 +9,13 @@ import { removeManaged } from '../../src/main/dsh/files';
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await removeManaged(os.tmpdir(), root); });
 async function store() { const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-browser-store-')); roots.push(root); const value = new BrowserStore(root); await value.init(); return { value, root }; }
+
+it('does not persist temporary AI search queries through native search-tab titles', async () => {
+  const { value, root } = await store(); value.data.tabs[0]!.title = '搜索 · PRIVATE_TEMPORARY_AI_QUERY';
+  await value.flush(); expect(await readFile(path.join(root, 'browser.json'), 'utf8')).not.toContain('PRIVATE_TEMPORARY_AI_QUERY');
+  expect(value.data.tabs[0]!.title).toContain('PRIVATE_TEMPORARY_AI_QUERY');
+  const reopened = new BrowserStore(root); await reopened.init(); expect(reopened.data.tabs[0]!.title).toBe('新标签页');
+});
 it('normalizes webpage/search input and rejects scripts, file access, credential URLs and invalid IPC bounds', () => {
   expect(browserAddress('bilibili.com/video')).toBe('https://bilibili.com/video');
   expect(browserAddress('http://localhost:8000/a')).toBe('http://localhost:8000/a');

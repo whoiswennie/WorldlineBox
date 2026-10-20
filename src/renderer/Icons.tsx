@@ -22,6 +22,11 @@ export type IconName =
   | "pause"
   | "play"
   | "users"
+  | "user"
+  | "file-text"
+  | "layers"
+  | "shield"
+  | "printer"
   | "message-circle"
   | "activity"
   | "network"
@@ -105,6 +110,11 @@ export type IconName =
   | "align-right";
 
 const iconPaths: Record<IconName, ReactNode> = {
+  user: <><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a8 8 0 0 1 16 0v2" /></>,
+  "file-text": <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6M8 13h8M8 17h6" /></>,
+  layers: <><path d="m12 3 10 5-10 5L2 8Zm-10 9 10 5 10-5M2 16l10 5 10-5" /></>,
+  shield: <path d="M12 3 3 6v6c0 5 9 10 9 10s9-5 9-10V6Z" />,
+  printer: <><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6Z" /><path d="M18 12h.01" /></>,
   "pen-tool": <><path d="m15.5 4.5 4 4M4 20l4.6-1 12-12a2.8 2.8 0 0 0-4-4l-12 12L4 20Z" /><path d="m5.6 15.4 3 3M13 21h8" /></>,
   highlighter: <><path d="m13 3 8 8-9 9H4v-8l9-9Z" /><path d="m9 7 8 8M4 12l8 8M4 16l4 4M3 22h7" /></>,
   "arrow-up-right": <><path d="M5 19 19 5M8 5h11v11" /></>,

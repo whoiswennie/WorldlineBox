@@ -40,7 +40,7 @@ export class BrowserStore {
     }
     if (!isBrowserUrl(this.data.preferences.homepage)) throw Error('已保存的浏览器主页无效；原配置保留。');
     if (new Set(this.data.tabs.map(tab => tab.id)).size !== this.data.tabs.length) throw Error('标签页配置包含重复 ID；原配置保留。');
-    this.data.tabs = this.data.preferences.restoreSession ? this.data.tabs.filter(tab => isBrowserUrl(tab.url)).map(tab => ({ ...tab, title: tab.title || (tab.url === BROWSER_HOME ? '新标签页' : tab.url), loading: false, discarded: true, audible: false })) : [];
+    this.data.tabs = this.data.preferences.restoreSession ? this.data.tabs.filter(tab => isBrowserUrl(tab.url)).map(tab => ({ ...tab, title: tab.url === BROWSER_HOME ? '新标签页' : tab.title || tab.url, nativeBlank: false, loading: false, discarded: true, audible: false })) : [];
     if (!this.data.tabs.length) this.data.tabs = [newBrowserTab(this.data.preferences.homepage)];
     if (!this.data.tabs.some(tab => tab.id === this.data.activeTabId)) this.data.activeTabId = this.data.tabs[0]!.id;
     this.data.downloads = this.data.downloads.map(item => ['progressing', 'paused'].includes(item.status) ? { ...item, status: 'interrupted' } : item);
@@ -48,6 +48,9 @@ export class BrowserStore {
   changed(): void { if (this.timer) return; this.timer = setTimeout(() => { this.timer = undefined; void this.flush().catch(this.report); }, 350); this.timer.unref(); }
   async flush(): Promise<void> {
     clearTimeout(this.timer); this.timer = undefined; const snapshot = structuredClone(this.data);
+    // Native search pages are ephemeral. Their queries must not leak into the
+    // ordinary tab/session file via a generated page title.
+    for (const tab of [...snapshot.tabs, ...snapshot.closedTabs]) if (tab.url === BROWSER_HOME && !tab.nativeBlank) tab.title = '新标签页';
     const write = this.writes.catch(() => undefined).then(() => atomicJson(path.join(this.root, 'browser.json'), snapshot));
     this.writes = write; return write;
   }

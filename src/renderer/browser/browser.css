@@ -2,11 +2,16 @@
 .browser-tabs { display: flex; align-items: center; gap: 5px; height: 47px; flex: 0 0 47px; box-sizing: border-box; padding: 8px 150px 0 12px; background: var(--ui-surface-field); overflow-x: auto; scrollbar-width: thin; }
 .browser-tab { display: flex; align-items: center; flex: 0 1 230px; height: 38px; min-width: 95px; max-width: 250px; border-radius: 10px 10px 0 0; color: var(--ui-content-secondary); border: 1px solid transparent; }
 .browser-tab.is-active { color: var(--ui-content-primary); background: var(--ui-surface-canvas); border-color: var(--ui-border-subtle); border-bottom-color: transparent; }
-.browser-tab > button:first-child { display: flex; gap: 8px; align-items: center; height: 36px; padding: 9px; flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; cursor: pointer; line-height: 18px; }
-.browser-tab > button:first-child span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.browser-tab > .ui-button { margin-right: 3px; flex: 0 0 auto; }
-.browser-tab-status { display: flex; align-items: center; justify-content: center; flex: 0 0 14px; width: 14px; height: 14px; line-height: 1; }
-.browser-tab > button:first-child > svg { flex-shrink: 0; }
+.browser-tab-select { display: flex; gap: 8px; align-items: center; height: 36px; padding: 9px; flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; cursor: pointer; line-height: 18px; }
+.browser-tab-select > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.browser-tab-select > svg { flex-shrink: 0; }
+.browser-tab-audio, .browser-tab-close, .browser-tab-new { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 26px; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; line-height: 1; -webkit-app-region: no-drag; }
+.browser-tab-audio > span { display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; }
+.browser-tab-audio.is-muted { color: var(--ui-content-accent); }
+.browser-tab-close { margin-right: 3px; }
+.browser-tab-new { flex-basis: 30px; width: 30px; height: 30px; }
+.browser-tab-audio:hover, .browser-tab-close:hover, .browser-tab-new:hover { background: color-mix(in srgb, var(--ui-content-primary) 9%, transparent); }
+.browser-tabs button:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset: -2px; }
 .browser-toolbar { display: flex; gap: 4px; align-items: center; padding: 8px 12px; min-height: 52px; border-bottom: 1px solid var(--ui-border-subtle); }
 .browser-address { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 80px; height: 36px; padding: 0 12px; margin: 0 8px; background: var(--ui-surface-field); border: 1px solid var(--ui-border-subtle); border-radius: 18px; }
 .browser-address:focus-within { border-color: var(--ui-content-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-content-accent) 10%, transparent); }
