@@ -31,5 +31,8 @@
 - 完整 TypeScript 检查及本轮修改文件的 ESLint 检查通过。
 - 从 Git 暂存区实际以 `core.autocrlf=true` 检出完整清单，1832343 字节及 `9ec34c…7996f` 摘要保持一致，确认 Windows 检出不会改变锁定清单。
 - 实际 `02-Start-Development.bat` 通过隔离应用数据验收，主页约 53.7 秒可用，真实启动器 IPC 初始化成功。证据位于本机 `.tools/dev-bat-acceptance/2026-10-20T00-47-07-667Z-8d556a59-0d6b-475e-954e-38f1df993231/`。
+- 最终打包应用的四项端到端测试全部通过（2.4 分钟）：真实官方 CLI 在两个实例间切换，继承的同名旧命令不被调用，固定上下文与版本正确且退出码为 0；同时验证真实 Worker 导入、FTS5 搜索和关闭窗口后托盘进程保留。日志 `artifacts/portable-tools-packaged-final-2026-10-20.log`。
+- 最终打包前后 1403 项运行时输入摘要保持 `425c0fe2618474d87f1597170ce7d1ab68f9db409de645eeea7bffe91e5c8b59`。验收使用的 `app.asar` 为 649620982 字节，SHA-256 为 `b2fce0294eb38ebad7908c81ff7477ae7e1e5538c3eaeefe0ef4f4bffecdbc82`。
+- 包含最终 PATH 修复的实际 `03-Build-Installer.bat` 成功完成，退出码 0。生成 WorldlineBox 0.1.0 安装程序 `out/make/inno/WorldlineBoxSetup.exe`，714107370 字节，SHA-256 为 `ca8ec47171cd2c32af75183fcc326225fc0b0c8d9db5f1a1e1ca2faf14161c87`。日志 `artifacts/portable-tools-bat03-final-2026-10-20.log`，本机收据 `artifacts/portable-tools-repair-receipt-2026-10-20.json`。
 
 日志、实际下载包、重建工作区、截图与构建收据均保留在忽略的本机输出目录或由脚本清理，不提交个人电脑内容。
