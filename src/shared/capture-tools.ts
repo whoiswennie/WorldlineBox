@@ -55,6 +55,8 @@ const message = z.strictObject({ role: z.enum(['user', 'assistant']), content: z
 const selectionText = z.string().max(CAPTURE_SELECTION_MAX_BYTES).refine(value => new TextEncoder().encode(value).byteLength <= CAPTURE_SELECTION_MAX_BYTES, '选中文字超过 32 KiB 上限。');
 export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }), z.strictObject({ type: z.literal('context') }),
+  z.strictObject({ type: z.literal('surface.ready') }),
+  z.strictObject({ type: z.literal('recording.controls.ready'), id: z.string().min(1).max(100) }),
   z.strictObject({ type: z.literal('settings.save'), settings: captureToolsSettingsSchema }),
   z.strictObject({ type: z.literal('shortcuts.capture'), active: z.boolean() }),
   z.strictObject({ type: z.literal('open'), task: captureToolTaskSchema, source: z.literal('browser').optional() }), z.strictObject({ type: z.literal('close') }),

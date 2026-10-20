@@ -1,4 +1,6 @@
 export const browserZh = {
+  tabAudible: '正在播放声音', tabMuted: '标签页已静音',
+  openExternal: '在默认浏览器中打开', openSignInSite: '在默认浏览器打开原网站', signInTitle: '使用支持的浏览器登录', signInHint: 'Google 会限制嵌入式浏览器登录。可在默认浏览器继续使用网站；登录状态分别保存。',
   failureDetails: '技术详情',
   loadFailure: {
     dns: '无法解析网站地址。请检查网址、网络连接或当前代理的 DNS 设置后重试。',
@@ -36,6 +38,8 @@ export const browserZh = {
   permission: { media: '摄像头或麦克风', geolocation: '位置', notifications: '通知', 'clipboard-read': '读取剪贴板', pointerLock: '锁定鼠标', keyboardLock: '锁定键盘', 'storage-access': '站点存储' },
 };
 export const browserEn = {
+  tabAudible: 'Playing audio', tabMuted: 'Tab muted',
+  openExternal: 'Open in default browser', openSignInSite: 'Open original site in default browser', signInTitle: 'Sign in with a supported browser', signInHint: 'Google restricts sign-in in embedded browsers. Continue using the site in your default browser; sign-in sessions are separate.',
   failureDetails: 'Technical details',
   loadFailure: {
     dns: 'The website address could not be resolved. Check the address, connection, or DNS settings for your current proxy, then try again.',

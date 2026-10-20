@@ -21,7 +21,7 @@ vi.mock('electron', async () => {
   class Window extends EventEmitter {
     id = ++nextId; destroyed = false; visible = true; focused = false;
     webContents = Object.assign(new EventEmitter(), { mainFrame: {}, isDestroyed: () => this.destroyed, send: vi.fn(), setWindowOpenHandler: vi.fn() });
-    constructor(readonly options: unknown) { super(); mock.windows.push(this); }
+    constructor(readonly options: { show?: boolean }) { super(); this.visible = options.show !== false; mock.windows.push(this); }
     static getAllWindows() { return mock.windows; }
     isDestroyed() { return this.destroyed; } isVisible() { return this.visible; } isFocused() { return this.focused; }
     hide() { this.visible = false; } show() { this.visible = true; } showInactive() { this.visible = true; } focus() {}
@@ -29,7 +29,7 @@ vi.mock('electron', async () => {
     getMediaSourceId() { return 'window:' + this.id + ':0'; }
     getNativeWindowHandle() { const output = Buffer.alloc(8); output.writeBigUInt64LE(BigInt(this.id)); return output; }
     loadURL = vi.fn(async () => { await mock.boundaryLoad?.(); });
-    setMinimumSize = vi.fn(); setSize = vi.fn(); setBounds = vi.fn(); setResizable = vi.fn(); setMovable = vi.fn(); setContentProtection = vi.fn(); setAlwaysOnTop = vi.fn(); setIgnoreMouseEvents = vi.fn(); setShape = vi.fn(); moveTop = vi.fn(); removeMenu = vi.fn();
+    setOpacity = vi.fn(); setMinimumSize = vi.fn(); setSize = vi.fn(); setBounds = vi.fn(); setResizable = vi.fn(); setMovable = vi.fn(); setContentProtection = vi.fn(); setAlwaysOnTop = vi.fn(); setIgnoreMouseEvents = vi.fn(); setShape = vi.fn(); moveTop = vi.fn(); removeMenu = vi.fn();
   }
   const scope = { protocol: { handle: vi.fn((_scheme: string, fn: unknown) => { mock.scope.preview = fn; }), unhandle: vi.fn() }, setPermissionCheckHandler: (fn: unknown) => { mock.scope.check = fn; }, setPermissionRequestHandler: (fn: unknown) => { mock.scope.permission = fn; }, setDisplayMediaRequestHandler: (fn: unknown) => { mock.scope.display = fn; } };
   const image = { isEmpty: () => false, toPNG: () => mock.png, toDataURL: () => 'data:image/png;base64,' + mock.png.toString('base64') };
@@ -60,7 +60,13 @@ async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => v
   const source: CaptureImageSource = { dataUrl: 'data:image/png;base64,' + mock.png.toString('base64'), width: 64, height: 64, title: 'Provided browser', url: 'https://actual.example/page' };
   const captureBrowser = vi.fn(async () => source);
   const readBrowserSelection = vi.fn(async () => 'Actual browser selection');
-  const service = new CaptureToolsService({ root, downloadPath: path.join(root, 'Downloads'), getMainWindow: () => main, preloadPath: 'minimal-preload.js', loadWindow: async () => undefined,
+  const service: CaptureToolsService = new CaptureToolsService({ root, downloadPath: path.join(root, 'Downloads'), getMainWindow: () => main, preloadPath: 'minimal-preload.js', loadWindow: async window => {
+    expect(window.isVisible()).toBe(false);
+    expect((await service.handle(event(main), { type: 'surface.ready' })).ok).toBe(false);
+    expect((await service.handle(event(window, {} as Electron.WebFrameMain), { type: 'surface.ready' })).ok).toBe(false);
+    expect((await service.handle(event(window), { type: 'surface.ready' })).ok).toBe(true);
+    expect(window.isVisible()).toBe(false);
+  },
     getModelConfig: () => ({ apiFormat: 'openai_chat', model: 'vision-test', apiKey: 'SECRET' }), saveToLibrary, getFfmpeg: () => undefined, readBrowserSelection, validateShortcuts, onStateChanged });
   services.push(service); await service.init(); await service.open('screenshot', source, captureBrowser);
   const tool = mock.windows.at(-1) as BrowserWindow;
@@ -494,8 +500,12 @@ describe('desktop recording grants', () => {
     const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false,
       rect: { x: 0, y: 0, width: 32, height: 32 } });
     expect(prepared.ok && prepared.recordingControls).toMatchObject({ hidden: false, bounds: { width: 320, height: 44 } });
-    expect(tool.isVisible()).toBe(true);
+    expect(tool.isVisible()).toBe(false);
     if (!prepared.ok || !prepared.id || !prepared.recordingControls?.bounds) throw Error('No regional controller');
+    expect((await service.handle(event(tool), { type: 'recording.controls.ready', id: 'stale' })).ok).toBe(false);
+    expect(tool.isVisible()).toBe(false);
+    expect((await service.handle(event(tool), { type: 'recording.controls.ready', id: prepared.id })).ok).toBe(true);
+    expect(tool.isVisible()).toBe(true);
     expect(prepared.recordingControls.bounds.y).toBeGreaterThanOrEqual(677);
     expect(tool.setBounds).toHaveBeenLastCalledWith(prepared.recordingControls.bounds);
     await service.handle(event(tool), { type: 'recording.cancel', id: prepared.id });

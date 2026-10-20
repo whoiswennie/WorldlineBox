@@ -12,6 +12,18 @@ Cookies and site storage use a dedicated persistent session. Switching modules d
 
 Common shortcuts: Ctrl+L for the address bar, Ctrl+T for a new tab, Ctrl+W to close, Ctrl+Shift+T to restore, Ctrl+Tab to switch, Ctrl+F to find, Ctrl+R to reload, and Ctrl+plus/minus/0 to zoom. Esc exits website fullscreen; F11 toggles window fullscreen.
 
+## Website sign-in and the default browser
+
+Embedded pages run in visible Chromium views, without headless mode. WorldlineBox keeps a dedicated persistent profile, separate from Chrome or Edge. A website may recognize this independent profile as a new device.
+
+Google restricts sign-in in embedded browsers. Its account pages show an explanation and an **Open original site in default browser** action when the referring site is known. Otherwise, open the current page. **More → Open in default browser** is also available for HTTP/HTTPS pages. Opening an external browser requires clicking the action.
+
+After signing in with the default browser, continue using the website there. Its cookies are not automatically transferred back to WorldlineBox. The embedded browser keeps its actual Chromium/Electron identity; device verification and account policies remain controlled by the website. See [Google's embedded sign-in guidance](https://developers.googleblog.com/en/guidance-to-developers-affected-by-our-effort-to-block-less-secure-browsers-and-applications/).
+
+## Screen-tool startup
+
+Screenshot and recording tools appear after their selection interface and captured desktop image are ready. Recording controls are also laid out before they become visible. Region recordings place controls outside the captured area; a full-display recording hides them when no outside area is available. Use the recording shortcut again to stop.
+
 ## Save to an asset library
 
 Asset capture is built in; no extension installation is needed. Open a library in Assets, then click **Save to asset library** beside the browser's address bar.

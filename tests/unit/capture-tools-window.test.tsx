@@ -31,6 +31,8 @@ async function mount(task: CaptureToolsState['task'] = 'screenshot') {
   const api: WorldlineBoxCaptureToolsApi = { request, onChanged: () => () => undefined, onStopRecording: () => () => undefined };
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(() => root.render(<LocaleProvider initialPreference="zh-CN"><CaptureToolsWindow api={api} /></LocaleProvider>));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)); });
+  expect(request).toHaveBeenCalledWith({ type: 'surface.ready' });
   return { request };
 }
 function button(text: string) { return [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text)!; }
@@ -63,5 +65,5 @@ it('routes selection context to its temporary assistant without requesting deskt
   const { request } = await mount('selection');
   expect(host.querySelector('[data-selection-assistant]')).not.toBeNull();
   expect(host.querySelector('.selection-source-summary')?.textContent).toBe('来自上下文的真实选中文字。');
-  expect(request.mock.calls.map(([input]) => input.type)).toEqual(['context']);
+  expect(request.mock.calls.map(([input]) => input.type)).toEqual(['context', 'surface.ready']);
 });

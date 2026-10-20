@@ -36,6 +36,7 @@ export function BrowserMorePanel({ tab, run, onFind, b }: {
       {row('fullscreen', b('fullscreen'), action('fullscreen'), undefined, undefined, !tab)}
     </section>
     <section aria-label={words.tools}><h3>{words.tools}</h3>
+      {row('globe', b('openExternal'), () => void run({ type: 'tab.openExternal', source: 'page' }), undefined, undefined, !tab || !/^https?:\/\//.test(tab.url))}
       {row('code', b('devtools'), action('devtools'), undefined, undefined, !tab)}
     </section>
   </nav>;

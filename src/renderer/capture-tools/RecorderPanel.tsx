@@ -8,6 +8,7 @@ import { desktopRecordingMedia, recordingBitrate, recordingClock, recordingMimeT
 import type { Rect } from '../browser/screenshot/model';
 import { DesktopScreenshotOverlay } from './DesktopScreenshotOverlay';
 import { RecordingResult } from './RecordingResult';
+import { afterStartupPaint } from '../startup-lifecycle';
 
 type Phase = 'idle' | 'preparing' | 'recording' | 'paused' | 'finalizing' | 'saved' | 'failed' | 'cancelled';
 type Session = {
@@ -47,6 +48,10 @@ export function RecorderPanel({ api, state, onClose, source: desktopSource, onSo
   const active = phase === 'recording' || phase === 'paused';
   const locked = active || phase === 'preparing' || phase === 'finalizing' || awaitingMedia;
   const revealPath = phase === 'failed' && state.recording?.id === recordingId && state.recording.path ? state.recording.path : savedPath;
+  useEffect(() => {
+    if (!controlsPrepared || !recordingId) return;
+    return afterStartupPaint(() => { void api.request({ type: 'recording.controls.ready', id: recordingId }).catch(() => undefined); });
+  }, [api, controlsPrepared, recordingId]);
 
   async function loadSources() {
     setLoadingSources(true); setError('');

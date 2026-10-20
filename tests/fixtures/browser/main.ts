@@ -35,6 +35,9 @@ app.whenReady().then(async () => {
     progress('loaded');
     if (phase === 'initial') {
       const first = service.state().activeTabId!; const firstContents = view().webContents;
+      const identity = await firstContents.executeJavaScript('({webdriver:navigator.webdriver,ua:navigator.userAgent})') as { webdriver: boolean; ua: string };
+      assert.equal(identity.webdriver, false); assert(!identity.ua.includes('HeadlessChrome')); assert(identity.ua.includes('Electron/'));
+      receipt.realBrowserIdentity = identity;
       await firstContents.executeJavaScript("document.cookie='fixture_login=retained; Max-Age=86400; SameSite=Lax'; localStorage.setItem('fixture_login','retained'); window.runtimeMarker='page-stays-alive'");
       await service.handle({ type: 'bookmark.save', title: '测试收藏', folder: '验收' });
       await service.handle({ type: 'tab.new' }); const blank = service.state().activeTabId!;

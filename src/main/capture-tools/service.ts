@@ -58,6 +58,7 @@ export class CaptureToolsService {
   private settingsWarning?: string;
   private task: CaptureToolTask = 'screenshot';
   private tool?: BrowserWindow;
+  private surfaceReady?: { window: BrowserWindow; resolve(): void; reject(error: Error): void };
   private scope?: Session;
   private image?: CaptureImageSource;
   private selectedText = '';
@@ -328,6 +329,13 @@ export class CaptureToolsService {
     switch (request.type) {
       case 'state': return { ok: true, state: this.state() };
       case 'context': return { ok: true, state: this.state(), ...(this.image ? { source: this.image } : {}), ...(this.task === 'selection' ? { text: this.selectedText } : {}) };
+      case 'surface.ready': this.surfaceReady?.resolve(); return { ok: true };
+      case 'recording.controls.ready': {
+        const tool = this.tool, recording = this.recordings.state();
+        if (!tool || tool.isDestroyed() || recording?.id !== request.id || !['recording', 'paused'].includes(recording.status) || !this.recordingControls) throw Error('录屏控制条已失效。');
+        if (!this.recordingControls.hidden) { tool.showInactive(); tool.moveTop(); }
+        return { ok: true };
+      }
       case 'settings.save': await this.saveSettings(request.settings); break;
       case 'shortcuts.capture': this.captureShortcuts(request.active); break;
       case 'open': {
@@ -390,7 +398,7 @@ export class CaptureToolsService {
         const tool = this.tool;
         if (tool && !tool.isDestroyed()) {
           tool.hide(); tool.setAlwaysOnTop(true, 'screen-saver'); tool.setResizable(true); tool.setMinimumSize(280, 44); tool.setMovable(false);
-          if (controls.bounds) { tool.setBounds(controls.bounds); tool.setResizable(false); tool.showInactive(); tool.moveTop(); }
+          if (controls.bounds) { tool.setBounds(controls.bounds); tool.setResizable(false); }
         }
         if (source.id.startsWith('screen:')) {
           const physicalDisplay = this.image?.desktop?.displayId === String(display.id) && this.image.desktop.pixelBounds
@@ -617,7 +625,20 @@ export class CaptureToolsService {
         if (recording && ['recording', 'paused'].includes(recording.status)) void this.recordings.finish(recording.id).catch(() => undefined);
         if (!tool.isDestroyed()) tool.destroy();
       });
-      await this.options.loadWindow(tool); if (this.closed || tool.isDestroyed()) throw Error('截图窗口已关闭。'); tool.show(); tool.focus(); this.fitToolToDesktop();
+      // loadURL resolves before React's lazy module and desktop image are ready.
+      // Keep the HWND hidden until the actual capture surface has painted.
+      this.fitToolToDesktop();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const ready = new Promise<void>((resolve, reject) => {
+        this.surfaceReady = { window: tool, resolve, reject };
+        timer = setTimeout(() => reject(Error('屏幕工具未能准备好，请重试。')), 20_000);
+      });
+      const closed = () => this.surfaceReady?.window === tool && this.surfaceReady.reject(Error('截图窗口已关闭。'));
+      tool.once('closed', closed);
+      try { await Promise.all([this.options.loadWindow(tool), ready]); }
+      finally { clearTimeout(timer); tool.removeListener('closed', closed); if (this.surfaceReady?.window === tool) this.surfaceReady = undefined; }
+      if (this.closed || tool.isDestroyed()) throw Error('截图窗口已关闭。');
+      tool.setOpacity(0); tool.show(); this.fitToolToDesktop();
       // Windows can apply Electron's cached rounded DIP rectangle during the
       // first show. Correct it after that native event turn, while the tool
       // still belongs to this open operation.
@@ -625,6 +646,7 @@ export class CaptureToolsService {
         await new Promise<void>(resolve => setImmediate(resolve));
         if (this.closed || tool.isDestroyed()) throw Error('截图窗口已关闭。'); this.fitToolToDesktop();
       }
+      tool.setOpacity(1); tool.focus();
       this.changed();
       return { ok: true, state: this.state(), ...(this.image ? { source: this.image } : {}), ...(task === 'selection' ? { text: this.selectedText } : {}) };
     } catch (error) { this.restoreApp(); if (this.tool && !this.tool.isDestroyed()) this.tool.destroy(); throw error; }

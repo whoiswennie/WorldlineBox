@@ -19,7 +19,9 @@ test('video links open as real browser tabs, decode H.264/AAC and recover from f
   const clip = await readFile(clipPath);
   let mediaRequests = 0;
   let disconnect = true;
+  let finishSubframe: (() => void) | undefined;
   const server = createServer((request, response) => {
+    if (request.url === '/delayed-frame') { finishSubframe = () => { response.writeHead(200, { 'content-type': 'text/html' }); response.end('<!doctype html><title>Loaded frame</title>'); }; return; }
     if (request.url === '/disconnect' && disconnect) { request.socket.destroy(); return; }
     if (request.url === '/clip.mp4') {
       mediaRequests++;
@@ -60,19 +62,60 @@ test('video links open as real browser tabs, decode H.264/AAC and recover from f
     await expect.poll(() => application!.context().pages().some(page => page.url() === origin + '/video')).toBe(true);
     const player = application.context().pages().find(page => page.url() === origin + '/video')!;
     await expect(location).toHaveValue(origin + '/video');
-    await player.locator('#clip').evaluate(async element => { const video = element as HTMLVideoElement; video.muted = true; await video.play(); });
+    await expect(shell.getByRole('progressbar', { name: '正在打开网页…' })).toHaveCount(0);
+    await expect.poll(() => player.locator('#clip').evaluate(element => (element as HTMLVideoElement).readyState)).toBeGreaterThanOrEqual(2);
+    const viewportBefore = await shell.locator('[data-browser-viewport]').boundingBox();
+    // Silence the native output without muting the HTML media stream: the tab
+    // must still render its audible indicator, which used to grow the tab row.
+    await application.evaluate(({ webContents }, url) => webContents.getAllWebContents().find(contents => contents.getURL() === url)!.setAudioMuted(true), origin + '/video');
+    await application.evaluate(({ BrowserWindow, WebContentsView }, url) => {
+      const view = BrowserWindow.getAllWindows().flatMap(window => window.contentView.children).find(view => view instanceof WebContentsView && view.webContents.getURL() === url) as Electron.WebContentsView;
+      if (!view) throw Error('Missing playback view');
+      const probe = { boundsWrites: 0, visibilityWrites: 0 }; Reflect.set(globalThis, 'playbackLayoutProbe', probe);
+      const setBounds = view.setBounds.bind(view), setVisible = view.setVisible.bind(view);
+      view.setBounds = bounds => { probe.boundsWrites++; setBounds(bounds); };
+      view.setVisible = visible => { probe.visibilityWrites++; setVisible(visible); };
+    }, origin + '/video');
+    await player.locator('#clip').evaluate(async element => { const video = element as HTMLVideoElement; video.muted = false; await video.play(); });
+    await expect(shell.getByRole('img', { name: '正在播放声音' })).toBeVisible();
+    expect(await shell.locator('[data-browser-viewport]').boundingBox()).toEqual(viewportBefore);
     await expect.poll(() => player.locator('#clip').evaluate(element => (element as HTMLVideoElement).currentTime)).toBeGreaterThan(.25);
     expect(await player.locator('#clip').evaluate(element => {
       const video = element as HTMLVideoElement;
       return { width: video.videoWidth, height: video.videoHeight, error: video.error?.message ?? null, paused: video.paused };
     })).toEqual({ width: 64, height: 48, error: null, paused: false });
     expect(mediaRequests).toBeGreaterThan(0);
+    // Video sites load ancillary frames when playback starts. Their loading
+    // status must never add/remove height from the native page viewport.
+    await player.locator('iframe').evaluate((frame, url) => { (frame as HTMLIFrameElement).src = url; }, origin + '/delayed-frame');
+    await expect(shell.getByRole('progressbar', { name: '正在打开网页…' })).toBeVisible();
+    expect(await shell.locator('[data-browser-viewport]').boundingBox()).toEqual(viewportBefore);
+    await expect.poll(() => Boolean(finishSubframe)).toBe(true); finishSubframe!();
+    await expect(shell.getByRole('progressbar', { name: '正在打开网页…' })).toHaveCount(0);
+    expect(await shell.locator('[data-browser-viewport]').boundingBox()).toEqual(viewportBefore);
+    expect(await application.evaluate(() => Reflect.get(globalThis, 'playbackLayoutProbe'))).toEqual({ boundsWrites: 0, visibilityWrites: 0 });
     expect(await player.evaluate(() => ({ require: typeof Reflect.get(globalThis, 'require'), bridge: typeof Reflect.get(globalThis, 'worldlinebox') })))
       .toEqual({ require: 'undefined', bridge: 'undefined' });
+
+    // Provider policy is handled visibly, without auto-opening a browser or
+    // claiming that another browser's cookies transfer to this partition.
+    await application.context().route('https://accounts.google.com/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Sign-in fixture</title><p>Provider sign-in fixture</p>' }));
+    await application.evaluate(({ shell }) => {
+      const opened: string[] = []; Reflect.set(globalThis, 'explicitExternalPages', opened);
+      shell.openExternal = async url => { opened.push(url); };
+    });
+    await home.evaluate(() => window.open('https://accounts.google.com/v3/signin/identifier?client_id=fixture', '_blank'));
+    const signIn = shell.locator('.browser-sign-in');
+    await expect(signIn).toContainText('Google 会限制嵌入式浏览器登录');
+    await expect(signIn).toContainText('登录状态分别保存');
+    expect(await application.evaluate(() => Reflect.get(globalThis, 'explicitExternalPages'))).toEqual([]);
+    await signIn.getByRole('button', { name: '在默认浏览器打开原网站' }).click();
+    expect(await application.evaluate(() => Reflect.get(globalThis, 'explicitExternalPages'))).toEqual([origin + '/home']);
 
     // A failed main-frame navigation presents a recoverable browser error;
     // an aborted/stale load must not overwrite the next successful video page.
     await location.fill(origin + '/disconnect'); await location.press('Enter');
+    await expect(signIn).toHaveCount(0);
     await expect(shell.locator('.browser-failure')).toBeVisible();
     await expect(shell.locator('.browser-failure code')).toContainText('ERR_EMPTY_RESPONSE');
     await expect(shell.locator('.browser-failure').getByRole('button', { name: '全局网络设置' })).toBeVisible();

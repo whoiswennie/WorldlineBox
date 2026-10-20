@@ -3,6 +3,9 @@ import './startup.css';
 import { retryStartup, startupRetryCount } from './startup-retry';
 import { notifyStartupState } from './startup-lifecycle';
 const shell = document.getElementById('startup-shell');
+// Screen tools have their own native readiness handshake. Never draw the main
+// application's launch shell into a desktop-sized capture overlay.
+if (new URLSearchParams(location.search).get('window') === 'capture-tools') shell?.remove();
 if (new URLSearchParams(location.search).get('window') === 'companion-world') shell?.classList.add('is-world');
 const started = performance.now();
 try {

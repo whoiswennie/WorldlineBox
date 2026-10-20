@@ -10,6 +10,7 @@ import { BROWSER_CAPTURE_CONTENT_REQUEST, BROWSER_CAPTURE_REQUEST, BROWSER_CAPTU
 import { BrowserCaptureHost, type BrowserCaptureHooks, type BrowserCaptureSource } from './capture-host';
 import { formatBrowserLoadError, shouldIgnoreBrowserLoadError } from '../../shared/browser-load-error';
 import { BrowserTextDrafts, browserTextTitle, readBrowserTextSelection } from './text-selection';
+import { externalBrowserUrl, isRestrictedBrowserSignIn } from '../../shared/browser-compatibility';
 
 const MAX_LIVE_PAGES = 8;
 export class BrowserService {
@@ -33,6 +34,7 @@ export class BrowserService {
   private capture?: BrowserCaptureHost;
   private preloadRegistration?: string;
   private readonly navigationVersions = new Map<string, number>();
+  private readonly signInSources = new Map<string, string>();
   private readonly textVersions = new Map<string, number>();
   private readonly textDrafts = new BrowserTextDrafts();
   private readonly selectionFrames = new Map<string, { frame: Electron.WebFrameMain; url: string; documentId: string }>();
@@ -195,7 +197,9 @@ export class BrowserService {
     return { tabs: structuredClone(this.store.data.tabs), activeTabId: this.store.data.activeTabId, bookmarks: structuredClone(this.store.data.bookmarks),
       downloads: structuredClone(this.store.data.downloads), historyCount: this.store.data.history.length, preferences: { ...this.store.data.preferences },
       permissions: [...this.pendingPermissions].map(([id, value]) => ({ id, origin: value.origin, permission: value.permission })),
-      fullscreen: this.fullscreen, revision: this.revision, find: this.find, cacheBytes: this.cacheBytes, error: this.error, capture: this.capture?.state() };
+      fullscreen: this.fullscreen, revision: this.revision, find: this.find, cacheBytes: this.cacheBytes, error: this.error, capture: this.capture?.state(),
+      ...(isRestrictedBrowserSignIn(this.store.data.tabs.find(tab => tab.id === this.store.data.activeTabId)?.url ?? '')
+        ? { signIn: { provider: 'google' as const, siteUrl: this.signInSources.get(this.store.data.activeTabId!) } } : {}) };
   }
   private changed(persist = true): void {
     this.revision++;
@@ -260,8 +264,8 @@ export class BrowserService {
       owner.contentView.removeChildView(view);
       this.pageAction(() => this.closeTab(tab.id));
     });
-    // A normal browser user agent avoids desktop-wrapper notices; TLS and web security stay enabled.
-    contents.setUserAgent(contents.getUserAgent().replace(/\s(?:WorldlineBox|Electron)\/[\w.-]+/g, ''));
+    // Retain Chromium/Electron's real identity. Removing Electron from the UA
+    // cannot make an embedded user agent a provider-supported OAuth browser.
     const refresh = () => {
       if (contents.isDestroyed() || !this.store.data.tabs.includes(tab)) return;
       tab.loading = contents.isLoading(); tab.canGoBack = contents.navigationHistory.canGoBack(); tab.canGoForward = contents.navigationHistory.canGoForward();
@@ -274,10 +278,11 @@ export class BrowserService {
     contents.on('did-start-navigation', (_event, url, inPlace, mainFrame) => {
       this.invalidateText(tab.id);
       if (!mainFrame || inPlace) return;
+      this.rememberSignInSource(tab.id, url, contents.getURL());
       this.navigationVersions.set(tab.id, (this.navigationVersions.get(tab.id) ?? 0) + 1);
       if (isBrowserUrl(url)) tab.url = url.slice(0, 8192);
     });
-    contents.on('did-redirect-navigation', (_event, url, _inPlace, mainFrame) => { if (mainFrame && isBrowserUrl(url)) tab.url = url.slice(0, 8192); });
+    contents.on('did-redirect-navigation', (_event, url, _inPlace, mainFrame) => { if (mainFrame && isBrowserUrl(url)) { this.rememberSignInSource(tab.id, url, contents.getURL()); tab.url = url.slice(0, 8192); } });
     contents.on('did-stop-loading', () => {
       // An attachment starts a navigation but never replaces the document.
       // Once it stops, display the committed page rather than the download URL.
@@ -289,7 +294,13 @@ export class BrowserService {
     const navigated = (url: string) => { if (!isBrowserUrl(url)) return; tab.url = url.slice(0, 8192); tab.error = undefined; this.store.visit(tab.url, tab.title); refresh(); };
     contents.on('did-navigate', (_event, url) => navigated(url));
     contents.on('did-navigate-in-page', (_event, url, mainFrame) => { if (mainFrame) navigated(url); });
-    contents.on('media-started-playing', refresh); contents.on('media-paused', refresh);
+    const refreshMedia = () => {
+      if (contents.isDestroyed() || !this.store.data.tabs.includes(tab)) return;
+      const audible = contents.isCurrentlyAudible();
+      if (audible !== tab.audible) { tab.audible = audible; this.changed(false); }
+    };
+    contents.on('media-started-playing', refreshMedia); contents.on('media-paused', refreshMedia);
+    contents.on('audio-state-changed', refreshMedia);
     contents.on('found-in-page', (_event, result) => { if (tab.id === this.store.data.activeTabId) { this.find = { matches: result.matches, activeMatchOrdinal: result.activeMatchOrdinal }; this.changed(false); } });
     contents.on('did-fail-load', (_event, code, description, url, mainFrame) => {
       if (mainFrame && !shouldIgnoreBrowserLoadError(code, description) && url === tab.url) {
@@ -312,6 +323,7 @@ export class BrowserService {
         const supplied = options as Electron.WebContentsViewConstructorOptions;
         try {
           const child = this.addTab(details.url, details.disposition === 'background-tab', false, supplied, tab.id);
+          this.rememberSignInSource(child.id, details.url, tab.url);
           const childContents = this.views.get(child.id)!.view.webContents;
           // OpenURLFromTab can omit a native guest. In that path a custom
           // createWindow callback also owns the initial navigation.
@@ -403,6 +415,11 @@ export class BrowserService {
     if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
     const tab = this.store.data.tabs.find(item => item.id === id); if (tab) { tab.discarded = true; tab.loading = false; }
   }
+  private rememberSignInSource(id: string, destination: string, source: string): void {
+    if (!isRestrictedBrowserSignIn(destination)) { this.signInSources.delete(id); return; }
+    const site = externalBrowserUrl(source);
+    if (site && !isRestrictedBrowserSignIn(site)) this.signInSources.set(id, site);
+  }
   private addTab(url = BROWSER_HOME, background = false, navigate = true, popupOptions?: Electron.WebContentsViewConstructorOptions, protectedTab?: string): BrowserTab {
     if (this.store.data.tabs.length >= 50) throw Error('最多保留 50 个标签页，请先关闭部分页面。');
     if (!isBrowserUrl(url)) throw Error('无效的网页地址。');
@@ -427,6 +444,7 @@ export class BrowserService {
     const retained = new Set([...this.store.data.tabs, ...this.store.data.closedTabs].map(tab => tab.id));
     for (const key of Object.keys(this.store.data.navigation)) if (!retained.has(key)) delete this.store.data.navigation[key];
     this.destroyView(id);
+    this.signInSources.delete(id);
     if (!this.store.data.tabs.length) this.addTab();
     else if (this.store.data.activeTabId === id) this.select(this.store.data.tabs[Math.min(index, this.store.data.tabs.length - 1)]!.id);
     this.layout(); this.changed();
@@ -438,7 +456,13 @@ export class BrowserService {
       width: Math.max(0, Math.min(this.bounds.width, size.width - this.bounds.x)), height: Math.max(0, Math.min(this.bounds.height, size.height - this.bounds.y)) };
     for (const [id, entry] of this.views) {
       const visible = this.visible && id === this.store.data.activeTabId && bounds.width > 0 && bounds.height > 0 && !this.store.data.tabs.find(tab => tab.id === id)?.error;
-      if (visible) entry.view.setBounds(bounds); entry.view.setVisible(visible);
+      // Reapplying native bounds/visibility during media and subframe events
+      // needlessly invalidates the compositor's video surface.
+      if (visible) {
+        const current = entry.view.getBounds();
+        if (current.x !== bounds.x || current.y !== bounds.y || current.width !== bounds.width || current.height !== bounds.height) entry.view.setBounds(bounds);
+      }
+      if (entry.view.getVisible() !== visible) entry.view.setVisible(visible);
     }
   }
   private shortcut(key: string, ctrl: boolean, shift: boolean, alt: boolean): boolean {
@@ -534,6 +558,13 @@ export class BrowserService {
       case 'tab.restore': this.restore(); break;
       case 'tab.navigate': void this.load(this.active(), browserAddress(request.text, this.store.data.preferences.searchEngine)); break;
       case 'tab.action': this.act(request.action); break;
+      case 'tab.openExternal': {
+        const tab = this.active();
+        const url = externalBrowserUrl(request.source === 'signInSite' && isRestrictedBrowserSignIn(tab.url) ? this.signInSources.get(tab.id) ?? tab.url : tab.url);
+        if (!url) throw Error('当前页面不能在系统浏览器中打开。');
+        try { await shell.openExternal(url); } catch { throw Error('无法打开系统默认浏览器，请检查系统默认应用设置。'); }
+        break;
+      }
       case 'tab.zoom': { const tab = this.active(); tab.zoom = request.factor; this.ensureView(tab).webContents.setZoomFactor(request.factor); break; }
       case 'find': {
         const contents = this.ensureView(this.active()).webContents;

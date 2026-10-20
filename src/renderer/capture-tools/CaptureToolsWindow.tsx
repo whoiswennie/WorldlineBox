@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { CaptureDesktopSource, CaptureImageSource, CaptureToolsRequest, CaptureToolsResponse, CaptureToolsState, WorldlineBoxCaptureToolsApi } from '../../shared/capture-tools';
 import type { ScreenshotAsk } from '../browser/screenshot/types';
 import { DesktopScreenshotOverlay } from './DesktopScreenshotOverlay';
@@ -9,6 +9,7 @@ import { SelectionAssistant } from './SelectionAssistant';
 import { getCaptureToolsApi } from './CaptureToolsSettingsPage';
 import { useCaptureWords } from './messages';
 import './capture-tools.css';
+import { afterStartupPaint } from '../startup-lifecycle';
 
 export function CaptureToolsWindow({ api = getCaptureToolsApi() }: { api?: WorldlineBoxCaptureToolsApi }) {
   const words = useCaptureWords();
@@ -21,6 +22,19 @@ export function CaptureToolsWindow({ api = getCaptureToolsApi() }: { api?: World
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [long, setLong] = useState<{ frames: number; width: number; height: number }>();
+  const surfaceReported = useRef(false);
+  const hasContext = state !== undefined;
+  useEffect(() => {
+    if (!api || surfaceReported.current || !hasContext && !error) return;
+    let current = true; let cancelPaint: (() => void) | undefined;
+    const image = document.querySelector<HTMLImageElement>('.desktop-screenshot-surface');
+    // Decode the displayed bitmap, rather than showing a loading card over the
+    // desktop and swapping it for the captured screen a moment later.
+    void (image?.decode().catch(() => undefined) ?? Promise.resolve()).then(() => {
+      if (current) cancelPaint = afterStartupPaint(() => { surfaceReported.current = true; void api.request({ type: 'surface.ready' }).catch(() => undefined); });
+    });
+    return () => { current = false; cancelPaint?.(); };
+  }, [api, hasContext, source, error]);
   useEffect(() => {
     if (!api) return;
     let current = true;

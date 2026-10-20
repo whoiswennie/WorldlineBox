@@ -24,7 +24,7 @@ export const browserStateSchema = z.object({ tabs: z.array(browserTabSchema).max
   downloads: z.array(browserDownloadSchema).max(200), historyCount: z.number().int().min(0), preferences: browserPreferencesSchema,
   permissions: z.array(browserPermissionSchema).max(10), fullscreen: z.boolean(), revision: z.number().int().min(0),
   find: z.object({ matches: z.number(), activeMatchOrdinal: z.number() }).optional(), cacheBytes: z.number().min(0).optional(), error: z.string().optional(),
-  capture: browserCaptureStateSchema.optional() });
+  capture: browserCaptureStateSchema.optional(), signIn: z.object({ provider: z.literal('google'), siteUrl: z.string().max(8192).optional() }).optional() });
 export type BrowserState = z.infer<typeof browserStateSchema>;
 export type BrowserTab = z.infer<typeof browserTabSchema>;
 export type BrowserDownload = z.infer<typeof browserDownloadSchema>;
@@ -37,6 +37,7 @@ export const browserRequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('tab.select'), id }), z.object({ type: z.literal('tab.close'), id }), z.object({ type: z.literal('tab.restore') }),
   z.object({ type: z.literal('tab.navigate'), text: z.string().min(1).max(8192) }),
   z.object({ type: z.literal('tab.action'), action: z.enum(['back', 'forward', 'reload', 'stop', 'home', 'pin', 'mute', 'fullscreen', 'devtools']) }),
+  z.object({ type: z.literal('tab.openExternal'), source: z.enum(['page', 'signInSite']).default('page') }).strict(),
   z.object({ type: z.literal('tab.zoom'), factor: z.number().min(.25).max(5) }),
   z.object({ type: z.literal('find'), text: z.string().max(500), forward: z.boolean().optional(), next: z.boolean().optional() }),
   z.object({ type: z.literal('bookmark.save'), id: id.optional(), title: z.string().min(1).max(500), folder: z.string().max(100).default('') }), z.object({ type: z.literal('bookmark.remove'), id }),

@@ -1,10 +1,12 @@
 .web-browser { display: flex; flex-direction: column; height: 100%; min-width: 0; background: var(--ui-surface-canvas); color: var(--ui-content-primary); }
-.browser-tabs { display: flex; align-items: center; gap: 5px; min-height: 47px; padding: 8px 150px 0 12px; background: var(--ui-surface-field); overflow-x: auto; scrollbar-width: thin; }
-.browser-tab { display: flex; align-items: center; flex: 0 1 230px; min-width: 95px; max-width: 250px; border-radius: 10px 10px 0 0; color: var(--ui-content-secondary); border: 1px solid transparent; }
+.browser-tabs { display: flex; align-items: center; gap: 5px; height: 47px; flex: 0 0 47px; box-sizing: border-box; padding: 8px 150px 0 12px; background: var(--ui-surface-field); overflow-x: auto; scrollbar-width: thin; }
+.browser-tab { display: flex; align-items: center; flex: 0 1 230px; height: 38px; min-width: 95px; max-width: 250px; border-radius: 10px 10px 0 0; color: var(--ui-content-secondary); border: 1px solid transparent; }
 .browser-tab.is-active { color: var(--ui-content-primary); background: var(--ui-surface-canvas); border-color: var(--ui-border-subtle); border-bottom-color: transparent; }
-.browser-tab > button:first-child { display: flex; gap: 8px; align-items: center; padding: 9px; flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.browser-tab > button:first-child { display: flex; gap: 8px; align-items: center; height: 36px; padding: 9px; flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; cursor: pointer; line-height: 18px; }
 .browser-tab > button:first-child span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .browser-tab > .ui-button { margin-right: 3px; flex: 0 0 auto; }
+.browser-tab-status { display: flex; align-items: center; justify-content: center; flex: 0 0 14px; width: 14px; height: 14px; line-height: 1; }
+.browser-tab > button:first-child > svg { flex-shrink: 0; }
 .browser-toolbar { display: flex; gap: 4px; align-items: center; padding: 8px 12px; min-height: 52px; border-bottom: 1px solid var(--ui-border-subtle); }
 .browser-address { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 80px; height: 36px; padding: 0 12px; margin: 0 8px; background: var(--ui-surface-field); border: 1px solid var(--ui-border-subtle); border-radius: 18px; }
 .browser-address:focus-within { border-color: var(--ui-content-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-content-accent) 10%, transparent); }
@@ -82,7 +84,13 @@
 .browser-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 15px; color: var(--ui-status-danger-content); background: var(--ui-status-danger-surface); font-size: 12px; }
 .browser-failure { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 35px; color: var(--ui-content-primary); background: var(--ui-surface-canvas); text-align: center; }.browser-failure p { max-width: 600px; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; color: var(--ui-content-secondary); }
 .browser-failure details { max-width: 600px; margin-top: 20px; font-size: 12px; color: var(--ui-content-secondary); }.browser-failure summary { cursor: pointer; }.browser-failure code { display: block; margin-top: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.browser-load-indicator { height: 2px; flex: 0 0 2px; background: linear-gradient(90deg, transparent, var(--ui-content-accent), transparent); background-size: 50% 100%; animation: browser-loading 1.8s linear infinite; }
+.browser-loading-track { position: relative; height: 0; flex: 0 0 0; z-index: 1; pointer-events: none; }
+.browser-sign-in { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 12px 16px; border-bottom: 1px solid var(--ui-border-subtle); background: var(--ui-surface-field); }
+.browser-sign-in > svg { flex-shrink: 0; color: var(--ui-content-accent); }
+.browser-sign-in > div { flex: 1; min-width: 0; }
+.browser-sign-in strong { font-size: 12px; font-weight: 600; }
+.browser-sign-in p { margin: 4px 0 0; color: var(--ui-content-secondary); font-size: 12px; line-height: 1.5; }
+.browser-load-indicator { position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, transparent, var(--ui-content-accent), transparent); background-size: 50% 100%; animation: browser-loading 1.8s linear infinite; }
 @keyframes browser-loading { from { background-position: -100% 0; } to { background-position: 200% 0; } }
 @media (prefers-reduced-motion: reduce) { .browser-load-indicator { animation: none; background: var(--ui-content-accent); } }
 

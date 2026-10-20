@@ -94,7 +94,21 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
         }), options);
       };
     });
+    await application.evaluate(({ app }) => {
+      const shown: Array<Promise<unknown>> = []; Reflect.set(globalThis, 'captureFirstFrames', shown);
+      app.on('browser-window-created', (_event, window) => {
+        window.once('show', () => {
+          if (!window.webContents.getURL().includes('window=capture-tools')) return;
+          shown.push(window.webContents.executeJavaScript(`({
+            startup:!!document.querySelector('#startup-shell,.startup-host,.startup-screen'),
+            imageReady:[...document.querySelectorAll('.desktop-screenshot-surface')].every(image=>image.complete && image.naturalWidth>0),
+            surface:!!document.querySelector('.desktop-screenshot-overlay,.capture-tools-window')
+          })`));
+        });
+      });
+    });
     await request(main, { type: 'open', task: 'screenshot' }); let tool = await toolPage(application);
+    expect(await application.evaluate(async () => await Promise.all(Reflect.get(globalThis, 'captureFirstFrames')))).toEqual([{ startup: false, imageReady: true, surface: true }]);
     expect(await tool.evaluate(() => ({ keys: Object.keys((globalThis as unknown as Bridge).worldlinebox), process: typeof Reflect.get(globalThis, 'process'), require: typeof Reflect.get(globalThis, 'require') })))
       .toEqual({ keys: ['captureTools'], process: 'undefined', require: 'undefined' });
     const captured = (await request(tool, { type: 'screenshot.capture', sourceId: fixture.sourceId })).source!;

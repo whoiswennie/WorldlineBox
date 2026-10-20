@@ -69,7 +69,7 @@ applicationRoot.render(
             <RadiusProvider>
             <MenuAcrylicProvider>
               <InspectorCardFeelProvider>
-                <StartupBoundary><Suspense fallback={observer || captureWindow ? <StartupScreen title={captureWindow ? '正在打开屏幕工具' : '正在打开伙伴世界'} compact /> : null}><RendererReady>{captureWindow ? <CaptureWindow /> : observer ? <WorldWindow /> : <ShortcutProvider><App /></ShortcutProvider>}</RendererReady></Suspense></StartupBoundary>
+                <StartupBoundary><Suspense fallback={observer ? <StartupScreen title="正在打开伙伴世界" compact /> : null}><RendererReady>{captureWindow ? <CaptureWindow /> : observer ? <WorldWindow /> : <ShortcutProvider><App /></ShortcutProvider>}</RendererReady></Suspense></StartupBoundary>
               </InspectorCardFeelProvider>
             </MenuAcrylicProvider>
             </RadiusProvider>

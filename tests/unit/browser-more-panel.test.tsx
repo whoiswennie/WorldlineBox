@@ -36,12 +36,13 @@ it('dispatches supported tab actions and opens find without duplicating the glob
     ['恢复关闭的标签页', { type: 'tab.restore' }], ['固定标签页', { type: 'tab.action', action: 'pin' }],
     ['静音此标签页', { type: 'tab.action', action: 'mute' }], ['全屏', { type: 'tab.action', action: 'fullscreen' }],
     ['开发者工具', { type: 'tab.action', action: 'devtools' }],
+    ['在默认浏览器中打开', { type: 'tab.openExternal', source: 'page' }],
   ] as const) {
     await act(() => button(label).click()); expect(run).toHaveBeenLastCalledWith(request);
     expect(browserRequestSchema.safeParse(request).success).toBe(true);
   }
   await act(() => button('在页面中查找').click());
-  expect(onFind).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledTimes(5);
+  expect(onFind).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledTimes(6);
   expect(host.textContent).not.toContain('全局网络设置');
   expect(host.querySelector('.browser-more-current strong')?.textContent).toBe('参考资料');
   expect(host.querySelector('.browser-more-current')?.getAttribute('title')).toBe('https://example.test/resources');
@@ -79,7 +80,7 @@ it('clamps zoom steps at protocol limits and avoids floating point drift', async
 it('blocks all tab-dependent actions without an active tab while keeping restore usable', async () => {
   const { run, onFind, render } = await mount(); await render(undefined);
   expect(host.querySelector('.browser-more-current')).toBeNull();
-  for (const label of ['固定标签页', '静音此标签页', '在页面中查找', '全屏', '开发者工具', '缩小页面', '放大页面', '重置为 100%']) {
+  for (const label of ['固定标签页', '静音此标签页', '在页面中查找', '全屏', '开发者工具', '缩小页面', '放大页面', '重置为 100%', '在默认浏览器中打开']) {
     expect(button(label).disabled).toBe(true); await act(() => button(label).click());
   }
   expect(run).not.toHaveBeenCalled(); expect(onFind).not.toHaveBeenCalled();
