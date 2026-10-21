@@ -704,6 +704,9 @@ const preparedResidents = new WeakMap<Page, Set<string>>();
 async function ensureAwakeRoutine(page: Page, companionId: string, conversationId: string) {
   const prepared = preparedResidents.get(page) ?? new Set<string>(); preparedResidents.set(page, prepared);
   if (prepared.has(companionId)) return;
+  // Opening a conversation no longer activates a dormant resident's world.
+  // These fixtures explicitly need a live actor for their chat/work scenarios.
+  await request(page, { type: 'companion.set-active', id: companionId, active: true });
   let world = (await request(page, { type: 'world.snapshot' })).world!;
   if (world.settings.mode !== 'realtime') world = (await request(page, { type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } })).world!;
   const routine = (await request(page, { type: 'routine.get', companionId, conversationId })).routine!;
