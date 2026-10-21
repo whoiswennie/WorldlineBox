@@ -25,7 +25,7 @@
 | 真实聊天UI | 三个稳定reply气泡立即出现，实际read_file工具、流式文字、第三位排队、单独取消和同气泡重试通过；重复底部队列卡已移除。SSE工具续说及整应用重启恢复沿用同一消息ID；四次本机首有效文字约0.48–1.05秒，不代表云模型或其他机器速度。 |
 | 文档规模 | 十万条短记录catalogue和三千篇720字真实文件验证分页/中文全文/标签/增量目录扫描；列表最多64项，目录可见窗口绘制。原生VCP另测100/1000篇温查询，无每次重读全部日记或重编码。没有十万篇真实Gemma全量构建的性能结论。 |
 | 资产语义搜索 | 开关独立且默认关闭，记忆不受其关闭影响。真实14资产、文字/图片/音频/视频检索5/5小样本Top1；实际应用启用、索引、重启复用和清缓存进程退出通过。向量身份与记忆相同；大量首建仍需要时间。 |
-| 代码回归 | 最新相关广回归1334通过、0失败、11跳过；十万消息/十万日记的重置测试单独串行8/8通过，合计1342项。大规模重置的严格单批时延不与其它压力测试争抢CPU。完整类型检查通过；lint 0错误、8条既有警告。 |
+| 代码回归 | 最新相关广回归1334通过、0失败、11跳过；十万消息/十万日记的重置测试单独串行8/8通过，合计1342项。大规模重置的严格单批时延不与其它压力测试争抢CPU。完整类型检查通过；lint 0错误、8条非阻断警告，主要为现有页面的Hook依赖提示。 |
 | 实际打包程序 | 本次03生成的Windows x64 ASAR，7个Electron端到端用例全部通过、0跳过/重试：自然文件与资产库绑定/修订/遗忘/重启，普通对话原AIMemo召回，内置模型设置，学习来源，三伙伴气泡，SSE工具/重启恢复，资产语义搜索/向量复用/清缓存退出。每次启动断言app.isPackaged与独立userData，未改用户安装。此项不是实际安装/卸载向导旅程。 |
 | 上游与资源 | 127份上游原文件SHA未变。去重阈值仅在宿主runtime私有参数副本调整，保留相近但矛盾的来源；参数影响、成本及边界在内容审计中明确。内置模型与CPU/Vulkan运行组件按固定清单校验，权重直接从安装资源读取。 |
 
@@ -41,4 +41,6 @@
 
 完整本机证据位于 `artifacts/vcp-validation/`（构建产物不提交Git）：`content-three-companions.json`、`content-real-dream-positive-evidence.json`、`companion-life-rhythm-validation.json`、`closed-loop-final-regression.json`、`closed-loop-reset-standalone.log`、`learning-sources-ui/reading-permission-proof.json`、`parallel-reply-progress/`、`asset-ui-lifecycle/sqlite-reuse-proof.json`、`packaged-companion-memory-both.json`、`closed-loop-packaged-interactions.json`。截图使用实际1440/1040 CSS像素及记录的DPR，不将请求800但被最小宽度限制的窗口称为800像素验收。
 
-安装包须由本次 `03-Build-Installer.bat` 生成，并对实际 `app.isPackaged`/ASAR执行验收。旧安装包、开发构建及未完成的打包尝试不计入通过；最终安装包信息随后记录在本机release验收回执中。
+本次实际执行 `03-Build-Installer.bat`，完整类型检查、资源校验、Forge及Inno均退出0。安装包在2026-10-22 02:07（UTC+8）生成：`out/make/inno/WorldlineBoxSetup.exe`，1,207,363,658字节（1151.4 MiB）。SHA-256为 `17b00354c6bf8e1f2062643721ccfcb74d5fe651d220a71c3ff5835856805b61`，同目录附`.sha256`文件。
+
+实际验收的ASAR SHA-256为 `942a38595d08bcdadf8bde24c6705dfb8e855b4f151acbfa5905616823e32b2f`。构建日志`closed-loop-installer-build.log`及汇总`closed-loop-release.json`保存在本机证据目录。旧安装包、开发构建及未完成的尝试不计入本次通过；未执行用户系统中的实际安装/卸载，不改现有安装和资料。
