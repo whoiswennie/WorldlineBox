@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
@@ -9,7 +9,7 @@ import type { CompanionWorldActor, CompanionWorldSnapshot } from '../../src/shar
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { DshLauncherRequest, DshLauncherResponse, DshLauncherState } from '../../src/shared/dsh-launcher';
 import type { DshTaskRecord } from '../../src/shared/dsh-tasks';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 import { openCompanionWorldWindow } from './companion-world-window-helpers';
 import { shareWorldHomeAddress, walkIntoWorldHome } from './companion-world-address-helpers';
 
@@ -66,13 +66,14 @@ function clock(hour: number) { return String((Math.floor(hour) + 24) % 24).padSt
 function cleanup(root: string) {
   const resolved = path.resolve(root);
   if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-world-flow-')) throw new Error('Unexpected isolated world flow cleanup target.');
-  rmSync(resolved, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });
+  removeCompanionTestDirectory(resolved);
 }
 async function launch(profile: string) {
   const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(),
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
   const page = await application.firstWindow(), nativeWindow = await application.browserWindow(page);
   await nativeWindow.evaluate(win => { win.unmaximize(); win.setSize(1440, 900); win.setFocusable(false); win.setOpacity(0); win.webContents.setBackgroundThrottling(false); win.hide(); });
+  await ensureCompanionTestWorkspace(page);
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 60_000 });
   await page.locator('[data-application-module="companions"]').click(); return { application, page };
 }
@@ -91,9 +92,9 @@ async function providerFixture() {
         if (purpose === 'world_attention') output = { urgency: [urgent, cancelledUrgent].includes(sourceText) ? 'urgent' : 'ordinary', confidence: .98, evidence: [sourceText], reason: '脚本中这条实际用户消息临近截止并请求立即协助。' };
         else if (purpose === 'world_decision') output = { action: null, reason: '本例的初始许可和占用由宿主预设。', appraisals: [] };
         else if (purpose === 'world_social') output = { text: null, reason: '本例不继续自主话题。' };
-        else if (purpose === 'memory_dream') output = { candidates: [], dream: null };
-        else if (purpose === 'memory_query') output = {};
-        else if (purpose.startsWith('memory_')) output = { candidates: [] };
+        else if (purpose === 'vcp_sleep_reflection') output = { notes: [], dream: null };
+        else if (purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
+        else if (purpose === 'vcp_experience_journal') output = { notes: [] };
         else {
           response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' }); response.flushHeaders();
           if ([urgent, cancelledUrgent].includes(sourceText)) {

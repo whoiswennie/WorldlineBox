@@ -1,12 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { WorldlineBoxCompanionsApi } from '../../src/shared/companions';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi } };
-function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-drop-paste-')) throw new Error('Invalid cleanup path'); rmSync(resolved, { recursive: true, force: true, maxRetries: 4, retryDelay: 100 }); }
+function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-drop-paste-')) throw new Error('Invalid cleanup path'); removeCompanionTestDirectory(resolved); }
 // Only the OS clipboard source is a fixture; DOM native Files, preload webUtils,
 // IPC import, managed PNG persistence, attachment URLs and message storage are real.
 // eslint-disable-next-line no-empty-pattern
@@ -20,6 +20,7 @@ test('accepts native multi-file drops and copied files/images while preserving a
   try {
     const page = await application.firstWindow(), native = await application.browserWindow(page);
     await native.evaluate(window => { window.unmaximize(); window.setSize(1480, 1050); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+    await ensureCompanionTestWorkspace(page);
     await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '联系人', exact: true }).click();
     await page.locator('[data-companion-contact="deepseek-flash"]').click(); await page.getByRole('button', { name: '发消息', exact: true }).click();
     await page.evaluate(() => { const input = document.createElement('input'); input.type = 'file'; input.multiple = true; input.id = 'native-drop-fixture'; input.style.display = 'none'; document.body.append(input); });

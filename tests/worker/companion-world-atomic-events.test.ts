@@ -85,7 +85,7 @@ it('rolls back work cancellation and its terminal event together, then accepts a
 it('rejects an impossible replacement without cancelling the existing physical park composite or leaking interruption events', () => {
   const f = fixture();
   for (const rule of f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!) f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: rule.id, expectedRevision: rule.revision });
-  f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '原有散步活动', action: 'park_walk', startMinute: 600, endMinute: 602, probability: 1, durationMinutes: 35 } });
+  f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '原有散步活动', action: 'park_walk', startMinute: 600, endMinute: 602, probability: 1, checkIntervalMinutes: 1, durationMinutes: 35 } });
   f.store.request({ type: 'life-event.tick' });
   vi.setSystemTime(Date.now() + 1600); f.store.request({ type: 'world.tick' });
   const claim = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;

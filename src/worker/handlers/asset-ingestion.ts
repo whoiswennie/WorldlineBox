@@ -43,6 +43,7 @@ export async function executeAssetIngestionWorkerCommand(
   hooks: AssetIngestionHooks,
 ): Promise<WorkerResult | undefined> {
   switch (request.command.type) {
+    case 'asset.learning.page': return { ok: true, type: 'asset.learning.page', ...libraryService.listLearningAssets(request.command) };
     case 'asset.list': {
       const assets = libraryService.listAssets(request.command);
       // WorldlineBox-4bdd26 收编 codex/large-library-performance@d5f58088：渲染端

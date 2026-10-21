@@ -2290,6 +2290,36 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
     if (result.type !== 'embedding.model.default-set') throw new Error('Unexpected embedding model default response.');
     return { ok: true as const, value: { id: result.id } };
   },
+  async embeddingGetGlobalSettings() {
+    const result = await request({ type: 'embedding.global.get.request' });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.global.settings') throw new Error('Unexpected global embedding settings response.');
+    return { ok: true as const, value: result.settings };
+  },
+  async embeddingLocalTextStatus() {
+    const result = await request({ type: 'embedding.local-text.status.request' });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.local-text.status') throw new Error('Unexpected local text model response.');
+    return { ok: true as const, value: result.status };
+  },
+  async embeddingLocalTextInstall(input: { update?: boolean }) {
+    const result = await request({ type: 'embedding.local-text.install.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.local-text.status') throw new Error('Unexpected local text model response.');
+    return { ok: true as const, value: result.status };
+  },
+  async embeddingLocalTextDelete() {
+    const result = await request({ type: 'embedding.local-text.delete.request' });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.local-text.status') throw new Error('Unexpected local text model response.');
+    return { ok: true as const, value: result.status };
+  },
+  async embeddingSaveGlobalSettings({ selectionId }: { selectionId: string | null }) {
+    const result = await request({ type: 'embedding.global.save.request', selectionId });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.global.settings') throw new Error('Unexpected global embedding settings response.');
+    return { ok: true as const, value: result.settings };
+  },
   async syncSaveBinding({ libraryId, serverId, directoryName, enabled, pollIntervalMs, showCardSyncStatus }: { libraryId: string; serverId: string; directoryName?: string; enabled?: boolean; pollIntervalMs?: number; showCardSyncStatus?: boolean }): Promise<LibraryApiResult<void>> {
     const result = await request({ type: 'sync.library.binding.save.request', libraryId, serverId, directoryName, enabled, pollIntervalMs, showCardSyncStatus });
     if (!result.ok) return failure(result);

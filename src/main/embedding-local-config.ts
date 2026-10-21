@@ -10,6 +10,7 @@ import {
 export type LocalEmbeddingTestConfig = {
   modelDirectory: string;
   runtimePath: string;
+  cpuRuntimePath?: string;
 };
 
 const FILE_NAME = "embedding-gemma.local.json";

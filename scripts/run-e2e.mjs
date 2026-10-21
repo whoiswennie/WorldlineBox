@@ -99,6 +99,8 @@ if (isolatedBuild) {
   }, null, 2)}\n`);
   await ensureStaticDirectoryLink('assets');
   await ensureStaticDirectoryLink('resources');
+  await ensureStaticDirectoryLink('vendor');
+  await ensureStaticDirectoryLink('src');
 }
 
 // Check the final absolute deletion target and its real parent first. In

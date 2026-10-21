@@ -1,19 +1,19 @@
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import { COMPANION_WEATHER_LABELS } from '../../src/shared/companion-weather';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
 const owner = 'deepseek-flash';
 function cleanup(root: string) {
   const absolute = path.resolve(root);
   if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-weather-feedback-')) throw Error('Invalid test cleanup');
-  rmSync(absolute, { recursive: true, force: true });
+  removeCompanionTestDirectory(absolute);
 }
 async function request(page: Page, input: CompanionsRequest) {
   const result = await page.evaluate(input => (globalThis as unknown as Bridge).worldlinebox.companions.request(input), input);
@@ -29,7 +29,7 @@ test('a native weather check finishes and reports fresh world evidence after lea
       try {
         const body = JSON.parse(data), raw = body.messages?.[1]?.content;
         const text = typeof raw === 'string' ? raw : raw?.find((part: { type: string; text?: string }) => part.type === 'text')?.text;
-        const context = JSON.parse(text); let content: unknown = { candidates: [] }; let calls: unknown;
+        const context = JSON.parse(text); let content: unknown = { notes: [] }; let calls: unknown;
         if (context.purpose === 'world_attention') content = { urgency: 'ordinary', confidence: .99, evidence: [], reason: '普通问题。' };
         else if (context.purpose === 'world_decision') content = { action: null, reason: '没有新的自主安排。', appraisals: [] };
         else if (context.purpose === 'activity_task_step') {
@@ -57,6 +57,7 @@ test('a native weather check finishes and reports fresh world evidence after lea
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_HIDE_WINDOW: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }) });
     const page = await app.firstWindow(), native = await app.browserWindow(page);
     await native.evaluate(window => { window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.showInactive(); });
+    await ensureCompanionTestWorkspace(page);
     await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
     const configured = await page.evaluate(baseUrl => (globalThis as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', model: 'deepseek-flash', baseUrl, apiKey: 'local-weather-fixture', autoAnalyzeEnabled: false, disclaimerAccepted: true }), 'http://127.0.0.1:' + address.port);
     expect(configured.ok).toBe(true);

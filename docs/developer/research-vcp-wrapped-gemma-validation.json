@@ -1,0 +1,132 @@
+{
+  "generatedAt": "2026-10-21T10:03:16.122Z",
+  "model": "C:\\Users\\hp\\AppData\\Local\\Temp\\worldlinebox-e5-cpu-validation\\embeddinggemma-2-UD-Q4_K_XL.gguf",
+  "dimension": 768,
+  "documents": 12,
+  "queries": 12,
+  "top1Correct": 12,
+  "recallAt5": 12,
+  "initializedMs": 1057.1047,
+  "ingestionMs": 2035.1622999999997,
+  "totalMs": 3522.3138,
+  "embeddingRequests": {
+    "document": 24,
+    "query": 12
+  },
+  "results": [
+    {
+      "id": "zh-rain",
+      "expected": "umbrella",
+      "top1": "umbrella",
+      "rank": 1,
+      "elapsedMs": 41.72559999999976,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-umbrella",
+      "expected": "umbrella",
+      "top1": "umbrella",
+      "rank": 1,
+      "elapsedMs": 36.90359999999964,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "zh-birthday",
+      "expected": "birthday",
+      "top1": "birthday",
+      "rank": 1,
+      "elapsedMs": 36.302000000000135,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-allergy",
+      "expected": "allergy",
+      "top1": "allergy",
+      "rank": 1,
+      "elapsedMs": 35.896799999999985,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "zh-coffee",
+      "expected": "coffee",
+      "top1": "coffee",
+      "rank": 1,
+      "elapsedMs": 36.235299999999825,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-project",
+      "expected": "project",
+      "top1": "project",
+      "rank": 1,
+      "elapsedMs": 38.785399999999754,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-dentist",
+      "expected": "appointment",
+      "top1": "appointment",
+      "rank": 1,
+      "elapsedMs": 33.74810000000025,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-library",
+      "expected": "library",
+      "top1": "library",
+      "rank": 1,
+      "elapsedMs": 33.87010000000009,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "zh-train",
+      "expected": "train",
+      "top1": "train",
+      "rank": 1,
+      "elapsedMs": 34.02649999999994,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-sqlite",
+      "expected": "bug",
+      "top1": "bug",
+      "rank": 1,
+      "elapsedMs": 35.44350000000031,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-plants",
+      "expected": "garden",
+      "top1": "garden",
+      "rank": 1,
+      "elapsedMs": 34.077999999999975,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-budget",
+      "expected": "budget",
+      "top1": "budget",
+      "rank": 1,
+      "elapsedMs": 32.89980000000014,
+      "nativeJointUsed": true,
+      "degraded": false
+    }
+  ],
+  "limitations": [
+    "Small synthetic fixture, not representative quality evidence.",
+    "Calls a previously started CPU-only local llama server; this script does not own or stop that model process.",
+    "Uses original DailyNote.create, real document and ordered tag embeddings, host ID comments, original ingestion, Rust geometry/graph publication and native River queries.",
+    "Official query and document prefixes are applied by the test loopback gateway, matching the global embedding adapter; no fabricated vectors."
+  ]
+}

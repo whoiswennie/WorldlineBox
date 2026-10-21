@@ -2,6 +2,8 @@
 # 按字节 SHA-256 校验。任何行尾转换（CRLF）都会导致哈希漂移、打包失败，
 # 因此整个目录标记为 -text（不做换行符转换）。
 resources/ufbx/* -text
+# VCP sources are preserved and verified against the upstream bytes.
+vendor/vcp-memory/** -text
 *.bat text eol=crlf
 # Reviewed tool inventory is hashed byte-for-byte on every operating system.
 resources/portable-tools/manifests/*.json text eol=lf

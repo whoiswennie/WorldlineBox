@@ -1,12 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { WorldlineBoxCompanionsApi } from '../../src/shared/companions';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
-function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-media-e2e-')) throw new Error('Unexpected media fixture cleanup path.'); if (existsSync(resolved)) rmSync(resolved, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 }); }
+function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-media-e2e-')) throw new Error('Unexpected media fixture cleanup path.'); if (existsSync(resolved)) removeCompanionTestDirectory(resolved); }
 
 function wave() {
   const samples = 32000, data = Buffer.alloc(44 + samples * 2); data.write('RIFF'); data.writeUInt32LE(data.length - 8, 4); data.write('WAVEfmt ', 8); data.writeUInt32LE(16, 16); data.writeUInt16LE(1, 20); data.writeUInt16LE(1, 22); data.writeUInt32LE(16000, 24); data.writeUInt32LE(32000, 28); data.writeUInt16LE(2, 32); data.writeUInt16LE(16, 34); data.write('data', 36); data.writeUInt32LE(samples * 2, 40);
@@ -26,6 +26,7 @@ test('displays real image galleries, plays registered audio and video, and locat
   try {
     const page = await application.firstWindow(), native = await application.browserWindow(page);
     await native.evaluate(window => { window.unmaximize(); window.setSize(1520, 1120); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+    await ensureCompanionTestWorkspace(page);
     await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
     const webm = await page.evaluate(async () => {
       const canvas = document.createElement('canvas'); canvas.width = 160; canvas.height = 90; const context = canvas.getContext('2d')!, stream = canvas.captureStream(12), recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' }), chunks: Blob[] = [];

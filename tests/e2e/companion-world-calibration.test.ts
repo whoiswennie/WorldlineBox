@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { CompanionWorldActor } from '../../src/shared/companion-world';
 import { worldCharacterArt } from '../../src/shared/companion-world-art';
 import { worldAnimationFrame } from '../../src/renderer/companions/world/world-presentation';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 import { openCompanionWorldWindow } from './companion-world-window-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
@@ -20,7 +20,7 @@ const clock = (hour: number) => Math.floor((hour + 24) % 24).toString().padStart
 function cleanup(root: string) {
   const resolved = path.resolve(root);
   if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-world-calibration-')) throw new Error('Unexpected calibration fixture cleanup path.');
-  rmSync(resolved, { recursive: true, force: true });
+  removeCompanionTestDirectory(resolved);
 }
 type VisualTrace = { frames: { at: number; x: number; y: number }[]; raf: number; stop: boolean };
 
@@ -34,6 +34,7 @@ test('received movement converges continuously at the real destination', async (
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'hardware' }) });
     const main = await application.firstWindow(), native = await application.browserWindow(main);
     await native.evaluate(window => { window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+    await ensureCompanionTestWorkspace(main);
     await main.locator('[data-application-module="companions"]').click();
     const companionId = 'minimax', conversation = (await request(main, { type: 'conversation.open', companionId })).conversation!, scope = { companionId, conversationId: conversation.id };
     const snapshot = (await request(main, { type: 'world.snapshot' })).world!;
@@ -82,9 +83,9 @@ test('both corrected sisters stay grounded during real rest, sleep and pending c
       let output: unknown;
       if (context.purpose === 'world_decision') output = { action: null, reason: '保持生活计划。', appraisals: [] };
       else if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .98, evidence: [context.source.content], reason: '无需打断当前作息。' };
-      else if (context.purpose === 'memory_query') output = {};
-      else if (context.purpose === 'memory_dream') output = { candidates: [], dream: null };
-      else if (context.purpose?.startsWith('memory_')) output = { candidates: [] };
+      else if (context.purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
+      else if (context.purpose === 'vcp_sleep_reflection') output = { notes: [], dream: null };
+      else if (context.purpose === 'vcp_experience_journal') output = { notes: [] };
       else { reply = response; return; }
       response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] }));
     });
@@ -95,6 +96,7 @@ test('both corrected sisters stay grounded during real rest, sleep and pending c
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'hardware' }) });
     const main = await application.firstWindow(), native = await application.browserWindow(main);
     await native.evaluate(window => { window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+    await ensureCompanionTestWorkspace(main);
     await main.locator('[data-application-module="companions"]').click();
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('No fixture port.');
     await main.evaluate(baseUrl => (window as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', baseUrl, model: 'calibration-fixture', apiKey: 'fixture-calibration-key' }), 'http://127.0.0.1:' + address.port);

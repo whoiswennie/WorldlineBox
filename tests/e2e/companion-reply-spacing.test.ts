@@ -1,18 +1,18 @@
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
 const owner = 'deepseek-flash', prompt = '空步骤排版验收', first = '我先核对一下当前状态。', last = '状态已经核对，现在可以继续聊天。';
 function cleanup(root: string) {
   const absolute = path.resolve(root);
   if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-reply-spacing-')) throw Error('Invalid test cleanup');
-  rmSync(absolute, { recursive: true, force: true });
+  removeCompanionTestDirectory(absolute);
 }
 async function request(page: Page, input: CompanionsRequest) {
   const result = await page.evaluate(input => (globalThis as unknown as Bridge).worldlinebox.companions.request(input), input);
@@ -28,7 +28,7 @@ test('empty native tool turns add no blank space while streaming, after commit o
       try {
         const body = JSON.parse(data), raw = body.messages?.[1]?.content;
         const context = JSON.parse(typeof raw === 'string' ? raw : raw?.find((part: { type: string; text?: string }) => part.type === 'text')?.text);
-        let content: unknown = { candidates: [] }; let calls: unknown;
+        let content: unknown = { notes: [] }; let calls: unknown;
         if (context.purpose === 'world_attention') content = { urgency: 'ordinary', confidence: .99, evidence: [], reason: '普通问题。' };
         else if (context.purpose === 'world_decision') content = { action: null, reason: '没有新的自主安排。', appraisals: [] };
         else if (context.taskRequest?.prompt === prompt) {
@@ -57,6 +57,7 @@ test('empty native tool turns add no blank space while streaming, after commit o
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_HIDE_WINDOW: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }) });
     const page = await app.firstWindow(), native = await app.browserWindow(page);
     await native.evaluate(window => { window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.showInactive(); });
+    await ensureCompanionTestWorkspace(page);
     await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
     expect((await page.evaluate(baseUrl => (globalThis as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', model: 'spacing-fixture', baseUrl, apiKey: 'local-spacing-fixture', autoAnalyzeEnabled: false, disclaimerAccepted: true }), 'http://127.0.0.1:' + address.port)).ok).toBe(true);
     await page.locator('[data-application-module="companions"]').click();

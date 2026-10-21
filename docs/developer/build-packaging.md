@@ -25,6 +25,14 @@ npm run media:ensure
 
 离线环境可设置 `WORLDLINEBOX_MEDIA_AUTO_ACQUIRE=0`，此时校验失败会直接报错，不会联网下载。
 
+## 内置记忆与向量资源
+
+`03-Build-Installer.bat` 同时封装 VCP 运行闭包和唯一内置的 EmbeddingGemma 2 量化模型。`vendor-vcp-memory.mjs` 只从固定提交恢复缺失的原版文件，已有文件必须通过 SHA-256 校验；`stage-vcp-memory-runtime.mjs` 封装原版插件所需依赖。`stage-bundled-embedding.mjs --acquire` 在构建机获取锁定的 GGUF、匹配 projector 和 CPU/Vulkan 组件，所有文件验证后才进入包。已有合格资源时不再下载。
+
+量化权重约 696.65 MiB；当前 Windows x64 模型及两套运行组件共 105 文件、875,022,906 字节。模型直接从安装资源读取，不向用户配置目录复制大权重，最终用户离线即可运行。资产的文本、图片、音频、视频和伙伴记忆统一使用这套模型，设置不提供外部向量 API 或模型切换。其他平台尚未提供这套 Windows 组件，必须补齐相应平台的固定资源与实机验证后发布。
+
+`verify:package` 校验复制进最终包的模型与运行组件，并检查 VCP 原版内核和宿主入口。伙伴消息、世界和记忆的存储位置由用户选择的资产库决定，不能以安装包目录或用户 C 盘配置目录代替。设计与实测范围见 [VCP 记忆实施说明](companion-memory-implementation.md)。
+
 ## Forge / Vite 配置验证
 
 ```bash

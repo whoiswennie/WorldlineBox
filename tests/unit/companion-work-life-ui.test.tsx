@@ -75,11 +75,14 @@ it('shows work revision conflicts without clearing the unsaved request', async (
   await mount(work(request)); await click('修改要求'); await fill('工作标题', '未保存的新标题'); await click('保存工作修改'); expect(container!.textContent).toContain('工作单已更新'); expect(container!.querySelector<HTMLInputElement>('[aria-label="工作标题"]')!.value).toBe('未保存的新标题');
 });
 
-it('edits real life windows and whole-window probability while preserving disabled status and owner revision', async () => {
+it('edits repeated life rhythm and probability while preserving disabled status and owner revision', async () => {
   const request = vi.fn(async (input: CompanionsRequest): Promise<CompanionsResponse> => input.type === 'life-rule.list' ? { ok: true, lifeRules: [rule], lifeOccurrences: [] } : { ok: true });
   await mount(<CompanionLifeEvents companion={companion} companions={companions} request={request} />);
-  expect(container!.textContent).toContain('23:00—次日 01:00'); await click('编辑事件'); await fill('日常事件机会百分比', '42'); await click('保存日常事件');
-  expect(request).toHaveBeenCalledWith({ type: 'life-rule.update', companionId: companion.id, id: rule.id, expectedRevision: 7, rule: { title: rule.title, enabled: false, startMinute: 1380, endMinute: 60, probability: .42, action: 'message', targetId: companions[1]!.id } });
+  expect(container!.textContent).toContain('23:00—次日 01:00'); await click('编辑事件'); await fill('日常事件机会百分比', '42');
+  await fill('日常事件评估间隔分钟', '10'); await fill('日常事件行动冷却分钟', '75');
+  await fill('日常事件沉默冷却分钟', '25'); await fill('日常事件失败冷却分钟', '35'); await click('保存日常事件');
+  expect(request).toHaveBeenCalledWith({ type: 'life-rule.update', companionId: companion.id, id: rule.id, expectedRevision: 7, rule: { title: rule.title, enabled: false, startMinute: 1380, endMinute: 60, probability: .42, action: 'message', targetId: companions[1]!.id,
+    checkIntervalMinutes: 10, actionCooldownMinutes: 75, silenceCooldownMinutes: 25, failureCooldownMinutes: 35 } });
   await click('启用事件'); expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: 'life-rule.update', expectedRevision: 7, rule: expect.objectContaining({ enabled: true }) }));
   await click('移除事件'); expect(request.mock.calls.some(([input]) => input.type === 'life-rule.remove')).toBe(false); await click('确认移除事件'); expect(request).toHaveBeenCalledWith({ type: 'life-rule.remove', companionId: companion.id, id: rule.id, expectedRevision: 7 });
 });
@@ -89,5 +92,6 @@ it('creates an exact day-end window, removes player visit targets, and never sub
   await mount(<CompanionLifeEvents companion={companion} companions={companions} request={request} />); await click('添加日常事件'); await fill('日常事件名称', '午夜前看看朋友'); await choose('日常事件对象', 'user'); await choose('日常事件动作', 'visit');
   expect([...container!.querySelectorAll<HTMLOptionElement>('[aria-label="日常事件对象"] option')].some(item => item.value === 'user' || item.value === companion.id)).toBe(false);
   await fill('日常事件开始时间', '18:00'); await fill('日常事件结束时间', '18:00'); await click('保存日常事件'); expect(request.mock.calls.some(([input]) => input.type === 'life-rule.create')).toBe(false);
-  await fill('日常事件结束时间', '24:00'); await choose('日常事件对象', companions[1]!.id); await click('保存日常事件'); expect(request).toHaveBeenCalledWith({ type: 'life-rule.create', companionId: companion.id, clientId: expect.any(String), rule: { title: '午夜前看看朋友', enabled: true, startMinute: 1080, endMinute: 1440, probability: .35, action: 'visit', targetId: companions[1]!.id } });
+  await fill('日常事件结束时间', '24:00'); await choose('日常事件对象', companions[1]!.id); await click('保存日常事件'); expect(request).toHaveBeenCalledWith({ type: 'life-rule.create', companionId: companion.id, clientId: expect.any(String), rule: { title: '午夜前看看朋友', enabled: true, startMinute: 1080, endMinute: 1440, probability: .35, action: 'visit', targetId: companions[1]!.id,
+    checkIntervalMinutes: 15, actionCooldownMinutes: 90, silenceCooldownMinutes: 20, failureCooldownMinutes: 30 } });
 });

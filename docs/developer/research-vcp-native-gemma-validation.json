@@ -1,0 +1,147 @@
+{
+  "generatedAt": "2026-10-21T09:53:17.629Z",
+  "model": {
+    "id": "embeddinggemma-2-compact",
+    "mode": "text-only (no projector)",
+    "repo": "unsloth/embeddinggemma-2-GGUF",
+    "revision": "412430755667d84b1ac64fe1fe2693aa6219f1d9",
+    "sha256": "ea905fd08e8061db77a0031cbb5096d459d7cfd2bdd0ad2ba66e483f16719493",
+    "bytes": 175673856,
+    "dimension": 768
+  },
+  "dimension": 768,
+  "documents": 12,
+  "queries": 12,
+  "artifactPublished": true,
+  "knnTop1Correct": 12,
+  "riverTop1Correct": 12,
+  "elapsedMs": 89.8663,
+  "results": [
+    {
+      "id": "zh-rain",
+      "expected": "umbrella",
+      "knnTop1": "umbrella",
+      "knnRank": 1,
+      "riverTop1": "umbrella",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-umbrella",
+      "expected": "umbrella",
+      "knnTop1": "umbrella",
+      "knnRank": 1,
+      "riverTop1": "umbrella",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "zh-birthday",
+      "expected": "birthday",
+      "knnTop1": "birthday",
+      "knnRank": 1,
+      "riverTop1": "birthday",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-allergy",
+      "expected": "allergy",
+      "knnTop1": "allergy",
+      "knnRank": 1,
+      "riverTop1": "allergy",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "zh-coffee",
+      "expected": "coffee",
+      "knnTop1": "coffee",
+      "knnRank": 1,
+      "riverTop1": "coffee",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-project",
+      "expected": "project",
+      "knnTop1": "project",
+      "knnRank": 1,
+      "riverTop1": "project",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-dentist",
+      "expected": "appointment",
+      "knnTop1": "appointment",
+      "knnRank": 1,
+      "riverTop1": "appointment",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-library",
+      "expected": "library",
+      "knnTop1": "library",
+      "knnRank": 1,
+      "riverTop1": "library",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "zh-train",
+      "expected": "train",
+      "knnTop1": "train",
+      "knnRank": 1,
+      "riverTop1": "train",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-sqlite",
+      "expected": "bug",
+      "knnTop1": "bug",
+      "knnRank": 1,
+      "riverTop1": "bug",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-plants",
+      "expected": "garden",
+      "knnTop1": "garden",
+      "knnRank": 1,
+      "riverTop1": "garden",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    },
+    {
+      "id": "cross-budget",
+      "expected": "budget",
+      "knnTop1": "budget",
+      "knnRank": 1,
+      "riverTop1": "budget",
+      "riverRank": 1,
+      "nativeJointUsed": true,
+      "degraded": false
+    }
+  ],
+  "limitations": [
+    "Uses actual supplied embedding vectors and original Rust/KBM storage and query code.",
+    "Documents are intentionally untagged because the fixture has no genuine tag embeddings; this does not evaluate graph or tagged RiverMemo quality.",
+    "Small synthetic Chinese/English fixture; no real user data or external API calls; not a representative benchmark.",
+    "OS watchers and automatic background training were disabled only for this isolated comparison."
+  ]
+}

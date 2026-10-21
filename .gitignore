@@ -24,6 +24,11 @@ test-results/
 !.env.example
 embedding-gemma.local.json
 
+# Verified local embedding weights/runtime are staged into release resources.
+resources/embedding-models/*.gguf
+resources/embedding-models/runtime-cpu/
+resources/embedding-models/runtime-vulkan/
+
 # Large platform media bundles are produced by the trusted build pipeline or
 # acquired from a checksum-pinned release. Never commit local/system binaries.
 resources/ffmpeg/

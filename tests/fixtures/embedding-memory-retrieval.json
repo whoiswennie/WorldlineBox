@@ -1,0 +1,30 @@
+{
+  "documents": [
+    { "id": "umbrella", "text": "昨天下雨时，小岚在湖边公园把蓝色雨伞借给小雨。小雨答应周五到图书馆时归还雨伞。" },
+    { "id": "birthday", "text": "小岚的生日是六月十八日。她喜欢草莓奶油蛋糕，生日那天想和朋友一起在家吃晚饭。" },
+    { "id": "allergy", "text": "小雨对花生过敏，点餐时需要确认食物不含花生和花生油。她喜欢没有坚果的清淡饭菜。" },
+    { "id": "coffee", "text": "小岚最近发现晚上喝咖啡会睡不着，所以决定下午三点以后不再饮用含咖啡因的饮料。" },
+    { "id": "project", "text": "WorldlineBox 的记忆模块正在移植 VCP 的 RiverMemo 引擎，目的是让虚拟伙伴长期记住自己的生活经历。" },
+    { "id": "appointment", "text": "The dentist appointment is next Tuesday at nine in the morning. Alex should bring his insurance card and arrive fifteen minutes early." },
+    { "id": "library", "text": "Maya volunteers at the town library every Saturday afternoon. She arranges returned books and helps children find science stories." },
+    { "id": "cat", "text": "邻居家的橘猫叫南瓜，喜欢趴在窗台晒太阳。小岚给南瓜买了一个柔软的绿色猫窝。" },
+    { "id": "budget", "text": "The team has a monthly equipment budget of two thousand dollars. Computer purchases need manager approval before ordering." },
+    { "id": "train", "text": "小雨买了周六上午从上海出发去杭州的高铁票，出发时间为九点半，计划在西湖散步。" },
+    { "id": "bug", "text": "A database lock error was fixed by allowing only one owner to write to SQLite. Background tasks now submit changes through a queue." },
+    { "id": "garden", "text": "The balcony tomatoes need watering every other morning. Do not water them at noon, because the leaves can burn in strong sunlight." }
+  ],
+  "queries": [
+    { "id": "zh-rain", "text": "借出去的挡雨用品什么时候还给小岚？", "expected": "umbrella" },
+    { "id": "cross-umbrella", "text": "Who borrowed the blue umbrella and promised to give it back on Friday?", "expected": "umbrella" },
+    { "id": "zh-birthday", "text": "给小岚庆生应该准备哪种甜点？", "expected": "birthday" },
+    { "id": "cross-allergy", "text": "Which ingredient must Xiaoyu avoid because of an allergic reaction?", "expected": "allergy" },
+    { "id": "zh-coffee", "text": "她为了避免失眠，下午以后改变了什么饮食习惯？", "expected": "coffee" },
+    { "id": "cross-project", "text": "Which project is integrating VCP for the virtual companions long term memories?", "expected": "project" },
+    { "id": "cross-dentist", "text": "牙医预约什么时候，出门要带什么证件？", "expected": "appointment" },
+    { "id": "cross-library", "text": "谁周末会去帮小朋友找科学类图书？", "expected": "library" },
+    { "id": "zh-train", "text": "周六去西湖旅行乘坐的车几点出发？", "expected": "train" },
+    { "id": "cross-sqlite", "text": "数据库锁冲突最后采用什么并发写入方式解决？", "expected": "bug" },
+    { "id": "cross-plants", "text": "阳台上的蔬菜应该在哪个时间段浇水？", "expected": "garden" },
+    { "id": "cross-budget", "text": "采购电脑的审批和每月经费有什么限制？", "expected": "budget" }
+  ]
+}

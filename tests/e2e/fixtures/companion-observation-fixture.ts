@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
@@ -8,7 +8,10 @@ const Database = BetterSqlite3 as { new (filename: string): CompanionConnection 
 // Only this disposable test profile may be seeded. No production mutation IPC is exposed.
 const profile = path.resolve(process.argv[2]!), root = path.dirname(profile), mode = process.argv[3], output = process.argv[4]!;
 if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldlinebox-social-observer-')) throw new Error('Unexpected observation fixture profile.');
-const databasePath = path.join(profile, 'companions/messages.sqlite');
+const locator = path.join(profile, 'companion-library.json');
+const databasePath = existsSync(locator)
+  ? path.join((JSON.parse(readFileSync(locator, 'utf8')) as { libraryPath: string }).libraryPath, '.worldlinebox', 'companions', 'messages.sqlite')
+  : path.join(profile, 'companions/messages.sqlite');
 let store = new CompanionsStore(databasePath);
 function seedActions() {
   const group = store.request({ type: 'conversation.create-group', title: '一起做点小事', memberIds: ['deepseek-sister', 'deepseek-flash'] }).conversation!;

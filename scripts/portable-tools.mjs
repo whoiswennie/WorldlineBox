@@ -157,8 +157,11 @@ async function prepareRelease() {
     await copyFile(path.join(root, file.path), destination);
   }
   await copyFile(lockPath, path.join(path.dirname(release), 'tool-lock.json'));
+  // Reusing the default reviewed staging directory must not retain an older duplicate.
+  await safeRemoveOwned(path.join(releaseResources, 'embedding-models'), releaseResources);
   for (const entry of await readdir(path.join(projectRoot, 'resources'), { withFileTypes: true })) {
-    if (entry.name === 'portable-tools') continue;
+    // The immutable embedding bundle is shipped once as its own extraResource.
+    if (entry.name === 'portable-tools' || entry.name === 'embedding-models') continue;
     await cp(path.join(projectRoot, 'resources', entry.name), path.join(releaseResources, entry.name), { recursive: true, dereference: false });
   }
   await verify(release);

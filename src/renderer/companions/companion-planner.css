@@ -121,48 +121,6 @@
 .companions-workspace-request-error { display: flex; align-items: center; gap: 12px; padding: 9px 28px; background: color-mix(in srgb, #c96573 10%, var(--ui-surface-pane)); color: #c96573; font-size: 12px; flex-shrink: 0; }
 .companions-workspace-request-error > span { flex: 1; }
 .companions-workspace-request-error > button { border: 0; background: transparent; color: inherit; }
-.companions-memory-manager .companions-memory-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 22px 26px 0; }
-.companions-memory-overview { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; flex-shrink: 0; }
-.companions-memory-overview h4 { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
-.companions-memory-overview h4 > span { margin-left: 10px; font-size: 10px; color: var(--ui-content-tertiary); font-weight: 400; }
-.companions-memory-overview .companions-subtle { font-size: 11px; }
-.companions-memory-overview .companions-memory-scope { margin-top: 3px; font-size: 10px; }
-.companions-memory-manager .companions-memory-processing { flex: 0 0 260px; margin: 0; padding: 10px 12px; font-size: 11px; }
-.companions-memory-manager .companions-memory-processing[open] { position: absolute; z-index: var(--ui-layer-popover); width: 300px; right: max(44px, calc((100% - 1160px) / 2 + 26px)); background: var(--ui-surface-raised); box-shadow: var(--ui-shadow-popover); }
-.companions-memory-manager .companions-memory-filters { display: grid; grid-template-columns: 1fr 340px; gap: 12px; margin: 19px 0 17px; flex-shrink: 0; }
-.companions-memory-manager .companions-memory-filters input, .companions-memory-manager .companions-memory-filters select { font-size: 12px; padding: 11px 12px; border-radius: 8px; }
-.companions-memory-workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 20px; }
-.companions-memory-list { min-height: 0; overflow: auto; padding: 2px 3px 20px 0; scrollbar-width: thin; }
-.companions-memory-manager .companions-memory { padding: 17px 18px; margin: 0 0 11px; border: 1px solid var(--ui-border-subtle); border-radius: 11px; background: color-mix(in srgb, var(--ui-surface-canvas) 65%, transparent); }
-.companions-memory-manager .companions-memory.is-selected { border-color: color-mix(in srgb, var(--companion-blue) 50%, var(--ui-border-subtle)); background: color-mix(in srgb, var(--companion-blue) 4%, var(--ui-surface-canvas)); }
-.companions-memory-manager .companions-memory > p { font-size: 13px; line-height: 1.9; }
-.companions-memory-manager .companions-memory-meta { margin: 0 0 12px; }
-.companions-memory-manager .companions-memory-meta span { font-size: 10px; padding: 3px 7px; border: 0; background: color-mix(in srgb, var(--ui-content-secondary) 7%, transparent); }
-.companions-memory-manager .companions-memory-tags { gap: 5px; margin-top: 10px; }
-.companions-memory-manager .companions-memory-tags button { font-size: 10px; padding: 3px 7px; }
-.companions-memory-manager .companions-memory-actions { margin-top: 15px; padding-top: 11px; border-top: 1px solid var(--ui-border-subtle); gap: 10px; }
-.companions-memory-manager .companions-memory-actions small { font-size: 10px; }
-.companions-memory-manager .companions-memory-actions button { gap: 4px; font-size: 10px; color: var(--ui-content-secondary); }
-.companions-memory-reading { min-height: 0; overflow: auto; border: 1px solid var(--ui-border-subtle); border-radius: 12px; background: color-mix(in srgb, var(--ui-surface-canvas) 60%, transparent); padding: 20px; scrollbar-width: thin; }
-.companions-memory-reading > header { margin-bottom: 20px; display: flex; justify-content: space-between; align-items: baseline; }
-.companions-memory-reading h3 { font-size: 12px; font-weight: 600; }
-.companions-memory-reading > header > span { color: var(--ui-content-tertiary); font-size: 10px; }
-.companions-memory-reading .companions-memory-detail { color: var(--ui-content-secondary); font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
-.companions-memory-reading-content { padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid var(--ui-border-subtle); color: var(--ui-content-primary); font-size: 13px; line-height: 1.9; white-space: pre-wrap; }
-.companions-memory-reading .companions-memory-source, .companions-memory-reading .companions-memory-related { margin-top: 20px; padding-top: 12px; }
-.companions-memory-reading .companions-memory-source summary { font-size: 11px; }
-.companions-memory-reading .companions-memory-source p { font-size: 12px; line-height: 1.9; margin-top: 12px; }
-.companions-memory-reading button { border: 0; background: transparent; color: var(--companion-blue); padding: 8px 0; font-size: 11px; }
-.companions-memory-empty, .companions-memory-reading-empty { display: grid; place-content: center; justify-items: center; gap: 12px; text-align: center; color: var(--ui-content-tertiary); min-height: 240px; }
-.companions-memory-empty > svg, .companions-memory-reading-empty > svg { width: 32px; height: 32px; opacity: .5; }
-.companions-memory-empty p, .companions-memory-reading-empty p { font-size: 13px; }
-.companions-memory-empty small, .companions-memory-reading-empty small { font-size: 11px; line-height: 1.8; }
-.companions-memory-manager .companions-memory-manual { margin: 14px -26px 0; padding: 15px 26px; flex-shrink: 0; background: color-mix(in srgb, var(--ui-surface-canvas) 45%, transparent); }
-.companions-memory-manager .companions-memory-manual summary { font-size: 12px; }
-.companions-memory-manager .companions-memory-editor { margin-top: 12px; }
-.companions-memory-manager .companions-memory-editor textarea { min-height: 82px; max-height: 170px; font-size: 12px; padding: 12px; border-radius: 8px; }
-.companions-memory-manager .companions-memory-editor button { padding: 5px 8px; font-size: 12px; }
-.companions-memory-manager .companions-memory-editor button:last-child { border-radius: 6px; color: var(--ui-content-inverse); background: var(--companion-blue); }
 .companions-schedule-workspace { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
 .companions-workspace-tabs { display: flex; flex: 0 0 auto; gap: 24px; padding: 0 28px; border-bottom: 1px solid var(--ui-border-subtle); }
 .companions-workspace-tabs button { display: flex; align-items: center; gap: 7px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ui-content-tertiary); padding: 14px 2px; font-size: 12px; }
@@ -263,5 +221,5 @@
 .companions-schedule-editor-empty h3 { font-size: 17px; font-weight: 500; }
 .companions-schedule-editor-empty p { font-size: 12px; color: var(--ui-content-tertiary); line-height: 1.9; }
 @media (max-width: 1250px) { .companions-planner { flex-basis: 295px; width: 295px; padding-inline: 16px; }.companions-schedule-workspace { grid-template-columns: minmax(0, 1fr) 310px; }.companions-schedule-list { padding-inline: 20px; } }
-@media (max-width: 1020px) { .companions-planner { width: 320px; }.companions-memory-workspace { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 13px; }.companions-memory-manager .companions-memory-panel { padding-inline: 20px; }.companions-memory-manager .companions-memory-processing { flex-basis: 210px; }.companions-memory-manager .companions-memory-filters { grid-template-columns: 1fr 270px; }.companions-memory-manager .companions-memory-manual { margin-inline: -20px; padding-inline: 20px; }.companions-schedule-toolbar { flex-wrap: wrap; } }
-@media (max-width: 800px) { .companions-memory-manager > header, .companions-schedule-manager > header { padding: 18px; }.companions-workspace-title h2 { font-size: 16px; }.companions-workspace-title p { font-size: 10px; }.companions-workspace-symbol { display: none; }.companions-memory-manager-owner > .companion-avatar { display: none; }.companions-memory-overview { display: block; }.companions-memory-manager .companions-memory-processing { margin-top: 12px; }.companions-memory-manager .companions-memory-filters { grid-template-columns: 1fr; margin-top: 12px; }.companions-memory-workspace { grid-template-columns: 1fr; overflow: auto; }.companions-memory-list { min-height: 130px; max-height: 260px; }.companions-memory-reading { min-height: 180px; }.companions-schedule-workspace { grid-template-columns: minmax(0, 1fr) 290px; }.companions-schedule-row { gap: 10px; }.companions-schedule-row-date { display: none; } }
+@media (max-width: 1020px) { .companions-planner { width: 320px; }.companions-schedule-toolbar { flex-wrap: wrap; } }
+@media (max-width: 800px) { .companions-schedule-manager > header { padding: 18px; }.companions-schedule-manager .companions-workspace-title h2 { font-size: 16px; }.companions-schedule-manager .companions-workspace-title p { font-size: 12px; }.companions-schedule-manager .companions-workspace-symbol { display: none; }.companions-schedule-workspace { grid-template-columns: minmax(0, 1fr) 290px; }.companions-schedule-row { gap: 10px; }.companions-schedule-row-date { display: none; } }

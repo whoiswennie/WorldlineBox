@@ -146,9 +146,9 @@ describe('sourced companion runtime state', () => {
   it('validates exact evidence and commits an automatic state proposal with its leased extraction', () => {
     const { store, scope } = fixture(), message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，也尊重你的选择。' });
     const job = store.request({ type: 'memory.jobs.claim' }).memoryJob!;
-    expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, candidates: [], stateProposal: proposal(message, { evidence: [{ sourceMessageId: message.id, quote: '捏造来源' }] }) })).toThrow('原文');
+    expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [], stateProposal: proposal(message, { evidence: [{ sourceMessageId: message.id, quote: '捏造来源' }] }) })).toThrow('原文');
     expect(store.request({ type: 'memory.status', ...scope }).memoryStatus?.running).toBe(1);
-    store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, candidates: [], stateProposal: proposal(message, { expression: 'playful', focus: '讨论选择', appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) });
+    store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [], stateProposal: proposal(message, { expression: 'playful', focus: '讨论选择', appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) });
     const state = store.request({ type: 'state.get', ...scope }).runtimeState!;
     expect(state.expression).toBe('playful'); expect(state.relationship.affinity).toBeGreaterThan(50);
     expect(store.request({ type: 'memory.status', ...scope }).memoryStatus?.completed).toBe(1);
@@ -214,7 +214,7 @@ describe('sourced companion runtime state', () => {
     const { store, scope } = fixture(), source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，暂时的私密计划。' });
     const job = store.request({ type: 'memory.jobs.claim' }).memoryJob!;
     store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] });
-    expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, candidates: [],
+    expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [],
       stateProposal: proposal(source, { focus: source.content, appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) })).not.toThrow();
     expect(store.request({ type: 'memory.status', ...scope }).memoryStatus?.completed).toBe(1);
     expect(store.request({ type: 'state.get', ...scope }).runtimeState).toMatchObject({ relationship: { affinity: 50, trust: 50, respect: 50 } });
@@ -228,6 +228,21 @@ describe('sourced companion runtime state', () => {
     expect(store.request({ type: 'state.get', ...scope }).runtimeState?.energy).toBe(88);
     store.updateAction(action.id, { status: 'failed', error: '实际程序报错' });
     expect(store.request({ type: 'state.get', ...scope }).runtimeState).toMatchObject({ energy: 88, relationship: { affinity: 50, trust: 50, respect: 50 } });
+    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.familiarity.sharedEventCount).toBe(1);
+    store.request({ type: 'state.action', actionId: action.id });
+    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.familiarity.sharedEventCount).toBe(1);
+    const group = store.createConversation('另一可见域', ['alice']);
+    expect(store.request({ type: 'state.get', companionId: 'alice', conversationId: group.id }).runtimeState?.familiarity.sharedEventCount).toBe(0);
+    store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] });
+    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.familiarity.sharedEventCount).toBe(0);
+  });
+
+  it('does not count diary creation or a task without a real outcome as a shared experience', () => {
+    const { store, scope } = fixture();
+    const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '今天一起看看任务吧。' });
+    store.request({ type: 'memory.record', ...scope, candidate: { content: '共同的日记描述', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
+    store.createAction({ ...scope, sourceMessageId: source.id, title: '只有完成标签', status: 'succeeded' });
+    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.familiarity.sharedEventCount).toBe(0);
   });
 });
 

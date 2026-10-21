@@ -41,10 +41,11 @@ export const companionWorldEventSchema = z.object({ id, sequence: z.number().int
   effect: z.object({ type: z.enum(['comfort', 'stress', 'shared_success', 'rest', 'social']), intensity: z.number().min(0).max(1) }).optional() });
 export const companionWorldRelationshipSchema = z.object({ companionId: id, targetCompanionId: id, affinity: z.number().min(0).max(100),
   trust: z.number().min(0).max(100), interactions: z.number().int().nonnegative(), updatedAt: z.iso.datetime() });
-export const companionWorldWorkSchema = z.object({ workId: id, companionId: id, kind: z.enum(['chat', 'action', 'schedule']),
+export const companionWorldWorkSchema = z.object({ workId: id, companionId: id, kind: z.enum(['chat', 'action', 'schedule', 'learning']),
   status: z.enum(['waiting', 'moving', 'seating', 'ready', 'ended']), computerId: id.optional(), nextCheckAt: z.iso.datetime().optional(), reason: z.string().optional() });
 export const companionWorldJobSchema = z.object({ id, kind: z.enum(['decision', 'dream']), companionId: id, conversationId: id, status: z.enum(['pending', 'running', 'done', 'failed']),
-  leaseToken: id.optional(), throughEventSequence: z.number().int().nonnegative(), createdAt: z.iso.datetime(), attempts: z.number().int().nonnegative(), sourceMemoryIds: z.array(id).max(20).default([]), encounterMemberIds: z.array(id).min(2).max(4).optional() });
+  leaseToken: id.optional(), throughEventSequence: z.number().int().nonnegative(), createdAt: z.iso.datetime(), attempts: z.number().int().nonnegative(), sourceMemoryIds: z.array(id).max(20).default([]), encounterMemberIds: z.array(id).min(2).max(4).optional(),
+  sleepEpisodeId: id.optional(), dreamAllowed: z.boolean().optional() });
 export const companionWorldSnapshotSchema = z.object({
   settings: companionWorldSettingsSchema,
   clock: z.object({ realNow: z.iso.datetime(), virtualNow: z.iso.datetime(), speed: z.number().positive(), day: z.number().int(), hour: z.number().min(0).max(24), daylight: z.boolean() }),
@@ -88,11 +89,15 @@ export const companionWorldStorageCommands = [
   z.strictObject({ type: z.literal('world.clock'), since: z.array(z.iso.datetime()).max(10).optional() }),
   z.strictObject({ type: z.literal('world.tick'), now: z.iso.datetime().optional(), snapshot: z.boolean().default(false) }),
   scope.extend({ type: z.literal('world.attention.record'), sourceMessageId: id, sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/), urgency: z.enum(['urgent', 'ordinary']), confidence: z.number().min(0).max(1), evidence: z.array(z.string().min(1).max(4000)).min(1).max(10), reason: z.string().min(1).max(1000) }).strict(),
-  scope.extend({ type: z.literal('world.work.begin'), workId: id, kind: z.enum(['chat', 'action', 'schedule']), sourceMessageId: id.optional(), urgent: z.boolean().default(false), fixed: z.boolean().default(false) }).strict(),
+  scope.extend({ type: z.literal('world.work.begin'), workId: id, kind: z.enum(['chat', 'action', 'schedule', 'learning']), sourceMessageId: id.optional(), urgent: z.boolean().default(false), fixed: z.boolean().default(false),
+    learningGrantId: id.optional(), learningLeaseToken: id.optional() }).strict(),
   z.strictObject({ type: z.literal('world.work.ready'), companionId: id, workId: id }),
   z.strictObject({ type: z.literal('world.work.end'), companionId: id, workId: id }),
-  z.strictObject({ type: z.literal('world.job.claim'), kind: z.enum(['decision', 'dream']) }),
-  z.strictObject({ type: z.literal('world.job.complete'), id, leaseToken: id, action: companionWorldArgumentsSchema.optional(), sourceMemoryIds: z.array(id).max(30).default([]), memoryCandidates: z.array(companionMemoryCandidateSchema).max(20).default([]),
+  z.strictObject({ type: z.literal('world.job.claim'), kind: z.enum(['decision', 'dream']), excludedCompanionIds: z.array(id).max(100).optional() }),
+  z.strictObject({ type: z.literal('world.job.check'), id, leaseToken: id }),
+  z.strictObject({ type: z.literal('world.job.bind-memories'), id, leaseToken: id,
+    memoryVersions: z.array(z.strictObject({ id, version: z.number().int().positive() })).min(1).max(20) }),
+  z.strictObject({ type: z.literal('world.job.complete'), id, leaseToken: id, expectedMemoryRevision: z.string().min(1).max(128).optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional(), activityTask: z.strictObject({ title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(16000) }).optional(), action: companionWorldArgumentsSchema.optional(), sourceMemoryIds: z.array(id).max(30).default([]), memoryCandidates: z.array(companionMemoryCandidateSchema).max(20).default([]),
     dream: z.strictObject({ text: z.string().max(8000), sourceMessageIds: z.array(id).min(1).max(30), relatedMemoryIds: z.array(id).min(1).max(30), evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().min(1).max(4000) })).min(1).max(60) }).optional(),
     appraisals: z.array(z.strictObject({ eventId: id, targetCompanionId: id, type: z.enum(['support', 'respect', 'boundary_violation', 'hostility', 'shared_success', 'repair', 'disappointment']), intensity: z.number().min(0).max(1), confidence: z.number().min(0).max(1) })).max(10).default([]) }),
   z.strictObject({ type: z.literal('world.job.fail'), id, leaseToken: id, error: z.string().max(2000) }),

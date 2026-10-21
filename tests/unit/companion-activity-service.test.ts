@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import { CompanionWorldService } from '../../src/main/companions/world-service';
 import { CompanionActivityTaskService } from '../../src/main/companions/activity-task-service';
+import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 const seeds: CompanionSeed[] = [{ id: 'alice', name: 'Alice', persona: '尊重实际结果', description: '', model: '', avatar: 'sister', active: true, proactive: true }];
 let worldService: CompanionWorldService | undefined;
 let root: string, store: CompanionsStore, service: CompanionActivityTaskService | undefined;
@@ -90,7 +91,9 @@ it.each([{ initiallyQueued: true, offline: false }, { initiallyQueued: false, of
     expect(get()).toMatchObject({ status: 'waiting', step: 2 });
   }
   vi.useFakeTimers();
-  worldService = new CompanionWorldService({ request: async input => store.request(input), fetchFn,
+  worldService = new CompanionWorldService({ request: async input => input.type === 'memory.search' ? { ok: true, memoryPage: { items: [], hasMore: false },
+    memoryContext: { text: '', revision: store.request({ type: 'memory.snapshot', companionId: input.companionId, conversationId: input.conversationId,
+      beforeSequence: input.beforeSequence }).memorySnapshot!.revision, profileKey: 'fixture-vcp-profile' } } : store.request(input), fetchFn,
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' }), changed: vi.fn(), wakeWaiting: vi.fn(), report: error => { throw error; } });
   for (let iteration = 0; iteration < 150 && get().status !== 'succeeded'; iteration++) {
     await worldService.tick(); await service!.tick();
@@ -157,4 +160,113 @@ it('rejects an in-flight result after cancellation, rather than dispatching its 
   await service!.close();
   expect(store.request({ type: 'world.observe', companionId: scope.companionId, conversationId: scope.conversationId }).world!.actors[0]!.route).toHaveLength(0);
   expect(store.request({ type: 'activity.get', companionId: scope.companionId, conversationId: scope.conversationId, id: scope.task.id }).activityTask!.status).toBe('cancelled');
+});
+
+it.each(['private', 'group', 'world', 'world-private-denied', 'private-own-revise', 'private-own-organize'] as const)(
+  'reads a real owned material and records sourced personal understanding within the original %s domain', async domain => {
+    let materialId = '', sourceId = '', quote = '', learnedId = '', blockedRead = false;
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      expect(data.purpose).toBe('activity_task_step');
+      if (domain === 'world-private-denied') expect(JSON.stringify(data)).not.toContain('PRIVATE_MATERIAL_DETAIL');
+      if (data.task.step === 0) return response({ status: 'continue', action: null, wait: null,
+        memory: { operation: 'read', id: materialId }, summary: '先实际阅读这一份本人可见资料，再决定是否形成认识。' });
+      const read = data.task.history.find((item: { action: string }) => item.action === 'memory.read');
+      expect(read).toBeDefined();
+      if (domain === 'world-private-denied') {
+        expect(read.ok).toBe(false); blockedRead = true;
+        return response({ status: 'blocked', action: null, wait: null, summary: '这份资料不属于当前世界任务可读范围，没有读到内容，也没有形成新的学习笔记。' });
+      }
+      expect(read.ok).toBe(true);
+      const actualRead = JSON.parse(read.result);
+      expect(actualRead.memories[0]).toMatchObject({ id: materialId, version: 1, sourceMessageIds: [sourceId] });
+      expect(actualRead.sources[0]).toMatchObject({ id: sourceId, content: expect.stringContaining(quote) });
+      const ownMutation = domain === 'private-own-revise' || domain === 'private-own-organize';
+      if (ownMutation && data.task.step === 1) return response({ status: 'continue', action: null, wait: null,
+        memory: domain === 'private-own-organize' ? { operation: 'organize', ids: [materialId], tags: ['学习资料', '已核对出处'] }
+          : { operation: 'revise', id: materialId, expectedVersion: 1, candidate: { diaryName: '学习资料', content: '阅读方法：' + quote,
+            tags: ['学习资料', '已核对出处'], sourceMessageIds: [sourceId], evidence: [{ sourceMessageId: sourceId, quote }] } }, summary: '按实际阅读结果整理这一份资料。' });
+      if (data.task.step === 1 || ownMutation && data.task.step === 2) return response({ status: 'continue', action: null, wait: null,
+        memory: { operation: 'record', candidate: { diaryName: '自我认识', content: '读过这份有来源的资料后，我更愿意保留观察背景和原始出处，再形成有条件的个人判断。',
+          tags: ['资料学习', '原始出处', '个人认识'], sourceMessageIds: [sourceId], relatedMemoryIds: [materialId], evidence: [{ sourceMessageId: sourceId, quote }] } },
+        summary: '根据实际读到的资料，记录可以追溯和撤回的个人理解。' });
+      const written = data.task.history.find((item: { action: string }) => item.action === 'memory.record');
+      expect(written.ok).toBe(true); learnedId = JSON.parse(written.result).memories[0].id;
+      return response({ status: 'complete', action: null, wait: null, summary: '已读完这份资料，并保存有原始来源的个人认识。' });
+    });
+    const base = setup(fetchFn); store.request({ type: 'activity.cancel', companionId: base.companionId, conversationId: base.conversationId, id: base.task.id });
+    await service!.close();
+    const scope = { companionId: 'alice', conversationId: domain === 'group' ? store.createConversation('本人的学习小组', ['alice']).id
+      : domain.startsWith('world') ? 'world_alice' : base.conversationId };
+    const materialScope = domain === 'world-private-denied' ? { companionId: 'alice', conversationId: base.conversationId } : scope;
+    const source = domain === 'world' ? store.request({ type: 'memory.world_query', ...scope, category: 'observations', query: '', limit: 2 }).memorySources![0]!
+      : store.appendMessage({ conversationId: materialScope.conversationId, authorId: 'user',
+        content: domain === 'world-private-denied' ? 'PRIVATE_MATERIAL_DETAIL' : '读资料时保存原始出处，区分实际观察、作者解释和自己的推测，不把一次观察升级为普遍结论。', replyDirective: 'none' });
+    sourceId = source.id; quote = source.content.slice(0, 180);
+    materialId = store.request({ type: 'memory.record', ...materialScope, candidate: { diaryName: '学习资料', content: source.content, tags: ['学习资料', '阅读方法'],
+      sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!.id;
+    const calls: CompanionStorageCommand[] = [];
+    service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return store.request(input); },
+      configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' }),
+      profiles: async () => ({ publicProfiles: [], visualInputs: [] }), fetchFn, excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
+    const goal = '阅读本人可见资料 ' + materialId + '；只有实际读到内容后才用逐字证据形成个人认识，保持原来源范围。';
+    const taskSource = domain.startsWith('world') ? undefined : store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: goal, replyDirective: 'none' });
+    const task = store.request({ type: 'activity.start', ...scope, clientId: 'learn_material_' + domain,
+      ...(taskSource ? { sourceMessageId: taskSource.id } : {}), title: '阅读指定的本人资料', goal }).activityTask!;
+    const get = () => store.request({ type: 'activity.get', ...scope, id: task.id }).activityTask!;
+    for (let step = 0; step < 15 && !['succeeded', 'failed'].includes(get().status); step++) {
+      await service.tick(); await new Promise(resolve => setImmediate(resolve));
+      vi.setSystemTime(Date.now() + 2000); store.request({ type: 'world.tick' });
+    }
+    expect(get().status).toBe(domain === 'world-private-denied' ? 'failed' : 'succeeded');
+    expect(calls.find(input => input.type === 'memory.read')).toMatchObject({ ...scope, id: materialId });
+    if (domain === 'world-private-denied') {
+      expect(blockedRead).toBe(true); expect(calls.some(input => input.type === 'memory.record')).toBe(false); expect(learnedId).toBe(''); return;
+    }
+    expect(calls.filter(input => input.type === 'memory.record')).toHaveLength(1);
+    const learned = store.request({ type: 'memory.read', ...scope, id: learnedId }).memoryRead!.memory;
+    expect(learned).toMatchObject({ diaryName: '自我认识', sourceConversationId: materialScope.conversationId });
+    expect(learned.sources.map(item => item.messageId)).toEqual([sourceId]);
+    expect(get().history.filter(item => item.action.startsWith('memory.')).map(item => item.action)).toEqual(domain === 'private-own-revise'
+      ? ['memory.read', 'memory.revise', 'memory.record'] : domain === 'private-own-organize' ? ['memory.read', 'memory.organize', 'memory.record'] : ['memory.read', 'memory.record']);
+    store.request({ type: 'memory.forget', ...materialScope, sourceMessageIds: [sourceId] });
+    expect(() => store.request({ type: 'memory.read', ...scope, id: learnedId })).toThrow();
+    expect(store.request({ type: 'activity.get', ...scope, id: task.id }).activityTask!.history).toEqual([]);
+  });
+
+it.each(['revise', 'forget'] as const)('rejects stale learning after a previously read material is externally %s during the next model inference', async change => {
+  let materialId = '', planning = false, resolve!: (value: Response) => void;
+  const pending = new Promise<Response>(done => { resolve = done; });
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    if (data.task.step === 0) return response({ status: 'continue', action: null, wait: null, memory: { operation: 'read', id: materialId }, summary: '读取指定的本人资料。' });
+    expect(data.task.history[0]).toMatchObject({ action: 'memory.read', ok: true }); planning = true; return pending;
+  };
+  const base = setup(fetchFn); store.request({ type: 'activity.cancel', companionId: base.companionId, conversationId: base.conversationId, id: base.task.id }); await service!.close();
+  const scope = { companionId: base.companionId, conversationId: base.conversationId };
+  const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '这是需要保留出处的原始阅读资料。', replyDirective: 'none' });
+  const sourceId = source.id, quote = source.content;
+  const candidate = { diaryName: '学习资料', content: source.content, tags: ['学习资料'], sourceMessageIds: [sourceId], evidence: [{ sourceMessageId: sourceId, quote }] };
+  materialId = store.request({ type: 'memory.record', ...scope, candidate }).memories![0]!.id;
+  const calls: CompanionStorageCommand[] = [];
+  service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return store.request(input); },
+    configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' }),
+    profiles: async () => ({ publicProfiles: [], visualInputs: [] }), fetchFn, excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
+  const request = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '阅读这份资料并形成有来源的个人认识。', replyDirective: 'none' });
+  const task = store.request({ type: 'activity.start', ...scope, sourceMessageId: request.id, clientId: 'stale_learning_' + change,
+    title: '阅读指定资料', goal: request.content + materialId }).activityTask!;
+  for (let step = 0; step < 8 && !planning; step++) { await service.tick(); await new Promise(done => setImmediate(done));
+    vi.setSystemTime(Date.now() + 2000); store.request({ type: 'world.tick' }); }
+  expect(planning).toBe(true);
+  if (change === 'forget') store.request({ type: 'memory.forget', ...scope, id: materialId });
+  else store.request({ type: 'memory.revise', ...scope, id: materialId, expectedVersion: 1, candidate: { ...candidate, content: '管理员修订了资料解释，但保留同一份原始出处。' } });
+  resolve(response({ status: 'continue', action: null, wait: null, summary: '这是基于旧资料版本的晚到认识。',
+    memory: { operation: 'record', candidate: { ...candidate, diaryName: '自我认识', content: '不应落盘的旧版认识', relatedMemoryIds: [materialId] } } }));
+  await vi.waitFor(() => expect(calls.some(command => command.type === 'activity.fail')).toBe(true));
+  // A rejected in-flight lease is reclaimed by the durable scheduler, without publishing its old result.
+  vi.setSystemTime(Date.now() + 122000); store.request({ type: 'world.tick' }); await service.tick();
+  expect(calls.some(command => command.type === 'memory.record')).toBe(false);
+  const stopped = store.request({ type: 'activity.get', ...scope, id: task.id }).activityTask!;
+  expect(stopped).toMatchObject({ status: 'cancelled', history: [] });
+  expect(store.request({ type: 'memory.browse', ...scope }).memoryPage!.items.some(hit => hit.memory.content === '不应落盘的旧版认识')).toBe(false);
 });

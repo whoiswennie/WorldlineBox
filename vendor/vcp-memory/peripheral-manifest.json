@@ -1,0 +1,277 @@
+{
+  "repository": "https://github.com/lioensky/VCPToolBox",
+  "commit": "7ceecd48c46caac8168b909ade5febbc4a254e42",
+  "plugins": [
+    "DailyNote",
+    "DailyNoteManager",
+    "RAGDiaryPlugin",
+    "LightMemo",
+    "VCPTimeLine"
+  ],
+  "files": [
+    {
+      "path": "Plugin/DailyNote/dailynote.js",
+      "bytes": 70721,
+      "sha256": "021e23c975daea121c2ce16a20770fd6a1a3252675e53c1936ab23fcbd231e2e"
+    },
+    {
+      "path": "Plugin/DailyNoteManager/daily-note-manager.js",
+      "bytes": 28186,
+      "sha256": "0eb8fee4a6b53664636ba9b8e411d765b165e9a05d4fb457bb1cd9bb400d92bf"
+    },
+    {
+      "path": "modules/associativeDiscovery.js",
+      "bytes": 10760,
+      "sha256": "bd06d17d134ac39061529f8bfac459c9330cdfe1a67eeebf8b5d03da89daa9b6"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/AIMemoHandler.js",
+      "bytes": 41838,
+      "sha256": "3fd7a4a3b4a3c48855523ce8cbbce43fbe5a4dd58331b002b3560bd28a3b1901"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/AttachmentMemoUtils.js",
+      "bytes": 2278,
+      "sha256": "dc1860c5abe1c15c3e73db98cca7742891c4d8ef85b1fe3a4cef9b801ceeae52"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/BM25QueryOptimizer.js",
+      "bytes": 12056,
+      "sha256": "a95a196251f31a74d2375ffd47ae1ce31257adee544567f54e5ff1ef5af7cd02"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/CacheManager.js",
+      "bytes": 4843,
+      "sha256": "bd43a14486abe874d9f6372fa4c268965f02242224634d7b1dbc5e126114b2d5"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/ContextVectorManager.js",
+      "bytes": 20029,
+      "sha256": "24e5a089165dc5d255b5550751a602c2e92863c2c7a7b17f1884b8a02c812049"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/DirectDiaryTextProcessor.js",
+      "bytes": 49515,
+      "sha256": "a44f0530fddd2bd838d734d7f165d323ea49ef70d796ae73a5190d4498383f7b"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/FoldingStore.js",
+      "bytes": 12202,
+      "sha256": "60734cdddfa6c2cfcee10461927e9fdabac8b4421fd88dca4c399e42f5b03c29"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/MessageContentUtils.js",
+      "bytes": 2467,
+      "sha256": "a18170433e7731be2cc422bc7fd6a140fb09ccb93005929877f63f707d86c1b7"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/MetaThinkingManager.js",
+      "bytes": 30619,
+      "sha256": "ab2ed554a31a6c93ce7b5ef2409617306e1732ed5e0bc0ba07e8579bb31a9897"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js",
+      "bytes": 289250,
+      "sha256": "19850ed1b6314b4e2358acda7fb0e67411dd88c42983329c657044642605fece"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/RAGResultFormatter.js",
+      "bytes": 8484,
+      "sha256": "34027ece6f6b59b26f5507ec19547259f0dcf9b2f06bd1e7791cd4122cd0e573"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/SemanticGroupManager.js",
+      "bytes": 20098,
+      "sha256": "f7d312a057f9886c32a48f68f3c39179b60b255e1990bc37b19fc60aacffb552"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/TDBPlaceholderProcessor.js",
+      "bytes": 24525,
+      "sha256": "ea8a6d769e69302c6e211a90e642e5fabe7e4031a1a26f022ba2d9a7f2f1fd45"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/TextSanitizer.js",
+      "bytes": 11356,
+      "sha256": "d0fcba38ba56b36903ee03a328ccaa717c798b786c10f6241ab6ef34f9dbafd0"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/TimeExpressionParser.js",
+      "bytes": 9104,
+      "sha256": "e97a64fd5b91c6e2c52009198b30f1fb5eac203ee1545b1b2375dac3c76840d8"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/VectorMathUtils.js",
+      "bytes": 4448,
+      "sha256": "2cb4f04954896d438ac66a26337217c83cabf7cf0d071f1d2b8ca4364ba584f7"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/timeExpressions.config.js",
+      "bytes": 2747,
+      "sha256": "fb329bb8a88b38c9a2cd8d1b505de721e1f6b5367cb81e73c5ed1bab15095e4a"
+    },
+    {
+      "path": "TextChunker.js",
+      "bytes": 5622,
+      "sha256": "6c2b0f16b4d25f3b87e606bd72b64dc4bb2fe9ed4091dcdec67a520a0eb4a8b4"
+    },
+    {
+      "path": "modules/agentManager.js",
+      "bytes": 14182,
+      "sha256": "6a5ebd7d1eaa82b40a9f8c89c2784504bdd8bcd3fe79ff572ba4c78a21bec540"
+    },
+    {
+      "path": "modules/dynamicToolRegistry.js",
+      "bytes": 73887,
+      "sha256": "bddbbbad16f3bc45b880cec65103b5a16d24939d2cea2dc1b0c40198311dbb2f"
+    },
+    {
+      "path": "modules/foldProtocol.js",
+      "bytes": 2316,
+      "sha256": "ebc26f159480513bf7066943c6dee2f70959336d6593c82f294752428a96faa6"
+    },
+    {
+      "path": "modules/jevClient.js",
+      "bytes": 14775,
+      "sha256": "6da2f3a0ae9d362fd955bb722e02d4576f756cdfc1d63c527855443b4b3ac447"
+    },
+    {
+      "path": "modules/jevFoldFilter.js",
+      "bytes": 16317,
+      "sha256": "95c139f65e7b190f8e4e95e11de6a7b0acdf44c1da063d919e9bad38f1823431"
+    },
+    {
+      "path": "modules/jevScorer.js",
+      "bytes": 5879,
+      "sha256": "4b5f1efa7bf14d84ee130df422dbdfcfb57449470812632d4b83ba3411973e1d"
+    },
+    {
+      "path": "modules/messageProcessor.js",
+      "bytes": 57021,
+      "sha256": "4093b312e343bd4de51f3363c22639acd48fbee50eeb82fc1936665ec2bd107e"
+    },
+    {
+      "path": "modules/sarPromptManager.js",
+      "bytes": 5637,
+      "sha256": "6abc9a29b65af8fb2da5d22109bb792ed045b5f6a39fcfb5639979d1c874731c"
+    },
+    {
+      "path": "modules/toolboxManager.js",
+      "bytes": 6602,
+      "sha256": "3a41e0ecce85a51952737432c20e3055f4c4fcfacc4493d5b753238f2a1d036a"
+    },
+    {
+      "path": "modules/tvsManager.js",
+      "bytes": 3288,
+      "sha256": "3102b326bc37699f2fda74e9179cde0d983a0bc8eb901a5ffada7cee19043cdf"
+    },
+    {
+      "path": "Plugin/LightMemo/LightMemo.js",
+      "bytes": 46700,
+      "sha256": "a72f9561708cea7e4fd4e74db270a8de198190063aa56abd4c4dbeb78b204be1"
+    },
+    {
+      "path": "Plugin/LightMemo/nativeQuery.js",
+      "bytes": 8453,
+      "sha256": "b792a1725ea854d5afccd6d9537e87bc907db78b0af2aab44858a646eccb71fc"
+    },
+    {
+      "path": "Plugin/VCPTimeLine/VCPTimeLine.js",
+      "bytes": 41442,
+      "sha256": "189e62657002bac19c42742e4f8288ef065defda7cb5308afdc256a416276129"
+    },
+    {
+      "path": "Plugin/DailyNote/plugin-manifest.json",
+      "bytes": 6214,
+      "sha256": "3d140728c5e43f4a8e0956046265271b226372881ff3d0c80a47415bc2fdccb9"
+    },
+    {
+      "path": "Plugin/DailyNoteManager/plugin-manifest.json",
+      "bytes": 9234,
+      "sha256": "00e5f97fe4245fa76920c9ee359578f4daa9c18a1dac9b534cb2c21bfdd2e013"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/plugin-manifest.json",
+      "bytes": 2397,
+      "sha256": "59010d69def2868e0db4b46995014125cb712c79bc5d3f18bdfb2b1743c51452"
+    },
+    {
+      "path": "Plugin/LightMemo/plugin-manifest.json",
+      "bytes": 4578,
+      "sha256": "d5604a59ebc04be23d71e2ba944d3613aa365c1c34c8e207073ed313e86164ed"
+    },
+    {
+      "path": "Plugin/VCPTimeLine/plugin-manifest.json",
+      "bytes": 635,
+      "sha256": "4017ea5229f8fed5da97ce8b0352363f75cad904729d565f3d74b7082136d44b"
+    },
+    {
+      "path": "Plugin/DailyNote/TagMaster.txt",
+      "bytes": 1748,
+      "sha256": "d88ca2d340b639acc6af040c4fc2826e5650eee0f39d0e0a319db9a80d5c246f"
+    },
+    {
+      "path": "Plugin/DailyNoteManager/Readme.md",
+      "bytes": 8259,
+      "sha256": "54edfd356f3b249e04d5d6dd05c4ce234fc8d71591a124a028430397039d07b8"
+    },
+    {
+      "path": "Plugin/LightMemo/config.env.example",
+      "bytes": 2123,
+      "sha256": "1a44d7a1ec9494001bece92ab00582a7d01c975196b27761af8684d843b59f94"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/README.md",
+      "bytes": 17898,
+      "sha256": "ddaf207f8e9c50ccb2427ef766c263a8d8569f0a782c93cb2fbf1333e4530e0e"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/META_THINKING_GUIDE.md",
+      "bytes": 6497,
+      "sha256": "7ab78d8a5131935b48be78b1bcbfddd99f86439039adf14d30f18a84da5be4dd"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/AIMemoPrompt.txt",
+      "bytes": 6884,
+      "sha256": "8cc4cefc7a8ac6353efa449711ab8db6b09d4b69ddd4036d8b613c1758752864"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/MoreAIMemoPresets/AIMemoPromptX.txt",
+      "bytes": 127,
+      "sha256": "4b8d065ee279420b1012a1a2fe39fc94b8397cfd8f81d4a33f1e1077c0e9e637"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/config.env.example",
+      "bytes": 3607,
+      "sha256": "e0f19dc0d1b1044040d0250dcbb9581fa7e1df476eed47187d424d8b435fe92c"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/rag_tags.json.example",
+      "bytes": 470,
+      "sha256": "23ec34dc77fc32b89b53b73bb0d561f953034b7c1bffa3ea44e24ad91e2c89ba"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/semantic_groups.json.example",
+      "bytes": 732,
+      "sha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/semantic_groups.edit.json.example",
+      "bytes": 732,
+      "sha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542"
+    }
+  ],
+  "runtimePackages": [
+    "@dqbd/tiktoken",
+    "@node-rs/jieba",
+    "axios",
+    "better-sqlite3",
+    "cheerio",
+    "chinese-lunar-calendar",
+    "chokidar",
+    "dayjs",
+    "dotenv",
+    "https-proxy-agent",
+    "mime-types",
+    "node-fetch"
+  ]
+}

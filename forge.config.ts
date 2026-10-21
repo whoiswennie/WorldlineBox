@@ -57,6 +57,10 @@ const config: ForgeConfig = {
       process.env.VcpkgEnabled = 'false';
       const mediaPlatform = nativeMediaPlatform(platform, arch);
       runNodeGate('scripts/generate-automation-declarations.mjs', []);
+        runNodeGate('scripts/vendor-vcp-memory.mjs', ['--restore-missing']);
+        runNodeGate('scripts/vendor-vcp-memory.mjs', ['--verify']);
+      runNodeGate('scripts/stage-vcp-memory-runtime.mjs', []);
+      runNodeGate('scripts/stage-bundled-embedding.mjs', ['--acquire']);
       // Recover ignored media executables from the pinned WorldlineBox-Build
       // release when a clean checkout or a local replacement fails the gate.
       runNodeGate('scripts/media-binaries.mjs', ['ensure', '--platform', mediaPlatform]);
@@ -138,6 +142,9 @@ const config: ForgeConfig = {
     // platform bundle before packaging; `verify:package` repeats the same
     // checks against this copied directory.
     extraResource: [
+      path.join(projectRoot, '.tools', 'vcp-memory-release', 'vcp-memory'),
+      path.join(projectRoot, '.tools', 'vcp-memory-release', 'vcp-memory-host'),
+      path.join(projectRoot, 'resources', 'embedding-models'),
       packagedResourcesRoot,
       // Browser extension bundle (manual-load distribution): installed at
       // WorldlineBox.app/Contents/Resources/extension (macOS) or
@@ -157,7 +164,11 @@ const config: ForgeConfig = {
     // module plugin can unpack better-sqlite3.
     ignore: (file) => {
       if (!file) return false;
-      return !file.startsWith('/.vite') && !file.startsWith('/node_modules');
+      const normalized = file.replaceAll('\\', '/');
+      // These complete dependency trees ship once through extraResource. Keeping
+      // them in ASAR as well doubles the payload and sends nested copies to prune.
+      if (/^\/\.vite\/vcp-memory(?:-host)?(?:\/|$)/u.test(normalized)) return true;
+      return !normalized.startsWith('/.vite') && !normalized.startsWith('/node_modules');
     },
   },
   rebuildConfig: {

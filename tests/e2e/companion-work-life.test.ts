@@ -1,5 +1,5 @@
 import { builtinModules, createRequire } from 'node:module';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,10 +8,10 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionWorkOrder } from '../../src/shared/companion-work-order';
 import { THEME_PREF_KEY } from '../../src/renderer/theme/theme-preferences';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 async function request(page: Page, input: CompanionsRequest) { const result = await page.evaluate(value => (window as unknown as { worldlinebox: { companions: WorldlineBoxCompanionsApi } }).worldlinebox.companions.request(value), input); expect(result.ok, result.error).toBe(true); return result; }
-function cleanup(root: string) { const absolute = path.resolve(root); if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-social-observer-')) throw new Error('Unexpected work-life fixture cleanup.'); rmSync(absolute, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 }); }
+function cleanup(root: string) { const absolute = path.resolve(root); if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-social-observer-')) throw new Error('Unexpected work-life fixture cleanup.'); removeCompanionTestDirectory(absolute); }
 
 // Uses real SQLite records and UI commands; fixture work is paused and is not execution evidence.
 // eslint-disable-next-line no-empty-pattern
@@ -29,7 +29,11 @@ test('manages real work orders separately from daily life windows in light and d
     application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
     const page = await application.firstWindow(), native = await application.browserWindow(page);
     await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 960); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+    await ensureCompanionTestWorkspace(page);
     page.on('pageerror', error => errors.push(error.message));
+    const migrated = (await request(page, { type: 'work-order.list', companionId: data.companionId, conversationId: data.conversationId, includeHistory: true, limit: 100 })).workOrderPage!;
+    expect(migrated.items.some(order => order.id === data.order.id), 'The selected library must retain the actual legacy fixture work order.').toBe(true);
+    await request(page, { type: 'conversation.open', companionId: data.companionId });
     await page.locator('[data-application-module="companions"]').click(); await page.locator('[data-companion-conversation="' + data.conversationId + '"]').click();
     await page.getByRole('button', { name: '我们之间', exact: true }).click();
     const planner = page.getByRole('complementary', { name: '伙伴手帐', exact: true });

@@ -29,7 +29,7 @@ function fixture() {
 function advance(store: CompanionsStore, milliseconds: number): CompanionWorldSnapshot { vi.setSystemTime(Date.now() + milliseconds); return store.request({ type: 'world.tick', snapshot: true }).world!; }
 const actor = (world: CompanionWorldSnapshot) => world.actors.find(actor => actor.companionId === 'alice')!;
 function start(store: CompanionsStore, durationMinutes = 35): CompanionLifeOccurrence {
-  store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '测试实际公园散步', enabled: true, startMinute: 600, endMinute: 610, probability: 1, action: 'park_walk', durationMinutes } });
+  store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '测试实际公园散步', enabled: true, startMinute: 600, endMinute: 610, probability: 1, checkIntervalMinutes: 1, action: 'park_walk', durationMinutes } });
   store.request({ type: 'life-event.tick' });
   let claim: CompanionLifeOccurrence | undefined;
   for (let index = 0; index < 4 && !claim; index++) { advance(store, 1000); claim = store.request({ type: 'life-event.claim' }).lifeOccurrence; }

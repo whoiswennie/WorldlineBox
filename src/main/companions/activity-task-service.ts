@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { Companion, CompanionConversation } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
-import { activityDecisionSchema, type CompanionActivityTask } from '../../shared/companion-activity-task';
+import { activityDecisionSchema, type CompanionActivityTask, type CompanionActivityMemoryIntent } from '../../shared/companion-activity-task';
 import type { CompanionProfileInput } from '../../shared/companion-public-profile';
 import { generateCompanionStructured, type CompanionModelConfig } from './model';
 import { companionModelWorld, COMPANION_WORLD_PERCEPTION_RULES } from './world-perception-context';
@@ -25,6 +25,13 @@ export class CompanionActivityTaskService {
     if (this.closed || this.ticking) return;
     this.ticking = (async () => {
       while (!this.closed && this.jobs.size < 2) {
+        const intent = (await this.options.request({ type: 'activity.memory.claim' })).activityMemoryIntent;
+        if (intent) {
+          const controller = new AbortController();
+          const promise = this.memoryStep(intent, controller.signal).catch(this.options.report).finally(() => { this.jobs.delete(intent.id); this.options.changed(); });
+          this.jobs.set(intent.id, { companionId: intent.companionId, controller, promise });
+          continue;
+        }
         const excludedIds = [...new Set([...this.options.excludedIds(), ...[...this.jobs.values()].map(job => job.companionId)])];
         const task = (await this.options.request({ type: 'activity.claim', excludedIds })).activityTask;
         if (!task?.leaseToken || this.closed) break;
@@ -35,6 +42,25 @@ export class CompanionActivityTaskService {
       }
     })().catch(this.options.report).finally(() => { this.ticking = undefined; });
     await this.ticking;
+  }
+  private async memoryStep(intent: CompanionActivityMemoryIntent, signal: AbortSignal): Promise<void> {
+    try {
+      signal.throwIfAborted();
+      if (this.options.excludedIds().includes(intent.companionId)) throw new Error('伙伴当前暂停，记忆步骤稍后继续。');
+      const { operation, ...parameters } = intent.operation;
+      const scope = { companionId: intent.companionId, conversationId: intent.conversationId };
+      const command = { ...parameters, ...scope, type: `memory.${operation}`,
+        ...(['record', 'revise', 'organize'].includes(operation) ? { operationId: intent.id } : {}) } as CompanionStorageCommand;
+      const result = await this.options.request(command);
+      if (!result.ok) throw new Error(result.error ?? '记忆操作未完成。');
+      signal.throwIfAborted();
+      const receipt = activityMemoryReceipt(result);
+      await this.options.request({ type: 'activity.memory.complete', id: intent.id, leaseToken: intent.leaseToken,
+        ...receipt });
+    } catch (error) {
+      if (!signal.aborted && !this.closed) await this.options.request({ type: 'activity.memory.fail', id: intent.id, leaseToken: intent.leaseToken,
+        error: error instanceof Error ? error.message.slice(0, 1000) : '记忆操作未完成。' }).catch(() => undefined);
+    }
   }
   private async step(task: CompanionActivityTask, signal: AbortSignal): Promise<void> {
     const leaseToken = task.leaseToken!;
@@ -111,4 +137,35 @@ export class CompanionActivityTaskService {
   cancelCompanion(id: string): void { for (const job of this.jobs.values()) if (job.companionId === id) job.controller.abort(); }
   async drainCompanion(id: string): Promise<void> { await this.ticking; this.cancelCompanion(id); await Promise.allSettled([...this.jobs.values()].filter(job => job.companionId === id).map(job => job.promise)); }
   async close(): Promise<void> { this.closed = true; if (this.timer) clearInterval(this.timer); for (const job of this.jobs.values()) job.controller.abort(); await this.ticking; await Promise.allSettled([...this.jobs.values()].map(job => job.promise)); }
+}
+
+/** Keep durable task history bounded, parseable, and tied to every source it contains. */
+export function activityMemoryReceipt(result: CompanionStorageResponse): {
+  result: string; sourceMessageIds: string[]; noteVersions: Array<{ id: string; version: number }>;
+} {
+  const notes = [...new Map([...(result.memories ?? []), ...(result.memoryRead ? [result.memoryRead.memory] : []),
+    ...(result.memoryPage?.items.map(hit => hit.memory) ?? [])].map(note => [note.id, note])).values()];
+  const sources = new Set<string>();
+  const included: typeof notes = [];
+  const payload: { ok: boolean; memories: unknown[]; sources: unknown[]; truncated: boolean; hasMore: boolean } = {
+    ok: result.ok, memories: [], sources: [], truncated: false, hasMore: result.memoryPage?.hasMore ?? false,
+  };
+  for (const note of notes) {
+    const nextSources = new Set([...sources, ...note.sources.map(source => source.messageId)]);
+    if (nextSources.size > 100 || included.length >= 100) { payload.truncated = true; continue; }
+    const entry = { id: note.id, version: note.version, content: note.content.slice(0, 2000),
+      contentTruncated: note.content.length > 2000, tags: note.tags, sourceMessageIds: note.sources.map(source => source.messageId) };
+    payload.memories.push(entry);
+    if (JSON.stringify(payload).length > 14000) { payload.memories.pop(); payload.truncated = true; continue; }
+    included.push(note); for (const id of nextSources) sources.add(id);
+    if (entry.contentTruncated) payload.truncated = true;
+  }
+  // Original LightMemo/RAG context is revision-bound and deliberately not persisted in a task's history.
+  for (const source of result.memoryRead?.sources ?? []) {
+    if (!sources.has(source.id)) continue;
+    const entry = { id: source.id, content: source.content.slice(0, 2000), contentTruncated: source.content.length > 2000 };
+    payload.sources.push(entry);
+    if (JSON.stringify(payload).length > 15500) { payload.sources.pop(); payload.truncated = true; break; }
+  }
+  return { result: JSON.stringify(payload), sourceMessageIds: [...sources], noteVersions: included.map(note => ({ id: note.id, version: note.version })) };
 }

@@ -1,8 +1,15 @@
 import { ipcRenderer, webUtils } from 'electron';
+import { COMPANION_WORKSPACE_CHANNEL, companionWorkspaceRequestSchema, companionWorkspaceResponseSchema, type CompanionWorkspaceRequest } from '../../shared/companion-workspace';
 import { COMPANIONS_CHANNEL, COMPANIONS_CHANGED_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL, companionsRequestSchema, companionsResponseSchema, companionReplyStreamEventSchema,
   type CompanionReplyStreamEvent, type CompanionsRequest, type WorldlineBoxCompanionsApi } from '../../shared/companions';
 
 export const companions: WorldlineBoxCompanionsApi = Object.freeze({
+  async workspace(input: CompanionWorkspaceRequest) {
+    const parsed = companionWorkspaceRequestSchema.safeParse(input);
+    if (!parsed.success) return { ok: false, error: '伙伴资产库请求格式不正确。' };
+    const result = companionWorkspaceResponseSchema.safeParse(await ipcRenderer.invoke(COMPANION_WORKSPACE_CHANNEL, parsed.data));
+    return result.success ? result.data : { ok: false, error: '伙伴资产库返回了无效结果。' };
+  },
   async importFiles(files: File[]) {
     if (!files.length || files.length > 10) return { ok: false, error: '一次可添加 1–10 个文件。' };
     const paths = [...new Set(files.map(file => webUtils.getPathForFile(file)))];

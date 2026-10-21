@@ -1,0 +1,6 @@
+{
+  "name": "@worldlinebox/vcp-memory-vendor",
+  "private": true,
+  "type": "commonjs",
+  "description": "Unmodified VCP memory core from 7ceecd48c46caac8168b909ade5febbc4a254e42"
+}

@@ -1,14 +1,18 @@
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
 import { z } from 'zod';
-import { activityStorageCommands } from './companion-activity-task';
+import { companionLearningStorageCommands, companionLearningStatusSchema, companionLearningJobSchema } from './companion-learning';
+import { companionDocumentCatalogCommands, companionDocumentCatalogPageSchema } from './companion-document-catalog';
+import { activityStorageCommands, activityMemoryIntentSchema } from './companion-activity-task';
+import { companionMemoryTagCommands, companionMemoryTagJobSchema, companionMemoryTagStatusSchema } from './companion-memory-tags';
 
 import {
   actionSchema, attachmentSchema, companionDraftSchema, companionIdSchema,
-  companionsResponseSchema, memorySchema, companionActionPageQuerySchema, companionReplyRecoverySchema, companionMessagesQuerySchema, companionSearchQuerySchema,
+  companionsResponseSchema, companionActionPageQuerySchema, companionReplyRecoverySchema, companionMessagesQuerySchema, companionSearchQuerySchema,
 } from './companions';
 import { dshTaskRecordSchema } from './dsh-tasks';
 import { companionLoopCheckpointSchema, companionWorkSchema } from './companion-loop';
-import { companionMemoryStorageCommands, companionMemoryJobSchema } from './companion-memory';
+import { companionMemoryStorageCommands, companionMemoryJobSchema, companionMemoryDomainSchema, companionMemoryOutboxSchema, companionMemorySnapshotSchema, companionMemoryPolicySchema, companionMemoryProhibitionSchema } from './companion-memory';
+import { companionMemoryLibraryIndexStateSchema, companionMemoryLibraryIndexPageSchema, companionMemoryLibraryChangesSchema } from './companion-memory';
 import { companionScheduleStorageCommands, companionScheduleOccurrenceSchema, companionScheduleSchema } from './companion-schedule';
 import { companionStateStorageCommands, companionRuntimeStateSchema } from './companion-state';
 import { companionRoutineStorageCommands } from './companion-routine';
@@ -69,8 +73,13 @@ export const companionTaskCheckpointSchema = z.strictObject({ prompt: z.string()
 export type CompanionTaskCheckpoint = z.infer<typeof companionTaskCheckpointSchema>;
 export const updateCompanionActionSchema = actionSchema.pick({ status: true, taskId: true, sessionId: true, result: true, error: true, stage: true, events: true, accessMode: true, startedAt: true, finishedAt: true, pid: true, executionSummary: true }).partial();
 export type UpdateCompanionAction = z.infer<typeof updateCompanionActionSchema>;
-export const saveCompanionMemorySchema = memorySchema.omit({ id: true, createdAt: true, updatedAt: true, sourceConversationId: true }).extend({ id: companionIdSchema.optional(), conversationId: companionIdSchema.optional(), expectedVersion: z.number().int().positive().optional() });
-export type SaveCompanionMemory = z.infer<typeof saveCompanionMemorySchema>;
+export const saveCompanionMemorySchema = z.strictObject({ companionId: companionIdSchema, conversationId: companionIdSchema,
+  autoTags: z.boolean().optional(),
+  id: companionIdSchema.optional(), content: z.string().trim().min(1).max(65536), tags: z.array(z.string().trim().min(1).max(100)).max(50).default([]),
+  operationId: companionIdSchema.optional(), diaryName: z.string().trim().min(1).max(160).optional(),
+  expectedProhibitionRevision: z.string().min(1).max(128).optional(),
+  sourceMessageId: companionIdSchema.optional(), expectedVersion: z.number().int().positive().optional() });
+export type SaveCompanionMemory = z.input<typeof saveCompanionMemorySchema>;
 export const companionProactiveStateSchema = z.strictObject({
   lastAttemptAt: z.string().optional(),
   lastSentAt: z.string().optional(), lastUserMessageId: companionIdSchema.optional(),
@@ -79,6 +88,9 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
+  ...companionLearningStorageCommands,
+  ...companionDocumentCatalogCommands,
+  ...companionMemoryTagCommands,
   ...activityStorageCommands, ...companionInterruptionCommands,
   ...playerProfileCommands,
   ...companionResetCommands,
@@ -161,6 +173,22 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   loop: companionLoopCheckpointSchema.optional(),
   work: companionWorkSchema.optional(), works: z.array(companionWorkSchema).optional(),
   memoryJob: companionMemoryJobSchema.optional(), backfillComplete: z.boolean().optional(),
+  memoryTagJob: companionMemoryTagJobSchema.optional(), memoryTagStatus: companionMemoryTagStatusSchema.optional(),
+  memoryDomains: z.array(companionMemoryDomainSchema).optional(), memoryOutbox: companionMemoryOutboxSchema.optional(),
+  memorySnapshot: companionMemorySnapshotSchema.optional(),
+  memoryLibraryIndexState: companionMemoryLibraryIndexStateSchema.optional(),
+  memoryLibraryIndexPage: companionMemoryLibraryIndexPageSchema.optional(),
+  memoryLibraryChanges: companionMemoryLibraryChangesSchema.optional(),
+  memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
+  memoryProhibitions: z.array(companionMemoryProhibitionSchema).optional(),
+  memoryProhibitionRevision: z.string().min(1).max(128).optional(),
+  memoryProhibitionConversationId: companionIdSchema.optional(),
+  memoryInvalidatedCompanionIds: z.array(companionIdSchema).optional(),
+  memoryInvalidatedScopeIds: z.array(companionIdSchema).optional(),
+  activityMemoryIntent: activityMemoryIntentSchema.optional(),
+  documentCatalog: companionDocumentCatalogPageSchema.optional(),
+  documentCatalogUnchanged: z.boolean().optional(),
+  learning: companionLearningStatusSchema.optional(), learningJob: companionLearningJobSchema.optional(),
   rebuiltCount: z.number().int().nonnegative().optional(),
   schedule: companionScheduleSchema.optional(), schedules: z.array(companionScheduleSchema).optional(),
   scheduleOccurrence: companionScheduleOccurrenceSchema.optional(), scheduleOccurrences: z.array(companionScheduleOccurrenceSchema).optional(),

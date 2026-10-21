@@ -1,0 +1,28 @@
+{
+  "name": "vexus-lite",
+  "version": "0.1.0",
+  "description": "Lightweight Rust-powered vector index for TagVectorManager",
+  "main": "index.js",
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "artifacts": "napi artifacts"
+  },
+  "napi": {
+    "name": "vexus-lite",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.16.0"
+  },
+  "engines": {
+    "node": ">= 14"
+  }
+}

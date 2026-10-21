@@ -11,6 +11,14 @@ interface Pending {
   resolve(value: CompanionStorageResponse): void;
   reject(error: Error): void;
 }
+export interface CompanionStorageChange {
+  memoryInvalidatedCompanionIds?: string[];
+  memoryInvalidatedScopeIds?: string[];
+}
+function invalidatedIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return [...new Set(value.filter((id): id is string => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(id)))];
+}
 
 /** Transport only. Main never imports better-sqlite3 or opens the message DB. */
 export class CompanionStorageClient {
@@ -22,7 +30,7 @@ export class CompanionStorageClient {
   #closedAck: (() => void) | undefined;
 
   constructor(private readonly workerPath: string, private readonly databasePath: string,
-    private readonly onIndexChanged: () => void = () => undefined, private readonly onIndexError: (error: Error) => void = () => undefined) {}
+    private readonly onIndexChanged: (event?: CompanionStorageChange) => void = () => undefined, private readonly onIndexError: (error: Error) => void = () => undefined) {}
 
   async start(): Promise<void> {
     if (this.#closing) throw new Error('伙伴存储正在关闭。');
@@ -72,7 +80,12 @@ export class CompanionStorageClient {
             fail(new Error('error' in message && typeof message.error === 'string' ? message.error : '伙伴存储无法启动。'));
           } else if (message.type === 'storage.closed') {
             this.#closedAck?.();
-          } else if (message.type === 'storage.index-changed' || message.type === 'storage.reset-changed') {
+          } else if (message.type === 'storage.reset-changed') {
+            this.onIndexChanged({
+              memoryInvalidatedCompanionIds: invalidatedIds('memoryInvalidatedCompanionIds' in message ? message.memoryInvalidatedCompanionIds : undefined),
+              memoryInvalidatedScopeIds: invalidatedIds('memoryInvalidatedScopeIds' in message ? message.memoryInvalidatedScopeIds : undefined),
+            });
+          } else if (message.type === 'storage.index-changed') {
             this.onIndexChanged();
           } else if (message.type === 'storage.index-failed') {
             this.onIndexError(new Error('error' in message ? String(message.error) : '消息搜索索引更新失败。'));

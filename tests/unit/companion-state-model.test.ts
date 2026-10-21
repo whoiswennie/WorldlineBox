@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildCompanionContext, companionRuntimeBehavior, type CompanionReplyInput } from '../../src/main/companions/context';
 import { generateCompanionReply, type CompanionModelConfig } from '../../src/main/companions/model';
-import { generateCompanionMemoryExtraction } from '../../src/main/companions/memory-model';
+import { generateCompanionJournal } from '../../src/main/companions/memory-model';
 import { companionStateArgumentsSchema } from '../../src/shared/companion-state-tool';
 import type { CompanionRuntimeState } from '../../src/shared/companion-state';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
@@ -96,20 +96,21 @@ describe('continuous companion state affects behavior without replacing persona 
   ])('rejects model-written mood, numeric relationships, identities or unsupported evidence %#', value => {
     expect(companionStateArgumentsSchema.safeParse({ action: 'update', expectedRevision: 2, proposal: value }).success).toBe(false);
   });
-  it('accepts a supported appraisal and automatically extracts it beside an empty memory candidate list', async () => {
+  it('accepts a supported appraisal beside an empty VCP journal batch', async () => {
     expect(companionStateArgumentsSchema.parse({ action: 'update', expectedRevision: 2, proposal }).action).toBe('update');
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(structured({ candidates: [], stateProposal: proposal }));
-    const result = await generateCompanionMemoryExtraction(input, config, undefined, { fetchFn });
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(structured({ notes: [], stateProposal: proposal }));
+    const result = await generateCompanionJournal(input, config, undefined, { fetchFn });
     expect(result.stateProposal).toMatchObject(proposal);
     const request = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
-    expect(request.messages[0].content).toContain('用户抱怨真实失败');
-    expect(request.messages[0].content).toContain('普通任务指令不是支持尊重');
+    expect(result.notes).toEqual([]);
+    expect(request.messages[0].content).toContain('对真实失败的批评不当敌意');
+    expect(request.messages[0].content).toContain('普通委托、礼貌与消息数量不自动增加关系');
     expect(JSON.parse(request.messages[1].content).runtimeState.affect).toEqual(runtimeState.affect);
   });
   it('requires a real user author for user relationship appraisal and verifies quote text', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(structured({ candidates: [], stateProposal: proposal }));
-    await expect(generateCompanionMemoryExtraction({ ...input, messages: [{ ...input.messages[0]!, authorId: 'sister' }] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
-    fetchFn.mockResolvedValue(structured({ candidates: [], stateProposal: { ...proposal, evidence: [{ sourceMessageId: 'user_message', quote: '捏造原文' }] } }));
-    await expect(generateCompanionMemoryExtraction(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(structured({ notes: [], stateProposal: proposal }));
+    await expect(generateCompanionJournal({ ...input, messages: [{ ...input.messages[0]!, authorId: 'sister' }] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    fetchFn.mockResolvedValue(structured({ notes: [], stateProposal: { ...proposal, evidence: [{ sourceMessageId: 'user_message', quote: '捏造原文' }] } }));
+    await expect(generateCompanionJournal(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 });

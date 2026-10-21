@@ -22,6 +22,8 @@ import {
 } from "../../src/shared/embedding/profile";
 import { rendererRequestSchema } from "../../src/shared/protocol/requests";
 import { rendererResultSchema } from "../../src/shared/protocol/responses";
+import { semanticToolbarReady } from "../../src/renderer/semantic-work";
+import { LOCAL_TEXT_EMBEDDING_MODEL, LOCAL_TEXT_EMBEDDING_MODEL_ID, type LocalTextEmbeddingInstallStatus } from "../../src/shared/embedding/global-profile";
 
 const sample = {
   id: "model-1",
@@ -30,6 +32,42 @@ const sample = {
   modelDirectory: "model-dir",
   runtimePath: "runtime-bin",
 };
+
+it('rejects retired downloads and external model bindings before touching files or services in the fixed-model app', async () => {
+  const unexpected = () => { throw new Error('A retired embedding operation reached its old backend.'); };
+  const runtime = {
+    readGlobalSettings: () => ({ version: 1 as const, selectionId: 'embeddinggemma-2-compact' }),
+    readCatalog: unexpected, writeCatalog: unexpected, userDataPath: unexpected, homePath: unexpected,
+    readServices: unexpected, writeServices: unexpected, readBindings: unexpected, writeBindings: unexpected,
+  };
+  for (const input of [
+    { type: 'embedding.install.start.request', modelId: 'embeddinggemma-2-balanced' },
+    { type: 'embedding.install.delete.request', modelId: 'embeddinggemma-2-compact' },
+    { type: 'embedding.binding.save.request', libraryId: 'library-one', selectionId: 'svc_textonly1' },
+    { type: 'embedding.binding.save.request', libraryId: 'library-one', selectionId: 'embeddinggemma-2-quality' },
+  ]) {
+    const result = await tryHandleEmbeddingModelRequest(rendererRequestSchema.parse(input), runtime);
+    expect(result).toMatchObject({ ok: false, error: { code: 'EMBEDDING_MODEL_INVALID' } });
+  }
+});
+
+it('waits for both asset and companion encoders to stop before clearing their managed runtime cache', async () => {
+  let releaseAssets: (() => void) | undefined;
+  const uninstall = vi.fn(() => ({ installed: true, phase: 'ready' }));
+  const invalidateGlobalEmbedding = vi.fn(async () => undefined);
+  const stopGemmaIndex = vi.fn(() => new Promise<void>(resolve => { releaseAssets = resolve; }));
+  const stopHttpIndex = vi.fn(async () => undefined);
+  const clearing = tryHandleEmbeddingModelRequest({ type: 'embedding.local-text.delete.request' }, {
+    invalidateGlobalEmbedding, stopGemmaIndex, stopHttpIndex, textInstaller: { uninstall },
+  } as never);
+  await vi.waitFor(() => expect(stopGemmaIndex).toHaveBeenCalled());
+  expect(invalidateGlobalEmbedding).toHaveBeenCalledOnce();
+  expect(stopHttpIndex).toHaveBeenCalledOnce();
+  expect(uninstall).not.toHaveBeenCalled();
+  releaseAssets!();
+  expect(await clearing).toMatchObject({ ok: true, status: { installed: true, phase: 'ready' } });
+  expect(uninstall).toHaveBeenCalledOnce();
+});
 
 describe("embedding profile", () => {
   it("keeps the profile key independent of the device path", () => {
@@ -54,6 +92,39 @@ describe("embedding profile", () => {
 });
 
 describe("embedding model catalog", () => {
+  it.each(["ready", "missing", "failed"] as const)("uses bundled %s status for UI readiness without requiring userData model copies", async (phase) => {
+    const status: LocalTextEmbeddingInstallStatus = {
+      modelId: LOCAL_TEXT_EMBEDDING_MODEL_ID, phase,
+      installed: phase !== "missing", runtimeInstalled: true,
+      revision: LOCAL_TEXT_EMBEDDING_MODEL.revision, installedRevision: LOCAL_TEXT_EMBEDDING_MODEL.revision,
+      updateAvailable: false, bytesDownloaded: 0, totalBytes: LOCAL_TEXT_EMBEDDING_MODEL.packageBytes,
+      error: phase === "failed" ? "Bundled resources failed verification." : null,
+    };
+    const handleStatus = vi.fn(() => ({ ok: true as const, type: "embedding.index.status" as const,
+      phase: "starting" as const, done: 0, total: 0, failedCount: 0 }));
+    const unexpected = () => { throw new Error("Bundled readiness must not inspect legacy model copies or external services."); };
+    const runtime = {
+      textInstaller: { status: () => status },
+      readGlobalSettings: () => ({ version: 1 as const, selectionId: LOCAL_TEXT_EMBEDDING_MODEL_ID }),
+      readCatalog: unexpected, writeCatalog: unexpected, userDataPath: unexpected, homePath: unexpected,
+      embeddingIndex: { handleStatus }, stopHttpIndex: vi.fn(async () => undefined),
+      get embeddingHttpIndex(): never { return unexpected(); },
+    };
+    const result = await tryHandleEmbeddingModelRequest({ type: "embedding.install.status.request" }, runtime as never);
+    expect(result).toMatchObject({ ok: true, type: "embedding.install.status", runtimeInstalled: true, runtimeDownloadable: false });
+    if (!result?.ok || result.type !== "embedding.install.status") throw new Error("Installation status failed.");
+    const ready = semanticToolbarReady({ selectionId: LOCAL_TEXT_EMBEDDING_MODEL_ID,
+      runtimeInstalled: result.runtimeInstalled, models: result.models, service: null });
+    expect(ready).toBe(phase === "ready");
+    expect(result.models.filter(model => model.installed).map(model => model.modelId))
+      .toEqual(phase === "ready" ? [LOCAL_TEXT_EMBEDDING_MODEL_ID] : []);
+    if (ready) {
+      await tryHandleEmbeddingModelRequest({ type: "embedding.index.status.request", libraryId: "fresh-library",
+        modelId: LOCAL_TEXT_EMBEDDING_MODEL_ID, run: true, restart: true }, runtime as never);
+      expect(handleStatus).toHaveBeenCalledWith(expect.objectContaining({ libraryId: "fresh-library", run: true, restart: true }));
+    } else expect(handleStatus).not.toHaveBeenCalled();
+  });
+
   it("checks installation and uninstalls without inspecting home or mapped-drive roots", async () => {
     const userData = mkdtempSync(path.join(tmpdir(), "worldlinebox-managed-embedding-"));
     const models = path.join(userData, "embedding-models");

@@ -5,6 +5,6 @@ export const companionWorldQuerySchema = z.strictObject({
   roomId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).optional(), limit: z.number().int().min(1).max(20).default(10),
 });
 export const companionWorldObservationSchema = z.object({
-  category: z.enum(['contacts', 'scenes', 'social', 'observations']), observedAt: z.iso.datetime(),
+  category: z.enum(['contacts', 'scenes', 'social', 'observations', 'experience', 'learning']), observedAt: z.iso.datetime(),
   observedAtVirtual: z.iso.datetime(), internalized: z.literal(false),
 });

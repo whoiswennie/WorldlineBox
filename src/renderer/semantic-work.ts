@@ -1,4 +1,5 @@
 import { isEmbeddingServiceSelectionId } from "../shared/embedding/http-service";
+import { isLocalTextEmbeddingModelId } from '../shared/embedding/global-profile';
 import {
   isSemanticSearchModelId,
   SETTINGS_LOCAL_SEMANTIC_MODELS,
@@ -30,7 +31,7 @@ export function semanticToolbarReady(input: {
     return input.runtimeInstalled
       && input.models.some((model) => model.modelId === input.selectionId && model.installed);
   }
-  if (!isEmbeddingServiceSelectionId(input.selectionId) || !input.service) return false;
+  if ((!isEmbeddingServiceSelectionId(input.selectionId) && !isLocalTextEmbeddingModelId(input.selectionId)) || !input.service) return false;
   return input.service.textStatus === "verified"
     && input.service.dimensions != null
     && input.service.modalities.includes("text");

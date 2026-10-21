@@ -1,0 +1,167 @@
+{
+  "generatedAt": "2026-10-21T09:54:05.811Z",
+  "passed": true,
+  "model": {
+    "id": "embeddinggemma-2-compact",
+    "repository": "unsloth/embeddinggemma-2-GGUF",
+    "revision": "412430755667d84b1ac64fe1fe2693aa6219f1d9",
+    "core": {
+      "file": "embeddinggemma-2-UD-Q4_K_XL.gguf",
+      "bytes": 175673856,
+      "sha256": "ea905fd08e8061db77a0031cbb5096d459d7cfd2bdd0ad2ba66e483f16719493"
+    },
+    "projector": {
+      "file": "mmproj-Q8_0.gguf",
+      "bytes": 554821120,
+      "sha256": "90e7b0238009e2954f856f2081dcf7f35af026b64c765e98f4777053e1754460"
+    },
+    "weightBytes": 730494976,
+    "dimension": 768,
+    "sameAsExistingInstallPin": true
+  },
+  "runtime": {
+    "release": "b11457",
+    "asset": "llama-b11457-bin-win-cpu-x64.zip",
+    "gpuLayers": 0,
+    "projectorOffload": false,
+    "threads": 4,
+    "startupMs": 3305.5811
+  },
+  "validation": {
+    "textToImageCorrect": 3,
+    "textToImageQueries": 3,
+    "imageToImageTop1": "red",
+    "repeatCosine": 0.9999999999999987,
+    "redBlueCosine": 0.893767401762563,
+    "minimumCoreOnlyVsMultimodalTextCosine": 0.9999999999999987,
+    "requestMedianMs": 34.96849999999995,
+    "requestP95Ms": 1259.9457
+  },
+  "textResults": [
+    {
+      "text": "一块纯红色的正方形",
+      "expected": "red",
+      "top1": "red",
+      "ranking": [
+        {
+          "id": "red",
+          "score": 0.7344127381709848
+        },
+        {
+          "id": "blue",
+          "score": 0.6816762415877405
+        },
+        {
+          "id": "checker",
+          "score": 0.6501946706795131
+        }
+      ]
+    },
+    {
+      "text": "a plain blue square",
+      "expected": "blue",
+      "top1": "blue",
+      "ranking": [
+        {
+          "id": "blue",
+          "score": 0.7653592176597418
+        },
+        {
+          "id": "red",
+          "score": 0.6705955530200263
+        },
+        {
+          "id": "checker",
+          "score": 0.6379692817986687
+        }
+      ]
+    },
+    {
+      "text": "黑白相间的棋盘格图案",
+      "expected": "checker",
+      "top1": "checker",
+      "ranking": [
+        {
+          "id": "checker",
+          "score": 0.7721600578442281
+        },
+        {
+          "id": "blue",
+          "score": 0.5494793711283495
+        },
+        {
+          "id": "red",
+          "score": 0.5439239394037981
+        }
+      ]
+    }
+  ],
+  "imageRanking": [
+    {
+      "id": "red",
+      "score": 0.9980781872450594
+    },
+    {
+      "id": "blue",
+      "score": 0.8877743579855971
+    },
+    {
+      "id": "checker",
+      "score": 0.7740865171602098
+    }
+  ],
+  "textComparisons": [
+    {
+      "id": "umbrella",
+      "cosine": 0.9999999999999993
+    },
+    {
+      "id": "birthday",
+      "cosine": 0.9999999999999998
+    },
+    {
+      "id": "allergy",
+      "cosine": 0.9999999999999998
+    },
+    {
+      "id": "coffee",
+      "cosine": 1.0000000000000004
+    },
+    {
+      "id": "project",
+      "cosine": 0.9999999999999997
+    },
+    {
+      "id": "appointment",
+      "cosine": 0.999999999999999
+    },
+    {
+      "id": "library",
+      "cosine": 0.9999999999999987
+    },
+    {
+      "id": "cat",
+      "cosine": 0.9999999999999991
+    },
+    {
+      "id": "budget",
+      "cosine": 0.9999999999999998
+    },
+    {
+      "id": "train",
+      "cosine": 0.9999999999999998
+    },
+    {
+      "id": "bug",
+      "cosine": 1.0000000000000016
+    },
+    {
+      "id": "garden",
+      "cosine": 1.0000000000000004
+    }
+  ],
+  "limitations": [
+    "Synthetic colour/pattern canary verifies image input is consumed and text/image spaces agree; it is not a general image retrieval quality benchmark.",
+    "Audio/video quality was not evaluated by this image/text canary."
+  ]
+}

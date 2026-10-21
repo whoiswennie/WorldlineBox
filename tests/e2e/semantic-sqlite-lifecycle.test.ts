@@ -1,322 +1,180 @@
-import { createServer } from 'node:http';
-import type { ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-
-import { _electron as electron, expect, test, type Page } from '@playwright/test';
+import { createCanvas } from '@napi-rs/canvas';
+import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
-import { resolveElectronExecutablePath } from './electron-test-helpers';
+import { LOCAL_TEXT_EMBEDDING_MODEL_ID } from '../../src/shared/embedding/global-profile';
+import { removeCompanionTestDirectory, assetCard, electronLaunchEnv, resolveElectronLaunchOptions, waitForLibraryLoadingToFinish } from './electron-test-helpers';
 
-test.describe.configure({ timeout: 180_000 });
-
-async function openSemanticSettings(window: Page): Promise<void> {
-  await window.getByRole('button', { name: '设置', exact: true }).click();
-  // The nav tab's accessible name includes the experimental badge.
-  await window.getByRole('tab', { name: /语义搜索/ }).click();
-  await window.getByRole('tab', { name: '自定义', exact: true }).click();
+type Bridge = Window & { worldlinebox: { library: WorldlineBoxLibraryApi } };
+function cleanupSemanticFixture(root: string) {
+  if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith('worldlinebox-semantic-sqlite-e2e-')) throw new Error('Unexpected semantic fixture cleanup path.');
+  removeCompanionTestDirectory(root);
 }
 
-async function findImportedAssetCard(window: Page, fileName: string) {
-  const assetId = await window.evaluate(async (name) => {
-    const api = (globalThis as typeof globalThis & { worldlinebox: { library: {
-      listOpen(): Promise<{ ok: boolean; value?: Array<{ libraryId: string }> }>;
-      listAssets(input: { libraryId: string; recursive: boolean }): Promise<{
-        ok: boolean; value?: Array<{ assetId: string; relativeFilePath: string }>;
-      }>;
-    } } }).worldlinebox.library;
-    const opened = await api.listOpen();
-    const libraryId = opened.value?.[0]?.libraryId;
-    if (!opened.ok || !libraryId) throw new Error('The semantic fixture library is not open.');
-    const listed = await api.listAssets({ libraryId, recursive: true });
-    if (!listed.ok) throw new Error('Could not list semantic fixture assets.');
-    return listed.value?.find((asset) => asset.relativeFilePath.endsWith(name))?.assetId ?? null;
-  }, fileName);
-  if (!assetId) throw new Error(`The semantic fixture asset ${fileName} is missing.`);
-  return window.locator(`[data-asset-id="${assetId}"]`);
-}
-
-async function closeApplicationBounded(application: {
-  close(): Promise<void>;
-  process(): ChildProcess;
-}): Promise<void> {
-  const process = application.process();
-  let exited = process.exitCode !== null || process.signalCode !== null;
-  const exit = new Promise<void>((resolve) => {
-    if (exited) resolve();
-    else process.once('exit', () => { exited = true; resolve(); });
-  });
-  let closeTimer: NodeJS.Timeout | undefined;
-  const closedGracefully = await Promise.race([
-    application.close().then(() => true, () => false),
-    new Promise<boolean>((resolve) => { closeTimer = setTimeout(() => resolve(false), 10_000); }),
-  ]);
-  if (closeTimer) clearTimeout(closeTimer);
-  let exitedInTime = await Promise.race([
-    exit.then(() => true),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
-  ]);
-  if (!exitedInTime) {
-    process.kill('SIGTERM');
-    exitedInTime = await Promise.race([
-      exit.then(() => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
-    ]);
+// The actual bundled multimodal model and production Worker/SQLite index are used.
+// Only the OS picker is directed to this case's own files; no embedding endpoint,
+// replacement vectors, index writes or user profile are supplied by the fixture.
+// eslint-disable-next-line no-empty-pattern
+test('enables real bundled asset semantics through the UI and reuses SQLite vectors after full restart before releasing runtime cache', async ({}, testInfo) => {
+  test.setTimeout(300_000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-semantic-sqlite-e2e-'));
+  const evidence = path.resolve('artifacts/vcp-validation/asset-ui-lifecycle'); mkdirSync(evidence, { recursive: true });
+  const profile = path.join(root, 'profile'), libraryPath = path.join(root, '本地语义验收');
+  const files = ['雨天备忘.md', '会议安排.md', '红色方块.png', '相近红色方块.png', '蓝色方块.png'].map(name => path.join(root, name));
+  writeFileSync(files[0]!, '# 雨天备忘\n\n折叠雨伞放在玄关左边第二个抽屉里。天气预报有降水时，出门记得带上。', 'utf8');
+  writeFileSync(files[1]!, '# 会议安排\n\n周五上午十点在公司三楼开季度预算会议，提前准备报销单。', 'utf8');
+  for (const [index, color] of [[2, '#f00000'], [3, '#e71919'], [4, '#1538ed']] as const) {
+    const canvas = createCanvas(256, 256), context = canvas.getContext('2d'); context.fillStyle = '#ffffff'; context.fillRect(0, 0, 256, 256);
+    context.fillStyle = color; context.fillRect(28, 28, 200, 200); writeFileSync(files[index]!, canvas.toBuffer('image/png'));
   }
-  if (!exitedInTime) {
-    process.kill('SIGKILL');
-    exitedInTime = await Promise.race([
-      exit.then(() => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
-    ]);
-  }
-  if (!exitedInTime) throw new Error('Electron child process did not exit after bounded cleanup.');
-  if (!closedGracefully) throw new Error('Electron close exceeded its 10 second cleanup limit.');
-}
-
-test('persists Worker-owned vectors through full app restart and reuses them for search', async () => {
-  const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'worldlinebox-semantic-sqlite-e2e-'));
-  const corpusPath = path.join(temporaryRoot, 'semantic-corpus.txt');
-  const otherPath = path.join(temporaryRoot, 'other-corpus.txt');
-  const failedPath = path.join(temporaryRoot, 'semantic-failure.txt');
-  const imagePath = path.join(temporaryRoot, 'unsupported-image.png');
-  writeFileSync(corpusPath, 'semantic corpus seed alpha');
-  writeFileSync(otherPath, 'semantic corpus seed beta');
-  writeFileSync(failedPath, 'semantic corpus seed provider failure');
-  writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-
-  let corpusRequests = 0;
-  let queryRequests = 0;
-  const server = createServer(async (request, response) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { input?: string | string[] };
-    const inputs = Array.isArray(body.input) ? body.input : [body.input ?? ''];
-    for (const input of inputs) {
-      if (input.includes('semantic corpus seed')) corpusRequests += 1;
-      else queryRequests += 1;
-    }
-    if (inputs.some((input) => input.includes('provider failure'))) {
-      response.writeHead(503, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ error: { message: 'Fixture provider failure.' } }));
-      return;
-    }
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ data: inputs.map((input, index) => ({
-      index,
-      embedding: input.includes('quarterly budget meeting') || input.includes('beta')
-        ? [0, 1, ...new Array(766).fill(0)]
-        : [1, 0, ...new Array(766).fill(0)],
-    })) }));
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Embedding fixture server did not bind.');
-  const endpoint = `http://127.0.0.1:${address.port}/v1`;
-
-  const applicationDirectory = process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
+  let application: ElectronApplication | undefined;
+  const diagnostics: string[] = [];
   const launch = async () => {
-    const instance = await electron.launch({
-    timeout: 30_000,
-    args: process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE ? [] : [applicationDirectory],
-    cwd: applicationDirectory,
-    executablePath: resolveElectronExecutablePath(),
-    env: {
-      ...process.env,
-      WORLDLINEBOX_E2E: '1',
-      WORLDLINEBOX_E2E_HIDE_WINDOW: '1',
-      WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(temporaryRoot, 'user-data'),
-      WORLDLINEBOX_E2E_CREATE_PARENT_PATH: temporaryRoot,
-      WORLDLINEBOX_E2E_OPEN_LIBRARY_PATH: path.join(temporaryRoot, 'Semantic fixture'),
-      WORLDLINEBOX_E2E_IMPORT_FILES: [corpusPath, otherPath, failedPath, imagePath].join(path.delimiter),
-    },
-    });
-    if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) await instance.evaluate(({ dialog }, paths) => {
+    const app = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
+      WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile,
+      WORLDLINEBOX_E2E_CREATE_PARENT_PATH: root, WORLDLINEBOX_E2E_OPEN_LIBRARY_PATH: libraryPath,
+      WORLDLINEBOX_E2E_IMPORT_FILES: files.join(path.delimiter),
+    }) });
+    app.process().stderr?.on('data', chunk => { diagnostics.push(String(chunk)); });
+    if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) await app.evaluate(({ app, dialog }, fixture) => {
+      if (!app.isPackaged || app.getPath('userData') !== fixture.profile) throw new Error('Packaged semantics must use its real ASAR and isolated profile.');
       dialog.showOpenDialog = async (...args: unknown[]) => {
         const title = (args.at(-1) as { title?: string }).title ?? '';
-        return { canceled: false, filePaths: /Create Library|创建资源库/iu.test(title) ? [paths.root]
-          : /Open Library|打开资源库/iu.test(title) ? [paths.library] : paths.files };
+        if (/Create Library|创建资源库/iu.test(title)) return { canceled: false, filePaths: [fixture.root] };
+        if (/Open Library|打开资源库/iu.test(title)) return { canceled: false, filePaths: [fixture.libraryPath] };
+        if (/Import|导入/iu.test(title)) return { canceled: false, filePaths: fixture.files };
+        throw new Error('Unexpected native dialog in semantic fixture: ' + title);
       };
-    }, { root: temporaryRoot, library: path.join(temporaryRoot, 'Semantic fixture'), files: [corpusPath, otherPath, failedPath, imagePath] });
-    return instance;
+    }, { root, profile, libraryPath, files });
+    const page = await app.firstWindow(), native = await app.browserWindow(page);
+    await native.evaluate(win => { win.unmaximize(); win.setSize(1440, 960); win.setFocusable(false); win.setOpacity(0); win.webContents.setBackgroundThrottling(false); win.hide(); win.showInactive(); });
+    await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
+    await page.locator('[data-application-module="assets"]').click();
+    return { application: app, page };
   };
-  let application: Awaited<ReturnType<typeof launch>> | undefined;
   try {
-    application = await launch();
-    if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) expect(await application.evaluate(({ app }) => app.isPackaged)).toBe(true);
-    let window = await application.firstWindow();
-    await window.locator('[data-application-module="assets"]').click();
-    await window.getByRole('button', { name: '创建资源库' }).click();
-    await window.getByRole('textbox', { name: '名称', exact: true }).fill('Semantic fixture');
-    await window.getByRole('button', { name: '创建', exact: true }).click();
-    await window.getByRole('button', { name: '导入文件', exact: true }).first().click();
-    await window.evaluate(async () => {
-      const api = (globalThis as typeof globalThis & { worldlinebox: { library: {
-        listOpen(): Promise<{ ok: boolean; value?: Array<{ libraryId: string }> }>;
-        importFiles(input: { libraryId: string }): Promise<{ ok: boolean }>;
-      } } }).worldlinebox.library;
-      const opened = await api.listOpen();
-      const libraryId = opened.value?.[0]?.libraryId;
-      if (!opened.ok || !libraryId) throw new Error('The semantic fixture library is not open.');
-      const imported = await api.importFiles({ libraryId });
-      if (!imported.ok) throw new Error('Could not import semantic fixture assets.');
+    let started = await launch(); application = started.application; let page = started.page;
+    await page.getByRole('button', { name: '创建资源库', exact: true }).click();
+    await page.getByRole('textbox', { name: '名称', exact: true }).fill('本地语义验收');
+    await page.getByRole('button', { name: '创建', exact: true }).click();
+    await waitForLibraryLoadingToFinish(page);
+    await page.getByRole('button', { name: '导入文件', exact: true }).first().click();
+    for (const file of files) await expect(assetCard(page, path.basename(file))).toBeVisible({ timeout: 30_000 });
+    const opened = await page.evaluate(() => (window as unknown as Bridge).worldlinebox.library.listOpen());
+    expect(opened.ok).toBe(true); if (!opened.ok) throw new Error(opened.error.message);
+    const libraryId = opened.value[0]!.libraryId;
+    const resources = await page.evaluate(async () => {
+      const api = (window as unknown as Bridge).worldlinebox.library;
+      return { global: await api.embeddingGetGlobalSettings(), bundled: await api.embeddingLocalTextStatus(), toolbar: await api.embeddingInstallStatus() };
     });
+    console.log('ASSET_UI_BUNDLED_RESOURCES', JSON.stringify(resources));
+    expect(resources.bundled).toMatchObject({ ok: true, value: { phase: 'ready', installed: true, runtimeInstalled: true } });
+    expect(resources.toolbar).toMatchObject({ ok: true, value: { runtimeInstalled: true, models: expect.arrayContaining([{ modelId: LOCAL_TEXT_EMBEDDING_MODEL_ID, installed: true }]) } });
+    await openSettings(page, '语义搜索');
+    const enabled = page.getByRole('switch', { name: '开启语义搜索', exact: true });
+    await expect(enabled).toHaveAttribute('aria-checked', 'false'); await enabled.click();
+    await expect(enabled).toHaveAttribute('aria-checked', 'true'); await page.keyboard.press('Escape');
+    // run:false only observes: the renderer UI must actually start the encoder.
+    let lastStatus = '';
+    await expect.poll(async () => {
+      const state = await indexStatus(page, libraryId), signature = JSON.stringify(state);
+      if (signature !== lastStatus) { lastStatus = signature; console.log('ASSET_UI_INDEX_STATUS', signature); }
+      return state;
+    }, { timeout: 120_000 }).toMatchObject({ phase: 'ready', done: 5, total: 5, failedCount: 0 });
+    const before = await persistedVectors(application, libraryPath);
+    expect(before).toHaveLength(5); expect(before.every(row => row.dimensions === 768)).toBe(true);
+    const activatedPids = await runtimeChildren(application);
+    if (process.platform === 'win32') expect(activatedPids.length).toBeGreaterThan(0);
+    await searchFromUi(page, '下雨出门带的东西放在哪里');
+    await expect(page.locator('.asset-card').first()).toHaveAttribute('data-asset-name', '雨天备忘.md', { timeout: 60_000 });
+    await page.getByRole('combobox', { name: '搜索资源库', exact: true }).fill('');
+    await expect(assetCard(page, '红色方块.png')).toBeVisible();
+    await assetCard(page, '红色方块.png').click({ button: 'right' });
+    await page.getByRole('menu').getByRole('menuitem', { name: '找相似', exact: true }).click();
+    await expect(page.locator('.find-similar-banner')).toContainText('红色方块.png');
+    await expect(page.locator('.asset-card').first()).toHaveAttribute('data-asset-name', '相近红色方块.png', { timeout: 60_000 });
+    await page.screenshot({ path: path.join(evidence, 'bundled-assets-similar.png') });
+    await expect.poll(() => persistedVectors(application!, libraryPath)).toEqual(before);
 
-    await openSemanticSettings(window);
-    await expect(window.getByText(/可以用自然语言模糊查找内容.*内存占用会增加/u)).toBeVisible();
-    await window.getByRole('button', { name: '添加服务', exact: true }).click();
-    await window.locator('#embedding-service-name').fill('Local semantic fixture');
-    await window.locator('#embedding-service-url').fill(endpoint);
-    await window.locator('#embedding-service-model').fill('controlled-fixture-model');
-    await window.locator('#embedding-service-dimensions').fill('768');
-    await window.locator('.semantic-service-form').getByRole('button', { name: '保存', exact: true }).click();
-    const serviceCard = window.locator('.semantic-model-card').filter({ hasText: 'Local semantic fixture' });
-    await expect(serviceCard).toBeVisible();
-    await serviceCard.getByRole('button').nth(1).click();
-    await expect(serviceCard.getByRole('status')).toContainText('768');
-    await window.getByRole('switch', { name: '开启语义搜索' }).click();
-    await window.getByRole('combobox', { name: '默认模型' }).selectOption({ label: 'Local semantic fixture' });
-
-    const readIndexState = () => window.evaluate(async () => {
-      const api = (globalThis as typeof globalThis & { worldlinebox: { library: {
-        listOpen(): Promise<{ ok: boolean; value?: Array<{ libraryId: string }> }>;
-        embeddingIndexStatus(input: { libraryId: string; modelId: string; run: boolean; restart: boolean }): Promise<{
-          ok: boolean; value?: { phase: string; done: number; total: number; failedCount: number };
-        }>;
-        embeddingListServices(): Promise<{ ok: boolean; value?: Array<{ id: string; name: string }> }>;
-      } } }).worldlinebox.library;
-      const opened = await api.listOpen();
-      const services = await api.embeddingListServices();
-      const libraryId = opened.value?.[0]?.libraryId;
-      const service = services.value?.find((entry) => entry.name === 'Local semantic fixture');
-      if (!libraryId || !service) throw new Error('Semantic service binding is unavailable.');
-      const status = await api.embeddingIndexStatus({ libraryId, modelId: service.id, run: true, restart: false });
-      return status.value;
-    });
-    await expect.poll(readIndexState, { timeout: 90_000 }).toMatchObject({
-      phase: 'ready', done: 2, total: 3, failedCount: 1,
-    });
-    const indexedCorpusCalls = corpusRequests;
-    expect(indexedCorpusCalls).toBe(3);
-
-    await window.keyboard.press('Escape');
-    const failedAssetCard = await findImportedAssetCard(window, 'semantic-failure.txt');
-    await failedAssetCard.click();
-    await failedAssetCard.click({ button: 'right' });
-    const failedContextMenu = window.getByRole('menu');
-    await expect(failedContextMenu.getByRole('menuitem', { name: '找相似', exact: true })).toBeVisible();
-    await failedContextMenu.getByRole('menuitem', { name: '找相似', exact: true }).click();
-    await expect(window.getByText('此资产未能完成向量编码，暂时无法查找相似内容。')).toBeVisible();
-    await window.getByRole('button', { name: '更多工具', exact: true }).click();
-    await window.getByRole('menuitem', { name: '后台任务', exact: true }).click();
-    await expect(window.locator('.media-jobs-embedding-section'))
-      .toContainText('有 1 个文本未能完成编码');
-    await window.getByRole('button', { name: '关闭后台任务' }).click();
-
-    await window.keyboard.press('Escape');
-    const supportedTextCard = await findImportedAssetCard(window, 'semantic-corpus.txt');
-    await supportedTextCard.click();
-    await supportedTextCard.click({ button: 'right' });
-    const textContextMenu = window.getByRole('menu');
-    await expect(textContextMenu.getByRole('menuitem', { name: '找相似', exact: true })).toBeVisible();
-    await window.keyboard.press('Escape');
-    const unsupportedImageCard = await findImportedAssetCard(window, 'unsupported-image.png');
-    await unsupportedImageCard.click();
-    await unsupportedImageCard.click({ button: 'right' });
-    const imageContextMenu = window.getByRole('menu');
-    await expect(imageContextMenu).toBeVisible();
-    await expect(imageContextMenu.getByRole('menuitem', { name: '找相似', exact: true })).toHaveCount(0);
-    await window.keyboard.press('Escape');
-    const search = window.getByRole('combobox', { name: '搜索资源库' });
-    await search.fill('quarterly budget meeting');
-    const queriesBeforeUi = queryRequests;
-    await window.locator('.search-semantic-toggle').click();
-    await expect(window.locator('.search-semantic-toggle')).toHaveAttribute('aria-pressed', 'true');
-    await expect.poll(() => queryRequests, { message: 'UI semantic query was not submitted.' }).toBeGreaterThan(queriesBeforeUi);
-    const corpusCards = window.getByRole('button', { name: /semantic corpus seed (alpha|beta) TXT/ });
-    await expect(corpusCards).toHaveCount(2);
-    await expect(corpusCards.nth(0)).toHaveAccessibleName(/semantic corpus seed beta TXT/);
-    await window.screenshot({ path: path.join(process.cwd(), 'test-results', 'semantic-sqlite-lifecycle.png') });
-
-    const ids = await window.evaluate(async () => {
-      const api = (globalThis as typeof globalThis & { worldlinebox: { library: {
-        listOpen(): Promise<{ ok: boolean; value?: Array<{ libraryId: string }> }>;
-        listAssets(input: { libraryId: string; query?: string; limit?: number }): Promise<{
-          ok: boolean; value?: { assets: Array<{ assetId: string; relativeFilePath: string }> };
-        }>;
-        embeddingListServices(): Promise<{ ok: boolean; value?: Array<{ id: string; name: string }> }>;
-        embeddingSearch(input: { libraryId: string; modelId: string; query: string; filters?: Array<{
-          field: 'format'; values: string[]; exclude: boolean;
-        }> }): Promise<{ ok: boolean; value?: { assetIds: string[] } }>;
-        embeddingSimilar(input: { libraryId: string; modelId: string; assetId: string }): Promise<{
-          ok: boolean; value?: { status: string; assetIds: string[] };
-        }>;
-      } } }).worldlinebox.library;
-      const opened = await api.listOpen();
-      const libraryId = opened.value?.[0]?.libraryId;
-      const services = await api.embeddingListServices();
-      const serviceId = services.value?.find((entry) => entry.name === 'Local semantic fixture')?.id;
-      if (!libraryId || !serviceId) throw new Error('Semantic fixture service is unavailable.');
-      const filtered = await api.embeddingSearch({ libraryId, modelId: serviceId,
-        query: 'semantic fixture filtered query', filters: [{ field: 'format', values: ['txt'], exclude: false }] });
-      const sourceAssetId = filtered.value?.assetIds[0];
-      if (!sourceAssetId) throw new Error('Semantic text fixture is missing.');
-      const similar = await api.embeddingSimilar({ libraryId, modelId: serviceId, assetId: sourceAssetId });
-      if (!filtered.ok || !filtered.value || !similar.ok || !similar.value) throw new Error('Semantic search API failed.');
-      return { libraryId, serviceId, sourceAssetId, filtered: filtered.value.assetIds };
-    });
-    expect(ids.filtered).toHaveLength(2);
-    const readSimilar = () => window.evaluate(async ({ libraryId, serviceId, sourceAssetId }) => {
-      const api = (globalThis as typeof globalThis & { worldlinebox: { library: WorldlineBoxLibraryApi } }).worldlinebox.library;
-      const result = await api.embeddingSimilar({ libraryId, modelId: serviceId, assetId: sourceAssetId });
-      if (!result.ok) throw new Error(result.error.message);
-      return result.value;
-    }, ids);
-    // The first similar request can legitimately return preparing while its
-    // source vector/cache is opened; the UI also waits for the ready state.
-    await expect.poll(readSimilar, { timeout: 15_000 }).toMatchObject({ status: 'ready' });
-    expect((await readSimilar()).assetIds).toHaveLength(1);
-
-    await closeApplicationBounded(application);
-    application = undefined;
-    application = await launch();
-    window = await application.firstWindow();
-    await window.locator('[data-application-module="assets"]').click();
-    await window.getByRole('button', { name: '打开资源库', exact: true }).click();
-    await expect(window.getByRole('button', { name: /当前资源库 Semantic fixture/ })).toBeVisible();
-    await openSemanticSettings(window);
-    await expect.poll(readIndexState, { timeout: 90_000 }).toMatchObject({
-      phase: 'ready', done: 2, total: 3, failedCount: 1,
-    });
-    expect(corpusRequests).toBe(indexedCorpusCalls);
-    await window.keyboard.press('Escape');
-    const queriesBeforeRestartSearch = queryRequests;
-    await window.getByRole('combobox', { name: '搜索资源库' }).fill('quarterly budget meeting');
-    const toggle = window.locator('.search-semantic-toggle');
-    if (await toggle.getAttribute('aria-pressed') !== 'true') await toggle.click();
-    await expect.poll(() => queryRequests, { message: 'Post-restart semantic query was not submitted.' })
-      .toBeGreaterThan(queriesBeforeRestartSearch);
-    const reopenedCorpusCards = window.getByRole('button', { name: /semantic corpus seed (alpha|beta) TXT/ });
-    await expect(reopenedCorpusCards).toHaveCount(2);
-    await expect(reopenedCorpusCards.nth(0)).toHaveAccessibleName(/semantic corpus seed beta TXT/);
-    await openSemanticSettings(window);
-    await window.getByRole('switch', { name: '开启语义搜索' }).click();
-    await expect.poll(() => window.evaluate(async () => {
-      const api = (globalThis as typeof globalThis & { worldlinebox: { library: {
-        listOpen(): Promise<{ ok: boolean; value?: Array<{ libraryId: string }> }>;
-        embeddingListServices(): Promise<{ ok: boolean; value?: Array<{ id: string; name: string }> }>;
-        embeddingIndexStatus(input: { libraryId: string; modelId: string; run: boolean; restart: boolean }): Promise<{
-          ok: boolean; value?: { phase: string };
-        }>;
-      } } }).worldlinebox.library;
-      const library = (await api.listOpen()).value?.[0];
-      const service = (await api.embeddingListServices()).value?.find(entry => entry.name === 'Local semantic fixture');
-      if (!library || !service) return null;
-      return (await api.embeddingIndexStatus({ libraryId: library.libraryId, modelId: service.id, run: false, restart: false })).value?.phase;
-    }), { message: 'Disabling semantic search must stop the active library encoder.' }).toBe('unavailable');
+    await application.close(); application = undefined;
+    started = await launch(); application = started.application; page = started.page;
+    // Asset libraries intentionally reopen through the normal picker. Wait for
+    // its first-entry dialog instead of sampling a still-rendering button count.
+    await page.getByRole('button', { name: '打开资源库', exact: true }).click();
+    await waitForLibraryLoadingToFinish(page);
+    await expect(assetCard(page, '雨天备忘.md')).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => indexStatus(page, libraryId), { timeout: 120_000 }).toMatchObject({ phase: 'ready', done: 5, total: 5, failedCount: 0 });
+    expect(await persistedVectors(application, libraryPath)).toEqual(before);
+    await searchFromUi(page, '有降雨预报时应该去哪里取伞');
+    await expect(page.locator('.asset-card').first()).toHaveAttribute('data-asset-name', '雨天备忘.md', { timeout: 60_000 });
+    expect(await persistedVectors(application, libraryPath)).toEqual(before);
+    await openSettings(page, '语义搜索');
+    await expect(page.getByRole('switch', { name: '开启语义搜索', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await page.getByRole('switch', { name: '开启语义搜索', exact: true }).click();
+    await expect.poll(() => indexStatus(page, libraryId), { timeout: 15_000 }).toMatchObject({ phase: 'unavailable' });
+    await page.getByRole('tab', { name: '全局模型', exact: true }).click();
+    const model = page.getByRole('listitem', { name: '内置多模态向量服务', exact: true });
+    await expect(model.getByRole('status')).toHaveText('已就绪');
+    await model.getByRole('button', { name: '清理运行缓存', exact: true }).click();
+    await expect(model).toHaveAttribute('aria-busy', 'false', { timeout: 30_000 });
+    await expect(model.getByRole('status')).toHaveText('已就绪');
+    expect(await persistedVectors(application, libraryPath)).toEqual(before);
+    await expect.poll(() => runtimeChildren(application!), { timeout: 15_000 }).toEqual([]);
+    const status = await page.evaluate(() => (window as unknown as Bridge).worldlinebox.library.embeddingLocalTextStatus());
+    expect(status).toMatchObject({ ok: true, value: { installed: true, runtimeInstalled: true, phase: 'ready' } });
+    await page.screenshot({ path: path.join(evidence, 'bundled-assets-cache-released.png') });
+    const proof = { model: LOCAL_TEXT_EMBEDDING_MODEL_ID, actualTextAndImages: 5, uiEnabled: true, uiSemanticSearch: true, uiImageSimilar: true, fullAppRestart: true, unchangedVectorBlobsAndTimestamps: before, activatedRuntimePids: activatedPids, runtimeChildrenAfterClear: [], runtimeCleared: true, bundledFilesPreserved: true };
+    writeFileSync(path.join(evidence, 'sqlite-reuse-proof.json'), JSON.stringify(proof, null, 2));
+    await testInfo.attach('sqlite-reuse-proof', { body: JSON.stringify(proof), contentType: 'application/json' });
   } finally {
-    if (application) await closeApplicationBounded(application);
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    rmSync(temporaryRoot, { recursive: true, force: true });
+    await testInfo.attach('electron-stderr', { body: diagnostics.join('').slice(-120_000), contentType: 'text/plain' });
+    await application?.close();
+    cleanupSemanticFixture(root);
   }
 });
+
+async function openSettings(page: Page, tab: string) {
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('dialog', { name: '通用设置', exact: true }).getByRole('tab', { name: new RegExp(tab, 'u') }).click();
+}
+async function indexStatus(page: Page, libraryId: string) {
+  const result = await page.evaluate(input => (window as unknown as Bridge).worldlinebox.library.embeddingIndexStatus(input), { libraryId, modelId: LOCAL_TEXT_EMBEDDING_MODEL_ID, run: false, restart: false });
+  if (!result.ok) throw new Error(result.error.message); return result.value;
+}
+async function searchFromUi(page: Page, query: string) {
+  const toggle = page.locator('.search-semantic-toggle');
+  await expect(toggle).toHaveAttribute('aria-disabled', 'false');
+  if (await toggle.getAttribute('aria-pressed') !== 'true') await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('combobox', { name: '搜索资源库', exact: true }).fill(query);
+  await page.keyboard.press('Enter');
+}
+async function persistedVectors(application: ElectronApplication, libraryPath: string) {
+  return application.evaluate(({ app }, libraryPath) => {
+    // Read through Electron's matching native ABI, never open the database in the
+    // Node Playwright runner. This read-only probe doesn't own runtime/index writes.
+    const require = process.getBuiltinModule('node:module').createRequire(app.getAppPath() + '/package.json');
+    const Database = require('better-sqlite3') as new (file: string, options: { readonly: boolean; fileMustExist: boolean }) => {
+      prepare(sql: string): { all(): unknown[] }; close(): void;
+    };
+    const crypto = process.getBuiltinModule('node:crypto');
+    const db = new Database(libraryPath + '/.worldlinebox/semantic/index.sqlite', { readonly: true, fileMustExist: true });
+    try {
+      const rows = db.prepare('SELECT profile_id,asset_id,source_revision,dimensions,vector,updated_at FROM asset_embeddings ORDER BY profile_id,asset_id').all() as Array<{ profile_id: string; asset_id: string; source_revision: string; dimensions: number; vector: Buffer; updated_at: string }>;
+      return rows.map(row => ({ profile: row.profile_id, asset: row.asset_id, revision: row.source_revision, dimensions: row.dimensions, hash: crypto.createHash('sha256').update(row.vector).digest('hex'), updatedAt: row.updated_at }));
+    } finally { db.close(); }
+  }, libraryPath);
+}
+
+async function runtimeChildren(application: ElectronApplication): Promise<number[]> {
+  return application.evaluate(() => {
+    if (process.platform !== 'win32') return [];
+    // The runtime has a small owner process, so it is Main's grandchild. Walk
+    // the actual process tree instead of assuming the server is a direct child.
+    const script = `$allProcesses = @(Get-CimInstance Win32_Process); $descendantIds = [System.Collections.Generic.HashSet[uint32]]::new(); [void]$descendantIds.Add(${process.pid}); do { $added = $false; foreach ($entry in $allProcesses) { if ($descendantIds.Contains([uint32]$entry.ParentProcessId) -and $descendantIds.Add([uint32]$entry.ProcessId)) { $added = $true } } } while ($added); $allProcesses | Where-Object { $_.Name -eq 'llama-server.exe' -and $descendantIds.Contains([uint32]$_.ProcessId) } | Select-Object -ExpandProperty ProcessId`;
+    const output = process.getBuiltinModule('node:child_process').execFileSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8', windowsHide: true });
+    return output.trim().split(/\s+/u).filter(Boolean).map(Number);
+  });
+}

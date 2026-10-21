@@ -1,5 +1,6 @@
 import { isEmbeddingSelectionId, isEmbeddingServiceSelectionId } from "./http-service";
 import { isSemanticSearchModelId, type SemanticSearchModelId } from "./profile";
+import { isLocalTextEmbeddingModelId } from './global-profile';
 
 export type EmbeddingLibraryBinding = {
   selectionId: string | null;
@@ -67,7 +68,7 @@ export function embeddingBindingIssue(input: {
   if (isSemanticSearchModelId(selectionId)) {
     return input.runtimeInstalled && input.installedModelIds.has(selectionId) ? "ready" : "install";
   }
-  if (!isEmbeddingServiceSelectionId(selectionId)) return "missing";
+  if (!isEmbeddingServiceSelectionId(selectionId) && !isLocalTextEmbeddingModelId(selectionId)) return "missing";
   const service = input.services.get(selectionId);
   if (!service) return "missing";
   if (service.textStatus !== "verified" || service.dimensions == null) return "configure";
@@ -88,9 +89,9 @@ export function clearEmbeddingBinding(
 /**
  * Effective model for a library:
  * - global off → null
- * - library has an explicit selection → that id
+ * - an enabled library uses the unified bundled model
  * - library explicitly off (binding present, enabled false) → null
- * - no library binding → Settings default model id
+ * - old per-library model ids are ignored
  */
 export function resolveEffectiveEmbeddingSelection(input: {
   globalEnabled: boolean;
@@ -99,9 +100,6 @@ export function resolveEffectiveEmbeddingSelection(input: {
   libraryBinding: EmbeddingLibraryBinding | undefined;
 }): string | null {
   if (!input.globalEnabled) return null;
-  if (input.libraryBinding === undefined) {
-    return isEmbeddingSelectionId(input.defaultModelId) ? input.defaultModelId : null;
-  }
-  if (!input.libraryBinding.enabled || !input.libraryBinding.selectionId) return null;
-  return input.libraryBinding.selectionId;
+  if (input.libraryBinding && !input.libraryBinding.enabled) return null;
+  return isEmbeddingSelectionId(input.defaultModelId) ? input.defaultModelId : null;
 }

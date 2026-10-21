@@ -76,12 +76,12 @@ describe("effective embedding selection", () => {
     })).toBe("embeddinggemma-2-compact");
   });
 
-  it("uses the library selection when set, and respects an explicit off", () => {
+  it("migrates a former API override to the unified local model, and respects an explicit off", () => {
     expect(resolveEffectiveEmbeddingSelection({
       globalEnabled: true,
       defaultModelId: "embeddinggemma-2-compact",
       libraryBinding: { selectionId: "svc_readytext", enabled: true },
-    })).toBe("svc_readytext");
+    })).toBe("embeddinggemma-2-compact");
     expect(resolveEffectiveEmbeddingSelection({
       globalEnabled: true,
       defaultModelId: "embeddinggemma-2-compact",

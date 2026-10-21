@@ -2497,6 +2497,7 @@ async function handleRequestWithoutWriteLease(request: WorkerRequest): Promise<W
       }
       return result;
     }
+    case 'asset.learning.page':
     case 'asset.list':
     case 'asset.sequence.create':
     case 'asset.sequence.dissolve':

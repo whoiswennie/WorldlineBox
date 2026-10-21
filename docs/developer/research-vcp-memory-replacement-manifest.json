@@ -1,0 +1,525 @@
+{
+  "schema": "worldlinebox.vcp-memory-replacement-research",
+  "auditedOn": "2026-10-21",
+  "status": "pinned-source manifest; host integration implemented; final package and end-to-end validation tracked separately",
+  "direction": "Replace the existing non-embedding memory engine completely; no dual engine or old-engine fallback.",
+  "upstream": {
+    "repository": "https://github.com/lioensky/VCPToolBox",
+    "commit": "7ceecd48c46caac8168b909ade5febbc4a254e42"
+  },
+  "license": {
+    "path": "LICENSE",
+    "bytes": 14022,
+    "sha256": "5392a8b3f46108fa3494e8c15b57da9e14e9bbd93335590cb5b50364fcf770a8"
+  },
+  "host": {
+    "repository": "https://github.com/whoiswennie/WorldlineBox",
+    "commitAtAuditStart": "b193d3e95b8b1be677708a29083d7f81bf2d1466"
+  },
+  "hotCore": {
+    "localJavaScriptFileCount": 19,
+    "files": [
+      {
+        "path": "EmbeddingUtils.js",
+        "bytes": 13319,
+        "sha256": "9800fcaaa567c148b9b4f7131e827ae295184e44897484913c52288192f01f9d"
+      },
+      {
+        "path": "KnowledgeBaseManager.js",
+        "bytes": 163617,
+        "sha256": "fd4a41a11ad0cd4d5612f46d72e1780601df128f25aa71d0f5a8e3507b63bd3e"
+      },
+      {
+        "path": "ResultDeduplicator.js",
+        "bytes": 20328,
+        "sha256": "29c7d3400638cb72b2aaa862ea417a1d2874f65011a5a879c9785a3bee7c243d"
+      },
+      {
+        "path": "RiverMemoEngine.js",
+        "bytes": 26922,
+        "sha256": "2e21813da7adc6012c7bc1d9b05de95cc5f20c05b5efc2d156a05fcbe69f516e"
+      },
+      {
+        "path": "TagMemoEngine.js",
+        "bytes": 23589,
+        "sha256": "55419c5f5914fece3a35e13c2e054c9637163f5c59e2a3dc73efcde2bf6daa57"
+      },
+      {
+        "path": "TagMemoV10Engine.js",
+        "bytes": 12302,
+        "sha256": "2968abfa38123d979cfcd059f79c7aabbeb4fbdac27b81ca4e6190aa02a1d2b7"
+      },
+      {
+        "path": "modules/knowledgeBase/databaseCoordinator.js",
+        "bytes": 15797,
+        "sha256": "54f4cb318eaf3311ebee2a198f2129c0a93b5d58b33c02a564439a67ac2b894e"
+      },
+      {
+        "path": "modules/knowledgeBase/diaryMetadataCache.js",
+        "bytes": 8108,
+        "sha256": "24e5e362d7a51ce86ee1f7386d9a502c2fa380a4421626955afb96f89589a1a1"
+      },
+      {
+        "path": "modules/knowledgeBase/fileWatcher.js",
+        "bytes": 11913,
+        "sha256": "d17ba552a5831b4af187a501ee04323260e5f96b5f6d671a24128f1e440c02d5"
+      },
+      {
+        "path": "modules/knowledgeBase/indexRepository.js",
+        "bytes": 23351,
+        "sha256": "50dcc09089eb42d5d0bb26cefa56019718bf53e2cbef0d752b193b508692e949"
+      },
+      {
+        "path": "modules/knowledgeBase/ingestionPipeline.js",
+        "bytes": 37910,
+        "sha256": "9a2f6da6e858b6682b4399eacdf20b1d6c0d97d6be4d7cf694f31370a7ce2a89"
+      },
+      {
+        "path": "modules/knowledgeBase/memoConfig.js",
+        "bytes": 5729,
+        "sha256": "3763d457d9b942ddc2e8d246a48fb2e2ce1991391ecb3bf6d2cc058be1de8590"
+      },
+      {
+        "path": "modules/knowledgeBase/memoryProfiler.js",
+        "bytes": 13149,
+        "sha256": "7539545d14a7422fc14d36489f4cffc8f5cec981a8a72eeb019a3d821225734b"
+      },
+      {
+        "path": "modules/knowledgeBase/searchService.js",
+        "bytes": 9525,
+        "sha256": "d0a613fff293d85f69b544711af8d78d9e43c06aabd7ce2744e9d1d9a4a5ad35"
+      },
+      {
+        "path": "modules/knowledgeBase/tagConsistencyService.js",
+        "bytes": 22116,
+        "sha256": "baba47848ed1489fbda03a04ab5686a0aa853558d54e604923fa404cc8981f75"
+      },
+      {
+        "path": "modules/knowledgeBase/textPreprocessor.js",
+        "bytes": 3379,
+        "sha256": "d3ce885035f496331143877182a8b455b49a0301591126a9978c0f8613709689"
+      },
+      {
+        "path": "modules/knowledgeBase/vectorCodec.js",
+        "bytes": 1936,
+        "sha256": "6464c17e6a9fff45b0c463f97b686dbc079766193cf007ec4cd140b7d539cdd7"
+      },
+      {
+        "path": "modules/tagmemoV10/immutable.js",
+        "bytes": 15041,
+        "sha256": "94b8b03a9402301d346805962eb51d96447026ff73aade89ab39f6bb6e8ff671"
+      },
+      {
+        "path": "modules/tagmemoV10/riverObservability.js",
+        "bytes": 4343,
+        "sha256": "c5c3a19e9cce06dfa148840cd0cb2f6d2102c4c6b002a8c7c3f316b179015bdd"
+      }
+    ],
+    "resources": [
+      {
+        "path": "rag_params.json",
+        "bytes": 5985,
+        "sha256": "08a10fbf013c1feaf478a1748aead5d3e046c708d6d5acd55f0f94e49e7067a0"
+      }
+    ],
+    "externalRuntimePackages": [
+      {
+        "name": "@dqbd/tiktoken",
+        "upstreamDeclaredRange": "^1.0.22",
+        "auditFixtureVersion": "1.0.22"
+      },
+      {
+        "name": "node-fetch",
+        "upstreamDeclaredRange": "^3.3.2",
+        "auditFixtureVersion": "3.3.2",
+        "loadMechanism": "dynamic import"
+      }
+    ]
+  },
+  "native": {
+    "sourceFiles": [
+      {
+        "path": "rust-vexus-lite/.gitignore",
+        "bytes": 483,
+        "sha256": "093dccb98c44e9a914734aa0d2f18c216be42ccf040eb318fbb235bc112c6e32"
+      },
+      {
+        "path": "rust-vexus-lite/AGENTS.md",
+        "bytes": 1243,
+        "sha256": "1bf460796ee7541e7d74c2d76387affe1f3c9484c72cc37b210bffacd71993a1"
+      },
+      {
+        "path": "rust-vexus-lite/Cargo.lock",
+        "bytes": 35544,
+        "sha256": "602c9f4a8b0060ac414004ea4eebde0d9edb7d78c3f5cc1ab0db32d5ae4ae320"
+      },
+      {
+        "path": "rust-vexus-lite/Cargo.toml",
+        "bytes": 1311,
+        "sha256": "cd750a158a6aeedd1347a9f9cee135390b095f805a6f25bc06bb8c646b54c0c3"
+      },
+      {
+        "path": "rust-vexus-lite/README.md",
+        "bytes": 45096,
+        "sha256": "4b1731f30440633cfd68f66042fa55c9fd9e6df08139424cea8746de91f1d060"
+      },
+      {
+        "path": "rust-vexus-lite/build.rs",
+        "bytes": 70,
+        "sha256": "444164a4265ff424fb52c357377cd7655e7c358bc2d70ce1a990675dd6bbd4ff"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/Cargo.toml",
+        "bytes": 736,
+        "sha256": "f28b0b3f0a3fb287e05c991d0be89df6544086aa1e1341e5860e3ff275c96399"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/LICENSE",
+        "bytes": 11577,
+        "sha256": "b939133662bcde79d3f1876bfbb9a40ea22b9d14f677a4b663b7b5f1ac7691a3"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/asset.rs",
+        "bytes": 10708,
+        "sha256": "8e76a8ba082eff4f14d68f432310c9694fa7ea04a5177aaad0f34653b4f75218"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/asset_tests.rs",
+        "bytes": 4256,
+        "sha256": "c73b24c67f4784e0ba2375cdb6ed056974309d50ee2da27d0ebc045e533fc002"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/engine.rs",
+        "bytes": 16963,
+        "sha256": "eececd6d9e1c1ff691ed250bd383db7870194cba3d6c1e4a5017dd0f56c8fa6c"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/engine_tests.rs",
+        "bytes": 12220,
+        "sha256": "573a294158b76ccfdd5da98f64c7971abf63640a4aa3fa23a906712d69519b13"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/bq.rs",
+        "bytes": 52676,
+        "sha256": "cc1ea1b8981350e6fc2828533fa78d362314d3712536382724a4df83a7799216"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver.rs",
+        "bytes": 151678,
+        "sha256": "874918df3ba7aae55fe224d87678a8a46196be46f2610cf12417b39f41e7c55c"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm.rs",
+        "bytes": 74275,
+        "sha256": "b848c4b76a0c661a09f55a6599249cb076393f2e353218786da98d3890ac0c4f"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/build.rs",
+        "bytes": 15750,
+        "sha256": "66772757234e597975ad2a3e6b0a7e7d90e1633b17d1d685855789de7b79a45f"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs",
+        "bytes": 38516,
+        "sha256": "6741b4b60bdc832fbdf2eeb77d04a2ffbb122254856598348bd54a869c541951"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic_search.rs",
+        "bytes": 10822,
+        "sha256": "dcb4df986675be7af1da9d163c9171db66395670ca51547c1b3431e041ac0d2c"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic_tests.rs",
+        "bytes": 15811,
+        "sha256": "c3cdc4fe3275f65e1ff4a5f7114634a5c7bda13195453daeffcd98ac9fc4af80"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/l2_tests.rs",
+        "bytes": 10526,
+        "sha256": "ed085c91c06f07610dfa9d822eb4cb6bb826ac4ebdd04601dd307bb57bb72582"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/native_l2_tests.rs",
+        "bytes": 7338,
+        "sha256": "6f50f6d2a31796ce7721aebedd5d9ee725361335f71c8e2a36389340bf5c5876"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/production.rs",
+        "bytes": 13726,
+        "sha256": "c49c1612e50ea92b923dc5e2ae4497a1817bd9a6022662b97cb9887ba5cc8efb"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/production_tests.rs",
+        "bytes": 10484,
+        "sha256": "923fdbe9239db02586a21dc85e0453af48bac8bdb7c577046886bce321a2c7d2"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/routing_snapshot.rs",
+        "bytes": 9095,
+        "sha256": "494adaf9401f8a815ffc14fdfc93c690a7725b9c6757b77d624e9178ebf136c6"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/lib.rs",
+        "bytes": 423,
+        "sha256": "fdc7b24057a0fc345e556c3ea95f6eaa181d589237d958e75f5088be87902ac6"
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/vector.rs",
+        "bytes": 20693,
+        "sha256": "a283401a09a0a763a7fc5f96250c5e6adf2fe4ae8e02eda58dce4ee8a291b2ef"
+      },
+      {
+        "path": "rust-vexus-lite/index.d.ts",
+        "bytes": 22447,
+        "sha256": "03f7b7b5b4fe846188a9a5001214d5216e452399cbf52748b6ed331b891c645c"
+      },
+      {
+        "path": "rust-vexus-lite/index.js",
+        "bytes": 9685,
+        "sha256": "2f7d68d1f6b71db1f5adeb4721e8b7ca8c6b7dd43c34d11d1683880f17163be2"
+      },
+      {
+        "path": "rust-vexus-lite/package.json",
+        "bytes": 641,
+        "sha256": "135625768206e4e3ba35c2eceac9a2045738c98c9d1cb40ccc5eb5f15451e33c"
+      },
+      {
+        "path": "rust-vexus-lite/rust-toolchain.toml",
+        "bytes": 52,
+        "sha256": "5345848dfcc1171f10672b502d78ee0db32fcadd201747cb79407c5868379d56"
+      },
+      {
+        "path": "rust-vexus-lite/src/global_chunks.rs",
+        "bytes": 25704,
+        "sha256": "9802d6a57d9d6da6b879d6a8c3e958efbfc7fea2d15cf632cb1bfd0e89665d29"
+      },
+      {
+        "path": "rust-vexus-lite/src/index_handle.rs",
+        "bytes": 3444,
+        "sha256": "0333a1165f9d98461fa3de2cd9796e68b59282b84e120a59644be0f9653ff813"
+      },
+      {
+        "path": "rust-vexus-lite/src/index_lifecycle.rs",
+        "bytes": 88204,
+        "sha256": "b3adb471abe26ca00175d83bfcc163fb883759927bacc68c3ce2956e41ffde83"
+      },
+      {
+        "path": "rust-vexus-lite/src/index_maintenance.rs",
+        "bytes": 7300,
+        "sha256": "067c9db6eb24f5ed5efe4c1d10267674c401302fdebe2f8fa021421ebc053f7d"
+      },
+      {
+        "path": "rust-vexus-lite/src/index_source.rs",
+        "bytes": 10167,
+        "sha256": "0608c6b48b40e78902b40ed4568bbcde08e29e84a3d3f477cc57c43bb53fa098"
+      },
+      {
+        "path": "rust-vexus-lite/src/ingestion.rs",
+        "bytes": 113633,
+        "sha256": "c71d8b7c64fa720acae04e4ea68012015367c2e758611b0cbd25a21d9d4fcb2c"
+      },
+      {
+        "path": "rust-vexus-lite/src/knowledge_runtime.rs",
+        "bytes": 180751,
+        "sha256": "8dd9dbd5df7cc2244bfc3b3c882329d82b58a91efd496a3711e6a69ef1e2283e"
+      },
+      {
+        "path": "rust-vexus-lite/src/lib.rs",
+        "bytes": 88885,
+        "sha256": "4ae03a677cb92b5c377022951270d48fb4d9c839f90bbe8d5be549e39f6d5733"
+      },
+      {
+        "path": "rust-vexus-lite/src/light_memo.rs",
+        "bytes": 19634,
+        "sha256": "05fc03107f16a941e2e25f31b82f87f79617851a569937b72268c0cf9ee47163"
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_artifact_builder.rs",
+        "bytes": 42216,
+        "sha256": "3131304e5ffacf6b4e86876ff3f25ac5b33e26706ed267b53aed831f8e13abcf"
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_geometry.rs",
+        "bytes": 43257,
+        "sha256": "de39506a7865c9b053e061d463730b6cb741546f332734cf6c1f9d8acbf368af"
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_pipeline.rs",
+        "bytes": 94239,
+        "sha256": "a7a8860e822ef71e4100613449b485b7570c3262ce2ff12a84d25b1a648e8dbd"
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_projection.rs",
+        "bytes": 20585,
+        "sha256": "4a074ec6c316f070b7d7de7513bead4c59b4c42b0240600aa245d68ab017ce87"
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_sensing.rs",
+        "bytes": 39491,
+        "sha256": "fbd6132e57e6a2477b151117d803ffceae886dbd6df5d3544ca9e80ba6b05ec5"
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_thinking.rs",
+        "bytes": 20277,
+        "sha256": "425ac8ea04f2d4ab1ae0946ee5ac1da649e14fcd74c25512754212726a02a019"
+      },
+      {
+        "path": "rust-vexus-lite/src/publication_gate.rs",
+        "bytes": 5935,
+        "sha256": "b72f4913a290e1577a01390814b7d283c493e0c5a908453de418a16841c87db0"
+      },
+      {
+        "path": "rust-vexus-lite/src/result_deduplicator.rs",
+        "bytes": 10055,
+        "sha256": "d64289d010bb65f2e23bd4585371706072506ca4bb8e1875658aedaa7c04cfb5"
+      },
+      {
+        "path": "rust-vexus-lite/src/retrieval_index.rs",
+        "bytes": 12342,
+        "sha256": "e5dd77854fa7e10a9998ca8dbf1bbab97643408495656759ad8ed5d4b0ab4889"
+      },
+      {
+        "path": "rust-vexus-lite/src/rivermemo_topology_v3.rs",
+        "bytes": 110869,
+        "sha256": "a302854a965251e58f7dc2b77fa5cd4c55a201d76bb067c71d4857ecce8afa59"
+      },
+      {
+        "path": "rust-vexus-lite/src/schema.rs",
+        "bytes": 36384,
+        "sha256": "c98a5501ebf1d832a8f3f8112fd6db92930e26bb1940a71eaa97956b3c55f51c"
+      },
+      {
+        "path": "rust-vexus-lite/src/storage.rs",
+        "bytes": 50622,
+        "sha256": "d57d7bec436c38adb528adb10aa0ca870dfb1e2f3f296296434f69817b0b95a9"
+      },
+      {
+        "path": "rust-vexus-lite/src/tag_consistency.rs",
+        "bytes": 55512,
+        "sha256": "f61f951dbeb93c204d4979961791001eb054681b5cdd3ce3826541f6f27e6455"
+      },
+      {
+        "path": "rust-vexus-lite/src/task_lifecycle.rs",
+        "bytes": 5398,
+        "sha256": "d7ce11d2b14de9b40112d0512e5d8db349663897a0508dcf207639b2fb391300"
+      },
+      {
+        "path": "rust-vexus-lite/src/text.rs",
+        "bytes": 17193,
+        "sha256": "f72f681626641bc15672505131208226e255ab52e9066b5000d97f942467b77d"
+      },
+      {
+        "path": "rust-vexus-lite/test.js",
+        "bytes": 1947,
+        "sha256": "5e80dd57405dd81abb8c26a93ff2fe9cddbeaa70ee0757550d4e083f30162efe"
+      }
+    ],
+    "testedBinary": {
+      "path": "rust-vexus-lite/vexus-lite.win32-x64-msvc.node",
+      "bytes": 10628608,
+      "sha256": "fa8f89310d75d07683f2bba2f81cffd33786be615fa661a1c72b1d9e2774bae5"
+    },
+    "rebuiltFromSourceDuringAudit": false,
+    "minimumRust": "1.89",
+    "maximumRetrievalDimension": 4096,
+    "napiFeature": "napi4"
+  },
+  "requiredMemoryPeripherals": [
+    {
+      "path": "Plugin/DailyNote/dailynote.js",
+      "role": "write and edit",
+      "bytes": 70721,
+      "sha256": "021e23c975daea121c2ce16a20770fd6a1a3252675e53c1936ab23fcbd231e2e"
+    },
+    {
+      "path": "Plugin/DailyNoteManager/daily-note-manager.js",
+      "role": "organize archive and associate",
+      "bytes": 28186,
+      "sha256": "0eb8fee4a6b53664636ba9b8e411d765b165e9a05d4fb457bb1cd9bb400d92bf"
+    },
+    {
+      "path": "Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js",
+      "role": "passive recall and context assembly",
+      "bytes": 289250,
+      "sha256": "19850ed1b6314b4e2358acda7fb0e67411dd88c42983329c657044642605fece"
+    },
+    {
+      "path": "Plugin/LightMemo/LightMemo.js",
+      "role": "active recall",
+      "bytes": 46700,
+      "sha256": "a72f9561708cea7e4fd4e74db270a8de198190063aa56abd4c4dbeb78b204be1"
+    },
+    {
+      "path": "Plugin/VCPTimeLine/VCPTimeLine.js",
+      "role": "long-term timeline",
+      "bytes": 41442,
+      "sha256": "189e62657002bac19c42742e4f8288ef065defda7cb5308afdc256a416276129"
+    }
+  ],
+  "peripheralClosureStatus": "Entry hashes only in this manifest; full static dependency audit is separate. Dynamic runtime integration still requires validation.",
+  "optionalColdKnowledge": {
+    "path": "TDBKnowledge.js",
+    "defaultEnabled": false,
+    "extraPackages": [
+      "better-sqlite3",
+      "chokidar",
+      "triviumdb"
+    ],
+    "notes": "Separate cold knowledge service; not equivalent to the hot memory embedded TDB kernel."
+  },
+  "licenses": [
+    {
+      "path": "LICENSE",
+      "declared": "CC BY-NC-SA 4.0"
+    },
+    {
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/LICENSE",
+      "declared": "Apache-2.0"
+    },
+    {
+      "hostPath": "LICENSE",
+      "declared": "MIT"
+    }
+  ],
+  "prohibitedImports": [
+    "config.env and credentials",
+    "dailynote runtime contents",
+    "knowledge runtime contents",
+    "VectorStore and VectorStoreTDB runtime data",
+    "plugin state and user caches"
+  ],
+  "mandatoryHostAdapters": [
+    "Identity and source authorization independent of the retired engine",
+    "Visibility-domain isolation including graph and cache",
+    "Durable source-to-diary delivery and receipts",
+    "Embedding runtime configuration before require",
+    "Read-only code versus writable plugin state paths",
+    "Native tool mapping for all model protocols",
+    "Chat/world/action/timeline entry points",
+    "Asynchronous task operations outside message DB transactions",
+    "Native resources and packaged platform validation"
+  ],
+  "knownUpstreamScopeLimits": [
+    "diaryNames constrains candidates but not the shared global observation graph",
+    "Native joint query replaces allowedFileIds and uses empty deniedFileIds; caller file ACL is not enforced there"
+  ],
+  "validation": {
+    "electron": "43.1.0",
+    "embeddedNode": "24.18.0",
+    "napi": "10",
+    "platform": "win32",
+    "arch": "x64",
+    "vector3072InsertAndSearch": "passed",
+    "dimension4097Rejection": "passed",
+    "upstreamNativeMemoManifestCompatibility": "passed",
+    "upstreamKbmNativeLifecycle": {
+      "passed": 7,
+      "failed": 0
+    },
+    "kbmFixture": "4-dimensional manual vectors; real native ingestion, geometry, joint RiverMemo, hybrid plan and observation handle lifetime; external dependencies installed only in temp",
+    "realModelCalls": false,
+    "packagedAppValidated": false,
+    "multiPlatformValidated": false,
+    "semanticQualityValidated": false
+  }
+}

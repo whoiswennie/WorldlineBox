@@ -184,7 +184,7 @@ describe("embedding http services", () => {
     expect(JSON.stringify(summary)).not.toContain("secret-key");
   });
 
-  it("remembers a tested custom service id", () => {
+  it("replaces a retired persisted service selection with the sole bundled model", () => {
     const storage = {
       value: JSON.stringify({
         version: 1,
@@ -194,7 +194,7 @@ describe("embedding http services", () => {
       getItem: () => storage.value,
       setItem: (key: string, item: string) => { void key; storage.value = item; },
     };
-    expect(loadSemanticSearchPreferences(storage).modelId).toBe("svc_abc12345");
+    expect(loadSemanticSearchPreferences(storage)).toMatchObject({ enabled: true, modelId: "embeddinggemma-2-compact" });
   });
 
   it("stores declared modalities and dimensions, and rejects an empty modality list", () => {

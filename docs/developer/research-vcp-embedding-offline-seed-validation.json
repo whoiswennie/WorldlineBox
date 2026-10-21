@@ -1,0 +1,43 @@
+{
+  "generatedAt": "2026-10-21T09:56:18.947Z",
+  "modelId": "embeddinggemma-2-compact",
+  "dimension": 768,
+  "profileKey": "embeddinggemma-2-gguf\n412430755667d84b1ac64fe1fe2693aa6219f1d9\nQ4_K_XL\nembeddinggemma-2-UD-Q4_K_XL.gguf\nmmproj-Q8_0.gguf\n768\ntask: search result | query: ",
+  "offlineSeed": {
+    "ready": true,
+    "seedMs": 1459.8225,
+    "remoteRequests": 0,
+    "deleted": true,
+    "automaticReseedSuppressed": true,
+    "manualRepairReady": true,
+    "updateReady": true,
+    "sameSizeCorruptionRestored": true,
+    "runtimeCorruptionRestored": true
+  },
+  "ownedTextRuntime": {
+    "queries": 12,
+    "top1Correct": 12,
+    "vectorDimension": 768,
+    "usedProjector": false,
+    "closedSuccessfully": true,
+    "automaticOffloadOnCpuPackage": {
+      "gpuLayersArgument": 99,
+      "usedCpuOnlyBinary": true,
+      "dimension": 768,
+      "startupAndQueryMs": 2665.8241,
+      "closedSuccessfully": true
+    }
+  },
+  "buildAcquisition": {
+    "command": "node scripts/stage-bundled-embedding.mjs --acquire",
+    "sourceRevision": "412430755667d84b1ac64fe1fe2693aa6219f1d9",
+    "runtimeRelease": "b11457",
+    "verifiedFiles": 53,
+    "verifiedBytes": 780106013,
+    "existingBundleDownloads": 0,
+    "cleanDestinationFromPinnedCache": true,
+    "cleanDestinationRemoteRequests": 0,
+    "fixedSourceSha256Verification": true,
+    "installationNeedsNetwork": false
+  }
+}

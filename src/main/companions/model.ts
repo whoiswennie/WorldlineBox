@@ -132,13 +132,29 @@ export async function generateCompanionReply(
   }
 }
 
-/** Memory understanding uses the selected chat model, without executable tools. */
+/** Structured cognition uses the same provider transport as ordinary conversation. */
 export async function generateCompanionStructured(
+  context: { system: string; user: string }, config: CompanionModelConfig, signal?: AbortSignal,
+  options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs' | 'visualInputs'> = {},
+): Promise<unknown> {
+  const raw = await generateCompanionContent(context, config, signal, options, true);
+  try { return JSON.parse(raw.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '').trim()); }
+  catch { throw new CompanionModelError('INVALID_RESPONSE', '记忆模型返回的结构无效，稍后会重新处理。'); }
+}
+
+/** VCP timeline prompts retain their plain text output across every configured API format. */
+export async function generateCompanionText(
   context: { system: string; user: string },
   config: CompanionModelConfig,
   signal?: AbortSignal,
   options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs' | 'visualInputs'> = {},
-): Promise<unknown> {
+): Promise<string> {
+  return generateCompanionContent(context, config, signal, options, false);
+}
+async function generateCompanionContent(
+  context: { system: string; user: string }, config: CompanionModelConfig, signal: AbortSignal | undefined,
+  options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs' | 'visualInputs'>, structured: boolean,
+): Promise<string> {
   if (signal?.aborted) throw new CompanionModelError('CANCELLED', '记忆处理已取消。');
   validateConfig(config);
   const model = config.model.trim();
@@ -154,15 +170,12 @@ export async function generateCompanionStructured(
     const operation = async () => {
       const response = await fetchCompanionProvider(controller.signal, options.fetchFn ?? globalThis.fetch.bind(globalThis), rejected => {
         const current = prepareCompanionVisualContext(context, options.visualInputs, config, rejected);
-        return { request: providerRequest({ ...config, model }, current.context, controller.signal, false, false, false, current.images), hasImages: current.images.length > 0 };
+        return { request: providerRequest({ ...config, model }, current.context, controller.signal, false, false, false, current.images, structured), hasImages: current.images.length > 0 };
       });
       const envelope = await readBoundedJson(response);
       if (extractLoopCalls(config.apiFormat, envelope).length) throw new CompanionModelError('INVALID_RESPONSE', '记忆模型不应调用工具。');
       const raw = extractProviderText(config.apiFormat, envelope).trim();
-      // Visible JSON only; no conversational fallback can become a memory candidate.
-      const text = raw.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '').trim();
-      try { return JSON.parse(text); }
-      catch { throw new CompanionModelError('INVALID_RESPONSE', '记忆模型返回的结构无效，稍后会重新处理。'); }
+      return stripCompanionThoughts(raw);
     };
     return await Promise.race([operation(), aborted]);
   } catch (error) {
@@ -217,7 +230,7 @@ function companionImagePart(format: AiApiFormat, image: Pick<ToolVisualInput, 'm
   if (format === 'openai_responses') return { type: 'input_image', image_url: url, detail };
   return { type: 'image_url', image_url: { url, detail } };
 }
-function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false, images: readonly CompanionVisualInput[] = []): Parameters<typeof fetch> {
+function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false, images: readonly CompanionVisualInput[] = [], structured = true): Parameters<typeof fetch> {
   const deepseek = isDeepseekOfficialEndpoint(config.baseUrl ?? '');
   const tools = [...(enableDsh ? [COMPANION_DSH_TOOL, COMPANION_DSH_RECORD_TOOL] : []), ...(enableMemory ? [...COMPANION_MEMORY_TOOLS, COMPANION_SCHEDULE_TOOL, COMPANION_STATE_TOOL, COMPANION_ROUTINE_TOOL, COMPANION_WORLD_TOOL, COMPANION_ACTIVITY_TOOL, COMPANION_WORK_TOOL, COMPANION_LIFE_TOOL, ...COMPANION_FILE_TOOLS] : [])];
   const bearerHeaders = { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
@@ -229,14 +242,14 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
       return [resolveOpenAiChatCompletionsUrl(config.baseUrl), init(bearerHeaders, {
         model: config.model, max_tokens: 8_192, stream,
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })), parallel_tool_calls: true } : {}),
-        ...(deepseek ? { thinking: { type: 'disabled' }, response_format: { type: 'json_object' } } : {}),
+        ...(deepseek ? { thinking: { type: 'disabled' }, ...(structured ? { response_format: { type: 'json_object' } } : {}) } : {}),
         messages: [{ role: 'system', content: context.system }, { role: 'user', content: context.user }, ...imageMessage],
       })];
     case 'openai_responses':
       return [resolveOpenAiResponsesUrl(config.baseUrl), init(bearerHeaders, {
         model: config.model, max_output_tokens: 8_192, stream,
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', ...tool, strict: false })), parallel_tool_calls: true } : {}),
-        ...(deepseek ? { reasoning: { effort: 'none' }, text: { format: { type: 'json_object' } } } : {}),
+        ...(deepseek ? { reasoning: { effort: 'none' }, ...(structured ? { text: { format: { type: 'json_object' } } } : {}) } : {}),
         instructions: context.system, input: [{ role: 'user', content: context.user }, ...imageMessage],
       })];
     case 'anthropic':
@@ -254,13 +267,13 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
         ...(tools.length ? { tools: [{ function_declarations: tools.map(tool => ({ name: tool.name,
           description: tool.description, parametersJsonSchema: tool.parameters })) }] } : {}),
         contents: [{ role: 'user', parts: [{ text: context.user }] }, ...(images.length ? [{ role: 'user', parts: companionImageParts(config.apiFormat, images) }] : [])],
-        generationConfig: { maxOutputTokens: 8_192, responseMimeType: 'application/json' },
+        generationConfig: { maxOutputTokens: 8_192, ...(structured ? { responseMimeType: 'application/json' } : {}) },
       })];
     case 'dashscope_native':
       return [resolveDashScopeMultimodalGenerationUrl(config.baseUrl), init({ ...bearerHeaders, ...(stream ? { 'X-DashScope-SSE': 'enable' } : {}) }, {
         model: config.model, input: { messages: [{ role: 'system', content: [{ text: context.system }] },
           { role: 'user', content: [{ text: context.user }] }, ...imageMessage] },
-        parameters: { result_format: 'message', max_tokens: 8_192, enable_thinking: false, response_format: { type: 'json_object' },
+        parameters: { result_format: 'message', max_tokens: 8_192, enable_thinking: false, ...(structured ? { response_format: { type: 'json_object' } } : {}),
           ...(stream ? { incremental_output: true } : {}),
           ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}) },
       })];

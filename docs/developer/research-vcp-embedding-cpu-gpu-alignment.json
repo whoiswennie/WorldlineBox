@@ -1,0 +1,58 @@
+{
+  "generatedAt": "2026-10-21T11:19:15.2961546Z",
+  "modelId": "embeddinggemma-2-compact",
+  "sameWeights": true,
+  "dimension": 768,
+  "comparedDocuments": 12,
+  "minCpuGpuCosine": 0.999527455391651,
+  "documentComparisons": [
+    {
+      "id": "umbrella",
+      "cosine": 0.9997555290538691
+    },
+    {
+      "id": "birthday",
+      "cosine": 0.9998008843888057
+    },
+    {
+      "id": "allergy",
+      "cosine": 0.9997189140524713
+    },
+    {
+      "id": "coffee",
+      "cosine": 0.9997700843974995
+    },
+    {
+      "id": "project",
+      "cosine": 0.9996999276511767
+    },
+    {
+      "id": "appointment",
+      "cosine": 0.999527455391651
+    },
+    {
+      "id": "library",
+      "cosine": 0.9997170709707751
+    },
+    {
+      "id": "cat",
+      "cosine": 0.9997744236053389
+    },
+    {
+      "id": "budget",
+      "cosine": 0.9997127678158625
+    },
+    {
+      "id": "train",
+      "cosine": 0.9997314035454727
+    },
+    {
+      "id": "bug",
+      "cosine": 0.9995756235856307
+    },
+    {
+      "id": "garden",
+      "cosine": 0.999569452387362
+    }
+  ]
+}

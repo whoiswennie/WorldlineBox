@@ -19014,6 +19014,30 @@ export class LibraryService {
     return { sequenceId: input.sequenceId, fps: input.fps };
   }
 
+  /** Bounded, read-only candidate enumeration for explicitly granted learning sources. */
+  listLearningAssets(input: { libraryId: string; folderId?: string; assetId?: string; afterId?: string; limit: number }): { assets: AssetSummary[]; hasMore: boolean; nextCursor?: string } {
+    const library = this.requireOpenLibrary(input.libraryId), db = library.connection;
+    const limit = Math.max(1, Math.min(128, Math.floor(input.limit) || 1));
+    const where = ["a.deleted_at IS NULL", "a.availability='available'", 'a.current_revision_id IS NOT NULL', 'a.asset_id>?'], params: unknown[] = [input.afterId ?? ''];
+    if (input.assetId) { where.push('a.asset_id=?'); params.push(input.assetId); }
+    if (input.folderId) {
+      const managed = db.prepare('SELECT folder_id,relative_path FROM managed_folders WHERE folder_id=?').get(input.folderId) as { folder_id: string; relative_path: string } | undefined;
+      if (managed) {
+        where.push("a.location_kind='managed' AND (a.managed_folder_id=? OR (a.relative_file_path>=? AND a.relative_file_path<?))");
+        params.push(managed.folder_id, managed.relative_path + '/', managed.relative_path + '0');
+      } else {
+        const linked = this.resolveLinkedFolderScope(library, input.folderId);
+        if (!linked) throw new LibraryServiceError('FOLDER_NOT_FOUND');
+        where.push('a.linked_folder_id=?'); params.push(linked.linkedFolderId);
+        if (linked.relativePath) { where.push('(a.relative_file_path>=? AND a.relative_file_path<?)'); params.push(linked.relativePath + '/', linked.relativePath + '0'); }
+      }
+    }
+    const found = db.prepare('SELECT a.asset_id FROM assets a WHERE ' + where.join(' AND ') + ' ORDER BY a.asset_id LIMIT ?').all(...params, limit + 1) as Array<{ asset_id: string }>;
+    const ids = found.slice(0, limit).map(row => row.asset_id);
+    const assets = ids.length ? this.listAssets({ libraryId: input.libraryId, recursive: true, assetIds: ids }).filter(asset => asset.availability === 'available').sort((a, b) => a.assetId < b.assetId ? -1 : a.assetId > b.assetId ? 1 : 0) : [];
+    return { assets, hasMore: found.length > limit, ...(ids.length ? { nextCursor: ids.at(-1) } : {}) };
+  }
+
   listAssets(input: {
     libraryId: string;
     folderId?: string;
@@ -19188,6 +19212,7 @@ export class LibraryService {
   importFolderAsLinked(input: {
     libraryId: string;
     sourceRootPath: string;
+    companionMemory?: true;
     displayName?: string;
     /** WorldlineBox-316493: managed folder to hang the linked root under. */
     parentFolderId?: string | null;
@@ -19257,7 +19282,11 @@ export class LibraryService {
     } catch {
       // Unresolvable library path: fall back to the configured one.
     }
-    if (pathIsWithin(canonicalLibraryPath, canonicalRoot)) {
+    const companionMemoryRoot = path.join(canonicalLibraryPath, '伙伴记忆');
+    const ownedCompanionMemory = input.companionMemory === true
+      && path.resolve(sourceRoot) === path.resolve(companionMemoryRoot)
+      && canonicalRoot === realpathSync(companionMemoryRoot);
+    if (pathIsWithin(canonicalLibraryPath, canonicalRoot) && !ownedCompanionMemory) {
       throw new LibraryServiceError('INVALID_IMPORT_SOURCE', {
         reason: 'LINKED_SOURCE_INSIDE_LIBRARY',
       });
@@ -19287,6 +19316,9 @@ export class LibraryService {
     const folderId = randomUUID();
     const importId = randomUUID();
     const defaultRules = DEFAULT_LINKED_FOLDER_RULES.map((rule) => ({ ...rule, ruleId: randomUUID() }));
+    if (ownedCompanionMemory) for (const pattern of ['.同步状态.json', '.时间线索引.json', '*.meta.json']) {
+      defaultRules.push({ ruleId: randomUUID(), action: 'exclude', target: 'filename', pattern, enabled: true });
+    }
     let lastProgressAt = 0;
     const emitLinkedProgress = (
       phase: ImportProgressEvent['phase'],

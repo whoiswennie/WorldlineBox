@@ -53,8 +53,8 @@ describe('durable companion reply streaming drafts', () => {
     expect(read.prepare('SELECT rowid FROM message_search WHERE rowid=?').get(bubble.sequence)).toBeUndefined(); read.close();
     expect(store.search({ query: '杭州' }).messages).toEqual([]);
     expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [bubble.id] }).memorySources).toEqual([]);
-    expect(store.request({ type: 'memory.sources.search', ...scope, query: '杭州' }).memorySources).toEqual([]);
-    store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, candidates: [] });
+    expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [bubble.id] }).memorySources).toEqual([]);
+    store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] });
     expect(store.request({ type: 'memory.status', ...scope }).memoryStatus).toMatchObject({ pending: 0, completed: 1 });
     const later = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '另一条请求' });
     const final = { ...checkpoint, status: 'done' as const, turns: [{ text: '杭州的地址是未核实的草稿', rawText: '杭州的地址是未核实的草稿', calls: [] }] };

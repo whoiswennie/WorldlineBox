@@ -87,7 +87,7 @@ function Prepare-Node([switch]$Install) {
     if ($actualVersion -ne "v$nodeVersion") { throw "Unexpected local Node version: $actualVersion" }
     $env:Path = "$nodeRoot;$env:Path"
     $env:VcpkgEnabled = 'false'
-    $env:npm_config_cache = Join-Path $toolsRoot 'npm-cache'
+    if (-not $env:npm_config_cache) { $env:npm_config_cache = Join-Path $toolsRoot 'npm-cache' }
     $env:ELECTRON_CACHE = Join-Path $toolsRoot 'electron-cache'
 }
 
@@ -164,7 +164,9 @@ function Install-Dependencies {
     # before setup ever reaches that required rebuild. Keep the other native
     # packages' install hooks so their bundled NAPI binaries are prepared.
     $env:ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
-    Run-Npm @('ci', '--ignore-scripts', '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund')
+    $dependencyArguments = @('ci', '--ignore-scripts', '--include=optional', '--prefer-offline', '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund')
+    if ($env:WORLDLINEBOX_SETUP_OFFLINE -eq '1') { $dependencyArguments += '--offline' }
+    Run-Npm $dependencyArguments
     Run-Npm @('rebuild', 'koffi', 'node-pty', '--ignore-scripts=false')
 }
 

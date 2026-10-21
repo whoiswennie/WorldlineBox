@@ -1,0 +1,14 @@
+.companions-bubble-progress { min-width: min(270px, 100%); margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--ui-border-subtle); font-size: 12px; line-height: 1.5; color: var(--ui-content-secondary); }
+.companions-loop-segments:empty + .companions-bubble-progress { margin-top: 0; padding-top: 0; border-top: 0; }
+.companions-bubble-progress-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.companions-bubble-progress-row strong { color: var(--ui-content-primary); font-size: 12px; font-weight: 500; }
+.companions-bubble-progress-row time { font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+.companions-bubble-progress-row button { margin-left: auto; border: 0; border-radius: var(--ui-radius-control, 6px); padding: 3px 7px; background: var(--ui-surface-raised); color: var(--ui-content-secondary); font: inherit; cursor: pointer; }
+.companions-bubble-progress-row time + button { margin-left: 2px; }
+.companions-bubble-progress-row button:hover { color: var(--ui-content-primary); background: var(--ui-surface-hover); }
+.companions-bubble-progress-detail { display: block; padding-left: 19px; margin-top: 3px; max-width: 420px; overflow-wrap: anywhere; }
+.companions-bubble-progress.is-failed .companions-bubble-progress-row strong { color: var(--ui-danger, var(--ui-content-primary)); }
+.companions-bubble-memory { margin-top: 5px; padding-left: 19px; font-size: 12px; }
+.companions-bubble-memory summary { cursor: pointer; }
+.companions-bubble-memory p { max-width: 360px; margin: 4px 0 0; color: var(--ui-content-secondary); font-size: 12px; }
+.companions-bubble-progress.is-terminal { opacity: .86; }

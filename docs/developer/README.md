@@ -13,6 +13,10 @@
 - [架构](architecture.md)——进程模型、目录结构、关键设计
 - [应用侧边栏](application-navigation.md)——功能模块登记、状态保留与设置入口
 - [伙伴消息系统](companions.md)——独立 SQLite owner、角色模型连接、记忆与 DSH 行动回流
+- [VCP 记忆实施说明](companion-memory-implementation.md)——统一资产库、自然文本日记、原版检索、持续生活及内置多模态向量
+- [伙伴系统验收](companion-system-acceptance.md)——三伙伴、持续生活、授权学习、消息气泡与安装包的实际验证边界
+- [VCP 记忆内容审计](vcp-memory-content-audit.md)——原版源码信息流、真实模型内容测试、修复和额外调用成本
+- [VCP 记忆完整替换调研](research-vcp-memory-replacement.md)——以 VCP 替换无 Embedding 占位方案的源码清单、宿主边界及验证
 - [DSH 启动器](dsh-launcher.md)——固定运行时、实例隔离、进程监督、快照与离线备份
 - [DSH 整合包格式](dsh-packs-format.md)——依赖封存、来源锁与导入校验
 - [测试](testing.md)——测试体系与运行方式

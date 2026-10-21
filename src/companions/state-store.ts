@@ -1,7 +1,7 @@
 import {
   companionStateProposalSchema, type CompanionRuntimeState, type CompanionStateProposal,
 } from '../shared/companion-state';
-import type { CompanionMemory, CompanionMessage, CompanionAction } from '../shared/companions';
+import type { CompanionMessage, CompanionAction } from '../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionConnection } from './store';
 import { createHash } from 'node:crypto';
@@ -40,10 +40,26 @@ export class CompanionStateStore {
       CREATE TABLE IF NOT EXISTS companion_state_interactions (companion_id TEXT NOT NULL REFERENCES companions(id), message_id TEXT NOT NULL REFERENCES messages(id), conversation_id TEXT NOT NULL, PRIMARY KEY(companion_id,message_id));
       CREATE TABLE IF NOT EXISTS companion_state_actions (action_id TEXT NOT NULL REFERENCES actions(id), status TEXT NOT NULL, PRIMARY KEY(action_id,status));
       CREATE TABLE IF NOT EXISTS companion_state_events (companion_id TEXT NOT NULL REFERENCES companions(id), event_key TEXT NOT NULL, conversation_id TEXT NOT NULL, PRIMARY KEY(companion_id,event_key));
+      CREATE TABLE IF NOT EXISTS companion_state_event_sources(companion_id TEXT NOT NULL,event_key TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES messages(id),
+        PRIMARY KEY(companion_id,event_key,message_id),FOREIGN KEY(companion_id,event_key) REFERENCES companion_state_events(companion_id,event_key) ON DELETE CASCADE);
+      CREATE INDEX IF NOT EXISTS companion_state_event_source ON companion_state_event_sources(message_id,companion_id);
       CREATE TABLE IF NOT EXISTS companion_state_appraisals (id TEXT PRIMARY KEY, companion_id TEXT NOT NULL, source_date TEXT NOT NULL, positive_change REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS companion_appraisal_budget ON companion_state_appraisals(companion_id,source_date,active);
       CREATE TABLE IF NOT EXISTS companion_appraisal_sources (companion_id TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES messages(id),appraisal_id TEXT NOT NULL REFERENCES companion_state_appraisals(id),PRIMARY KEY(companion_id,message_id));
     `);
+    this.db.transaction(() => {
+      const key = 'vcp-memory-replacement/retired-fact-events';
+      if (!this.db.prepare("SELECT 1 FROM metadata WHERE key=? AND value='pending'").get(key)) return;
+      // Old inferred facts cannot substantiate a host experience receipt.
+      this.db.prepare("DELETE FROM companion_state_events WHERE event_key NOT GLOB 'world:*' AND event_key NOT GLOB 'experience:*'").run();
+      for (const entry of rows(this.db.prepare('SELECT companion_id,data FROM companion_runtime_states').all())) {
+        const state = decode<CompanionRuntimeState>(entry.data);
+        state.familiarity.sharedEventCount = Number(row(this.db.prepare("SELECT count(*) AS n FROM companion_state_events WHERE companion_id=? AND event_key GLOB 'experience:*'").get(entry.companion_id)).n);
+        state.familiarity.stage = stage(state.familiarity.interactionCount, state.familiarity.sharedEventCount);
+        this.db.prepare('UPDATE companion_runtime_states SET data=? WHERE companion_id=?').run(JSON.stringify(state), entry.companion_id);
+      }
+      this.db.prepare("UPDATE metadata SET value='done' WHERE key=?").run(key);
+    }).immediate();
   }
 
   private requireCompanion(id: string): void {
@@ -105,7 +121,7 @@ export class CompanionStateStore {
     }
     if (conversation.kind === 'group') {
       const interactionCount = Number(row(this.db.prepare('SELECT count(*) AS n FROM companion_state_interactions WHERE companion_id=? AND conversation_id=?').get(scope.companionId, scope.conversationId)).n);
-      const sharedEventCount = Number(row(this.db.prepare('SELECT count(*) AS n FROM companion_state_events WHERE companion_id=? AND conversation_id=?').get(scope.companionId, scope.conversationId)).n);
+      const sharedEventCount = Number(row(this.db.prepare("SELECT count(*) AS n FROM companion_state_events WHERE companion_id=? AND conversation_id=? AND event_key GLOB 'experience:*'").get(scope.companionId, scope.conversationId)).n);
       state.familiarity = { interactionCount, sharedEventCount, stage: stage(interactionCount, sharedEventCount) };
     }
     return state;
@@ -117,6 +133,11 @@ export class CompanionStateStore {
       const state = this.load(companionId), seen = new Set<string>(), now = this.currentTime(Date.now());
       for (let index = 0; index < sourceIds.length; index += 200) {
         const batch = sourceIds.slice(index, index + 200);
+        const events = rows(this.db.prepare(`SELECT DISTINCT event_key FROM companion_state_event_sources WHERE companion_id=? AND message_id IN (${batch.map(() => '?').join(',')})`).all(companionId, ...batch));
+        for (const event of events) {
+          this.db.prepare('DELETE FROM companion_state_events WHERE companion_id=? AND event_key=?').run(companionId, event.event_key);
+          state.familiarity.sharedEventCount = Math.max(0, state.familiarity.sharedEventCount - 1);
+        }
         for (const found of rows(this.db.prepare(`SELECT a.id,a.data FROM companion_state_appraisals a JOIN companion_appraisal_sources s ON s.appraisal_id=a.id WHERE a.companion_id=? AND a.active=1 AND s.message_id IN (${batch.map(() => '?').join(',')})`).all(companionId, ...batch))) {
           if (seen.has(String(found.id))) continue; seen.add(String(found.id));
           const data = decode<{ appliedAt: string; affectDelta: CompanionRuntimeState['affect']; relationshipDelta: CompanionRuntimeState['relationship'] }>(found.data);
@@ -127,6 +148,7 @@ export class CompanionStateStore {
         }
       }
       if ((state.sourceMessageIds ?? []).some(id => sourceIds.includes(id))) { state.focus = undefined; state.reason = undefined; state.evidence = []; state.sourceMessageIds = []; state.sourceConversationId = undefined; }
+      state.familiarity.stage = stage(state.familiarity.interactionCount, state.familiarity.sharedEventCount);
       state.mood = deriveCompanionMood(state.affect, state.energy, this.busy(companionId)); this.save(state);
     }).immediate();
   }
@@ -228,18 +250,24 @@ export class CompanionStateStore {
       state.sourceConversationId = action.conversationId;
       const evidence = this.db.prepare('SELECT id FROM messages WHERE action_id=? AND status=\'sent\' ORDER BY sequence DESC LIMIT 1').get(action.id);
       state.sourceMessageIds = [evidence ? String(row(evidence).id) : action.sourceMessageId]; state.evidence = [];
+      if (['succeeded', 'failed'].includes(action.status) && (action.result || action.error)) this.addExperience(state,
+        { companionId: action.companionId, conversationId: action.conversationId }, 'action:' + action.id, [action.sourceMessageId]);
       this.save(state);
     }).immediate();
   }
-  event(memory: CompanionMemory): void {
-    if (!['event', 'agreement', 'task'].includes(memory.kind ?? '') || memory.status !== 'active' || !memory.sourceConversationId) return;
-    const eventKey = memory.eventId ?? memory.id;
-    this.db.transaction(() => {
-      if (!this.db.prepare('INSERT OR IGNORE INTO companion_state_events(companion_id,event_key,conversation_id) VALUES(?,?,?)').run(memory.companionId, eventKey, memory.sourceConversationId).changes) return;
-      this.energy(memory.companionId);
-      const state = this.load(memory.companionId); state.familiarity.sharedEventCount++;
-      state.familiarity.stage = stage(state.familiarity.interactionCount, state.familiarity.sharedEventCount); this.save(state);
-    }).immediate();
+  /** A real task receipt contributes once; diary wording and tag counts never do. */
+  private addExperience(state: CompanionRuntimeState, scope: Scope, key: string, sourceIds: string[]): void {
+    const sources = this.visibleSources(scope, sourceIds);
+    if (!sources.length || sources.length !== sourceIds.length || !sources.some(source => source.authorId === 'user')) return;
+    const eventKey = 'experience:' + key;
+    if (!this.db.prepare('INSERT OR IGNORE INTO companion_state_events(companion_id,event_key,conversation_id) VALUES(?,?,?)').run(scope.companionId, eventKey, scope.conversationId).changes) return;
+    for (const source of sources) this.db.prepare('INSERT INTO companion_state_event_sources VALUES(?,?,?)').run(scope.companionId, eventKey, source.id);
+    state.familiarity.sharedEventCount++;
+    state.familiarity.stage = stage(state.familiarity.interactionCount, state.familiarity.sharedEventCount);
+  }
+  experience(scope: Scope, key: string, sourceIds: string[]): void {
+    this.db.transaction(() => { this.requireScope(scope); this.energy(scope.companionId); const state = this.load(scope.companionId);
+      this.addExperience(state, scope, key, sourceIds); this.save(state); }).immediate();
   }
   worldState(companionId: string): Pick<CompanionRuntimeState, 'energy' | 'mood' | 'expression' | 'affect'> {
     this.energy(companionId); const state = this.load(companionId);

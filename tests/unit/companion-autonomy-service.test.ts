@@ -18,7 +18,12 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-autonomy-')); roots.push(root); const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const snapshot = store.request({ type: 'world.snapshot' }).world!; store.request({ type: 'world.configure', expectedRevision: snapshot.settings.revision, patch: { timeZone: 'UTC' } });
   const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
-  const request = vi.fn(async (command: CompanionStorageCommand) => store.request(command));
+  const request = vi.fn(async (command: CompanionStorageCommand) => {
+    if (command.type !== 'memory.search') return store.request(command);
+    const snapshot = store.request({ type: 'memory.snapshot', companionId: command.companionId, conversationId: command.conversationId }).memorySnapshot!;
+    return { ok: true as const, memoryPage: { items: snapshot.notes.map(memory => ({ memory, reasons: ['authorized fixture'], path: [] })), hasMore: false },
+      memoryContext: { text: snapshot.notes.map(note => note.content).join('\n'), revision: snapshot.revision, profileKey: 'fixture-vcp-profile' } };
+  });
   const fetchFn = vi.fn<typeof fetch>(), report = vi.fn(), changed = vi.fn(), launch = vi.fn(), resume = vi.fn(), wait = vi.fn();
   const ready = vi.fn(async (order: CompanionWorkOrder, signal: AbortSignal) => {
     if (signal.aborted) throw new Error('cancelled');
@@ -165,7 +170,7 @@ it('uses accumulated world-time life probability to send one authored spontaneou
   for (const rule of f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!) f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: rule.id, expectedRevision: rule.revision });
   const current = f.store.request({ type: 'world.snapshot' }).world!;
   f.store.request({ type: 'world.configure', expectedRevision: current.settings.revision, patch: { mode: 'compressed' } });
-  const rule = f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '向玩家问候', action: 'message', targetId: 'user', startMinute: 600, endMinute: 610, probability: 1 } }).lifeRule!;
+  const rule = f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '向玩家问候', action: 'message', targetId: 'user', startMinute: 600, endMinute: 610, probability: 1, checkIntervalMinutes: 1 } }).lifeRule!;
   f.fetchFn.mockImplementation(async (_url, init) => {
     const body = JSON.parse(String(init?.body)), input = JSON.parse(body.messages[1].content);
     expect(body.tools).toBeUndefined(); expect(input).toMatchObject({ speakerId: 'alice', target: { id: 'user', kind: 'human_player' }, action: 'message' });
@@ -179,6 +184,43 @@ it('uses accumulated world-time life probability to send one authored spontaneou
   expect(messages.filter(message => message.authorId === 'user')).toHaveLength(0);
   expect(f.launch).not.toHaveBeenCalled(); expect(f.ready).not.toHaveBeenCalled();
   f.service.tick(); await new Promise<void>(resolve => setImmediate(resolve)); expect(f.fetchFn).toHaveBeenCalledOnce(); expect(f.report).not.toHaveBeenCalled();
+});
+
+it('bounds independent life cognition at two owners and respects a real silence decision without blocking the third owner', async () => {
+  const f = fixture(), pending = deferred<Response>();
+  const third = f.store.createCompanion({ name: 'Charlie', persona: '只在有实际资料时交流，喜欢保留安静时间。', description: '', model: '', avatar: 'sister', proactive: true });
+  f.store.setCompanionActive(third.id, true);
+  const owners = ['alice', 'bob', third.id];
+  for (const [index, owner] of owners.entries()) {
+    const role = f.store.state().companions.find(role => role.id === owner)!; f.store.updateCompanion(owner, { ...role, proactive: true });
+    for (const rule of f.store.request({ type: 'life-rule.list', companionId: owner }).lifeRules!) f.store.request({ type: 'life-rule.remove', companionId: owner, id: rule.id, expectedRevision: rule.revision });
+    f.store.request({ type: 'life-rule.create', companionId: owner, rule: { title: '有内容再交流', action: 'message', targetId: owners[(index + 1) % owners.length],
+      startMinute: 0, endMinute: 1440, probability: 1, checkIntervalMinutes: 1, silenceCooldownMinutes: 1 } });
+  }
+  const world = f.store.request({ type: 'world.snapshot' }).world!;
+  f.store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed' } });
+  let active = 0, maximum = 0; const started: string[] = []; let slowOutput: unknown, slowOwner: string | undefined;
+  releases.push(() => pending.resolve(response(slowOutput)));
+  f.fetchFn.mockImplementation(async (_url, init) => {
+    const body = JSON.parse(String(init?.body)), input = JSON.parse(body.messages[1].content);
+    expect(String(init?.body)).toContain('不是必须发言'); expect(input.memoryContext).toBeDefined();
+    started.push(input.speakerId); active++; maximum = Math.max(maximum, active);
+    const value = { eventId: input.eventId, speakerId: input.speakerId, targetId: input.target.id,
+      decision: 'silence', text: null, reason: '这次没有新的内容，继续自己的阅读。' };
+    slowOwner ??= input.speakerId;
+    if (input.speakerId === slowOwner) { slowOutput = value; const reply = await pending.promise; active--; return reply; }
+    active--; return response(value);
+  });
+  f.service.tick(); await until(() => f.request.mock.calls.some(([command]) => command.type === 'life-event.claim'));
+  await new Promise<void>(resolve => setImmediate(resolve)); vi.setSystemTime(Date.now() + 1000); f.service.tick();
+  await until(() => started.length === 2); expect(maximum).toBe(2);
+  const thirdOwner = owners.find(owner => !started.includes(owner))!;
+  await until(() => f.store.request({ type: 'life-rule.list', companionId: started[1]! }).lifeOccurrences!.some(occ => occ.status === 'silent'));
+  await new Promise<void>(resolve => setImmediate(resolve)); vi.setSystemTime(Date.now() + 1000); f.service.tick();
+  await until(() => started.includes(thirdOwner)); expect(started[0]).toBe(slowOwner); expect(maximum).toBe(2);
+  pending.resolve(response(slowOutput)); await until(() => f.store.request({ type: 'life-rule.list', companionId: slowOwner! }).lifeOccurrences!.some(occ => occ.status === 'silent'));
+  for (const owner of owners) expect(f.store.messages({ conversationId: f.store.openPrivate(owner).id }).messages.filter(message => message.authorId === owner)).toHaveLength(0);
+  expect(f.launch).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled();
 });
 
 it('cancels only the selected assignee internal cognition and leaves a different assignee order eligible', async () => {

@@ -1,6 +1,9 @@
 import { z } from 'zod';
+import { companionLearningAssetPageSchema } from '../companion-learning-assets';
+import { globalEmbeddingSettingsSchema } from '../embedding/global-settings';
+import { localTextEmbeddingInstallStatusSchema } from '../embedding/text-install-status';
 
-import { EMBEDDING_HTTP_ADAPTERS } from '../embedding/http-service';
+import { EMBEDDING_HTTP_ADAPTERS, isEmbeddingSelectionId } from '../embedding/http-service';
 import {
   SEMANTIC_IMAGE_BYTES_MAX,
   SEMANTIC_IMAGE_BYTES_MIN,
@@ -1748,6 +1751,7 @@ const assetOperationSuccessSchemas = [
 ] as const;
 
 const workerSuccessResultSchema = z.discriminatedUnion('type', [
+  companionLearningAssetPageSchema.extend({ ok: z.literal(true), type: z.literal('asset.learning.page') }),
   z.strictObject({
     ok: z.literal(true),
     type: z.literal('asset.relink-batch.preview'),
@@ -2205,9 +2209,11 @@ const workerSuccessResultSchema = z.discriminatedUnion('type', [
     bytesBase64: z.string().max(90_000_000).optional(),
     audioHandle: z.string().uuid().optional(),
     audioWindowCount: z.number().int().min(0).max(16).optional(),
+    videoWindows: z.array(z.strictObject({ bytesBase64: z.string().min(1).max(11_200_000), audioBase64: z.string().max(2_800_000).optional() })).min(1).max(16).optional(),
   }).superRefine((result, context) => {
     const payloadCount = Number(result.text !== undefined)
       + Number(result.bytesBase64 !== undefined)
+      + Number(result.videoWindows !== undefined)
       + Number(result.audioHandle !== undefined);
     if (payloadCount !== 1) {
       context.addIssue({ code: 'custom', message: 'Prepared semantic content must have exactly one payload.' });
@@ -2221,6 +2227,7 @@ const workerSuccessResultSchema = z.discriminatedUnion('type', [
     if (result.kind === 'audio' && (result.audioHandle === undefined || result.audioWindowCount === undefined)) {
       context.addIssue({ code: 'custom', path: ['audioHandle'], message: 'A bounded audio handle is required.' });
     }
+    if (result.kind === 'video' && !result.videoWindows?.length) context.addIssue({ code: 'custom', path: ['videoWindows'], message: 'Bounded video windows are required.' });
   }),
   z.strictObject({
     ok: z.literal(true),
@@ -2704,7 +2711,7 @@ const rendererSuccessResultSchema = z.discriminatedUnion('type', [
     ok: z.literal(true),
     type: z.literal('embedding.services.listed'),
     services: z.array(z.strictObject({
-      id: z.string().regex(/^svc_[a-z0-9]{8,40}$/),
+      id: z.string().refine(isEmbeddingSelectionId),
       name: nonBlankString.max(80),
       description: z.string().max(200),
       adapter: z.enum(EMBEDDING_HTTP_ADAPTERS),
@@ -2722,6 +2729,12 @@ const rendererSuccessResultSchema = z.discriminatedUnion('type', [
       profileKey: z.string().nullable(),
     })),
   }),
+  z.strictObject({
+    ok: z.literal(true),
+    type: z.literal('embedding.global.settings'),
+    settings: globalEmbeddingSettingsSchema,
+  }),
+  z.strictObject({ ok: z.literal(true), type: z.literal('embedding.local-text.status'), status: localTextEmbeddingInstallStatusSchema }),
   z.strictObject({
     ok: z.literal(true),
     type: z.literal('embedding.service.saved'),
@@ -2751,7 +2764,7 @@ const rendererSuccessResultSchema = z.discriminatedUnion('type', [
     libraryId: nonBlankString.max(255),
     selectionId: z.union([
       z.null(),
-      z.string().regex(/^(?:embeddinggemma-2-(?:compact|balanced|quality)|svc_[a-z0-9]{8,40})$/),
+      z.string().refine(isEmbeddingSelectionId),
     ]),
     enabled: z.boolean(),
     inherit: z.boolean(),

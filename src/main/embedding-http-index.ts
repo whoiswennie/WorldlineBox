@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FilterClause, SearchScope } from "../shared/asset-types";
 import { postEmbeddingHttp } from "./embedding-http";
+import type { EmbeddingPurpose } from '../shared/embedding/global-profile';
 import { fitSemanticImage, SemanticImageLimitError } from "./embedding-image-fit";
 import { DASHSCOPE_VISUAL_SEARCH_INSTRUCT } from "../shared/embedding/http-service";
 import { embeddingSkipKey } from "./embedding-test-index";
@@ -60,7 +61,16 @@ export type EmbeddingHttpServiceView = {
   modalities: readonly EmbeddingModality[];
   maxImageEdgePx?: number;
   maxImageBytes?: number;
+  /** Managed local text encoders supply the same identity used by companion memory. */
+  profileKey?: string;
 };
+
+export type EmbeddingIndexTextEncoder = (texts: readonly string[], input: {
+  selectionId: string;
+  purpose: EmbeddingPurpose;
+  expectedProfileKey: string;
+  signal?: AbortSignal;
+}) => Promise<{ vectors: number[][] }>;
 
 export class EmbeddingHttpIndex {
   #generation = 0;
@@ -79,6 +89,8 @@ export class EmbeddingHttpIndex {
     loadService: (id: string) => EmbeddingHttpServiceView | null;
     readKey: (id: string) => string | null;
     isLibraryEnabled?: (libraryId: string, serviceId: string) => boolean;
+    /** Text requests share the global encoder; media keeps its configured HTTP adapter. */
+    embed?: EmbeddingIndexTextEncoder;
   }) {}
 
   async close(libraryId?: string): Promise<void> {
@@ -176,7 +188,7 @@ export class EmbeddingHttpIndex {
       this.#queryControllers.set(queryId, controller);
       const checkedService = this.#currentService(state);
       if (!checkedService) throw new Error("Embedding service configuration changed.");
-      const [vector] = await postEmbeddingHttp({
+      const [vector] = await this.#embed(checkedService, 'query', {
         baseUrl: checkedService.baseUrl,
         modelName: checkedService.modelName,
         adapter: checkedService.adapter,
@@ -311,7 +323,7 @@ export class EmbeddingHttpIndex {
             let vector: number[] | undefined;
             errorCategory = "provider";
             try {
-              [vector] = await postEmbeddingHttp({
+              [vector] = await this.#embed(checkedService, 'document', {
                 baseUrl: checkedService.baseUrl, modelName: checkedService.modelName, adapter: checkedService.adapter,
                 dimensions: checkedService.dimensions, inputs, apiKey: this.options.readKey(checkedService.id),
                 signal: controller.signal,
@@ -500,7 +512,7 @@ export class EmbeddingHttpIndex {
             if (this.#state?.generation !== generation || !this.#currentService(state)) return;
             const controller = this.#newRequestController();
             errorCategory = "provider";
-            const [vector] = await postEmbeddingHttp({
+            const [vector] = await this.#embed(checkedService, 'document', {
               baseUrl: checkedService.baseUrl, modelName: checkedService.modelName, adapter: checkedService.adapter,
               dimensions: checkedService.dimensions, inputs, apiKey: this.options.readKey(checkedService.id),
               signal: controller.signal,
@@ -684,6 +696,15 @@ export class EmbeddingHttpIndex {
   #isLibraryEnabled(libraryId: string, serviceId: string): boolean {
     return this.options.isLibraryEnabled?.(libraryId, serviceId) ?? false;
   }
+
+  async #embed(service: EmbeddingHttpServiceView, purpose: EmbeddingPurpose, input: Parameters<typeof postEmbeddingHttp>[0]): Promise<number[][]> {
+    if (this.options.embed && input.inputs.every(item => typeof item === 'string')) {
+      return (await this.options.embed(input.inputs as readonly string[], {
+        selectionId: service.id, purpose, expectedProfileKey: profileKeyForService(service), signal: input.signal,
+      })).vectors;
+    }
+    return postEmbeddingHttp(input);
+  }
 }
 
 function httpServiceReady(
@@ -698,6 +719,7 @@ function httpServiceReady(
 }
 
 function profileKeyForService(service: EmbeddingHttpServiceView): string {
+  if (service.profileKey) return service.profileKey;
   if (service.dimensions == null) return "";
   const limits = imageLimitsOf(service);
   return embeddingHttpProfileKey({

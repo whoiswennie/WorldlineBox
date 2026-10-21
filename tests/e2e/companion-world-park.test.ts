@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -9,7 +9,7 @@ import type { CompanionWorldWindowApi, CompanionWorldWindowOpen } from '../../sr
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { CompanionWorldSnapshot } from '../../src/shared/companion-world';
 import { companionWorldCellWalkable, companionWorldEnvironment } from '../../src/shared/companion-world-engine';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath, resolveSessionLogPath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, companionTestDataRoot, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath, resolveSessionLogPath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; companionWorld: CompanionWorldWindowApi; llm: WorldlineBoxLlmApi } };
 const output = path.resolve('.tools/test-output/companions');
@@ -17,7 +17,7 @@ const finalText = '公共花园和小屋同时观察时，这条消息仍然正�
 function cleanup(directory: string) {
   const absolute = path.resolve(directory);
   if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-world-park-')) throw new Error('Unexpected park fixture cleanup target.');
-  rmSync(absolute, { recursive: true, force: true });
+  removeCompanionTestDirectory(absolute);
 }
 async function request(page: Page, input: CompanionsRequest) {
   const result = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), input);
@@ -28,6 +28,7 @@ async function launch(profile: string) {
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'hardware' }) });
   const page = await application.firstWindow(), native = await application.browserWindow(page);
   await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 900); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.showInactive(); });
+  await ensureCompanionTestWorkspace(page);
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
   return { application, page };
 }
@@ -60,7 +61,7 @@ function seedClock(profile: string, virtualAt: number) {
   // minutes/day advances at 1x from the chosen date; realtime remains absolute
   // computer time and must never be bent by an obsolete clock anchor.
   const script = `const Database=require('better-sqlite3');const db=new Database(process.argv[1]);const row=db.prepare('SELECT data FROM companion_world WHERE id=1').get();const world=JSON.parse(row.data);const now=Date.now();world.settings={...world.settings,revision:world.settings.revision+1,mode:'compressed',dayDurationMinutes:1440,timeZone:'UTC'};world.anchors=[{realAt:now,virtualAt:Number(process.argv[2]),settings:world.settings}];world.cursor=now;db.prepare('UPDATE companion_world SET data=? WHERE id=1').run(JSON.stringify(world));db.close();`;
-  const result = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(profile, 'companions/messages.sqlite'), String(virtualAt)], { cwd: resolveElectronAppPath(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
+  const result = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(companionTestDataRoot(profile), 'messages.sqlite'), String(virtualAt)], { cwd: resolveElectronAppPath(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
   expect(result.status, result.stderr).toBe(0);
 }
 async function parkReady(page: Page) {
@@ -85,9 +86,9 @@ test('observes a real public park, physical bench use and bounded multiwindow re
         const data = JSON.parse(JSON.parse(raw).messages[1].content); let result: unknown;
         if (data.purpose === 'world_attention') result = { urgency: 'ordinary', confidence: .98, evidence: [data.source.content], reason: '普通聊天无需中断生活。' };
         else if (data.purpose === 'world_decision') result = { action: null, reason: '保持实际公园活动。', appraisals: [] };
-        else if (data.purpose === 'memory_query') result = {};
-        else if (data.purpose === 'memory_dream') result = { candidates: [], dream: null };
-        else if (data.purpose?.startsWith('memory_')) result = { candidates: [] };
+        else if (data.purpose === 'vcp_memory_prohibition_check') result = { allowed: true, matchedPolicyIds: [] };
+        else if (data.purpose === 'vcp_sleep_reflection') result = { notes: [], dream: null };
+        else if (data.purpose === 'vcp_experience_journal') result = { notes: [] };
         else result = { text: finalText, memories: [] };
         response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: 'stop' }] }));
       } catch { response.writeHead(400); response.end(); }

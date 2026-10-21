@@ -195,7 +195,8 @@ it('resets work and life state in batches, blocks stale completion and preserves
   expect(f.store.request({ type: 'work-order.list', ...f.scope, includeHistory: true }).workOrderPage!.items).toEqual([]);
   expect(companionStorageResponseSchema.parse(f.store.request({ type: 'work-order.list', ...bob })).workOrderPage!.items[0]!.id).toBe(other.id);
   const resetDefaults = f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!;
-  expect(resetDefaults).toHaveLength(3); expect(resetDefaults.some(rule => rule.action === 'park_walk')).toBe(true);
+  expect(resetDefaults.map(rule => rule.action).sort()).toEqual(['message', 'park_walk']);
+  expect(resetDefaults.some(rule => rule.action === 'message' && rule.targetId === 'user')).toBe(false);
   expect(f.store.request(lifeRequest).lifeRule!.id).not.toBe(oldLife.id);
 });
 

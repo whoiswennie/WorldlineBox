@@ -22,9 +22,17 @@ The built-in browser includes asset capture without installing an extension. Use
 
 Windows x64 now includes a [DSH launcher](docs/user-guide/dsh-launcher.md) with exact runtime artifacts, private plugin instances, process controls, packs, snapshots and complete offline backups. Versions and packs share sessions, the default workspace, account authorization and model/API settings. Plugins, skills and execution configuration remain private. The launcher is the first application module and opens by default.
 
-The new [Companions and Messages module](docs/user-guide/companions.md) sits between Launcher and Assets. It provides persistent direct and group chats, built-in whale companions, custom contacts, source-linked memories, opt-in proactive contact and DSH action cards. A separate SQLite database owns messages and relationships. Characters inherit the complete global LLM connection by default, or use their own API format, URL, encrypted key and model; personality and names do not select providers.
+The [Companions and Messages module](docs/user-guide/companions.md) sits between Launcher and Assets. It provides persistent direct and group chats, built-in whale companions, custom contacts, automatic journals with inspectable sources, proactive contact, calendar and daily-life activities, and DSH action cards. Characters inherit the complete global chat-model connection by default, or use their own API format, URL, encrypted key and model; personality and names do not select providers.
 
-**Complete persistent world state and game/world adapters remain planned features.** Actual cross-version data migrations and third-party plugin compatibility require version-specific validation.
+On first entry, choose one asset library for the companions. Chats, relationships, schedules and world state live in that library's `.worldlinebox/companions/` directory. Each companion has readable journals, reference material, self-understanding and monthly timelines under `伙伴记忆/<companion ID>/`, linked into asset management. The application profile retains the library selection and device settings.
+
+Memory uses the transplanted VCP database, vector indices, tag and graph algorithms, RiverMemo retrieval, passive context and active recall tools. The former non-vector placeholder has been retired. A quantized EmbeddingGemma 2 model and its inference runtimes ship with the installer: text, images, audio and video share a 768-dimensional space for asset search and companion memory. The app uses a compatible GPU when available and a separate CPU runtime otherwise. It reads model weights from the installation directory, without a second weight copy in the user profile, model selection or an external embedding API setting.
+
+Saved messages enter a persistent journal queue. Replies recall relevant authorized material automatically, and a separate memory window supports search, filters, sources, corrections and forgetting. Companion and group visibility follows actual ownership and source permissions. Interrupted processing resumes from its queue; withdrawing a source also withdraws dependent memories and cached context. Automatic understanding can still miss or misinterpret details, so a traceable source is not a guarantee that every relevant memory will be recalled. See the [memory implementation record](docs/developer/companion-memory-implementation.md).
+
+Each companion can read explicitly granted libraries or folders, with shared sources, manual reading, optional autonomous reading and revocation. Life events offer repeated opportunities within configurable windows and cooldowns; actual sleep can produce sourced reflections and clearly marked fictional dreams. Each group reply has its own live progress bubble and cancellation. The [system acceptance record](docs/developer/companion-system-acceptance.md) and [real-model content audit](docs/developer/vcp-memory-content-audit.md) distinguish functional checks from content quality and document the remaining limits.
+
+The built-in companion world persists its current simulation state. Broader world authoring, branching worldlines and game/world adapters remain planned features. Actual cross-version data migrations and third-party plugin compatibility require version-specific validation.
 
 ## Target architecture
 
@@ -55,7 +63,7 @@ The complete [portable tool inventory](resources/portable-tools/manifests/win32-
 
 ## Roadmap and documentation
 
-The next stages are environment/instance management, locked pack installation and recovery, persistent character/world systems, and ecosystem adapters. See [product direction](docs/product-brief.md), [existing asset guide](docs/user-guide/README.en.md), [developer guide](docs/developer/README.en.md), and [extension author guide](docs/manual/README.md).
+The next stages extend environment/instance management, locked pack installation and recovery, character/world simulation, and ecosystem adapters. See [product direction](docs/product-brief.md), [existing asset guide](docs/user-guide/README.en.md), [developer guide](docs/developer/README.en.md), and [extension author guide](docs/manual/README.md).
 
 See the [0.1.0 validation record](docs/developer/validation-0.1.0.md) for checks and known limitations. The full inherited test suite is not fully passing on this Windows environment.
 
@@ -64,3 +72,5 @@ References: [PCL](https://github.com/Meloong-Git/PCL), [DeepSeek Harness](https:
 ## License and attribution
 
 MIT; see [LICENSE](LICENSE). The asset-management foundation comes from dolag233 and the original contributors, whose copyright notice is retained. Third-party components and media follow their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The maintainer supplied the new icon artwork.
+
+The memory integration includes original [VCPToolBox](https://github.com/lioensky/VCPToolBox) diary, vector-index, RiverMemo and long-term-context implementations, with the author's permission to adapt them. The pinned upstream sources and attribution are retained in `vendor/vcp-memory`.

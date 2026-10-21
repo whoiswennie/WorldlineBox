@@ -115,14 +115,14 @@ export function EmbeddingServiceSettings({
 
   async function refresh(): Promise<void> {
     const listed = await api.embeddingListServices();
-    setServices(listed.ok && listed.value ? listed.value : []);
+    setServices(listed.ok && listed.value ? listed.value.filter(service => service.id.startsWith('svc_')) : []);
   }
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const listed = await api.embeddingListServices();
-      if (!cancelled) setServices(listed.ok && listed.value ? listed.value : []);
+      if (!cancelled) setServices(listed.ok && listed.value ? listed.value.filter(service => service.id.startsWith('svc_')) : []);
     })();
     return () => {
       cancelled = true;

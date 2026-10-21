@@ -4,7 +4,9 @@
 
 ## 状态与存储边界
 
-玩家公开资料由 `shared/companion-profile.ts` 定义，通过 `player.profile.get/update` 与 `state.playerProfile` 提供。固定 ID 为 `user`，姓名、自述与头像/三视图附件引用使用修订号控制并发；删除图片引用不会修改聊天作者 ID。伙伴也有公开三视图及资料修订号。Main 的 `CompanionPublicProfiles` 每次推理重新解析当前参与者，只接收管理副本；内置头像从源码或打包的 renderer hashed assets 物化到 `userData/companions/portraits`，不能把外部工具无法读取的 `app.asar` 虚拟路径冒充真实文件路径。
+首次进入伙伴页必须选择可写 WorldlineBox 资产库。所有伙伴共用该库，消息、世界、日程、附件、来源账本及 VCP 索引位于 `<资产库>/.worldlinebox/companions/`；用户配置目录只存库定位信息。自然文本位于 `<资产库>/伙伴记忆/<伙伴ID>/` 的日记、资料、自我认识、时间线子目录，并映射进资产管理。详见 [VCP 记忆实施说明](companion-memory-implementation.md)。
+
+玩家公开资料由 `shared/companion-profile.ts` 定义，通过 `player.profile.get/update` 与 `state.playerProfile` 提供。固定 ID 为 `user`，姓名、自述与头像/三视图附件引用使用修订号控制并发；删除图片引用不会修改聊天作者 ID。伙伴也有公开三视图及资料修订号。Main 的 `CompanionPublicProfiles` 每次推理重新解析当前参与者，只接收管理副本；内置头像从源码或打包的 renderer hashed assets 物化到所选库的 `.worldlinebox/companions/portraits`，不能把外部工具无法读取的 `app.asar` 虚拟路径冒充真实文件路径。
 
 头像选择共用 `AvatarCropDialog`，通过管理器主窗口的 `avatar.crop` 请求生成正式 PNG。裁剪参数使用 EXIF 校正、用户旋转后的图像坐标：正方形边长为 `round(min(width,height)/zoom)`，中心与提取区域限制在图像边界内。Main 验证管理附件、20 MiB 与 64M 像素限制，Sharp 完整解码后旋转、提取并输出 512×512 PNG，保留透明度；原图与已保存资料不修改。圆形取景是 UI 显示规则，正式方形文件供聊天圆形遮罩与真实视觉读取共用。
 
@@ -22,7 +24,7 @@
 
 伙伴身份、玩家与 NPC 的回复对象、唯一伙伴私聊/群聊、主动手机通信和按天只读观察的契约见[伙伴身份与社交](companion-social.md)。主脑每次推理都由宿主投影真实 self、发言者、参与成员与回复源；provider 的 `role=user` 仅是传输信封。
 
-`CompanionService` 调度角色回复、主动联系和 DSH 行动。`CompanionStorageClient` 只负责 UtilityProcess 消息传输；`src/companions/worker.ts` 是独立 SQLite owner，主进程和 Renderer 不打开数据库。消息库位于 `userData/companions/messages.sqlite`，不修改资产数据库迁移。Forge 与隔离 E2E 构建均输出 `companion_worker.js`。
+`CompanionService` 调度角色回复、主动联系和 DSH 行动。`CompanionStorageClient` 只负责 UtilityProcess 消息传输；`src/companions/worker.ts` 是独立 SQLite owner，主进程和 Renderer 不打开数据库。消息库位于所选资产库的 `.worldlinebox/companions/messages.sqlite`，不修改资产数据库迁移。Forge 与隔离 E2E 构建均输出 `companion_worker.js`。
 
 SQLite 使用 WAL、外键、事务迁移和 FTS5。私聊身份由角色 ID 确定；群聊身份由去重排序后的成员 ID 集合确定，与群名无关。群名的 auto/custom 标记保存在 metadata，自动标题读取成员当前姓名。发送使用客户端 ID 去重，跨聊天引用与非成员发言被拒绝。消息分页按稳定序号读取；任务历史通过 `actions.page` 按创建 UTC 时间与 ID 倒序游标分页、按角色过滤，列表省略大段输出，详情通过 `action.get` 单独读取，突破原有最近 100 条列表的范围。时间源保存毫秒 ISO 值；启动时刻来自真实 TaskRecord，终态时间在事务中记录。
 
@@ -48,7 +50,7 @@ SQLite 使用 WAL、外键、事务迁移和 FTS5。私聊身份由角色 ID 确
 
 普通循环使用源消息序号读取之前49条记录，并单独固定完整当前请求与显式引用。基础 system/user 输入在第一次推理前存入 loop checkpoint，后续步骤与中断恢复复用该快照，只追加本循环的工具结果和明确引导。旧消息是背景，不是待办列表；后续消息不会挤掉较早的排队请求或随时间变化混入已启动的回复。主动联系继续使用触发时的最近50条对话。该快照用于任务隔离，不构成长期记忆检索或长任务 token 压缩机制。
 
-正式消息与记忆待处理项在消息库事务中登记。后台增量处理用户消息及已发送伙伴回复，保留来源身份、序号、修订和校验；原生记忆工具与后台共用事实修订、标签、证据校验和遗忘规则。执行计划不能作为已完成成果，伙伴感想与未决假设不升级为用户事实。召回组合主体/事实键、事件、标签别名、全文和有来源的关系，必要时检索原始消息；全链路不配置、不请求 Embedding。实现边界与验证见 [自治记忆实施说明](companion-memory-implementation.md)。原始思考链和凭据不进入角色消息；工具参数与结果经过凭据和二进制脱敏后进入独立进度记录。主脑提供 `dsh` 与原生 `memory.*` 工具，实际系统命令只由原生执行 agent 的内部工具运行。
+正式消息与记忆待处理项在消息库事务中登记。后台以聊天模型形成有逐字证据、来源身份、序号、版本及校验的自然日记，原生记忆工具与后台共用来源校验及遗忘规则。执行计划不能作为已完成成果，伙伴感想与未决假设不升级为用户事实。召回已经替换为原版 VCP 的向量、Tag、图、RiverMemo、LightMemo 和 RAGDiary 流程，旧事实表与 FTS 记忆方案已退役。内置多模态 EmbeddingGemma 2 与资产语义搜索共用，无需设置向量接口。实现边界与验证见 [VCP 记忆实施说明](companion-memory-implementation.md)。原始思考链和凭据不进入角色消息；工具参数与结果经过凭据和二进制脱敏后进入独立进度记录。主脑提供 `dsh` 与原生 `memory.*` 工具，实际系统命令只由原生执行 agent 的内部工具运行。
 
 主动检查在 Main 常驻，不依赖 React Activity。默认关闭；启用后本地 09:00–22:00，四小时联系间隔、每天两次上限、一次未答后等待用户新消息，另有三十分钟尝试冷却。时间、次数与来源用户消息在 SQLite 中保存。
 

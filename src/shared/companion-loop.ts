@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionToolImageReferenceSchema } from './companion-file-tool';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionLoopCallSchema = z.object({ id: z.string().min(1).max(200), name: z.string().max(100), arguments: z.string().max(65536),
@@ -12,7 +13,7 @@ export const companionLoopDraftSchema = z.strictObject({ step: z.number().int().
 export const companionLoopCheckpointSchema = z.object({ conversationId: id, sourceMessageId: id, companionId: id, messageId: id.optional(),
   proactiveWorkId: id.optional(), contextThroughSequence: z.number().int().positive().optional(),
   status: z.enum(['running', 'done']), context: companionLoopContextSchema.optional(), turns: z.array(companionLoopTurnSchema).max(64),
-  draft: companionLoopDraftSchema.optional(), supplements: z.array(z.object({ id, content: z.string().max(16000) })).max(100).default([]) })
+  draft: companionLoopDraftSchema.optional(), progress: companionReplyProgressSchema.optional(), supplements: z.array(z.object({ id, content: z.string().max(16000) })).max(100).default([]) })
   .superRefine((checkpoint, context) => {
     if (checkpoint.draft && (checkpoint.status !== 'running' || checkpoint.draft.step !== checkpoint.turns.length)) context.addIssue({ code: 'custom', path: ['draft'], message: '流式草稿必须属于当前尚未完成的循环步骤。' });
   });
@@ -20,6 +21,6 @@ export type CompanionLoopCall = z.infer<typeof companionLoopCallSchema>;
 export type CompanionLoopTurn = z.infer<typeof companionLoopTurnSchema>;
 export type CompanionLoopCheckpoint = z.infer<typeof companionLoopCheckpointSchema>;
 export const companionWorkSchema = z.object({ id, conversationId: id, sourceMessageId: id, companionId: id,
-  status: z.enum(['queued', 'running', 'interrupted', 'done', 'cancelled']), ordinal: z.number().int().positive().optional(), proactive: z.boolean().default(false),
+  messageId: id.optional(), status: z.enum(['queued', 'running', 'interrupted', 'done', 'cancelled']), ordinal: z.number().int().positive().optional(), proactive: z.boolean().default(false),
   createdAt: z.string(), updatedAt: z.string() });
 export type CompanionWork = z.infer<typeof companionWorkSchema>;

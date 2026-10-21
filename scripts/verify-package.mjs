@@ -35,8 +35,14 @@ const resourcesPath =
   packagePlatform === 'darwin'
     ? path.join(packageRoot, 'WorldlineBox.app', 'Contents', 'Resources')
     : path.join(packageRoot, 'resources');
+if (existsSync(path.join(resourcesPath, 'resources', 'embedding-models'))) {
+  throw new Error('Embedding model resources are duplicated inside the general resources payload. Ship the bundle only once.');
+}
 
 const requiredPaths = [
+  path.join(resourcesPath, 'embedding-models', 'manifest.json'),
+  path.join(resourcesPath, 'vcp-memory', 'KnowledgeBaseManager.js'),
+  path.join(resourcesPath, 'vcp-memory-host', 'worker.cjs'),
   path.join(resourcesPath, 'app.asar'),
   path.join(
     resourcesPath,
@@ -48,6 +54,10 @@ const requiredPaths = [
     'better_sqlite3.node',
   ),
 ];
+
+const embeddingVerification = spawnSync(process.execPath, [path.join(projectRoot, 'scripts', 'stage-bundled-embedding.mjs'),
+  '--verify', '--bundle-dir', path.join(resourcesPath, 'embedding-models')], { cwd: projectRoot, encoding: 'utf8', windowsHide: true });
+if (embeddingVerification.status !== 0) throw new Error(`Packaged embedding resources failed verification: ${embeddingVerification.stderr || embeddingVerification.stdout}`);
 
 const sqliteVecPackage = packagePlatform === 'darwin'
   ? `sqlite-vec-darwin-${packageArch}`
@@ -118,6 +128,22 @@ if (existsSync(sqliteNodePath)) {
 
 const asarPath = path.join(resourcesPath, 'app.asar');
 const asarFiles = asar.listPackage(asarPath);
+if (asarFiles.some(entry => /^\/?\.vite\/vcp-memory(?:-host)?(?:\/|$)/u.test(String(entry).replaceAll('\\', '/')))) {
+  throw new Error('VCP resources are duplicated inside ASAR; they must ship only through extraResource.');
+}
+const expectedVcp = JSON.parse(readFileSync(path.join(projectRoot, 'vendor', 'vcp-memory', 'upstream-manifest.json'), 'utf8'));
+for (const entry of expectedVcp.files) {
+  const file = path.join(resourcesPath, 'vcp-memory', entry.path);
+  const bytes = readFileSync(file);
+  if (bytes.length !== entry.bytes || createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
+    throw new Error(`Packaged VCP upstream checksum mismatch: ${entry.path}`);
+  }
+}
+for (const name of ['runtime.cjs', 'worker.cjs', 'peripherals.cjs']) {
+  const expected = readFileSync(path.join(projectRoot, 'src', 'main', 'vcp-memory', name));
+  const actual = readFileSync(path.join(resourcesPath, 'vcp-memory-host', name));
+  if (!expected.equals(actual)) throw new Error(`Packaged VCP host is stale or changed: ${name}`);
+}
 const requiredAsarEntries = [
   'plugin_standard_host.js',
   'plugin_trusted_host.js',

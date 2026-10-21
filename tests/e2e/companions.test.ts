@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,12 +11,13 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import type { CompanionMessage, CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
+import { removeCompanionTestDirectory, electronLaunchEnv, preparePackagedCompanionLaunch, resolveElectronExecutablePath, resolveElectronLaunchOptions } from './electron-test-helpers';
 
 type CompanionBridgeWindow = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
 interface ProviderRequest {
   path: string; headers: IncomingHttpHeaders; model: string; companionId: string; latestUser: string;
-  memories: unknown[]; reply: string;
+  memories: unknown[]; reply: string; processedMemory?: { text: string; revision: string; profileKey: string };
   stateRevision?: number; toolResults?: string[];
 }
 interface ProviderFixture { baseUrl: string; requests: ProviderRequest[]; memoryRequests: Array<{ purpose: string; companionId: string; sourceIds: string[] }>; streamStarts: Array<{ userText: string; step: number; first: string; second: string }>; releaseStream(userText: string, step?: number): void; release(): void; close(): Promise<void> }
@@ -24,7 +25,7 @@ interface ProviderFixture { baseUrl: string; requests: ProviderRequest[]; memory
 // Electron supplies the window; no Playwright browser fixture is needed.
 // eslint-disable-next-line no-empty-pattern
 test('automatically records ordinary conversation, exposes sources and progress, rejects stale edits and forgets across restart', async ({}, testInfo) => {
-  test.setTimeout(120_000);
+  test.setTimeout(240_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-memory-'));
   const profile = path.join(root, 'profile'), provider = await providerFixture();
   let application: ElectronApplication | undefined;
@@ -43,21 +44,35 @@ test('automatically records ordinary conversation, exposes sources and progress,
     await ensureAwakeRoutine(page, companionId, conversationId);
     await sendUi(page, conversationId, '我喜欢看海', [companionId]);
     const source = (await messages(page, conversationId)).find(message => message.authorId === 'user' && message.content === '我喜欢看海')!;
-    const browse = (status: 'active' | 'forgotten' = 'active') => request(page, { type: 'memory.browse', companionId, conversationId, query: '', terms: [], tags: [], includeHistory: status !== 'active', status, limit: 20 });
-    await expect.poll(async () => (await browse()).memoryPage?.items.some(hit => hit.memory.kind === 'preference' && hit.memory.content === '用户喜欢看海。'), { timeout: 35_000 }).toBe(true);
+    const browse = () => request(page, { type: 'memory.browse', companionId, conversationId, query: '', tags: [], limit: 20 });
+    let lastCaptureStatus = '';
+    await expect.poll(async () => {
+      const page = await browse();
+      const status = (await request(started.page, { type: 'memory.status', companionId, conversationId })).memoryStatus;
+      const signature = JSON.stringify({ status, notes: page.memoryPage?.items.map(hit => ({ id: hit.memory.id, status: hit.memory.status })) });
+      if (signature !== lastCaptureStatus) { lastCaptureStatus = signature; console.log('VCP_CAPTURE_STATUS', signature); }
+      return page.memoryPage?.items.some(hit => hit.memory.status === 'indexed' && hit.memory.content === '用户喜欢看海。');
+    }, { timeout: 90_000 }).toBe(true);
     const learned = (await browse()).memoryPage!.items.find(hit => hit.memory.content === '用户喜欢看海。')!.memory;
-    expect(learned).toMatchObject({ origin: 'user', captureMethod: 'automatic', kind: 'preference', epistemicStatus: 'asserted', status: 'active', sourceMessageId: source.id });
-    expect(learned.tags?.map(tag => tag.name)).toContain('看海');
-    expect(provider.memoryRequests.some(item => item.purpose === 'memory_extraction' && item.sourceIds.includes(source.id))).toBe(true);
+    expect(learned).toMatchObject({ origin: 'user', captureMethod: 'automatic', status: 'indexed', diaryName: '生活日记', sourceMessageId: source.id });
+    expect(learned.tags).toEqual(['用户', '看海']);
+    expect(provider.memoryRequests.some(item => item.purpose === 'vcp_experience_journal' && item.sourceIds.includes(source.id))).toBe(true);
+    const recalled = await request(page, { type: 'memory.search', companionId, conversationId, query: '用户喜欢什么休闲活动？', tags: [], limit: 20 });
+    const nativeHit = recalled.memoryPage!.items.find(hit => hit.memory.id === learned.id)!;
+    expect(nativeHit).toBeDefined(); expect(nativeHit.score).toEqual(expect.any(Number));
+    expect(nativeHit.reasons).toContain('VCP river');
+    expect(recalled.memoryContext?.text).toContain('用户喜欢看海');
     await expect.poll(async () => (await request(page, { type: 'memory.status', companionId })).memoryStatus?.pending, { timeout: 35_000 }).toBe(0);
     const status = (await request(page, { type: 'memory.status', companionId })).memoryStatus!;
-    expect(status.failed).toBe(0); expect(status.extractionWatermark).toBe(status.messageWatermark);
+    expect(status.failed).toBe(0); expect(status.captureWatermark).toBe(status.messageWatermark); expect(status.pendingIndex).toBe(0); expect(status.indexed).toBe(1);
 
     // The next reply receives automatically recalled evidence without a memory tool or manual prompt.
     await sendUi(page, conversationId, '你还记得我喜欢什么吗？', [companionId]);
-    expect(provider.requests.at(-1)!.memories).toEqual(expect.arrayContaining([expect.objectContaining({ id: learned.id, content: '用户喜欢看海。' })]));
+    expect(provider.requests.at(-1)!.memories).toEqual([]);
+    expect(provider.requests.at(-1)!.processedMemory).toMatchObject({ text: expect.stringContaining('用户喜欢看海'), revision: expect.any(String), profileKey: expect.any(String) });
+    expect(provider.memoryRequests.some(item => item.purpose === 'vcp_aimemo')).toBe(true);
     await expect(page.locator('[data-companion-messages]').getByText('记得，你喜欢看海。', { exact: true })).toBeVisible();
-    expect(provider.memoryRequests.some(item => item.purpose === 'memory_query')).toBe(true);
+    expect(provider.memoryRequests.some(item => ['memory_extraction', 'memory_query', 'memory_maintenance'].includes(item.purpose))).toBe(false);
     await expect.poll(async () => (await request(page, { type: 'memory.status', companionId, conversationId })).memoryStatus?.pending, { timeout: 35_000 }).toBe(0);
     await page.getByRole('button', { name: '我们之间', exact: true }).click();
     const journal = page.getByRole('complementary', { name: '伙伴手帐' });
@@ -67,75 +82,85 @@ test('automatically records ordinary conversation, exposes sources and progress,
     expect(geometry.width).toBe(320); expect(geometry.scroll).toBeLessThanOrEqual(geometry.client + 1);
     await journal.getByRole('button', { name: '管理共同记忆', exact: true }).click();
     const manager = page.getByRole('dialog', { name: '共同记忆管理', exact: true });
-    const panel = manager.getByRole('region', { name: '共同记忆管理' });
+    const panel = manager.getByRole('region', { name: '伙伴记忆库' });
     await expect(panel).toBeVisible();
-    const memory = panel.locator('.companions-memory').filter({ has: page.getByRole('button', { name: `编辑记忆 ${learned.id}`, exact: true }) });
-    await expect(memory).toContainText('偏好'); await expect(memory).toContainText('明确表达');
-    await expect(memory.locator('.companions-memory-tags button')).toContainText('看海');
+    await panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true }).click();
+    await expect(panel.locator('.memory-library-paper')).toContainText('用户喜欢看海。');
+    await expect(panel.locator('.memory-library-document-tags button')).toContainText(['用户', '看海']);
     await panel.getByRole('button', { name: `查看记忆来源 ${learned.id}`, exact: true }).click();
-    await expect(panel.locator('.companions-memory-source')).toContainText('我喜欢看海');
-    await panel.locator('.companions-memory-source summary').click();
-    await panel.locator('.companions-memory-processing summary').click();
-    await expect(panel.locator('.companions-memory-processing')).toContainText('消息 / 已处理位置');
-    await expect(panel.locator('.companions-memory-processing')).toContainText('持久化处理进度');
-    await memory.scrollIntoViewIfNeeded();
-    await panel.locator('.companions-memory-processing summary').click();
-    const modalGeometry = await manager.evaluate(element => ({ width: element.getBoundingClientRect().width, client: element.clientWidth, scroll: element.scrollWidth }));
-    expect(modalGeometry.width).toBeGreaterThan(1000); expect(modalGeometry.scroll).toBeLessThanOrEqual(modalGeometry.client + 1);
-    const columns = await panel.locator('.companions-memory-workspace').evaluate(element => [...element.children].map(child => ({ left: child.getBoundingClientRect().left, width: child.getBoundingClientRect().width })));
-    expect(columns[1]!.left).toBeGreaterThan(columns[0]!.left + columns[0]!.width); expect(columns.every(column => column.width > 350)).toBe(true);
+    await expect(panel.locator('.memory-library-inspector')).toContainText('生活日记');
+    await expect(panel.locator('.memory-library-inspector')).toContainText('已收录');
+    await expect(panel.locator('.memory-library-source')).toContainText('我喜欢看海');
+    await panel.locator('.memory-library-source summary').click();
+    await panel.getByRole('button', { name: '收录与记录规则', exact: true }).click();
+    await expect(panel.locator('.memory-library-maintenance')).toContainText('等待索引 / 可供回忆');
+    await expect(panel.locator('.memory-library-maintenance')).toContainText('需要重试');
+    await panel.getByRole('button', { name: '关闭记忆维护', exact: true }).click();
+    const workspaceGeometry = await manager.evaluate(element => ({ width: element.getBoundingClientRect().width, client: element.clientWidth, scroll: element.scrollWidth }));
+    expect(workspaceGeometry.width).toBeGreaterThan(1000); expect(workspaceGeometry.scroll).toBeLessThanOrEqual(workspaceGeometry.client + 1);
+    const columns = await panel.locator('.memory-library-body').evaluate(element => [...element.children].map(child => ({ left: child.getBoundingClientRect().left, width: child.getBoundingClientRect().width })));
+    expect(columns).toHaveLength(3); expect(columns[1]!.left).toBeGreaterThanOrEqual(columns[0]!.left + columns[0]!.width); expect(columns[2]!.width).toBeGreaterThan(500);
     const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
-    await manager.getByRole('button', { name: '关闭共同记忆管理', exact: true }).click();
-    await theme(page, '亮色');
-    await journal.getByRole('button', { name: '管理共同记忆', exact: true }).click();
-    await panel.getByRole('button', { name: `查看记忆来源 ${learned.id}`, exact: true }).click();
-    await panel.locator('.companions-memory-source summary').click();
-    await page.screenshot({ path: path.join(artifacts, 'verified-memory-system.png') });
-    await manager.getByRole('button', { name: '关闭共同记忆管理', exact: true }).click();
-    await theme(page, '暗色');
-    await journal.getByRole('button', { name: '管理共同记忆', exact: true }).click();
-    await panel.getByRole('button', { name: `查看记忆来源 ${learned.id}`, exact: true }).click();
-    await panel.locator('.companions-memory-source summary').click();
-    await page.screenshot({ path: path.join(artifacts, 'verified-memory-system-dark.png') });
-
+    for (const [mode, name] of [['亮色', 'verified-memory-system.png'], ['暗色', 'verified-memory-system-dark.png']] as const) {
+      await manager.getByRole('button', { name: '关闭共同记忆管理', exact: true }).click();
+      await theme(page, mode);
+      await journal.getByRole('button', { name: '管理共同记忆', exact: true }).click();
+      await panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true }).click();
+      await panel.getByRole('button', { name: `查看记忆来源 ${learned.id}`, exact: true }).click();
+      await panel.locator('.memory-library-source summary').click();
+      await page.screenshot({ path: path.join(artifacts, name) });
+    }
     await panel.getByRole('button', { name: `编辑记忆 ${learned.id}`, exact: true }).click();
     await panel.getByRole('textbox', { name: '共同记忆内容', exact: true }).fill('用户现在喜欢看森林。');
-    // A concurrent user correction advances the actual SQLite version while this editor retains its old version.
-    await request(page, { type: 'memory.save', companionId, conversationId, id: learned.id, expectedVersion: learned.version!, sourceMessageId: source.id, content: '用户现在喜欢看山。' });
+    const concurrentWrite = await page.evaluate(async ({ owner, noteId }) => {
+      const api = (window as unknown as CompanionBridgeWindow).worldlinebox.companions;
+      const document = (await api.workspace!({ type: 'memory.documents.list', companionId: owner, directory: '', limit: 64 })).documents!.items.find(item => item.noteId === noteId)!;
+      return api.workspace!({ type: 'memory.documents.save', companionId: owner, path: document.path, expectedRevision: document.revision, content: '用户现在喜欢看山。' });
+    }, { owner: companionId, noteId: learned.id });
+    expect(concurrentWrite.ok, concurrentWrite.error).toBe(true);
     await panel.getByRole('button', { name: '保存修正', exact: true }).click();
-    await expect(manager.locator('.companions-workspace-request-error')).toContainText('记忆版本冲突');
+    await expect(panel.getByRole('alert')).toContainText('文件或宿主日记已发生变化');
     await expect(panel.getByRole('textbox', { name: '共同记忆内容', exact: true })).toHaveValue('用户现在喜欢看森林。');
     const concurrent = (await browse()).memoryPage!.items.find(hit => hit.memory.id === learned.id)!.memory;
     expect(concurrent.content).toBe('用户现在喜欢看山。');
-    // The real changed event refreshes the list even if its short-lived error
-    // has already disappeared; the unsaved editor still retains the old revision.
-    await expect(memory).toContainText('用户现在喜欢看山。');
-    await panel.getByRole('button', { name: '取消修正', exact: true }).click();
-    await page.getByRole('button', { name: '关闭错误提示', exact: true }).click();
+    await expect(panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true })).toContainText('用户现在喜欢看山。');
+    await panel.getByRole('button', { name: '取消编辑', exact: true }).click();
+    await panel.getByRole('button', { name: '放弃修改并离开', exact: true }).click();
     await panel.getByRole('button', { name: `编辑记忆 ${learned.id}`, exact: true }).click();
     await panel.getByRole('textbox', { name: '共同记忆内容', exact: true }).fill('用户现在喜欢看森林。');
     await panel.getByRole('button', { name: '保存修正', exact: true }).click();
     await expect.poll(async () => (await browse()).memoryPage?.items.find(hit => hit.memory.id === learned.id)?.memory.content).toBe('用户现在喜欢看森林。');
     expect((await browse()).memoryPage!.items.find(hit => hit.memory.id === learned.id)!.memory.version).toBe(concurrent.version! + 1);
     await panel.getByRole('button', { name: `删除记忆 ${learned.id}`, exact: true }).click();
-    await expect(panel.getByText('这条记忆及其旧来源衍生内容将退出召回，聊天原文仍保留。', { exact: true })).toBeVisible();
+    await expect(panel.getByText('这篇文档及其旧来源的衍生记忆将退出召回，原始聊天仍保留。此操作不会删除其他日记。', { exact: true })).toBeVisible();
     await panel.getByRole('button', { name: '确认遗忘', exact: true }).click();
     await expect.poll(async () => (await browse()).memoryPage?.items.length).toBe(0);
-    await panel.getByLabel('记忆状态', { exact: true }).selectOption('forgotten');
-    await expect(panel.locator('.companions-memory').first()).toContainText('已遗忘的记忆');
+    expect((await request(page, { type: 'memory.status', companionId, conversationId })).memoryStatus?.forgotten).toBeGreaterThan(0);
+    await expect(panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true })).toHaveCount(0);
     await expect(panel).not.toContainText('用户现在喜欢看森林。');
     expect((await messages(page, conversationId)).some(message => message.id === source.id)).toBe(true);
     await application.close(); application = undefined;
     started = await launch(profile, false); application = started.application; page = started.page;
     expect((await browse()).memoryPage!.items).toHaveLength(0);
-    const forgotten = (await browse('forgotten')).memoryPage!.items;
-    expect(forgotten.length).toBeGreaterThan(0);
-    expect(forgotten.every(hit => hit.memory.content === '已遗忘的记忆' && !hit.memory.sources?.length && !hit.memory.tags?.length)).toBe(true);
-    expect((await request(page, { type: 'memory.search', companionId, conversationId, query: '看海 看山 看森林', terms: [], tags: [], includeHistory: true, limit: 20 })).memoryPage!.items).toHaveLength(0);
+    expect((await request(page, { type: 'memory.status', companionId, conversationId })).memoryStatus?.forgotten).toBeGreaterThan(0);
+    expect((await request(page, { type: 'memory.search', companionId, conversationId, query: '看海 看山 看森林', tags: [], limit: 20 })).memoryPage!.items).toHaveLength(0);
+    expect((await request(page, { type: 'memory.sources.filter', companionId, conversationId, ids: [source.id] })).memorySources).toEqual([]);
+    expect((await messages(page, conversationId)).some(message => message.id === source.id && message.content === '我喜欢看海')).toBe(true);
   } catch (error) {
+    if (application) {
+      const live = await application.windows()[0]?.evaluate(async () => {
+        const api = (window as unknown as CompanionBridgeWindow).worldlinebox.companions;
+        return { status: await api.request({ type: 'memory.status', companionId: 'deepseek-sister' }),
+          state: await api.request({ type: 'state' }) };
+      }).catch(() => undefined);
+      diagnostics.push(JSON.stringify(live));
+    }
     await application?.windows()[0]?.screenshot({ path: testInfo.outputPath('memory-failure.png') }).catch(() => undefined);
     const logs = path.join(profile, 'logs');
     if (existsSync(logs)) for (const file of readdirSync(logs).filter(file => file.endsWith('.log'))) diagnostics.push(readFileSync(path.join(logs, file), 'utf8'));
+    mkdirSync(path.resolve('artifacts/vcp-validation'), { recursive: true });
+    const diagnosticPath = path.resolve('artifacts/vcp-validation/memory-application-diagnostics.log');
+    await import('node:fs/promises').then(fs => fs.writeFile(diagnosticPath, diagnostics.join('\n').replaceAll('fixture-memory-key', '[fixture key]'), 'utf8'));
     await testInfo.attach('companion-application-diagnostics', { body: diagnostics.join('\n').replaceAll('fixture-memory-key', '[fixture key]'), contentType: 'text/plain' });
     throw error;
   } finally { if (application) await application.close(); await provider.close(); cleanup(root); }
@@ -249,7 +274,9 @@ test('renders real SSE text before completion, continues after a tool, stops on 
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-stream-'));
   const profile = path.join(root, 'profile'), provider = await providerFixture();
   let application: ElectronApplication | undefined, page: Page | undefined;
+  let succeeded = false;
   const diagnostics: string[] = [], companionId = 'deepseek-sister', conversationId = 'private-deepseek-sister';
+  const firstTokenMilestones: Array<{ userText: string; elapsedMs: number; replyId: string }> = [];
   try {
     let started = await launch(profile, false); application = started.application; page = started.page;
     application.process().stderr?.on('data', chunk => diagnostics.push(String(chunk)));
@@ -259,13 +286,21 @@ test('renders real SSE text before completion, continues after a tool, stops on 
     await page.getByRole('dialog', { name: '发起聊天' }).locator('.companions-start-chat-list button').filter({ has: page.getByText('大肥鱼', { exact: true }) }).click();
     await ensureAwakeRoutine(page, companionId, conversationId);
     async function begin(text: string) {
+      const startedAt = Date.now();
       await page!.getByRole('textbox', { name: '输入消息', exact: true }).fill(text);
       await page!.getByRole('button', { name: '发送', exact: true }).click();
-      await expect.poll(() => provider.streamStarts.some(start => start.userText === text && start.step === 0)).toBe(true);
-      const source = (await messages(page!, conversationId)).filter(message => message.authorId === 'user' && message.content === text).at(-1)!;
-      await expect.poll(async () => (await messages(page!, conversationId)).find(message => message.replyToId === source.id && message.authorId === companionId)?.id).toBeTruthy();
-      const reply = (await messages(page!, conversationId)).find(message => message.replyToId === source.id && message.authorId === companionId)!;
+      let source: CompanionMessage | undefined;
+      await expect.poll(async () => { source = (await messages(page!, conversationId)).find(message => message.authorId === 'user' && message.content === text); return source?.id; }).toBeTruthy();
+      const sourceId = source!.id;
+      await expect.poll(async () => (await messages(page!, conversationId)).find(message => message.replyToId === sourceId && message.authorId === companionId)?.id).toBeTruthy();
+      const reply = (await messages(page!, conversationId)).find(message => message.replyToId === sourceId && message.authorId === companionId)!;
       const body = page!.locator(`[data-companion-message="${reply.id}"]`);
+      await expect(body.getByRole('status', { name: '本条回复进度', exact: true })).toBeVisible();
+      // The real first passive recall includes verifying the bundled model. Its
+      // own bubble must already exist while that work precedes the SSE request.
+      await expect.poll(() => provider.streamStarts.some(start => start.userText === text && start.step === 0), { timeout: 60_000 }).toBe(true);
+      const milestone = { userText: text, elapsedMs: Date.now() - startedAt, replyId: reply.id };
+      firstTokenMilestones.push(milestone); diagnostics.push(JSON.stringify({ milestone: 'first-stream-token', ...milestone }));
       const first = provider.streamStarts.find(start => start.userText === text && start.step === 0)!;
       await expect(body.locator('[data-reply-phase="streaming"]')).toContainText(first.first);
       await expect(body).not.toContainText(first.second);
@@ -292,8 +327,8 @@ test('renders real SSE text before completion, continues after a tool, stops on 
     await completed(tool.reply.id, tool.first.first + tool.first.second + '\n\n' + afterTool.first + afterTool.second);
     expect((await messages(page, conversationId)).find(message => message.id === tool.reply.id)!.segments).toHaveLength(2);
     const cancelText = '流式验收：取消', cancelled = await begin(cancelText);
-    await page.getByRole('button', { name: '取消回复', exact: true }).click();
-    await expect(cancelled.body).toContainText('回复已中断'); await expect(cancelled.body).toContainText(cancelled.first.first);
+    await cancelled.body.getByRole('button', { name: '取消这条回复', exact: true }).click();
+    await expect(cancelled.body).toContainText('已取消'); await expect(cancelled.body).toContainText(cancelled.first.first);
     provider.releaseStream(cancelText);
     await expect(cancelled.body).not.toContainText(cancelled.first.second);
     await expect.poll(async () => (await messages(page!, conversationId)).find(message => message.id === cancelled.reply.id)?.replyDraft?.text).toBe(cancelled.first.first);
@@ -301,11 +336,12 @@ test('renders real SSE text before completion, continues after a tool, stops on 
     await expect.poll(async () => (await messages(page!, conversationId)).find(message => message.id === interrupted.reply.id)?.replyDraft?.text, { timeout: 10_000 }).toBe(interrupted.first.first);
     await application.close(); application = undefined;
     started = await launch(profile, false); application = started.application; page = started.page;
+    application.process().stderr?.on('data', chunk => diagnostics.push(String(chunk)));
     await page.locator('[data-application-module="companions"]').click();
     const restored = page.locator(`[data-companion-message="${interrupted.reply.id}"]`);
-    await expect(restored).toContainText(interrupted.first.first); await expect(restored).toContainText('回复已中断');
+    await expect(restored).toContainText(interrupted.first.first, { timeout: 30_000 }); await expect(restored).toContainText('回复中断');
     expect(provider.streamStarts.filter(start => start.userText === resumeText)).toHaveLength(1);
-    await page.getByRole('button', { name: '继续上次回复', exact: true }).click();
+    await restored.getByRole('button', { name: '重试这条回复', exact: true }).click();
     await expect.poll(() => provider.streamStarts.filter(start => start.userText === resumeText).length).toBe(2);
     await expect(restored.locator('[data-reply-phase="streaming"]')).toContainText(interrupted.first.first);
     provider.releaseStream(resumeText);
@@ -313,12 +349,19 @@ test('renders real SSE text before completion, continues after a tool, stops on 
     expect((await messages(page, conversationId)).find(message => message.id === interrupted.reply.id)!.content.match(/重启前已经出现的正文/gu)).toHaveLength(1);
     await expect(restored).not.toContainText('回复已中断');
     expect((await messages(page, conversationId)).find(message => message.id === cancelled.reply.id)!.content).not.toContain(cancelled.first.second);
+    const evidence = path.resolve('artifacts/vcp-validation/parallel-reply-progress'); mkdirSync(evidence, { recursive: true });
+    writeFileSync(path.join(evidence, 'reply-stream-restart-proof.json'), JSON.stringify({ firstTokenMilestones,
+      resumedMessageId: interrupted.reply.id, attemptsAfterRestart: provider.streamStarts.filter(start => start.userText === resumeText).length,
+      cancelledMessageId: cancelled.reply.id, targetedCancellation: true, draftSurvivedWholeApplicationRestart: true }, null, 2));
+    succeeded = true;
   } catch (error) {
     await page?.screenshot({ path: testInfo.outputPath('streaming-failure.png') }).catch(() => undefined);
     diagnostics.push(JSON.stringify({ starts: provider.streamStarts, requests: provider.requests.slice(-6) }));
     const logs = path.join(profile, 'logs'); if (existsSync(logs)) for (const file of readdirSync(logs).filter(file => file.endsWith('.log'))) diagnostics.push(readFileSync(path.join(logs, file), 'utf8'));
+    const diagnosticRoot = path.resolve('artifacts/vcp-validation/reply-restart-diagnostics'); mkdirSync(diagnosticRoot, { recursive: true });
+    writeFileSync(path.join(diagnosticRoot, 'latest.txt'), 'retained fixture: ' + root + '\n' + diagnostics.join('\n').replaceAll('fixture-stream-key', '[fixture key]'));
     await testInfo.attach('streaming-application-diagnostics', { body: diagnostics.join('\n').replaceAll('fixture-stream-key', '[fixture key]'), contentType: 'text/plain' }); throw error;
-  } finally { if (application) await application.close(); await provider.close(); cleanup(root); }
+  } finally { if (application) await application.close(); await provider.close(); if (succeeded) cleanup(root); else console.log('RETAINED_STREAM_FIXTURE', root); }
 });
 
 test('starts empty, bounds long history, searches with filters and context, and deletes or dissolves chats', async () => {
@@ -349,7 +392,7 @@ test('starts empty, bounds long history, searches with filters and context, and 
       db.function('companion_search_facet',{deterministic:true},s=>Array.from(s,c=>c.codePointAt(0).toString(16)).join('x'));
       const insert=db.prepare("INSERT INTO messages(id,conversation_id,author_id,kind,content,created_at,status) VALUES(?,'private-gpt',?,'text',?,?,'sent')");
       db.transaction(()=>{for(let i=1;i<=1800;i++)insert.run('history_'+i,i%2?'user':'gpt','历史编号 '+i+'：一起讨论小说、图片和生活。'+(i%10===0?' 星海合同':'')+' 这是一段足够长的聊天内容，验证连续滚动的阅读位置。',new Date(Date.UTC(2026,0,1)+Math.floor(i/50)*86400000).toISOString());})();db.close();`;
-    const seeded = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(profile, 'companions/messages.sqlite')], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
+    const seeded = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(companionDataRoot(profile), 'messages.sqlite')], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
     expect(seeded.status, seeded.stderr).toBe(0);
     started = await launch(profile, false); application = started.application; page = started.page;
     await page.locator('[data-application-module="companions"]').click(); await page.locator('[data-companion-conversation="private-gpt"]').click();
@@ -577,7 +620,7 @@ test('task monitor pages durable role history and shows complete local timestamp
         result: '已核验任务 ' + index, events: [{ sequence: 1, type: 'tool_end', summary: '工具实际返回结果', contentKind: 'output', content: '原始工具输出 ' + index, receivedAt: new Date(created + 1234).toISOString() }] };
     });
     const sourceCode = `const Database=require('better-sqlite3');const db=new Database(process.argv[1]);const data=JSON.parse(process.argv[2]);db.transaction(()=>{for(const row of data)db.prepare('INSERT INTO actions(id,conversation_id,companion_id,status,data) VALUES(?,?,?,?,?)').run(row.id,row.conversationId,row.companionId,row.status,JSON.stringify(row))})();db.close();`;
-    const seeded = spawnSync(resolveElectronExecutablePath(), ['-e', sourceCode, path.join(profile, 'companions/messages.sqlite'), JSON.stringify(data)], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
+    const seeded = spawnSync(resolveElectronExecutablePath(), ['-e', sourceCode, path.join(companionDataRoot(profile), 'messages.sqlite'), JSON.stringify(data)], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
     expect(seeded.status, seeded.stderr).toBe(0);
     started = await launch(profile); application = started.application; const page = started.page;
     await page.locator('[data-application-module="companions"]').click();
@@ -640,7 +683,7 @@ test('keeps capability entries and quoted messages compact and opens the linked 
           db.prepare('INSERT INTO actions(id,conversation_id,companion_id,status,data) VALUES(?,?,?,?,?)').run(id,room,'deepseek-sister','succeeded',JSON.stringify(action));
         }
       })();db.close();`;
-    const seeded = spawnSync(resolveElectronExecutablePath(), ['-e', sourceCode, path.join(profile, 'companions/messages.sqlite'), room.id], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
+    const seeded = spawnSync(resolveElectronExecutablePath(), ['-e', sourceCode, path.join(companionDataRoot(profile), 'messages.sqlite'), room.id], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
     expect(seeded.status, seeded.stderr).toBe(0);
     started = await launch(profile); application = started.application; const page = started.page;
     await page.locator('[data-application-module="companions"]').click();
@@ -751,9 +794,33 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
         const payload = JSON.parse(body) as { model: string; stream?: boolean; messages: Array<{ role: string; content: string; tool_call_id?: string }> };
         const userContext = payload.messages.filter(message => message.role === 'user').at(-1)?.content;
         if (!userContext) throw new Error('Missing actual companion context.');
+        const systemContext = payload.messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
+        if (/个人记忆时间线|月度时间线摘要器/.test(systemContext)) {
+          // Only the global chat provider is replaced. The original VCP timeline
+          // still builds its files and vectors through the real native runtime.
+          memoryRequests.push({ purpose: 'vcp_timeline', companionId: '', sourceIds: [] });
+          const date = userContext.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? '';
+          const content = userContext.includes('用户喜欢看海') ? `${date} 用户喜欢看海。` : '没有新的共同经历。';
+          response.setHeader('Content-Type', 'application/json');
+          response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }));
+          return;
+        }
+        // Original AIMemo sends its complete plain-text prompt in one user
+        // message. The host gateway adds its constraint system message; this is
+        // neither the JSON journal extractor nor the ordinary chat contract.
+        if (userContext.includes('VCP记忆处理单元') && userContext.includes('[完整知识库]')) {
+          const knowledge = /\*\*\[完整知识库\]\*\*:[\s\S]*?```\s*([\s\S]*?)```/u.exec(userContext)?.[1] ?? '';
+          const dialogue = /\*\*\[当前对话上下文\]\*\*:[\s\S]*?```\s*([\s\S]*?)```/u.exec(userContext)?.[1] ?? '';
+          const query = /(?:^|\n)User:\s*([\s\S]*)$/u.exec(dialogue)?.[1] ?? '';
+          const relevant = /喜欢|看海|休闲/u.test(query) && knowledge.includes('用户喜欢看海');
+          memoryRequests.push({ purpose: 'vcp_aimemo', companionId: '', sourceIds: [] });
+          response.setHeader('Content-Type', 'application/json');
+          response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '这是我获取的所有相关知识/记忆[[' + (relevant ? '用户喜欢看海。' : '未找到相关记忆') + ']]' } }] }));
+          return;
+        }
         const context = JSON.parse(userContext) as {
           purpose?: string; companion?: { id: string }; currentMessage?: { content: string }; source?: { content: string };
-          runtimeState?: { revision: number };
+          runtimeState?: { revision: number }; memoryRecall?: { context?: { text: string; revision: string; profileKey: string } };
           conversation: { replyingAs: string }; messages: Array<{ id?: string; authorId?: string; speaker?: string; content: string }>; memories: unknown[];
         };
         let text: string, stateCall: Record<string, unknown> | undefined;
@@ -761,26 +828,22 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
         else if (context.purpose === 'world_social') text = JSON.stringify({ text: null, reason: '本例不继续伙伴话题。' });
         else if (context.purpose === 'world_message_authorization') text = JSON.stringify({ allowed: false, confidence: .99, evidence: [], reason: '本例无转发委托。' });
         else if (context.purpose === 'world_attention') text = JSON.stringify({ urgency: 'ordinary', confidence: .95, evidence: [context.source?.content ?? ''], reason: '用户没有请求打断当前作息。' });
-        else if (context.purpose === 'memory_dream') text = JSON.stringify({ candidates: [], dream: null });
-        else if (['memory_extraction', 'memory_query', 'memory_maintenance'].includes(context.purpose ?? '')) {
-          memoryRequests.push({ purpose: context.purpose!, companionId: context.companion?.id ?? '', sourceIds: context.messages.map(message => message.id).filter((id): id is string => !!id) });
-          if (context.purpose === 'memory_query') text = JSON.stringify({ query: context.currentMessage?.content ?? '', terms: ['看海'], tags: ['看海'], includeHistory: false, limit: 20 });
-          else {
-            const appreciation = context.purpose === 'memory_extraction' ? context.messages.find(message => message.authorId === 'user' && message.id && message.content === '谢谢你一直陪我，我相信你，也会支持你。') : undefined;
-            text = JSON.stringify({ candidates: context.purpose === 'memory_extraction' ? context.messages.filter(message => message.authorId === 'user' && message.id && message.content.includes('喜欢看海')).map(message => ({
-            kind: 'preference', content: '用户喜欢看海。', subject: 'user', factKey: 'activity.seaside', value: '喜欢看海', epistemicStatus: 'asserted',
+        else if (context.purpose === 'vcp_sleep_reflection') text = JSON.stringify({ notes: [], dream: null });
+        else if (context.purpose === 'vcp_experience_journal') {
+          memoryRequests.push({ purpose: context.purpose, companionId: context.companion?.id ?? '', sourceIds: context.messages.map(message => message.id).filter((id): id is string => !!id) });
+          const appreciation = context.messages.find(message => message.authorId === 'user' && message.id && message.content === '谢谢你一直陪我，我相信你，也会支持你。');
+          text = JSON.stringify({ notes: context.messages.filter(message => message.authorId === 'user' && message.id && message.content.includes('喜欢看海')).map(message => ({
+            content: '用户喜欢看海。', diaryName: '生活日记', tags: ['用户', '看海'],
             sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }],
-            tags: [{ name: '看海', type: 'topic', aliases: ['海边散步'] }],
-            })) : [], ...(appreciation ? { stateProposal: { reason: '用户表达了陪伴的感谢与信任。', sourceMessageIds: [appreciation.id], evidence: [{ sourceMessageId: appreciation.id, quote: appreciation.content }], appraisals: [{ type: 'support', target: 'user', intensity: .7, confidence: .95 }] } } : {}) });
-          }
+          })), ...(appreciation ? { stateProposal: { reason: '用户表达了陪伴的感谢与信任。', sourceMessageIds: [appreciation.id], evidence: [{ sourceMessageId: appreciation.id, quote: appreciation.content }], appraisals: [{ type: 'support', target: 'user', intensity: .7, confidence: .95 }] } } : {}) });
         } else {
           const latestUser = context.messages.filter(message => message.speaker === 'user').at(-1)?.content ?? '';
-          const recalledSeaside = context.memories.some(memory => typeof memory === 'object' && memory !== null && 'content' in memory && typeof memory.content === 'string' && memory.content.includes('喜欢看海'));
+          const recalledSeaside = context.memoryRecall?.context?.text.includes('用户喜欢看海') ?? false;
           const reply = latestUser === '格式验收' ? richReply : latestUser.includes('喜欢看海') ? '好呀，我记住你喜欢看海了。周末可以留些时间慢慢逛。'
             : latestUser.includes('喜欢什么') && recalledSeaside ? '记得，你喜欢看海。'
             : `我收到了「${latestUser}」，我们接着聊。`;
           requests.push({ path: request.url ?? '', headers: request.headers, model: payload.model,
-            companionId: context.conversation.replyingAs, latestUser, memories: context.memories, reply, stateRevision: context.runtimeState?.revision,
+            companionId: context.conversation.replyingAs, latestUser, memories: context.memories, reply, stateRevision: context.runtimeState?.revision, processedMemory: context.memoryRecall?.context,
             toolResults: payload.messages.filter(message => message.role === 'tool').map(message => message.content) });
           if (latestUser.startsWith('流式验收：') && payload.stream && request.url?.endsWith('/chat/completions')) {
             const step = payload.messages.some(message => message.role === 'tool' && message.tool_call_id === 'fixture_stream_inspect') ? 1 : 0;
@@ -835,9 +898,9 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
 }
 
 async function launch(profilePath: string, openDefaultChats = true): Promise<{ application: ElectronApplication; page: Page }> {
-  const appPath = resolveElectronAppPath();
-  const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [appPath], cwd: appPath,
-    env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profilePath }) });
+  const application = await electron.launch({ ...resolveElectronLaunchOptions(),
+    env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profilePath, WORLDLINEBOX_E2E_CREATE_PARENT_PATH: path.dirname(profilePath) }) });
+  await preparePackagedCompanionLaunch(application, profilePath);
   const page = await application.firstWindow();
   const nativeWindow = await application.browserWindow(page);
   await nativeWindow.evaluate(win => { win.unmaximize(); win.setSize(1440, 900); win.setFocusable(false); win.setOpacity(0); win.webContents.setBackgroundThrottling(false); win.hide(); });
@@ -846,8 +909,25 @@ async function launch(profilePath: string, openDefaultChats = true): Promise<{ a
   // actionability checks. A transparent, non-focusable surface stays invisible
   // to the user while exercising the real compositor.
   await nativeWindow.evaluate(win => win.showInactive());
+  if (!existsSync(path.join(profilePath, 'companion-library.json'))) {
+    const prepared = await page.evaluate(async () => {
+      const bridge = (window as unknown as { worldlinebox: { library: WorldlineBoxLibraryApi; companions: WorldlineBoxCompanionsApi } }).worldlinebox;
+      const created = await bridge.library.create({ displayName: '伙伴资产库' });
+      if (!created.ok) throw new Error('Could not create the real companion asset library.');
+      return bridge.companions.workspace!({ type: 'select', libraryId: created.value.libraryId });
+    });
+    expect(prepared.ok, prepared.error).toBe(true);
+    expect(prepared.selected!.dataRoot).not.toContain(path.join(profilePath, 'companions'));
+  }
   if (openDefaultChats) await prepareReplyAuthors(page, ['deepseek-sister', 'deepseek-flash']);
   return { application, page };
+}
+
+function companionDataRoot(profile: string): string {
+  const locator = path.join(profile, 'companion-library.json');
+  if (!existsSync(locator)) return path.join(profile, 'companions'); // Explicit pre-upgrade fixtures are migrated on selection.
+  const selection = JSON.parse(readFileSync(locator, 'utf8')) as { libraryPath: string };
+  return path.join(selection.libraryPath, '.worldlinebox', 'companions');
 }
 
 async function request(page: Page, input: CompanionsRequest) {
@@ -924,7 +1004,7 @@ function cleanup(root: string) {
   if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-companions-e2e-')) {
     throw new Error('Refusing cleanup outside this temporary companion profile.');
   }
-  rmSync(absolute, { recursive: true, force: true });
+  removeCompanionTestDirectory(absolute);
 }
 
 test.describe.configure({ timeout: 120_000 });
@@ -954,9 +1034,9 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     await sendUi(page, sisterChat, '我喜欢看海，周末想慢慢逛。', ['deepseek-sister']);
     await expect(page.locator('[data-companion-messages]').getByText('好呀，我记住你喜欢看海了。周末可以留些时间慢慢逛。', { exact: true })).toBeVisible();
     const preferenceSource = (await messages(page, sisterChat)).find(message => message.authorId === 'user' && message.content === '我喜欢看海，周末想慢慢逛。')!;
-    // Automatic extraction is durable background work, separate from completing
-    // the reply. Wait for the real job instead of expecting inline memory writes.
-    await expect.poll(async () => (await request(page, { type: 'memory.list', companionId: 'deepseek-sister' })).memories?.length, { timeout: 35_000 }).toBe(1);
+    // Journal capture and native VCP indexing are durable background work.
+    // Wait for the real acknowledgement, using the bundled local embedding model.
+    await expect.poll(async () => (await request(page, { type: 'memory.list', companionId: 'deepseek-sister' })).memories?.filter(note => note.status === 'indexed').length, { timeout: 90_000 }).toBe(1);
     await expect.poll(async () => (await request(page, { type: 'memory.status', companionId: 'deepseek-sister' })).memoryStatus?.pending, { timeout: 35_000 }).toBe(0);
     const learned = (await request(page, { type: 'memory.list', companionId: 'deepseek-sister' })).memories!;
     expect(learned).toHaveLength(1);
@@ -1000,7 +1080,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     expect(custom.avatarAttachmentId).toBeTruthy();
     const avatarId = custom.avatarAttachmentId!;
     await decodeLocalImage(page, avatarId);
-    const savedAvatar = readFileSync(path.join(profile, 'companions', 'attachments', `${avatarId}.png`));
+    const savedAvatar = readFileSync(path.join(companionDataRoot(profile), 'attachments', `${avatarId}.png`));
     expect(await sharp(savedAvatar).metadata()).toMatchObject({ format: 'png', width: 512, height: 512 });
     const oriented = await sharp(selectedImagePath).autoOrient().png().toBuffer({ resolveWithObject: true });
     const side = Math.min(oriented.info.width, oriented.info.height);
@@ -1061,7 +1141,7 @@ test('real companion UI supports persistent contacts, private chats and multi-ro
     const requestCount = provider.requests.length;
     const sisterHistory = await messages(page, sisterChat);
     await application.close(); application = undefined;
-    const databaseBytes = readFileSync(path.join(profile, 'companions', 'messages.sqlite'));
+    const databaseBytes = readFileSync(path.join(companionDataRoot(profile), 'messages.sqlite'));
     expect(databaseBytes.subarray(0, 16).toString()).toBe('SQLite format 3\u0000');
     expect(databaseBytes.includes(Buffer.from(avatarId))).toBe(true);
     expect(databaseBytes.includes(Buffer.from(attachment.id))).toBe(true);
@@ -1144,10 +1224,10 @@ test('global routing updates immediately while an independent encrypted role con
     const globalConfig = await page.evaluate(() => (window as unknown as CompanionBridgeWindow).worldlinebox.llm.getConfig());
     for (const key of [globalOne, globalTwo, roleKey]) {
       expect(JSON.stringify({ publicState, history, globalConfig })).not.toContain(key);
-      const ciphertext = readFileSync(path.join(profile, 'companions', 'llm-keys.enc.json'), 'utf8');
+      const ciphertext = readFileSync(path.join(companionDataRoot(profile), 'llm-keys.enc.json'), 'utf8');
       expect(ciphertext).not.toContain(key);
     }
-    const encrypted = JSON.parse(readFileSync(path.join(profile, 'companions', 'llm-keys.enc.json'), 'utf8')) as Record<string, string>;
+    const encrypted = JSON.parse(readFileSync(path.join(companionDataRoot(profile), 'llm-keys.enc.json'), 'utf8')) as Record<string, string>;
     expect(Object.keys(encrypted)).toEqual([role.id]);
     expect(Buffer.from(encrypted[role.id]!, 'base64').equals(Buffer.from(roleKey))).toBe(false);
     expect(await application.evaluate(({ safeStorage }, encoded) => safeStorage.decryptString(Buffer.from(encoded, 'base64')), encrypted[role.id]!)).toBe(roleKey);

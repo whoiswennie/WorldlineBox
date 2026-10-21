@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildCompanionContext, type CompanionReplyInput } from '../../src/main/companions/context';
-import { generateCompanionReply, parseCompanionReply, resolveCompanionModel, type CompanionModelConfig } from '../../src/main/companions/model';
+import { generateCompanionReply, generateCompanionText, generateCompanionStructured, parseCompanionReply, resolveCompanionModel, type CompanionModelConfig } from '../../src/main/companions/model';
 import type { CompanionMemory, CompanionMessage } from '../../src/shared/companions';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
 import { companionLoopCheckpointSchema } from '../../src/shared/companion-loop';
@@ -27,10 +27,39 @@ function message(id: string, sequence: number, content: string, overrides: Parti
   return { id, sequence, conversationId: 'private_sister', authorId: 'user', kind: 'text', content,
     createdAt: '2026-10-13T00:00:00Z', status: 'sent', attachments: [], ...overrides };
 }
-function memory(id: string, companionId: string, content: string, sourceMessageId?: string): CompanionMemory {
-  return { id, companionId, content, sourceMessageId, origin: 'companion', createdAt: '2026-10-13T00:00:00Z', updatedAt: '2026-10-13T00:00:00Z' };
+function memory(id: string, companionId: string, content: string, sourceMessageId?: string, sourceConversationId = 'private_sister'): CompanionMemory {
+  const at = '2026-10-13T00:00:00Z';
+  return { id, companionId, content, sourceMessageId, scopeId: `scope_${companionId}`, sourceConversationId,
+    sources: sourceMessageId ? [{ messageId: sourceMessageId, conversationId: sourceConversationId, sequence: 1,
+      authorId: 'user', revision: 1, checksum: 'host-checksum', createdAt: at }] : [],
+    sourceSequence: 0, tags: [], status: 'indexed', captureMethod: 'automatic', version: 1,
+    origin: 'companion', createdAt: at, updatedAt: at };
 }
 function response(body: unknown): Response { return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }); }
+it.each(['', '这是我获取的所有相关知识/记忆[[未找到相关记忆]]'])('does not reinject unfiltered native candidate bodies after VCP focused context %j', text => {
+  const payload = JSON.parse(buildCompanionContext({ ...input, memories: [memory('candidate', 'sister', 'PRIVATE_UNRELATED_CANDIDATE')],
+    memoryRecall: { reasons: [{ id: 'candidate', reasons: ['native candidate'], path: ['candidate'] }], pending: false, degraded: false,
+      context: { text, revision: 'current-ledger', profileKey: 'local-gemma' } } }).user);
+  expect(payload.memories).toEqual([]);
+  expect(JSON.stringify(payload)).not.toContain('PRIVATE_UNRELATED_CANDIDATE');
+  expect(payload.memoryRecall.context.text).toBe(text);
+});
+it.each(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native'] as const)('retains original VCP plain-text output across %s without forcing JSON mode', async apiFormat => {
+  const envelope = (text: string) => apiFormat === 'openai_responses' ? { output: [{ type: 'message', content: [{ type: 'output_text', text }] }] }
+    : apiFormat === 'anthropic' ? { content: [{ type: 'text', text }] }
+    : apiFormat === 'gemini_native' ? { candidates: [{ content: { parts: [{ text }] } }] }
+    : apiFormat === 'dashscope_native' ? { output: { choices: [{ message: { content: text } }] } }
+    : { choices: [{ message: { content: text } }] };
+  const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response(envelope('[[未找到相关记忆]]'))).mockResolvedValueOnce(response(envelope('{"notes":[]}')));
+  const provider = { ...config, apiFormat };
+  await expect(generateCompanionText({ system: '按原版模板输出纯文本', user: '木星问题' }, provider, undefined, { fetchFn })).resolves.toBe('[[未找到相关记忆]]');
+  const plain = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
+  expect(plain.response_format).toBeUndefined();
+  expect(plain.text?.format).toBeUndefined();
+  expect(plain.generationConfig?.responseMimeType).toBeUndefined();
+  expect(plain.parameters?.response_format).toBeUndefined();
+  await expect(generateCompanionStructured({ system: '输出JSON', user: '记忆资料' }, provider, undefined, { fetchFn })).resolves.toEqual({ notes: [] });
+});
 function chatResponse(text = '{"text":"那就慢慢来。","memories":["用户喜欢宽松的出游安排。"]}'): Response {
   return response({ choices: [{ message: { content: text, reasoning_content: 'THIS MUST NOT BE RETAINED' } }] });
 }
@@ -68,8 +97,8 @@ describe('persistent companion model context', () => {
         message('group_user', 2, '海边走走', { conversationId: 'group' }),
         message('group_flash', 3, '妹妹的上一句话', { conversationId: 'group', authorId: 'flash' })],
       memories: [memory('private', 'sister', 'PRIVATE MEMORY', 'private_message'),
-        memory('manual', 'sister', 'PRIVATE MANUAL MEMORY'), memory('public', 'sister', '公开群约定', 'group_user'),
-        memory('other', 'flash', 'OTHER PERSONA MEMORY', 'group_user')],
+        memory('manual', 'sister', 'PRIVATE MANUAL MEMORY'), memory('public', 'sister', '公开群约定', 'group_user', 'group'),
+        memory('other', 'flash', 'OTHER PERSONA MEMORY', 'group_user', 'group')],
     });
     expect(context.user).not.toContain('PRIVATE');
     expect(context.user).not.toContain('OTHER PERSONA');
@@ -81,7 +110,7 @@ describe('persistent companion model context', () => {
     const context = buildCompanionContext({ ...input,
       conversation: { ...input.conversation, id: 'group', kind: 'group', memberIds: ['sister', 'flash'] },
       messages: [message('new_group_message', 90, '接着聊之前的约定', { conversationId: 'group' })],
-      memories: [{ ...memory('old_group', 'sister', '这个群约定周末讨论旅行。', 'long_ago'), sourceConversationId: 'group' },
+      memories: [memory('old_group', 'sister', '这个群约定周末讨论旅行。', 'long_ago', 'group'),
         { ...memory('private', 'sister', 'PRIVATE OLD MEMORY', 'private_message'), sourceConversationId: 'private_sister' },
         { ...memory('other_group', 'sister', 'OTHER GROUP SECRET', 'old_other'), sourceConversationId: 'other_group' },
         { ...memory('mismatched', 'sister', 'CONFLICTING PRIVATE PROVENANCE', 'new_group_message'), sourceConversationId: 'private_sister' },
@@ -120,20 +149,21 @@ describe('persistent companion model context', () => {
     expect(payload.memories[0].content).toBe('\u0000'.repeat(4_000));
     expect(payload.earlierConversationSummary).toBe('\u0000'.repeat(3_000));
   });
-  it('preserves recall order, structured evidence and scope while excluding forgotten or future records', () => {
+  it('preserves VCP recall order, ordered tags, source provenance and scope while excluding forgotten or future journals', () => {
     const context = buildCompanionContext({ ...input, taskRequest: { sourceMessageId: 'user_message', prompt: '现在偏好？' },
       memories: [
-        { ...memory('direct', 'sister', '直接答案'), updatedAt: '2026-01-01', version: 2, sourceSequence: 1, subject: 'user', factKey: 'travel.pace', polarity: 'positive' },
+        { ...memory('direct', 'sister', '直接答案', 'user_message'), updatedAt: '2026-01-01', version: 2, sourceSequence: 1, tags: ['旅行', '节奏'] },
         { ...memory('background', 'sister', '相关背景'), updatedAt: '2026-10-14' },
         { ...memory('forgotten', 'sister', 'FORGOTTEN'), status: 'forgotten' },
         { ...memory('future_memory', 'sister', 'FUTURE'), sourceSequence: 2 },
       ],
       memorySources: [message('evidence', 1, '全文来源' + '细节'.repeat(10_000)), message('future_source', 2, 'FUTURE SOURCE')],
-      memoryRecall: { reasons: [{ id: 'direct', reasons: ['fact_key'], path: ['direct'] }], pending: true, degraded: false },
+      memoryRecall: { reasons: [{ id: 'direct', reasons: ['vcp-river'], path: ['direct'] }], pending: true, degraded: false },
     });
     const payload = JSON.parse(context.user);
     expect(payload.memories.map((item: { id: string }) => item.id)).toEqual(['direct', 'background']);
-    expect(payload.memories[0]).toMatchObject({ version: 2, sourceSequence: 1, subject: 'user', factKey: 'travel.pace' });
+    expect(payload.memories[0]).toMatchObject({ version: 2, sourceSequence: 1, tags: ['旅行', '节奏'],
+      sources: [{ messageId: 'user_message', revision: 1, checksum: 'host-checksum' }] });
     expect(payload.memorySources[0].content).toBe('全文来源' + '细节'.repeat(10_000));
     expect(payload.memorySources).toHaveLength(1);
     expect(payload.memoryRecall).toMatchObject({ pending: true, degraded: false });
@@ -229,10 +259,10 @@ describe('native memory tools across provider formats', () => {
     return { candidates: [{ content: { parts: [{ text: '我查到原来的约定了。' }] } }] };
   }
   it.each(formats)('registers every real native memory capability and returns the correct call/result pairs for %s', async format => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response(toolEnvelope(format, 'memory_search', { terms: ['约定'] })))
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response(toolEnvelope(format, 'memory_search', { query: '以前的约定' })))
       .mockResolvedValueOnce(response(textEnvelope(format)));
     const reply = await generateCompanionReply(input, { ...config, apiFormat: format }, undefined, { fetchFn, loop: true });
-    expect(reply.turn?.calls).toEqual([{ id: 'native_memory_1', name: 'memory.search', arguments: '{"terms":["约定"]}' }]);
+    expect(reply.turn?.calls).toEqual([{ id: 'native_memory_1', name: 'memory.search', arguments: '{"query":"以前的约定"}' }]);
     const request = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
     const registered = format === 'dashscope_native' ? request.parameters.tools : request.tools;
     const definitions = format === 'gemini_native' ? registered[0].function_declarations
@@ -281,8 +311,8 @@ describe('native memory tools across provider formats', () => {
     expect(body.tools[0].function_declarations[1]).toHaveProperty('parametersJsonSchema');
   });
   it('does not accept model-selected identity/scope, requires evidence and a user request for forgetting', () => {
-    expect(companionMemoryToolArgumentsSchemas['memory.search'].safeParse({ companionId: 'other', terms: ['生日'] }).success).toBe(false);
-    expect(companionMemoryToolArgumentsSchemas['memory.record'].safeParse({ candidate: { kind: 'fact', content: '猜测', sourceMessageIds: [] } }).success).toBe(false);
+    expect(companionMemoryToolArgumentsSchemas['memory.search'].safeParse({ companionId: 'other', query: '生日' }).success).toBe(false);
+    expect(companionMemoryToolArgumentsSchemas['memory.record'].safeParse({ candidate: { content: '猜测', sourceMessageIds: [], tags: [] } }).success).toBe(false);
     expect(companionMemoryToolArgumentsSchemas['memory.forget'].safeParse({ id: 'existing' }).success).toBe(false);
     expect(companionMemoryToolArgumentsSchemas['memory.forget'].safeParse({ id: 'existing', requestMessageId: 'user_message' }).success).toBe(true);
   });

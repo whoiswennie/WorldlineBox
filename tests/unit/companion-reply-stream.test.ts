@@ -1,8 +1,36 @@
 import { expect, it, vi } from 'vitest';
 import { CompanionReplyStreamStore, projectCompanionReply } from '../../src/renderer/companions/reply-stream';
 import type { CompanionMessage, CompanionReplyStreamEvent } from '../../src/shared/companions';
+import type { CompanionReplyProgress } from '../../src/shared/companion-reply-progress';
 const message: CompanionMessage = { id: 'reply', conversationId: 'room', authorId: 'role', sequence: 2, createdAt: '2026-10-14T08:00:00Z', kind: 'text', status: 'sent', content: '前一步。', attachments: [], replyToId: 'source', isReplyDraft: true, segments: [{ text: '前一步。', actionIds: ['actual-tool'] }] };
 function event(patch: Partial<CompanionReplyStreamEvent> = {}): CompanionReplyStreamEvent { return { conversationId: 'room', companionId: 'role', sourceMessageId: 'source', messageId: 'reply', step: 1, attemptId: 'attempt-a', text: '这一段正在输出', phase: 'streaming', ...patch }; }
+it('keeps three parallel loops and a second request by the same companion separate, without progress erasing streamed text', () => {
+  const store = new CompanionReplyStreamStore(), at = '2026-10-22T00:00:00Z';
+  const messages = ['one', 'two', 'three', 'other-request'].map((id, index) => ({ ...message, id, authorId: index === 3 ? 'one' : id,
+    replyToId: index === 3 ? 'another-source' : 'source', content: '', segments: [] }));
+  store.reconcile(messages);
+  const stage = (index: number, phase: CompanionReplyProgress['phase'], revision: number) => event({ messageId: messages[index]!.id,
+    companionId: messages[index]!.authorId, sourceMessageId: messages[index]!.replyToId!, phase: 'progress', text: '',
+    progress: { workId: 'work-' + index, phase, revision, detail: phase, startedAt: at, updatedAt: at } });
+  store.accept(stage(0, 'tools', 2)); store.accept(stage(1, 'streaming', 3)); store.accept(stage(2, 'waiting', 1)); store.accept(stage(3, 'queued', 1));
+  store.accept(event({ messageId: 'two', companionId: 'two', text: '第二位伙伴的真实增量' }));
+  store.accept(stage(1, 'context', 2)); // Late stage cannot move the second bubble backwards.
+  store.accept(stage(2, 'cancelled', 4));
+  expect(messages.map(item => projectCompanionReply(item, store.snapshot(item.id)).progress?.phase)).toEqual(['tools', 'streaming', 'cancelled', 'queued']);
+  expect(projectCompanionReply(messages[1]!, store.snapshot('two')).segments?.[1]?.text).toBe('第二位伙伴的真实增量');
+  store.accept({ ...stage(0, 'failed', 99), companionId: 'wrong-owner' });
+  expect(store.snapshot('one').progress?.phase).toBe('tools');
+  store.reconcile(messages); // An older durable page cannot roll back the live status.
+  expect(store.snapshot('three').progress?.phase).toBe('cancelled');
+});
+it('validates an autonomous unquoted reply against its durable source identity and streams in its own bubble', () => {
+  const store = new CompanionReplyStreamStore();
+  const proactive = { ...message, replyToId: undefined, replyProgress: { workId: 'proactive-work', sourceMessageId: 'source', phase: 'thinking' as const,
+    revision: 1, detail: '正在生成自主回复', startedAt: message.createdAt, updatedAt: message.createdAt } };
+  store.reconcile([proactive]); store.accept(event({ text: '自主回复的真实增量' }));
+  store.accept(event({ sourceMessageId: 'another-source', text: '不能跨来源覆盖' }));
+  expect(projectCompanionReply(proactive, store.snapshot('reply')).segments?.at(-1)?.text).toBe('自主回复的真实增量');
+});
 it('projects only the current turn and lets durable committed text take over without duplication', () => {
   const store = new CompanionReplyStreamStore(), current = vi.fn(), other = vi.fn();
   store.subscribe('reply', current); store.subscribe('another-message', other); store.reconcile([message]);

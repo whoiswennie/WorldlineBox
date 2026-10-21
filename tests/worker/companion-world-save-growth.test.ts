@@ -97,7 +97,7 @@ it('keeps one hot clock anchor through hundreds of edits while historical real/v
   const hot = JSON.parse(String(record(db.prepare('SELECT data FROM companion_world WHERE id=1').get()).data));
   expect(hot.anchors).toHaveLength(1); expect(Number(record(db.prepare('SELECT COUNT(*) AS n FROM companion_world_clock_segments').get()).n)).toBe(302);
   const unused = () => { throw new Error('Historical clock lookup must not execute world behavior.'); };
-  const clock = new CompanionWorldStore(db, unused, unused, unused, unused, unused);
+  const clock = new CompanionWorldStore(db, unused, unused, unused, unused, unused, unused, unused);
   for (const checkpoint of checkpoints) {
     expect(clock.virtualAt(checkpoint.real)).toBe(checkpoint.virtual);
     expect(clock.realAt(checkpoint.virtual, checkpoint.real)).toBe(checkpoint.real);

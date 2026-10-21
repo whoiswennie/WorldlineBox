@@ -14,6 +14,9 @@ export const EMBEDDING_GEMMA2_MODEL_REVISION = "412430755667d84b1ac64fe1fe2693aa
 export const EMBEDDING_AUDIO_SAMPLE_RATE = 16_000;
 export const EMBEDDING_AUDIO_WINDOW_SECONDS = 120;
 export const EMBEDDING_AUDIO_MAX_WINDOWS = 16;
+/** 1 fps video frames plus a 16 kHz mono audio track fit the shared 8192-token context. */
+export const EMBEDDING_VIDEO_WINDOW_SECONDS = 16;
+export const EMBEDDING_VIDEO_MAX_WINDOWS = 16;
 
 /** Document body sent with the file name. Longer files keep this leading slice. */
 export const EMBEDDING_TEXT_MAX_CHARS = 2_500;
@@ -121,6 +124,7 @@ export function embeddingProfileKey(tier: EmbeddingGemmaTier): string {
     EMBEDDING_GEMMA2_TIER_FILES[tier].projectorFile,
     String(EMBEDDING_GEMMA2_DIMENSIONS),
     EMBEDDING_GEMMA2_QUERY_PREFIX,
+    'context:8192;video:1fps:16s:16windows:audio16k:uniform:mean:v1',
   ].join("\n");
 }
 
@@ -265,7 +269,7 @@ export function embeddingSourceForModalities(asset: {
   if (asset.deletedAt || (asset.availability !== undefined && asset.availability !== "available")
     || asset.currentRevisionId.startsWith("corrupt:")) return null;
   if (asset.mediaType === "video" && modalities.includes("video")) {
-    return { kind: "video", revision: asset.currentRevisionId };
+    return { kind: "video", revision: `${asset.currentRevisionId}\nvideo:v1:1fps:${EMBEDDING_VIDEO_WINDOW_SECONDS}s:${EMBEDDING_VIDEO_MAX_WINDOWS}:audio16k:uniform:mean` };
   }
   const source = embeddingSourcePlan(asset);
   if (source === "audio" && modalities.includes("audio")) {

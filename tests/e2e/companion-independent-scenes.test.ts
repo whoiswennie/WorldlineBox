@@ -1,10 +1,10 @@
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test';
 import type { WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionWorldWindowApi } from '../../src/shared/companion-world-window';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; companionWorld: CompanionWorldWindowApi } };
 test('explicit activation, simulation time, peer observation and independent scene resource release', async () => {
@@ -18,6 +18,7 @@ if (path.dirname(path.resolve(profile)) !== path.resolve(tmpdir()) || !path.base
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
     const main = await application.firstWindow(), native = await application.browserWindow(main);
     await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 900); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.showInactive(); });
+    await ensureCompanionTestWorkspace(main);
     await expect(main.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 60_000 });
     const initial = await main.evaluate(() => (window as unknown as Bridge).worldlinebox.companions.request({ type: 'state' }));
     expect(initial.state!.companions.filter(role => role.active).map(role => role.id)).toEqual(['deepseek-flash']);
@@ -116,6 +117,6 @@ if (path.dirname(path.resolve(profile)) !== path.resolve(tmpdir()) || !path.base
     await main.screenshot({ path: path.join(artifacts, 'verified-world-header-narrow-dark.png') });
   } finally {
     await application?.close();
-    rmSync(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });
+    removeCompanionTestDirectory(profile);
   }
 });

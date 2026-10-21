@@ -3,6 +3,16 @@ import { bindStartupHandoff } from "./startup-handoff";
 import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
+import { CompanionWorkspaceStore, type CompanionWorkspaceSelection } from './companions/workspace';
+import { COMPANION_WORKSPACE_CHANNEL, companionWorkspaceRequestSchema, type CompanionWorkspaceLibrary } from '../shared/companion-workspace';
+import type { CompanionMemoryDocumentCommand } from '../shared/companion-memory-documents';
+import type { CompanionLearningWorkspaceCommand } from '../shared/companion-learning';
+import { companionLearningAssets } from './companions/learning-assets';
+import { GlobalEmbeddingService, createManagedTextEmbeddingService } from './embedding-global-service';
+import { LocalTextEmbeddingInstaller } from './embedding-text-model-install';
+import { VcpEmbeddingGateway } from './vcp-embedding-gateway';
+import { VcpChatGateway } from './vcp-chat-gateway';
+import { CompanionVcpRuntime } from './companions/vcp-runtime';
 import type { DshLauncher } from './dsh/launcher';
 import type { LauncherNetwork } from './dsh/launcher-network';
 import { forkNetworkUtility } from './network-utility-process';
@@ -37,6 +47,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  net,
   protocol,
   safeStorage,
   screen,
@@ -125,7 +136,6 @@ import {
   type EmbeddingServiceCatalog,
 } from "./embedding-service-registry";
 import type { EmbeddingModelCatalog } from "./embedding-model-catalog";
-import { parseEmbeddingModelCatalog } from "./embedding-model-catalog";
 import { resolveEffectiveEmbeddingSelection } from "../shared/embedding/library-binding";
 import { tryHandlePreviewOwnedRequest } from "./library-request/preview";
 import { tryHandleMediaShellWorkerResult } from "./library-request/media-shell";
@@ -616,6 +626,7 @@ let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureV
 let captureToolsService: CaptureToolsService | undefined;
 let musicService: MusicService | undefined;
 let companionService: CompanionService | undefined;
+let creatingCompanionService: Promise<CompanionService> | undefined;
 let companionWorldWindows: CompanionWorldWindowManager | undefined;
 const mainProcessSessionId = randomUUID();
 /** Effective UI locale for native dialogs; synced from Renderer (WorldlineBox-bwb). */
@@ -623,6 +634,40 @@ let appLocale: AppLocale = "en";
 let workerClient: LibraryWorkerClient | undefined;
 let embeddingTestIndex: EmbeddingTestIndex | undefined;
 let embeddingHttpIndex: EmbeddingHttpIndex | undefined;
+let globalEmbeddingService: GlobalEmbeddingService | undefined;
+let vcpEmbeddingGateway: VcpEmbeddingGateway | undefined;
+let vcpChatGateway: VcpChatGateway | undefined;
+let localTextEmbeddingInstaller: LocalTextEmbeddingInstaller | undefined;
+let preparingBundledEmbedding: Promise<void> | undefined;
+function textEmbeddingInstaller(): LocalTextEmbeddingInstaller {
+  return localTextEmbeddingInstaller ??= new LocalTextEmbeddingInstaller({ userDataPath: app.getPath('userData'),
+    bundleDirectory: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'embedding-models') });
+}
+async function prepareBundledEmbedding(): Promise<void> {
+  return preparingBundledEmbedding ??= (async () => {
+    const root = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources');
+    await textEmbeddingInstaller().seedBundledPackage(path.join(root, 'embedding-models'));
+  })().catch(error => { preparingBundledEmbedding = undefined; throw error; });
+}
+
+function globalEmbedding(): GlobalEmbeddingService {
+  return globalEmbeddingService ??= new GlobalEmbeddingService({
+    userDataPath: app.getPath('userData'),
+    bundleDirectory: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'embedding-models'),
+    ...(process.platform === 'win32' ? { koffiPath: createRequire(path.join(app.getAppPath(), 'package.json')).resolve('koffi') } : {}),
+  });
+}
+
+async function vcpEmbeddingConfiguration() {
+  // Verify executable/model resources before inference, without making a chat
+  // history read wait for a complete multi-gigabyte resource audit.
+  await prepareBundledEmbedding();
+  const provider = globalEmbedding();
+  const profile = await provider.resolveProfile();
+  if (profile.dimension > 4096) throw new Error('VCP 记忆支持 1–4096 维向量，请选择兼容的全局模型。');
+  vcpEmbeddingGateway ??= new VcpEmbeddingGateway(provider);
+  return vcpEmbeddingGateway.configuration(profile.selectionId, profile);
+}
 
 function embeddingIndex(): EmbeddingTestIndex {
   embeddingTestIndex ??= new EmbeddingTestIndex({
@@ -634,7 +679,7 @@ function embeddingIndex(): EmbeddingTestIndex {
       if (!workerClient) return Promise.reject(new Error("Library Worker is unavailable."));
       return workerClient.request(command);
     },
-    installedLayout: (modelId) => resolveInstalledEmbeddingLayout(inspectManagedEmbeddingInstall(app.getPath("userData")), modelId),
+    installedLayout: (modelId) => resolveInstalledEmbeddingLayout(inspectManagedEmbeddingInstall(app.getPath("userData"), path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'embedding-models')), modelId),
     resolveMediaBinaries: resolveHostMediaBinaries,
   });
   return embeddingTestIndex;
@@ -646,7 +691,9 @@ function embeddingHttp(): EmbeddingHttpIndex {
       if (!workerClient) return Promise.reject(new Error("Library Worker is unavailable."));
       return workerClient.request(command);
     },
-    loadService: (id) => parseEmbeddingServiceCatalog(readEmbeddingServices()).services.find((service) => service.id === id) ?? null,
+    loadService: (id) => (id !== 'embeddinggemma-2-compact' ? createManagedTextEmbeddingService(id, app.getPath('userData')) : null)
+      ?? parseEmbeddingServiceCatalog(readEmbeddingServices()).services.find((service) => service.id === id) ?? null,
+    embed: (texts, input) => globalEmbedding().embed(texts, input),
     readKey: readEmbeddingServiceKey,
     isLibraryEnabled: (libraryId, serviceId) => {
       const binding = readEmbeddingBindings()[libraryId];
@@ -654,7 +701,7 @@ function embeddingHttp(): EmbeddingHttpIndex {
       // Main does not own that preference; an absent per-library binding must
       // therefore allow the already-routed service request.
       if (!binding) return true;
-      const defaultModelId = parseEmbeddingModelCatalog(readEmbeddingModels()).defaultModelId ?? "";
+      const defaultModelId = 'embeddinggemma-2-compact';
       return resolveEffectiveEmbeddingSelection({
         globalEnabled: true,
         defaultModelId,
@@ -3296,6 +3343,11 @@ async function commandFor(
       });
     }
     case "embedding.models.list.request":
+    case "embedding.global.get.request":
+    case "embedding.global.save.request":
+    case "embedding.local-text.status.request":
+    case "embedding.local-text.install.request":
+    case "embedding.local-text.delete.request":
     case "embedding.models.upsert.request":
     case "embedding.models.delete.request":
     case "embedding.models.set-default.request":
@@ -3454,7 +3506,13 @@ async function handleLibraryRequest(
     });
     if (syncOwnedResult) return syncOwnedResult;
 
+    if (request.type === 'embedding.index.status.request' || request.type === 'embedding.search.request' || request.type === 'embedding.similar.request') await prepareBundledEmbedding();
+    if (request.type === 'embedding.local-text.status.request' || request.type === 'embedding.install.status.request') await prepareBundledEmbedding();
     const embeddingModelResult = await tryHandleEmbeddingModelRequest(request, {
+      readGlobalSettings: () => ({ version: 1, selectionId: 'embeddinggemma-2-compact' }),
+      writeGlobalSettings: () => undefined,
+      invalidateGlobalEmbedding: () => globalEmbeddingService?.invalidate() ?? Promise.resolve(),
+      textInstaller: textEmbeddingInstaller(),
       readCatalog: readEmbeddingModels,
       writeCatalog: writeEmbeddingModels,
       readServices: readEmbeddingServices,
@@ -4550,15 +4608,71 @@ async function startApplication(): Promise<void> {
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
-  let creatingCompanionService: Promise<CompanionService> | undefined;
+  const companionWorkspace = new CompanionWorkspaceStore(app.getPath('userData'));
+  let changingCompanionWorkspace = false;
+  let openingCompanionLibrary: { path: string; promise: Promise<void> } | undefined;
+  const ensureCompanionLibrary = (selected: CompanionWorkspaceSelection): Promise<void> => {
+    if (openingCompanionLibrary?.path === selected.libraryPath) return openingCompanionLibrary.promise;
+    const promise = (async () => {
+      if (!workerClient || applicationClosing) throw new Error('资产库服务暂时不可用。');
+      const list = await workerClient.request({ type: 'library.list' });
+      if (!list.ok || list.type !== 'library.list') throw new Error('无法读取已打开的资产库。');
+      const existingLibrary = list.libraries.find(library => library.libraryId === selected.libraryId);
+      if (!existingLibrary) {
+        const opened = await workerClient.request({ type: 'library.open', selectedLibraryPath: selected.libraryPath });
+        if (!opened.ok || opened.type !== 'library.opened' || opened.library.readOnly || opened.library.libraryId !== selected.libraryId) {
+          throw new Error('伙伴所选资产库无法重新打开，请检查目录后重新选择。');
+        }
+        rememberOpenedLibrary(opened.library.libraryPath, opened.library.displayName, opened.library.libraryId);
+        publishLifecycle({ type: 'library.opened', library: { libraryId: opened.library.libraryId, displayName: opened.library.displayName, displayPath: opened.library.libraryPath } });
+      } else if (existingLibrary.readOnly) throw new Error('伙伴资产库需要写入权限。');
+      const roots = await workerClient.request({ type: 'linked-folder.list', libraryId: selected.libraryId });
+      if (!roots.ok || roots.type !== 'linked-folder.list') throw new Error('无法恢复伙伴记忆的资产目录映射。');
+      if (!roots.folders.some(folder => path.resolve(folder.absoluteRootPath) === path.resolve(selected.memoryRoot))) {
+        const linked = await workerClient.request({ type: 'asset.import-linked', libraryId: selected.libraryId, displayName: '伙伴记忆', sourceRootPath: selected.memoryRoot, companionMemory: true });
+        if (!linked.ok) throw new Error('伙伴目录已准备，但资产库目录映射失败，请重新选择以重试。');
+      }
+    })();
+    openingCompanionLibrary = { path: selected.libraryPath, promise };
+    void promise.finally(() => { if (openingCompanionLibrary?.promise === promise) openingCompanionLibrary = undefined; }).catch(() => undefined);
+    return promise;
+  };
   const ensureCompanionService = (): Promise<CompanionService> => {
     if (applicationClosing) return Promise.reject(new Error('应用正在关闭。'));
+    if (changingCompanionWorkspace) return Promise.reject(new Error('正在切换伙伴资产库，请稍后重试。'));
     if (companionService) return Promise.resolve(companionService);
     return creatingCompanionService ??= (async () => {
-      const { CompanionService } = await import('./companions/service');
+      const activationStarted = performance.now();
+      const phase = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+        const started = performance.now();
+        try { return await operation(); }
+        finally { logger?.info('companions.activation.phase', 'Companion activation phase finished.', { phase: name, durationMs: performance.now() - started, totalMs: performance.now() - activationStarted }); }
+      };
+      const { CompanionService } = await phase('load-service', () => import('./companions/service'));
+      const workspace = await phase('workspace', () => companionWorkspace.current());
+      if (!workspace) throw new Error('请先为伙伴选择一个资产库。');
+      await phase('open-library', () => ensureCompanionLibrary(workspace));
       if (applicationClosing) throw new Error('应用正在关闭。');
       companionService = new CompanionService({
-        userData: app.getPath('userData'), workerPath: path.join(__dirname, 'companion_worker.js'), appPath: app.getAppPath(),
+        learningAssets: companionLearningAssets({ memoryRoot: workspace.memoryRoot, request: command => {
+          if (!workerClient) throw new Error('资产服务尚未就绪。'); return workerClient.request(command);
+        } }),
+        memoryRuntime: new CompanionVcpRuntime({ dataRoot: path.join(workspace.dataRoot, 'vcp'),
+          vendorRoot: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), 'vendor', 'vcp-memory'),
+          workerPath: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory-host', 'worker.cjs') : path.join(app.getAppPath(), 'src', 'main', 'vcp-memory', 'worker.cjs'),
+          resolveEmbedding: vcpEmbeddingConfiguration,
+          resolvePlugins: async () => {
+            vcpChatGateway ??= new VcpChatGateway(async (context, signal) => {
+              const { generateCompanionText } = await import('./companions/model');
+              const config = loadAiConfig();
+              return generateCompanionText(context, { apiFormat: config.apiFormat, model: config.model,
+                baseUrl: config.baseUrl, apiKey: getDecryptedApiKey() }, signal,
+              { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }), timeoutMs: 120000 });
+            });
+            return { chat: await vcpChatGateway.configuration() };
+          } }),
+        userData: app.getPath('userData'), dataRoot: workspace.dataRoot, memoryLibraryRoot: workspace.memoryRoot,
+        workerPath: path.join(__dirname, 'companion_worker.js'), appPath: app.getAppPath(),
         window: () => mainWindow, hasConfig: () => loadAiConfig().hasKey,
         getConfig: () => {
           const config = loadAiConfig();
@@ -4571,6 +4685,59 @@ async function startApplication(): Promise<void> {
       return companionService;
     })().catch(error => { creatingCompanionService = undefined; throw error; });
   };
+  let workspaceTail: Promise<unknown> = Promise.resolve();
+  ipcMain.handle(COMPANION_WORKSPACE_CHANNEL, (event, input: unknown) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权管理伙伴资产库。' };
+    const operation = workspaceTail.then(async () => {
+      const parsed = companionWorkspaceRequestSchema.safeParse(input);
+      if (!parsed.success) return { ok: false, error: '伙伴资产库请求格式不正确。' };
+      const command = parsed.data;
+      if (command.type.startsWith('memory.learning.')) return (await ensureCompanionService()).manageLearningSources(command as CompanionLearningWorkspaceCommand);
+      if (command.type.startsWith('memory.documents.')) {
+        return (await ensureCompanionService()).manageMemoryDocuments(command as CompanionMemoryDocumentCommand);
+      }
+      const selectedWorkspace = command.type === 'status' ? await companionWorkspace.current() : undefined;
+      if (selectedWorkspace) await ensureCompanionLibrary(selectedWorkspace);
+      const list = await workerClient?.request({ type: 'library.list' });
+      const libraries: CompanionWorkspaceLibrary[] = list?.ok && list.type === 'library.list' ? list.libraries.filter(library => !library.readOnly) : [];
+      if (command.type === 'status') return { ok: true, selected: selectedWorkspace, libraries };
+      if (command.type === 'reveal') {
+        const selected = await companionWorkspace.current();
+        if (!selected) throw new Error('请先选择伙伴资产库。');
+        const error = await shell.openPath(selected.memoryRoot); if (error) throw new Error('无法打开伙伴记忆目录。');
+        return { ok: true, selected, libraries };
+      }
+      let library = command.type === 'select' ? libraries.find(item => item.libraryId === command.libraryId) : undefined;
+      if (command.type === 'choose') {
+        const fixturePath = process.env.WORLDLINEBOX_E2E === '1' ? process.env.WORLDLINEBOX_E2E_COMPANION_LIBRARY_PATH : undefined;
+        const chosen = fixturePath ? { canceled: false, filePaths: [fixturePath] } : await dialog.showOpenDialog(mainWindow!, {
+          title: '选择所有伙伴共同使用的 WorldlineBox 资产库', properties: ['openDirectory'], buttonLabel: '使用此资产库' });
+        if (chosen.canceled || !chosen.filePaths[0]) return { ok: true, cancelled: true, libraries };
+        const opened = await workerClient?.request({ type: 'library.open', selectedLibraryPath: chosen.filePaths[0] });
+        if (!opened?.ok || opened.type !== 'library.opened' || opened.library.readOnly) throw new Error('请选择可写的 WorldlineBox 资产库；可先在资产管理中创建。');
+        library = opened.library;
+        rememberOpenedLibrary(library.libraryPath, library.displayName, library.libraryId);
+        publishLifecycle({ type: 'library.opened', library: { libraryId: library.libraryId, displayName: library.displayName, displayPath: library.libraryPath } });
+      }
+      if (!library) throw new Error('资产库尚未打开，请重新选择。');
+      changingCompanionWorkspace = true;
+      try {
+        const current = await companionWorkspace.current().catch(() => undefined);
+        if (current?.libraryPath !== library.libraryPath) {
+          await creatingCompanionService?.catch(() => undefined);
+          companionWorldWindows?.closeAll();
+          const previous = companionService;
+          companionService = undefined; creatingCompanionService = undefined;
+          await previous?.shutdown();
+        }
+        const selected = await companionWorkspace.select(library);
+        await ensureCompanionLibrary(selected);
+        mainWindow?.webContents.send('worldlinebox:companions-changed');
+        return { ok: true, selected, libraries };
+      } finally { changingCompanionWorkspace = false; }
+    }).catch(error => { logger?.error('companions.workspace', error); return { ok: false, error: error instanceof Error && /[\u4e00-\u9fff]/u.test(error.message) ? error.message : '伙伴资产库暂时不可用，请重新选择。' }; });
+    workspaceTail = operation; return operation;
+  });
   // Register before creating renderer processes: a late protocol.handle() is
   // invisible to an already running Chromium URL loader factory. Keep only the
   // lightweight route eager; storage and companion workers stay demand loaded.
@@ -7263,7 +7430,7 @@ if (!hasSingleInstanceLock) {
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !browserService && !captureToolsService && !dshLauncher && !musicService && !companionService && !closeGlobalNetwork)) return;
+    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !companionService && !creatingCompanionService && !closeGlobalNetwork)) return;
     event.preventDefault();
     if (applicationShutdownPromise) return;
 
@@ -7285,12 +7452,15 @@ if (!hasSingleInstanceLock) {
         browserService?.shutdown(),
         dshLauncher?.shutdown(),
         musicService?.flush(),
-        companionService?.shutdown(),
+        creatingCompanionService ? creatingCompanionService.then(service => service.shutdown(), () => undefined) : companionService?.shutdown(),
         captureToolsService?.shutdown(),
+        globalEmbeddingService?.close(),
+        vcpEmbeddingGateway?.close(),
+        vcpChatGateway?.close(),
       ]);
       for (const [index, result] of results.entries()) {
         if (result.status !== "rejected") continue;
-        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown", "capture-tools.shutdown"][index]
+        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown", "capture-tools.shutdown", "embedding.global.close", "embedding.gateway.close", "vcp.chat.close"][index]
           ?? "application.shutdown.close";
         logger?.error(source, result.reason, { reason: "application-quit" });
       }

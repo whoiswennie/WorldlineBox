@@ -1,0 +1,919 @@
+// Plugin/RAGDiaryPlugin/AIMemoHandler.js
+// AI驱动的记忆召回处理器
+
+const axios = require('axios');
+const fs = require('fs').promises;
+const path = require('path');
+const dayjs = require('dayjs');
+const crypto = require('crypto');
+const utc = require('dayjs/plugin/utc');
+const timezone = require('dayjs/plugin/timezone');
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+
+class AIMemoHandler {
+    constructor(ragPlugin, cacheManager) {
+        this.ragPlugin = ragPlugin;
+        this.config = {};
+        this.promptTemplate = '';
+        this.cacheManager = cacheManager; // ✅ 使用注入的统一缓存管理器
+        // 不在构造函数中调用 loadConfig，而是在主插件初始化时调用
+    }
+
+    async loadConfig() {
+        // 从环境变量加载配置
+        this.config = {
+            model: process.env.AIMemoModel || '',
+            batchSize: parseInt(process.env.AIMemoBatch) || 5,
+            url: process.env.AIMemoUrl || '',
+            apiKey: process.env.AIMemoApi || '',
+            maxTokensPerBatch: parseInt(process.env.AIMemoMaxTokensPerBatch) || 60000,
+            promptFile: process.env.AIMemoPrompt || 'AIMemoPrompt.txt'
+        };
+
+        console.log('[AIMemoHandler] Configuration loaded successfully.');
+
+        // 加载提示词模板
+        try {
+            const promptPath = path.join(__dirname, this.config.promptFile);
+            this.promptTemplate = await fs.readFile(promptPath, 'utf-8');
+            console.log('[AIMemoHandler] Prompt template loaded successfully.');
+        } catch (error) {
+            console.error('[AIMemoHandler] Failed to load prompt template:', error);
+            this.promptTemplate = '';
+        }
+    }
+
+    isConfigured() {
+        return !!(this.config.url && this.config.apiKey && this.config.model && this.promptTemplate);
+    }
+
+    /**
+     * 聚合处理多个日记本的 AIMemo 请求（新增）
+     * @param {Array<string>} dbNames - 日记本名称数组
+     * @param {string} userContent - 用户输入
+     * @param {string} aiContent - AI回复
+     * @param {string} combinedQueryForDisplay - 用于VCP广播的组合查询
+     * @param {string} presetName - 预设名称（可选）
+     * @returns {string} - 格式化的聚合AI召回结果
+     */
+    async processAIMemoAggregated(dbNames, userContent, aiContent, combinedQueryForDisplay, presetName = null) {
+        if (!this.isConfigured() && !presetName) {
+            console.warn('[AIMemoHandler] AIMemo is not configured. Skipping.');
+            return '[AIMemo功能未配置]';
+        }
+
+        console.log(`[AIMemoHandler] 聚合处理 ${dbNames.length} 个日记本: ${dbNames.join(', ')}${presetName ? ` (使用预设: ${presetName})` : ''}`);
+
+        try {
+            // --- 加载预设配置 ---
+            let currentConfig = { ...this.config };
+            let currentPromptTemplate = this.promptTemplate;
+            let presetContentForCache = '';
+
+            if (presetName) {
+                const presetResult = await this._loadPresetRaw(presetName);
+                if (presetResult) {
+                    const { preset, rawContent } = presetResult;
+                    presetContentForCache = rawContent; // 使用原始 JSON 内容作为缓存键的一部分
+                    currentConfig = {
+                        model: preset.AIMemoModel || currentConfig.model,
+                        batchSize: parseInt(preset.AIMemoBatch) || currentConfig.batchSize,
+                        url: preset.AIMemoUrl || currentConfig.url,
+                        apiKey: preset.AIMemoApi || currentConfig.apiKey,
+                        maxTokensPerBatch: parseInt(preset.AIMemoMaxTokensPerBatch) || currentConfig.maxTokensPerBatch,
+                        promptFile: preset.AIMemoPrompt || currentConfig.promptFile
+                    };
+
+                    // 加载预设的提示词模板
+                    if (preset.AIMemoPrompt) {
+                        try {
+                            // 优先从 MoreAIMemoPresets 目录加载
+                            const presetPromptPath = path.join(__dirname, 'MoreAIMemoPresets', preset.AIMemoPrompt);
+                            currentPromptTemplate = await fs.readFile(presetPromptPath, 'utf-8');
+                            presetContentForCache += `|prompt:${currentPromptTemplate}`; // 同时将提示词内容加入缓存键
+                        } catch (e) {
+                            // 回退到插件根目录
+                            try {
+                                const fallbackPromptPath = path.join(__dirname, preset.AIMemoPrompt);
+                                currentPromptTemplate = await fs.readFile(fallbackPromptPath, 'utf-8');
+                                presetContentForCache += `|prompt:${currentPromptTemplate}`;
+                            } catch (e2) {
+                                console.error(`[AIMemoHandler] Failed to load preset prompt ${preset.AIMemoPrompt}:`, e2.message);
+                            }
+                        }
+                    }
+                } else {
+                    // ENOENT 等情况：用户没配预设 JSON，直接用 config.env 的默认配置即可
+                    console.warn(`[AIMemoHandler] 未找到预设 "${presetName}.json"，使用 config.env 默认 AIMemo 配置。`);
+                }
+            }
+
+            // --- 缓存机制 ---
+            const cacheKey = this._getCacheKey(dbNames, userContent, aiContent, presetContentForCache);
+            const cached = this.cacheManager.get('aimemo', cacheKey);
+            if (cached) {
+                console.log(`[AIMemoHandler] ✅ 命中统一缓存 (aimemo)，直接返回结果。Key: ${cacheKey.substring(0, 8)}...`);
+                if (this.ragPlugin.pushVcpInfo && cached.vcpInfo) {
+                    this.ragPlugin.pushVcpInfo({
+                        ...cached.vcpInfo,
+                        fromCache: true
+                    });
+                }
+                return cached.content;
+            }
+            console.log(`[AIMemoHandler] ❌ 缓存未命中 (aimemo)，继续处理。Key: ${cacheKey.substring(0, 8)}...`);
+            // --- 缓存机制结束 ---
+
+            // 1. 收集所有日记文件（基于文件级别，而非合并后的字符串）
+            const allDiaryFiles = [];
+            const loadedDiaries = [];
+
+            for (const dbName of dbNames) {
+                const files = await this._getDiaryFiles(dbName);
+                if (files.length === 0) {
+                    console.warn(`[AIMemoHandler] 跳过空日记本: ${dbName}`);
+                    continue;
+                }
+                allDiaryFiles.push(...files.map(f => ({ ...f, dbName })));
+                loadedDiaries.push(dbName);
+            }
+
+            if (allDiaryFiles.length === 0) {
+                return '[所有日记本均为空或无法访问]';
+            }
+
+            console.log(`[AIMemoHandler] 成功加载 ${loadedDiaries.length} 个日记本，共 ${allDiaryFiles.length} 个文件`);
+
+            // 2. 估算总token并决定处理方式
+            const totalFileTokens = allDiaryFiles.reduce((sum, f) => sum + f.tokens, 0);
+            const FIXED_OVERHEAD = 10000; // 固定预留10k给提示词和上下文
+            const totalTokens = totalFileTokens + FIXED_OVERHEAD;
+
+            console.log(`[AIMemoHandler] Token估算 - 文件总计: ${totalFileTokens}, 固定开销: ${FIXED_OVERHEAD}, 总计: ${totalTokens}`);
+
+            // 3. 处理（单次或分批）
+            let resultObject;
+            if (totalTokens > currentConfig.maxTokensPerBatch) {
+                resultObject = await this._processBatchedAggregated(loadedDiaries, allDiaryFiles, userContent, aiContent, combinedQueryForDisplay, currentConfig, currentPromptTemplate);
+            } else {
+                resultObject = await this._processSingleAggregated(loadedDiaries, allDiaryFiles, userContent, aiContent, combinedQueryForDisplay, currentConfig, currentPromptTemplate);
+            }
+
+            // VCP Info 广播 (非缓存)
+            if (this.ragPlugin.pushVcpInfo && resultObject.vcpInfo) {
+                try {
+                    this.ragPlugin.pushVcpInfo(resultObject.vcpInfo);
+                } catch (e) {
+                    console.error('[MetaThinkingManager] Cache hit broadcast failed:', e.message);
+                }
+            }
+
+            this.cacheManager.set('aimemo', cacheKey, resultObject);
+            return resultObject.content;
+
+        } catch (error) {
+            // 显式打印 message/stack，避免某些日志框架 JSON 序列化 Error 时输出空 {}
+            console.error(`[AIMemoHandler] 聚合处理失败: ${error?.message || error}`);
+            if (error?.stack) {
+                console.error(`[AIMemoHandler] Stack:`, error.stack);
+            }
+            return `[AIMemo聚合处理失败: ${error?.message || '未知错误'}]`;
+        }
+    }
+
+    // --- 缓存辅助方法 ---
+
+    _getCacheKey(dbNames, userContent, aiContent, presetContentForCache) {
+        const sortedDbNames = [...dbNames].sort().join(',');
+        // 如果没有预设内容，则使用默认配置的标识
+        const presetPart = presetContentForCache || 'default_config';
+        
+        return this.cacheManager.generateKey({
+            dbNames: sortedDbNames,
+            user: userContent,
+            ai: aiContent,
+            preset: presetPart
+        });
+    }
+
+    async _loadPresetRaw(presetName) {
+        const presetPath = path.join(__dirname, 'MoreAIMemoPresets', `${presetName}.json`);
+        try {
+            const rawContent = await fs.readFile(presetPath, 'utf-8');
+            return {
+                preset: JSON.parse(rawContent),
+                rawContent: rawContent
+            };
+        } catch (error) {
+            // ENOENT = 用户没配独立预设 JSON，是良性场景，由调用方统一打一条 WARN，这里静默返回 null
+            if (error.code === 'ENOENT') {
+                return null;
+            }
+            // 文件存在但解析失败（JSON 格式错误、权限问题等）才是真正的错误
+            console.error(`[AIMemoHandler] 预设 "${presetName}.json" 加载失败 (${error.code || 'unknown'}):`, error.message);
+            return null;
+        }
+    }
+
+
+    // --- 缓存辅助方法结束 ---
+
+    /**
+     * 单次聚合处理
+     */
+    async _processSingleAggregated(dbNames, diaryFiles, userContent, aiContent, combinedQueryForDisplay, config, promptTemplate) {
+        console.log(`[AIMemoHandler] 单次聚合处理 ${dbNames.length} 个日记本，共 ${diaryFiles.length} 个文件`);
+
+        // 将所有文件内容合并
+        const knowledgeBase = this._combineFiles(diaryFiles);
+        const prompt = this._buildPrompt(knowledgeBase, userContent, aiContent, promptTemplate);
+        const aiResponse = await this._callAIModel(prompt, config);
+
+        if (!aiResponse) {
+            const content = '[AI模型调用失败]';
+            return {
+                content,
+                vcpInfo: {
+                    type: 'AI_MEMO_RETRIEVAL',
+                    dbNames: dbNames,
+                    query: combinedQueryForDisplay,
+                    mode: 'aggregated_single_failed',
+                    diaryCount: dbNames.length,
+                    fileCount: diaryFiles.length,
+                    error: 'AI模型调用失败'
+                }
+            };
+        }
+
+        const extractedMemories = this._extractMemories(aiResponse);
+
+        const content = `[跨库联合检索: ${dbNames.join(' + ')}]\n${extractedMemories}`;
+        const vcpInfo = {
+            type: 'AI_MEMO_RETRIEVAL',
+            dbNames: dbNames,
+            query: combinedQueryForDisplay,
+            mode: 'aggregated_single',
+            diaryCount: dbNames.length,
+            fileCount: diaryFiles.length,
+            rawResponse: aiResponse,
+            extractedMemories: extractedMemories
+        };
+
+        return { content, vcpInfo };
+    }
+
+    /**
+     * 分批聚合处理
+     */
+    async _processBatchedAggregated(dbNames, diaryFiles, userContent, aiContent, combinedQueryForDisplay, config, promptTemplate) {
+        console.log(`[AIMemoHandler] 分批聚合处理 ${dbNames.length} 个日记本，共 ${diaryFiles.length} 个文件`);
+
+        const batches = this._splitFilesIntoBatches(diaryFiles, config);
+        console.log(`[AIMemoHandler] 文件分割为 ${batches.length} 个批次`);
+
+        // 打印每个批次的统计信息
+        batches.forEach((batch, idx) => {
+            const batchTokens = batch.reduce((sum, f) => sum + f.tokens, 0);
+            console.log(`[AIMemoHandler] 批次 ${idx + 1}: ${batch.length} 个文件, ${batchTokens} tokens`);
+        });
+
+        const batchResults = [];
+        for (let i = 0; i < batches.length; i += config.batchSize) {
+            const batchGroup = batches.slice(i, i + config.batchSize);
+            const promises = batchGroup.map((batch, idx) =>
+                this._processBatch(batch, userContent, aiContent, i + idx + 1, batches.length, config, promptTemplate)
+            );
+
+            const groupResults = await Promise.all(promises);
+            batchResults.push(...groupResults);
+        }
+
+        const mergedMemories = this._mergeBatchResults(batchResults);
+
+        const content = `[跨库联合检索: ${dbNames.join(' + ')}]\n${mergedMemories}`;
+        const vcpInfo = {
+            type: 'AI_MEMO_RETRIEVAL',
+            dbNames: dbNames,
+            query: combinedQueryForDisplay,
+            mode: 'aggregated_batched',
+            diaryCount: dbNames.length,
+            fileCount: diaryFiles.length,
+            batchCount: batches.length,
+            extractedMemories: mergedMemories
+        };
+
+        return { content, vcpInfo };
+    }
+
+    /**
+     * 处理 ::AIMemo 占位符（保留用于向后兼容）
+     * @param {string} dbName - 日记本名称
+     * @param {string} userContent - 用户输入（已清理HTML）
+     * @param {string} aiContent - AI回复（已清理HTML，可能为null）
+     * @param {string} combinedQueryForDisplay - 用于VCP广播的组合查询
+     * @returns {string} - 格式化的AI召回结果
+     */
+    async processAIMemo(dbName, userContent, aiContent, combinedQueryForDisplay) {
+        // 直接调用聚合方法，传入单个日记本
+        return await this.processAIMemoAggregated([dbName], userContent, aiContent, combinedQueryForDisplay);
+    }
+
+    /**
+     * 🌟 AIMemo+ 模式：先用 RiverMemo 做向量级初筛（5x dynamicK），再交给 LLM 提取记忆
+     * 与 processAIMemoAggregated 的区别：知识库来自 RiverMemo 召回的 chunks，而非整本日记文件
+     *
+     * @param {string[]} dbNames - 日记本名称数组
+     * @param {string} userContent
+     * @param {string} aiContent
+     * @param {string} combinedQueryForDisplay
+     * @param {string|null} presetName - 预设名称
+     * @param {object} tagMemoOptions - { queryVector, baseK, tagWeight, tagTruncationRatio, metrics, ghostTags }
+     * @returns {Promise<string>}
+     */
+    async processAIMemoPlusAggregated(dbNames, userContent, aiContent, combinedQueryForDisplay, presetName, tagMemoOptions) {
+        if (!this.isConfigured() && !presetName) {
+            console.warn('[AIMemoHandler+] AIMemo is not configured. Skipping.');
+            return '[AIMemo功能未配置]';
+        }
+
+        const {
+            queryVector,
+            baseK = 5,
+            tagWeight = null,
+            tagTruncationRatio = 0.5,
+            metrics = {},
+            ghostTags = [],
+            sourceFiles = null,
+            cacheSalt = ''
+        } = tagMemoOptions || {};
+
+        const hasSourceFiles = Array.isArray(sourceFiles);
+
+        if (!queryVector && !hasSourceFiles) {
+            console.warn('[AIMemoHandler+] 缺失 queryVector 且没有传入后缀管线来源，回退到完整 AIMemo 流程');
+            return await this.processAIMemoAggregated(dbNames, userContent, aiContent, combinedQueryForDisplay, presetName);
+        }
+
+        const searchK = Math.max(5, Math.round(baseK * 5));
+        console.log(
+            `[AIMemoHandler+] 启动 AIMemo+ 处理: ${dbNames.length} 个日记本, ` +
+            `baseK=${baseK}, searchK=${searchK}, tagWeight=${tagWeight}, ` +
+            `sourceMode=${hasSourceFiles ? 'suffix_pipeline' : 'rivermemo_prerank'}`
+        );
+
+        try {
+            // --- 加载预设配置（与 processAIMemoAggregated 一致）---
+            let currentConfig = { ...this.config };
+            let currentPromptTemplate = this.promptTemplate;
+            let presetContentForCache = '';
+
+            if (presetName) {
+                const presetResult = await this._loadPresetRaw(presetName);
+                if (presetResult) {
+                    const { preset, rawContent } = presetResult;
+                    presetContentForCache = rawContent;
+                    currentConfig = {
+                        model: preset.AIMemoModel || currentConfig.model,
+                        batchSize: parseInt(preset.AIMemoBatch) || currentConfig.batchSize,
+                        url: preset.AIMemoUrl || currentConfig.url,
+                        apiKey: preset.AIMemoApi || currentConfig.apiKey,
+                        maxTokensPerBatch: parseInt(preset.AIMemoMaxTokensPerBatch) || currentConfig.maxTokensPerBatch,
+                        promptFile: preset.AIMemoPrompt || currentConfig.promptFile
+                    };
+                    if (preset.AIMemoPrompt) {
+                        try {
+                            const presetPromptPath = path.join(__dirname, 'MoreAIMemoPresets', preset.AIMemoPrompt);
+                            currentPromptTemplate = await fs.readFile(presetPromptPath, 'utf-8');
+                            presetContentForCache += `|prompt:${currentPromptTemplate}`;
+                        } catch (e) {
+                            try {
+                                const fallbackPromptPath = path.join(__dirname, preset.AIMemoPrompt);
+                                currentPromptTemplate = await fs.readFile(fallbackPromptPath, 'utf-8');
+                                presetContentForCache += `|prompt:${currentPromptTemplate}`;
+                            } catch (e2) {
+                                console.error(`[AIMemoHandler+] Failed to load preset prompt ${preset.AIMemoPrompt}:`, e2.message);
+                            }
+                        }
+                    }
+                } else {
+                    console.warn(`[AIMemoHandler+] 未找到预设 "${presetName}.json"，使用 config.env 默认 AIMemo 配置。`);
+                }
+            }
+
+            let sourceFingerprint = hasSourceFiles ? cacheSalt || 'suffix_pipeline' : 'rivermemo_prerank';
+            let normalizedSourceFiles = [];
+
+            if (hasSourceFiles) {
+                normalizedSourceFiles = sourceFiles
+                    .map((file, index) => ({
+                        name: file.name || `${file.dbName || dbNames[0] || 'AIMemoPlus'}_source_${index}`,
+                        content: file.content || file.text || '',
+                        tokens: Number.isFinite(file.tokens) ? file.tokens : this._estimateTokens(file.content || file.text || ''),
+                        dbName: file.dbName || dbNames[0] || 'AIMemoPlus',
+                        source: file.source || 'suffix_pipeline',
+                        score: file.score ?? file.rerank_score ?? 0
+                    }))
+                    .filter(file => file.content && file.content.trim().length > 0);
+
+                const fingerprintPayload = normalizedSourceFiles.map(file => ({
+                    name: file.name,
+                    dbName: file.dbName,
+                    source: file.source,
+                    content: file.content
+                }));
+                sourceFingerprint = crypto.createHash('sha256').update(JSON.stringify(fingerprintPayload)).digest('hex');
+                console.log(`[AIMemoHandler+] 复用完整后缀管线来源: ${normalizedSourceFiles.length} 个候选片段, fingerprint=${sourceFingerprint.substring(0, 8)}...`);
+            }
+
+            // --- 缓存机制 ---
+            const cacheKey = this._getCacheKey(
+                dbNames,
+                userContent,
+                aiContent,
+                `${presetContentForCache}|plus|sK${searchK}|src:${sourceFingerprint}`
+            );
+            const cached = this.cacheManager.get('aimemo', cacheKey);
+            if (cached) {
+                console.log(`[AIMemoHandler+] ✅ 命中缓存。Key: ${cacheKey.substring(0, 8)}...`);
+                if (this.ragPlugin.pushVcpInfo && cached.vcpInfo) {
+                    this.ragPlugin.pushVcpInfo({ ...cached.vcpInfo, fromCache: true });
+                }
+                return cached.content;
+            }
+            console.log(`[AIMemoHandler+] ❌ 缓存未命中。Key: ${cacheKey.substring(0, 8)}...`);
+
+            let chunks = [];
+
+            if (hasSourceFiles) {
+                chunks = normalizedSourceFiles
+                    .map((file, index) => ({
+                        dbName: file.dbName,
+                        text: file.content,
+                        tokens: file.tokens,
+                        score: file.score || 0,
+                        source: file.source,
+                        name: file.name || `${file.dbName}_suffix_${index}`
+                    }))
+                    .sort((a, b) => (b.score || 0) - (a.score || 0));
+
+                const seenTexts = new Set();
+                chunks = chunks.filter(chunk => {
+                    const key = chunk.text.trim();
+                    if (!key || seenTexts.has(key)) return false;
+                    seenTexts.add(key);
+                    return true;
+                });
+
+                console.log(`[AIMemoHandler+] 后缀管线候选整理完成: ${chunks.length} 个唯一片段`);
+            } else {
+                chunks = await this._retrieveRiverMemoChunks(
+                    dbNames, queryVector, searchK, tagWeight, ghostTags, tagTruncationRatio, { ...metrics, queryText: userContent }
+                );
+
+                if (chunks.length === 0) {
+                    const emptyResult = `[AIMemo+ 初筛: ${dbNames.join(' + ')} 未召回任何相关片段]`;
+                    console.log('[AIMemoHandler+] RiverMemo 初筛无结果');
+                    return emptyResult;
+                }
+
+                console.log(`[AIMemoHandler+] RiverMemo 初筛召回 ${chunks.length} 个 chunks，总 token: ${chunks.reduce((sum, c) => sum + c.tokens, 0)}`);
+            }
+
+            if (chunks.length === 0) {
+                const emptyResult = hasSourceFiles
+                    ? `[AIMemo+ 后缀管线: ${dbNames.join(' + ')} 未获得可总结片段]`
+                    : `[AIMemo+ 初筛: ${dbNames.join(' + ')} 未召回任何相关片段]`;
+                console.log('[AIMemoHandler+] AIMemo+ 无有效候选');
+                return emptyResult;
+            }
+
+            const totalChunkTokens = chunks.reduce((sum, c) => sum + c.tokens, 0);
+            console.log(`[AIMemoHandler+] Token估算 - chunks: ${totalChunkTokens}, 固定开销: ${10000}, 总计: ${totalChunkTokens + 10000}`);
+
+            // --- 将 chunks 包装成 file 结构以复用现有处理流程 ---
+            const fakeFiles = chunks.map((chunk, i) => ({
+                name: chunk.name || `${chunk.dbName}_chunk_${i}`,
+                content: chunk.text,
+                tokens: chunk.tokens,
+                dbName: chunk.dbName,
+                source: chunk.source,
+                score: chunk.score
+            }));
+
+            // --- 单批 / 分批处理 ---
+            const FIXED_OVERHEAD = 10000;
+            const totalTokens = totalChunkTokens + FIXED_OVERHEAD;
+            let resultObject;
+            if (totalTokens > currentConfig.maxTokensPerBatch) {
+                resultObject = await this._processBatchedAggregated(dbNames, fakeFiles, userContent, aiContent, combinedQueryForDisplay, currentConfig, currentPromptTemplate);
+            } else {
+                resultObject = await this._processSingleAggregated(dbNames, fakeFiles, userContent, aiContent, combinedQueryForDisplay, currentConfig, currentPromptTemplate);
+            }
+
+            // 标记为 Plus 模式 + 内容前缀
+            if (resultObject.vcpInfo) {
+                resultObject.vcpInfo.mode = (resultObject.vcpInfo.mode || 'aggregated') + '_plus';
+                resultObject.vcpInfo.riverMemoChunkCount = chunks.length;
+                resultObject.vcpInfo.searchK = hasSourceFiles ? null : searchK;
+                resultObject.vcpInfo.tagWeight = tagWeight;
+                resultObject.vcpInfo.sourceMode = hasSourceFiles ? 'suffix_pipeline' : 'rivermemo_prerank';
+                resultObject.vcpInfo.sourceFingerprint = sourceFingerprint.substring(0, 16);
+            }
+
+            resultObject.content = hasSourceFiles
+                ? `[AIMemo+ 后缀管线: ${chunks.length}片段, 跨${dbNames.length}库]\n${resultObject.content}`
+                : `[AIMemo+ RiverMemo初筛: ${chunks.length}片段/${searchK}K, 跨${dbNames.length}库]\n${resultObject.content}`;
+
+            if (this.ragPlugin.pushVcpInfo && resultObject.vcpInfo) {
+                try {
+                    this.ragPlugin.pushVcpInfo(resultObject.vcpInfo);
+                } catch (e) {
+                    console.error('[AIMemoHandler+] VCP broadcast failed:', e.message);
+                }
+            }
+
+            this.cacheManager.set('aimemo', cacheKey, resultObject);
+            return resultObject.content;
+        } catch (error) {
+            console.error(`[AIMemoHandler+] 处理失败: ${error?.message || error}`);
+            if (error?.stack) {
+                console.error(`[AIMemoHandler+] Stack:`, error.stack);
+            }
+            return `[AIMemo+处理失败: ${error?.message || '未知错误'}]`;
+        }
+    }
+
+    /**
+     * 🌟 跨日记本 RiverMemo 检索 - AIMemo+ 的核心初筛逻辑
+     * 由统一 RiverMemo 查询一次完成共享感应和读出，不另行调用增强或重复召回。
+     */
+    async _retrieveRiverMemoChunks(dbNames, queryVector, k, tagWeight, ghostTags, tagTruncationRatio, metrics) {
+        const vdb = this.ragPlugin?.vectorDBManager;
+        if (!vdb || typeof vdb.executeNativeRiverQuery !== 'function') {
+            console.warn('[AIMemoHandler+] vectorDBManager 不可用');
+            return [];
+        }
+
+        const result = await vdb.executeNativeRiverQuery(
+            { text: String(metrics.queryText || ''), vector: queryVector },
+            { diaryNames: dbNames, topK: k * dbNames.length, candidateK: Math.max(300, k * dbNames.length),
+                coreTags: ghostTags, sourceObservationConfig: { baseTagBoost: tagWeight ?? 0.6 } }
+        );
+        const allChunks = result.results.map(item => ({
+            dbName: item.diaryName || dbNames[0], text: item.text || '',
+            score: item.score || 0, tokens: this._estimateTokens(item.text || '')
+        }));
+
+        // 3. 按分数排序 + 文本指纹去重
+        allChunks.sort((a, b) => (b.score || 0) - (a.score || 0));
+        const seen = new Set();
+        const uniqueChunks = [];
+        for (const chunk of allChunks) {
+            const key = (chunk.text || '').trim();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            uniqueChunks.push(chunk);
+        }
+
+        return uniqueChunks;
+    }
+
+
+    /**
+     * 处理单个批次（基于文件数组）
+     */
+    async _processBatch(batchFiles, userContent, aiContent, batchIndex, totalBatches, config, promptTemplate) {
+        console.log(`[AIMemoHandler] Processing batch ${batchIndex}/${totalBatches} (${batchFiles.length} files)`);
+
+        const knowledgeBase = this._combineFiles(batchFiles);
+        const prompt = this._buildPrompt(knowledgeBase, userContent, aiContent, promptTemplate);
+        const aiResponse = await this._callAIModel(prompt, config);
+
+        if (!aiResponse) {
+            console.warn(`[AIMemoHandler] Batch ${batchIndex} failed, returning empty`);
+            return '';
+        }
+
+        return this._extractMemories(aiResponse);
+    }
+
+    /**
+     * 获取日记本的所有文件（基于文件级别）
+     */
+    async _getDiaryFiles(dbName) {
+        const projectBasePath = process.env.PROJECT_BASE_PATH;
+        const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || (projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'));
+
+        const characterDirPath = path.join(dailyNoteRootPath, dbName);
+        const files = [];
+
+        try {
+            const fileList = await fs.readdir(characterDirPath);
+            const relevantFiles = fileList.filter(file => {
+                const lowerCaseFile = file.toLowerCase();
+                return lowerCaseFile.endsWith('.txt') || lowerCaseFile.endsWith('.md');
+            }).sort();
+
+            for (const file of relevantFiles) {
+                const filePath = path.join(characterDirPath, file);
+                try {
+                    const content = await fs.readFile(filePath, 'utf-8');
+                    const tokens = this._estimateTokens(content);
+                    files.push({
+                        name: file,
+                        content: content,
+                        tokens: tokens
+                    });
+                } catch (readErr) {
+                    console.warn(`[AIMemoHandler] 无法读取文件 ${file}:`, readErr.message);
+                }
+            }
+        } catch (dirError) {
+            if (dirError.code !== 'ENOENT') {
+                console.error(`[AIMemoHandler] 读取目录失败 ${characterDirPath}:`, dirError.message);
+            }
+        }
+
+        return files;
+    }
+
+    /**
+     * 将文件数组分割成多个批次（基于文件级别的贪心打包）
+     */
+    _splitFilesIntoBatches(files, config) {
+        const FIXED_OVERHEAD = 10000; // 固定预留10k给提示词和上下文
+        const maxTokensPerBatch = (config || this.config).maxTokensPerBatch - FIXED_OVERHEAD;
+        const batches = [];
+
+        let currentBatch = [];
+        let currentTokens = 0;
+
+        for (const file of files) {
+            // 如果当前批次为空，或者加入这个文件不会超限，就加入
+            if (currentBatch.length === 0 || currentTokens + file.tokens <= maxTokensPerBatch) {
+                currentBatch.push(file);
+                currentTokens += file.tokens;
+            } else {
+                // 当前批次已满，保存并开启新批次
+                batches.push(currentBatch);
+                currentBatch = [file];
+                currentTokens = file.tokens;
+            }
+        }
+
+        // 添加最后一个批次
+        if (currentBatch.length > 0) {
+            batches.push(currentBatch);
+        }
+
+        return batches.length > 0 ? batches : [files]; // 至少返回一个批次
+    }
+
+    /**
+     * 将文件数组合并成单个知识库字符串
+     */
+    _combineFiles(files) {
+        return files.map(f => {
+            const dbPrefix = f.dbName ? `=== ${f.dbName}日记本 ===\n` : '';
+            return dbPrefix + f.content;
+        }).join('\n\n---\n\n');
+    }
+
+    /**
+     * 合并多个批次的结果
+     */
+    _mergeBatchResults(results) {
+        // 过滤掉空结果和"未找到"结果
+        const validResults = results.filter(r =>
+            r &&
+            !r.includes('[[未找到相关记忆]]') &&
+            !r.includes('[[知识库为空]]')
+        );
+
+        if (validResults.length === 0) {
+            return '这是我获取的所有相关知识/记忆[[未找到相关记忆]]';
+        }
+
+        // 提取所有[[...]]块
+        const allBlocks = [];
+        for (const result of validResults) {
+            const blocks = this._extractMemoryBlocks(result);
+            allBlocks.push(...blocks);
+        }
+
+        if (allBlocks.length === 0) {
+            return '这是我获取的所有相关知识/记忆[[未找到相关记忆]]';
+        }
+
+        // 去重并合并
+        const uniqueBlocks = [...new Set(allBlocks)];
+        return '这是我获取的所有相关知识/记忆' + uniqueBlocks.join('');
+    }
+
+    /**
+     * 从AI响应中提取[[...]]块
+     */
+    _extractMemoryBlocks(text) {
+        const blocks = [];
+        const regex = /\[\[([\s\S]*?)\]\]/g;
+        let match;
+
+        while ((match = regex.exec(text)) !== null) {
+            blocks.push(`[[${match[1]}]]`);
+        }
+
+        return blocks;
+    }
+
+    /**
+     * 构建发送给AI的提示词
+     */
+    _buildPrompt(knowledgeBase, userContent, aiContent, promptTemplate) {
+        const now = dayjs().tz(DEFAULT_TIMEZONE);
+
+        let prompt = promptTemplate || this.promptTemplate;
+
+        // 替换占位符
+        prompt = prompt.replace(/\{\{knowledge_base\}\}/g, knowledgeBase);
+        prompt = prompt.replace(/\{\{current_user_prompt\}\}/g, userContent || '');
+        prompt = prompt.replace(/\{\{last_assistant_response\}\}/g, aiContent || '[无AI回复]');
+        prompt = prompt.replace(/\{\{Date\}\}/g, now.format('YYYY-MM-DD'));
+        prompt = prompt.replace(/\{\{Time\}\}/g, now.format('HH:mm:ss'));
+
+        return prompt;
+    }
+
+    /**
+     * 调用AI模型
+     */
+    async _callAIModel(prompt, config) {
+        const maxRetries = 3;
+        const retryDelay = 2000;
+        const currentConfig = config || this.config;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                console.log(`[AIMemoHandler] Calling AI model (attempt ${attempt}/${maxRetries})...`);
+
+                const response = await axios.post(
+                    `${currentConfig.url}v1/chat/completions`,
+                    {
+                        model: currentConfig.model,
+                        messages: [
+                            {
+                                role: 'user',
+                                content: prompt
+                            }
+                        ],
+                        temperature: 0.3, // 较低温度以保持一致性
+                        max_tokens: 40000 // 足够的输出空间，特别是对于思考模型
+                    },
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${currentConfig.apiKey}`,
+                            'Content-Type': 'application/json'
+                        },
+                        timeout: 120000 // 2分钟超时
+                    }
+                );
+
+                const content = response.data?.choices?.[0]?.message?.content;
+                if (!content) {
+                    console.error('[AIMemoHandler] AI response has no content');
+                    return null;
+                }
+
+                const cleanedContent = this._handleRepetitiveOutput(content);
+                if (cleanedContent.length < content.length) {
+                    console.log(`[AIMemoHandler] AI model response was cleaned from repetition. Original length: ${content.length}, Cleaned length: ${cleanedContent.length}`);
+                }
+
+                console.log(`[AIMemoHandler] AI model responded successfully (${cleanedContent.length} chars)`);
+                return cleanedContent;
+
+            } catch (error) {
+                const status = error.response?.status;
+
+                if ((status === 500 || status === 503 || error.code === 'ECONNABORTED') && attempt < maxRetries) {
+                    console.warn(`[AIMemoHandler] AI call failed (${status || error.code}). Retrying in ${retryDelay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    continue;
+                }
+
+                if (error.response) {
+                    console.error(`[AIMemoHandler] AI API error (${error.response.status}): ${error.message}`);
+                } else if (error.request) {
+                    console.error('[AIMemoHandler] No response from AI API:', error.message);
+                } else {
+                    console.error('[AIMemoHandler] Error setting up AI request:', error.message);
+                }
+
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 从AI响应中提取记忆内容（带降级机制）
+     */
+    _extractMemories(aiResponse) {
+        if (!aiResponse) {
+            return '[AI未返回有效响应]';
+        }
+
+        // 1. 尝试匹配标准格式："这是我获取的所有相关知识/记忆[[...]]"
+        const standardMatch = aiResponse.match(/这是我获取的所有相关知识\/记忆(\[\[[\s\S]*?\]\])+/);
+        if (standardMatch) {
+            console.log('[AIMemoHandler] Successfully extracted memories in standard format');
+            return standardMatch[0];
+        }
+
+        // 2. 降级：尝试提取所有[[...]]
+        const blocks = this._extractMemoryBlocks(aiResponse);
+        if (blocks.length > 0) {
+            console.log(`[AIMemoHandler] Degraded extraction: Found ${blocks.length} memory blocks`);
+            return '这是我获取的所有相关知识/记忆' + blocks.join('');
+        }
+
+        // 3. 最终降级：返回AI的全部响应，并包装
+        console.warn('[AIMemoHandler] Final degradation: Returning full AI response');
+        return `这是我获取的所有相关知识/记忆[[${aiResponse}]]`;
+    }
+
+    /**
+     * Helper for token estimation
+     */
+    _estimateTokens(text) {
+        if (!text) return 0;
+        // 更准确的中英文混合估算
+        const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+        const otherChars = text.length - chineseChars;
+        // 中文: ~1.5 token/char, 英文: ~0.25 token/char (1 word ≈ 4 chars)
+        return Math.ceil(chineseChars * 1.5 + otherChars * 0.25);
+    }
+
+    /**
+     * 处理AI模型输出中的循环重复内容
+     * @param {string} text - AI模型的原始输出
+     * @returns {string} - 清理重复内容后的文本
+     */
+    _handleRepetitiveOutput(text) {
+        // 1. 将文本按换行符分割成行，过滤掉空行
+        const lines = text.split('\n').filter(line => line.trim().length > 0);
+        if (lines.length < 10) { // 如果行数太少，不太可能出现有意义的重复
+            return text;
+        }
+
+        // 2. 寻找重复的文本块。我们假设重复单元至少包含2行
+        const minRepeatUnitSize = 2;
+        let repetitionFound = false;
+        let firstOccurrenceEndIndex = -1;
+        let repeatUnitSize = 0;
+
+        // 从可能的重复单元大小开始迭代
+        for (let unitSize = minRepeatUnitSize; unitSize <= Math.floor(lines.length / 2); unitSize++) {
+            // 检查从末尾开始的两个连续单元是否相同
+            const lastUnit = lines.slice(lines.length - unitSize).join('\n');
+            const secondLastUnit = lines.slice(lines.length - 2 * unitSize, lines.length - unitSize).join('\n');
+
+            if (lastUnit === secondLastUnit) {
+                // 发现了重复，现在从头开始找到这个重复单元第一次出现的位置
+                const unitToFind = lastUnit;
+                for (let i = 0; i <= lines.length - 2 * unitSize; i++) {
+                    const currentSlice = lines.slice(i, i + unitSize).join('\n');
+                    if (currentSlice === unitToFind) {
+                        // 确认这确实是一个重复序列的开始
+                        const nextSlice = lines.slice(i + unitSize, i + 2 * unitSize).join('\n');
+                        if (nextSlice === unitToFind) {
+                            repetitionFound = true;
+                            firstOccurrenceEndIndex = i + unitSize;
+                            repeatUnitSize = unitSize;
+                            break; // 找到第一次出现就跳出内层循环
+                        }
+                    }
+                }
+            }
+            if (repetitionFound) {
+                break; // 找到任何一个重复模式就跳出外层循环
+            }
+        }
+
+        // 3. 如果找到了重复，截断文本
+        if (repetitionFound) {
+            console.log(`[AIMemoHandler] Repetition detected. Unit size: ${repeatUnitSize}. Truncating content.`);
+            // 保留到第一个重复单元结束的部分
+            const cleanedLines = lines.slice(0, firstOccurrenceEndIndex);
+            return cleanedLines.join('\n');
+        }
+
+        // 4. 如果没有找到重复，返回原始文本
+        return text;
+    }
+}
+
+module.exports = AIMemoHandler;

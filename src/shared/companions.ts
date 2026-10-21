@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { companionReplyProgressSchema } from './companion-reply-progress';
+import type { CompanionWorkspaceRequest, CompanionWorkspaceResponse } from './companion-workspace';
 import { companionWorldObservationSchema } from './companion-knowledge';
 import { companionContactReceiptSchema } from './companion-contact';
 import { activityPublicCommands, activityTaskSchema } from './companion-activity-task';
@@ -6,7 +8,7 @@ import { dshRecordOverviewSchema, dshRecordQuerySchema, dshRecordPageSchema } fr
 import { dshExecutionAccessModeSchema } from './dsh-access';
 import { companionWorkSchema, companionLoopDraftSchema } from './companion-loop';
 import { COMPANION_AVATAR_IDS, COMPANION_TEMPLATE_IDS } from './companion-template-ids';
-import { companionMemorySchema, companionMemoryPageSchema, companionMemoryStatusSchema, companionMemoryPublicCommands } from './companion-memory';
+import { companionMemorySchema, companionMemoryPageSchema, companionMemoryStatusSchema, companionMemoryPublicCommands, companionMemoryPolicySchema } from './companion-memory';
 import { companionSchedulePublicCommands, companionScheduleSchema, companionScheduleOccurrenceSchema } from './companion-schedule';
 import { companionStatePublicCommands, companionRuntimeStateSchema } from './companion-state';
 import { companionRoutinePublicCommands, companionRoutineSchema, companionRoutineRuntimeSchema } from './companion-routine';
@@ -25,7 +27,7 @@ export const companionIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionReplyStreamEventSchema = z.strictObject({
   conversationId: companionIdSchema, companionId: companionIdSchema, sourceMessageId: companionIdSchema,
   messageId: companionIdSchema, step: z.number().int().min(0).max(63), attemptId: companionIdSchema,
-  text: z.string().max(65536), phase: z.enum(['streaming', 'committed', 'interrupted', 'discarded']),
+  text: z.string().max(65536), phase: z.enum(['streaming', 'committed', 'interrupted', 'discarded', 'progress']), progress: companionReplyProgressSchema.optional(),
 });
 export type CompanionReplyStreamEvent = z.infer<typeof companionReplyStreamEventSchema>;
 export const companionLlmSchema = z.object({
@@ -60,7 +62,7 @@ export const messageSchema = z.object({
   attachments: z.array(attachmentSchema).max(10),
   worldObservation: companionWorldObservationSchema.optional(),
   memoryEvidenceOnly: z.boolean().optional(),
-  isReplyDraft: z.boolean().optional(), replyDraft: companionLoopDraftSchema.optional(),
+  replyProgress: companionReplyProgressSchema.optional(), isReplyDraft: z.boolean().optional(), replyDraft: companionLoopDraftSchema.optional(),
   segments: z.array(z.object({ text: z.string().max(65536), actionIds: z.array(companionIdSchema).max(16) })).max(64).optional(),
 });
 export type CompanionMessage = z.infer<typeof messageSchema>;
@@ -160,8 +162,8 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
     targetSourceMessageId: companionIdSchema.optional(), priority: z.enum(['normal', 'urgent']).optional(),
     delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']).optional(), targetActionId: companionIdSchema.optional() }),
   companionSearchQuerySchema.extend({ type: z.literal('message.search') }).strict(),
-  z.strictObject({ type: z.literal('reply.retry'), conversationId: companionIdSchema }),
-  z.strictObject({ type: z.literal('reply.cancel'), conversationId: companionIdSchema }),
+  z.strictObject({ type: z.literal('reply.retry'), conversationId: companionIdSchema, workId: companionIdSchema.optional() }),
+  z.strictObject({ type: z.literal('reply.cancel'), conversationId: companionIdSchema, workId: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('reply.resume'), conversationId: companionIdSchema }),
   z.strictObject({ type: z.literal('memory.list'), companionId: companionIdSchema }),
   ...companionMemoryPublicCommands,
@@ -172,7 +174,7 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   ...companionRoutinePublicCommands,
   ...companionWorldPublicCommands,
   ...companionSocialPublicCommands,
-  z.strictObject({ type: z.literal('memory.save'), companionId: companionIdSchema, conversationId: companionIdSchema.optional(), id: companionIdSchema.optional(), content: z.string().trim().min(1).max(4000), sourceMessageId: companionIdSchema.optional(), expectedVersion: z.number().int().positive().optional() }),
+  z.strictObject({ type: z.literal('memory.save'), companionId: companionIdSchema, conversationId: companionIdSchema.optional(), id: companionIdSchema.optional(), content: z.string().trim().min(1).max(65536), sourceMessageId: companionIdSchema.optional(), expectedVersion: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('memory.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema }),
   companionActionPageQuerySchema.extend({ type: z.literal('actions.page') }).strict(),
@@ -200,6 +202,8 @@ export const companionsResponseSchema = z.object({
   taskRecord: dshRecordPageSchema.optional(),
   message: messageSchema.optional(), companion: companionSchema.optional(),
   memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(),
+  memoryContext: z.object({ text: z.string().max(1024 * 1024), revision: z.string(), profileKey: z.string() }).optional(),
+  memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
   memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),
   memorySources: z.array(messageSchema).optional(), forgottenCount: z.number().int().nonnegative().optional(),
   sourceHasMore: z.boolean().optional(), sourceNextCursor: z.number().int().nonnegative().optional(),
@@ -224,6 +228,7 @@ export const companionsResponseSchema = z.object({
 });
 export type CompanionsResponse = z.infer<typeof companionsResponseSchema>;
 export interface WorldlineBoxCompanionsApi {
+  workspace?(input: CompanionWorkspaceRequest): Promise<CompanionWorkspaceResponse>;
   importFiles?(files: File[]): Promise<CompanionsResponse>;
   request(input: CompanionsRequest): Promise<CompanionsResponse>;
   onChanged(listener: () => void): () => void;

@@ -209,12 +209,13 @@ describe('authoritative continuous subjective perception', () => {
     expect(observe(f).perception!.environment.weather).toBeUndefined();
     expect(f.store.request({ type: 'world.snapshot' }).world!.environment.weather).toBe('rain');
     const rule = f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: {
-      title: '出门确认天气再散步', enabled: true, startMinute: 600, endMinute: 610, probability: 1, action: 'park_walk', durationMinutes: 35 } }).lifeRule!;
+      title: '出门确认天气再散步', enabled: true, startMinute: 600, endMinute: 610, probability: 1, checkIntervalMinutes: 1, action: 'park_walk', durationMinutes: 35 } }).lifeRule!;
     f.store.request({ type: 'life-event.tick' });
     const occurrence = f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(value => value.ruleId === rule.id)!;
     // Seed only the random clock's threshold; all perception, dispatch and body movement remain authoritative.
     const db = new Sqlite(f.filename); try { db.prepare('UPDATE companion_life_occurrences SET data=? WHERE id=?').run(JSON.stringify({ ...occurrence, threshold: 1e-9 }), occurrence.id); } finally { db.close(); }
-    advance(f.store, 1000); const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
+    // Realtime mode must actually reach the configured one-minute evaluation.
+    advance(f.store, 60000); const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
     expect(claimed.ruleId).toBe(rule.id);
     expect(f.store.request({ type: 'life-event.complete', id: claimed.id, leaseToken: claimed.leaseToken! }).lifeOccurrence!.status).toBe('active');
     let world = f.store.request({ type: 'world.snapshot' }).world!, subject = world.actors.find(actor => actor.companionId === 'alice')!;

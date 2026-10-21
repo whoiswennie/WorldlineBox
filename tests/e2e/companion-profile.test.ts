@@ -9,18 +9,19 @@ import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/sha
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { CompanionPublicProfile } from '../../src/shared/companion-public-profile';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
 type ImageProof = { personId: string; role: string; sha256: string; mime: string; width: number; height: number; bytes: number; detail: string };
 type Capture = { context: { publicProfiles: CompanionPublicProfile[]; identity: { currentReply: { speaker: { id: string; name: string } } }; visionManifest: Array<{ personId: string; role: string; delivery: string }> }; images: ImageProof[] };
 async function request(page: Page, input: CompanionsRequest) { const result = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), input); expect(result.ok, result.error).toBe(true); return result; }
-function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-profile-e2e-')) throw new Error('Unexpected profile fixture cleanup path.'); rmSync(resolved, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 }); }
+function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-profile-e2e-')) throw new Error('Unexpected profile fixture cleanup path.'); removeCompanionTestDirectory(resolved); }
 async function launch(profile: string) {
   const packaged = process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE;
   const application = await electron.launch({ executablePath: packaged ?? resolveElectronExecutablePath(), args: packaged ? [] : [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
   const page = await application.firstWindow(), native = await application.browserWindow(page);
   await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 1000); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+  await ensureCompanionTestWorkspace(page);
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page'); return { application, page };
 }
 async function choose(application: ElectronApplication, filename?: string) { await application.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: !file, filePaths: file ? [file] : [] }); }, filename); }
@@ -67,9 +68,9 @@ test('persists public player and companion references, displays the real user id
       if (payload.messages.length === 1) { if (typeof context.purpose !== 'string') throw new Error('A primary reply must retain the base JSON in messages[1].'); auxiliaryPurposes.push(context.purpose); }
       if (context.purpose === 'world_decision') output = { action: null, reason: '保持当前生活安排。', appraisals: [] };
       else if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .99, evidence: [context.source.content], reason: '正常交流。' };
-      else if (context.purpose === 'memory_query') output = {};
-      else if (context.purpose === 'memory_dream') output = { candidates: [], dream: null };
-      else if (context.purpose?.startsWith('memory_')) output = { candidates: [] };
+      else if (context.purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
+      else if (context.purpose === 'vcp_sleep_reflection') output = { notes: [], dream: null };
+      else if (context.purpose === 'vcp_experience_journal') output = { notes: [] };
       else {
         const images: ImageProof[] = [];
         for (const message of payload.messages.filter((message: { role: string; content: unknown }) => message.role === 'user' && Array.isArray(message.content))) {

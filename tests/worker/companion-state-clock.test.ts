@@ -84,9 +84,9 @@ it('uses the world-zone source day for daily budgets, retains real audit timesta
 it('keeps a leased state proposal and extraction watermark pending while its source is still in the unmaterialized future', () => {
   const f = fixture(); vi.setSystemTime(Date.now() + 1000 * 86400000);
   const message = source(f), job = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
-  const complete = () => f.store.request({ type: 'memory.jobs.complete' as const, id: job.id, leaseToken: job.leaseToken, candidates: [], stateProposal: { reason: '用户表达实际的支持。', sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }], appraisals: [{ type: 'support' as const, target: 'user' as const, intensity: 1, confidence: 1 }] } });
+  const complete = () => f.store.request({ type: 'memory.jobs.complete' as const, id: job.id, leaseToken: job.leaseToken, notes: [], stateProposal: { reason: '用户表达实际的支持。', sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }], appraisals: [{ type: 'support' as const, target: 'user' as const, intensity: 1, confidence: 1 }] } });
   expect(() => complete()).toThrow('补算');
-  expect(f.store.request({ type: 'memory.status', ...f.scope }).memoryStatus).toMatchObject({ running: 1, completed: 0, extractionWatermark: 0 });
+  expect(f.store.request({ type: 'memory.status', ...f.scope }).memoryStatus).toMatchObject({ running: 1, completed: 0, captureWatermark: 0 });
   expect(f.store.request({ type: 'world.clock' }).worldClock!.backlog).toBe(true);
   // The same durable claim remains available for retry; rejection did not
   // consume the source, mark it completed, or partially apply the proposal.

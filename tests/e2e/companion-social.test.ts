@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
 type Record = { purpose: string; self?: string; sourceId?: string; speaker?: string; participants?: string[]; tools: boolean; at: number };
 const sender = 'deepseek-sister', receiver = 'deepseek-flash';
@@ -13,7 +13,7 @@ const opening = '手机话题：想听听你今天自己的音乐与读书计划
 async function request(page: Page, value: CompanionsRequest) { const result = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), value); expect(result.ok, result.error).toBe(true); return result; }
 async function world(page: Page) { return (await request(page, { type: 'world.snapshot' })).world!; }
 const clock = (hour: number) => String((Math.floor(hour) + 24) % 24).padStart(2, '0') + ':00';
-function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-social-e2e-')) throw new Error('Unexpected social fixture cleanup.'); rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 }); }
+function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-social-e2e-')) throw new Error('Unexpected social fixture cleanup.'); removeCompanionTestDirectory(resolved); }
 async function provider() {
   const logs: Record[] = [], held = new Set<() => void>(); let recipients: string[] = [], armed = false, keepReplying = true, hold = true;
   const server = createServer((incoming, outgoing) => {
@@ -35,9 +35,9 @@ async function provider() {
           const reply = () => { held.delete(reply); json(outgoing, output); };
           if (hold) { held.add(reply); return; }
         } else if (purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .99, evidence: [data.source.content], reason: '伙伴社交不授予用户紧急授权。' };
-        else if (purpose === 'memory_query') output = {};
-        else if (purpose === 'memory_dream') output = { candidates: [], dream: null };
-        else if (purpose.startsWith('memory_')) output = { candidates: [] };
+        else if (purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
+        else if (purpose === 'vcp_sleep_reflection') output = { notes: [], dream: null };
+        else if (purpose === 'vcp_experience_journal') output = { notes: [] };
         else output = { text: '不应从伙伴话题启动玩家聊天。', memories: [] };
         json(outgoing, output);
       } catch { outgoing.writeHead(400); outgoing.end(); }
@@ -54,6 +54,7 @@ async function launch(root: string, baseUrl: string) {
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'software' }) });
   const page = await application.firstWindow(), native = await application.browserWindow(page);
   await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 900); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+  await ensureCompanionTestWorkspace(page);
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
   await page.evaluate(async baseUrl => (window as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', baseUrl, model: 'social-fixture', apiKey: 'fixture-only-social-key' }), baseUrl);
   await page.locator('[data-application-module="companions"]').click();

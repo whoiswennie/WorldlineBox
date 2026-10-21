@@ -16,6 +16,8 @@ export default tseslint.config(
       'out/**',
       'coverage/**',
       'node_modules/**',
+      // Pinned upstream sources are hash-verified and intentionally kept byte-for-byte.
+      'vendor/vcp-memory/**',
       // Emscripten-generated glue (acquired by scripts/build-ufbx-wasm.mjs).
       'resources/ufbx/**',
       'resources/portable-tools/win32-x64/**',
@@ -23,12 +25,14 @@ export default tseslint.config(
   },
   js.configs.recommended,
   {
-    files: ['scripts/**/*.mjs'],
+    files: ['scripts/**/*.mjs', 'tests/node/**/*.mjs'],
     languageOptions: {
       globals: globals.node,
     },
   },
   ...tseslint.configs.recommended,
+  { files: ['src/main/vcp-memory/**/*.cjs', 'scripts/**/*.cjs'], languageOptions: { globals: globals.node, sourceType: 'commonjs' },
+    rules: { '@typescript-eslint/no-require-imports': 'off', 'no-redeclare': ['error', { builtinGlobals: false }] } },
   {
     files: ['**/*.{ts,tsx}'],
     languageOptions: {

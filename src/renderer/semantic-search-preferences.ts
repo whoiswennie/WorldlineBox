@@ -69,7 +69,7 @@ export function loadSemanticSearchPreferences(
     return {
       version: 1,
       enabled: parsed.data.enabled,
-      modelId: parsed.data.modelId,
+      modelId: 'embeddinggemma-2-compact',
       searchMode: parsed.data.searchMode ?? "keyword",
       pageSize: parsed.data.pageSize ?? DEFAULT_SEMANTIC_SEARCH_PAGE_SIZE,
     };
@@ -85,7 +85,7 @@ export function saveSemanticSearchPreferences(
   resolveStorage(storage).setItem(SEMANTIC_SEARCH_PREF_KEY, JSON.stringify({
     version: 1,
     enabled: prefs.enabled,
-    modelId: prefs.modelId,
+    modelId: 'embeddinggemma-2-compact',
     searchMode: prefs.searchMode,
     pageSize: prefs.pageSize,
   }));

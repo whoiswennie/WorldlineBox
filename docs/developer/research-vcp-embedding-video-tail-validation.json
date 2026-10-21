@@ -1,0 +1,23 @@
+{
+  "generatedAt": "2026-10-21T12:26:53.273Z",
+  "realFfmpeg": true,
+  "elapsedMs": 357.81149999999997,
+  "longVideoSeconds": 33,
+  "audioSeconds": 2,
+  "windowCount": 3,
+  "windowAudio": [
+    true,
+    false,
+    false
+  ],
+  "videoWindowBytes": [
+    1415,
+    1415,
+    962
+  ],
+  "shortClipSeconds": 0.2,
+  "shortClipWindowCount": 1,
+  "shortClipVideoBytes": 962,
+  "modelInferencePerformed": false,
+  "passed": true
+}

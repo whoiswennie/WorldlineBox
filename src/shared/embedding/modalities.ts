@@ -16,11 +16,9 @@ export type EmbeddingSourceModality = (typeof LOCAL_GEMMA_INPUT_MODALITIES)[numb
 
 /**
  * What this release actually prepares for local semantic indexing.
- * Video assets use the cover image. Multi-frame / `input_video` sampling
- * may return later; it is not a product path here.
- * A video with no cover yet is not a target until a thumbnail-ready event.
+ * Video uses bounded timeline windows with its actual frames and audio track.
  */
-export const LOCAL_SEMANTIC_ENCODE_MODALITIES = ["image", "audio", "text"] as const satisfies readonly EmbeddingSourceModality[];
+export const LOCAL_SEMANTIC_ENCODE_MODALITIES = ["image", "video", "audio", "text"] as const satisfies readonly EmbeddingSourceModality[];
 
 export function isEmbeddingModality(value: string): value is EmbeddingModality {
   return (EMBEDDING_MODALITIES as readonly string[]).includes(value);

@@ -19,13 +19,13 @@ import type { AssetSummary } from '../../shared/asset-types';
 import type { LibraryService } from '../library-service';
 import { backupExistingSemanticIndexFile, removeSemanticIndexForRebuild, SemanticIndexStore, type SemanticVectorProfile } from '../semantic-index-store';
 import { digestLegacySemanticCache, parseLegacySemanticCache, type LegacySemanticCacheEntry } from '../legacy-semantic-cache';
-import { resolveFfmpegPath } from '../binary-resolver';
+import { resolveFfmpegPath, resolveFfprobePath } from '../binary-resolver';
+import { prepareEmbeddingVideoWindows, type EmbeddingVideoWindow } from '../embedding-video';
 
 const TARGET_PAGE_SIZE = 500;
 const MAX_CANDIDATES = 100_000;
 const MAX_TEXT_READ_BYTES = 256 * 1024;
 const MAX_IMAGE_INPUT_BYTES = 64 * 1024 * 1024;
-const MAX_VIDEO_INPUT_BYTES = 64 * 1024 * 1024;
 const AUDIO_WINDOW_SECONDS = 120;
 const AUDIO_MAX_WINDOWS = 16;
 const AUDIO_TEMP_PREFIX = 'worldlinebox-semantic-audio-';
@@ -215,6 +215,7 @@ const sessions = new Map<string, Session>();
 const cancelledSearches = new Map<string, Set<string>>();
 const audioHandles = new Map<string, { libraryId: string; generation: string; windows: Buffer[] }>();
 const activeAudioJobs = new Map<string, { controller: AbortController; promise: Promise<Buffer[]> }>();
+const activeVideoJobs = new Map<string, { controller: AbortController; promise: Promise<EmbeddingVideoWindow[]> }>();
 
 export async function backupSemanticIndexWorkerLibrary(input: {
   libraryId: string;
@@ -855,14 +856,13 @@ export async function executeSemanticIndexWorkerCommand(
     }
     if (command.kind === 'video') {
       const sourcePath = service.resolveAssetPath(command.libraryId, command.assetId);
-      const maxBytes = Math.min(command.maxInputBytes, MAX_VIDEO_INPUT_BYTES);
-      const bytes = await hooks.runWithoutAdmission(async () => {
-        const sourceStat = await stat(sourcePath);
-        if (sourceStat.size <= 0 || sourceStat.size > maxBytes) {
-          throw new Error('Semantic video exceeds the supported input size.');
-        }
-        return readFileBounded(sourcePath, maxBytes);
-      });
+      const jobKey = `${command.libraryId}:${command.sessionGeneration}:${command.assetId}`;
+      const controller = new AbortController();
+      const job = { controller, promise: prepareEmbeddingVideoWindows({ sourcePath, ffmpegPath: resolveFfmpegPath(), ffprobePath: resolveFfprobePath(), signal: controller.signal }) };
+      activeVideoJobs.set(jobKey, job);
+      let videoWindows: EmbeddingVideoWindow[];
+      try { videoWindows = await hooks.runWithoutAdmission(() => job.promise); }
+      finally { if (activeVideoJobs.get(jobKey) === job) activeVideoJobs.delete(jobKey); }
       currentSession(command.libraryId, command.sessionGeneration);
       const [currentAsset] = service.getSemanticAssetSources(command.libraryId, [command.assetId]);
       const currentSource = currentAsset && sourceForAsset(currentAsset, [command.kind]);
@@ -875,8 +875,7 @@ export async function executeSemanticIndexWorkerCommand(
         assetId: currentAsset.assetId,
         sourceRevision: currentSource.revision,
         kind: 'video',
-        mimeType: path.extname(sourcePath).toLowerCase() === '.mp4' ? 'video/mp4' : 'application/octet-stream',
-        bytesBase64: bytes.toString('base64'),
+        videoWindows,
       };
     }
     if (command.kind === 'image') {
@@ -1164,6 +1163,9 @@ export async function closeSemanticIndexWorkerLibrary(libraryId?: string): Promi
   const audioJobs = [...activeAudioJobs.entries()].filter(([key]) => libraryId === undefined || key.startsWith(`${libraryId}:`));
   for (const [, job] of audioJobs) job.controller.abort();
   await Promise.allSettled(audioJobs.map(([, job]) => job.promise));
+  const videoJobs = [...activeVideoJobs.entries()].filter(([key]) => libraryId === undefined || key.startsWith(`${libraryId}:`));
+  for (const [, job] of videoJobs) job.controller.abort();
+  await Promise.allSettled(videoJobs.map(([, job]) => job.promise));
   for (const [handle, audio] of audioHandles) {
     if (libraryId === undefined || audio.libraryId === libraryId) audioHandles.delete(handle);
   }

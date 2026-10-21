@@ -141,7 +141,7 @@ export function resolveContainedPath(root: string, relativePath: string): string
   return target;
 }
 
-function emptySnapshot(phase: EmbeddingIndexSnapshot["phase"] = "starting"): EmbeddingIndexSnapshot {
+function emptySnapshot(phase: EmbeddingIndexSnapshot["phase"] = "unavailable"): EmbeddingIndexSnapshot {
   return { phase, done: 0, total: 0, failedCount: 0 };
 }
 
@@ -431,9 +431,9 @@ export class EmbeddingTestIndex {
       if (current.phase === "starting" || current.phase === "indexing" || current.phase === "ready") return;
       if (!request.restart) return;
     }
-    const config = readLocalEmbeddingTestConfig(this.options.configDirectories)
-      ?? this.options.installedLayout?.(request.modelId)
-      ?? null;
+    const config = this.options.installedLayout
+      ? this.options.installedLayout(request.modelId)
+      : readLocalEmbeddingTestConfig(this.options.configDirectories);
     if (!config || !localEmbeddingFilesReady(config, request.modelId)) {
       const generation = ++this.#generation;
       void this.#closeSession().catch((error: unknown) => {
@@ -725,6 +725,7 @@ export class EmbeddingTestIndex {
       if (error instanceof AggregateError) throw error;
       return startSession({
         ...baseSessionOptions,
+        executable: config.cpuRuntimePath ?? config.runtimePath,
         gpuLayers: 0,
         signal,
       });
@@ -800,8 +801,13 @@ export class EmbeddingTestIndex {
       return this.#embedWithProvider(() => session.embedText(text));
     }
     if (target.kind === "video") {
-      // Multi-frame / input_video semantic may return later. This release does not sample frames.
-      throw new SemanticPreparationError("Video semantic uses the cover image.");
+      if (!prepared.videoWindows?.length) throw new SemanticPreparationError('Video windows are unavailable.');
+      const vectors: number[][] = [];
+      for (const window of prepared.videoWindows) {
+        if (this.#state?.generation !== generation) return null;
+        vectors.push(await this.#embedWithProvider(() => session.embedVideoPayload(window.bytesBase64, window.audioBase64)));
+      }
+      return meanPoolEmbeddings(vectors);
     }
     if (!prepared.mimeType || !prepared.bytesBase64) {
       throw new SemanticPreparationError("Semantic image payload is unavailable.");

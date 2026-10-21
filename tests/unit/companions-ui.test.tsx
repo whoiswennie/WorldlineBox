@@ -5,6 +5,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { Companions } from '../../src/renderer/companions/Companions';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import type { Companion, CompanionAction, CompanionAttachment, CompanionConversation, CompanionMemory, CompanionMessage, CompanionReplyStreamEvent, CompanionState, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
+import type { CompanionMemoryDocumentRead } from '../../src/shared/companion-memory-documents';
+import type { CompanionWorkspaceRequest, CompanionWorkspaceResponse } from '../../src/shared/companion-workspace';
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
@@ -13,6 +15,11 @@ const date = '2026-10-13T08:00:00.000Z';
 const sisters: Companion[] = BUILTIN_COMPANIONS.map(item => ({ ...item, builtin: true, createdAt: date }));
 function conversation(id: string, kind: 'private' | 'group', memberIds: string[], pinned = false): CompanionConversation { return { id, kind, title: kind === 'group' ? '海边小屋' : sisters.find(item => item.id === memberIds[0])!.name, memberIds, pinned, muted: false, unread: 0, updatedAt: date, lastMessage: '一起聊聊吧' }; }
 function message(sequence: number, content = `第 ${sequence} 条消息`, extra: Partial<CompanionMessage> = {}): CompanionMessage { return { id: `message-${sequence}`, sequence, conversationId: 'private-sister', authorId: sequence % 2 ? 'user' : 'deepseek-sister', kind: 'text', content, createdAt: date, status: 'sent', attachments: [], ...extra }; }
+
+function pendingReply(phase: 'waiting' | 'thinking' = 'thinking', detail = '正在生成回复'): CompanionMessage {
+  return message(2, '', { isReplyDraft: true, segments: [], replyToId: 'message-1', replyProgress: {
+    workId: 'work-one', revision: 1, phase, detail, startedAt: date, updatedAt: date } });
+}
 
 function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message(1, '帮我整理照片'), message(2, '我们慢慢来。')], initialActions: CompanionAction[] = []) {
   let state: CompanionState = { companions: sisters.map(item => ({ ...item })), conversations: [conversation('private-sister', 'private', ['deepseek-sister'], true), conversation('group-home', 'group', ['deepseek-sister', 'deepseek-flash'])], activities: [], configured: true, ...extra };
@@ -75,7 +82,16 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
       case 'work-order.list': return { ok: true, workOrderPage: { items: [], hasMore: false } };
       case 'state.get': return { ok: true, runtimeState: { companionId: input.companionId, energy: 82, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: -.1, dominance: .1 }, relationship: { affinity: 45, trust: 50, respect: 60 }, familiarity: { stage: 'acquainted', interactionCount: 4, sharedEventCount: 1 }, updatedAt: date, revision: 1 } };
       case 'memory.save': {
-        const saved: CompanionMemory = { id: input.id ?? 'memory-a', companionId: input.companionId, content: input.content, sourceMessageId: input.sourceMessageId, origin: 'user', createdAt: date, updatedAt: date };
+        const previous = memories.find(item => item.id === input.id);
+        const source = messages.find(item => item.id === (input.sourceMessageId ?? previous?.sourceMessageId));
+        const sourceConversationId = input.conversationId ?? source?.conversationId ?? previous?.sourceConversationId ?? 'private-sister';
+        const saved: CompanionMemory = { id: input.id ?? 'memory-a', companionId: input.companionId,
+          scopeId: `scope-${input.companionId}-${sourceConversationId}`, content: input.content, sourceMessageId: source?.id,
+          sourceConversationId, sourceSequence: source?.sequence ?? 0,
+          sources: source ? [{ messageId: source.id, conversationId: source.conversationId, sequence: source.sequence,
+            authorId: source.authorId, revision: 1, checksum: 'fixture-host-checksum', createdAt: source.createdAt }] : [],
+          tags: previous?.tags ?? [], status: 'queued', captureMethod: 'manual', version: (previous?.version ?? 0) + 1,
+          origin: 'user', createdAt: previous?.createdAt ?? date, updatedAt: date };
         memories = [...memories.filter(item => item.id !== saved.id), saved]; return { ok: true, memories };
       }
       case 'memory.delete': memories = memories.filter(item => item.id !== input.id); return { ok: true };
@@ -161,7 +177,7 @@ it('searches and filters the full built-in catalogue and restores the selected r
 it('keeps private and group conversations in the message list and opens the same private conversation from contacts', async () => {
   const f = fixture(); await mount(f.api);
   const navigation = container!.querySelector('nav[aria-label="伙伴导航"]')!;
-  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '世界', '社交']);
+  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '记忆', '世界', '社交']);
   expect(container!.querySelector('[aria-label="伙伴设置"]')).toBeNull();
   expect(container!.querySelectorAll('[data-companion-conversation]')).toHaveLength(2);
   expect(container!.querySelector('[data-companion-conversation]')!.getAttribute('data-companion-conversation')).toBe('private-sister');
@@ -212,7 +228,7 @@ it('does not mark messages read while the module is hidden or the contact page i
 });
 
 it('honors IME and Shift+Enter, accepts new input while the companion is thinking, and does not turn chat into a DSH task', async () => {
-  const f = fixture({ activities: [{ companionId: 'deepseek-sister', conversationId: 'private-sister', status: 'thinking' }] });
+  const f = fixture({ activities: [{ companionId: 'deepseek-sister', conversationId: 'private-sister', status: 'thinking' }] }, [message(1), pendingReply()]);
   await mount(f.api); const textarea = await fill('textarea[aria-label="输入消息"]', '你好，今天看海吗？');
   expect(textarea.disabled).toBe(false);
   await act(() => {
@@ -225,8 +241,8 @@ it('honors IME and Shift+Enter, accepts new input while the companion is thinkin
   await act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', conversationId: 'private-sister', content: '你好，今天看海吗？' }));
   expect(f.request.mock.calls.some(([input]) => input.type === 'action.run')).toBe(false);
-  expect(textarea.value).toBe(''); await click('取消回复');
-  expect(f.request).toHaveBeenCalledWith({ type: 'reply.cancel', conversationId: 'private-sister' });
+  expect(textarea.value).toBe(''); await click('取消这条回复');
+  expect(f.request).toHaveBeenCalledWith({ type: 'reply.cancel', conversationId: 'private-sister', workId: 'work-one' });
 });
 
 it('retains a failed message draft, shows the real error, and offers retry for a failed model reply', async () => {
@@ -374,6 +390,27 @@ it('keeps each group member presence distinct and updates the open status panel 
   expect(container!.querySelector('[aria-label="伙伴状态"]')).toBeNull();
 });
 
+it('keeps a queued loop in its existing bubble and reserves the queue dock for an old item without a reply identity', async () => {
+  const room = 'group-home', source = message(1, '正在处理的消息', { conversationId: room }), later = message(3, '随后的一条消息', { conversationId: room });
+  const draft = (sequence: number, phase: 'thinking' | 'queued', sourceMessageId: string, workId: string) => message(sequence, '', {
+    conversationId: room, authorId: 'deepseek-sister', replyToId: sourceMessageId, isReplyDraft: true, segments: [],
+    replyProgress: { workId, sourceMessageId, phase, revision: 1, detail: '实际循环状态', startedAt: date, updatedAt: date } });
+  const queue = [
+    { id: 'working', conversationId: room, companionId: 'deepseek-sister', sourceMessageId: source.id, messageId: 'message-2', status: 'running' as const, proactive: false, createdAt: date, updatedAt: date },
+    { id: 'queued', conversationId: room, companionId: 'deepseek-sister', sourceMessageId: later.id, messageId: 'message-4', status: 'queued' as const, proactive: false, createdAt: date, updatedAt: date },
+  ];
+  const f = fixture({ queue: [...queue, { ...queue[1]!, id: 'legacy', sourceMessageId: 'legacy-source', messageId: undefined }] }, [source, draft(2, 'thinking', source.id, 'working'), later, draft(4, 'queued', later.id, 'queued')]);
+  await mount(f.api); await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="group-home"]')!.click());
+  expect(container!.querySelectorAll('.companions-queue-row')).toHaveLength(1);
+  const bubble = container!.querySelector('[data-companion-message="message-4"]')!;
+  expect(bubble.querySelector('[data-reply-stage="queued"]')).not.toBeNull();
+  await click('立即引导', bubble);
+  expect(f.request).toHaveBeenCalledWith({ type: 'message.guide', id: later.id, targetSourceMessageId: source.id });
+  await f.publish({ queue });
+  expect(container!.querySelector('.companions-queue-dock')).toBeNull();
+  expect(container!.querySelector('[data-companion-message="message-4"]')).toBe(bubble);
+});
+
 it('finds an older message and explicitly returns to the latest history without mixing a gap into the timeline', async () => {
   const history = Array.from({ length: 65 }, (_, index) => message(index + 1, index === 2 ? '第一次一起去海边' : `日常 ${index + 1}`));
   const f = fixture({}, history); await mount(f.api); await click('搜索聊天记录');
@@ -507,13 +544,39 @@ it('creates a group and manages its name and membership in the same conversation
 });
 
 it('saves and corrects sourced memory without a second manual capability dispatch entry', async () => {
-  const f = fixture(); await mount(f.api); await click('记住消息 1'); await fill('textarea[aria-label="共同记忆内容"]', '喜欢把照片按旅行地点整理'); await click('记住这件事');
-  expect(f.request).toHaveBeenCalledWith({ type: 'memory.save', companionId: 'deepseek-sister', conversationId: 'private-sister', content: '喜欢把照片按旅行地点整理', sourceMessageId: 'message-1' });
+  vi.useFakeTimers(); const f = fixture(); let saved: CompanionMemoryDocumentRead | undefined;
+  const source = message(1, '帮我整理照片');
+  const workspace = vi.fn(async (input: CompanionWorkspaceRequest): Promise<CompanionWorkspaceResponse> => {
+    if (input.type === 'status') return { ok: true, selected: { libraryId: 'fixture-library', displayName: '伙伴资产库', libraryPath: 'D:/fixture', dataRoot: 'D:/fixture/.companions', memoryRoot: 'D:/fixture/伙伴记忆' } };
+    if (input.type === 'memory.documents.list') return { ok: true, documents: { companionId: input.companionId, directory: input.directory, folders: [{ path: '日记', name: '日记', count: saved ? 1 : 0 }], items: saved ? [saved.document] : [], hasMore: false } };
+    if (input.type === 'memory.documents.read') return { ok: true, document: saved };
+    if (input.type === 'memory.documents.create') {
+      const memory: CompanionMemory = { id: 'memory-a', companionId: input.companionId, scopeId: 'fixture-scope', content: input.content, diaryName: input.diaryName, sourceMessageId: input.sourceMessageId,
+        sourceConversationId: source.conversationId, sourceSequence: source.sequence, sources: [{ sourceType: 'message', messageId: source.id, conversationId: source.conversationId, sequence: source.sequence, authorId: source.authorId, revision: 1, checksum: 'fixture-source-checksum', createdAt: source.createdAt }],
+        tags: input.tags, status: 'queued', captureMethod: 'manual', version: 1, origin: 'user', createdAt: date, updatedAt: date };
+      saved = { document: { path: input.path, name: '聊天摘记.md', title: '聊天摘记', directory: '日记', kind: 'note', category: 'diary', updatedAt: date, bytes: 100, revision: 'fixture-document-1', contentHash: 'a'.repeat(64), readOnly: false, tags: input.tags, syncState: 'pending', noteId: memory.id, version: 1, sourceCount: 1 }, content: input.content, memory, sources: [source], hasMoreSources: false };
+      return { ok: true, document: saved };
+    }
+    if (input.type === 'memory.documents.save' && saved) {
+      if (input.expectedRevision !== saved.document.revision) return { ok: false, error: '版本已变化。' };
+      saved = { ...saved, content: input.content, document: { ...saved.document, revision: 'fixture-document-2', version: 2 }, memory: saved.memory ? { ...saved.memory, content: input.content, version: 2 } : undefined }; return { ok: true, document: saved };
+    }
+    return { ok: true };
+  });
+  await mount({ ...f.api, workspace }); await click('记住消息 1'); await fill('textarea[aria-label="共同记忆内容"]', '喜欢把照片按旅行地点整理'); await click('保存文档');
+  expect(workspace).toHaveBeenCalledWith({ type: 'memory.documents.create', companionId: 'deepseek-sister', path: '日记/聊天摘记.md', content: '喜欢把照片按旅行地点整理', sourceMessageId: 'message-1', tags: [], diaryName: '日记' });
+  const created = (await workspace({ type: 'memory.documents.read', companionId: 'deepseek-sister', path: '日记/聊天摘记.md', sourceLimit: 30 })).document!;
+  expect(created.memory?.sources[0]).toMatchObject({ sourceType: 'message', messageId: source.id });
   await click('编辑记忆 memory-a'); await fill('textarea[aria-label="共同记忆内容"]', '这次照片按地点整理'); await click('保存修正');
-  expect(f.memories()[0]!.content).toBe('这次照片按地点整理');
+  expect(workspace).toHaveBeenCalledWith(expect.objectContaining({ type: 'memory.documents.save', path: '日记/聊天摘记.md', expectedRevision: 'fixture-document-1', content: '这次照片按地点整理' }));
+  const corrected = (await workspace({ type: 'memory.documents.read', companionId: 'deepseek-sister', path: '日记/聊天摘记.md', sourceLimit: 30 })).document!;
+  expect(corrected.memory?.content).toBe('这次照片按地点整理'); expect(corrected.memory?.sources[0]?.messageId).toBe(source.id);
   await click('关闭共同记忆管理'); await click('我们之间'); await click('管理共同记忆');
-  expect(container!.querySelector<HTMLTextAreaElement>('textarea[aria-label="共同记忆内容"]')!.value).toBe('');
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+  expect(container!.querySelector('textarea[aria-label="共同记忆内容"]')).toBeNull();
+  expect(container!.querySelector('.memory-library-paper')?.textContent).toContain('这次照片按地点整理');
   expect(container!.querySelector('[title="交给伙伴处理"]')).toBeNull();
+  expect(f.request.mock.calls.some(([input]) => input.type === 'memory.save')).toBe(false);
   expect(f.request.mock.calls.some(([input]) => input.type === 'action.run')).toBe(false);
 });
 
@@ -602,15 +665,15 @@ it('shows actual action steps and elapsed time, hides private thinking, and keep
 
 it('tracks real reply elapsed time each second and resumes it accurately after the module is hidden', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-13T08:00:05.000Z'));
-  const f = fixture({ activities: [{ companionId: 'deepseek-sister', conversationId: 'private-sister', status: 'thinking', startedAt: date }] });
-  const settings = await mount(f.api); expect(container!.querySelector('.companions-typing-label')!.textContent).toContain('正在回复 · 5 秒');
+  const f = fixture({ activities: [{ companionId: 'deepseek-sister', conversationId: 'private-sister', status: 'thinking', startedAt: date }] }, [message(1), pendingReply()]);
+  const settings = await mount(f.api); expect(container!.querySelector('[aria-label="本条回复进度"]')!.textContent).toContain('正在思考5 秒');
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-  expect(container!.querySelector('.companions-typing-label')!.textContent).toContain('7 秒');
+  expect(container!.querySelector('[aria-label="本条回复进度"]')!.textContent).toContain('7 秒');
   await act(() => root!.render(<Companions api={f.api} isActive={false} onOpenSettings={settings} />));
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-  expect(container!.querySelector('.companions-typing-label')!.textContent).toContain('7 秒');
+  expect(container!.querySelector('[aria-label="本条回复进度"]')!.textContent).toContain('7 秒');
   await act(() => root!.render(<Companions api={f.api} isActive onOpenSettings={settings} />));
-  expect(container!.querySelector('.companions-typing-label')!.textContent).toContain('12 秒');
+  expect(container!.querySelector('[aria-label="本条回复进度"]')!.textContent).toContain('12 秒');
   expect(f.request.mock.calls.some(([input]) => input.type === 'reply.cancel')).toBe(false);
 });
 
@@ -629,14 +692,15 @@ it('offers global settings when unconfigured, labels a preset greeting, and clea
 
 
 it('shows real waiting and generation stages before reply text exists and allows cancellation', async () => {
-  const f = fixture({ activities: [{ companionId: 'deepseek-sister', conversationId: 'private-sister', sourceMessageId: 'message-1', status: 'waiting', stage: '正在用手机处理先前消息，稍后依次回复', startedAt: date }] });
+  const f = fixture({ activities: [{ companionId: 'deepseek-sister', conversationId: 'private-sister', sourceMessageId: 'message-1', status: 'waiting', stage: '正在用手机处理先前消息，稍后依次回复', startedAt: date }] }, [message(1), pendingReply('waiting', '正在用手机处理先前消息，稍后依次回复')]);
   await mount(f.api);
-  const progress = container!.querySelector('[aria-label="伙伴回复进度"]')!;
+  const progress = container!.querySelector('[data-companion-message="message-2"] .companions-bubble-progress')!;
   expect(progress.textContent).toContain('等待回复');
   expect(progress.textContent).toContain('正在用手机处理先前消息');
-  expect(progress.querySelector('.companions-typing.is-waiting')).not.toBeNull();
-  await click('取消回复');
-  expect(f.api.request).toHaveBeenCalledWith({ type: 'reply.cancel', conversationId: 'private-sister' });
+  expect(progress.getAttribute('data-reply-stage')).toBe('waiting');
+  expect(container!.querySelector('.companions-reply-progress')).toBeNull();
+  await click('取消这条回复');
+  expect(f.api.request).toHaveBeenCalledWith({ type: 'reply.cancel', conversationId: 'private-sister', workId: 'work-one' });
 });
 
 

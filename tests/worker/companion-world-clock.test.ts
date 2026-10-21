@@ -27,16 +27,16 @@ it('measures experienced world time across mode rollback and preserves message/s
   vi.setSystemTime(Date.now() + 60000);
   const source = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '我今天买了一盆兰花。', replyDirective: 'none' });
   expect(source.worldCreatedAt).toBe('2026-10-14T11:12:00.000Z'); expect(source.createdAt).toBe('2026-10-14T10:01:00.000Z');
-  f.store.request({ type: 'memory.record', ...f.scope, candidate: { kind: 'event', subject: 'user', content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
+  f.store.request({ type: 'memory.record', ...f.scope, candidate: { content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
   configure(f.store, 'realtime'); vi.setSystemTime(Date.now() + 120000);
   const response = companionStorageResponseSchema.parse(f.store.request({ type: 'world.clock', since: [start] }));
   expect(response.worldClock).toMatchObject({ mode: 'realtime', virtualNow: new Date().toISOString(), elapsed: [{ realAt: start, milliseconds: 74 * 60000 }] });
   f.store.close(); stores.delete(f.store); const store = open(f.file);
   expect(store.getMessage(source.id)).toMatchObject({ createdAt: source.createdAt, worldCreatedAt: source.worldCreatedAt });
   const query = { ...f.scope, query: '兰花', from: '2026-10-14T11:00:00Z', to: '2026-10-14T11:30:00Z' };
-  expect(store.request({ type: 'memory.search', ...query }).memoryPage!.items).toHaveLength(1);
-  expect(store.request({ type: 'memory.sources.search', ...query }).memorySources!.map(message => message.id)).toEqual([source.id]);
-  expect(store.request({ type: 'memory.sources.search', ...query, from: '2026-10-14T10:00:00Z', to: '2026-10-14T10:30:00Z' }).memorySources).toEqual([]);
+  expect(store.request({ type: 'memory.browse', ...query, query: '' }).memoryPage!.items).toHaveLength(1);
+  expect(store.request({ type: 'memory.sources.filter', ...f.scope, ids: [source.id] }).memorySources!.map(message => message.id)).toEqual([source.id]);
+  expect(store.request({ type: 'memory.browse', ...query, query: '', from: '2026-10-14T10:00:00Z', to: '2026-10-14T10:30:00Z' }).memoryPage?.items).toEqual([]);
 });
 it('keeps remaining visit permission duration when compressed time realigns and all residents adopt the selected world zone', () => {
   const f = fixture(); configure(f.store, 'compressed');

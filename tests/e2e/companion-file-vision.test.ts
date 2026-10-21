@@ -11,7 +11,7 @@ import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import type { CompanionFileInput, CompanionToolImageReference } from '../../src/shared/companion-file-tool';
 import type { CompanionLoopCheckpoint } from '../../src/shared/companion-loop';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, companionTestDataRoot, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi; dshLauncher: WorldlineBoxDshLauncherApi } };
 const companionId = 'deepseek-sister', conversationId = 'private-deepseek-sister';
@@ -26,6 +26,7 @@ async function launch(profile: string) {
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
   const page = await application.firstWindow(), native = await application.browserWindow(page);
   await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 1050); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+  await ensureCompanionTestWorkspace(page);
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page'); return { application, page };
 }
 async function openChat(page: Page) {
@@ -50,7 +51,7 @@ function wave() {
 function cleanup(root: string) {
   const target = path.resolve(root);
   if (path.dirname(target) !== path.resolve(tmpdir()) || !path.basename(target).startsWith('worldlinebox-file-vision-e2e-')) throw new Error('Unexpected file vision cleanup path.');
-  rmSync(target, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 });
+  removeCompanionTestDirectory(target);
 }
 
 // Only the native chooser and remote model are fixtures. Main executes the
@@ -71,9 +72,9 @@ test('reads actual text and image pixels with native tools, sends an existing fi
         if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .99, evidence: [context.source.content], reason: '普通只读查看请求，正常等待。' };
         else if (context.purpose === 'world_decision') output = { action: null, reason: '遵守当前生活安排。', appraisals: [] };
         else if (context.purpose === 'world_social') output = { text: null, reason: '自然结束。' };
-        else if (context.purpose === 'memory_query') output = {};
-        else if (context.purpose === 'memory_dream') output = { candidates: [], dream: null };
-        else if (context.purpose?.startsWith('memory_')) output = { candidates: [] };
+        else if (context.purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
+        else if (context.purpose === 'vcp_sleep_reflection') output = { notes: [], dream: null };
+        else if (context.purpose === 'vcp_experience_journal') output = { notes: [] };
         else {
           const files = context.files as CompanionFileInput[], tools = body.messages.filter((message: { role: string }) => message.role === 'tool');
           const references = context.messages.flatMap((message: { attachments?: Array<{ type: string; attachmentId: string; path?: string; available: boolean }> }) => message.attachments ?? []);
@@ -133,7 +134,7 @@ test('reads actual text and image pixels with native tools, sends an existing fi
     const screenshot = testInfo.outputPath('file-vision-final.png'); await bubble.screenshot({ path: screenshot }); await testInfo.attach('real-tool-attachments', { path: screenshot, contentType: 'image/png' });
     const replyId = reply!.id, attachmentIds = reply!.attachments.map(attachment => attachment.id);
     await application.close(); application = undefined;
-    const database = new DatabaseSync(path.join(profile, 'companions', 'messages.sqlite'), { readOnly: true });
+    const database = new DatabaseSync(path.join(companionTestDataRoot(profile), 'messages.sqlite'), { readOnly: true });
     try {
       const stored = database.prepare('SELECT value FROM metadata WHERE key=?').get(`loop/${source.id}/${companionId}`)!;
       const checkpoint = JSON.parse(String(stored.value)) as CompanionLoopCheckpoint; expect(checkpoint.status).toBe('done'); expect(checkpoint.messageId).toBe(replyId); expect(checkpoint.turns).toHaveLength(2);
@@ -141,7 +142,7 @@ test('reads actual text and image pixels with native tools, sends an existing fi
       const allCheckpoints = database.prepare("SELECT value FROM metadata WHERE key LIKE 'loop/%' OR key LIKE 'message-loop/%'").all().map(row => String(row.value)).join('\n');
       expect(allCheckpoints).not.toMatch(/"base64"\s*:/u); expect(allCheckpoints).not.toContain('data:image/');
       const files = attachmentIds.map(id => database.prepare('SELECT relative_path,data FROM attachments WHERE id=?').get(id)!);
-      for (const file of files) { const filename = path.resolve(profile, 'companions', String(file.relative_path)); expect(filename.startsWith(path.join(profile, 'companions', 'attachments') + path.sep)).toBe(true); expect(existsSync(filename)).toBe(true); const item = JSON.parse(String(file.data)); if (item.mime === 'audio/wav') expect(readFileSync(filename)).toEqual(originalAudio); }
+      for (const file of files) { const filename = path.resolve(companionTestDataRoot(profile), String(file.relative_path)); expect(filename.startsWith(path.join(companionTestDataRoot(profile), 'attachments') + path.sep)).toBe(true); expect(existsSync(filename)).toBe(true); const item = JSON.parse(String(file.data)); if (item.mime === 'audio/wav') expect(readFileSync(filename)).toEqual(originalAudio); }
     } finally { database.close(); }
     for (const filename of [imageFile, textFile, audioFile]) rmSync(filename); expect(existsSync(imageFile)).toBe(false);
     opened = await launch(profile); application = opened.application; page = opened.page; await openChat(page);

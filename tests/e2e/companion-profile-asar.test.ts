@@ -1,6 +1,7 @@
+import { removeCompanionTestDirectory } from './electron-test-helpers';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createRequire, builtinModules } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -17,7 +18,7 @@ type Report = { error?: string; electronVersion: string; ready: boolean; runAsNo
 async function cleanup(root: string): Promise<void> {
   const resolved = path.resolve(root);
   if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-profile-asar-e2e-')) throw new Error('Unexpected isolated ASAR fixture cleanup.');
-  await rm(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+  removeCompanionTestDirectory(resolved);
 }
 
 test('materializes the actual hashed ASAR portrait to a normal OS file before passing bound pixels to the model', async () => {

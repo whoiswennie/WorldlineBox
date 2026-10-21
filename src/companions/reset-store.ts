@@ -8,7 +8,7 @@ import type { CompanionStorageCommand } from '../shared/companion-storage';
 import { companionSearchTokens } from '../shared/companion-search';
 
 type Row = Record<string, string | number | null>;
-type Progress = { step: number; memoryStep: number; roomAfter: string; messageAfter: number; refs: number; taskIds: string[] };
+type Progress = { step: number; roomAfter: string; messageAfter: number; refs: number; taskIds: string[] };
 type Job = CompanionReset & { throughSequence: number; progress: Progress };
 const row = (input: unknown) => input as Row;
 const rows = (input: unknown[]) => input.map(row);
@@ -22,7 +22,8 @@ export class CompanionResetStore {
   constructor(private readonly db: CompanionConnection, private readonly root: string,
     private readonly defaults: (id: string) => Companion,
     private readonly resetWorld: (id: string) => void,
-    private readonly withdrawSources: (ids: string[]) => void) {}
+    private readonly withdrawSources: (ids: string[]) => void,
+    private readonly withdrawNote: (id: string) => void, private readonly resetNotes: (owner: string, limit: number) => number) {}
 
   initialize(): void {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_reset_jobs(companion_id TEXT PRIMARY KEY,id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,phase TEXT NOT NULL,data TEXT NOT NULL);
@@ -31,9 +32,6 @@ export class CompanionResetStore {
       CREATE TABLE IF NOT EXISTS companion_reset_social_rooms(job_id TEXT NOT NULL,conversation_id TEXT NOT NULL,PRIMARY KEY(job_id,conversation_id));
       CREATE TABLE IF NOT EXISTS companion_reset_messages(job_id TEXT NOT NULL,message_id TEXT NOT NULL,sequence INTEGER NOT NULL,PRIMARY KEY(job_id,message_id));
       CREATE INDEX IF NOT EXISTS companion_reset_message_id ON companion_reset_messages(message_id);
-      CREATE TABLE IF NOT EXISTS companion_reset_memories(job_id TEXT NOT NULL,memory_id TEXT NOT NULL,PRIMARY KEY(job_id,memory_id));
-      CREATE TABLE IF NOT EXISTS companion_reset_invalidations(job_id TEXT NOT NULL,memory_id TEXT NOT NULL,after_id TEXT NOT NULL DEFAULT '',done INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(job_id,memory_id));
-      CREATE INDEX IF NOT EXISTS companion_reset_invalidation_pending ON companion_reset_invalidations(job_id,done,memory_id);
       CREATE TABLE IF NOT EXISTS companion_reset_garbage(job_id TEXT NOT NULL,attachment_id TEXT NOT NULL,PRIMARY KEY(job_id,attachment_id));
       CREATE TABLE IF NOT EXISTS companion_reset_files(job_id TEXT NOT NULL,relative_path TEXT NOT NULL,PRIMARY KEY(job_id,relative_path));`);
   }
@@ -49,7 +47,7 @@ export class CompanionResetStore {
         && rows(this.db.prepare(`PRAGMA index_info(${ident(String(index.name))})`).all())[0]?.name === column);
       if (columns.some(column => column.name === 'companion_id') && !indexed('companion_id')) this.db.exec(`CREATE INDEX IF NOT EXISTS ${ident('reset_owner_' + table)} ON ${ident(table)}(companion_id)`);
       for (const fk of rows(this.db.prepare(`PRAGMA foreign_key_list(${ident(table)})`).all())) {
-        if (!['messages', 'memories', 'actions'].includes(String(fk.table))) continue;
+        if (!['messages', 'vcp_memory_notes', 'actions'].includes(String(fk.table))) continue;
         const column = String(fk.from); if (!indexed(column)) this.db.exec(`CREATE INDEX IF NOT EXISTS ${ident('reset_fk_' + table + '_' + column)} ON ${ident(table)}(${ident(column)})`);
         if (fk.table === 'messages') this.messageReferences.push({ table, column });
       }
@@ -67,7 +65,7 @@ export class CompanionResetStore {
   status(id: string): { reset?: CompanionReset; resetTaskIds: string[] } { const job = this.load(id); return { reset: job && this.public(job), resetTaskIds: job?.progress.taskIds ?? [] }; }
   blocked(id: string): boolean { return !!this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(id); }
   assertCommand(command: CompanionStorageCommand): void {
-    if (command.type.startsWith('companion.reset') || command.type === 'companion.task.track') return;
+    if (command.type.startsWith('companion.reset') || command.type.startsWith('memory.outbox.') || command.type === 'companion.task.track') return;
     const input = command as unknown as { type: string; id?: string; actionId?: string; companionId?: string; sourceMessageId?: string;
       action?: { companionId: string; sourceMessageId: string }; work?: { companionId: string; sourceMessageId: string };
       checkpoint?: { companionId?: string; sourceMessageId?: string }; memory?: { companionId: string; sourceMessageId?: string };
@@ -75,9 +73,9 @@ export class CompanionResetStore {
     let owner = input.companionId, source = input.sourceMessageId;
     for (const value of [input.action, input.work, input.checkpoint, input.memory]) if (value?.companionId) { owner = value.companionId; source = value.sourceMessageId; }
     const table = input.type.startsWith('action.') || input.type.startsWith('checkpoint.') || input.type === 'state.action' ? 'actions'
-      : input.type.startsWith('activity.') ? 'companion_activity_tasks' : input.type.startsWith('memory.jobs.') ? 'memory_jobs' : input.type.startsWith('world.job.') ? 'companion_world_jobs'
+      : input.type.startsWith('activity.') ? 'companion_activity_tasks' : input.type.startsWith('memory.jobs.') ? 'vcp_capture_jobs' : input.type.startsWith('world.job.') ? 'companion_world_jobs'
         : input.type.startsWith('social.job.') ? 'companion_social_jobs' : input.type.startsWith('work-order.') ? 'companion_work_orders' : input.type === 'work.status' ? 'companion_work_queue'
-          : input.type === 'memory.delete' ? 'memories' : input.type.startsWith('schedule.') && 'id' in input ? 'companion_schedules' : undefined;
+          : input.type === 'memory.delete' ? 'vcp_memory_notes' : input.type.startsWith('schedule.') && 'id' in input ? 'companion_schedules' : undefined;
     if (!owner && table && (input.id || input.actionId)) { const found = this.db.prepare(`SELECT companion_id FROM ${ident(table)} WHERE id=?`).get(input.id ?? input.actionId); if (found) owner = String(row(found).companion_id); }
     if (input.type === 'schedule.occurrence.update' && input.id) { const found = this.db.prepare('SELECT s.companion_id FROM companion_schedule_occurrences o JOIN companion_schedules s ON s.id=o.schedule_id WHERE o.id=?').get(input.id); if (found) owner = String(row(found).companion_id); }
     if (input.message) {
@@ -115,7 +113,7 @@ export class CompanionResetStore {
       if (expectedRevision !== undefined && expectedRevision !== (current.revision ?? 1)) throw new Error('伙伴资料已经更新，请重新读取后重置。');
       const job: Job = { id: randomUUID(), companionId: id, scope: 'all', status: 'running', phase: 'stopping', processed: 0, startedAt: stamp(), updatedAt: stamp(),
         throughSequence: Number(row(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM messages').get()).n),
-        progress: { step: 0, memoryStep: 0, roomAfter: '', messageAfter: 0, refs: 0, taskIds: rows(this.db.prepare("SELECT json_extract(data,'$.taskId') AS task FROM actions WHERE companion_id=? AND status IN('queued','running','interrupted') AND json_extract(data,'$.taskId') IS NOT NULL").all(id)).map(item => String(item.task)) } };
+        progress: { step: 0, roomAfter: '', messageAfter: 0, refs: 0, taskIds: rows(this.db.prepare("SELECT json_extract(data,'$.taskId') AS task FROM actions WHERE companion_id=? AND status IN('queued','running','interrupted') AND json_extract(data,'$.taskId') IS NOT NULL").all(id)).map(item => String(item.task)) } };
       this.save(job); this.db.prepare('INSERT INTO companion_reset_boundaries(companion_id,through_sequence) VALUES(?,?) ON CONFLICT(companion_id) DO UPDATE SET through_sequence=MAX(through_sequence,excluded.through_sequence)').run(id, job.throughSequence);
       for (const attachment of [current.avatarAttachmentId, current.appearanceAttachmentId]) if (attachment) this.garbage(job, attachment);
       this.db.prepare('UPDATE companions SET deleted_at=NULL,data=? WHERE id=?').run(JSON.stringify({ ...defaults, id, createdAt: current.createdAt, revision: (current.revision ?? 1) + 1 }), id);
@@ -132,14 +130,7 @@ export class CompanionResetStore {
     this.save(job); return this.public(job);
   }
   private garbage(job: Job, attachmentId: string): void { this.db.prepare('INSERT OR IGNORE INTO companion_reset_garbage(job_id,attachment_id) VALUES(?,?)').run(job.id, attachmentId); }
-  private invalidate(job: Job, memoryId: string): void {
-    this.db.prepare('INSERT OR IGNORE INTO companion_reset_invalidations(job_id,memory_id) VALUES(?,?)').run(job.id, memoryId);
-    // Withdraw before removing a dependency/source edge, so another reader
-    // cannot observe an apparently source-free valid memory between batches.
-    this.db.prepare("UPDATE memories SET data=json_set(data,'$.status','invalid','$.updatedAt',?) WHERE id=? AND companion_id!=?").run(stamp(), memoryId, job.companionId);
-    this.db.prepare("UPDATE memory_records SET status='invalid' WHERE memory_id=? AND companion_id!=?").run(memoryId, job.companionId);
-    this.db.prepare('DELETE FROM memory_search WHERE rowid IN(SELECT ordinal FROM memory_records WHERE memory_id=? AND companion_id!=?)').run(memoryId, job.companionId);
-  }
+  private invalidate(_job: Job, noteId: string): void { this.withdrawNote(noteId); }
   private removeRows(table: string, predicate: string, args: unknown[], limit: number, before?: (items: Row[]) => void): number {
     if (table === 'companion_social_visit_contacts') {
       const found = rows(this.db.prepare(`SELECT guest_id,host_id FROM companion_social_visit_contacts WHERE ${predicate} LIMIT ?`).all(...args, limit));
@@ -153,7 +144,13 @@ export class CompanionResetStore {
   private ownerSteps(job: Job): Array<[string, string, unknown[], ((items: Row[]) => void)?]> {
     const id = job.companionId;
     return [
-      ...['memory_tags', 'memory_jobs', 'memory_observers', 'memory_source_blocks', 'memory_forget_rules', 'memory_operations'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
+      ['companion_document_catalog', 'companion_id=?', [id]],
+      ['companion_document_folders', 'companion_id=?', [id]],
+      ['companion_world_sleep_episodes', 'companion_id=?', [id]],
+      ['companion_learning_reads', 'companion_id=?', [id]],
+      ['companion_learning_grants', 'companion_id=?', [id]],
+      ['vcp_note_source_history', 'note_id IN(SELECT id FROM vcp_memory_notes WHERE companion_id=?)', [id]],
+      ...['vcp_capture_jobs', 'vcp_source_observers', 'vcp_source_blocks', 'vcp_source_prohibitions', 'vcp_source_policy_holds', 'vcp_operation_receipts'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
       ['companion_schedule_occurrences', 'schedule_id IN(SELECT id FROM companion_schedules WHERE companion_id=?)', [id]],
       ['companion_work_order_audit', 'order_id IN(SELECT id FROM companion_work_orders WHERE companion_id=?)', [id]],
       ['companion_work_orders', 'companion_id=?', [id]],
@@ -169,6 +166,7 @@ export class CompanionResetStore {
       ['companion_world_visit_records', 'guest_id=? OR host_id=?', [id, id]],
       ['companion_world_perceptions', 'companion_id=?', [id]],
       ['companion_activity_tasks', 'companion_id=?', [id]],
+      ['companion_world_known_entrances', 'companion_id=? OR target_id=?', [id, id]],
       ['companion_world_suspended', 'companion_id=?', [id]],
       ['companion_social_jobs', 'conversation_id IN(SELECT conversation_id FROM companion_reset_social_rooms WHERE job_id=?)', [job.id]],
       ['companion_social_outbox', 'conversation_id IN(SELECT conversation_id FROM companion_reset_social_rooms WHERE job_id=?)', [job.id]],
@@ -180,26 +178,7 @@ export class CompanionResetStore {
       ...['actorId', 'targetId', 'privateOwner'].map(field => ['companion_world_events', `json_extract(data,'$.${field}')=?`, [id]] as [string, string, unknown[]]),
     ];
   }
-  private memoryBatch(job: Job, limit: number): number {
-    const batch = rows(this.db.prepare('SELECT id FROM memories WHERE companion_id=? LIMIT ?').all(job.companionId, limit));
-    const insert = this.db.prepare('INSERT OR IGNORE INTO companion_reset_memories(job_id,memory_id) VALUES(?,?)');
-    for (const item of batch) insert.run(job.id, item.id);
-    job.progress.memoryStep = 0; return batch.length;
-  }
-  private memoryLinks(job: Job, limit: number): number {
-    const batch = 'SELECT memory_id FROM companion_reset_memories WHERE job_id=?';
-    const steps: Array<[string, string, unknown[], ((items: Row[]) => void)?]> = [
-      ['memory_dependencies', `memory_id IN(${batch}) OR source_memory_id IN(${batch})`, [job.id, job.id], items => { for (const item of items) this.invalidate(job, String(item.memory_id)); }],
-      ['memory_relations', `from_id IN(${batch}) OR to_id IN(${batch})`, [job.id, job.id]],
-      ['memory_tag_links', `memory_id IN(${batch})`, [job.id]],
-      ['memory_sources', `memory_id IN(${batch})`, [job.id]],
-      ['memory_records', `memory_id IN(${batch})`, [job.id], items => { for (const item of items) this.db.prepare('DELETE FROM memory_search WHERE rowid=?').run(item.ordinal); }],
-      ['memories', `id IN(${batch})`, [job.id]],
-    ];
-    const step = steps[job.progress.memoryStep];
-    if (!step) { this.db.prepare('DELETE FROM companion_reset_memories WHERE job_id=?').run(job.id); return -1; }
-    const count = this.removeRows(step[0], step[1], step[2], limit, step[3]); if (!count) job.progress.memoryStep++; return count;
-  }
+  private memoryBatch(job: Job, limit: number): number { return this.resetNotes(job.companionId, limit); }
   private rooms(job: Job, limit: number): number {
     const found = rows(this.db.prepare('SELECT c.id,c.kind,(SELECT COUNT(*) FROM conversation_members x WHERE x.conversation_id=c.id) AS members,EXISTS(SELECT 1 FROM companion_social_conversations s WHERE s.id=c.id) AS peer FROM conversation_members m JOIN conversations c ON c.id=m.conversation_id WHERE m.companion_id=? AND c.id>? ORDER BY c.id LIMIT ?').all(job.companionId, job.progress.roomAfter, limit));
     for (const item of found) {
@@ -255,7 +234,7 @@ export class CompanionResetStore {
         if (!found.length) job.progress.refs++; return found.length;
       }
       const count = this.removeRows(ref.table, `${ident(ref.column)} IN(${stage})`, [job.id], limit, items => {
-        if (ref.table === 'memory_sources') for (const item of items) this.invalidate(job, String(item.memory_id));
+        if (ref.table === 'vcp_note_sources') for (const item of items) this.invalidate(job, String(item.note_id));
         if (ref.table === 'message_attachments') for (const item of items) this.garbage(job, String(item.attachment_id));
         if (ref.table === 'companion_social_messages') for (const item of items) this.db.prepare('DELETE FROM companion_social_search WHERE rowid=?').run(item.sequence);
       });
@@ -303,19 +282,6 @@ export class CompanionResetStore {
     }
     return found.length;
   }
-  private invalidations(job: Job, limit: number): number {
-    const found = this.db.prepare('SELECT * FROM companion_reset_invalidations WHERE job_id=? AND done=0 ORDER BY memory_id LIMIT 1').get(job.id); if (!found) return 0;
-    const item = row(found), id = String(item.memory_id), memory = this.db.prepare('SELECT companion_id FROM memories WHERE id=?').get(id);
-    if (memory && row(memory).companion_id !== job.companionId) {
-      this.db.prepare("UPDATE memories SET data=json_set(data,'$.status','invalid','$.updatedAt',?) WHERE id=?").run(stamp(), id);
-      this.db.prepare("UPDATE memory_records SET status='invalid' WHERE memory_id=?").run(id);
-      this.db.prepare('DELETE FROM memory_search WHERE rowid IN(SELECT ordinal FROM memory_records WHERE memory_id=?)').run(id);
-    }
-    const children = rows(this.db.prepare('SELECT memory_id FROM memory_dependencies WHERE source_memory_id=? AND memory_id>? ORDER BY memory_id LIMIT ?').all(id, item.after_id, limit));
-    for (const child of children) this.invalidate(job, String(child.memory_id));
-    this.db.prepare('UPDATE companion_reset_invalidations SET after_id=?,done=? WHERE job_id=? AND memory_id=?').run(children.at(-1)?.memory_id ?? item.after_id, Number(children.length < limit), job.id, id);
-    return children.length + 1;
-  }
   private garbageBatch(job: Job, limit: number): number {
     const found = rows(this.db.prepare('SELECT attachment_id FROM companion_reset_garbage WHERE job_id=? LIMIT ?').all(job.id, limit));
     for (const item of found) {
@@ -355,9 +321,8 @@ export class CompanionResetStore {
         const started = performance.now(); let emptySteps = 0;
         do {
         let count = 0;
-        if (job.phase === 'rooms') { count = this.rooms(job, limit); if (!count) job.phase = 'select-memories'; }
-        else if (job.phase === 'select-memories') { count = this.memoryBatch(job, limit); job.phase = count ? 'memory-links' : 'owner-records'; }
-        else if (job.phase === 'memory-links') { count = this.memoryLinks(job, limit); if (count < 0) { count = 0; job.phase = 'select-memories'; } }
+        if (job.phase === 'rooms') { count = this.rooms(job, limit); if (!count) job.phase = 'journals'; }
+        else if (job.phase === 'journals') { count = this.memoryBatch(job, limit); if (!count) job.phase = 'owner-records'; }
         else if (job.phase === 'owner-records') {
           const step = this.ownerSteps(job)[job.progress.step];
           if (!step) job.phase = 'metadata';
@@ -367,11 +332,10 @@ export class CompanionResetStore {
         else if (job.phase === 'social-rooms') { count = this.socialRooms(job, limit); if (!count) job.phase = 'actions'; }
         else if (job.phase === 'message-links') { count = this.messageLinks(job, limit); if (count < 0) { count = 0; job.phase = 'messages'; } }
         else if (job.phase === 'messages') { count = this.messageMetadata(job, limit); if (!count) job.phase = 'select-messages'; }
-        else if (job.phase === 'actions') { count = this.removeRows('actions', 'companion_id=?', [job.companionId], limit, items => { for (const item of items) { this.db.prepare('DELETE FROM companion_state_actions WHERE action_id=?').run(item.id); this.db.prepare('UPDATE messages SET action_id=NULL WHERE action_id=?').run(item.id); this.db.prepare('DELETE FROM metadata WHERE key=? OR key GLOB ?').run('task-checkpoint/' + item.id, 'task-attempt/' + item.id + '/*'); } }); if (!count) job.phase = 'invalidate'; }
-        else if (job.phase === 'invalidate') { count = this.invalidations(job, limit); if (!count) job.phase = 'attachments'; }
+        else if (job.phase === 'actions') { count = this.removeRows('actions', 'companion_id=?', [job.companionId], limit, items => { for (const item of items) { this.db.prepare('DELETE FROM companion_state_actions WHERE action_id=?').run(item.id); this.db.prepare('UPDATE messages SET action_id=NULL WHERE action_id=?').run(item.id); this.db.prepare('DELETE FROM metadata WHERE key=? OR key GLOB ?').run('task-checkpoint/' + item.id, 'task-attempt/' + item.id + '/*'); } }); if (!count) job.phase = 'attachments'; }
         else if (job.phase === 'attachments') { count = this.garbageBatch(job, limit); if (!count) job.phase = 'files'; }
         else if (job.phase === 'finish') {
-          for (const table of ['companion_reset_rooms', 'companion_reset_invalidations']) { count = this.removeRows(table, 'job_id=?', [job.id], limit); if (count) break; }
+          for (const table of ['companion_reset_rooms']) { count = this.removeRows(table, 'job_id=?', [job.id], limit); if (count) break; }
           if (!count) { job.status = 'completed'; job.phase = 'completed'; this.resetWorld(job.companionId); }
         }
         job.processed += count;

@@ -1,0 +1,116 @@
+{
+  "generatedAt": "2026-10-21T11:09:27.805Z",
+  "runtime": "C:\\Users\\hp\\Desktop\\project\\new\\WorldlineBox\\resources\\embedding-models\\runtime-cpu",
+  "cpu": true,
+  "startupMs": 2069.7902,
+  "dimension": 768,
+  "beforeGpuMiB": "200",
+  "loadedGpuMiB": "200",
+  "text": {
+    "vectors": []
+  },
+  "image": {},
+  "audio": {},
+  "video": {
+    "rankings": [
+      {
+        "expected": "red-blue",
+        "results": [
+          {
+            "id": "red-blue",
+            "score": 0.7974583342967207
+          },
+          {
+            "id": "red-green",
+            "score": 0.7626303169218692
+          }
+        ]
+      },
+      {
+        "expected": "red-green",
+        "results": [
+          {
+            "id": "red-green",
+            "score": 0.8034635364047662
+          },
+          {
+            "id": "red-blue",
+            "score": 0.7725072345101708
+          }
+        ]
+      }
+    ],
+    "correct": 2,
+    "sameFirstFrameDifferentContentCosine": 0.9760454586084581,
+    "audioRankings": [
+      {
+        "expected": "dentist",
+        "results": [
+          {
+            "id": "dentist",
+            "score": 0.7325975928470753
+          },
+          {
+            "id": "library",
+            "score": 0.6055148876090255
+          }
+        ]
+      },
+      {
+        "expected": "library",
+        "results": [
+          {
+            "id": "library",
+            "score": 0.7698781340110801
+          },
+          {
+            "id": "dentist",
+            "score": 0.6439853095481021
+          }
+        ]
+      }
+    ],
+    "audioCorrect": 2
+  },
+  "peakObservedGpuMiB": "200",
+  "closedSuccessfully": true,
+  "nativeGpuEvidence": [],
+  "requestCount": 8,
+  "latencyMedianMs": 2673.7787,
+  "latencySamples": [
+    {
+      "phase": "video",
+      "ms": 2710.0892000000003
+    },
+    {
+      "phase": "video",
+      "ms": 2673.7787
+    },
+    {
+      "phase": "video",
+      "ms": 15.647700000000441
+    },
+    {
+      "phase": "video",
+      "ms": 15.288000000000466
+    },
+    {
+      "phase": "video",
+      "ms": 6068.9583999999995
+    },
+    {
+      "phase": "video",
+      "ms": 7282.661900000001
+    },
+    {
+      "phase": "video",
+      "ms": 21.7586999999985
+    },
+    {
+      "phase": "video",
+      "ms": 20.189299999998184
+    }
+  ],
+  "totalMs": 21463.172199999997,
+  "afterGpuMiB": "200"
+}

@@ -4,18 +4,23 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import { CompanionService } from '../../src/main/companions/service';
+import { VcpMemoryClient } from '../../src/main/vcp-memory/client';
+import type { VcpMemoryNote, VcpMemoryScope, VcpMemoryMessage, VcpMemoryTimelineArtifacts, VcpMemoryPluginName } from '../../src/main/vcp-memory/contracts';
+import { vcpMemoryNotebookFolder } from '../../src/main/vcp-memory/contracts';
+import type { CompanionMemoryRuntime } from '../../src/main/companions/vcp-runtime';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory';
 import type { CompanionMemory } from '../../src/shared/companions';
 import type { DshLauncher } from '../../src/main/dsh/launcher';
 
 const transport = vi.hoisted(() => ({ request: vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(),
-  start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(), worldFetch: vi.fn<typeof fetch>() }));
+  start: vi.fn<() => Promise<void>>(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(), worldFetch: vi.fn<typeof fetch>(), authorizationFetch: vi.fn<typeof fetch>(), prohibitionFetch: vi.fn<typeof fetch>() }));
 vi.mock('../../src/main/companions/storage-client', () => ({ CompanionStorageClient: class {
   start = transport.start; request = transport.request; close = transport.close;
 } }));
 vi.mock('electron', () => ({
-  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => /memory_(?:extraction|query|maintenance|dream)/u.test(String(init?.body))
+  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => /companion_management_authorization/u.test(String(init?.body))
+    ? transport.authorizationFetch(input, init) : /vcp_memory_prohibition_check/u.test(String(init?.body)) ? transport.prohibitionFetch(input, init) : /vcp_(?:experience_journal|sleep_reflection)/u.test(String(init?.body))
     ? transport.memoryFetch(input, init) : /world_(?:decision|attention)/u.test(String(init?.body)) ? transport.worldFetch(input, init) : transport.fetch(input, init)) },
   dialog: { showOpenDialog: vi.fn() }, ipcMain: { handle: vi.fn() }, protocol: { handle: vi.fn() }, shell: { showItemInFolder: vi.fn() },
   safeStorage: { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value), decryptString: (value: Buffer) => value.toString() },
@@ -23,10 +28,12 @@ vi.mock('electron', () => ({
 
 const seeds: CompanionSeed[] = [{ id: 'sister', name: '大肥鱼', description: '姐姐', persona: '温柔沉稳', model: '', avatar: 'sister', proactive: false }];
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionService>();
+const clients = new Map<string, FakeVcpClient>();
 const fixedTime = '2026-10-14T02:00:00Z';
+
 type Payload = { purpose?: string; companion?: { id: string }; taskRequest?: { sourceMessageId: string; prompt: string };
   currentMessage?: { id: string; content: string }; messages: Array<{ id: string; content: string; authorId: string }>;
-  relevantMemories?: CompanionMemory[]; memories?: CompanionMemory[] };
+  relevantMemories?: CompanionMemory[]; memories?: CompanionMemory[]; memoryRecall?: { context?: { text: string } } };
 function body(init?: RequestInit): { messages: Array<{ role: string; content: string; tool_call_id?: string }> } {
   return JSON.parse(String(init?.body));
 }
@@ -39,9 +46,53 @@ function toolResponse(id: string, name: string, args: unknown): Response {
   return new Response(JSON.stringify({ choices: [{ message: { content: null,
     tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
 }
-function preference(source: { id: string; content: string }, value = '茶'): CompanionMemoryCandidate {
-  return { kind: 'preference', subject: 'user', factKey: 'drink.preference', value, content: `用户喜欢${value}。`,
-    sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags: [{ name: '饮料偏好', aliases: ['饮品习惯'] }] };
+function journal(source: { id: string; content: string }, content = '用户喜欢茶。', tags = ['饮料偏好']): CompanionMemoryCandidate {
+  return { content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags };
+}
+
+/** Host orchestration fake only. Original indexing/River behavior is tested in the worker suite. */
+class FakeVcpClient extends VcpMemoryClient {
+  readonly notes = new Map<string, Map<string, VcpMemoryNote>>();
+  constructor(root: string) {
+    super({ dataRoot: root, vendorRoot: 'unused-vendor', workerPath: 'unused-worker',
+      embedding: { baseUrl: 'http://127.0.0.1/internal-document', model: 'bundled-gemma2', apiKey: 'internal', dimension: 768 } });
+  }
+  override remember = vi.fn(async (scope: VcpMemoryScope, note: VcpMemoryNote) => {
+    const notes = this.notes.get(scope.scopeId) ?? new Map<string, VcpMemoryNote>();
+    notes.set(note.id, structuredClone(note)); this.notes.set(scope.scopeId, notes);
+    return { id: note.id, indexed: true as const };
+  });
+  override replace = vi.fn(async (scope: VcpMemoryScope, notes: VcpMemoryNote[]) => {
+    this.notes.set(scope.scopeId, new Map(notes.map(note => [note.id, structuredClone(note)])));
+    return { replaced: true as const, count: notes.length };
+  });
+  override search = vi.fn(async (scope: VcpMemoryScope, query: { text: string; topK?: number }) => ({
+    results: [...(this.notes.get(scope.scopeId)?.values() ?? [])].slice(0, query.topK ?? 100)
+      .map(note => ({ ...structuredClone(note), score: 0.9, sourceFile: `memories/${note.id}.md`, engine: 'river' as const })),
+    diagnostics: { jointUsed: true }, degraded: false,
+  }));
+  override forget = vi.fn(async (scope: VcpMemoryScope, id: string) => {
+    this.notes.get(scope.scopeId)?.delete(id); return { id, deleted: true as const };
+  });
+  override purgeScope = vi.fn(async (scope: VcpMemoryScope) => { this.notes.delete(scope.scopeId); });
+  override interruptScope = vi.fn(async () => undefined);
+  override capabilities = vi.fn(async () => ({ plugins: {}, timelineGenerationConfigured: false, coldKnowledge: false }));
+  override preprocess = vi.fn(async (scope: VcpMemoryScope, messages: VcpMemoryMessage[]) => ({
+    messages: messages.map(message => ({ ...message, content: typeof message.content === 'string'
+      ? message.content.replace(/\[\[([^\]]+)日记本::RiverMemo(?:::AIMemo\+)?\]\]/gu, (_marker, folders: string) => [...(this.notes.get(scope.scopeId)?.values() ?? [])]
+        .filter(note => folders.split('|').includes(vcpMemoryNotebookFolder(note.diaryName))).map(note => note.content).join('\n'))
+        .replace('[[AIMemo=True]]', '')
+        .replace('[[VCPTimeLine::WorldlineBox]]', '') : message.content })), events: [],
+  }));
+  override pluginCall = vi.fn(async (scope: VcpMemoryScope, plugin: VcpMemoryPluginName, arguments_: Record<string, unknown>) => {
+    if (plugin !== 'LightMemo' || typeof arguments_.folder !== 'string') throw new Error('Unexpected fixture plugin command.');
+    return { result: [...(this.notes.get(scope.scopeId)?.values() ?? [])].filter(note => String(arguments_.folder).split(',').includes(vcpMemoryNotebookFolder(note.diaryName))).map(note => note.content).join('\n'), indexed: true };
+  });
+  override exportTimelineArtifacts = vi.fn(async (_scope: VcpMemoryScope, sourceRevision: string): Promise<VcpMemoryTimelineArtifacts> => ({
+    schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision, agents: [],
+  }));
+  override importTimelineArtifacts = vi.fn(async () => ({ acceptedMonths: 0, skippedMonths: 0 }));
+  override close = vi.fn(async () => undefined);
 }
 function bindStorage(store: CompanionsStore) {
   transport.request.mockImplementation(async command => store.request(command));
@@ -49,7 +100,9 @@ function bindStorage(store: CompanionsStore) {
 }
 function startService(root: string): CompanionService {
   const dsh = { state: () => ({ tasks: [], operations: [] }), requestTask: vi.fn(async () => ({ ok: true })) } as unknown as DshLauncher;
-  const service = new CompanionService({ userData: root, workerPath: 'mocked-worker', window: () => undefined,
+  const client = new FakeVcpClient(root); clients.set(root, client);
+  const runtime: CompanionMemoryRuntime = { get: async () => ({ client, profileKey: 'bundled-gemma2:768' }), close: async () => client.close() };
+  const service = new CompanionService({ userData: root, workerPath: 'mocked-worker', window: () => undefined, memoryRuntime: runtime,
     getConfig: () => ({ apiFormat: 'openai_chat', model: 'memory-test-chat-model', baseUrl: 'https://provider.invalid', apiKey: 'private-test-key' }),
     hasConfig: () => true, dsh: () => dsh, report: vi.fn() });
   services.add(service); return service;
@@ -65,8 +118,7 @@ function fixture(customSeeds = seeds) {
   for (const seed of customSeeds) {
     const room = store.openPrivate(seed.id);
     const computer = world.scenes.find(scene => scene.ownerId === seed.id)!.objects.find(object => object.kind === 'computer')!;
-    store.request({ type: 'world.tool', companionId: seed.id, conversationId: room.id,
-      arguments: { action: 'move', destinationId: computer.id } });
+    store.request({ type: 'world.tool', companionId: seed.id, conversationId: room.id, arguments: { action: 'move', destinationId: computer.id } });
   }
   vi.setSystemTime(testNow); store.request({ type: 'world.tick' }); bindStorage(store);
   return { root, databasePath, store, conversation, service: startService(root) };
@@ -77,25 +129,48 @@ async function closeService(service: CompanionService) {
 async function sent(service: CompanionService, store: CompanionsStore, conversationId: string, content: string, clientId: string) {
   const result = await service.handle({ type: 'message.send', conversationId, content, clientId, delivery: 'chat' });
   const message = result.message!;
-  await vi.waitFor(() => expect(store.request({ type: 'work.list', sourceMessageId: message.id }).works?.every(work => work.status === 'done')).toBe(true), { timeout: 5000 });
+  await vi.waitFor(() => expect(store.request({ type: 'work.list', sourceMessageId: message.id }).works?.every(work => work.status === 'done'), content).toBe(true), { timeout: 5000 });
   return message;
 }
 function active(store: CompanionsStore, conversationId: string, companionId = 'sister') {
   return store.request({ type: 'memory.browse', companionId, conversationId, limit: 100 }).memoryPage!.items.map(hit => hit.memory);
 }
 function status(store: CompanionsStore, companionId = 'sister') { return store.request({ type: 'memory.status', companionId }).memoryStatus!; }
-async function background(milliseconds = 2_100) { await vi.advanceTimersByTimeAsync(milliseconds); }
+async function background(milliseconds = 2_100) {
+  await vi.advanceTimersByTimeAsync(milliseconds);
+  // The persistent permission-view manifest uses real asynchronous file I/O.
+  await vi.waitFor(() => {
+    for (const store of stores) for (const companion of store.request({ type: 'state', includeConversations: false }).state?.companions ?? []) {
+      expect(status(store, companion.id).running).toBe(0);
+    }
+  }, { timeout: 5000 });
+}
+function markIndexed(store: CompanionsStore) {
+  for (let count = 0; count < 100; count++) {
+    const row = store.request({ type: 'memory.outbox.claim' }).memoryOutbox;
+    if (!row) return;
+    store.request({ type: 'memory.outbox.complete', id: row.id, leaseToken: row.leaseToken, indexed: true });
+  }
+  throw new Error('Unexpected outbox backlog.');
+}
 
 beforeEach(() => {
   vi.clearAllMocks(); vi.useFakeTimers(); vi.setSystemTime(new Date(fixedTime));
+  transport.start.mockReset(); transport.start.mockResolvedValue(undefined);
   transport.fetch.mockReset(); transport.memoryFetch.mockReset();
+  transport.prohibitionFetch.mockReset(); transport.prohibitionFetch.mockImplementation(async () => structuredResponse({ allowed: true, matchedPolicyIds: [] }));
+  transport.authorizationFetch.mockReset(); transport.authorizationFetch.mockImplementation(async (_input, init) => {
+    const data = JSON.parse(body(init).messages[1]!.content) as { source: { id: string; content: string }; tool: string; action: string; targetId: string | null };
+    return structuredResponse({ allowed: data.source.content.startsWith('请忘掉'), confidence: 1,
+      sourceMessageId: data.source.id, tool: data.tool, action: data.action, targetId: data.targetId, evidence: [data.source.content] });
+  });
   transport.worldFetch.mockReset(); transport.worldFetch.mockImplementation(async () => structuredResponse({ action: null, reason: '安静观察。', appraisals: [] }));
   transport.fetch.mockImplementation(async () => textResponse('好，慢慢聊。'));
-  transport.memoryFetch.mockImplementation(async (_input, init) => structuredResponse(payload(init).purpose === 'memory_query' ? {} : { candidates: [] }));
+  transport.memoryFetch.mockImplementation(async () => structuredResponse({ notes: [] }));
 });
 afterEach(async () => {
   for (const service of services) await closeService(service);
-  for (const store of stores) store.close(); stores.clear();
+  for (const store of stores) store.close(); stores.clear(); clients.clear();
   for (const root of roots.splice(0)) {
     if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldlinebox-memory-service-')) throw new Error('Unexpected memory test cleanup target.');
     rmSync(root, { recursive: true, force: true });
@@ -103,62 +178,90 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-describe('automatic companion memory through the main service and real SQLite', () => {
-  it('records a normal chat without a reminder or primary-model memory call and keeps actual user/reply sources', async () => {
+describe('VCP companion memory through the main service and real SQLite', () => {
+  it('closes once after a pending storage start without reviving initialization or recovery jobs', async () => {
+    let ready!: () => void;
+    transport.start.mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve; }));
+    const f = fixture(), first = f.service.shutdown(), second = f.service.shutdown();
+    f.service.configurationChanged();
+    expect(first).toBe(second); expect(transport.close).not.toHaveBeenCalled();
+    ready(); await vi.advanceTimersByTimeAsync(1000); await first; services.delete(f.service);
+    expect(transport.close).toHaveBeenCalledTimes(1);
+    expect(transport.request.mock.calls.map(([command]) => command.type)).toEqual(['actions', 'action.interrupt-pending']);
+    await expect(f.service.handle({ type: 'state' })).rejects.toThrow('关闭');
+  });
+  it('captures an experience journal without primary-model tools and retains actual user/reply sources', async () => {
     const f = fixture();
     transport.memoryFetch.mockImplementation(async (_input, init) => {
-      const data = payload(init);
-      if (data.purpose !== 'memory_extraction') return structuredResponse(data.purpose === 'memory_query' ? {} : { candidates: [] });
-      const source = data.messages.find(message => message.authorId === 'user' && message.content === '我一直喜欢茶。');
-      return structuredResponse({ candidates: source ? [preference(source)] : [] });
+      const data = payload(init), user = data.messages.find(message => message.authorId === 'user' && message.content === '我一直喜欢茶。');
+      const reply = data.messages.find(message => message.authorId === 'sister');
+      const note = user ? journal(user) : undefined;
+      if (note && reply) { note.sourceMessageIds.push(reply.id); note.evidence.push({ sourceMessageId: reply.id, quote: reply.content }); }
+      return structuredResponse({ notes: note ? [note] : [] });
     });
     const source = await sent(f.service, f.store, f.conversation.id, '我一直喜欢茶。', 'normal-preference');
     expect(active(f.store, f.conversation.id)).toHaveLength(0);
     await background();
     expect(active(f.store, f.conversation.id)).toHaveLength(1);
-    expect(active(f.store, f.conversation.id)[0]).toMatchObject({ kind: 'preference', factKey: 'drink.preference', value: '茶', sourceMessageId: source.id });
-    const read = f.store.request({ type: 'memory.read', companionId: 'sister', conversationId: f.conversation.id, id: active(f.store, f.conversation.id)[0]!.id }).memoryRead!;
-    expect(read.sources.some(message => message.id === source.id && message.content === '我一直喜欢茶。')).toBe(true);
+    const note = active(f.store, f.conversation.id)[0]!;
+    expect(note).toMatchObject({ content: '用户喜欢茶。', tags: ['饮料偏好'], sourceMessageId: source.id, status: 'indexed', captureMethod: 'automatic' });
+    const read = f.store.request({ type: 'memory.read', companionId: 'sister', conversationId: f.conversation.id, id: note.id }).memoryRead!;
+    expect(read.sources.some(message => message.id === source.id && message.content === source.content)).toBe(true);
     expect(read.sources.some(message => message.authorId === 'sister' && message.content === '好，慢慢聊。')).toBe(true);
+    expect(clients.get(f.root)!.remember).toHaveBeenCalledWith(expect.objectContaining({ scopeId: note.scopeId }), expect.objectContaining({ id: note.id, content: note.content, author: 'WorldlineBox' }));
     expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.turns.every(turn => turn.calls.length === 0)).toBe(true);
     await background(31_000);
     expect(active(f.store, f.conversation.id)).toHaveLength(1);
-    expect(status(f.store).extractionWatermark).toBe(status(f.store).messageWatermark);
+    expect(status(f.store).captureWatermark).toBe(status(f.store).messageWatermark);
+    expect(transport.memoryFetch.mock.calls.every(([, init]) => payload(init).purpose === 'vcp_experience_journal')).toBe(true);
   });
 
-  it('retains a failed extraction and retries network and invalid-evidence output before advancing the watermark', async () => {
+  it('retries network failure and invalid evidence before advancing capture and indexing watermarks', async () => {
     const f = fixture(); let attempts = 0;
     transport.memoryFetch.mockImplementation(async (_input, init) => {
-      const data = payload(init);
-      if (data.purpose !== 'memory_extraction') return structuredResponse({});
+      const source = payload(init).messages.find(message => message.content === '我一直喜欢茶。');
       attempts++;
       if (attempts === 1) throw new Error('private provider network data: private-test-key');
-      const source = data.messages.find(message => message.authorId === 'user' && message.content === '我一直喜欢茶。')!;
-      return structuredResponse({ candidates: source ? [{ ...preference(source), ...(attempts === 2 ? { evidence: [{ sourceMessageId: source.id, quote: '这句原文并不存在' }] } : {}) }] : [] });
+      return structuredResponse({ notes: source ? [{ ...journal(source), ...(attempts === 2 ? { evidence: [{ sourceMessageId: source.id, quote: '这句原文并不存在' }] } : {}) }] : [] });
     });
     const source = await sent(f.service, f.store, f.conversation.id, '我一直喜欢茶。', 'retry-preference');
     await background();
     expect(status(f.store).failed).toBeGreaterThan(0);
-    expect(status(f.store).extractionWatermark).toBeLessThan(source.sequence);
+    expect(status(f.store).captureWatermark).toBeLessThan(source.sequence);
     expect(status(f.store).lastError).not.toContain('private-test-key');
     await background(31_000);
     expect(status(f.store).failed).toBeGreaterThan(0);
     expect(active(f.store, f.conversation.id)).toHaveLength(0);
-    expect(status(f.store).extractionWatermark).toBeLessThan(source.sequence);
+    expect(status(f.store).captureWatermark).toBeLessThan(source.sequence);
     await background(31_000);
     expect(active(f.store, f.conversation.id)).toHaveLength(1);
     expect(status(f.store).failed).toBe(0);
-    expect(status(f.store).extractionWatermark).toBe(status(f.store).messageWatermark);
+    expect(status(f.store).captureWatermark).toBe(status(f.store).messageWatermark);
   });
 
-  it('recalls a once-stated birthday after 220 unrelated messages when the user changes the wording', async () => {
+  it('keeps an accepted journal queued until VCP acknowledges indexing and retries failed delivery', async () => {
+    const f = fixture(), client = clients.get(f.root)!;
+    transport.memoryFetch.mockImplementation(async (_input, init) => {
+      const source = payload(init).messages.find(message => message.content === '记住周六带伞。');
+      return structuredResponse({ notes: source ? [journal(source, '约好周六带伞。', ['周六', '雨伞'])] : [] });
+    });
+    client.remember.mockRejectedValueOnce(new Error('Local encoder temporarily unavailable.'));
+    await sent(f.service, f.store, f.conversation.id, '记住周六带伞。', 'pending-embedding');
+    await background();
+    expect(active(f.store, f.conversation.id)[0]?.status).toBe('queued');
+    expect(status(f.store).pendingIndex).toBe(1);
+    expect(f.store.request({ type: 'memory.snapshot', companionId: 'sister', conversationId: f.conversation.id }).memorySnapshot?.notes).toHaveLength(0);
+    await background(35_000);
+    expect(active(f.store, f.conversation.id)[0]?.status).toBe('indexed');
+    expect(client.remember).toHaveBeenCalledTimes(2);
+    expect(f.store.request({ type: 'memory.snapshot', companionId: 'sister', conversationId: f.conversation.id }).memorySnapshot?.notes).toHaveLength(1);
+  });
+
+  it('delegates recall of an old journal to VCP after the source leaves recent chat context', async () => {
     const f = fixture();
     transport.memoryFetch.mockImplementation(async (_input, init) => {
-      const data = payload(init);
-      if (data.purpose === 'memory_query') return structuredResponse({ query: '用户生日', terms: ['生日', '出生日期'], subject: 'user', factKey: 'birthday' });
-      const source = data.messages.find(message => message.content === '我的生日是4月9日。');
-      return structuredResponse({ candidates: source ? [{ kind: 'fact', subject: 'user', factKey: 'birthday', value: '04-09', content: '用户生日是4月9日。',
-        sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags: [{ name: '生日', aliases: ['出生日期'] }] }] : [] });
+      const source = payload(init).messages.find(message => message.content === '我的生日是4月9日。');
+      return structuredResponse({ notes: source ? [journal(source, '用户的生日是4月9日。', ['生日'])] : [] });
     });
     const birthday = await sent(f.service, f.store, f.conversation.id, '我的生日是4月9日。', 'old-birthday');
     await background();
@@ -166,58 +269,152 @@ describe('automatic companion memory through the main service and real SQLite', 
     let brainPayload: Payload | undefined;
     transport.fetch.mockImplementation(async (_input, init) => {
       brainPayload = payload(init);
-      return textResponse(brainPayload.memories?.some(memory => memory.factKey === 'birthday' && memory.value === '04-09') ? '是4月9日。' : '不知道。');
+      return textResponse(brainPayload.memoryRecall?.context?.text.includes('4月9日') ? '是4月9日。' : '不知道。');
     });
     await sent(f.service, f.store, f.conversation.id, '你知道我出生的那天是哪一日吗？', 'new-birthday-question');
     expect(brainPayload?.messages.some(message => message.id === birthday.id)).toBe(false);
-    expect(brainPayload?.memories?.some(memory => memory.sourceMessageId === birthday.id && memory.value === '04-09')).toBe(true);
+    expect(brainPayload?.memories).toEqual([]);
+    expect(brainPayload?.memoryRecall?.context?.text).toContain('4月9日');
+    expect(clients.get(f.root)!.search).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ text: expect.stringContaining('出生的那天') }));
+    expect(clients.get(f.root)!.preprocess).toHaveBeenCalledWith(expect.anything(), expect.arrayContaining([
+      expect.objectContaining({ role: 'system', content: expect.stringContaining(`[[${vcpMemoryNotebookFolder('经历')}日记本::RiverMemo::AIMemo+]]`) }),
+    ]));
     expect(f.store.messages({ conversationId: f.conversation.id }).messages.at(-1)?.content).toBe('是4月9日。');
   });
 
-  it('executes native record/search/read/revise/forget against the database and returns native result IDs', async () => {
-    const f = fixture(); let savedId = '', version = 1; const steps = new Map<string, number>(), results: Array<{ id: string; value: CompanionStorageResponse }> = [];
+  it('executes native record/search/read/organize/revise/forget tools with stable journal IDs and VCP receipts', async () => {
+    const f = fixture(); let savedId = '', version = 1; const steps = new Map<string, number>();
+    const results: Array<{ id: string; value: CompanionStorageResponse }> = [];
+    const collect = (sourceId: string) => {
+      const checkpoint = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: sourceId }).loop!;
+      results.push(...checkpoint.turns.flatMap(turn => (turn.results ?? []).map(result => ({ id: result.callId, value: JSON.parse(result.content) as CompanionStorageResponse }))));
+    };
     transport.fetch.mockImplementation(async (_input, init) => {
       const data = payload(init), source = { id: data.taskRequest!.sourceMessageId, content: data.taskRequest!.prompt };
       const step = steps.get(source.id) ?? 0; steps.set(source.id, step + 1);
       const latest = body(init).messages.at(-1)!;
       if (latest.role === 'tool') {
-        const result = JSON.parse(latest.content) as CompanionStorageResponse; results.push({ id: latest.tool_call_id!, value: result });
+        const result = JSON.parse(latest.content) as CompanionStorageResponse;
         const saved = result.memories?.[0] ?? result.memoryRead?.memory ?? result.memoryPage?.items[0]?.memory;
-        if (saved) { savedId = saved.id; version = saved.version ?? 1; }
+        if (saved) { savedId = saved.id; version = saved.version; }
       }
-      if (source.content === '我一直喜欢茶。') {
-        if (step === 0) return toolResponse('record_1', 'memory_record', { candidate: preference(source) });
-        if (step === 1) return toolResponse('search_1', 'memory_search', { subject: 'user', factKey: 'drink.preference', terms: ['茶'] });
-        if (step === 2) return toolResponse('read_1', 'memory_read', { id: savedId });
-        if (step === 3) return toolResponse('organize_1', 'memory_organize', { ids: [savedId], tags: [{ name: '饮料偏好', aliases: ['饮品习惯'] }] });
-      } else if (source.content === '更正，现在喜欢水。' && step === 0) return toolResponse('revise_1', 'memory_revise', { id: savedId, expectedVersion: version, candidate: { ...preference(source, '水'), correction: true } });
-      else if (source.content.includes('忘掉') && step === 0) return toolResponse('forget_1', 'memory_forget', { subject: 'user', factKey: 'drink.preference', persistent: true, requestMessageId: source.id });
+      if (source.content === '我一直喜欢茶。' && step === 0) return toolResponse('record_1', 'memory_record', { candidate: journal(source) });
+      if (source.content === '回忆并整理饮料日记。') {
+        if (step === 0) return toolResponse('search_1', 'memory_search', { query: '饮料偏好' });
+        if (step === 1) return toolResponse('read_1', 'memory_read', { id: savedId });
+        if (step === 2) return toolResponse('organize_1', 'memory_organize', { ids: [savedId], tags: ['饮料偏好', '茶'] });
+      }
+      if (source.content === '更正，现在喜欢水。' && step === 0) return toolResponse('revise_1', 'memory_revise', { id: savedId, expectedVersion: version, candidate: journal(source, '用户现在喜欢水。', ['饮料偏好', '水']) });
+      if (source.content.includes('忘掉') && step === 0) return toolResponse('forget_1', 'memory_forget', { tag: '饮料偏好', persistent: true, requestMessageId: source.id });
       return textResponse('处理好了。');
     });
-    await sent(f.service, f.store, f.conversation.id, '我一直喜欢茶。', 'native-record');
-    expect(active(f.store, f.conversation.id)[0]).toMatchObject({ value: '茶', version: 2 });
+    const recordSource = await sent(f.service, f.store, f.conversation.id, '我一直喜欢茶。', 'native-record'); collect(recordSource.id);
+    expect(active(f.store, f.conversation.id)[0]).toMatchObject({ status: 'queued', version: 1 });
+    await background();
+    const organizeSource = await sent(f.service, f.store, f.conversation.id, '回忆并整理饮料日记。', 'native-organize'); collect(organizeSource.id);
+    expect(active(f.store, f.conversation.id)[0]).toMatchObject({ content: '用户喜欢茶。', tags: ['饮料偏好', '茶'], version: 2 });
     expect(results.map(result => result.id)).toEqual(['record_1', 'search_1', 'read_1', 'organize_1']);
+    expect(clients.get(f.root)!.pluginCall).toHaveBeenCalledWith(expect.anything(), 'LightMemo', expect.objectContaining({ folder: vcpMemoryNotebookFolder('经历'), query: '饮料偏好', enginemode: 'rivermemo' }));
     expect(results.find(result => result.id === 'read_1')?.value.memoryRead?.sources.some(source => source.content === '我一直喜欢茶。')).toBe(true);
     const originalId = savedId;
-    await sent(f.service, f.store, f.conversation.id, '更正，现在喜欢水。', 'native-revise');
-    expect(active(f.store, f.conversation.id)[0]).toMatchObject({ value: '水', supersedesId: originalId });
+    version = active(f.store, f.conversation.id)[0]!.version;
+    const reviseSource = await sent(f.service, f.store, f.conversation.id, '更正，现在喜欢水。', 'native-revise'); collect(reviseSource.id);
+    expect(active(f.store, f.conversation.id)[0]).toMatchObject({ id: originalId, content: '用户现在喜欢水。', version: 3 });
     expect(results.find(result => result.id === 'revise_1')?.value.ok).toBe(true);
-    expect(f.store.request({ type: 'memory.inspect', companionId: 'sister', conversationId: f.conversation.id, id: originalId }).memoryRead?.memory.status).toBe('superseded');
-    await sent(f.service, f.store, f.conversation.id, '请忘掉我饮料偏好，以后不要再记录。', 'native-forget');
+    await sent(f.service, f.store, f.conversation.id, '请忘掉我的饮料偏好，以后不要再记录。', 'native-forget');
     expect(active(f.store, f.conversation.id)).toHaveLength(0);
-    expect(status(f.store).forgotten).toBe(2);
-    expect(f.store.request({ type: 'memory.sources.search', companionId: 'sister', conversationId: f.conversation.id, terms: ['喜欢', '茶', '水'] }).memorySources).toHaveLength(0);
+    expect(status(f.store).forgotten).toBe(1);
     await background(31_000);
     expect(active(f.store, f.conversation.id)).toHaveLength(0);
+    expect(clients.get(f.root)!.forget).toHaveBeenCalledWith(expect.anything(), originalId);
+    const newSource = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '再说一次，我喜欢茶。', replyDirective: 'none' });
+    expect(() => f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: journal(newSource) })).toThrow();
+    expect(transport.prohibitionFetch).not.toHaveBeenCalled();
   });
 
-  it('refuses a model-proposed forget when the actual current user message contains no forgetting request', async () => {
+  it.each(['record', 'revise', 'save'] as const)('checks a changed-word residence proposal at the unified %s entrance', async action => {
+    const f = fixture(), secret = 'FORGOTTEN_RESIDENCE_8734';
+    f.store.saveMemory({ companionId: 'sister', conversationId: f.conversation.id, content: secret, tags: ['家庭住址'] });
+    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '家庭住址', persistent: true });
+    const safe = f.store.saveMemory({ companionId: 'sister', conversationId: f.conversation.id, content: '周六为花园浇水。', tags: ['花园'] });
+    const rules = f.store.request({ type: 'memory.prohibitions', companionId: 'sister', conversationId: f.conversation.id }).memoryProhibitions!;
+    const proposed = '用户已经搬到枫树街二十三号居住。';
+    transport.prohibitionFetch.mockImplementation(async () => structuredResponse({ allowed: false, matchedPolicyIds: [rules[0]!.id] }));
+    if (action === 'save') {
+      await expect(f.service.handle({ type: 'memory.save', companionId: 'sister', conversationId: f.conversation.id, content: proposed })).rejects.toThrow('不再记录');
+    } else {
+      let step = 0;
+      transport.fetch.mockImplementation(async (_input, init) => {
+        if (step++ === 0) return toolResponse('blocked_diary', `memory_${action}`, {
+          ...(action === 'revise' ? { id: safe.id, expectedVersion: safe.version } : {}),
+          candidate: journal({ id: payload(init).taskRequest!.sourceMessageId, content: proposed }, proposed, ['新居']),
+        });
+        expect(JSON.parse(body(init).messages.at(-1)!.content)).toMatchObject({ ok: false, error: expect.stringContaining('不再记录') });
+        return textResponse('这项信息尚未保存。');
+      });
+      await sent(f.service, f.store, f.conversation.id, proposed, `prohibition-${action}`);
+      expect(step).toBe(2);
+    }
+    expect(transport.prohibitionFetch).toHaveBeenCalledTimes(1);
+    const validation = String(transport.prohibitionFetch.mock.calls[0]?.[1]?.body);
+    expect(validation).toContain(proposed); expect(validation).toContain('家庭住址'); expect(validation).not.toContain(secret);
+    expect(active(f.store, f.conversation.id)).toEqual([expect.objectContaining({ id: safe.id, content: safe.content, version: safe.version })]);
+  });
+
+  it('keeps a manual diary uncommitted when semantic prohibition validation fails', async () => {
+    const f = fixture();
+    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '家庭住址', persistent: true });
+    transport.prohibitionFetch.mockRejectedValueOnce(new Error('Policy provider unavailable'));
+    await expect(f.service.handle({ type: 'memory.save', companionId: 'sister', conversationId: f.conversation.id,
+      content: '用户已搬到枫树街二十三号。' })).rejects.toThrow();
+    expect(active(f.store, f.conversation.id)).toHaveLength(0);
+    expect(transport.request.mock.calls.filter(([command]) => command.type === 'memory.save')).toHaveLength(0);
+  });
+
+  it('atomically refuses a new prohibition installed after an empty preflight read', async () => {
+    const f = fixture(); let installed = false;
+    transport.request.mockImplementation(async command => {
+      const response = f.store.request(command);
+      if (command.type === 'memory.prohibitions' && !installed) {
+        installed = true;
+        f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '饮食偏好', persistent: true });
+      }
+      return response;
+    });
+    await expect(f.service.handle({ type: 'memory.save', companionId: 'sister', conversationId: f.conversation.id,
+      content: '用户最喜欢香煎蛋。' })).rejects.toThrow('禁记规则已变化');
+    expect(transport.prohibitionFetch).not.toHaveBeenCalled();
+    expect(active(f.store, f.conversation.id)).toHaveLength(0);
+    expect(transport.request.mock.calls.find(([command]) => command.type === 'memory.save')?.[0]).toMatchObject({
+      memory: { expectedProhibitionRevision: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+    });
+  });
+
+  it('uses the actual group source policy when a private tool records witnessed group material', async () => {
+    const f = fixture([...seeds, { id: 'flash', name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false }]);
+    const group = f.store.createConversation('讨论', ['sister', 'flash']);
+    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: group.id, tag: '家庭住址', persistent: true });
+    const source = f.store.appendMessage({ conversationId: group.id, authorId: 'user', content: '我现在住枫树街二十三号。', replyDirective: 'none' });
+    const rules = f.store.request({ type: 'memory.prohibitions', companionId: 'sister', conversationId: group.id }).memoryProhibitions!;
+    transport.prohibitionFetch.mockImplementation(async () => structuredResponse({ allowed: false, matchedPolicyIds: [rules[0]!.id] }));
+    let step = 0;
+    transport.fetch.mockImplementation(async (_input, init) => {
+      if (step++ === 0) return toolResponse('group_diary', 'memory_record', { candidate: journal(source, source.content, ['新居']) });
+      expect(JSON.parse(body(init).messages.at(-1)!.content)).toMatchObject({ ok: false, error: expect.stringContaining('不再记录') });
+      return textResponse('尚未保存。');
+    });
+    await sent(f.service, f.store, f.conversation.id, '把我刚才在群里说的内容记下。', 'group-source-policy');
+    expect(transport.prohibitionFetch).toHaveBeenCalledTimes(1);
+    expect(active(f.store, group.id)).toHaveLength(0);
+  });
+
+  it('refuses a model-proposed forget when the current user message contains no forgetting request', async () => {
     const f = fixture(), old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '我一直喜欢茶。', replyDirective: 'none' });
-    f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: preference(old) });
+    f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: journal(old) }); markIndexed(f.store);
     let attempted = false, result: CompanionStorageResponse | undefined;
     transport.fetch.mockImplementation(async (_input, init) => {
       const sourceId = payload(init).taskRequest!.sourceMessageId;
-      if (!attempted) { attempted = true; return toolResponse('unauthorized_forget', 'memory_forget', { subject: 'user', factKey: 'drink.preference', requestMessageId: sourceId }); }
+      if (!attempted) { attempted = true; return toolResponse('unauthorized_forget', 'memory_forget', { tag: '饮料偏好', requestMessageId: sourceId }); }
       result = JSON.parse(body(init).messages.at(-1)!.content) as CompanionStorageResponse;
       return textResponse('今天慢慢聊。');
     });
@@ -227,52 +424,76 @@ describe('automatic companion memory through the main service and real SQLite', 
     expect(status(f.store).forgotten).toBe(0);
   });
 
-  it('automatically records an observed group agreement for a companion who did not speak', async () => {
-    const f = fixture([...seeds, { id: 'flash', name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false }]);
+  it('keeps new authorized search and read results after forgetting cuts off the contaminated provider history', async () => {
+    const f = fixture(), secret = 'WITHDRAWN_SECRET_9127';
+    const oldSource = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `旧秘密是${secret}`, replyDirective: 'none' });
+    const old = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: journal(oldSource, `旧秘密是${secret}`, ['旧秘密']) }).memories![0]!;
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '花园计划是周六给玫瑰浇水。', replyDirective: 'none' });
+    const safe = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: journal(source, source.content, ['花园计划']) }).memories![0]!;
+    markIndexed(f.store);
+    let step = 0;
+    transport.fetch.mockImplementation(async (_input, init) => {
+      const current = payload(init), latest = body(init).messages.at(-1)!;
+      if (step++ === 0) return toolResponse('withdraw_old_secret', 'memory_forget', { id: old.id, requestMessageId: current.taskRequest!.sourceMessageId });
+      expect(String(init?.body)).not.toContain(secret);
+      if (step === 2) {
+        expect(latest.role).not.toBe('tool');
+        return toolResponse('new_search', 'memory_search', { query: '花园计划' });
+      }
+      if (step === 3) {
+        expect(latest).toMatchObject({ role: 'tool', tool_call_id: 'new_search' });
+        expect((JSON.parse(latest.content) as CompanionStorageResponse).memoryPage?.items[0]?.memory.id).toBe(safe.id);
+        return toolResponse('new_read', 'memory_read', { id: safe.id });
+      }
+      expect(latest).toMatchObject({ role: 'tool', tool_call_id: 'new_read' });
+      expect((JSON.parse(latest.content) as CompanionStorageResponse).memoryRead?.memory.content).toBe(source.content);
+      return textResponse('仍然记得花园计划：周六给玫瑰浇水。');
+    });
+    const request = await sent(f.service, f.store, f.conversation.id, '请忘掉旧秘密，然后查看仍然有效的花园计划。', 'forget-then-new-tools');
+    expect(step).toBe(4);
+    const checkpoint = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: request.id }).loop!;
+    expect(JSON.parse(checkpoint.context!.user).memoryHistoryBoundary).toBe(1);
+    expect(f.store.messages({ conversationId: f.conversation.id }).messages.at(-1)?.content).toContain('玫瑰浇水');
+  });
+
+  it('records an observed group agreement for a silent witness and isolates it from other groups', async () => {
+    const f = fixture([...seeds,
+      { id: 'flash', name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false },
+      { id: 'comet', name: '阿星', description: '朋友', persona: '安静', model: '', avatar: 'sister', proactive: false }]);
     const group = f.store.createConversation('出行安排', ['sister', 'flash']);
     transport.memoryFetch.mockImplementation(async (_input, init) => {
-      const data = payload(init), source = data.messages.find(message => message.content.includes('周六十点'));
-      return structuredResponse({ candidates: source ? [{ kind: 'agreement', subject: 'group', factKey: 'trip.meeting', content: '本群约定周六十点在东门集合。',
-        sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: '周六十点在东门集合' }], tags: [{ name: '旅行集合' }] }] : [] });
+      const source = payload(init).messages.find(message => message.content.includes('周六十点'));
+      return structuredResponse({ notes: source ? [journal(source, '本群约定周六十点在东门集合。', ['旅行集合', '东门'])] : [] });
     });
     const source = await sent(f.service, f.store, group.id, '@大肥鱼，大家周六十点在东门集合。', 'group-agreement');
     expect(f.store.messages({ conversationId: group.id }).messages.some(message => message.authorId === 'flash')).toBe(false);
     await background();
-    expect(active(f.store, group.id, 'flash')[0]).toMatchObject({ sourceMessageId: source.id, sourceConversationId: group.id, kind: 'agreement' });
-    expect(f.store.request({ type: 'memory.search', companionId: 'flash', conversationId: group.id, terms: ['东门'] }).memoryPage?.items[0]?.memory.content).toContain('东门');
+    expect(active(f.store, group.id, 'flash')[0]).toMatchObject({ sourceMessageId: source.id, sourceConversationId: group.id, content: expect.stringContaining('东门'), status: 'indexed' });
+    const other = f.store.createConversation('另一个群', ['sister', 'flash', 'comet']);
+    expect(active(f.store, other.id, 'flash')).toHaveLength(0);
+    const hit = await f.service.handle({ type: 'memory.search', companionId: 'flash', conversationId: group.id, query: '东门集合', tags: [], limit: 20 });
+    expect(hit.memoryPage?.items[0]?.memory.content).toContain('东门');
   });
 
-  it('builds a phase overview and experience from actual task sources and invalidates them after correction', async () => {
-    const f = fixture();
-    transport.memoryFetch.mockImplementation(async (_input, init) => {
-      const data = payload(init), source = data.messages.find(message => message.content.includes('聊天功能验收通过'));
-      if (data.purpose === 'memory_extraction') return structuredResponse({ candidates: source ? [{ kind: 'task', subject: 'WorldlineBox', factKey: 'chat.acceptance',
-        content: 'WorldlineBox 聊天功能验收通过。', value: 'completed', eventId: 'chat_work', eventStatus: 'completed',
-        sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags: [{ name: 'WorldlineBox' }] }] : [] });
-      if (data.purpose === 'memory_maintenance' && source) return structuredResponse({ candidates: [
-        { kind: 'overview', subject: 'WorldlineBox', factKey: 'phase.2026-10', content: '2026年10月阶段：聊天功能验收通过。',
-          sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], relatedMemoryIds: data.relevantMemories!.map(memory => memory.id) },
-        { kind: 'knowledge', subject: 'WorldlineBox', factKey: 'lesson.acceptance', content: '本次先检查真实结果再确认完成，适用于功能验收；仅有这次通过证据，不能保证所有功能。',
-          sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], relatedMemoryIds: data.relevantMemories!.map(memory => memory.id) },
-      ] });
-      return structuredResponse({ candidates: [] });
-    });
-    await sent(f.service, f.store, f.conversation.id, 'WorldlineBox 聊天功能验收通过，我先核对了真实结果才确认完成。', 'phase-completed');
+  it('preserves journal dependency sources and invalidates derived notes when a source note is revised', async () => {
+    const f = fixture(), source = await sent(f.service, f.store, f.conversation.id, 'WorldlineBox 聊天功能验收通过，我先核对真实结果再确认。', 'phase-completed');
+    const atom = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: journal(source, 'WorldlineBox 聊天功能验收通过。', ['WorldlineBox', '聊天验收']) }).memories![0]!;
+    const derived = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: { ...journal(source, '这次验收先核对真实结果才确认完成；一次通过不能保证所有功能。', ['WorldlineBox', '验收经验']), relatedMemoryIds: [atom.id] } }).memories![0]!;
     await background();
-    const records = active(f.store, f.conversation.id), atom = records.find(memory => memory.kind === 'task')!;
-    expect(records.map(memory => memory.kind).sort()).toEqual(['knowledge', 'overview', 'task']);
-    for (const derived of records.filter(memory => memory.id !== atom.id)) {
-      const read = f.store.request({ type: 'memory.read', companionId: 'sister', conversationId: f.conversation.id, id: derived.id }).memoryRead!;
-      expect(read.related.some(memory => memory.id === atom.id)).toBe(true);
-      expect(read.sources.some(source => source.content.includes('先核对了真实结果'))).toBe(true);
-    }
+    expect(active(f.store, f.conversation.id)).toHaveLength(2);
+    expect(f.store.request({ type: 'memory.read', companionId: 'sister', conversationId: f.conversation.id, id: derived.id }).memoryRead?.sources.some(message => message.id === source.id)).toBe(true);
     const correction = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '更正：聊天功能验收没有通过，仍需修复。', replyDirective: 'none' });
-    f.store.request({ type: 'memory.revise', companionId: 'sister', conversationId: f.conversation.id, id: atom.id, expectedVersion: atom.version!, candidate: {
-      kind: 'task', subject: 'WorldlineBox', factKey: 'chat.acceptance', content: '聊天功能验收未通过，仍需修复。', value: 'ongoing', eventId: 'chat_work', eventStatus: 'ongoing', correction: true,
-      sourceMessageIds: [correction.id], evidence: [{ sourceMessageId: correction.id, quote: correction.content }],
-    } });
-    expect(active(f.store, f.conversation.id).map(memory => memory.kind)).toEqual(['task']);
-    for (const derived of records.filter(memory => memory.id !== atom.id)) expect(f.store.request({ type: 'memory.inspect', companionId: 'sister', conversationId: f.conversation.id, id: derived.id }).memoryRead?.memory.status).toBe('invalid');
+    f.store.request({ type: 'memory.revise', companionId: 'sister', conversationId: f.conversation.id, id: atom.id, expectedVersion: atom.version,
+      candidate: journal(correction, '聊天功能验收未通过，仍需修复。', ['WorldlineBox', '聊天验收']) });
+    expect(active(f.store, f.conversation.id)).toHaveLength(1);
+    expect(active(f.store, f.conversation.id)[0]?.id).toBe(atom.id);
+    expect(() => f.store.request({ type: 'memory.read', companionId: 'sister', conversationId: f.conversation.id, id: derived.id })).toThrow();
+    await background(31_000);
+    expect(clients.get(f.root)!.forget).toHaveBeenCalledWith(expect.anything(), derived.id);
   });
 
   it('withdraws an old world-inspection tool result after its source is forgotten, even outside recalled chat and memory sources', async () => {
@@ -305,7 +526,7 @@ describe('automatic companion memory through the main service and real SQLite', 
     const f = fixture(), secret = 'SECRET_ADDRESS_青松路881号';
     const old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `旧地址是 ${secret}`, replyDirective: 'none' });
     const saved = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: {
-      kind: 'fact', subject: 'user', factKey: 'address', content: `用户地址 ${secret}`, value: secret,
+      content: `用户地址 ${secret}`, tags: ['地址'],
       sourceMessageIds: [old.id], evidence: [{ sourceMessageId: old.id, quote: old.content }],
     } }).memories![0]!;
     let resolvePending!: (response: Response) => void;

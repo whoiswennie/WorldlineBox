@@ -16,6 +16,9 @@ export const activityMemorySchema = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('organize'), ids: z.array(id).min(1).max(20), tags: z.array(companionMemoryTagSchema).max(20) }),
 ]);
 export type ActivityMemoryOperation = z.input<typeof activityMemorySchema>;
+export const activityMemoryIntentSchema = z.object({ id, taskId: id, companionId: id, conversationId: id,
+  operation: activityMemorySchema, leaseToken: id });
+export type CompanionActivityMemoryIntent = z.infer<typeof activityMemoryIntentSchema>;
 /** A model chooses actions and completion; the host owns admission, effects and wakeups. */
 export const activityDecisionSchema = z.strictObject({ status: z.enum(['continue', 'complete', 'blocked']),
   memory: activityMemorySchema.optional(), action: companionWorldArgumentsSchema.nullable(), wait: activityWaitSchema.nullable(),
@@ -47,6 +50,10 @@ export const activityStorageCommands = [...activityPublicCommands,
   z.strictObject({ type: z.literal('activity.recover') }),
   z.strictObject({ type: z.literal('activity.observe'), id, leaseToken: id }),
   z.strictObject({ type: z.literal('activity.commit'), id, leaseToken: id, decision: activityDecisionSchema }),
+  z.strictObject({ type: z.literal('activity.memory.claim') }),
+  z.strictObject({ type: z.literal('activity.memory.complete'), id, leaseToken: id, result: z.string().max(16000),
+    sourceMessageIds: z.array(id).max(100).default([]), noteVersions: z.array(z.object({ id, version: z.number().int().positive() })).max(100).default([]) }),
+  z.strictObject({ type: z.literal('activity.memory.fail'), id, leaseToken: id, error: z.string().max(1000) }),
   z.strictObject({ type: z.literal('activity.reject'), id, leaseToken: id, action: companionWorldArgumentsSchema, reason: z.string().min(1).max(2000) }),
   z.strictObject({ type: z.literal('activity.fail'), id, leaseToken: id, error: z.string().max(1000) }),
 ] as const;

@@ -13,6 +13,36 @@ const seeds: CompanionSeed[] = [
   { id: 'deepseek-flash', name: '小肥鱼', description: '妹妹', persona: '活泼好奇', model: '', avatar: 'flash', proactive: false },
 ];
 
+it('creates one durable queued bubble per group loop, keeps its identity on retry and cancels only the selected work', () => {
+  const f = fixture();
+  const third = f.store.createCompanion({ name: '第三位', persona: '并行回复验收', description: '', model: '', avatar: 'custom', proactive: false });
+  f.store.setCompanionActive(third.id, true);
+  const owners = ['deepseek-sister', 'deepseek-flash', third.id];
+  const room = f.store.createConversation('三位伙伴', owners);
+  const source = f.store.appendMessage({ conversationId: room.id, authorId: 'user', content: '请大家各自处理这条消息。' });
+  const work = (companionId: string) => ({ id: 'work_' + companionId, conversationId: room.id, sourceMessageId: source.id, companionId,
+    status: 'queued' as const, proactive: false, createdAt: source.createdAt, updatedAt: source.createdAt });
+  for (const owner of owners) f.store.request({ type: 'work.enqueue', work: work(owner) });
+  const listed = f.store.request({ type: 'work.list' }).works!;
+  expect(new Set(listed.map(item => item.messageId)).size).toBe(3);
+  for (const item of listed) {
+    expect(f.store.getMessage(item.messageId!)).toMatchObject({ authorId: item.companionId, replyToId: source.id, isReplyDraft: true,
+      content: '', replyProgress: { workId: item.id, phase: 'queued' } });
+  }
+  f.store.request({ type: 'work.enqueue', work: work(owners[0]!) });
+  expect(f.store.request({ type: 'messages', conversationId: room.id, limit: 100 }).messages).toHaveLength(4);
+  const cancelled = listed[1]!;
+  f.store.request({ type: 'work.status', id: cancelled.id, status: 'cancelled' });
+  expect(f.store.getMessage(cancelled.messageId!).replyProgress?.phase).toBe('cancelled');
+  expect(f.store.getMessage(listed[0]!.messageId!).replyProgress?.phase).toBe('queued');
+  close(f.store); const reopened = open(f.databasePath);
+  expect(reopened.getMessage(cancelled.messageId!).replyProgress?.phase).toBe('cancelled');
+  reopened.request({ type: 'work.enqueue', work: work(cancelled.companionId), resume: true });
+  expect(reopened.request({ type: 'work.list' }).works?.find(item => item.id === cancelled.id)?.messageId).toBe(cancelled.messageId);
+  expect(reopened.getMessage(cancelled.messageId!).replyProgress?.phase).toBe('queued');
+  expect(reopened.getMessage(source.id).content).toBe(source.content);
+});
+
 it('persists a FIFO queue, admits at most 20 globally and 5 per role, and refills after release and restart', () => {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T08:00:00Z');
   const f = fixture();
@@ -75,7 +105,7 @@ describe('CompanionsStore real SQLite persistence', () => {
     const { store, databasePath } = fixture();
     store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '自定义姐姐', description: '我的签名', persona: '用户编辑的人设' });
     const original = store.appendMessage({ conversationId: 'private-deepseek-sister', authorId: 'user', content: '迁移前的消息' });
-    store.request({ type: 'memory.save', memory: { companionId: 'deepseek-sister', content: '迁移前的约定', origin: 'user' } });
+    store.request({ type: 'memory.save', memory: { companionId: 'deepseek-sister', content: '迁移前的约定', conversationId: 'private-deepseek-sister' } });
     expect(() => store.deleteCompanion('deepseek-flash')).toThrow('不能删除');
     close(store);
     const upgraded = new CompanionsStore(databasePath); stores.push(upgraded);
@@ -271,11 +301,11 @@ describe('CompanionsStore real SQLite persistence', () => {
   it('isolates private memories and prevents changing ownership through an ID', () => {
     const { databasePath, store } = fixture();
     const message = store.appendMessage({ conversationId: 'private-deepseek-sister', authorId: 'user', content: '我喜欢慢慢看海' });
-    const memory = store.saveMemory({ companionId: 'deepseek-sister', content: '用户喜欢慢慢看海', sourceMessageId: message.id, origin: 'user' });
+    const memory = store.saveMemory({ companionId: 'deepseek-sister', content: '用户喜欢慢慢看海', conversationId: message.conversationId, sourceMessageId: message.id });
     expect(store.listMemory('deepseek-flash')).toEqual([]);
-    expect(() => store.saveMemory({ companionId: 'deepseek-flash', content: '偷看姐姐私聊', sourceMessageId: message.id, origin: 'companion' })).toThrow('不是聊天成员');
-    expect(() => store.saveMemory({ id: memory.id, companionId: 'deepseek-flash', content: '修改记忆归属', origin: 'user' })).toThrow('另一个伙伴');
-    store.saveMemory({ ...memory, content: '用户目前喜欢慢慢看海' });
+    expect(() => store.saveMemory({ companionId: 'deepseek-flash', content: '偷看姐姐私聊', conversationId: message.conversationId, sourceMessageId: message.id })).toThrow('不是聊天成员');
+    expect(() => store.saveMemory({ id: memory.id, companionId: 'deepseek-flash', content: '修改记忆归属', conversationId: 'private-deepseek-flash', expectedVersion: memory.version })).toThrow();
+    store.saveMemory({ companionId: memory.companionId, conversationId: memory.sourceConversationId, id: memory.id, expectedVersion: memory.version, content: '用户目前喜欢慢慢看海' });
     close(store);
     const reopened = open(databasePath);
     expect(reopened.listMemory('deepseek-sister')[0]!.content).toBe('用户目前喜欢慢慢看海');
@@ -287,12 +317,12 @@ describe('CompanionsStore real SQLite persistence', () => {
     const { databasePath, store } = fixture();
     const group = store.createConversation('持久共同经历', ['deepseek-sister', 'deepseek-flash']);
     const message = store.appendMessage({ conversationId: group.id, authorId: 'user', content: '下次去看海' });
-    const memory = store.saveMemory({ companionId: 'deepseek-sister', content: '群里约定下次去看海', sourceMessageId: message.id, origin: 'companion' });
+    const memory = store.saveMemory({ companionId: 'deepseek-sister', content: '群里约定下次去看海', conversationId: group.id, sourceMessageId: message.id });
     expect(memory.sourceConversationId).toBe(group.id);
-    const forgedInput = { companionId: 'deepseek-sister', content: '只属于姐姐私聊', sourceMessageId: 'missing', origin: 'user' as const, sourceConversationId: group.id };
-    expect(() => store.saveMemory(forgedInput)).toThrow('来源消息不存在');
+    const forgedInput = { companionId: 'deepseek-sister', content: '只属于姐姐私聊', sourceMessageId: 'missing', conversationId: group.id };
+    expect(() => store.saveMemory(forgedInput)).toThrow();
     const privateSource = store.appendMessage({ conversationId: 'private-deepseek-sister', authorId: 'user', content: '私聊的约定' });
-    const derived = store.saveMemory({ ...forgedInput, sourceMessageId: privateSource.id });
+    const derived = store.saveMemory({ ...forgedInput, conversationId: privateSource.conversationId, sourceMessageId: privateSource.id });
     expect(derived.sourceConversationId).toBe('private-deepseek-sister');
     for (let index = 0; index < 55; index++) store.appendMessage({ conversationId: group.id, authorId: 'user', content: `后来第${index}条聊天` });
     expect(store.messages({ conversationId: group.id, limit: 50 }).messages.some(value => value.id === message.id)).toBe(false);

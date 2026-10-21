@@ -8,6 +8,7 @@ import {
   searchScopeSchema,
   sortDefinitionSchema,
 } from '../asset-types';
+import { companionLearningAssetPageCommandSchema } from '../companion-learning-assets';
 import {
   CONTENT_REPLACE_BATCH_INLINE_MAX_BASE64_LENGTH,
   CONTENT_REPLACE_BATCH_MAX_ITEMS,
@@ -1390,6 +1391,14 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('embedding.models.list.request'),
   }),
+  z.strictObject({ type: z.literal('embedding.global.get.request') }),
+  z.strictObject({ type: z.literal('embedding.local-text.status.request') }),
+  z.strictObject({ type: z.literal('embedding.local-text.install.request'), update: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('embedding.local-text.delete.request') }),
+  z.strictObject({
+    type: z.literal('embedding.global.save.request'),
+    selectionId: z.string().refine(isEmbeddingSelectionId).nullable(),
+  }),
   z.strictObject({
     type: z.literal('embedding.models.upsert.request'),
     id: identifierSchema.optional(),
@@ -1493,6 +1502,7 @@ export function parseRendererRequest(input: unknown): RendererRequest {
 }
 
 export const workerCommandSchema = z.discriminatedUnion('type', [
+  companionLearningAssetPageCommandSchema,
   z.strictObject({
     type: z.literal('library.create'),
     displayName: displayNameSchema,
@@ -1880,6 +1890,8 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('asset.import-linked'),
     libraryId: identifierSchema,
+    /** Main-only projection of the fixed library/伙伴记忆 directory. */
+    companionMemory: z.literal(true).optional(),
     displayName: optionalIdentifierSchema,
     sourceRootPath: selectedPathSchema,
     /** WorldlineBox-316493: managed folder to hang the linked root under. */

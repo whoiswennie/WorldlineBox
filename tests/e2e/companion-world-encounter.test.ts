@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -9,7 +9,7 @@ import type { CompanionWorldSnapshot } from '../../src/shared/companion-world';
 import type { CompanionWorldWindowApi } from '../../src/shared/companion-world-window';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import { companionWorldCellWalkable } from '../../src/shared/companion-world-engine';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath, resolveSessionLogPath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, companionTestDataRoot, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath, resolveSessionLogPath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; companionWorld: CompanionWorldWindowApi; llm: WorldlineBoxLlmApi } };
 const members = ['deepseek-flash', 'deepseek-sister', 'gemini'];
@@ -20,12 +20,13 @@ async function request(page: Page, input: CompanionsRequest) {
 }
 function cleanup(directory: string) {
   const absolute = path.resolve(directory); if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-encounter-')) throw new Error('Unexpected encounter fixture cleanup target.');
-  rmSync(absolute, { recursive: true, force: true });
+  removeCompanionTestDirectory(absolute);
 }
 async function launch(profile: string) {
   const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'hardware' }) });
   const page = await application.firstWindow(), native = await application.browserWindow(page);
   await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 940); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.showInactive(); });
+  await ensureCompanionTestWorkspace(page);
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page'); return { application, page };
 }
 function seedEncounter(profile: string) {
@@ -33,7 +34,7 @@ function seedEncounter(profile: string) {
   // fixture inputs. No messages, social jobs, claims or decisions are inserted.
   // Real elapsed time must accumulate hazard and generate the production event.
   const script = `const Database=require('better-sqlite3');const db=new Database(process.argv[1]);const ids=JSON.parse(process.argv[2]);const row=db.prepare('SELECT data FROM companion_world WHERE id=1').get();const world=JSON.parse(row.data),now=Date.now();world.settings={...world.settings,revision:world.settings.revision+1,mode:'realtime'};world.anchors=[{realAt:now,virtualAt:now,settings:world.settings}];world.cursor=now;for(let i=0;i<ids.length;i++){const actor=world.actors.find(a=>a.companionId===ids[i]);Object.assign(actor,{sceneId:'park',position:{x:119+i,y:56},route:[],activity:'idle',activityStartedAtReal:new Date(now).toISOString(),routinePhase:'awake',artAction:'idle',lastDecisionAt:now});for(const key of ['destinationId','furnitureId','transition','seatUntil','phoneResume','parkWalk','meetingHold'])delete actor[key];}db.prepare('UPDATE companion_world SET data=? WHERE id=1').run(JSON.stringify(world));const clock=db.prepare('INSERT OR REPLACE INTO companion_world_encounters(pair_key,left_id,right_id,data) VALUES(?,?,?,?)');for(let a=0;a<ids.length;a++)for(let b=a+1;b<ids.length;b++)clock.run(ids[a]+'|'+ids[b],ids[a],ids[b],JSON.stringify({present:true,hazard:0,threshold:.02,lastRealAt:now}));db.close();`;
-  const result = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(profile, 'companions/messages.sqlite'), JSON.stringify(members)], { cwd: resolveElectronAppPath(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
+  const result = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(companionTestDataRoot(profile), 'messages.sqlite'), JSON.stringify(members)], { cwd: resolveElectronAppPath(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
   expect(result.status, result.stderr).toBe(0);
 }
 
@@ -60,9 +61,9 @@ test('a real integrated encounter starts a three-companion face conversation wit
           const speaker = data.identity.self.id, next = data.members.find((member: { id: string }) => member.id !== speaker && member.id !== data.source.authorId)?.id;
           await new Promise(resolve => setTimeout(resolve, 1800));
           result = { text: speaker + '：我听到你的话了，就在这里一起聊聊喷泉和今天的公园吧。', ...(next ? { nextRecipientId: next } : {}), reason: '回应真实在场成员。' };
-        } else if (data.purpose === 'memory_query') result = {};
-        else if (data.purpose === 'memory_dream') result = { candidates: [], dream: null };
-        else if (data.purpose?.startsWith('memory_')) result = { candidates: [] };
+        } else if (data.purpose === 'vcp_memory_prohibition_check') result = { allowed: true, matchedPolicyIds: [] };
+        else if (data.purpose === 'vcp_sleep_reflection') result = { notes: [], dream: null };
+        else if (data.purpose === 'vcp_experience_journal') result = { notes: [] };
         else { fixtureErrors.push('Unexpected model purpose: ' + data.purpose); result = { text: null, reason: '无需发言。' }; }
         response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: 'stop' }] }));
       } catch (error) { fixtureErrors.push(String(error)); response.writeHead(400); response.end(); }

@@ -1,0 +1,32 @@
+# Rust编译产物
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock (对于库项目通常忽略)
+Cargo.lock
+
+# Node.js相关
+node_modules/
+package-lock.json
+
+# 编译生成的.node文件（可选，根据需求决定是否提交）
+# *.node  # 已注释，允许提交预编译的.node文件用于PR
+
+# IDE相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试生成的文件
+test_index.usearch
+test_map.bin
+
+# OS相关
+.DS_Store
+Thumbs.db
+
+# 构建临时文件
+*.tmp

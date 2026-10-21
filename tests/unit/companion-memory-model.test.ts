@@ -1,25 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
-import type { Companion, CompanionConversation, CompanionMessage } from '../../src/shared/companions';
-import {
-  buildDirectCompanionMemoryQuery, generateCompanionMemoryExtraction, generateCompanionMemoryMaintenance,
-  planCompanionMemoryQuery,
-} from '../../src/main/companions/memory-model';
+import type { Companion, CompanionConversation, CompanionMemory, CompanionMessage } from '../../src/shared/companions';
+import { generateCompanionJournal } from '../../src/main/companions/memory-model';
 import type { CompanionModelConfig } from '../../src/main/companions/model';
 
-const companion: Companion = { id: 'sister', name: '大肥鱼', description: '姐姐', persona: '温柔，沉稳。', model: '',
-  avatar: 'sister', builtin: true, proactive: false, createdAt: '2026-10-14T00:00:00Z' };
+const at = '2026-10-14T00:00:00Z';
+const companion: Companion = { id: 'sister', name: '大肥鱼', description: '姐姐', persona: '温柔，沉稳。', model: 'character-model-must-not-route-journals',
+  avatar: 'sister', builtin: true, proactive: false, createdAt: at };
 const conversation: CompanionConversation = { id: 'private_sister', kind: 'private', title: '大肥鱼', memberIds: ['sister'],
-  pinned: false, muted: false, unread: 0, updatedAt: '2026-10-14T00:00:00Z', lastMessage: '' };
+  pinned: false, muted: false, unread: 0, updatedAt: at, lastMessage: '' };
 const config: CompanionModelConfig = { apiFormat: 'openai_chat', model: 'configured-chat-model', baseUrl: 'https://api.deepseek.com', apiKey: 'test-private-key' };
 function message(id: string, sequence: number, content: string, overrides: Partial<CompanionMessage> = {}): CompanionMessage {
   return { id, sequence, content, conversationId: conversation.id, authorId: 'user', kind: 'text',
-    createdAt: '2026-10-14T00:00:00Z', attachments: [], status: 'sent', ...overrides };
+    createdAt: at, attachments: [], status: 'sent', ...overrides };
 }
 const input = { companion, conversation, messages: [message('coffee', 4, '现在已经不喝咖啡了，聊天功能忙完了。')] };
-const candidate = { kind: 'preference', subject: 'user', factKey: 'coffee.preference', value: '不喝咖啡',
-  content: '用户现在不喝咖啡。', sourceMessageIds: ['coffee'], evidence: [{ sourceMessageId: 'coffee', quote: '现在已经不喝咖啡了' }],
-  polarity: 'negative', correction: true, tags: [{ name: '咖啡', aliases: ['coffee'] }] };
+const note = { content: '用户说：“现在已经不喝咖啡了”，并说明聊天功能已经忙完；没有说明这一改变会持续多久。',
+  tags: ['用户', '聊天功能', '咖啡'], sourceMessageIds: ['coffee'],
+  evidence: [{ sourceMessageId: 'coffee', quote: '现在已经不喝咖啡了，聊天功能忙完了' }] };
+function memory(overrides: Partial<CompanionMemory> = {}): CompanionMemory {
+  return { id: 'coffee_note', companionId: companion.id, scopeId: 'scope_private_sister', content: '用户以前喝咖啡。', tags: ['用户', '咖啡'],
+    sourceMessageId: 'old', sourceConversationId: conversation.id, sourceSequence: 3,
+    sources: [{ messageId: 'old', conversationId: conversation.id, sequence: 3, authorId: 'user', revision: 1, checksum: 'host-checksum', createdAt: at }],
+    origin: 'companion', status: 'indexed', captureMethod: 'automatic', version: 1, createdAt: at, updatedAt: at, ...overrides };
+}
 function response(format: AiApiFormat, value: unknown): Response {
   const text = JSON.stringify(value);
   const body = format === 'openai_chat' ? { choices: [{ message: { content: text } }] }
@@ -29,149 +33,157 @@ function response(format: AiApiFormat, value: unknown): Response {
           : { output: { choices: [{ message: { content: text } }] } };
   return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
 }
+function fetchFor(value: unknown) { return vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', value)); }
+function request(fetchFn: ReturnType<typeof fetchFor>) {
+  const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
+  return { body, payload: JSON.parse(body.messages[1].content), system: String(body.messages[0].content) };
+}
 
-describe('source-grounded automatic memory formation', () => {
+describe('source-grounded VCP experience journals', () => {
+  it('labels the real player and self explicitly after a peer topic, without exposing other-domain diaries', async () => {
+    const fetchFn = fetchFor({ notes: [] });
+    await generateCompanionJournal({ ...input, participants: [{ id: 'peer', name: '周岚' }, { id: companion.id, name: companion.name }],
+      contextMessages: [message('self', 1, '我刚才和周岚聊了观察表。', { authorId: companion.id })],
+      relevantMemories: [memory({ sourceConversationId: 'other_domain', content: 'OTHER_SCOPE_JOURNAL' })] }, config, undefined, { fetchFn });
+    const sent = request(fetchFn);
+    expect(sent.payload.identity).toMatchObject({ self: { id: companion.id, name: companion.name }, player: { id: 'user', kind: 'human_player' } });
+    expect(sent.payload.messages[0]).toMatchObject({ authorId: 'user', speaker: 'human_player' });
+    expect(sent.payload.contextMessages[0]).toMatchObject({ authorId: companion.id, speaker: 'self' });
+    expect(sent.payload.relevantMemories).toEqual([]);
+    expect(JSON.stringify(sent.payload)).not.toContain('OTHER_SCOPE_JOURNAL');
+    expect(sent.system).toContain('authorId=user 永远是独立真人玩家');
+  });
   it.each<AiApiFormat>(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native'])(
-    'uses only the configured chat model without tools or embeddings for %s', async format => {
-      const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response(format, { candidates: [candidate] }));
-      const result = await generateCompanionMemoryExtraction(input, { ...config, apiFormat: format }, undefined, { fetchFn });
-      expect(result.candidates[0]).toMatchObject(candidate);
+    'uses the supplied global chat model and ordinary structured transport for %s', async format => {
+      const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response(format, { notes: [note] }));
+      const result = await generateCompanionJournal(input, { ...config, apiFormat: format }, undefined, { fetchFn });
+      expect(result.notes[0]).toMatchObject(note);
       const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
-      expect(body.tools).toBeUndefined();
-      expect(body.parameters?.tools).toBeUndefined();
-      expect(body.model ?? String(fetchFn.mock.calls[0]?.[0])).toContain('configured-chat-model');
+      expect(body.tools).toBeUndefined(); expect(body.parameters?.tools).toBeUndefined();
+      expect(body.model ?? String(fetchFn.mock.calls[0]?.[0])).toContain(config.model);
       expect(format === 'openai_responses' ? body.max_output_tokens : format === 'gemini_native' ? body.generationConfig.maxOutputTokens
         : format === 'dashscope_native' ? body.parameters.max_tokens : body.max_tokens).toBe(8192);
-      expect(JSON.stringify(body)).toContain('memory_extraction');
+      expect(JSON.stringify(body)).toContain('vcp_experience_journal');
       expect(String(fetchFn.mock.calls[0]?.[0])).not.toContain('embedding');
       expect(JSON.stringify(body)).not.toContain(config.apiKey);
+      expect(JSON.stringify(body)).not.toContain(companion.model);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
     });
-  it('forms a spontaneous preference without a user request to remember and preserves correction and evidence', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { candidates: [candidate] }));
-    const result = await generateCompanionMemoryExtraction(input, config, undefined, { fetchFn });
-    expect(result.candidates[0]).toMatchObject({ correction: true, polarity: 'negative', epistemicStatus: 'asserted', evidence: candidate.evidence });
-    expect(JSON.stringify(result)).not.toContain('confirmed');
+  it('preserves narrative qualifiers, exact evidence and VCP Tag order without a remember request', async () => {
+    const result = await generateCompanionJournal(input, config, undefined, { fetchFn: fetchFor({ notes: [note] }) });
+    expect(result.notes[0]).toEqual({ ...note, relatedMemoryIds: [] });
+    expect(result.notes[0]?.tags).toEqual(['用户', '聊天功能', '咖啡']);
+    expect(result.notes[0]).not.toHaveProperty('factKey');
+    expect(result.notes[0]).not.toHaveProperty('epistemicStatus');
   });
-  it('accepts a no-change batch as an empty candidate list', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { candidates: [] }));
-    expect(await generateCompanionMemoryExtraction(input, config, undefined, { fetchFn })).toEqual({ candidates: [] });
+  it('accepts a no-change batch without manufacturing a journal or state update', async () => {
+    expect(await generateCompanionJournal(input, config, undefined, { fetchFn: fetchFor({ notes: [] }) })).toEqual({ notes: [] });
   });
   it.each([
-    { ...candidate, sourceMessageIds: ['invented'] },
-    { ...candidate, sourceMessageIds: ['coffee', 'coffee'] },
-    { ...candidate, evidence: [{ sourceMessageId: 'coffee', quote: '用户长期讨厌咖啡' }] },
-    { ...candidate, evidence: [] },
-    { ...candidate, relatedMemoryIds: ['never_read'] },
-    { ...candidate, subject: undefined },
-    { ...candidate, factKey: undefined },
-    { ...candidate, kind: 'reflection', subject: 'user', epistemicStatus: 'subjective' },
-    { ...candidate, kind: 'hypothesis', epistemicStatus: 'confirmed' },
-    { ...candidate, companionId: 'other_persona' },
-  ])('rejects unsupported sources, misclassified evidence or invented structure %#', async invalidCandidate => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { candidates: [invalidCandidate] }));
-    await expect(generateCompanionMemoryExtraction(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    { ...note, sourceMessageIds: ['invented'] }, { ...note, sourceMessageIds: ['coffee', 'coffee'] },
+    { ...note, evidence: [{ sourceMessageId: 'coffee', quote: '用户长期讨厌咖啡' }] },
+    { ...note, evidence: [{ sourceMessageId: 'other', quote: '现在已经不喝咖啡了' }] },
+    { ...note, evidence: [] }, { ...note, relatedMemoryIds: ['never_read'] },
+    { ...note, tags: [{ name: '咖啡', aliases: ['coffee'] }] }, { ...note, companionId: 'other_persona' },
+    { ...note, sql: 'SELECT * FROM messages' }, { ...note, content: '' },
+  ])('rejects unverifiable evidence, scope injection or non-journal structure %#', async invalidNote => {
+    await expect(generateCompanionJournal(input, config, undefined, { fetchFn: fetchFor({ notes: [invalidNote] }) }))
+      .rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
-  it('uses neighboring history only to resolve references and rejects its IDs as new job sources', async () => {
+  it('requires a verbatim quotation for every claimed source', async () => {
+    const second = message('result', 5, '我把聊天导出功能也完成了。');
+    await expect(generateCompanionJournal({ ...input, messages: [...input.messages, second] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [{ ...note, sourceMessageIds: ['coffee', second.id] }] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+  it('exposes neighboring history for reference resolution but never accepts it as new evidence', async () => {
     const oldMessage = message('old', 3, '以前喝咖啡。');
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { candidates: [{ ...candidate,
-      sourceMessageIds: ['old'], evidence: [{ sourceMessageId: 'old', quote: '以前喝咖啡' }] }] }));
-    await expect(generateCompanionMemoryExtraction({ ...input, contextMessages: [oldMessage] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
-    const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
-    const payload = JSON.parse(body.messages[1].content);
-    expect(payload.contextMessages[0].id).toBe('old');
+    const fetchFn = fetchFor({ notes: [{ ...note, sourceMessageIds: ['old'], evidence: [{ sourceMessageId: 'old', quote: '以前喝咖啡' }] }] });
+    await expect(generateCompanionJournal({ ...input, contextMessages: [oldMessage] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(request(fetchFn).payload.contextMessages[0].id).toBe('old');
+    expect(request(fetchFn).payload.messages.map((source: { id: string }) => source.id)).toEqual(['coffee']);
+  });
+  it('does not send failed, streamed or checkpoint drafts as evidence or surrounding context', async () => {
+    const excluded = [message('failed', 1, 'UNSENT_PRIVATE', { status: 'failed' }),
+      message('streaming', 2, 'STREAM_PRIVATE', { isReplyDraft: true }),
+      message('checkpoint', 3, 'CHECKPOINT_PRIVATE', { replyDraft: { step: 0, attemptId: 'attempt', text: 'UNCOMMITTED_TEXT' } })];
+    const fetchFn = fetchFor({ notes: [] });
+    await generateCompanionJournal({ ...input, messages: [...excluded, ...input.messages], contextMessages: excluded }, config, undefined, { fetchFn });
+    const { payload } = request(fetchFn);
     expect(payload.messages.map((source: { id: string }) => source.id)).toEqual(['coffee']);
+    expect(payload.contextMessages).toEqual([]);
+    expect(JSON.stringify(payload)).not.toMatch(/UNSENT_PRIVATE|STREAM_PRIVATE|CHECKPOINT_PRIVATE|UNCOMMITTED_TEXT/u);
   });
-  it('does not turn unsent drafts or another group into evidence', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { candidates: [candidate] }));
-    await expect(generateCompanionMemoryExtraction({ ...input, messages: [message('coffee', 4, '现在已经不喝咖啡了', { status: 'failed' })] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
-    await expect(generateCompanionMemoryExtraction({ ...input, conversation: { ...conversation, id: 'group', kind: 'group' } }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  it.each<Partial<CompanionMessage>>([{ status: 'failed' }, { isReplyDraft: true },
+    { replyDraft: { step: 0, attemptId: 'attempt', text: 'private draft' } }, { conversationId: 'other_group' }])(
+    'rejects a model citation of a filtered message %#', async overrides => {
+      await expect(generateCompanionJournal({ ...input, messages: [message('coffee', 4, input.messages[0]!.content, overrides)] }, config, undefined,
+        { fetchFn: fetchFor({ notes: [note] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    });
+  it('keeps group evidence and context within its group even when private memories are supplied', async () => {
+    const group = { ...conversation, id: 'group_current', kind: 'group' as const };
+    const visible = message('group_source', 9, '这个群的聊天导出已经上线。', { conversationId: group.id });
+    const fetchFn = fetchFor({ notes: [] });
+    await generateCompanionJournal({ ...input, conversation: group, messages: [...input.messages, visible], contextMessages: input.messages,
+      relevantMemories: [memory(), memory({ id: 'another_group', sourceConversationId: 'group_other' }),
+        memory({ id: 'same_group', sourceConversationId: group.id }), memory({ id: 'other_companion', companionId: 'other', sourceConversationId: group.id })] },
+    config, undefined, { fetchFn });
+    const { payload } = request(fetchFn);
+    expect(payload.messages.map((source: { id: string }) => source.id)).toEqual(['group_source']);
+    expect(payload.contextMessages).toEqual([]);
+    expect(payload.relevantMemories.map((item: { id: string }) => item.id)).toEqual(['same_group']);
+    await expect(generateCompanionJournal({ ...input, conversation: group, messages: [visible] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [note] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
-  it('rejects conversational or partial JSON output rather than treating it as a memory', async () => {
+  it('links a new correction to an actually read same-domain old diary without treating old sources as new evidence', async () => {
+    const old = memory({ sources: [{ ...memory().sources[0]!, messageId: 'coffee' }] });
+    const linked = { ...note, relatedMemoryIds: [old.id] };
+    expect((await generateCompanionJournal({ ...input, relevantMemories: [old] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [linked] }) })).notes[0]?.relatedMemoryIds).toEqual([old.id]);
+    expect((await generateCompanionJournal({ ...input, relevantMemories: [memory()] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [linked] }) })).notes[0]?.relatedMemoryIds).toEqual([old.id]);
+    await expect(generateCompanionJournal({ ...input, relevantMemories: [memory({ sourceConversationId: 'other_domain' })] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [linked] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+  it('rejects conversational or partial JSON instead of reporting capture success', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: '好的，我已经记住了。' } }] })));
-    await expect(generateCompanionMemoryExtraction(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    await expect(generateCompanionJournal(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
-  it('reports sanitized authentication, network, timeout and cancellation errors without claiming memory success', async () => {
+  it('sanitizes authentication, network, timeout and cancellation errors without claiming capture success', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(`private provider error ${config.apiKey}`, { status: 401 }));
-    const auth = await generateCompanionMemoryExtraction(input, config, undefined, { fetchFn }).catch(error => error);
-    expect(auth).toMatchObject({ code: 'AUTH' });
-    expect(String(auth)).not.toContain(config.apiKey);
+    const auth = await generateCompanionJournal(input, config, undefined, { fetchFn }).catch(error => error);
+    expect(auth).toMatchObject({ code: 'AUTH' }); expect(String(auth)).not.toContain(config.apiKey);
     fetchFn.mockRejectedValue(new Error(`https://private.example/?api_key=${config.apiKey}`));
-    const network = await generateCompanionMemoryExtraction(input, config, undefined, { fetchFn }).catch(error => error);
-    expect(network).toMatchObject({ code: 'NETWORK' });
-    expect(String(network)).not.toContain('private.example');
+    const network = await generateCompanionJournal(input, config, undefined, { fetchFn }).catch(error => error);
+    expect(network).toMatchObject({ code: 'NETWORK' }); expect(String(network)).not.toContain('private.example');
     fetchFn.mockImplementation(() => new Promise(() => undefined));
-    await expect(generateCompanionMemoryExtraction(input, config, undefined, { fetchFn, timeoutMs: 5 })).rejects.toMatchObject({ code: 'TIMEOUT' });
+    await expect(generateCompanionJournal(input, config, undefined, { fetchFn, timeoutMs: 5 })).rejects.toMatchObject({ code: 'TIMEOUT' });
     const controller = new AbortController(); controller.abort();
-    await expect(generateCompanionMemoryExtraction(input, config, controller.signal, { fetchFn })).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(generateCompanionJournal(input, config, controller.signal, { fetchFn })).rejects.toMatchObject({ code: 'CANCELLED' });
     expect(fetchFn).toHaveBeenCalledTimes(3);
   });
 });
 
-describe('automatic query understanding', () => {
-  it('pins the current topic before historical replies and excludes subsequent messages', async () => {
-    const messages = [message('old', 1, '之前那个方案'), message('assistant', 2, '刚才讨论的是旅行。', { authorId: 'sister' }),
-      message('current', 3, '不是旅行。我说的是 WorldlineBox 记忆方案，谁提出、为什么改、现在怎样？'),
-      message('later', 4, '下一次才问的消息')];
-    const query = { query: 'WorldlineBox 记忆方案', terms: ['WorldlineBox', '记忆', '提出者', '修改原因', '当前状态'], tags: ['记忆管理'], includeHistory: false };
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', query));
-    expect(await planCompanionMemoryQuery({ companion, conversation, messages, currentMessageId: 'current' }, config, undefined, { fetchFn })).toMatchObject(query);
-    const payload = JSON.parse(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)).messages[1].content);
-    expect(payload.currentMessage.content).toBe(messages[2]!.content);
-    expect(payload.messages.map((source: { id: string }) => source.id)).toEqual(['old', 'assistant', 'current']);
-    expect(JSON.stringify(payload)).not.toContain('下一次才问');
-    expect(payload.purpose).toBe('memory_query');
-  });
-  it('keeps aliases, time range and historical intent as structured query values', async () => {
-    const query = { query: '以前阿林那个项目', terms: ['阿林', '林林', 'WorldlineBox'], subject: 'person_lin',
-      eventId: 'old_project', from: '2026-01-01', to: '2026-09-01', includeHistory: true, limit: 40 };
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', query));
-    expect(await planCompanionMemoryQuery({ ...input, currentMessage: '以前阿林那个项目怎样了？' }, config, undefined, { fetchFn })).toMatchObject(query);
-  });
-  it('rejects scope injection and unsupported output instead of routing model-authored SQL', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { query: '生日', companionId: 'other', sql: 'SELECT *' }));
-    await expect(planCompanionMemoryQuery(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
-  });
-  it('falls back to the current message when a model emits an empty query', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', {}));
-    const query = await planCompanionMemoryQuery(input, config, undefined, { fetchFn });
-    expect(query.query).toBe(input.messages[0]!.content.normalize('NFKC'));
-    expect(query.terms.length).toBeGreaterThan(0);
-  });
-  it('has a model-free path and recognizes historical questions without using prior assistant text', () => {
-    const query = buildDirectCompanionMemoryQuery({ ...input, messages: [message('past', 1, '以前喝咖啡时说了什么？'),
-      message('assistant', 2, '换个主题：旅行。', { authorId: 'sister' })] });
-    expect(query.query).toBe('以前喝咖啡时说了什么？'.normalize('NFKC'));
-    expect(query.includeHistory).toBe(true);
-    expect(query.query).not.toContain('旅行');
-  });
-});
-
-describe('source-grounded autonomous maintenance', () => {
-  const old = { id: 'coffee_fact', companionId: 'sister', content: '用户不喝咖啡。', kind: 'preference' as const,
-    sourceMessageId: 'coffee', sourceConversationId: 'private_sister', version: 1, origin: 'companion' as const,
-    createdAt: '2026-10-14', updatedAt: '2026-10-14' };
-  const overview = { kind: 'overview', content: '聊天功能完成后，用户调整了咖啡习惯。', sourceMessageIds: ['coffee'],
-    evidence: [{ sourceMessageId: 'coffee', quote: '现在已经不喝咖啡了，聊天功能忙完了' }], relatedMemoryIds: ['coffee_fact'],
-    tags: [{ name: '聊天功能', type: 'project' }] };
-  it('derives a phase directory from atomic facts and actual source text while excluding earlier summaries', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { candidates: [overview] }));
-    const result = await generateCompanionMemoryMaintenance({ ...input, relevantMemories: [old, { ...old, id: 'summary', kind: 'overview', content: 'OLD SUMMARY MUST NOT BECOME EVIDENCE' }], intent: '聊天功能阶段' }, config, undefined, { fetchFn });
-    expect(result.candidates[0]).toMatchObject(overview);
-    const payload = JSON.parse(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)).messages[1].content);
-    expect(payload.purpose).toBe('memory_maintenance');
-    expect(payload.relevantMemories.map((memory: { id: string }) => memory.id)).toEqual(['coffee_fact']);
-    expect(JSON.stringify(payload)).not.toContain('OLD SUMMARY');
+describe('journal current-state provenance', () => {
+  const stateProposal = { expression: 'direct', focus: '聊天功能', reason: '用户明确报告聊天功能已完成。', sourceMessageIds: ['coffee'], evidence: note.evidence,
+    appraisals: [{ type: 'shared_success', target: 'user', intensity: 0.4, confidence: 0.8 }] };
+  it('accepts a quoted current user appraisal independently of whether a new journal is needed', async () => {
+    expect(await generateCompanionJournal(input, config, undefined, { fetchFn: fetchFor({ notes: [], stateProposal }) }))
+      .toEqual({ notes: [], stateProposal });
   });
   it.each([
-    { ...overview, relatedMemoryIds: [] }, { ...overview, sourceMessageIds: ['invented'] },
-    { ...overview, kind: 'fact', subject: 'user', factKey: 'new_fact' },
-    { ...overview, relatedMemoryIds: ['old_summary'] },
-  ])('rejects ungrounded maintenance or unsupported atomic output %#', async invalidCandidate => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { candidates: [invalidCandidate] }));
-    await expect(generateCompanionMemoryMaintenance({ ...input, relevantMemories: [old] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    { ...stateProposal, sourceMessageIds: ['invented'] }, { ...stateProposal, sourceMessageIds: ['coffee', 'coffee'] },
+    { ...stateProposal, evidence: [{ sourceMessageId: 'coffee', quote: '用户非常信任我' }] }, { ...stateProposal, evidence: [] },
+    { ...stateProposal, relationship: { affinity: 100, trust: 100, respect: 100 } }, { ...stateProposal, persona: '改变稳定人格' },
+  ])('rejects ungrounded or host-owned state changes %#', async invalidState => {
+    await expect(generateCompanionJournal(input, config, undefined, { fetchFn: fetchFor({ notes: [], stateProposal: invalidState }) }))
+      .rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
-  it('rejects an unrelated dependency with no contributing source', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { candidates: [{ ...overview, relatedMemoryIds: ['unrelated'] }] }));
-    await expect(generateCompanionMemoryMaintenance({ ...input, relevantMemories: [{ ...old, id: 'unrelated', sourceMessageId: 'another_source' }] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  it('does not treat a companion-authored account as user relationship evidence', async () => {
+    await expect(generateCompanionJournal({ ...input, messages: [{ ...input.messages[0]!, authorId: companion.id }] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [], stateProposal }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+  it('cannot cite context-only user speech for a current-state change', async () => {
+    await expect(generateCompanionJournal({ ...input, messages: [], contextMessages: input.messages }, config, undefined,
+      { fetchFn: fetchFor({ notes: [], stateProposal }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 });

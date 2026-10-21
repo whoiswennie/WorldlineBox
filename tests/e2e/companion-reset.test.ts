@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -7,11 +7,11 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, companionTestDataRoot, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
 async function request(page: Page, input: CompanionsRequest) { const result = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), input); expect(result.ok, result.error).toBe(true); return result; }
-function cleanup(root: string) { const absolute = path.resolve(root); if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-reset-e2e-')) throw new Error('Unexpected reset fixture cleanup.'); rmSync(absolute, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 }); }
+function cleanup(root: string) { const absolute = path.resolve(root); if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-reset-e2e-')) throw new Error('Unexpected reset fixture cleanup.'); removeCompanionTestDirectory(absolute); }
 
 // Real UtilityProcess/SQLite, provider stream, public forms and managed files.
 // Only the provider and OS chooser are fixtures; no reset handler is replaced.
@@ -28,9 +28,9 @@ test('factory reset restores the built-in, stops an old stream, preserves other 
         const body = JSON.parse(raw), serialized = body.messages[1].content as string, context = JSON.parse(serialized); let output: unknown;
         if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .98, evidence: [context.source.content], reason: '普通聊天。' };
         else if (context.purpose === 'world_decision') output = { action: null, reason: '保持当前生活。', appraisals: [] };
-        else if (context.purpose === 'memory_query') output = {};
-        else if (context.purpose === 'memory_dream') output = { candidates: [], dream: null };
-        else if (context.purpose?.startsWith('memory_')) output = { candidates: [] };
+        else if (context.purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
+        else if (context.purpose === 'vcp_sleep_reflection') output = { notes: [], dream: null };
+        else if (context.purpose === 'vcp_experience_journal') output = { notes: [] };
         else {
           primaryContexts.push(serialized);
           if (context.taskRequest?.prompt === 'RESET_PENDING') {
@@ -47,7 +47,9 @@ test('factory reset restores the built-in, stops an old stream, preserves other 
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const launch = async () => {
     const app = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE ? [] : [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_HIDE_WINDOW: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
-    const page = await app.firstWindow(), window = await app.browserWindow(page); await window.evaluate(value => { value.unmaximize(); value.setSize(1360, 1000); value.setOpacity(0); value.setFocusable(false); value.webContents.setBackgroundThrottling(false); value.showInactive(); });
+    const page = await app.firstWindow(), window = await app.browserWindow(page);
+    await window.evaluate(value => { value.unmaximize(); value.setSize(1360, 1000); value.setOpacity(0); value.setFocusable(false); value.webContents.setBackgroundThrottling(false); value.showInactive(); });
+    await ensureCompanionTestWorkspace(page);
     await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page'); return { app, page };
   };
   try {
@@ -106,7 +108,7 @@ test('factory reset restores the built-in, stops an old stream, preserves other 
       return { status: response.status, bytes: (await response.arrayBuffer()).byteLength };
     }, image.id);
     expect(attachment.status).toBe(200); expect(attachment.bytes).toBeGreaterThan(0);
-    expect(existsSync(originalFile)).toBe(true); expect(JSON.parse(readFileSync(path.join(profile, 'companions/llm-keys.enc.json'), 'utf8'))[sister.id]).toBeUndefined();
+    expect(existsSync(originalFile)).toBe(true); expect(JSON.parse(readFileSync(path.join(companionTestDataRoot(profile), 'llm-keys.enc.json'), 'utf8'))[sister.id]).toBeUndefined();
     const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); await page.screenshot({ path: path.join(artifacts, 'verified-companion-reset.png'), animations: 'disabled' });
     await dialog.getByRole('button', { name: '完成', exact: true }).click();
     const routine = (await request(page, { type: 'routine.get', companionId: sister.id, conversationId: ownRoom })).routine!;

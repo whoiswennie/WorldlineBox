@@ -81,6 +81,18 @@ afterEach(() => {
 });
 
 describe("embedding test index", () => {
+  it("reports an unstarted or closed encoder as unavailable without launching it", async () => {
+    const requestWorker = vi.fn(), installedLayout = vi.fn(), startSession = vi.fn();
+    const index = new EmbeddingTestIndex({ configDirectories: [], requestWorker, installedLayout, startSession });
+    const request = { libraryId: "library-one", modelId: "embeddinggemma-2-compact" as const, run: false, restart: false };
+    expect(index.handleStatus(request)).toMatchObject({ phase: "unavailable", done: 0, total: 0, failedCount: 0 });
+    await index.close();
+    expect(index.handleStatus(request)).toMatchObject({ phase: "unavailable" });
+    expect(installedLayout).not.toHaveBeenCalled();
+    expect(startSession).not.toHaveBeenCalled();
+    expect(requestWorker).not.toHaveBeenCalled();
+  });
+
   it("closes the active library model without interrupting it for another library stop", async () => {
     const layout = compactLayout("worldlinebox-semantic-scoped-stop-");
     const session = sessionDouble();
@@ -258,7 +270,7 @@ describe("embedding test index", () => {
     }
   });
 
-  it("embeds a video from its cover and does not sample frames", async () => {
+  it("still accepts an image target while advertising native video as a separate supported source", async () => {
     const { modelDirectory, runtimePath } = compactLayout("worldlinebox-semantic-video-cover-");
     const poster = Buffer.from("synthetic-cover").toString("base64");
     const session = sessionDouble();
@@ -308,11 +320,11 @@ describe("embedding test index", () => {
         .toMatchObject({ ok: true, type: "embedding.index.status", phase: "ready", total: 1, failedCount: 0 });
     });
     expect(commands.find((command) => command.type === "semantic.index.begin")).toMatchObject({
-      modalities: ["image", "audio", "text"],
+      modalities: ["image", "video", "audio", "text"],
       maxInputBytes: SEMANTIC_IMAGE_DECODE_MAX_BYTES,
     });
     expect(commands.find((command) => command.type === "semantic.index.targets")).toMatchObject({
-      modalities: ["image", "audio", "text"],
+      modalities: ["image", "video", "audio", "text"],
     });
     expect(fitSemanticImage).toHaveBeenCalledWith(expect.objectContaining({
       mimeType: "image/jpeg",
@@ -324,7 +336,7 @@ describe("embedding test index", () => {
     await index.close();
   });
 
-  it("rejects a video payload instead of sampling frames", async () => {
+  it("rejects missing video windows rather than silently indexing a cover", async () => {
     const { modelDirectory, runtimePath } = compactLayout("worldlinebox-semantic-video-disabled-");
     const session = sessionDouble();
     const requestWorker = vi.fn(async (command: WorkerCommand): Promise<WorkerResult> => {
@@ -365,6 +377,30 @@ describe("embedding test index", () => {
     ));
     expect(failed).toMatchObject({ errorCategory: "preparation" });
     await index.close();
+  });
+
+  it('encodes actual video windows with synchronized audio and pools every window in the shared space', async () => {
+    const { modelDirectory, runtimePath } = compactLayout('worldlinebox-semantic-native-video-');
+    const session = sessionDouble();
+    let written: WorkerCommand | undefined;
+    const requestWorker = vi.fn(async (command: WorkerCommand): Promise<WorkerResult> => {
+      if (command.type === 'semantic.index.begin') return { ok: true, type: 'semantic.index.started', profileId: 'a'.repeat(64), nativeCosineAvailable: false };
+      if (command.type === 'semantic.index.import-legacy') return { ok: true, type: 'semantic.index.legacy-imported', attempted: true, acceptedRows: 0, rejectedRows: 0 };
+      if (command.type === 'semantic.index.targets') return { ok: true, type: 'semantic.index.targets', revisionSnapshot: 1, total: 1, nextOffset: null,
+        targets: [{ assetId: 'video', sourceRevision: 'video:v1', kind: 'video', modality: 'video', alreadyIndexed: false }] };
+      if (command.type === 'semantic.index.job') return { ok: true, type: 'semantic.index.job-updated', updated: true };
+      if (command.type === 'semantic.index.prepare') return { ok: true, type: 'semantic.index.prepared', assetId: 'video', sourceRevision: 'video:v1', kind: 'video',
+        videoWindows: [{ bytesBase64: 'first-frames', audioBase64: 'first-speech' }, { bytesBase64: 'later-frames' }] };
+      if (command.type === 'semantic.index.write') { written = command; return { ok: true, type: 'semantic.index.written', accepted: ['video'], rejected: [] }; }
+      if (command.type === 'semantic.index.close') return { ok: true, type: 'semantic.index.closed' };
+      throw new Error(`Unexpected ${command.type}`);
+    });
+    const index = new EmbeddingTestIndex({ configDirectories: [], installedLayout: () => ({ modelDirectory, runtimePath }), requestWorker, startSession: async () => session });
+    index.handleStatus({ libraryId: 'library-video', modelId: 'embeddinggemma-2-compact', run: true, restart: false });
+    await vi.waitFor(() => expect(written?.type).toBe('semantic.index.write'));
+    expect(session.embedVideoPayload).toHaveBeenNthCalledWith(1, 'first-frames', 'first-speech');
+    expect(session.embedVideoPayload).toHaveBeenNthCalledWith(2, 'later-frames', undefined);
+    expect(session.embedImagePayload).not.toHaveBeenCalled(); await index.close();
   });
 
   it("reports a picture that cannot be fitted as a semantic image limit", async () => {

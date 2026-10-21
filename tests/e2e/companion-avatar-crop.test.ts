@@ -1,14 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 import { _electron as electron, expect, test, type Locator, type Page } from '@playwright/test';
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 async function request(page: Page, input: CompanionsRequest) { const result = await page.evaluate(value => (window as unknown as { worldlinebox: { companions: WorldlineBoxCompanionsApi } }).worldlinebox.companions.request(value), input); expect(result.ok, result.error).toBe(true); return result; }
-function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-avatar-e2e-')) throw new Error('Unexpected crop fixture cleanup path.'); rmSync(resolved, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 }); }
+function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-avatar-e2e-')) throw new Error('Unexpected crop fixture cleanup path.'); removeCompanionTestDirectory(resolved); }
 async function pixels(page: Page, id: string) { return Buffer.from(await page.evaluate(async attachmentId => Array.from(new Uint8Array(await (await fetch('worldlinebox-companion://attachment/' + attachmentId)).arrayBuffer())), id)); }
 async function visibleSquare(dialog: Locator, rotation: number) {
   return dialog.locator('.avatar-crop-stage').evaluate((stage, turn) => {
@@ -31,7 +31,9 @@ test('calibrates both player and companion avatars with real crop pixels, cancel
   const original = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900"><rect width="800" height="450" fill="#c18d8a"/><rect x="800" width="800" height="450" fill="#8daeb4"/><rect y="450" width="800" height="450" fill="#d3bb88"/><rect x="800" y="450" width="800" height="450" fill="#8a91af"/><path d="M505 775Q530 470 800 460Q1070 470 1095 775" fill="#354c5a"/><circle cx="800" cy="335" r="145" fill="#ecd4bd"/><path d="M660 330Q625 145 800 145Q975 145 945 330L905 240Q820 310 660 330" fill="#493f4b"/><circle cx="750" cy="345" r="10" fill="#493f4b"/><circle cx="850" cy="345" r="10" fill="#493f4b"/><path d="M765 405Q800 428 835 405" fill="none" stroke="#ac7370" stroke-width="8"/></svg>')).png().toBuffer(); writeFileSync(imageFile, original);
   const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'software' }) });
   try {
-    const page = await application.firstWindow(), native = await application.browserWindow(page); await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 1050); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); }); await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
+    const page = await application.firstWindow(), native = await application.browserWindow(page);
+    await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 1050); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+    await ensureCompanionTestWorkspace(page); await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
     await application.evaluate(({ dialog }, selected) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] }); }, imageFile);
     await page.getByRole('button', { name: '设置', exact: true }).click(); const settings = page.getByRole('dialog', { name: '通用设置', exact: true }); await settings.getByRole('tab', { name: '外观', exact: true }).click(); await settings.getByRole('radio', { name: 'WorldlineBox', exact: true }).click(); await settings.getByRole('radio', { name: '亮色', exact: true }).click(); await settings.getByRole('tab', { name: '用户信息', exact: true }).click();
     await settings.getByRole('button', { name: '选择头像', exact: true }).click(); let crop = page.getByRole('dialog', { name: '调整头像', exact: true }); await settleImage(crop);

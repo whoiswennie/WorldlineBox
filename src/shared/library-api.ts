@@ -63,6 +63,8 @@ export interface EmbeddingLibraryBinding {
   inherit: boolean;
 }
 
+import type { GlobalEmbeddingSettings } from './embedding/global-settings';
+import type { LocalTextEmbeddingInstallStatus } from './embedding/global-profile';
 import type {
   AssetSummary,
   BrowseLayoutEntry,
@@ -781,6 +783,11 @@ export interface WorldlineBoxLibraryApi {
   syncDeleteServer(input: { id: string }): Promise<LibraryApiResult<{ id: string }>>;
   /** Device-local EmbeddingGemma 2 registration. Does not write a library index. */
   embeddingListModels(): Promise<LibraryApiResult<EmbeddingModelSummary[]>>;
+  embeddingGetGlobalSettings(): Promise<LibraryApiResult<GlobalEmbeddingSettings>>;
+  embeddingLocalTextStatus(): Promise<LibraryApiResult<LocalTextEmbeddingInstallStatus>>;
+  embeddingLocalTextInstall(input: { update?: boolean }): Promise<LibraryApiResult<LocalTextEmbeddingInstallStatus>>;
+  embeddingLocalTextDelete(): Promise<LibraryApiResult<LocalTextEmbeddingInstallStatus>>;
+  embeddingSaveGlobalSettings(input: { selectionId: string | null }): Promise<LibraryApiResult<GlobalEmbeddingSettings>>;
   embeddingSaveModel(input: {
     id?: string;
     name: string;

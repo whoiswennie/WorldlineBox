@@ -50,8 +50,17 @@ import type { EmbeddingTestIndex } from "../embedding-test-index";
 import { createPublicError } from "../../shared/protocol/errors";
 import type { RendererRequest } from "../../shared/protocol/requests";
 import type { RendererResult } from "../../shared/protocol/responses";
+import type { GlobalEmbeddingSettings } from '../../shared/embedding/global-settings';
+import { isLocalTextEmbeddingModelId } from '../../shared/embedding/global-profile';
+import type { LocalTextEmbeddingInstaller } from '../embedding-text-model-install';
+import { createManagedTextEmbeddingService } from '../embedding-global-service';
+import { LOCAL_TEXT_EMBEDDING_MODEL_ID } from '../../shared/embedding/global-profile';
 
 export type EmbeddingModelRuntime = {
+  textInstaller?: LocalTextEmbeddingInstaller;
+  invalidateGlobalEmbedding?: () => Promise<void>;
+  readGlobalSettings?: () => GlobalEmbeddingSettings;
+  writeGlobalSettings?: (settings: GlobalEmbeddingSettings) => void | Promise<void>;
   readCatalog: () => unknown;
   writeCatalog: (catalog: EmbeddingModelCatalog) => void;
   readServices?: () => unknown;
@@ -73,7 +82,52 @@ export async function tryHandleEmbeddingModelRequest(
   request: RendererRequest,
   runtime: EmbeddingModelRuntime,
 ): Promise<RendererResult | undefined> {
+  if (runtime.readGlobalSettings && (request.type === 'embedding.search.request' || request.type === 'embedding.similar.request'
+    || request.type === 'embedding.index.status.request' && !request.stop)) {
+    if (request.modelId !== runtime.readGlobalSettings().selectionId) return { ok: false, error: createPublicError('EMBEDDING_MODEL_INVALID') };
+  }
+  if (runtime.readGlobalSettings && (request.type.startsWith('embedding.services.')
+    || request.type === 'embedding.models.upsert.request' || request.type === 'embedding.models.set-default.request'
+    || request.type === 'embedding.global.save.request' || request.type === 'embedding.install.start.request'
+    || request.type === 'embedding.install.delete.request'
+    || request.type === 'embedding.binding.save.request' && request.selectionId !== null
+      && request.selectionId !== LOCAL_TEXT_EMBEDDING_MODEL_ID && !request.inherit)) {
+    if (request.type === 'embedding.services.list.request') return { ok: true, type: 'embedding.services.listed', services: [] };
+    return { ok: false, error: createPublicError('EMBEDDING_MODEL_INVALID') };
+  }
   switch (request.type) {
+    case 'embedding.local-text.status.request':
+      if (!runtime.textInstaller) return { ok: false, error: createPublicError('EMBEDDING_INSTALL_FAILED') };
+      return { ok: true, type: 'embedding.local-text.status', status: runtime.textInstaller.status() };
+    case 'embedding.local-text.install.request':
+    case 'embedding.local-text.delete.request': {
+      if (!runtime.textInstaller) return { ok: false, error: createPublicError('EMBEDDING_INSTALL_FAILED') };
+      try {
+        await runtime.invalidateGlobalEmbedding?.();
+        await Promise.all([runtime.stopGemmaIndex?.(), runtime.stopHttpIndex?.()]);
+        const status = request.type === 'embedding.local-text.install.request'
+          ? await runtime.textInstaller.install({ update: request.update }) : runtime.textInstaller.uninstall();
+        return { ok: true, type: 'embedding.local-text.status', status };
+      } catch (error) {
+        runtime.logError?.('embedding.local-text.install', error);
+        return { ok: false, error: createPublicError('EMBEDDING_INSTALL_FAILED') };
+      }
+    }
+    case 'embedding.global.get.request':
+      return { ok: true, type: 'embedding.global.settings', settings: runtime.readGlobalSettings?.() ?? { version: 1, selectionId: null } };
+    case 'embedding.global.save.request': {
+      const id = request.selectionId;
+      if (id && !isSemanticSearchModelId(id) && !isLocalTextEmbeddingModelId(id)
+        && !parseEmbeddingServiceCatalog(runtime.readServices?.()).services.some(service => service.id === id)) {
+        return { ok: false, error: createPublicError('EMBEDDING_MODEL_INVALID') };
+      }
+      if (!runtime.writeGlobalSettings) return { ok: false, error: createPublicError('EMBEDDING_MODEL_INVALID') };
+      const settings: GlobalEmbeddingSettings = { version: 1, selectionId: id };
+      await runtime.writeGlobalSettings(settings);
+      await runtime.invalidateGlobalEmbedding?.();
+      await Promise.all([runtime.stopGemmaIndex?.(), runtime.stopHttpIndex?.()]);
+      return { ok: true, type: 'embedding.global.settings', settings };
+    }
     case "embedding.models.list.request":
       return {
         ok: true,
@@ -180,6 +234,22 @@ export async function tryHandleEmbeddingModelRequest(
 }
 
 function installStatus(runtime: EmbeddingModelRuntime): RendererResult {
+  // The bundled installer resolves the immutable resources directory. A fresh
+  // profile intentionally contains no copied weights, so inspecting userData
+  // here would prevent Renderer from ever starting the bundled encoder.
+  if (runtime.textInstaller) {
+    const status = runtime.textInstaller.status();
+    return {
+      ok: true,
+      type: "embedding.install.status",
+      runtimeInstalled: status.runtimeInstalled,
+      runtimeDownloadable: false,
+      models: SEMANTIC_SEARCH_MODEL_IDS.map((modelId) => ({
+        modelId,
+        installed: modelId === status.modelId && status.installed && status.phase === "ready",
+      })),
+    };
+  }
   const inspection = inspectManagedEmbeddingInstall(runtime.userDataPath());
   const installed = new Set(installedSemanticModels(new Set(inspection.files.keys())));
   return {
@@ -326,10 +396,13 @@ function listServices(runtime: EmbeddingModelRuntime): RendererResult {
   return {
     ok: true,
     type: "embedding.services.listed",
-    services: summarizeEmbeddingServices(
+    services: [...summarizeEmbeddingServices(
       parseEmbeddingServiceCatalog(runtime.readServices()),
       runtime.serviceCredentials,
-    ),
+    ), ...(() => {
+      const local = createManagedTextEmbeddingService(LOCAL_TEXT_EMBEDDING_MODEL_ID, runtime.userDataPath());
+      return local && !isSemanticSearchModelId(local.id) ? [{ ...local, hasCredential: false }] : [];
+    })()],
   };
 }
 

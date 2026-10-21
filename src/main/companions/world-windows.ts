@@ -125,4 +125,8 @@ export class CompanionWorldWindowManager {
     for (const entry of [...this.entries]) if (!entry.window.isDestroyed()) entry.window.destroy();
     this.entries.clear(); this.snapshot = undefined; this.contacts = undefined;
   }
+  closeAll(): void {
+    for (const entry of [...this.entries]) if (!entry.window.isDestroyed()) entry.window.destroy();
+    this.entries.clear(); this.snapshot = undefined; this.contacts = undefined;
+  }
 }

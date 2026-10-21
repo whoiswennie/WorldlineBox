@@ -1,0 +1,290 @@
+{
+  "generatedAt": "2026-10-21T09:36:47.405Z",
+  "model": {
+    "id": "embeddinggemma-2-compact",
+    "mode": "text-only (no projector)",
+    "repo": "unsloth/embeddinggemma-2-GGUF",
+    "revision": "412430755667d84b1ac64fe1fe2693aa6219f1d9",
+    "sha256": "ea905fd08e8061db77a0031cbb5096d459d7cfd2bdd0ad2ba66e483f16719493",
+    "bytes": 175673856,
+    "dimension": 768
+  },
+  "runtime": {
+    "release": "b11457",
+    "asset": "llama-b11457-bin-win-cpu-x64.zip",
+    "gpuLayers": 0,
+    "threads": 4,
+    "startupMs": 1898.2229,
+    "workingSetBytes": 339697664
+  },
+  "validation": {
+    "documents": 12,
+    "queries": 12,
+    "top1Correct": 12,
+    "recallAt3": 12,
+    "totalMs": 812.6406999999999,
+    "requestMedianMs": 31.40859999999998,
+    "requestP95Ms": 40.38129999999995,
+    "minVectorNorm": 0.9999999559371563,
+    "maxVectorNorm": 1.0000000428964513
+  },
+  "results": [
+    {
+      "id": "zh-rain",
+      "query": "借出去的挡雨用品什么时候还给小岚？",
+      "expected": "umbrella",
+      "top1": "umbrella",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "umbrella",
+          "score": 0.8487737798191509
+        },
+        {
+          "id": "birthday",
+          "score": 0.7561114729378506
+        },
+        {
+          "id": "coffee",
+          "score": 0.7317328318301838
+        }
+      ]
+    },
+    {
+      "id": "cross-umbrella",
+      "query": "Who borrowed the blue umbrella and promised to give it back on Friday?",
+      "expected": "umbrella",
+      "top1": "umbrella",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "umbrella",
+          "score": 0.8149176790606407
+        },
+        {
+          "id": "train",
+          "score": 0.6488866469925583
+        },
+        {
+          "id": "bug",
+          "score": 0.6352010963045414
+        }
+      ]
+    },
+    {
+      "id": "zh-birthday",
+      "query": "给小岚庆生应该准备哪种甜点？",
+      "expected": "birthday",
+      "top1": "birthday",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "birthday",
+          "score": 0.8279671904698327
+        },
+        {
+          "id": "coffee",
+          "score": 0.746891941747475
+        },
+        {
+          "id": "umbrella",
+          "score": 0.730985287224873
+        }
+      ]
+    },
+    {
+      "id": "cross-allergy",
+      "query": "Which ingredient must Xiaoyu avoid because of an allergic reaction?",
+      "expected": "allergy",
+      "top1": "allergy",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "allergy",
+          "score": 0.8203410008061107
+        },
+        {
+          "id": "coffee",
+          "score": 0.6740888097605853
+        },
+        {
+          "id": "umbrella",
+          "score": 0.6420493550067927
+        }
+      ]
+    },
+    {
+      "id": "zh-coffee",
+      "query": "她为了避免失眠，下午以后改变了什么饮食习惯？",
+      "expected": "coffee",
+      "top1": "coffee",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "coffee",
+          "score": 0.8201837333015116
+        },
+        {
+          "id": "allergy",
+          "score": 0.7090385818171093
+        },
+        {
+          "id": "umbrella",
+          "score": 0.6694737468110727
+        }
+      ]
+    },
+    {
+      "id": "cross-project",
+      "query": "Which project is integrating VCP for the virtual companions long term memories?",
+      "expected": "project",
+      "top1": "project",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "project",
+          "score": 0.7462537746496788
+        },
+        {
+          "id": "bug",
+          "score": 0.6073172273465668
+        },
+        {
+          "id": "budget",
+          "score": 0.6067842594545886
+        }
+      ]
+    },
+    {
+      "id": "cross-dentist",
+      "query": "牙医预约什么时候，出门要带什么证件？",
+      "expected": "appointment",
+      "top1": "appointment",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "appointment",
+          "score": 0.7244015467405057
+        },
+        {
+          "id": "train",
+          "score": 0.6545571352267873
+        },
+        {
+          "id": "umbrella",
+          "score": 0.6365867817654073
+        }
+      ]
+    },
+    {
+      "id": "cross-library",
+      "query": "谁周末会去帮小朋友找科学类图书？",
+      "expected": "library",
+      "top1": "library",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "library",
+          "score": 0.7834901526419944
+        },
+        {
+          "id": "umbrella",
+          "score": 0.7640241434298761
+        },
+        {
+          "id": "train",
+          "score": 0.7076787959685313
+        }
+      ]
+    },
+    {
+      "id": "zh-train",
+      "query": "周六去西湖旅行乘坐的车几点出发？",
+      "expected": "train",
+      "top1": "train",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "train",
+          "score": 0.7958494240600871
+        },
+        {
+          "id": "umbrella",
+          "score": 0.6456535950555665
+        },
+        {
+          "id": "coffee",
+          "score": 0.6405633706073866
+        }
+      ]
+    },
+    {
+      "id": "cross-sqlite",
+      "query": "数据库锁冲突最后采用什么并发写入方式解决？",
+      "expected": "bug",
+      "top1": "bug",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "bug",
+          "score": 0.7861936270661657
+        },
+        {
+          "id": "project",
+          "score": 0.6240392503388366
+        },
+        {
+          "id": "coffee",
+          "score": 0.604792431354146
+        }
+      ]
+    },
+    {
+      "id": "cross-plants",
+      "query": "阳台上的蔬菜应该在哪个时间段浇水？",
+      "expected": "garden",
+      "top1": "garden",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "garden",
+          "score": 0.7974352218391503
+        },
+        {
+          "id": "cat",
+          "score": 0.6437064758357719
+        },
+        {
+          "id": "train",
+          "score": 0.6325409781181156
+        }
+      ]
+    },
+    {
+      "id": "cross-budget",
+      "query": "采购电脑的审批和每月经费有什么限制？",
+      "expected": "budget",
+      "top1": "budget",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "budget",
+          "score": 0.8042966965922337
+        },
+        {
+          "id": "allergy",
+          "score": 0.5991090300314287
+        },
+        {
+          "id": "umbrella",
+          "score": 0.5948483396775116
+        }
+      ]
+    }
+  ],
+  "sources": [
+    "https://huggingface.co/google/embeddinggemma-2",
+    "https://huggingface.co/unsloth/embeddinggemma-2-GGUF",
+    "https://ai.google.dev/gemma/docs/embeddinggemma"
+  ]
+}

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { builtinModules, createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,12 +8,12 @@ import { _electron as electron, expect, test, type ElectronApplication } from '@
 import type { CompanionAction, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionWorkOrder } from '../../src/shared/companion-work-order';
 import { THEME_PREF_KEY } from '../../src/renderer/theme/theme-preferences';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 interface SocialFixture { fixtureKind: string; virtualDay: string; previousDay: string; privateId: string; groupId: string; firstId: string; latestId: string; privateFact: string }
 interface WorkFixture { fixtureKind: string; conversationId: string; actions: CompanionAction[]; orders: CompanionWorkOrder[]; other: CompanionAction }
 interface ScaleFixture { fixtureKind: string; relationshipCount: number }
-function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-social-observer-')) throw new Error('Unexpected social observation fixture cleanup.'); rmSync(resolved, { recursive: true, force: true }); }
+function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-social-observer-')) throw new Error('Unexpected social observation fixture cleanup.'); removeCompanionTestDirectory(resolved); }
 async function fixture(root: string) {
   const nativeSqlite = createRequire(path.resolve('package.json')).resolve('better-sqlite3').replaceAll('\\', '/');
   await build({ configFile: false, logLevel: 'silent', resolve: { alias: { 'better-sqlite3': nativeSqlite } }, build: {
@@ -41,8 +41,10 @@ test('observes durable peer conversations by virtual date and keeps concurrent o
     const seed = await fixture(root), social = seed<SocialFixture>('social');
     application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(),
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'software' }) });
-    const page = await application.firstWindow(); await page.addInitScript(() => { Object.defineProperty(document, 'hidden', { get: () => false }); }); const native = await application.browserWindow(page);
+    const page = await application.firstWindow();
+    await page.addInitScript(() => { Object.defineProperty(document, 'hidden', { get: () => false }); }); const native = await application.browserWindow(page);
     await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 900); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+    await ensureCompanionTestWorkspace(page);
     page.on('pageerror', error => errors.push(error.message));
     await page.locator('[data-application-module="companions"]').click();
     await page.getByRole('button', { name: '打开伙伴社交观察', exact: true }).click();
@@ -190,6 +192,7 @@ test('explores 20,000 real stored relationships through aggregates, bounded page
     application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'software' }) });
     const page = await application.firstWindow(), native = await application.browserWindow(page);
     await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 900); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
+    await ensureCompanionTestWorkspace(page);
     await page.locator('[data-application-module="companions"]').click();
     await page.getByRole('button', { name: '打开伙伴社交观察', exact: true }).click();
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });

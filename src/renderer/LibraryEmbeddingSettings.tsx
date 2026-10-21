@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import type { EmbeddingIndexSnapshot, SemanticSearchModelId } from "../shared/embedding/profile";
-import { SETTINGS_LOCAL_SEMANTIC_MODELS } from "../shared/embedding/profile";
 import { embeddingBindingIssue } from "../shared/embedding/library-binding";
 import { isEmbeddingServiceSelectionId } from "../shared/embedding/http-service";
 import { embeddingServiceTextOnly } from "../shared/embedding/modalities";
@@ -36,7 +35,7 @@ export type LibraryEmbeddingCallbacks = {
 function toSelectValue(binding: { selectionId: string | null; enabled: boolean; inherit: boolean }): string {
   if (binding.inherit) return INHERIT_VALUE;
   if (!binding.enabled || !binding.selectionId) return OFF_VALUE;
-  return binding.selectionId;
+  return INHERIT_VALUE;
 }
 
 function indexStatusTone(phase: EmbeddingIndexSnapshot["phase"]): "checking" | "connected" | "failed" | "idle" {
@@ -105,7 +104,7 @@ export function LibraryEmbeddingSettings({
   const nothingReady = installed.size === 0 && services.length === 0;
   const effectiveSelectionId = savedValue === INHERIT_VALUE
     ? globalPrefs.enabled ? globalPrefs.modelId : null
-    : savedValue === OFF_VALUE ? null : savedValue;
+    : savedValue === OFF_VALUE ? null : globalPrefs.modelId;
   const savedBinding = effectiveSelectionId
     ? { selectionId: effectiveSelectionId, enabled: true }
     : { selectionId: null, enabled: false };
@@ -184,15 +183,6 @@ export function LibraryEmbeddingSettings({
               {t("settings.librarySemantic.inherit", { model: defaultLabel })}
             </option>
             <option value={OFF_VALUE}>{t("settings.librarySemantic.off")}</option>
-            {SETTINGS_LOCAL_SEMANTIC_MODELS.map((modelId) => (
-              <option key={modelId} value={modelId}>
-                {t(MODEL_LABEL_KEYS[modelId])}
-                {installed.has(modelId) ? "" : ` (${t("settings.librarySemantic.notInstalled")})`}
-              </option>
-            ))}
-            {services.map((service) => (
-              <option key={service.id} value={service.id}>{service.name}</option>
-            ))}
           </select>
           {!globalPrefs.enabled ? (
             <p className="app-settings-help-note">{t("settings.librarySemantic.globalOff")}</p>

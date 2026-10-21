@@ -1,0 +1,180 @@
+{
+  "generatedAt": "2026-10-21T12:39:06.704Z",
+  "modelId": "embeddinggemma-2-compact",
+  "repository": "unsloth/embeddinggemma-2-GGUF",
+  "revision": "412430755667d84b1ac64fe1fe2693aa6219f1d9",
+  "dimension": 768,
+  "contextTokens": 8192,
+  "sources": [
+    "https://huggingface.co/google/embeddinggemma-2",
+    "https://huggingface.co/unsloth/embeddinggemma-2-GGUF/tree/412430755667d84b1ac64fe1fe2693aa6219f1d9",
+    "https://github.com/ggml-org/llama.cpp/releases/tag/b11457",
+    "https://raw.githubusercontent.com/ggml-org/llama.cpp/b11457/tools/server/README.md"
+  ],
+  "fixedModel": {
+    "sameExistingCompactInstallPin": true,
+    "files": [
+      {
+        "path": "embeddinggemma-2-UD-Q4_K_XL.gguf",
+        "bytes": 175673856,
+        "sha256": "ea905fd08e8061db77a0031cbb5096d459d7cfd2bdd0ad2ba66e483f16719493"
+      },
+      {
+        "path": "mmproj-Q8_0.gguf",
+        "bytes": 554821120,
+        "sha256": "90e7b0238009e2954f856f2081dcf7f35af026b64c765e98f4777053e1754460"
+      }
+    ],
+    "weightBytes": 730494976,
+    "weightsApproxMiB": 696.654296875
+  },
+  "deployment": {
+    "platform": "win32-x64",
+    "fileCount": 105,
+    "bytes": 875022906,
+    "runtimeRelease": "b11457",
+    "gpu": "official Vulkan x64",
+    "fallback": "separate official CPU x64 executable",
+    "cudaRuntimeBundled": false,
+    "immutableResources": true,
+    "weightsCopiedToUserData": false,
+    "offlineSeedUserDataBytes": 284,
+    "offlineSeedNetworkRequests": 0,
+    "repair": "Verify immutable application resource files; model replacement follows the application version.",
+    "clear": "Stop inference and clear runtime metadata/cache; immutable bundled weights remain installed.",
+    "freshRuntimeAcquisition": {
+      "officialUrl": "https://github.com/ggml-org/llama.cpp/releases/download/b11457/llama-b11457-bin-win-vulkan-x64.zip",
+      "bytes": 33377746,
+      "sha256": "d01301582c711a69b9747b5984710d6ca99e57d95f680d3d33753cec570b4cb6",
+      "verified": true,
+      "elapsedMs": 230876.3565,
+      "transport": "PowerShell Invoke-WebRequest verified 1 MiB ranges",
+      "modelWeightsRedownloaded": false
+    }
+  },
+  "gpuPolicy": {
+    "preferDiscrete": "NVIDIA, AMD, Intel Arc, then other detected Vulkan devices",
+    "minimumReportedFreeMiB": 1536,
+    "probe": "llama-server --list-devices",
+    "deviceArgument": "--device chosenDevice --split-mode none",
+    "fallback": "If GPU probing/startup fails, use the separately bundled CPU executable and the same model files.",
+    "hardwareTested": {
+      "cpu": "Intel Core i9-14900HX",
+      "gpu": "NVIDIA GeForce RTX 5070 Laptop GPU",
+      "dedicatedMiB": 8151,
+      "driver": "592.19",
+      "alsoDetected": "Intel RaptorLake-S Mobile Graphics Controller"
+    },
+    "observedVideoVramMiB": {
+      "before": 200,
+      "loaded": 2259,
+      "peak": 2461,
+      "afterClose": 200
+    },
+    "nativeLayerTraceCaptured": false,
+    "accelerationEvidence": "Actual Vulkan executable and preflight-selected GPU; separate CPU comparison with the same weights and fixture; VRAM increase released after process close."
+  },
+  "results": {
+    "fourModalityCanary": {
+      "requestCount": 40,
+      "allFiniteDimension": 768,
+      "textTop1": "12/12",
+      "textToImage": "3/3",
+      "chineseTextToEnglishSpeech": "3/3",
+      "sameFirstFrameDifferentVideo": "2/2",
+      "startupMs": 21405.7213,
+      "totalMs": 125111.2335,
+      "medianRequestMs": 30.60209999998915
+    },
+    "productVideoWindows": {
+      "gpu": {
+        "visualTop1": "2/2",
+        "soundtrackTop1": "2/2",
+        "requestCount": 8,
+        "startupMs": 2806.4137,
+        "totalMs": 4725.7819,
+        "medianRequestMs": 177.8510000000001
+      },
+      "cpu": {
+        "visualTop1": "2/2",
+        "soundtrackTop1": "2/2",
+        "requestCount": 8,
+        "startupMs": 2069.7902,
+        "totalMs": 21463.172199999997,
+        "medianRequestMs": 2673.7787
+      }
+    },
+    "cpuGpuTextAlignment": {
+      "documents": 12,
+      "minCosine": 0.999527455391651,
+      "bitwiseIdentical": false
+    },
+    "readonlyCpuFallback": {
+      "simulatedGpuUnavailable": true,
+      "actualCpuInference": true,
+      "textTop1": "12/12",
+      "copiedModelFiles": 0,
+      "copiedRuntimeFiles": 0
+    },
+    "videoTail": {
+      "generatedAt": "2026-10-21T12:26:53.273Z",
+      "realFfmpeg": true,
+      "elapsedMs": 357.81149999999997,
+      "longVideoSeconds": 33,
+      "audioSeconds": 2,
+      "windowCount": 3,
+      "windowAudio": [
+        true,
+        false,
+        false
+      ],
+      "videoWindowBytes": [
+        1415,
+        1415,
+        962
+      ],
+      "shortClipSeconds": 0.2,
+      "shortClipWindowCount": 1,
+      "shortClipVideoBytes": 962,
+      "modelInferencePerformed": false,
+      "passed": true
+    },
+    "focusedRegression": {
+      "files": 8,
+      "tests": 57,
+      "passed": true,
+      "eslintPassed": true
+    }
+  },
+  "modalityPreparation": {
+    "text": "Official query/document prefixes, token-aware splitting in the global memory text encoder; the existing asset text reader currently samples up to 2500 characters.",
+    "image": "Actual original or prepared image payload into the same multimodal model; no independent image encoder.",
+    "audio": "Mono 16 kHz PCM; bounded 120 second windows, at most 16, normalized mean pooling.",
+    "video": "Actual frames at 1 fps with synchronized mono 16 kHz audio when present. Up to sixteen 16 second windows, contiguous for short videos and uniformly placed across long timelines; normalized mean pooling.",
+    "payloadLimits": {
+      "videoWindowBytes": 8388608,
+      "audioWindowBytes": 2097152,
+      "totalVideoBatchBytes": 67108864
+    },
+    "profileRevisionIncludesPreparationPolicy": true
+  },
+  "limits": [
+    "Quality checks are small bilingual and synthetic image/video plus offline TTS canaries, not a broad natural-media benchmark.",
+    "Cold Vulkan shader compilation can add about 52 seconds on first startup; warm startup is materially shorter.",
+    "Long video uses bounded timeline sampling, so brief events between sampled windows can be missed.",
+    "The existing long audio policy covers up to the first 32 minutes; this is not unlimited whole-file audio indexing.",
+    "Only Windows x64 CPU and Vulkan packages have been bundled and validated here. Other GPUs and failed-driver hardware were not physically tested.",
+    "The GPU-unavailable fallback failure was injected; the following distinct CPU executable and inference were real.",
+    "CPU and Vulkan vectors remain highly aligned but are not bitwise identical; both use the fixed original quantized weights."
+  ],
+  "evidenceFiles": [
+    "research-vcp-embedding-four-modal-vulkan-validation.json",
+    "research-vcp-embedding-video-window-vulkan-validation.json",
+    "research-vcp-embedding-video-window-cpu-validation.json",
+    "research-vcp-embedding-cpu-gpu-alignment.json",
+    "research-vcp-embedding-readonly-bundle-validation.json",
+    "research-vcp-embedding-video-tail-validation.json",
+    "research-vcp-wrapped-gemma-validation.json",
+    "research-vcp-embedding-build-acquisition-validation.json"
+  ]
+}

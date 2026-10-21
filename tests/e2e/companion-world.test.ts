@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, companionTestDataRoot, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 import { openCompanionWorldWindow } from './companion-world-window-helpers';
 import { companionWorldEnvironment } from '../../src/shared/companion-world-engine';
 
@@ -16,6 +16,7 @@ async function launch(profile: string, gpu: 'software' | 'hardware' = 'software'
   const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu }) });
   const page = await application.firstWindow(), win = await application.browserWindow(page);
   await win.evaluate((window, mode) => { window.unmaximize(); window.setSize(1440, 900); window.setFocusable(false); window.setOpacity(0); window.webContents.setBackgroundThrottling(false); if (mode === 'hardware') window.showInactive(); else window.hide(); }, gpu);
+  await ensureCompanionTestWorkspace(page);
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
   await page.locator('[data-application-module="companions"]').click();
   return { application, page };
@@ -24,7 +25,7 @@ function clock(hour: number) { const normalized = (hour + 24) % 24; return Math.
 function cleanup(directory: string) {
   const absolute = path.resolve(directory);
   if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-world-e2e-')) throw new Error('Refusing cleanup outside the isolated world profile.');
-  rmSync(absolute, { recursive: true, force: true });
+  removeCompanionTestDirectory(absolute);
 }
 // eslint-disable-next-line no-empty-pattern
 test('restores observer scene, camera and follow choice after closing and restarting the app', async ({}) => {
@@ -73,8 +74,13 @@ test('observes real homes, host-driven bedtime and movement, camera controls and
   try {
     const started = await launch(profile); application = started.application; let page = started.page;
     page.on('pageerror', error => errors.push(error.message));
+    const sister = (await request(page, { type: 'state' })).state!.companions.find(companion => companion.id === 'deepseek-sister')!;
+    if (sister.active === false) await request(page, { type: 'companion.set-active', id: sister.id, active: true, expectedRevision: sister.revision });
     const initial = (await request(page, { type: 'world.snapshot' })).world!;
-    expect(initial.settings).toMatchObject({ mode: 'compressed', dayDurationMinutes: 20 }); expect(initial.scenes.filter(scene => scene.kind === 'home').length).toBeGreaterThan(10);
+    expect(initial.settings).toMatchObject({ mode: 'realtime', dayDurationMinutes: 20 });
+    expect(initial.scenes.some(scene => scene.kind === 'home' && scene.ownerId === sister.id)).toBe(true);
+    // Exercise compressed routines explicitly; the product now defaults to real time.
+    await request(page, { type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode: 'compressed', dayDurationMinutes: 20 } });
     let worldPage = await openCompanionWorldWindow(application, page);
     let world = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
     await expect(world).toBeVisible();
@@ -212,7 +218,7 @@ function seedWorldClock(profile: string, virtualAt: number) {
   // This fixture changes a stopped, disposable profile's clock anchor. All subsequent
   // weather, movement, lighting and routines are produced by the real host, never the renderer.
   const script = `const Database=require('better-sqlite3');const db=new Database(process.argv[1]);const row=db.prepare('SELECT data FROM companion_world WHERE id=1').get();const world=JSON.parse(row.data);const now=Date.now();world.settings={...world.settings,revision:world.settings.revision+1,mode:'realtime',timeZone:'UTC'};world.anchors=[{realAt:now,virtualAt:Number(process.argv[2]),settings:world.settings}];world.cursor=now;db.prepare('UPDATE companion_world SET data=? WHERE id=1').run(JSON.stringify(world));db.close();`;
-  const result = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(profile, 'companions/messages.sqlite'), String(virtualAt)], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
+  const result = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(companionTestDataRoot(profile), 'messages.sqlite'), String(virtualAt)], { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
   expect(result.status, result.stderr).toBe(0);
 }
 function environmentDate(weather: 'clear' | 'rain', hour: number) {

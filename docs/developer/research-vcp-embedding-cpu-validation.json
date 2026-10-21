@@ -1,0 +1,303 @@
+{
+  "generatedAt": "2026-10-21T09:26:34.275Z",
+  "model": {
+    "id": "multilingual-e5-small",
+    "repo": "hdrrayan/multilingual-e5-small-gguf",
+    "revision": "7cdbf977cc0d1b5091a9dc41cd62405e6d0ca9f8",
+    "sha256": "6a5b2dfb958f98c851028f8c08424458249359ea921314be378f8b82088dcac1",
+    "bytes": 242360000,
+    "dimension": 384
+  },
+  "runtime": {
+    "release": "b11457",
+    "asset": "llama-b11457-bin-win-cpu-x64.zip",
+    "archiveBytes": 19436652,
+    "sha256": "ed20ed40e10c04d0853d8acf8700f0e6c1bb8212f0cc70c3a0da13dcbbc1b802",
+    "gpuLayers": 0,
+    "threads": 4,
+    "startupMs": 1534.239,
+    "workingSetBytes": 278405120
+  },
+  "hardware": {
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "Intel(R) Core(TM) i9-14900HX",
+    "logicalCpuCount": 32,
+    "totalMemory": 33967804416
+  },
+  "validation": {
+    "documents": 12,
+    "queries": 12,
+    "top1Correct": 9,
+    "recallAt3": 9,
+    "totalMs": 302.24460000000005,
+    "requestMedianMs": 10.659400000000005,
+    "requestP95Ms": 19.944599999999994,
+    "minimumVectorNorm": 0.9999999789989378,
+    "maximumVectorNorm": 1.0000000314841988
+  },
+  "results": [
+    {
+      "id": "zh-rain",
+      "query": "借出去的挡雨用品什么时候还给小岚？",
+      "expected": "umbrella",
+      "top1": "umbrella",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "umbrella",
+          "score": 0.917664924702237
+        },
+        {
+          "id": "birthday",
+          "score": 0.8751879083779255
+        },
+        {
+          "id": "allergy",
+          "score": 0.8695860456580249
+        }
+      ]
+    },
+    {
+      "id": "cross-umbrella",
+      "query": "Who borrowed the blue umbrella and promised to give it back on Friday?",
+      "expected": "umbrella",
+      "top1": "umbrella",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "umbrella",
+          "score": 0.7560870049765959
+        },
+        {
+          "id": "bug",
+          "score": 0.7547501906868137
+        },
+        {
+          "id": "library",
+          "score": 0.742260101253277
+        }
+      ]
+    },
+    {
+      "id": "zh-birthday",
+      "query": "给小岚庆生应该准备哪种甜点？",
+      "expected": "birthday",
+      "top1": "birthday",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "birthday",
+          "score": 0.9089181294745896
+        },
+        {
+          "id": "coffee",
+          "score": 0.8743890576247154
+        },
+        {
+          "id": "allergy",
+          "score": 0.8728607195412215
+        }
+      ]
+    },
+    {
+      "id": "cross-allergy",
+      "query": "Which ingredient must Xiaoyu avoid because of an allergic reaction?",
+      "expected": "allergy",
+      "top1": "allergy",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "allergy",
+          "score": 0.781450098951951
+        },
+        {
+          "id": "garden",
+          "score": 0.7661999450437278
+        },
+        {
+          "id": "bug",
+          "score": 0.7615848693902801
+        }
+      ]
+    },
+    {
+      "id": "zh-coffee",
+      "query": "她为了避免失眠，下午以后改变了什么饮食习惯？",
+      "expected": "coffee",
+      "top1": "coffee",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "coffee",
+          "score": 0.882359190560408
+        },
+        {
+          "id": "allergy",
+          "score": 0.8731228850110342
+        },
+        {
+          "id": "birthday",
+          "score": 0.8501974738253186
+        }
+      ]
+    },
+    {
+      "id": "cross-project",
+      "query": "Which project is integrating VCP for the virtual companions long term memories?",
+      "expected": "project",
+      "top1": "project",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "project",
+          "score": 0.821123137044224
+        },
+        {
+          "id": "budget",
+          "score": 0.7452118128275584
+        },
+        {
+          "id": "bug",
+          "score": 0.7361734083183225
+        }
+      ]
+    },
+    {
+      "id": "cross-dentist",
+      "query": "牙医预约什么时候，出门要带什么证件？",
+      "expected": "appointment",
+      "top1": "train",
+      "rank": 8,
+      "top3": [
+        {
+          "id": "train",
+          "score": 0.8411067907191676
+        },
+        {
+          "id": "allergy",
+          "score": 0.8410173863711343
+        },
+        {
+          "id": "coffee",
+          "score": 0.8377869346973726
+        }
+      ]
+    },
+    {
+      "id": "cross-library",
+      "query": "谁周末会去帮小朋友找科学类图书？",
+      "expected": "library",
+      "top1": "umbrella",
+      "rank": 8,
+      "top3": [
+        {
+          "id": "umbrella",
+          "score": 0.8716880711063312
+        },
+        {
+          "id": "cat",
+          "score": 0.8520527534786174
+        },
+        {
+          "id": "train",
+          "score": 0.8494172430092436
+        }
+      ]
+    },
+    {
+      "id": "zh-train",
+      "query": "周六去西湖旅行乘坐的车几点出发？",
+      "expected": "train",
+      "top1": "train",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "train",
+          "score": 0.9115886738907788
+        },
+        {
+          "id": "coffee",
+          "score": 0.8426014795366048
+        },
+        {
+          "id": "umbrella",
+          "score": 0.8385797621232737
+        }
+      ]
+    },
+    {
+      "id": "cross-sqlite",
+      "query": "数据库锁冲突最后采用什么并发写入方式解决？",
+      "expected": "bug",
+      "top1": "bug",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "bug",
+          "score": 0.8373794184119506
+        },
+        {
+          "id": "project",
+          "score": 0.8211648567586927
+        },
+        {
+          "id": "umbrella",
+          "score": 0.8120549297533849
+        }
+      ]
+    },
+    {
+      "id": "cross-plants",
+      "query": "阳台上的蔬菜应该在哪个时间段浇水？",
+      "expected": "garden",
+      "top1": "allergy",
+      "rank": 8,
+      "top3": [
+        {
+          "id": "allergy",
+          "score": 0.8604406966937
+        },
+        {
+          "id": "coffee",
+          "score": 0.8431655586139386
+        },
+        {
+          "id": "umbrella",
+          "score": 0.8369662916561729
+        }
+      ]
+    },
+    {
+      "id": "cross-budget",
+      "query": "采购电脑的审批和每月经费有什么限制？",
+      "expected": "budget",
+      "top1": "budget",
+      "rank": 1,
+      "top3": [
+        {
+          "id": "budget",
+          "score": 0.8307180816288301
+        },
+        {
+          "id": "project",
+          "score": 0.8147709065674609
+        },
+        {
+          "id": "allergy",
+          "score": 0.811004514700759
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Small synthetic Chinese/English fixture; not a representative quality benchmark.",
+    "No NVIDIA/CUDA runtime was loaded; CPU-only release and --n-gpu-layers 0 were used.",
+    "cstr/multilingual-e5-small-GGUF Q8_0 revision 178420da727e544c2689e89b6648b205ad176eda failed b11457 loading with missing BERT token type metadata and was rejected."
+  ],
+  "sources": [
+    "https://huggingface.co/intfloat/multilingual-e5-small",
+    "https://huggingface.co/hdrrayan/multilingual-e5-small-gguf",
+    "https://github.com/ggml-org/llama.cpp/releases/tag/b11457"
+  ]
+}

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionMessage } from '../shared/companions';
-import { activityTaskSchema, type ActivityDecision, type CompanionActivityTask } from '../shared/companion-activity-task';
+import { activityTaskSchema, activityMemorySchema, type ActivityDecision, type CompanionActivityTask } from '../shared/companion-activity-task';
 import type { CompanionWorldStore } from './world-store';
 import type { CompanionSocialStore } from './social-store';
 import { companionTimeInZone } from '../shared/companion-schedule-time';
@@ -12,10 +12,11 @@ import type { CompanionWorldSnapshot } from '../shared/companion-world';
 type Row = { data: string };
 type Stored = CompanionActivityTask & { clientId: string; sourceChecksum?: string; nextAt: number; leaseUntil?: number;
   planningMs?: number; planningStartedAt?: number; reportVersion?: number;
-  reportPending?: boolean;
+  reportPending?: boolean; memoryIntentId?: string;
   peerConversationId?: string;
   worldDay?: string; createdVirtualAt?: number;
   evidence?: Array<{ id: string; conversationId: string; checksum: string }>;
+  memoryVersions?: Array<{ id: string; version: number }>;
   condition?: { visitId?: string; until: number; afterSequence: number; sceneId?: string; x?: number; y?: number; virtualAt?: number } };
 const iso = (at = Date.now()) => new Date(at).toISOString();
 const terminal = (task: CompanionActivityTask) => ['succeeded', 'failed', 'cancelled'].includes(task.status);
@@ -30,8 +31,11 @@ export class CompanionActivityTaskStore {
   constructor(private readonly db: CompanionConnection, private readonly world: CompanionWorldStore, private readonly social: CompanionSocialStore,
     private readonly visible: (scope: { companionId: string; conversationId: string }, ids: string[]) => CompanionMessage[],
     private readonly append: (input: { conversationId: string; authorId: string; content: string; clientId: string; replyToId?: string; replyDirective: 'none' }) => unknown,
-    private readonly memory: (scope: { companionId: string; conversationId: string }, operation: ActivityMemoryOperation) => CompanionStorageResponse) {}
+    private readonly experienced: (task: CompanionActivityTask, sourceMessageId: string) => void) {}
   initialize(): void {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS companion_activity_memory_intents(id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES companion_activity_tasks(id) ON DELETE CASCADE,
+      companion_id TEXT NOT NULL,conversation_id TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL,lease_token TEXT,lease_until INTEGER);
+      CREATE INDEX IF NOT EXISTS companion_activity_memory_pending ON companion_activity_memory_intents(status,lease_until)`);
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_activity_tasks(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL REFERENCES companions(id),conversation_id TEXT NOT NULL REFERENCES conversations(id),source_message_id TEXT REFERENCES messages(id),status TEXT NOT NULL,next_at INTEGER NOT NULL,client_id TEXT NOT NULL UNIQUE,data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS companion_activity_due ON companion_activity_tasks(status,next_at);
       CREATE INDEX IF NOT EXISTS companion_activity_owner ON companion_activity_tasks(companion_id,status);
@@ -73,6 +77,8 @@ export class CompanionActivityTaskStore {
       const message = this.visible({ companionId: task.companionId, conversationId: item.conversationId }, [item.id])[0];
       if (!message || checksum(message) !== item.checksum) return false;
     }
+    for (const note of task.memoryVersions ?? []) if (!this.db.prepare("SELECT 1 FROM vcp_memory_notes WHERE id=? AND companion_id=? AND json_extract(data,'$.version')=? AND json_extract(data,'$.status') IN('queued','indexed')")
+      .get(note.id, task.companionId, note.version)) return false;
     if (!task.sourceMessageId) return true;
     const source = this.visible(task, [task.sourceMessageId])[0];
     return !!source && source.authorId === 'user' && checksum(source) === task.sourceChecksum;
@@ -89,6 +95,8 @@ export class CompanionActivityTaskStore {
     }
     task.status = status; task.stage = summary; delete task.wait; delete task.condition; delete task.leaseToken; delete task.leaseUntil;
     task.reportPending = !!task.sourceMessageId && this.valid(task); task.nextAt = Date.now();
+    if (status !== 'cancelled' && task.sourceMessageId && this.valid(task)
+      && task.history.some(item => item.ok && !item.action.startsWith('memory.') && item.action !== 'observe')) this.experienced(task, task.sourceMessageId);
     this.save(task); this.flushReports();
   }
   private flushReports(): void {
@@ -240,6 +248,7 @@ export class CompanionActivityTaskStore {
         if (!this.valid(task)) { this.finish(task, 'cancelled', '来源被撤回、伙伴重置或联系人已移除，停止后续行动。'); continue; }
         if (task.status === 'running' && (task.leaseUntil ?? 0) > Date.now()) continue;
         if (task.status === 'running') this.chargePlanning(task);
+        if (task.memoryIntentId) { task.nextAt = Date.now() + 1500; this.save(task); continue; }
         if (task.status === 'waiting' && !this.wake(task)) { task.nextAt = Date.now() + 1500; this.save(task); continue; }
         const world = this.world.snapshot(task), self = world.actors.find(actor => actor.companionId === task.companionId);
         if (world.backlog || this.peerBusy(task.companionId) || !self || ['sleeping','eating'].includes(self.routinePhase) || ['working','eating','sleeping','lyingDown','waking'].includes(self.activity) || world.works.some(work => work.companionId === task.companionId && work.kind !== 'chat' && work.status !== 'ended')) { task.nextAt = Date.now() + 5000; this.save(task); continue; }
@@ -284,20 +293,14 @@ export class CompanionActivityTaskStore {
       const afterSequence = this.peerMessages(task).at(-1)?.sequence ?? 0;
       let result = decision.summary, ok = true;
       // Nested savepoint keeps a rejected world action from leaking partial physics changes.
-      try { if (decision.memory) {
-        const response = this.memory(task, decision.memory);
-        if (!response) throw new Error('记忆操作没有返回有效结果。');
-        const memories = [...(response.memories ?? []), ...(response.memoryPage?.items.map(item => item.memory) ?? []),
-          ...(response.memoryRead?.memory ? [response.memoryRead.memory] : [])];
-        const sources = [...(response.memorySources ?? []), ...(response.memoryRead?.sources ?? [])];
-        for (const memory of memories) for (const reference of memory.sources ?? []) {
-          const source = this.visible({ companionId: task.companionId, conversationId: reference.conversationId }, [reference.messageId])[0];
-          if (!source || checksum(source) !== reference.checksum) throw new Error('记忆操作读到的来源已变化，请重新读取。');
-          sources.push(source);
-        }
-        for (const source of sources) if (!task.evidence?.some(item => item.id === source.id)) (task.evidence ??= []).push({ id: source.id, conversationId: source.conversationId, checksum: checksum(source) });
-        result = JSON.stringify(response);
+      if (decision.memory) {
+        const intentId = 'intent_' + createHash('sha256').update(task.id + '/' + task.step).digest('hex').slice(0, 48);
+        this.db.prepare('INSERT OR IGNORE INTO companion_activity_memory_intents(id,task_id,companion_id,conversation_id,status,data) VALUES(?,?,?,?,?,?)')
+          .run(intentId, task.id, task.companionId, task.conversationId, 'pending', JSON.stringify(decision.memory));
+        task.memoryIntentId = intentId; task.status = 'waiting'; task.stage = '正在处理自己的 VCP 日记，等待真实回执。';
+        task.nextAt = Date.now() + 1500; delete task.leaseToken; delete task.leaseUntil; this.save(task); return this.public(task);
       }
+      try {
       if (action) {
         this.db.transaction(() => {
           if (task.sourceMessageId && (action.action === 'message' || action.action === 'social')) {
@@ -324,11 +327,11 @@ export class CompanionActivityTaskStore {
           if (['move','travel','leave'].includes(action.action)) this.world.tagTaskMovement(task.companionId, task.id);
         }).immediate();
         if (action.action !== 'query') result = `宿主已接纳 ${action.action} 原子行为；异步行为以实际世界状态为准，尚不代表任务完成。`;
-      } }
-      catch (error) { ok = false; result = error instanceof Error ? error.message.slice(0, 2000) : '原子行为失败。'; }
+      }
+      } catch (error) { ok = false; result = error instanceof Error ? error.message.slice(0, 2000) : '原子行为失败。'; }
       const boundedResult = result.length <= 16000 ? result : JSON.stringify({ truncated: true, originalChars: result.length,
         excerpt: result.slice(0, 14000), hint: '这里只是截取的外部回执；缩小查询范围或结果数量后重新读取，不得把截取内容当作完整记录。' });
-      task.step++; task.attempts = 0; task.history.push({ step: task.step, at: iso(), action: decision.memory ? 'memory.' + decision.memory.operation : action?.action ?? 'observe', ...(action ? { arguments: action } : {}), result: boundedResult, ok });
+      task.step++; task.attempts = 0; task.history.push({ step: task.step, at: iso(), action: action?.action ?? 'observe', ...(action ? { arguments: action } : {}), result: boundedResult, ok });
       if (!ok && task.history.slice(-3).length === 3 && task.history.slice(-3).every(item => !item.ok && item.action === action?.action && item.result === result)) {
         this.finish(task, 'failed', '同一原子行为连续失败三次，已停止重试。最后原因：' + result); return this.public(task);
       }
@@ -346,11 +349,69 @@ export class CompanionActivityTaskStore {
       this.save(task); return this.public(task);
     }).immediate();
   }
+  private claimMemory(): CompanionStorageResponse {
+    return this.db.transaction(() => {
+      this.db.prepare("UPDATE companion_activity_memory_intents SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(Date.now());
+      const candidates = this.db.prepare("SELECT * FROM companion_activity_memory_intents WHERE status='pending' ORDER BY rowid LIMIT 32").all() as Array<{ id: string; task_id: string; companion_id: string; conversation_id: string; data: string }>;
+      for (const entry of candidates) {
+        const task = this.get(entry.task_id);
+        if (terminal(task) || !this.valid(task) || task.memoryIntentId !== entry.id) {
+          this.db.prepare("UPDATE companion_activity_memory_intents SET status='done',data='{}' WHERE id=?").run(entry.id); continue;
+        }
+        const token = randomUUID();
+        this.db.prepare("UPDATE companion_activity_memory_intents SET status='running',lease_token=?,lease_until=? WHERE id=?").run(token, Date.now() + 120000, entry.id);
+        return { ok: true, activityMemoryIntent: { id: entry.id, taskId: task.id, companionId: task.companionId,
+          conversationId: task.conversationId, operation: activityMemorySchema.parse(JSON.parse(entry.data)), leaseToken: token } };
+      }
+      return { ok: true };
+    }).immediate();
+  }
+  private completeMemory(command: Extract<CompanionStorageCommand, { type: 'activity.memory.complete' | 'activity.memory.fail' }>): CompanionStorageResponse {
+    return this.db.transaction(() => {
+      const entry = this.db.prepare("SELECT task_id,data FROM companion_activity_memory_intents WHERE id=? AND status='running' AND lease_token=? AND lease_until>?")
+        .get(command.id, command.leaseToken, Date.now()) as { task_id: string; data: string } | undefined;
+      if (!entry) throw new Error('记忆操作租约已失效。');
+      const task = this.get(entry.task_id);
+      const operation = JSON.parse(entry.data) as ActivityMemoryOperation;
+      // A successful own revise/organize is the one allowed transition from the
+      // version that admitted this intent. External edits still invalidate it.
+      const versions = new Map((task.memoryVersions ?? []).map(note => [note.id, note.version]));
+      if (command.type === 'activity.memory.complete' && ['revise', 'organize'].includes(operation.operation)) {
+        const mutableIds = operation.operation === 'revise' ? [operation.id] : operation.operation === 'organize' ? operation.ids : [];
+        for (const note of command.noteVersions ?? []) if (mutableIds.includes(note.id) && versions.get(note.id) === note.version - 1) versions.set(note.id, note.version);
+      }
+      task.memoryVersions = [...versions].map(([id, version]) => ({ id, version }));
+      if (terminal(task) || !this.valid(task) || task.memoryIntentId !== command.id) throw new Error('行动或其来源已改变，不能提交旧记忆回执。');
+      if (command.type === 'activity.memory.complete') {
+        const sources = this.visible(task, command.sourceMessageIds ?? []);
+        if (sources.length !== (command.sourceMessageIds ?? []).length) throw new Error('记忆操作的来源已撤回。');
+        for (const note of command.noteVersions ?? []) {
+          const current = this.db.prepare("SELECT data FROM vcp_memory_notes WHERE id=? AND companion_id=? AND json_extract(data,'$.version')=? AND json_extract(data,'$.status') IN('queued','indexed')")
+            .get(note.id, task.companionId, note.version) as Row | undefined;
+          if (!current) throw new Error('记忆操作的日记已修订或撤回。');
+          const references = (JSON.parse(current.data) as { sources: Array<{ messageId: string; checksum: string }> }).sources;
+          for (const reference of references) { const source = this.visible(task, [reference.messageId])[0];
+            if (!source || checksum(source) !== reference.checksum) throw new Error('记忆操作来源已改变。'); sources.push(source); }
+          versions.set(note.id, note.version);
+        }
+        task.memoryVersions = [...versions].map(([id, version]) => ({ id, version }));
+        for (const source of sources) if (!task.evidence?.some(item => item.id === source.id)) (task.evidence ??= []).push({ id: source.id, conversationId: source.conversationId, checksum: checksum(source) });
+      }
+      task.step++; task.attempts = 0; task.history.push({ step: task.step, at: iso(), action: 'memory.' + operation.operation,
+        result: command.type === 'activity.memory.complete' ? command.result : command.error, ok: command.type === 'activity.memory.complete' });
+      delete task.memoryIntentId; task.status = 'queued'; task.nextAt = Date.now() + 1500; task.stage = '记忆操作已有真实回执，继续判断下一步。'; this.save(task);
+      this.db.prepare("UPDATE companion_activity_memory_intents SET status='done',data='{}',lease_token=NULL,lease_until=NULL WHERE id=?").run(command.id);
+      return { ok: true, activityTask: this.public(task) };
+    }).immediate();
+  }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {
+      case 'activity.memory.claim': return this.claimMemory();
+      case 'activity.memory.complete': case 'activity.memory.fail': return this.completeMemory(command);
       case 'activity.motion.ensure': return this.ensureMotion(command);
       case 'activity.get': { const task = this.get(command.id); if (task.companionId !== command.companionId || task.conversationId !== command.conversationId) throw new Error('行动任务范围不可访问。'); return { ok: true, activityTask: this.public(task) }; }
       case 'activity.recover': {
+        this.db.prepare("UPDATE companion_activity_memory_intents SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running'").run();
         const rows = this.db.prepare("SELECT data FROM companion_activity_tasks WHERE status='running' OR (status='failed' AND json_extract(data,'$.stage') IN (?,?) AND json_extract(data,'$.step')<32 AND json_extract(data,'$.createdAt')>=?)").all(LEGACY_WAIT_TIMEOUT, LEGACY_CONTACT_REJECTION, iso(Date.now() - 86400000)) as Row[];
         for (const row of rows) {
           const task = JSON.parse(row.data) as Stored;

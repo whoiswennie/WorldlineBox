@@ -16,9 +16,9 @@ function resetNextBatch() {
   const current = store; resetRunning = true;
   void current.advanceReset().then(pending => {
     if (store !== current) return;
-    if (!pending || Date.now() - resetNotifiedAt >= 250) { resetNotifiedAt = Date.now(); port!.postMessage({ type: 'storage.reset-changed' }); }
+    if (!pending || Date.now() - resetNotifiedAt >= 250) { resetNotifiedAt = Date.now(); port!.postMessage({ type: 'storage.reset-changed', ...current.takeMemoryInvalidations() }); }
     if (pending) resetting = setImmediate(resetNextBatch);
-  }).catch(error => port!.postMessage({ type: 'storage.reset-changed', error: error instanceof Error ? error.message : '伙伴重置失败。' }))
+  }).catch(error => port!.postMessage({ type: 'storage.reset-changed', error: error instanceof Error ? error.message : '伙伴重置失败。', ...current.takeMemoryInvalidations() }))
     .finally(() => { resetRunning = false; });
 }
 function indexNextBatch() {

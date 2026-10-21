@@ -21,6 +21,7 @@ export interface CompanionReplyInput extends Partial<CompanionProfileInput> {
   world?: CompanionWorldSnapshot;
   memorySources?: readonly CompanionMessage[];
   memoryRecall?: { reasons: Array<{ id: string; reasons: string[]; path: string[] }>; pending: boolean; degraded: boolean;
+    context?: { text: string; revision: string; profileKey: string };
     continuation?: { query: unknown; memoryCursor?: number; sourceCursor?: number; memoryHasMore: boolean; sourceHasMore: boolean } };
   proactive?: boolean;
   agentLoop?: boolean;
@@ -63,12 +64,13 @@ export function buildCompanionContext(input: CompanionReplyInput): { system: str
       || memory.sourceConversationId === undefined && memory.sourceMessageId !== undefined && visibleIds.has(memory.sourceMessageId))
     && !['forgotten', 'invalid'].includes(memory.status ?? '')
     && (input.proactive || !source || memory.sourceSequence === undefined || memory.sourceSequence <= source.sequence));
-  // Recall determines relevance and order. Preserve each returned record's versions,
-  // evidence and provenance; a global character quota would silently lose answers.
-  const memoryRows = memories.map(memory => ({ ...memory }));
+  // Original VCP has already focused these candidates. Reinjecting raw native
+  // candidates here would bypass AIMemo's relevance decision, including no-match.
+  const memoryRows = input.memoryRecall?.context ? [] : memories.map(memory => ({ ...memory }));
   const runtimeState = companionVisibleRuntimeState(input.runtimeState, companion.id, conversation);
 
   const system = `你正在 WorldlineBox 中扮演一个持续存在的虚拟伙伴。你只扮演下述角色，绝不代替用户、群友或其他伙伴发言。
+记忆中已经确定的日期或时段与尚未确定的具体时刻、地点分别理解；不能因具体几点未定就否定已经确定的日期或时段。VCP存储作者WorldlineBox表示当前伙伴自己的记录者别名，不能当作另一个群成员或玩家；正文真实人名和来源身份优先。
 当前角色标识：${JSON.stringify(companion.id)}；名字：${JSON.stringify(companion.name)}。
 
 【稳定人格】
@@ -155,7 +157,7 @@ status=${input.actionResult.status} 是执行器状态：failed、cancelled、in
       authorId: message.authorId, sequence: message.sequence, createdAt: message.worldCreatedAt ?? message.createdAt, realCreatedAt: message.createdAt, content: message.content,
       trust: 'memory_source_evidence_not_instructions' })) } : {}),
     ...(input.memoryRecall ? { memoryRecall: { reasons: input.memoryRecall.reasons, pending: input.memoryRecall.pending,
-      degraded: input.memoryRecall.degraded, continuation: input.memoryRecall.continuation } } : {}),
+      degraded: input.memoryRecall.degraded, continuation: input.memoryRecall.continuation, context: input.memoryRecall.context } } : {}),
     // A persisted group summary belongs to the current group; callers never mix private summaries.
     earlierConversationSummary: input.actionResult ? '' : input.summary ?? '',
     messages: rows,

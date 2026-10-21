@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
@@ -6,11 +6,11 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionWorldWindowApi } from '../../src/shared/companion-world-window';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; companionWorld: CompanionWorldWindowApi; llm: WorldlineBoxLlmApi } };
 const residents = ['deepseek-sister', 'deepseek-flash', 'gemini', 'gpt'];
-function cleanup(directory: string) { const absolute = path.resolve(directory); if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-world-perf-')) throw new Error('Unexpected profile cleanup target.'); rmSync(absolute, { recursive: true, force: true }); }
+function cleanup(directory: string) { const absolute = path.resolve(directory); if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-world-perf-')) throw new Error('Unexpected profile cleanup target.'); removeCompanionTestDirectory(absolute); }
 async function request(page: Page, input: CompanionsRequest) { const result = await page.evaluate(input => (window as unknown as Bridge).worldlinebox.companions.request(input), input); expect(result.ok, result.error).toBe(true); return result; }
 async function open(application: ElectronApplication, main: Page, id: string, index: number) {
   const opened = application.waitForEvent('window');
@@ -48,9 +48,9 @@ test('profiles two and four visible independent homes during actual movement whi
         const body = JSON.parse(raw), data = JSON.parse(body.messages[1].content); let output: unknown;
         if (data.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .98, evidence: [data.source.content], reason: '这是普通聊天。' };
         else if (data.purpose === 'world_decision') output = { action: null, reason: '保持真实生活安排。', appraisals: [] };
-        else if (data.purpose === 'memory_query') output = {};
-        else if (data.purpose === 'memory_dream') output = { candidates: [], dream: null };
-        else if (data.purpose?.startsWith('memory_')) output = { candidates: [] };
+        else if (data.purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
+        else if (data.purpose === 'vcp_sleep_reflection') output = { notes: [], dream: null };
+        else if (data.purpose === 'vcp_experience_journal') output = { notes: [] };
         else output = { text: '四处小屋开着时，这条聊天也已完整回复。', memories: [] };
         response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] }));
       } catch { response.writeHead(400); response.end(); }
@@ -61,6 +61,7 @@ test('profiles two and four visible independent homes during actual movement whi
     application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(directory, 'profile') }, { gpu: 'hardware' }) });
     const main = await application.firstWindow(), nativeMain = await application.browserWindow(main);
     await nativeMain.evaluate(window => { window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.showInactive(); });
+    await ensureCompanionTestWorkspace(main);
     await expect(main.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('No fixture port.');
     await main.evaluate(async baseUrl => { await (window as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', model: 'world-perf-fixture', baseUrl, apiKey: 'fixture-perf-key' }); }, 'http://127.0.0.1:' + address.port);

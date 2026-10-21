@@ -43,14 +43,17 @@ export function installedSemanticModels(fileNames: ReadonlySet<string>): Semanti
  * Inspect only its runtime subtree: probing drive roots or unrelated caches
  * can block the main process indefinitely on disconnected mapped drives.
  */
-export function inspectManagedEmbeddingInstall(userData: string): EmbeddingInstallInspection {
-  const modelsDir = embeddingModelsDirectory(userData);
+export function inspectManagedEmbeddingInstall(userData: string, bundleDirectory?: string): EmbeddingInstallInspection {
+  const modelsDir = bundleDirectory ?? embeddingModelsDirectory(userData);
   const files = new Map<string, string>();
   for (const name of MODEL_FILE_NAMES) {
     const filePath = path.join(modelsDir, name);
     if (existsSync(filePath)) files.set(name, filePath);
   }
-  const runtimePath = findRuntimeBinary(path.join(modelsDir, "runtime"));
+  const cpuRuntimePath = findRuntimeBinary(path.join(modelsDir, "runtime-cpu"))
+    ?? findRuntimeBinary(path.join(modelsDir, "runtime"));
+  const runtimePath = findRuntimeBinary(path.join(modelsDir, "runtime-vulkan")) ?? cpuRuntimePath;
+  if (cpuRuntimePath) files.set(`cpu:${path.basename(cpuRuntimePath)}`, cpuRuntimePath);
   if (runtimePath) files.set(path.basename(runtimePath), runtimePath);
   return { files, runtimeFound: runtimePath !== null };
 }
@@ -356,7 +359,7 @@ export function resolveInstalledEmbeddingLayout(
   inspection: EmbeddingInstallInspection,
   modelId: SemanticSearchModelId,
   platform: NodeJS.Platform = process.platform,
-): { modelDirectory: string; runtimePath: string } | null {
+): { modelDirectory: string; runtimePath: string; cpuRuntimePath?: string } | null {
   const runtimeName = platform === "win32" ? "llama-server.exe" : "llama-server";
   const runtimePath = inspection.files.get(runtimeName)
     ?? inspection.files.get("llama-server")
@@ -369,7 +372,8 @@ export function resolveInstalledEmbeddingLayout(
   const projector = inspection.files.get(files.projectorFile);
   if (!core || !projector) return null;
   if (path.dirname(core) !== path.dirname(projector)) return null;
-  return { modelDirectory: path.dirname(core), runtimePath };
+  const cpuRuntimePath = inspection.files.get(`cpu:${runtimeName}`);
+  return { modelDirectory: path.dirname(core), runtimePath, ...(cpuRuntimePath ? { cpuRuntimePath } : {}) };
 }
 
 export class EmbeddingInstallError extends Error {

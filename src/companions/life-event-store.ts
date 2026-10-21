@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { companionCivilInstantInZone, companionTimeInZone } from '../shared/companion-schedule-time';
 import { companionLifeHazard, companionLifeMultiplier, companionLifeRuleDraftSchema, companionLifeThreshold,
+  companionLifeRhythm,
   type CompanionLifeOccurrence, type CompanionLifeRule } from '../shared/companion-life-event';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionWorldSnapshot } from '../shared/companion-world';
@@ -9,7 +10,8 @@ import type { CompanionConnection } from './store';
 
 type Row = { data: string };
 type LifeOptions = { world(): CompanionWorldSnapshot; perception(id: string): CompanionWorldPerception | undefined; elapsed(from: number, to: number): number;
-  perform(occurrence: CompanionLifeOccurrence, text?: string): string };
+  perform(occurrence: CompanionLifeOccurrence, text?: string): string;
+  memoryRevision?(scope: { companionId: string; conversationId: string }): string };
 const iso = (at = Date.now()) => new Date(at).toISOString();
 const read = <T>(row: unknown): T => JSON.parse((row as Row).data) as T;
 
@@ -50,10 +52,15 @@ export class CompanionLifeEventStore {
     // Explicit user removals are persistent; an empty rule list never reseeds.
     const key = 'life-rules-initialized/' + companionId;
     if (!this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get(key)) {
-      for (const rule of [
-      { title: '午后问候朋友', startMinute: 14 * 60, endMinute: 18 * 60, probability: .35, action: 'message' as const },
-      { title: '空闲时分享近况', startMinute: 10 * 60, endMinute: 20 * 60, probability: .2, action: 'message' as const, targetId: 'user' },
-      ]) this.create(companionId, rule);
+      const routineRow = this.db.prepare('SELECT data FROM companion_routines WHERE companion_id=?').get(companionId);
+      const routine = routineRow ? read<{ config: { wakeAt: string; sleepAt: string } }>(routineRow).config : { wakeAt: '07:00', sleepAt: '23:00' };
+      const minute = (value: string) => value.split(':').reduce((hours, part) => hours * 60 + Number(part), 0);
+      const awakeMinutes = (minute(routine.sleepAt) - minute(routine.wakeAt) + 1440) % 1440;
+      // Use the owner's actual routine. Persona and current state decide what
+      // to say (or to remain silent); no random invented personality template.
+      this.create(companionId, { title: '闲暇时联系朋友', startMinute: (minute(routine.wakeAt) + Math.min(120, Math.floor(awakeMinutes / 4))) % 1440,
+        endMinute: (minute(routine.sleepAt) + 1440 - Math.min(60, Math.floor(awakeMinutes / 4))) % 1440, probability: .45, action: 'message',
+        checkIntervalMinutes: 15, actionCooldownMinutes: 90, silenceCooldownMinutes: 20, failureCooldownMinutes: 30 });
       this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(key, 'true');
     }
     const parkKey = 'life-park-walk-initialized/' + companionId;
@@ -83,7 +90,7 @@ export class CompanionLifeEventStore {
   }
   private available(world: CompanionWorldSnapshot, id: string): boolean {
     const actor = world.actors.find(actor => actor.companionId === id);
-    return !!actor && !actor.parkWalk && !['working', 'eating', 'sleeping', 'lyingDown', 'waking', 'seating', 'standingUp'].includes(actor.activity)
+    return !!actor && !actor.parkWalk && !['sleeping', 'eating'].includes(actor.routinePhase) && !['working', 'eating', 'sleeping', 'lyingDown', 'waking', 'seating', 'standingUp'].includes(actor.activity)
       && !world.works.some(work => work.companionId === id && work.kind !== 'chat' && work.status !== 'ended');
   }
   private multiplier(world: CompanionWorldSnapshot, rule: CompanionLifeRule, targetId?: string): number {
@@ -126,19 +133,36 @@ export class CompanionLifeEventStore {
       for (const rule of this.rules(resident.companionId)) {
         const window = lifeWindow(now, rule.startMinute, rule.endMinute, world.settings.timeZone);
         if (!window) continue;
-        const start = iso(window.start), found = this.db.prepare('SELECT data FROM companion_life_occurrences WHERE rule_id=? AND window_start=?').get(rule.id, start);
-        const occurrence: CompanionLifeOccurrence = found ? read(found) : { id: randomUUID(), companionId: rule.companionId, ruleId: rule.id, rule,
+        const rhythm = companionLifeRhythm(rule), checkMs = rhythm.checkIntervalMinutes * 60000;
+        const found = this.db.prepare('SELECT data FROM companion_life_occurrences WHERE rule_id=? AND window_start>=? AND window_start<? ORDER BY window_start DESC LIMIT 1')
+          .get(rule.id, iso(window.start), iso(window.end));
+        const previousOccurrence = found ? read<CompanionLifeOccurrence>(found) : undefined;
+        if (!previousOccurrence) {
+          const prior = this.db.prepare('SELECT data FROM companion_life_occurrences WHERE rule_id=? ORDER BY window_start DESC LIMIT 1').get(rule.id);
+          const recent = prior ? read<CompanionLifeOccurrence>(prior) : undefined;
+          // A civil midnight must not erase the preceding action's cooldown.
+          if (recent && (recent.status === 'active' || recent.nextEligibleAt && now < Date.parse(recent.nextEligibleAt))) continue;
+        }
+        if (previousOccurrence && previousOccurrence.status !== 'observing') {
+          if (['pending', 'running', 'active'].includes(previousOccurrence.status)
+            || now < Date.parse(previousOccurrence.nextEligibleAt ?? iso(window.end))) continue;
+        }
+        const start = previousOccurrence && previousOccurrence.status !== 'observing' ? iso(now) : iso(window.start);
+        const occurrence: CompanionLifeOccurrence = previousOccurrence?.status === 'observing' ? previousOccurrence : { id: randomUUID(), companionId: rule.companionId, ruleId: rule.id, rule,
           windowStart: start, windowEnd: iso(window.end), status: 'observing', hazard: 0, threshold: companionLifeThreshold(rule.id + '/' + start),
-          lastRealAt: iso(real), multiplier: 0, attempts: 0, targetId: this.chooseTarget(world, rule, rule.id + '/' + start) };
+          lastRealAt: iso(real), lastEvaluatedAt: iso(now), multiplier: 0, attempts: 0, targetId: this.chooseTarget(world, rule, rule.id + '/' + start) };
         if (occurrence.status !== 'observing') continue;
         const previous = Date.parse(occurrence.lastRealAt);
         // A long unobserved offline gap has unknown intermediate availability.
         // Do not invent old social activity, or emit months of delayed greetings.
         const elapsed = real - previous <= 120000 ? Math.min(this.options.elapsed(previous, real), Math.max(0, now - window.start)) : 0;
-        occurrence.multiplier = allowed && rule.enabled ? this.multiplier(world, rule, occurrence.targetId) : 0;
-        occurrence.hazard += companionLifeHazard(rule.probability, window.end - window.start, elapsed, occurrence.multiplier);
+        occurrence.multiplier = allowed && rule.enabled && this.socialCooldownReady(world, occurrence) ? this.multiplier(world, rule, occurrence.targetId) : 0;
+        occurrence.hazard += companionLifeHazard(rule.probability, checkMs, elapsed, occurrence.multiplier);
         occurrence.lastRealAt = iso(real);
-        if (occurrence.hazard >= occurrence.threshold && occurrence.multiplier > 0 && (!['message', 'visit'].includes(rule.action) || occurrence.targetId)) occurrence.status = 'pending';
+        if (now - Date.parse(occurrence.lastEvaluatedAt ?? occurrence.windowStart) >= checkMs) {
+          occurrence.lastEvaluatedAt = iso(now);
+          if (occurrence.hazard >= occurrence.threshold && occurrence.multiplier > 0 && (!['message', 'visit'].includes(rule.action) || occurrence.targetId)) occurrence.status = 'pending';
+        }
         this.save(occurrence);
       }
     }
@@ -163,7 +187,9 @@ export class CompanionLifeEventStore {
         this.db.prepare('UPDATE companion_life_rules SET enabled=?,data=? WHERE id=?').run(+next.enabled, JSON.stringify(next), next.id);
         if (command.type === 'life-rule.remove') this.db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run('life-rule-removed/' + next.id, JSON.stringify({ companionId: next.companionId }));
         for (const row of this.db.prepare("SELECT data FROM companion_life_occurrences WHERE rule_id=? AND status IN ('observing','pending','running')").all(next.id)) {
-          const occ = read<CompanionLifeOccurrence>(row); occ.status = 'cancelled'; occ.reason = '规则已修改，本窗口不重新抽签。'; occ.leaseToken = undefined; occ.leaseUntil = undefined; this.save(occ);
+          const occ = read<CompanionLifeOccurrence>(row); occ.status = 'cancelled'; occ.reason = '规则已修改，旧结果不再提交。';
+          occ.nextEligibleAt = iso(Date.parse(this.options.world().clock.virtualNow) + companionLifeRhythm(next).checkIntervalMinutes * 60000);
+          occ.leaseToken = undefined; occ.leaseUntil = undefined; this.save(occ);
         }
         return { ok: true, lifeRule: next };
       }
@@ -172,7 +198,9 @@ export class CompanionLifeEventStore {
       if (command.type === 'life-event.claim') {
         for (const row of this.db.prepare("SELECT data FROM companion_life_occurrences WHERE status='pending' OR (status='running' AND lease_until<=?) ORDER BY window_start,id LIMIT 100").all(iso())) {
           const occ = read<CompanionLifeOccurrence>(row);
-          try { if (!this.owner(occ.companionId).proactive || !this.ownerRuleEnabled(occ.ruleId) || !this.available(world, occ.companionId)) continue; } catch { continue; }
+          if (command.excludedCompanionIds?.includes(occ.companionId)) continue;
+          try { if (!this.owner(occ.companionId).proactive || !this.ownerRuleEnabled(occ.ruleId) || !this.available(world, occ.companionId)
+            || !this.socialCooldownReady(world, occ)) continue; } catch { continue; }
           occ.status = 'running'; occ.leaseToken = randomUUID(); occ.leaseUntil = iso(Date.now() + 120000); occ.attempts++; this.save(occ);
           return { ok: true, lifeOccurrence: occ };
         }
@@ -181,19 +209,40 @@ export class CompanionLifeEventStore {
       if (command.type === 'life-event.complete' || command.type === 'life-event.fail') {
         const found = this.db.prepare('SELECT data FROM companion_life_occurrences WHERE id=?').get(command.id);
         if (!found) throw new Error('生活事件不存在。'); const occ = read<CompanionLifeOccurrence>(found); this.owner(occ.companionId);
-        if (occ.status === 'done' || occ.status === 'active') return { ok: true, lifeOccurrence: occ };
+        if (occ.status === 'done' || occ.status === 'active' || occ.status === 'silent') return { ok: true, lifeOccurrence: occ };
         if (occ.status !== 'running' || occ.leaseToken !== command.leaseToken || Date.parse(occ.leaseUntil!) <= Date.now()) throw new Error('生活事件租约已经失效。');
         if (command.type === 'life-event.complete') {
-          if (!this.owner(occ.companionId).proactive || !this.ownerRuleEnabled(occ.ruleId) || !this.available(world, occ.companionId)) throw new Error('伙伴此刻无法发起这个生活事件。');
-          if (['message', 'visit'].includes(occ.rule.action) && !command.text?.trim()) throw new Error('交流事件需要伙伴自己的真实发言。');
-          occ.result = this.options.perform(occ, command.text); occ.status = occ.rule.action === 'park_walk' ? 'active' : 'done';
-        } else { occ.reason = command.error; occ.status = occ.attempts < 3 ? 'pending' : 'failed'; }
+          if (command.expectedMemoryRevision !== undefined && this.options.memoryRevision?.({ companionId: occ.companionId, conversationId: 'world_' + occ.companionId }) !== command.expectedMemoryRevision)
+            throw new Error('这次生活发言使用的回忆已经变化。');
+          if (!this.owner(occ.companionId).proactive || !this.ownerRuleEnabled(occ.ruleId) || !this.available(world, occ.companionId)
+            || !this.socialCooldownReady(world, occ)) throw new Error('伙伴此刻无法发起这个生活事件。');
+          if (command.silent) {
+            if (!['message', 'visit'].includes(occ.rule.action) || command.text?.trim()) throw new Error('沉默结果不能同时发言或执行动作。');
+            occ.status = 'silent'; occ.reason = command.reason ?? '这次没有想分享的新内容，继续自己的生活。';
+          } else {
+            if (['message', 'visit'].includes(occ.rule.action) && !command.text?.trim()) throw new Error('交流事件需要伙伴自己的真实发言。');
+            occ.result = this.options.perform(occ, command.text); occ.status = occ.rule.action === 'park_walk' ? 'active' : 'done';
+          }
+        } else { occ.reason = command.error; occ.status = 'failed'; }
+        const rhythm = companionLifeRhythm(occ.rule);
+        const cooldown = occ.status === 'silent' ? rhythm.silenceCooldownMinutes : occ.status === 'failed' ? rhythm.failureCooldownMinutes : rhythm.actionCooldownMinutes;
+        occ.settledAt = world.clock.virtualNow; occ.nextEligibleAt = iso(Date.parse(occ.settledAt) + cooldown * 60000);
         occ.leaseToken = undefined; occ.leaseUntil = undefined; this.save(occ); return { ok: true, lifeOccurrence: occ };
       }
       return { ok: true };
     }).immediate();
   }
   private ownerRuleEnabled(id: string): boolean { return !!this.db.prepare('SELECT 1 FROM companion_life_rules WHERE id=? AND enabled=1').get(id); }
+  private socialCooldownReady(world: CompanionWorldSnapshot, occurrence: CompanionLifeOccurrence): boolean {
+    if (!['message', 'visit'].includes(occurrence.rule.action)) return true;
+    const found = this.db.prepare("SELECT data FROM companion_life_occurrences WHERE companion_id=? AND status='done' AND json_extract(data,'$.rule.action') IN('message','visit') ORDER BY COALESCE(json_extract(data,'$.settledAt'),window_start) DESC LIMIT 1").get(occurrence.companionId);
+    if (!found) return true;
+    const previous = read<CompanionLifeOccurrence>(found);
+    // Multiple rules cannot bypass an owner's contact budget. Human contact is
+    // opt-in per rule and spaced more widely than peer conversations.
+    const minimum = occurrence.targetId === 'user' || previous.targetId === 'user' ? 120 : 20;
+    return Date.parse(world.clock.virtualNow) - Date.parse(previous.settledAt ?? previous.windowStart) >= minimum * 60000;
+  }
 }
 
 export function lifeWindow(now: number, startMinute: number, endMinute: number, zone: string): { start: number; end: number } | undefined {

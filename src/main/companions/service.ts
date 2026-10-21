@@ -1,6 +1,8 @@
 import path from 'node:path';
+import type { CompanionReplyProgress } from '../../shared/companion-reply-progress';
+import { existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile, lstat, mkdir, realpath, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { type BrowserWindow, clipboard, dialog, ipcMain, net, protocol, shell } from 'electron';
 import { createFileClipboardDeps, readFilePathsFromClipboard } from '../file-clipboard';
 import { COMPANIONS_CHANNEL, COMPANIONS_CHANGED_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL, companionIdSchema, companionsRequestSchema,
@@ -19,6 +21,16 @@ import { CompanionAutonomyService } from './autonomy-service';
 import { CompanionActivityTaskService } from './activity-task-service';
 import { activityArgumentsSchema } from '../../shared/companion-activity-task';
 import { CompanionMemoryService } from './memory-service';
+import { CompanionMemoryTagService } from './memory-tags-service';
+import { validateCompanionMemoryProhibitions } from './memory-model';
+import { CompanionMemoryLibrary } from './memory-library';
+import { CompanionMemoryManagementSearch } from './memory-management-search';
+import { CompanionMemoryDocuments } from './memory-documents';
+import { CompanionLearningService, type CompanionLearningAssets } from './learning-service';
+import type { CompanionLearningWorkspaceCommand } from '../../shared/companion-learning';
+import type { CompanionMemoryDocumentCommand } from '../../shared/companion-memory-documents';
+import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
+import type { CompanionMemoryRuntime } from './vcp-runtime';
 import { CompanionScheduleService } from './schedule-service';
 import { CompanionReplyStream } from './reply-stream';
 import { CompanionWorldService } from './world-service';
@@ -50,6 +62,10 @@ import type { CompanionReset } from '../../shared/companion-reset';
 import { companionModelWorld } from './world-perception-context';
 
 export interface CompanionServiceOptions {
+  learningAssets?: CompanionLearningAssets;
+  memoryRuntime?: CompanionMemoryRuntime;
+  dataRoot?: string;
+  memoryLibraryRoot?: string;
   userData: string; workerPath: string; appPath?: string; window: () => BrowserWindow | undefined;
   getConfig: () => CompanionModelConfig; hasConfig: () => boolean;
   dsh: () => DshLauncher | undefined; report: (error: unknown) => void;
@@ -58,9 +74,15 @@ export interface CompanionServiceOptions {
 
 /** Owns conversations' reasoning lifecycles; SQLite belongs exclusively to the utility worker. */
 export class CompanionService {
+  private readonly learning?: CompanionLearningService;
   private readonly storage: CompanionStorageClient;
   private readonly credentials: CompanionCredentials;
   private readonly memory: CompanionMemoryService;
+  private readonly memoryTags: CompanionMemoryTagService;
+  private readonly memoryLibrary?: CompanionMemoryLibrary;
+  private readonly memoryDocuments?: CompanionMemoryDocuments;
+  private readonly memoryManagement: CompanionMemoryManagementSearch;
+  private readonly memoryDocumentJobs = new Set<Promise<CompanionWorkspaceResponse>>();
   private readonly schedules: CompanionScheduleService;
   private readonly world: CompanionWorldService;
   private readonly autonomy: CompanionAutonomyService;
@@ -91,34 +113,74 @@ export class CompanionService {
   private readonly fileReadJobs = new Map<string, Set<Promise<unknown>>>();
   private readonly assessedAttention = new Set<string>();
   private readonly attentionController = new AbortController();
+  private readonly memoryValidationControllers = new Map<AbortController, string>();
+  private readonly memoryValidationJobs = new Set<Promise<void>>();
   private pumping = false;
   private pumpAgain = false;
   private pumpIdle: Promise<void> | undefined;
   private readonly capabilityCapacity = new CompanionCapacity();
   private evidenceRevision = 0;
   private closed = false;
+  private shuttingDown?: Promise<void>;
   private proactiveBusy = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly initialization: Promise<void>;
 
   constructor(private readonly options: CompanionServiceOptions) {
-    this.root = path.join(options.userData, 'companions');
+    this.root = options.dataRoot ?? path.join(options.userData, 'companions');
     this.credentials = new CompanionCredentials(this.root);
-    this.storage = new CompanionStorageClient(options.workerPath, path.join(this.root, 'messages.sqlite'), () => this.changed(), options.report);
+    this.storage = new CompanionStorageClient(options.workerPath, path.join(this.root, 'messages.sqlite'), event => {
+      if (event?.memoryInvalidatedCompanionIds?.length) {
+        this.evidenceRevision++;
+        for (const owner of event.memoryInvalidatedCompanionIds) {
+          void this.memoryLibrary?.invalidate(owner).catch(options.report);
+          void this.memoryManagement?.invalidate(owner).catch(options.report);
+          void this.memory.invalidate(owner, event.memoryInvalidatedScopeIds).catch(options.report);
+        }
+      }
+      this.changed();
+    }, options.report);
     this.profiles = new CompanionPublicProfiles({ root: this.root, appPath: options.appPath ?? process.cwd(), request: command => this.call(command) });
     this.files = new CompanionFileReader({ root: this.root, request: command => this.call(command) });
+    this.memoryManagement = new CompanionMemoryManagementSearch({ runtime: options.memoryRuntime, requestStorage: command => this.call(command),
+      cacheRoot: path.join(this.root, 'vcp-management'), report: options.report, changed: () => this.changed() });
+    if (options.memoryLibraryRoot) this.memoryLibrary = new CompanionMemoryLibrary({ libraryDirectory: options.memoryLibraryRoot,
+      request: command => this.call(command), report: options.report });
+    if (this.memoryLibrary && options.memoryLibraryRoot) this.memoryDocuments = new CompanionMemoryDocuments({
+      library: this.memoryLibrary, libraryDirectory: options.memoryLibraryRoot, requestStorage: command => this.call(command),
+      search: (owner, query, limit, cursor) => this.memoryManagement.search(owner, query, limit, cursor) });
     this.memory = new CompanionMemoryService({ request: command => this.call(command),
+      runtime: options.memoryRuntime,
+      cacheRoot: path.join(this.root, 'vcp-context'),
+      onTimelineArtifacts: (scope, artifacts, valid) => this.memoryLibrary?.publishTimelines(scope, artifacts, valid) ?? Promise.resolve(),
       configFor: companion => this.configFor(companion),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), report: options.report,
       busy: () => [...this.activities.values()].some(activity => activity.status === 'thinking'), blocked: id => this.resettingCompanions.has(id) || this.dormantCompanions.has(id) });
+    let tagPrompt: Promise<string> | undefined;
+    this.memoryTags = new CompanionMemoryTagService({ request: command => this.call(command), config: async () => this.options.getConfig(),
+      validate: async (job, tags, signal) => {
+        const note = (await this.call({ type: 'memory.library.read', companionId: job.companionId, id: job.noteId, sourceLimit: 1 })).memoryRead?.memory;
+        if (!note || note.version !== job.version) throw new Error('自动标签引用的文档已变化。');
+        await this.validateMemoryWrite({ type: 'memory.library.organize', companionId: job.companionId, id: job.noteId,
+          expectedVersion: job.version, tags: [...tags], diaryName: note.diaryName ?? '日记' }, signal);
+      },
+      prompt: () => {
+        const resource = typeof process.resourcesPath === 'string' ? path.join(process.resourcesPath, 'vcp-memory', 'Plugin', 'DailyNote', 'TagMaster.txt') : undefined;
+        return tagPrompt ??= readFile(resource && existsSync(resource) ? resource
+          : path.join(options.appPath ?? process.cwd(), 'vendor', 'vcp-memory', 'Plugin', 'DailyNote', 'TagMaster.txt'), 'utf8');
+      },
+      fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
+      changed: () => this.changed(), report: options.report, busy: () => [...this.activities.values()].some(activity => activity.status === 'thinking') });
     this.world = new CompanionWorldService({ request: command => this.call(command), configFor: companion => this.configFor(companion),
       profiles: input => this.profiles.prepare(input),
+      memoryContextValid: (scope, context) => this.memory.contextValid(scope, context),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), wakeWaiting: () => { void this.pumpQueue(); }, report: options.report,
       beginPriority: (owner, room, source) => this.beginPriority(owner, room, source), endPriority: id => this.endPriority(id),
       blocked: id => this.resettingCompanions.has(id) || this.dormantCompanions.has(id), tickLife: () => this.autonomy.tick() });
     this.autonomy = new CompanionAutonomyService({ request: command => this.call(command), configFor: companion => this.configFor(companion),
+      memoryContextValid: (scope, context) => this.memory.contextValid(scope, context),
       profiles: input => this.profiles.prepare(input),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       ready: async (order, signal) => {
@@ -161,30 +223,118 @@ export class CompanionService {
       profiles: input => this.profiles.prepare(input), fetchFn: (url, init) => net.fetch(url instanceof URL ? url.toString() : url, { ...init, credentials: 'omit' }),
       excludedIds: () => [...new Set([...this.resettingCompanions, ...[...this.activities.values()].map(activity => activity.companionId)])],
       changed: () => this.changed(), report: options.report });
+    if (options.learningAssets) this.learning = new CompanionLearningService({ assets: options.learningAssets, request: command => this.call(command),
+      configured: options.hasConfig, blocked: owner => this.resettingCompanions.has(owner) || this.dormantCompanions.has(owner),
+      ready: async (owner, workId, signal, job) => {
+        if ([...this.activities.values()].some(activity => activity.companionId === owner && activity.status === 'thinking')) return false;
+        const scope = { companionId: owner, conversationId: 'world_' + owner };
+        const world = (await this.call({ type: 'world.observe', ...scope })).world, actor = world?.actors.find(actor => actor.companionId === owner);
+        if (!actor || ['sleeping', 'eating'].includes(actor.routinePhase) || ['working', 'sleeping', 'lyingDown', 'waking', 'eating'].includes(actor.activity)) return false;
+        await this.world.ready({ ...scope, workId, kind: 'learning', learningGrantId: job.id, learningLeaseToken: job.leaseToken, fixed: false }, AbortSignal.any([signal, AbortSignal.timeout(10000)])); return true;
+      }, end: (owner, workId) => this.world.end(owner, workId), changed: () => this.changed(), report: options.report });
     this.initialization = this.storage.start().then(async () => {
-      await this.call({ type: 'action.interrupt-pending' });
-      await this.call({ type: 'work-order.interrupt-pending' });
-      await this.call({ type: 'interruption.recover' });
-      await this.call({ type: 'work.interrupt-running' });
-      await this.call({ type: 'activity.recover' });
-      await this.call({ type: 'schedule.recover-activities' });
+      for (const type of ['action.interrupt-pending', 'work-order.interrupt-pending', 'interruption.recover',
+        'work.interrupt-running', 'activity.recover', 'schedule.recover-activities'] as const) {
+        if (this.closed) return;
+        await this.call({ type });
+      }
+      if (this.closed) return;
       for (const companion of (await this.call({ type: 'state' })).state?.companions ?? []) if (companion.active === false) this.dormantCompanions.add(companion.id);
+      if (this.closed) return;
       await this.restoreResets();
     });
     void this.initialization.catch(options.report);
-    void this.initialization.then(() => this.restoreQueue()).catch(options.report);
-    void this.initialization.then(() => this.memory.schedule()).catch(options.report);
-    void this.initialization.then(() => this.schedules.start()).catch(options.report);
-    void this.initialization.then(() => this.activityTasks.start()).catch(options.report);
-    void this.initialization.then(() => this.world.start()).catch(options.report);
+    void this.initialization.then(() => { if (!this.closed) return this.restoreQueue(); }).catch(options.report);
+    void this.initialization.then(() => { if (!this.closed) this.memory.schedule(); }).catch(options.report);
+    void this.initialization.then(() => { if (!this.closed) this.memoryLibrary?.start(); }).catch(options.report);
+    void this.initialization.then(() => { if (!this.closed) this.memoryTags.start(); }).catch(options.report);
+    void this.initialization.then(() => { if (!this.closed) this.schedules.start(); }).catch(options.report);
+    void this.initialization.then(() => { if (!this.closed) this.activityTasks.start(); }).catch(options.report);
+    void this.initialization.then(() => { if (!this.closed) this.world.start(); }).catch(options.report);
+    void this.initialization.then(() => { if (!this.closed) this.learning?.start(); }).catch(options.report);
   }
-  private async call(command: CompanionStorageCommand): Promise<CompanionStorageResponse> {
+  private async call(command: CompanionStorageCommand, signal?: AbortSignal): Promise<CompanionStorageResponse> {
+    if (command.type === 'memory.search') return this.memory.search(command);
+    if (command.type === 'memory.record' || command.type === 'memory.revise' || command.type === 'memory.save' || command.type === 'memory.library.organize') {
+      const controller = new AbortController();
+      const owner = command.type === 'memory.save' ? command.memory.companionId : command.companionId;
+      this.memoryValidationControllers.set(controller, owner);
+      const checking = this.validateMemoryWrite(command, AbortSignal.any([controller.signal, this.attentionController.signal, ...(signal ? [signal] : [])]));
+      this.memoryValidationJobs.add(checking);
+      try { await checking; }
+      finally { this.memoryValidationJobs.delete(checking); this.memoryValidationControllers.delete(controller); }
+    }
     const response = await this.storage.request(command);
     if (!response.ok) throw new Error(response.error ?? '伙伴存储暂时不可用。');
+    if (response.memoryInvalidatedCompanionIds?.length) {
+      this.evidenceRevision++;
+      for (const owner of response.memoryInvalidatedCompanionIds) {
+        void this.memoryLibrary?.invalidate(owner).catch(this.options.report);
+        void this.memory.invalidate(owner, response.memoryInvalidatedScopeIds).catch(this.options.report);
+      }
+    }
     if (command.type === 'memory.forget' || command.type === 'companion.reset') this.evidenceRevision++;
     if (command.type === 'message.append' || command.type === 'loop.save' && command.checkpoint.status === 'done'
-      || command.type === 'action.update' && command.patch.result !== undefined) this.memory.schedule();
+      || command.type === 'action.update' && command.patch.result !== undefined
+      || ['memory.record', 'memory.revise', 'memory.organize', 'memory.save', 'memory.delete', 'memory.forget', 'memory.index.rebuild', 'memory.policy.release', 'memory.library.organize', 'memory.library.delete', 'memory.tags.complete'].includes(command.type)) this.memory.schedule();
     return response;
+  }
+  /** Every new diary entrance shares the same policy gate, including UI and file imports. */
+  private async validateMemoryWrite(command: Extract<CompanionStorageCommand, { type: 'memory.record' | 'memory.revise' | 'memory.save' | 'memory.library.organize' }>, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const libraryNote = command.type === 'memory.library.organize'
+      ? (await this.call({ type: 'memory.library.read', companionId: command.companionId, id: command.id, sourceLimit: 1 })).memoryRead?.memory : undefined;
+    if (command.type === 'memory.library.organize' && (!libraryNote || libraryNote.version !== command.expectedVersion)) throw new Error('这篇文档已经变化，请重新读取后再保存。');
+    const draft = command.type === 'memory.save' ? command.memory : command;
+    const scope = { companionId: draft.companionId, conversationId: command.type === 'memory.library.organize' ? libraryNote!.sourceConversationId : ('conversationId' in draft ? draft.conversationId : ''),
+      ...('beforeSequence' in draft ? { beforeSequence: draft.beforeSequence } : {}) };
+    const selector = command.type === 'memory.record' ? { sourceMessageIds: command.candidate.sourceMessageIds }
+      : command.type === 'memory.revise' || command.type === 'memory.library.organize' ? { noteId: command.id } : {};
+    const policy = await this.call({ type: 'memory.prohibitions', ...scope, ...selector });
+    const rules = policy.memoryProhibitions ?? [];
+    if (!policy.memoryProhibitionRevision) throw new Error('禁记范围核验未完成，日记尚未提交。');
+    // The worker compares this token against the actual source domain inside the
+    // write transaction, including a newly added rule when this read was empty.
+    draft.expectedProhibitionRevision = policy.memoryProhibitionRevision;
+    signal.throwIfAborted();
+    if ('operationId' in draft && draft.operationId && (await this.call({ type: 'memory.operation.inspect', companionId: draft.companionId,
+      operationId: draft.operationId })).memories?.length) {
+      // The real command still goes to the host: its receipt checks payload, scope,
+      // current note version and visibility before returning the committed result.
+      signal.throwIfAborted();
+      return;
+    }
+    if (!rules.some(rule => rule.persistent && rule.tags.length)) return;
+    if ('id' in draft && draft.id) await this.call({ type: 'memory.read', ...scope, id: draft.id });
+    const candidate = command.type === 'memory.library.organize' ? { content: libraryNote!.content, tags: command.tags }
+      : command.type === 'memory.save' ? command.memory : command.candidate;
+    const owner = (await this.call({ type: 'state', includeConversations: false })).state?.companions.find(companion => companion.id === scope.companionId);
+    if (!owner) throw new Error('伙伴不可用，日记尚未提交。');
+    const allowed = await validateCompanionMemoryProhibitions({ content: candidate.content, tags: candidate.tags ?? [], prohibitions: rules },
+      await this.configFor(owner), signal, { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
+    signal.throwIfAborted();
+    if (!allowed) throw new Error('这篇日记涉及已要求今后不再记录的主题，尚未保存。');
+  }
+  /** Human-only natural-document management; agent tools have no route to this API. */
+  async manageLearningSources(command: CompanionLearningWorkspaceCommand): Promise<CompanionWorkspaceResponse> {
+    await this.initialization;
+    if (this.closed || !this.learning) throw new Error('学习来源服务暂不可用。');
+    return this.learning.handle(command);
+  }
+  async manageMemoryDocuments(command: CompanionMemoryDocumentCommand): Promise<CompanionWorkspaceResponse> {
+    await this.initialization;
+    if (this.closed || !this.memoryDocuments) throw new Error('伙伴记忆库暂时不可用。');
+    const job = this.memoryDocuments.handle(command);
+    this.memoryDocumentJobs.add(job);
+    try {
+      const response = await job;
+      if (response.ok && command.type === 'memory.documents.tags.cancel') this.memoryTags.cancelNote(response.document?.memory?.id);
+      if (response.ok && !['memory.documents.list', 'memory.documents.read', 'memory.documents.tags.status'].includes(command.type)) {
+        this.changed(); if (command.type !== 'memory.documents.tags.cancel') void this.memoryTags.tick().catch(this.options.report);
+      }
+      return response;
+    }
+    finally { this.memoryDocumentJobs.delete(job); }
   }
   private changed() {
     if (this.closed) return;
@@ -198,8 +348,9 @@ export class CompanionService {
     if (window && !window.isDestroyed()) window.webContents.send(COMPANION_REPLY_STREAM_CHANNEL, event);
   }
   configurationChanged() {
-    void this.initialization.then(() => this.call({ type: 'memory.jobs.retry' }))
-      .then(() => this.memory.schedule(0)).catch(this.options.report);
+    if (this.closed) return;
+    void this.initialization.then(() => { if (!this.closed) return this.call({ type: 'memory.jobs.retry' }); })
+      .then(() => { if (!this.closed) this.memory.schedule(0); }).catch(this.options.report);
     this.changed();
     this.schedules.wake();
   }
@@ -388,17 +539,38 @@ export class CompanionService {
         await this.call({ type: 'reply.checkpoint.status', conversationId: source.conversationId, sourceMessageId: source.id, status: 'cancelled' });
         this.changed(); return { ok: true };
       }
-      case 'reply.retry': await this.launchReply(request.conversationId, false, 'auto', true); return { ok: true };
+      case 'reply.retry': {
+        if (request.workId) {
+          const work = ((await this.call({ type: 'work.list' })).works ?? []).find(item => item.id === request.workId && item.conversationId === request.conversationId);
+          if (!work || !['interrupted', 'cancelled'].includes(work.status)) throw new Error('这次回复当前不能重试。');
+          await this.replies.get(work.id)?.promise;
+          await this.call({ type: 'work.enqueue', work, resume: true }); this.changed(); void this.pumpQueue();
+        } else await this.launchReply(request.conversationId, false, 'auto', true);
+        return { ok: true };
+      }
       case 'reply.cancel': {
-        for (const [controller, conversationId] of this.replyControllers) if (conversationId === request.conversationId) controller.abort();
-        const active = ((await this.call({ type: 'actions', conversationId: request.conversationId })).actions ?? []).filter(action => ['running', 'queued'].includes(action.status));
+        const works = ((await this.call({ type: 'work.list', unfinishedOnly: true })).works ?? [])
+          .filter(work => work.conversationId === request.conversationId && (!request.workId || work.id === request.workId));
+        if (request.workId && !works.length) throw new Error('这次回复已经结束或不属于当前聊天。');
+        const parentIds = new Set<string>();
+        for (const work of works) {
+          this.replies.get(work.id)?.controller.abort();
+          const loop = (await this.call({ type: 'loop.get', sourceMessageId: work.sourceMessageId,
+            companionId: work.companionId, ...(work.proactive ? { proactiveWorkId: work.id } : {}) })).loop;
+          if (loop?.messageId) parentIds.add(loop.messageId);
+          await this.call({ type: 'work.status', id: work.id, status: 'cancelled' });
+        }
+        if (!request.workId) for (const [controller, conversationId] of this.replyControllers) if (conversationId === request.conversationId) controller.abort();
+        const active = ((await this.call({ type: 'actions', conversationId: request.conversationId })).actions ?? [])
+          .filter(action => ['running', 'queued'].includes(action.status) && (!request.workId || !!action.parentMessageId && parentIds.has(action.parentMessageId)));
         for (const action of active) {
           this.cancelledActions.add(action.id); this.actionControllers.get(action.id)?.abort();
           if (action.taskId) await this.options.dsh()?.requestTask({ type: 'task.cancel', taskId: action.taskId }).catch(() => undefined);
         }
-        const checkpoint = (await this.call({ type: 'reply.checkpoint.get', conversationId: request.conversationId })).replyRecovery;
-        if (checkpoint) await this.call({ type: 'reply.checkpoint.status', conversationId: request.conversationId, sourceMessageId: checkpoint.sourceMessageId, status: 'cancelled' });
-        return { ok: true };
+        if (!request.workId) for (const sourceMessageId of new Set(works.map(work => work.sourceMessageId))) {
+          await this.call({ type: 'reply.checkpoint.status', conversationId: request.conversationId, sourceMessageId, status: 'cancelled' });
+        }
+        this.changed(); return { ok: true };
       }
       case 'reply.resume': {
         const checkpoint = (await this.call({ type: 'reply.checkpoint.get', conversationId: request.conversationId })).replyRecovery;
@@ -427,9 +599,11 @@ export class CompanionService {
         return { ok: true, reset: response.reset };
       }
       case 'memory.save': {
+        const conversationId = request.conversationId ?? (await this.call({ type: 'conversation.open', companionId: request.companionId })).conversation?.id;
+        if (!conversationId) throw new Error('请先打开该伙伴的聊天，再补充日记。');
         const response = await this.call({ type: 'memory.save', memory: {
           id: request.id, companionId: request.companionId, content: request.content,
-          sourceMessageId: request.sourceMessageId, conversationId: request.conversationId, expectedVersion: request.expectedVersion, origin: 'user',
+          sourceMessageId: request.sourceMessageId, conversationId, expectedVersion: request.expectedVersion,
         } }); this.changed(); return response;
       }
       case 'memory.jobs.retry': {
@@ -539,10 +713,13 @@ export class CompanionService {
     }
   }
   private async restoreResets(): Promise<void> {
+    if (this.closed) return;
     const state = (await this.call({ type: 'state' })).state;
     for (const job of state?.resetJobs ?? []) {
+      if (this.closed) return;
       if (job.phase !== 'stopping' || job.status === 'completed') continue;
       const current = await this.call({ type: 'companion.reset.status', id: job.companionId });
+      if (this.closed) return;
       if (current.reset) await this.cleanupReset(current.reset, current.resetTaskIds ?? []).catch(this.options.report);
     }
   }
@@ -565,6 +742,8 @@ export class CompanionService {
     return pending;
   }
   private async stopCompanion(companionId: string, knownTaskIds: readonly string[] = []): Promise<void> {
+    this.learning?.cancel(companionId);
+    for (const [controller, owner] of this.memoryValidationControllers) if (owner === companionId) controller.abort();
     const replies = [...this.replies.values()].filter(value => this.replyOwners.get(value.controller) === companionId);
     for (const reply of replies) { this.resetReplyControllers.add(reply.controller); reply.controller.abort(); }
     for (const [key, controller] of this.attentionControllers) if (key.startsWith(companionId + ':')) controller.abort();
@@ -595,7 +774,7 @@ export class CompanionService {
     // ID durably before stopping it; never infer process exit from UI status.
     await collect(); const failures = await terminate();
     await Promise.allSettled([...replies.map(reply => reply.promise), ...[...this.attentionJobs.entries()].filter(([key]) => key.startsWith(companionId + ':')).map(([, promise]) => promise),
-      ...[...(this.fileReadJobs.get(companionId) ?? [])], this.activityTasks.drainCompanion(companionId), this.memory.drainCompanion(companionId), this.world.drainCompanion(companionId), this.schedules.drainCompanion(companionId), this.autonomy.drainCompanion(companionId)]);
+      ...[...(this.fileReadJobs.get(companionId) ?? [])], this.learning?.drain(companionId), this.activityTasks.drainCompanion(companionId), this.memory.drainCompanion(companionId), this.world.drainCompanion(companionId), this.schedules.drainCompanion(companionId), this.autonomy.drainCompanion(companionId)]);
     if (failures.length) throw new Error('部分旧任务进程尚未确认停止，请重试。', { cause: failures[0] });
     for (const [key, activity] of this.activities) if (activity.companionId === companionId) this.activities.delete(key);
     this.unavailableCompanions.delete(companionId);
@@ -603,9 +782,12 @@ export class CompanionService {
   private async launchReply(conversationId: string, proactive = false, _delivery: 'auto' | 'queue' | 'parallel' | 'steer' | 'chat' = 'auto', recovery = false, sourceMessageId?: string) {
     void _delivery; // Delivery is a queue choice; every admitted reply uses the same loop.
     await this.initialization;
+    if (this.closed) return;
     const state = (await this.call({ type: 'state', includeHidden: true })).state;
+    if (this.closed) return;
     const conversation = state?.conversations.find(item => item.id === conversationId);
     const checkpoint = (await this.call({ type: 'reply.checkpoint.get', conversationId, sourceMessageId })).replyRecovery;
+    if (this.closed) return;
     const sourceId = sourceMessageId ?? checkpoint?.sourceMessageId;
     const message = sourceId ? (await this.call({ type: 'message.get', id: sourceId })).message : undefined;
     if (!conversation || !message) return;
@@ -615,23 +797,29 @@ export class CompanionService {
     });
     const speakers = addressed.length ? addressed : (conversation.kind === 'group' ? conversation.memberIds : conversation.memberIds.slice(0, 1));
     for (const companionId of speakers) {
+      if (this.closed) return;
       if (!proactive && checkpoint?.completedIds.includes(companionId)) continue;
       const stamp = new Date().toISOString();
       const work = { id: proactive ? randomUUID() : createHash('sha256').update(message.id + ':' + companionId).digest('hex'),
         conversationId, companionId, sourceMessageId: message.id, status: 'queued' as const, proactive, createdAt: stamp, updatedAt: stamp };
       await this.call({ type: 'work.enqueue', work, resume: recovery });
+      if (this.closed) return;
       if (!proactive) void this.assessAttention(companionId, message.id);
     }
     this.changed(); void this.pumpQueue();
   }
   private async restoreQueue() {
     await this.initialization;
+    if (this.closed) return;
     const state = (await this.call({ type: 'state' })).state;
+    if (this.closed) return;
     // A crash between message commit and enqueue is reconciled from the durable source.
     for (const recovery of state?.recoveries ?? []) if (recovery.dispatcher === 'queue' && !(await this.call({ type: 'work.list', sourceMessageId: recovery.sourceMessageId })).works?.length) {
+      if (this.closed) return;
       await this.launchReply(recovery.conversationId, false, 'auto', false, recovery.sourceMessageId);
     }
     for (const work of (await this.call({ type: 'work.list', unfinishedOnly: true })).works ?? []) {
+      if (this.closed) return;
       if (!work.proactive && work.status === 'queued') void this.assessAttention(work.companionId, work.sourceMessageId);
     }
     await this.pumpQueue();
@@ -761,11 +949,23 @@ export class CompanionService {
         await this.call({ type: 'loop.save', checkpoint });
       }
       this.activeLoops.set(loopKey, checkpoint);
-      const updateActivity = (status: CompanionActivity['status'], stage: string) => {
+      let progressSaves = Promise.resolve();
+      const updateActivity = (status: CompanionActivity['status'], stage: string,
+        phase: CompanionReplyProgress['phase'] = status === 'waiting' ? 'waiting' : status === 'working' ? 'tools' : 'thinking',
+        memory?: CompanionReplyProgress['memory']) => {
         const previous = this.activities.get(key);
-        if (previous?.status === status && previous.stage === stage) return;
-        this.activities.set(key, { companionId: id, conversationId, sourceMessageId: userMessage.id, status, stage,
-          startedAt: previous?.startedAt ?? new Date().toISOString() });
+        if (previous?.status === status && previous.stage === stage && checkpoint.progress?.phase === phase && !memory) return;
+        const startedAt = checkpoint.progress?.startedAt ?? previous?.startedAt ?? new Date().toISOString();
+        checkpoint.progress = { ...checkpoint.progress, workId, sourceMessageId: userMessage.id, phase, detail: stage,
+          revision: (checkpoint.progress?.revision ?? 0) + 1, startedAt, updatedAt: new Date().toISOString(),
+          ...(memory ? { memory } : {}) };
+        this.activities.set(key, { companionId: id, conversationId, sourceMessageId: userMessage.id, status, stage, startedAt });
+        this.publishReplyStream({ conversationId, companionId: id, sourceMessageId: userMessage.id,
+          messageId: checkpoint.messageId!, step: Math.min(checkpoint.turns.length, 63), attemptId: 'progress-' + (workId ?? checkpoint.messageId!),
+          text: '', phase: 'progress', progress: checkpoint.progress });
+        // Coalesce durable progress independently of token streaming. The object
+        // is serialized only when the preceding write has completed.
+        progressSaves = progressSaves.then(async () => { await this.call({ type: 'loop.save', checkpoint }); }).catch(this.options.report);
         this.changed();
       };
       const phoneReady = async () => {
@@ -783,17 +983,19 @@ export class CompanionService {
         const replyMessages = proactive ? (await this.call({ type: 'messages', conversationId, limit: 50 })).messages ?? [] : messages;
         if (proactive && !checkpoint.context) {
           if (replyMessages.findLast(message => message.authorId === 'user')?.id !== userMessage.id) {
-            checkpoint.status = 'done'; await this.call({ type: 'loop.save', checkpoint }); return;
+            checkpoint.status = 'done'; updateActivity('thinking', '回复已完成', 'completed'); await progressSaves; await this.call({ type: 'loop.save', checkpoint }); return;
           }
           checkpoint.contextThroughSequence = replyMessages.at(-1)?.sequence ?? userMessage.sequence;
         }
-        updateActivity('thinking', '正在读取相关记忆');
+        updateActivity('thinking', '被动记忆召回：正在检索获权来源', 'memory', { status: 'running' });
         const config = await this.configFor(companion);
         connection = connectionIdentity(config);
         const recalled = await this.memory.recall({ companion, conversation, messages: replyMessages, currentMessage: userMessage,
           beforeSequence: checkpoint.contextThroughSequence,
           referencedMessage: reference?.conversationId === conversationId ? reference : undefined, config, signal: controller.signal });
         const memories = recalled.memories;
+        updateActivity('thinking', recalled.degraded ? '被动记忆召回暂不可用，正在准备对话上下文' : '被动记忆召回已完成，正在准备对话上下文', 'context',
+          { status: recalled.degraded ? 'unavailable' : 'completed', count: memories.length, injected: !!recalled.context?.text });
         let step = checkpoint.turns.length ? checkpoint.turns.length - 1 : 0;
         if (!checkpoint.context) {
           checkpoint.context = buildCompanionContext({ companion, conversation, messages: replyMessages, memories,
@@ -816,7 +1018,7 @@ export class CompanionService {
               let stream: CompanionReplyStream | undefined;
               try {
                 await phoneReady();
-                updateActivity('thinking', '正在整理上下文');
+                updateActivity('thinking', '正在整理本轮上下文', 'context');
                 const revision = checkpoint.supplements.length;
                 const evidenceRevision = this.evidenceRevision;
                 const inference = await this.memoryInference(checkpoint, id, conversationId, userMessage.sequence);
@@ -835,7 +1037,7 @@ export class CompanionService {
                 reply = await generateCompanionReply({ companion, conversation, messages: replyMessages, memories, proactive, ...profiles, fileInputs,
                   sourceMessage: userMessage, identityDirectory: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name })), addressedCompanionIds: speakers,
                   members: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name, description: role.description })) }, config, controller.signal,
-                  { loop: true, ...inference, toolImages, onTextDelta: stream.onTextDelta,
+                  { loop: true, ...inference, toolImages, onTextDelta: text => { if (text && checkpoint.progress?.phase !== 'streaming') updateActivity('thinking', '正在输出回复', 'streaming'); stream!.onTextDelta(text); },
                     fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
                 await stream.complete();
                 if (controller.signal.aborted || this.closed) throw new CompanionModelError('CANCELLED', '这次回复已取消。');
@@ -845,7 +1047,9 @@ export class CompanionService {
                   ? currentProfiles?.playerProfile?.revision : currentProfiles?.companions.find(role => role.id === profile.id)?.revision) !== profile.revision)) {
                   await stream.stop('discarded'); retry--; continue;
                 }
-                if (revision !== checkpoint.supplements.length || evidenceRevision !== this.evidenceRevision) { await stream.stop('discarded'); retry--; continue; }
+                const inferenceMemory = (JSON.parse(inference.context.user) as { memoryRecall?: { context?: { revision: string; profileKey: string } } }).memoryRecall?.context;
+                if (revision !== checkpoint.supplements.length || evidenceRevision !== this.evidenceRevision
+                  || !await this.memory.contextValid({ companionId: id, conversationId, beforeSequence: await this.memoryBoundary(checkpoint, userMessage.sequence) }, inferenceMemory)) { await stream.stop('discarded'); retry--; continue; }
                 completedStream = stream;
                 break;
               } catch (error) {
@@ -872,7 +1076,7 @@ export class CompanionService {
           }
           await this.call({ type: 'loop.save', checkpoint }); this.changed();
           if (!turn.calls.length) {
-            checkpoint.status = 'done'; await this.call({ type: 'loop.save', checkpoint });
+            checkpoint.status = 'done'; updateActivity('thinking', '回复已完成', 'completed'); await progressSaves; await this.call({ type: 'loop.save', checkpoint });
             if (!proactive) await this.call({ type: 'reply.checkpoint.complete', conversationId, sourceMessageId: userMessage.id, companionId: id });
             if (proactive && turn.text) {
               const clock = (await this.call({ type: 'world.clock' })).worldClock;
@@ -936,7 +1140,7 @@ export class CompanionService {
                 return { call, tasks: parsed.tasks };
               } catch { return { call, error: '工具调用或参数无效。请按已提供工具的原生参数格式修正后继续。' }; }
             });
-            this.activities.set(key, { companionId: id, conversationId, sourceMessageId: userMessage.id, status: 'working', startedAt: new Date().toISOString() }); this.changed();
+            updateActivity('working', '正在调用能力：' + [...new Set(turn.calls.map(call => call.name))].join('、'), 'tools');
             let suspended = false;
             // Memory mutations in one model turn retain order; dependent revisions cannot race each other.
             let memoryChain: Promise<unknown> = Promise.resolve();
@@ -1016,16 +1220,17 @@ export class CompanionService {
             if (suspended || controller.signal.aborted || this.closed) throw new CompanionModelError('CANCELLED', '本次回复已中断，气泡和能力进度已保存，可以继续恢复。');
             turn.results = results;
             await this.call({ type: 'loop.save', checkpoint }); this.changed();
-            this.activities.set(key, { companionId: id, conversationId, sourceMessageId: userMessage.id, status: 'thinking', startedAt: new Date().toISOString() });
+            updateActivity('thinking', '能力结果已返回，正在继续思考', 'thinking');
           }
           if (step === 63) throw new Error('这次循环已到步骤上限，进度已保存，可以继续恢复。');
         }
       } catch (error) {
+        updateActivity('thinking', this.closed ? '应用关闭，回复进度已保存' : controller.signal.aborted ? '这次回复已取消' : publicError(error).slice(0, 500), this.closed ? 'interrupted' : controller.signal.aborted ? 'cancelled' : 'failed');
         if (!controller.signal.aborted && error instanceof CompanionModelError && ['CONFIG', 'AUTH', 'NETWORK', 'TIMEOUT', 'RATE_LIMIT'].includes(error.code)) {
           this.unavailableCompanions.set(id, { connection, reason: publicError(error).slice(0, 500) });
         }
         if (!controller.signal.aborted && !this.closed) await this.call({ type: 'message.append', message: { conversationId, authorId: 'system', kind: 'notice', status: 'failed', content: publicError(error) } });
-      } finally { await this.world.end(id, worldWork); await this.endPriority(interruptionId); this.activeLoops.delete(loopKey); this.activities.delete(key); this.memory.schedule(); this.changed(); }
+      } finally { await progressSaves.catch(this.options.report); await this.world.end(id, worldWork); await this.endPriority(interruptionId); this.activeLoops.delete(loopKey); this.activities.delete(key); this.memory.schedule(); this.changed(); }
     }));
 
   }
@@ -1071,13 +1276,22 @@ export class CompanionService {
     const scope = { companionId, conversationId, beforeSequence: await this.memoryBoundary(checkpoint, sourceSequence) };
     const data = JSON.parse(checkpoint.context.user) as {
       messages?: Array<{ id: string }>; memories?: Array<{ id: string; status?: string; sources?: Array<{ messageId: string }> }>;
-      memorySources?: Array<{ id: string }>; memoryRecall?: { reasons?: Array<{ id: string }>; continuation?: unknown };
+      memorySources?: Array<{ id: string }>; memoryRecall?: { reasons?: Array<{ id: string }>; continuation?: { query?: { query?: string } };
+        context?: { text: string; revision: string; profileKey: string }; pending?: boolean; degraded?: boolean };
       taskRequest?: { sourceMessageId: string; prompt: string; replyReference?: { id: string; content: string } };
       earlierConversationSummary?: string;
       memoryOperations?: Array<{ name: string; ok: boolean; forgottenCount?: number }>;
       withdrawnToolHistory?: boolean;
+      memoryHistoryBoundary?: number;
     };
-    const toolProvenance = checkpointToolProvenance(checkpoint);
+    const boundary = Number.isSafeInteger(data.memoryHistoryBoundary) && data.memoryHistoryBoundary! >= 0
+      && data.memoryHistoryBoundary! <= checkpoint.turns.length ? data.memoryHistoryBoundary! : 0;
+    const currentTurns = checkpoint.turns.slice(boundary);
+    const toolProvenance = checkpointToolProvenance(checkpoint, boundary);
+    const fingerprints = [...toolProvenance.contexts, ...(data.memoryRecall?.context ? [data.memoryRecall.context] : [])];
+    const firstFingerprint = fingerprints[0];
+    const changedContext = !!firstFingerprint && (fingerprints.some(item => item.revision !== firstFingerprint.revision || item.profileKey !== firstFingerprint.profileKey)
+      || !await this.memory.contextValid(scope, firstFingerprint));
     const sourceIds = [...new Set([...(data.messages ?? []), ...(data.memorySources ?? []), ...checkpoint.supplements,
       ...(data.taskRequest?.replyReference ? [data.taskRequest.replyReference] : []),
       ...(data.memories ?? []).flatMap(memory => (memory.sources ?? []).map(source => ({ id: source.messageId }))),
@@ -1087,8 +1301,7 @@ export class CompanionService {
       const checked = await this.call({ type: 'memory.sources.filter', ...scope, ids: sourceIds.slice(start, start + 100) });
       for (const message of checked.memorySources ?? []) allowedSources.add(message.id);
     }
-    const records = await this.call({ type: 'memory.records.filter', ...scope, ids: (data.memories ?? []).map(memory => memory.id),
-      includeHistory: data.memories?.some(memory => memory.status === 'superseded') ?? false });
+    const records = await this.call({ type: 'memory.records.filter', ...scope, ids: (data.memories ?? []).map(memory => memory.id) });
     const allowedRecords = new Set((records.memories ?? []).map(memory => memory.id));
     const lostSource = sourceIds.some(id => !allowedSources.has(id));
     data.messages = data.messages?.filter(message => allowedSources.has(message.id));
@@ -1100,15 +1313,23 @@ export class CompanionService {
     }
     if (data.memoryRecall?.reasons) data.memoryRecall.reasons = data.memoryRecall.reasons.filter(reason => allowedRecords.has(reason.id));
     // A resumed loop must not replay memory evidence withdrawn since its checkpoint was written.
-    const completedForget = checkpoint.turns.some(turn => turn.calls.some(call => call.name === 'memory.forget'
+    const completedForget = currentTurns.some(turn => turn.calls.some(call => call.name === 'memory.forget'
       && turn.results?.some(result => result.callId === call.id && (JSON.parse(result.content) as { ok?: boolean }).ok === true)));
     const world = await this.world.observe(scope);
     const visibleWorldEvents = new Set(world?.events.map(event => event.id) ?? []);
-    const withdrawMemoryResults = lostSource || completedForget || toolProvenance.worldEventIds.some(id => !visibleWorldEvents.has(id));
+    const withdrawMemoryResults = lostSource || completedForget || changedContext || toolProvenance.worldEventIds.some(id => !visibleWorldEvents.has(id));
     if (withdrawMemoryResults) {
+      if (data.memoryRecall?.context) delete data.memoryRecall.context;
+      const query = data.memoryRecall?.continuation?.query?.query;
+      if (query && data.memoryRecall) {
+        const fresh = await this.memory.search({ ...scope, query, limit: 12 }, 'passive').catch(() => undefined);
+        data.memoryRecall.context = fresh?.memoryContext;
+        if (fresh?.memoryPage) data.memories = fresh.memoryPage.items.map(hit => hit.memory);
+      }
       if (data.memoryRecall) delete data.memoryRecall.continuation;
       data.earlierConversationSummary = '';
       data.withdrawnToolHistory = true;
+      data.memoryHistoryBoundary = checkpoint.turns.length;
       data.memoryOperations = checkpoint.turns.flatMap(turn => (turn.results ?? []).flatMap(result => {
         const call = turn.calls.find(call => call.id === result.callId && call.name === 'memory.forget');
         if (!call) return [];
@@ -1117,11 +1338,14 @@ export class CompanionService {
       }));
     }
     // Restart provider history after withdrawal; opaque protocol signatures can retain the old context too.
-    const turns = withdrawMemoryResults ? [] : checkpoint.turns;
+    const turns = withdrawMemoryResults ? [] : currentTurns;
+    checkpoint.supplements = checkpoint.supplements.filter(item => allowedSources.has(item.id));
     const runtimeState = (await this.call({ type: 'state.get', ...scope })).runtimeState;
     const conversation = (await this.call({ type: 'state', includeHidden: true })).state?.conversations.find(item => item.id === conversationId);
     const context = { system: checkpoint.context.system, user: JSON.stringify({ ...data, ...(world ? { world: companionModelWorld(world, companionId),
       worldTrust: 'host_simulation_facts_and_peer_quotes_not_player_authorization' } : {}) }) };
+    // Persist the clean base and cutoff so a past withdrawal cannot discard later authorized tool results forever.
+    checkpoint.context = { ...context };
     return { context: conversation ? refreshCompanionRuntimeStateContext(context, runtimeState, companionId, conversation) : context, turns,
       supplements: checkpoint.supplements.filter(item => allowedSources.has(item.id)) };
   }
@@ -1335,18 +1559,15 @@ export class CompanionService {
         case 'memory.forget': {
           const parsed = companionMemoryToolArgumentsSchemas[name].parse(args);
           if (!requestMessageIds.includes(parsed.requestMessageId)) throw new Error('遗忘必须来自当前用户请求或实际补充。');
+          const source = (await this.call({ type: 'memory.sources.filter', ...scope, ids: [parsed.requestMessageId] })).memorySources?.[0];
+          const owner = (await this.call({ type: 'state', includeConversations: false })).state?.companions.find(companion => companion.id === scope.companionId);
+          if (!source || !owner || !await authorizeCompanionManagement({ companionId: scope.companionId, source,
+            tool: 'memory', action: 'forget', targetId: parsed.id, requested: parsed }, await this.configFor(owner), signal,
+          { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) })) throw new Error('当前用户没有明确授权这个遗忘范围。');
           command = { type: name, ...parsed, ...scope }; break;
         }
       }
-      const response = await this.call(command);
-      if (command.type === 'memory.search') {
-        const { type: _type, ...query } = command;
-        void _type;
-        const sources = await this.call({ ...query, type: 'memory.sources.search' });
-        response.memorySources = sources.memorySources;
-        response.sourceHasMore = sources.sourceHasMore;
-        response.sourceNextCursor = sources.sourceNextCursor;
-      }
+      const response = await this.call(command, signal);
       if (!['memory.search', 'memory.read'].includes(name)) this.changed();
       return response;
     } catch (error) { return { ok: false, error: publicError(error) }; }
@@ -1665,11 +1886,12 @@ export class CompanionService {
           const current = await sourceNow();
           if (!current || fingerprint(current) !== originalSource || blocked()) return 'withdrawn';
           if (revision !== this.evidenceRevision) return 'changed';
+          if (!await this.memory.contextValid({ ...scope, beforeSequence: source.sequence }, recalled.context)) return 'changed';
           const sources = new Map((await visible([...inputs.keys()])).map(message => [message.id, fingerprint(message)]));
           if ([...inputs].some(([id, value]) => sources.get(id) !== value)) return 'changed';
           for (let index = 0; index < recalled.memories.length; index += 100) {
             const originals = recalled.memories.slice(index, index + 100);
-            const records = (await this.call({ type: 'memory.records.filter', ...scope, ids: originals.map(memory => memory.id), includeHistory: originals.some(memory => memory.status === 'superseded') })).memories ?? [];
+            const records = (await this.call({ type: 'memory.records.filter', ...scope, ids: originals.map(memory => memory.id) })).memories ?? [];
             if (originals.some(memory => !records.some(record => record.id === memory.id && record.version === memory.version && record.status === memory.status && record.content === memory.content))) return 'changed';
           }
           return blocked() ? 'withdrawn' : revision === this.evidenceRevision ? 'valid' : 'changed';
@@ -1801,13 +2023,35 @@ export class CompanionService {
     if (!info.isFile() || info.size > 100 * 1024 * 1024) throw new Error('附件无效。');
     return candidate;
   }
-  async shutdown() {
+  shutdown(): Promise<void> { return this.shuttingDown ??= this.shutdownOnce(); }
+  private async shutdownOnce(): Promise<void> {
     this.closed = true;
+    const learningClosing = this.learning?.close();
     this.attentionController.abort();
+    for (const controller of this.memoryValidationControllers.keys()) controller.abort();
+    const managementClosing = this.memoryManagement.close();
     if (this.timer) clearInterval(this.timer);
+    for (const controller of this.replyControllers.keys()) controller.abort();
+    for (const controller of this.actionControllers.values()) controller.abort();
+    try { await this.initialization; }
+    catch {
+      await Promise.allSettled([...this.memoryDocumentJobs]);
+      await this.memoryDocuments?.close();
+      await managementClosing;
+      await this.memoryTags.close();
+      await learningClosing;
+      await Promise.allSettled([this.memoryLibrary?.close(), this.memory.close(), this.storage.close(), this.credentials.flush()]);
+      return;
+    }
+    await Promise.allSettled([...this.memoryDocumentJobs]);
+    await this.memoryDocuments?.close();
+    await managementClosing;
+    await this.memoryLibrary?.close();
+    await this.memoryTags.close();
     await this.schedules.close();
     await this.autonomy.close();
     await this.activityTasks.close();
+    await learningClosing;
     await this.world.close();
     await this.memory.close();
     for (const controller of this.replyControllers.keys()) controller.abort();
@@ -1825,6 +2069,7 @@ export class CompanionService {
     // cleanup boundary. Keep credentials and storage alive until it settles.
     await Promise.allSettled([...this.resetCleanupJobs.values()]);
     await Promise.allSettled([...this.fileReadJobs.values()].flatMap(jobs => [...jobs]));
+    await Promise.allSettled([...this.memoryValidationJobs]);
     await this.schedules.drain();
     await this.call({ type: 'action.interrupt-pending' });
     await this.credentials.flush();
@@ -1842,12 +2087,14 @@ function decorateAttachments(response: CompanionsResponse): CompanionsResponse {
 }
 
 function worldWorkId(kind: 'chat' | 'action' | 'schedule', id: string): string { return `${kind}_${createHash('sha256').update(id).digest('hex')}`; }
-function checkpointToolProvenance(checkpoint: CompanionLoopCheckpoint): { sourceIds: string[]; worldEventIds: string[] } {
+function checkpointToolProvenance(checkpoint: CompanionLoopCheckpoint, boundary = 0): { sourceIds: string[]; worldEventIds: string[]; contexts: Array<{ revision: string; profileKey: string }> } {
   const sourceIds = new Set<string>(), worldEventIds = new Set<string>();
+  const contexts = new Map<string, { revision: string; profileKey: string }>();
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return;
     if (Array.isArray(value)) { value.forEach(visit); return; }
     const row = value as Record<string, unknown>;
+    if (typeof row.revision === 'string' && typeof row.profileKey === 'string' && typeof row.text === 'string') contexts.set(`${row.revision}\n${row.profileKey}`, { revision: row.revision, profileKey: row.profileKey });
     if (typeof row.id === 'string' && typeof row.authorId === 'string' && typeof row.sequence === 'number') sourceIds.add(row.id);
     if (typeof row.sourceMessageId === 'string') sourceIds.add(row.sourceMessageId);
     if (Array.isArray(row.sourceMessageIds)) for (const id of row.sourceMessageIds) if (typeof id === 'string') sourceIds.add(id);
@@ -1857,10 +2104,10 @@ function checkpointToolProvenance(checkpoint: CompanionLoopCheckpoint): { source
     }
     Object.values(row).forEach(visit);
   };
-  for (const turn of checkpoint.turns) for (const result of turn.results ?? []) {
+  for (const turn of checkpoint.turns.slice(boundary)) for (const result of turn.results ?? []) {
     try { visit(JSON.parse(result.content)); } catch { /* Public textual errors have no host evidence metadata. */ }
   }
-  return { sourceIds: [...sourceIds], worldEventIds: [...worldEventIds] };
+  return { sourceIds: [...sourceIds], worldEventIds: [...worldEventIds], contexts: [...contexts.values()] };
 }
 function publicError(error: unknown): string {
   if (error instanceof CompanionModelError) return error.message;

@@ -1,0 +1,31 @@
+{
+  "generatedAt": "2026-10-21T10:59:45.858Z",
+  "bundleDirectory": "C:\\Users\\hp\\Desktop\\project\\new\\WorldlineBox\\resources\\embedding-models",
+  "profileKey": "embeddinggemma-2-gguf\n412430755667d84b1ac64fe1fe2693aa6219f1d9\nQ4_K_XL\nembeddinggemma-2-UD-Q4_K_XL.gguf\nmmproj-Q8_0.gguf\n768\ntask: search result | query: \ncontext:8192;video:1fps:16s:16windows:audio16k:uniform:mean:v1",
+  "ready": true,
+  "verifiedMs": 986.0226,
+  "remoteRequests": 0,
+  "userDataBytes": 284,
+  "copiedModelFiles": 0,
+  "copiedRuntimeFiles": 0,
+  "clearKeepsBundledWeightsReady": true,
+  "repairVerifiedInPlace": true,
+  "cpuFallback": {
+    "simulatedGpuUnavailable": true,
+    "attempts": [
+      {
+        "executable": "C:\\Users\\hp\\Desktop\\project\\new\\WorldlineBox\\resources\\embedding-models\\runtime-vulkan\\llama-server.exe",
+        "gpuLayers": 99
+      },
+      {
+        "executable": "C:\\Users\\hp\\Desktop\\project\\new\\WorldlineBox\\resources\\embedding-models\\runtime-cpu\\llama-server.exe",
+        "gpuLayers": 0
+      }
+    ],
+    "actualCpuInference": true,
+    "queryCount": 12,
+    "top1Correct": 12,
+    "dimension": 768,
+    "closedSuccessfully": true
+  }
+}

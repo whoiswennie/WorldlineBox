@@ -1,8 +1,11 @@
 import { createRequire } from 'node:module';
-import { readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
+import type { WorldlineBoxCompanionsApi } from '../../src/shared/companions';
+import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
+export { removeOwnedDirectorySync as removeCompanionTestDirectory } from '../../src/main/vcp-memory/filesystem';
 
 const require = createRequire(path.resolve('package.json'));
 
@@ -45,6 +48,57 @@ export function resolveElectronAppPath(): string {
   return process.env.WORLDLINEBOX_E2E_APP_PATH
     ?? process.env.WORLDLINEBOX_E2E_APP_DIRECTORY
     ?? process.cwd();
+}
+
+/** Packaged binaries load their own ASAR; a project path must not be an app argument. */
+export function resolveElectronLaunchOptions(): { executablePath: string; args: string[]; cwd: string } {
+  const packaged = process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE;
+  if (packaged) return { executablePath: packaged, args: [], cwd: path.dirname(packaged) };
+  const appPath = resolveElectronAppPath();
+  return { executablePath: resolveElectronExecutablePath(), args: [appPath], cwd: appPath };
+}
+
+/** Keep packaged acceptance on real production routes and in the test's own profile. */
+export async function preparePackagedCompanionLaunch(application: ElectronApplication, profile: string): Promise<void> {
+  if (!process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) return;
+  const details = await application.evaluate(({ app, dialog }, fixture) => {
+    if (!app.isPackaged) throw new Error('Packaged acceptance must run an actual packaged ASAR application.');
+    if (app.getPath('userData') !== fixture.profile) throw new Error('Packaged acceptance did not select its isolated profile.');
+    // Production deliberately ignores E2E_CREATE_PARENT_PATH. Replace only the
+    // native folder picker, exactly as the existing packaged-startup test does.
+    dialog.showOpenDialog = async (...arguments_: unknown[]) => {
+      const options = arguments_.at(-1) as { title?: string };
+      if (options.title !== 'Create Library' && options.title !== '创建资源库') throw new Error(`Unexpected packaged-test folder dialog: ${options.title}`);
+      return { canceled: false, filePaths: [fixture.parent] };
+    };
+    return { packaged: app.isPackaged, userData: app.getPath('userData'), appPath: app.getAppPath() };
+  }, { profile: path.resolve(profile), parent: path.dirname(path.resolve(profile)) });
+  expect(details.packaged).toBe(true);
+  expect(details.appPath).toMatch(/app\.asar$/u);
+}
+
+/** Real workspace selection for existing companion fixtures; preserves legacy DB migration. */
+export async function ensureCompanionTestWorkspace(page: Page): Promise<void> {
+  await page.waitForFunction(() => !!(window as unknown as { worldlinebox?: { companions?: { workspace?: unknown }; library?: unknown } }).worldlinebox?.companions?.workspace);
+  const result = await page.evaluate(async () => {
+    const bridge = (window as unknown as { worldlinebox: { companions: WorldlineBoxCompanionsApi; library: WorldlineBoxLibraryApi } }).worldlinebox;
+    const status = await bridge.companions.workspace!({ type: 'status' });
+    if (!status.ok) throw new Error(status.error || 'Could not read the fixture workspace.');
+    if (status.selected) return status;
+    const created = await bridge.library.create({ displayName: '伙伴验收资产库' });
+    if (!created.ok) throw new Error(created.error.message);
+    return bridge.companions.workspace!({ type: 'select', libraryId: created.value.libraryId });
+  });
+  expect(result.ok, result.error).toBe(true);
+  expect(result.selected).toBeDefined();
+}
+
+/** Offline seed/read helpers follow the selected library after the first launch. */
+export function companionTestDataRoot(profile: string): string {
+  const locator = path.join(profile, 'companion-library.json');
+  if (!existsSync(locator)) return path.join(profile, 'companions');
+  const selection = JSON.parse(readFileSync(locator, 'utf8')) as { libraryPath: string };
+  return path.join(selection.libraryPath, '.worldlinebox', 'companions');
 }
 
 /** Locate a browse card by filename, independent of caption formatting. */
@@ -214,6 +268,10 @@ export function electronLaunchEnv(
   const { ELECTRON_RUN_AS_NODE: _ignored, ...clean } = process.env;
   void _ignored;
   const merged: NodeJS.ProcessEnv = { ...clean, ...extra };
+  if (merged.WORLDLINEBOX_E2E === '1' && typeof extra.WORLDLINEBOX_E2E_USER_DATA_PATH === 'string'
+    && extra.WORLDLINEBOX_E2E_CREATE_PARENT_PATH === undefined) {
+    merged.WORLDLINEBOX_E2E_CREATE_PARENT_PATH = path.dirname(path.resolve(extra.WORLDLINEBOX_E2E_USER_DATA_PATH));
+  }
   // Explicit GPU fixtures retain the same isolated E2E profile and process policy.
   // Software is deterministic correctness coverage; hardware measures the normal renderer.
   if (options.gpu) {

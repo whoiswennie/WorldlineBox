@@ -14,6 +14,8 @@ import { LibraryService } from '../../src/worker/library-service';
 import { closeSemanticIndexWorkerLibrary, executeSemanticIndexWorkerCommand, reconcileSemanticPermanentDeletes, reserveSemanticDeleteCleanup, semanticPermanentDeleteCandidates, withSemanticDeleteCleanupStatus } from '../../src/worker/handlers/semantic-index';
 import { SemanticIndexStore } from '../../src/worker/semantic-index-store';
 import { InteractiveScheduler } from '../../src/worker/interactive-scheduler';
+const { prepareVideo } = vi.hoisted(() => ({ prepareVideo: vi.fn() }));
+vi.mock('../../src/worker/embedding-video', () => ({ prepareEmbeddingVideoWindows: prepareVideo }));
 
 const require = createRequire(import.meta.url);
 interface TestDatabase {
@@ -26,6 +28,7 @@ const roots: string[] = [];
 const services: LibraryService[] = [];
 
 afterEach(async () => {
+  prepareVideo.mockReset();
   vi.unstubAllEnvs();
   await closeSemanticIndexWorkerLibrary();
   for (const service of services.splice(0)) service.closeAll();
@@ -137,24 +140,27 @@ describe('semantic SQLite Worker handler', () => {
     const videoTargets = await call({ type: 'semantic.index.targets', libraryId: library.libraryId,
       sessionGeneration: videoSessionGeneration, modalities: ['video', 'image', 'audio', 'text'],
       offset: 0, limit: 20 });
+    const videoRevision = (videoTargets as { targets: Array<{ sourceRevision: string }> }).targets[0]!.sourceRevision;
+    expect(videoRevision).toContain(`${revisionId}\nvideo:v1:`);
     expect(videoTargets).toMatchObject({ ok: true, type: 'semantic.index.targets',
-      targets: [{ assetId, sourceRevision: revisionId, kind: 'video', modality: 'video' }] });
+      targets: [{ assetId, sourceRevision: videoRevision, kind: 'video', modality: 'video' }] });
+    prepareVideo.mockResolvedValueOnce([{ bytesBase64: videoBytes.toString('base64'), audioBase64: 'synchronized-audio' }]);
     const preparedVideo = await call({ type: 'semantic.index.prepare', libraryId: library.libraryId,
-      sessionGeneration: videoSessionGeneration, assetId, sourceRevision: revisionId,
+      sessionGeneration: videoSessionGeneration, assetId, sourceRevision: videoRevision,
       kind: 'video', maxInputBytes: 1024 });
     expect(preparedVideo).toMatchObject({ ok: true, type: 'semantic.index.prepared', assetId,
-      sourceRevision: revisionId, kind: 'video', mimeType: 'video/mp4',
-      bytesBase64: videoBytes.toString('base64') });
+      sourceRevision: videoRevision, kind: 'video', videoWindows: [{ bytesBase64: videoBytes.toString('base64'), audioBase64: 'synchronized-audio' }] });
+    expect(prepareVideo).toHaveBeenCalledWith(expect.objectContaining({ sourcePath, signal: expect.any(AbortSignal) }));
     await expect(call({ type: 'semantic.index.prepare', libraryId: library.libraryId,
       sessionGeneration: videoSessionGeneration, assetId, sourceRevision: revisionId,
-      kind: 'video', maxInputBytes: 2 })).rejects.toThrow(/video.*size|size.*video/i);
+      kind: 'video', maxInputBytes: 1024 })).rejects.toThrow(/revision|source/i);
     const videoClaimToken = randomUUID();
     expect(await call({ type: 'semantic.index.job', action: 'claim', libraryId: library.libraryId,
-      sessionGeneration: videoSessionGeneration, assetId, sourceRevision: revisionId,
+      sessionGeneration: videoSessionGeneration, assetId, sourceRevision: videoRevision,
       claimToken: videoClaimToken })).toMatchObject({ ok: true, type: 'semantic.index.job-updated', updated: true });
     expect(await call({ type: 'semantic.index.write', libraryId: library.libraryId,
       sessionGeneration: videoSessionGeneration, profileKey: videoProfileKey,
-      vectors: [{ assetId, sourceRevision: revisionId, claimToken: videoClaimToken, vector: [1, 0, 0] }] }))
+      vectors: [{ assetId, sourceRevision: videoRevision, claimToken: videoClaimToken, vector: [1, 0, 0] }] }))
       .toMatchObject({ ok: true, type: 'semantic.index.written', accepted: [assetId], rejected: [] });
     expect(await call({ type: 'semantic.index.similar', libraryId: library.libraryId,
       sessionGeneration: videoSessionGeneration, queryId: randomUUID(), profileKey: videoProfileKey,

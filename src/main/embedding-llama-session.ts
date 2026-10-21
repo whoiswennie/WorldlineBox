@@ -1,4 +1,6 @@
 import type { ChildProcess } from "node:child_process";
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createServer } from "node:net";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
@@ -13,10 +15,34 @@ const MIME_TYPES = new Map([
   [".png", "image/png"],
   [".webp", "image/webp"],
 ]);
+const runtimeDeviceProbes = new Map<string, Promise<string>>();
+/** Prefer a discrete GPU with enough free memory; a small shared-memory device is not forced. */
+export function chooseEmbeddingGpuDevice(listing: string, minimumFreeMiB = 1536): string | null {
+  return listing.split(/\r?\n/u).flatMap(line => {
+    const match = /^\s*([A-Za-z]+\d+):\s*(.+)\s+\((\d+) MiB,\s*(\d+) MiB free\)/u.exec(line);
+    if (!match || Number(match[4]) < minimumFreeMiB) return [];
+    const name = match[2]!;
+    const preference = /NVIDIA|RTX|GeForce/iu.test(name) ? 100 : /Radeon|AMD/iu.test(name) ? 70 : /Arc/iu.test(name) ? 60 : 10;
+    return [{ id: match[1]!, preference, free: Number(match[4]) }];
+  }).sort((a, b) => b.preference - a.preference || b.free - a.free)[0]?.id ?? null;
+}
+async function vulkanDevice(executable: string): Promise<string> {
+  let probe = runtimeDeviceProbes.get(executable);
+  if (!probe) {
+    probe = promisify(execFile)(executable, ['--list-devices'], { windowsHide: true, timeout: 12_000, maxBuffer: 128 * 1024 })
+      .then(({ stdout, stderr }) => {
+        const device = chooseEmbeddingGpuDevice(`${stdout}\n${stderr}`);
+        if (!device) throw new Error('No supported GPU has enough free memory; use the CPU runtime.');
+        return device;
+      }).catch(error => { runtimeDeviceProbes.delete(executable); throw error; });
+    runtimeDeviceProbes.set(executable, probe);
+  }
+  return probe;
+}
 
 export type LlamaEmbeddingFiles = {
   corePath: string;
-  projectorPath: string;
+  projectorPath?: string;
 };
 
 export type LlamaEmbeddingMediaBinaries = {
@@ -26,9 +52,11 @@ export type LlamaEmbeddingMediaBinaries = {
 
 export type LlamaEmbeddingSession = {
   embedText: (text: string) => Promise<number[]>;
+  embedTexts?: (texts: readonly string[], signal?: AbortSignal) => Promise<number[][]>;
+  countTokens?: (text: string, signal?: AbortSignal) => Promise<number>;
   embedImage: (imagePath: string) => Promise<number[]>;
   embedImagePayload: (mimeType: string, bytesBase64: string) => Promise<number[]>;
-  embedVideoPayload: (bytesBase64: string) => Promise<number[]>;
+  embedVideoPayload: (bytesBase64: string, audioBase64?: string) => Promise<number[]>;
   embedAudio: (wavPath: string) => Promise<number[]>;
   embedAudioPayload: (bytesBase64: string) => Promise<number[]>;
   close: () => Promise<void>;
@@ -51,21 +79,16 @@ export function embeddingAudioRequestBody(wavBase64: string): {
 }
 
 /**
- * llama.cpp's typed video input carries the raw container bytes as base64.
- * This release's product index does not call it. Video semantics use the cover
- * image. Multi-frame / `input_video` may return later.
+ * Each video window carries real frames and, when present, its matching audio.
  */
-export function embeddingVideoRequestBody(videoBase64: string): {
-  model: string;
-  input: Array<{ content: Array<{ type: "input_video"; input_video: { data: string } }> }>;
-} {
+export function embeddingVideoRequestBody(videoBase64: string, audioBase64?: string) {
   return {
     model: "embeddinggemma-2",
     input: [{
       content: [{
         type: "input_video",
         input_video: { data: videoBase64 },
-      }],
+        }, ...(audioBase64 ? [{ type: 'input_audio', input_audio: { data: audioBase64, format: 'wav' } }] : [])],
     }],
   };
 }
@@ -123,22 +146,45 @@ async function postEmbedding(input: {
   body: unknown;
   timeoutMs: number;
 }): Promise<number[]> {
+  return (await postEmbeddings(input, 1))[0]!;
+}
+
+async function postEmbeddings(input: {
+  baseUrl: string;
+  body: unknown;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}, count: number): Promise<number[][]> {
   const response = await fetch(`${input.baseUrl}/v1/embeddings`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input.body),
-    signal: AbortSignal.timeout(input.timeoutMs),
+    signal: input.signal
+      ? AbortSignal.any([input.signal, AbortSignal.timeout(input.timeoutMs)])
+      : AbortSignal.timeout(input.timeoutMs),
   });
   if (!response.ok) {
     await response.body?.cancel();
     throw new Error(`llama-server returned HTTP ${response.status}.`);
   }
-  const payload = await response.json() as { data?: Array<{ embedding?: unknown }> };
-  const embedding = payload.data?.[0]?.embedding;
-  if (!Array.isArray(embedding) || embedding.some((value) => typeof value !== "number")) {
-    throw new Error("llama-server did not return an embedding.");
+  const payload = await response.json() as { data?: Array<{ index?: number; embedding?: unknown }> };
+  if (!Array.isArray(payload.data) || payload.data.length !== count) {
+    throw new Error('llama-server did not return all embeddings.');
   }
-  return embedding as number[];
+  const items = [...payload.data];
+  if (items.some(item => item.index !== undefined)) {
+    const indices = new Set(items.map(item => item.index));
+    if (indices.size !== count || items.some(item => !Number.isInteger(item.index) || item.index! < 0 || item.index! >= count)) {
+      throw new Error('llama-server returned invalid embedding indices.');
+    }
+    items.sort((a, b) => a.index! - b.index!);
+  }
+  return items.map(item => {
+    if (!Array.isArray(item.embedding) || item.embedding.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
+      throw new Error('llama-server did not return a finite embedding.');
+    }
+    return item.embedding as number[];
+  });
 }
 
 export async function startLlamaEmbeddingSession(input: {
@@ -146,6 +192,10 @@ export async function startLlamaEmbeddingSession(input: {
   files: LlamaEmbeddingFiles;
   mediaBinaries?: LlamaEmbeddingMediaBinaries;
   gpuLayers: number;
+  modelName?: string;
+  contextSize?: number;
+  pooling?: 'mean' | 'last' | 'cls';
+  threads?: number;
   startupTimeoutMs?: number;
   requestTimeoutMs?: number;
   signal?: AbortSignal;
@@ -157,26 +207,31 @@ export async function startLlamaEmbeddingSession(input: {
   const baseUrl = `http://127.0.0.1:${port}`;
   const startupTimeoutMs = input.startupTimeoutMs ?? 180_000;
   const requestTimeoutMs = input.requestTimeoutMs ?? 180_000;
+  const contextSize = input.contextSize ?? 8192;
+  if (!Number.isInteger(contextSize) || contextSize < 16 || contextSize > 131072) throw new RangeError('Invalid embedding context size.');
   const videoRuntimeDirectory = input.mediaBinaries
     && path.dirname(path.resolve(input.mediaBinaries.ffmpegPath))
       === path.dirname(path.resolve(input.mediaBinaries.ffprobePath))
     ? path.dirname(path.resolve(input.mediaBinaries.ffmpegPath))
     : null;
-  // `--video-fps` stays on the runtime so a later release can sample frames again.
-  // The product index does not send `input_video` in this version.
   const videoRuntimeArgs = videoRuntimeDirectory
     ? ["--video-fps", "1", "--video-ffmpeg-dir", videoRuntimeDirectory]
     : [];
+  const selectedDevice = input.gpuLayers > 0 && path.basename(path.dirname(input.executable)) === 'runtime-vulkan'
+    ? await vulkanDevice(input.executable) : null;
+  input.signal?.throwIfAborted();
   const child = spawnOwnedEmbeddingRuntime(input.executable, [
     "--model", input.files.corePath,
-    "--mmproj", input.files.projectorPath,
+    ...(input.files.projectorPath ? ['--mmproj', input.files.projectorPath] : []),
     "--embedding",
-    "--pooling", "mean",
-    "--ctx-size", "4096",
-    "--batch-size", "4096",
-    "--ubatch-size", "4096",
+    "--pooling", input.pooling ?? "mean",
+    "--ctx-size", String(contextSize),
+    "--batch-size", String(contextSize),
+    "--ubatch-size", String(contextSize),
     "--n-gpu-layers", String(input.gpuLayers),
-    input.gpuLayers > 0 ? "--mmproj-offload" : "--no-mmproj-offload",
+    ...(selectedDevice ? ['--device', selectedDevice, '--split-mode', 'none'] : []),
+    ...(input.files.projectorPath ? [input.gpuLayers > 0 ? "--mmproj-offload" : "--no-mmproj-offload"] : []),
+    ...(input.threads ? ['--threads', String(Math.max(1, Math.floor(input.threads)))] : []),
     ...videoRuntimeArgs,
     "--host", "127.0.0.1",
     "--port", String(port),
@@ -207,8 +262,23 @@ export async function startLlamaEmbeddingSession(input: {
     embedText: (text) => postEmbedding({
       baseUrl,
       timeoutMs: requestTimeoutMs,
-      body: { model: "embeddinggemma-2", input: [text] },
+      body: { model: input.modelName ?? "embeddinggemma-2", input: [text] },
     }),
+    embedTexts: (texts, signal) => texts.length === 0 ? Promise.resolve([]) : postEmbeddings({
+      baseUrl, timeoutMs: requestTimeoutMs, signal,
+      body: { model: input.modelName ?? 'embeddinggemma-2', input: [...texts] },
+    }, texts.length),
+    countTokens: async (text, signal) => {
+      const response = await fetch(`${baseUrl}/tokenize`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: text, add_special: true }),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]) : AbortSignal.timeout(requestTimeoutMs),
+      });
+      if (!response.ok) throw new Error(`llama-server tokenizer returned HTTP ${response.status}.`);
+      const payload = await response.json() as { tokens?: unknown };
+      if (!Array.isArray(payload.tokens)) throw new Error('llama-server did not return tokens.');
+      return payload.tokens.length;
+    },
     embedImage: async (imagePath) => {
       const fileInfo = await stat(imagePath);
       if (fileInfo.size > MAX_IMAGE_BYTES) throw new Error("Image is too large to embed.");
@@ -217,15 +287,16 @@ export async function startLlamaEmbeddingSession(input: {
       return embedImagePayload(mimeType, (await readFile(imagePath)).toString("base64"));
     },
     embedImagePayload: (mimeType, bytesBase64) => embedImagePayload(mimeType, bytesBase64),
-    embedVideoPayload: (bytesBase64) => {
+    embedVideoPayload: (bytesBase64, audioBase64) => {
       if (!videoRuntimeDirectory) throw new Error("Video runtime is unavailable: FFmpeg and ffprobe were not resolved by the application.");
       if (!bytesBase64 || bytesBase64.length > Math.ceil(MAX_VIDEO_BYTES * 4 / 3) + 8) {
         throw new Error("Video payload is too large or unsupported.");
       }
+      if (audioBase64 && audioBase64.length > Math.ceil(MAX_AUDIO_WAV_BYTES * 4 / 3) + 8) throw new Error('Video audio window is too large.');
       return postEmbedding({
         baseUrl,
         timeoutMs: requestTimeoutMs,
-        body: embeddingVideoRequestBody(bytesBase64),
+        body: embeddingVideoRequestBody(bytesBase64, audioBase64),
       });
     },
     embedAudio: async (wavPath) => {

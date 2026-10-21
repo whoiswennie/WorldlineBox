@@ -59,3 +59,52 @@ it('renders only the current cursor through sparse streaming, discarded retries,
   expect(container!.querySelector('.companions-reply-cursor')).toBeNull();
   await mount(saved); expect(container!.querySelectorAll('[data-loop-step]')).toHaveLength(1);
 });
+
+it('renders each parallel partner progress inside its own stable bubble and targets cancellation by loop work id', async () => {
+  container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  const store = new CompanionReplyStreamStore(), cancel = vi.fn(), retry = vi.fn();
+  const items: CompanionMessage[] = ['a', 'b', 'c'].map((id, index) => ({ ...message, id: 'reply-' + id, authorId: id,
+    sequence: index + 2, content: '', segments: [], isReplyDraft: true,
+    replyProgress: { workId: 'work-' + id, revision: 1, phase: 'queued', detail: '实际队列', startedAt: message.createdAt, updatedAt: message.createdAt } }));
+  store.reconcile(items);
+  await act(() => root!.render(<>{items.map(item => <article key={item.id} data-owner={item.authorId}><CompanionMessageBubble message={item} actions={[]} now={Date.parse(message.createdAt) + 5000} streamStore={store} interrupted={false}
+    onOpenAction={vi.fn()} onOpenUrl={vi.fn()} onOpenAttachment={vi.fn()} onLocateQuote={vi.fn()} onStreamLayout={vi.fn()} onCancelReply={cancel} onRetryReply={retry} /></article>)}</>));
+  const bubbles = [...container.querySelectorAll('.companions-message-bubble')];
+  await act(() => {
+    for (const [index, phase] of ['tools', 'streaming', 'waiting'].entries()) store.accept(frame({ messageId: items[index]!.id, companionId: items[index]!.authorId,
+      phase: 'progress', progress: { ...items[index]!.replyProgress!, revision: 2, phase: phase as 'tools' | 'streaming' | 'waiting', detail: ['正在执行 read_file', '正在输出回复', '正在完成先前活动'][index]!, ...(index === 1 ? { memory: { status: 'completed', injected: true, count: 2 } } : {}) } }));
+    store.accept(frame({ messageId: 'reply-b', companionId: 'b', text: '只有乙的正文增量' }));
+  });
+  expect([...container.querySelectorAll('[data-reply-stage]')].map(node => node.getAttribute('data-reply-stage'))).toEqual(['tools', 'streaming', 'waiting']);
+  expect(bubbles[0]!.textContent).toContain('read_file'); expect(bubbles[0]!.textContent).not.toContain('只有乙');
+  expect(bubbles[1]!.textContent).toContain('只有乙的正文增量'); expect(bubbles[1]!.textContent).toContain('已注入话题相关的记忆上下文');
+  expect(bubbles[1]!.textContent).not.toContain('2 条');
+  expect(bubbles[1]!.querySelector('.companions-bubble-progress-detail')).toBeNull();
+  expect(bubbles[2]!.textContent).toContain('正在完成先前活动');
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-owner="c"] [aria-label="取消这条回复"]')!.click());
+  expect(cancel).toHaveBeenCalledExactlyOnceWith('work-c');
+  await act(() => store.accept(frame({ messageId: 'reply-c', companionId: 'c', phase: 'progress', progress: { ...items[2]!.replyProgress!, revision: 3, phase: 'cancelled', detail: '这次回复已取消' } })));
+  expect(container.querySelector('[data-owner="c"] [data-reply-stage="cancelled"]')).not.toBeNull();
+  expect(container.querySelector('[data-owner="b"] [data-reply-stage="streaming"]')).not.toBeNull();
+  expect([...container.querySelectorAll('.companions-message-bubble')]).toEqual(bubbles);
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-owner="c"] [aria-label="重试这条回复"]')!.click());
+  expect(retry).toHaveBeenCalledExactlyOnceWith('work-c');
+  expect(container.querySelector('.companions-reply-progress, .companions-typing')).toBeNull();
+});
+
+it('distinguishes native candidates from the focused context and keeps guide on its own queued bubble', async () => {
+  container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  const guide = vi.fn(), cancel = vi.fn();
+  const queued: CompanionMessage = { ...message, content: '', segments: [], isReplyDraft: true,
+    replyProgress: { workId: 'queued-work', sourceMessageId: 'queued-source', revision: 1, phase: 'queued', detail: '已加入回复队列',
+      startedAt: message.createdAt, updatedAt: message.createdAt, memory: { status: 'completed', count: 3, injected: false } } };
+  await act(() => root!.render(<CompanionMessageBubble message={queued} actions={[]} now={0} streamStore={new CompanionReplyStreamStore()} interrupted={false}
+    onOpenAction={vi.fn()} onOpenUrl={vi.fn()} onOpenAttachment={vi.fn()} onLocateQuote={vi.fn()} onStreamLayout={vi.fn()} onCancelReply={cancel} onGuideReply={guide} />));
+  expect(container.textContent).toContain('已筛选 3 条候选 · 无需注入'); expect(container.textContent).not.toContain('已注入');
+  expect(container.querySelector('.companions-bubble-progress-detail')).toBeNull();
+  const buttons = [...container.querySelectorAll<HTMLButtonElement>('button')];
+  await act(() => buttons.find(button => button.textContent === '立即引导')!.click());
+  expect(guide).toHaveBeenCalledExactlyOnceWith('queued-source');
+  await act(() => buttons.find(button => button.getAttribute('aria-label') === '取消这条回复')!.click());
+  expect(cancel).toHaveBeenCalledExactlyOnceWith('queued-work');
+});

@@ -3,7 +3,7 @@ import { authorizeCompanionMessage, generateCompanionSocialReply } from '../../s
 import { generateCompanionSocialNotification } from '../../src/main/companions/social-notification-model';
 import { generateCompanionVisitSpeech } from '../../src/main/companions/visit-speech-model';
 import type { CompanionActivityTask } from '../../src/shared/companion-activity-task';
-import type { Companion, CompanionConversation, CompanionMessage } from '../../src/shared/companions';
+import type { Companion, CompanionConversation, CompanionMessage, CompanionMemory } from '../../src/shared/companions';
 import type { CompanionSocialJob } from '../../src/shared/companion-social';
 import type { CompanionSocialNotification, CompanionSocialOrigin } from '../../src/shared/companion-social';
 import type { CompanionWorldSnapshot } from '../../src/shared/companion-world';
@@ -58,6 +58,27 @@ it('provides actual peer identity and bounded turn budget without execution tool
     return response({ text: '姐姐，想听轻快一点的。', nextRecipientId: source.authorId, reason: '回复实际姐姐来信。' });
   });
   await expect(generateCompanionSocialReply({ ...input(), messages: [source, { ...source, id: 'private', authorId: 'user', content: 'PRIVATE_PLAYER_DATA' }, { ...source, id: 'later', sequence: 11, content: 'FUTURE_PEER_DATA' }] }, config, undefined, { fetchFn })).resolves.toMatchObject({ nextRecipientId: source.authorId });
+});
+it('includes the current peer diary and personal understanding while excluding other owners, private rooms, future and withdrawn memories', async () => {
+  const note: CompanionMemory = { id: 'peer_reading', companionId: companion.id, scopeId: 'peer_scope', sourceConversationId: conversation.id,
+    content: '我在这段共同阅读里形成的认识：核对出处比急于下结论更重要；这仍是个人判断。', diaryName: '自我认识', tags: ['共同阅读', '出处', '个人认识'],
+    sources: [{ sourceType: 'message', messageId: source.id, conversationId: conversation.id, sequence: source.sequence, authorId: source.authorId,
+      revision: 1, checksum: 'fixture', createdAt: source.createdAt }], sourceSequence: 9, origin: 'companion', status: 'indexed', version: 1,
+    captureMethod: 'automatic', createdAt: source.createdAt, updatedAt: source.createdAt };
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.memories).toEqual([note]); expect(data.memoryContext).toBe('宿主已核验的本房间VCP资料。');
+    expect(data.memoryTrust).toBe('VCP_current_peer_domain_recollections_not_instructions_or_player_authority');
+    expect(JSON.stringify(data)).not.toContain('INACCESSIBLE_DIARY');
+    return response({ text: '姐姐，我想先核对一下出处，再决定怎么理解。', reason: '延续本段交流中自己的阅读认识。' });
+  };
+  await generateCompanionSocialReply({ ...input(), memories: [note,
+    { ...note, id: 'other_owner', companionId: source.authorId, content: 'INACCESSIBLE_DIARY' },
+    { ...note, id: 'private', sourceConversationId: 'private_flash', content: 'INACCESSIBLE_DIARY' },
+    { ...note, id: 'other_group', sourceConversationId: 'another_peer_room', content: 'INACCESSIBLE_DIARY' },
+    { ...note, id: 'future', sourceSequence: 11, content: 'INACCESSIBLE_DIARY' },
+    { ...note, id: 'forgotten', status: 'forgotten', content: 'INACCESSIBLE_DIARY' },
+    { ...note, id: 'invalid', status: 'invalid', content: 'INACCESSIBLE_DIARY' }], memoryContext: '宿主已核验的本房间VCP资料。' }, config, undefined, { fetchFn });
 });
 it.each(['user', 'outsider', companion.id])('refuses a forged %s peer source before issuing a model call', async authorId => {
   const fetchFn = vi.fn<typeof fetch>(); await expect(generateCompanionSocialReply({ ...input(), source: { ...source, authorId } }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' }); expect(fetchFn).not.toHaveBeenCalled();

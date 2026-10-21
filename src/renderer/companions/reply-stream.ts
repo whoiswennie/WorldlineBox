@@ -1,8 +1,9 @@
+import type { CompanionReplyProgress } from '../../shared/companion-reply-progress';
 import type { CompanionMessage, CompanionReplyStreamEvent } from '../../shared/companions';
 
-export interface CompanionReplySnapshot { readonly overlays: readonly CompanionReplyStreamEvent[]; readonly discarded: ReadonlySet<string> }
+export interface CompanionReplySnapshot { readonly overlays: readonly CompanionReplyStreamEvent[]; readonly discarded: ReadonlySet<string>; readonly progress?: CompanionReplyProgress }
 const EMPTY_SNAPSHOT: CompanionReplySnapshot = { overlays: [], discarded: new Set() };
-interface Entry { frames: Map<number, CompanionReplyStreamEvent>; discarded: Set<string>; snapshot: CompanionReplySnapshot }
+interface Entry { frames: Map<number, CompanionReplyStreamEvent>; discarded: Set<string>; snapshot: CompanionReplySnapshot; progress?: CompanionReplyProgress }
 
 /** One IPC subscription, with notifications only for the bubble being changed. */
 export class CompanionReplyStreamStore {
@@ -21,7 +22,7 @@ export class CompanionReplyStreamStore {
     while (this.retired.size > 1024) this.retired.delete(this.retired.values().next().value!);
   }
   private publish(id: string, entry: Entry) {
-    entry.snapshot = { overlays: [...entry.frames.values()].sort((a, b) => a.step - b.step), discarded: new Set(entry.discarded) };
+    entry.snapshot = { overlays: [...entry.frames.values()].sort((a, b) => a.step - b.step), discarded: new Set(entry.discarded), progress: entry.progress };
     for (const listener of this.listeners.get(id) ?? []) listener();
     while (this.entries.size > 128) {
       const oldest = this.entries.keys().next().value!;
@@ -30,11 +31,15 @@ export class CompanionReplyStreamStore {
     }
   }
   accept(event: CompanionReplyStreamEvent) {
-    if (this.finished.has(event.messageId) || this.retired.has(event.messageId + '/' + event.attemptId)) return;
     const message = this.messages.get(event.messageId);
-    if (message && (message.conversationId !== event.conversationId || message.authorId !== event.companionId || message.replyToId !== event.sourceMessageId)) return;
+    if (message && (message.conversationId !== event.conversationId || message.authorId !== event.companionId || (message.replyToId ?? message.replyProgress?.sourceMessageId) !== undefined && (message.replyToId ?? message.replyProgress?.sourceMessageId) !== event.sourceMessageId)) return;
     let entry = this.entries.get(event.messageId);
     if (!entry) { entry = { frames: new Map(), discarded: new Set(), snapshot: EMPTY_SNAPSHOT }; this.entries.set(event.messageId, entry); }
+    if (event.phase === 'progress') {
+      if (!event.progress || event.progress.revision <= (entry.progress?.revision ?? message?.replyProgress?.revision ?? 0)) return;
+      entry.progress = event.progress; this.publish(event.messageId, entry); return;
+    }
+    if (this.finished.has(event.messageId) || this.retired.has(event.messageId + '/' + event.attemptId)) return;
     const previous = entry.frames.get(event.step);
     if (event.phase === 'discarded') {
       this.retire(event); entry.discarded.add(event.attemptId);
@@ -57,8 +62,11 @@ export class CompanionReplyStreamStore {
       // snapshot takes precedence even if its terminal IPC frame arrives late.
       const finished = message.isReplyDraft !== true && !message.replyDraft && !!message.segments?.length;
       if (finished) { this.finished.add(message.id); while (this.finished.size > 256) this.finished.delete(this.finished.values().next().value!); }
-      const entry = this.entries.get(message.id); if (!entry) continue;
+      let entry = this.entries.get(message.id);
+      if (!entry && message.replyProgress) { entry = { frames: new Map(), discarded: new Set(), snapshot: EMPTY_SNAPSHOT }; this.entries.set(message.id, entry); }
+      if (!entry) continue;
       let changed = false;
+      if (message.replyProgress && message.replyProgress.revision > (entry.progress?.revision ?? 0)) { entry.progress = message.replyProgress; changed = true; }
       for (const [step, frame] of entry.frames) {
         const committed = frame.phase === 'committed' && message.segments?.[step]?.text === frame.text && message.replyDraft?.step !== step;
         if (committed || finished) { entry.frames.delete(step); this.retire(frame); changed = true; }
@@ -70,8 +78,9 @@ export class CompanionReplyStreamStore {
 }
 
 export function projectCompanionReply(message: CompanionMessage, snapshot: CompanionReplySnapshot) {
+  const progress = snapshot.progress && snapshot.progress.revision > (message.replyProgress?.revision ?? 0) ? snapshot.progress : message.replyProgress;
   const segments = message.segments?.map(segment => ({ ...segment }));
-  if (!snapshot.overlays.length && (!message.replyDraft || !snapshot.discarded.has(message.replyDraft.attemptId))) return { segments, phase: undefined };
+  if (!snapshot.overlays.length && (!message.replyDraft || !snapshot.discarded.has(message.replyDraft.attemptId))) return { segments, phase: undefined, progress };
   const projected = segments ?? (message.content ? [{ text: message.content, actionIds: [] }] : []);
   if (message.replyDraft && snapshot.discarded.has(message.replyDraft.attemptId) && projected[message.replyDraft.step]) projected[message.replyDraft.step] = { ...projected[message.replyDraft.step]!, text: '' };
   for (const frame of snapshot.overlays) {
@@ -79,5 +88,5 @@ export function projectCompanionReply(message: CompanionMessage, snapshot: Compa
     projected[frame.step] = { ...projected[frame.step]!, text: frame.text };
   }
   const phase = snapshot.overlays.some(frame => frame.phase === 'streaming') ? 'streaming' : snapshot.overlays.some(frame => frame.phase === 'interrupted') ? 'interrupted' : undefined;
-  return { segments: projected, phase };
+  return { segments: projected, phase, progress };
 }

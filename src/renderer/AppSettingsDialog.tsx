@@ -304,14 +304,18 @@ export function AppSettingsDialog({
               />
             ) : null}
             {!showingPluginSettings && activeCategory === "ai" ? (
+              <>
               <AiSettingsPage
                 aiUiPrefs={aiUiPrefs}
                 aiConfigPanel={aiConfigPanel}
                 onToggleShowAiBadges={onToggleShowAiBadges}
               />
+              <SemanticSearchSettings servicesApi={embeddingServicesApi} section="models" />
+              </>
             ) : null}
             {!showingPluginSettings && activeCategory === "semantic-search" ? (
               <SemanticSearchSettings
+                section="search"
                 libraryId={libraryId}
                 servicesApi={embeddingServicesApi}
               />

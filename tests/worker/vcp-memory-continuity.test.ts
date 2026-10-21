@@ -1,0 +1,145 @@
+import { fork } from 'node:child_process';
+import { mkdtemp, readdir } from 'node:fs/promises';
+import { createServer, type ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CompanionsStore } from '../../src/companions/store';
+import { CompanionMemoryService } from '../../src/main/companions/memory-service';
+import { CompanionMemoryViewCache } from '../../src/main/companions/memory-view-cache';
+import { VcpMemoryClient, type VcpMemoryTransport } from '../../src/main/vcp-memory/client';
+import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
+
+vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+function launch(file: string): VcpMemoryTransport {
+  const environment: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+  delete environment.NODE_PATH;
+  const child = fork(file, [], { execPath: process.execPath, env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  return { postMessage: message => { child.send(message as object); }, on: child.on.bind(child), kill: () => { child.kill(); } };
+}
+async function fixture() {
+  const root = await mkdtemp(path.join(tmpdir(), 'worldline-vcp-continuity-'));
+  cleanups.push(async () => {
+    if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-vcp-continuity-')) throw new Error('Unsafe continuity cleanup.');
+    await removeOwnedDirectory(root);
+  });
+  const controls = { hangTimeline: false, timelineCalls: 0, focusCalls: 0, focusPrompts: [] as string[], disconnected: 0 };
+  const pending = new Set<ServerResponse>();
+  const server = createServer(async (request, response) => {
+    let text = ''; for await (const chunk of request) text += chunk.toString();
+    const body = JSON.parse(text);
+    response.setHeader('Content-Type', 'application/json');
+    if (request.url?.includes('/chat/')) {
+      if (JSON.stringify(body).includes('vcp_experience_journal')) {
+        response.end(JSON.stringify({ choices: [{ message: { content: '{"notes":[]}' } }] })); return;
+      }
+      if (body.messages?.length === 1 && body.messages[0]?.role === 'user') {
+        controls.focusCalls++; controls.focusPrompts.push(body.messages[0].content);
+        const content = `这是我获取的所有相关知识/记忆[[alpha borrowed the blue umbrella.${body.messages[0].content.includes('TIMELINE_ONLY_VALIDATED_MONTH') ? ' TIMELINE_ONLY_VALIDATED_MONTH.' : ''}]]`;
+        response.end(JSON.stringify({ choices: [{ message: { content } }] })); return;
+      }
+      controls.timelineCalls++;
+      if (controls.hangTimeline) {
+        pending.add(response);
+        response.once('close', () => { pending.delete(response); controls.disconnected++; });
+        return;
+      }
+      response.end(JSON.stringify({ choices: [{ message: { content: '2026-10-14: alpha borrowed the blue umbrella. TIMELINE_ONLY_VALIDATED_MONTH.\nTag: alpha, umbrella' } }] })); return;
+    }
+    response.end(JSON.stringify({ data: body.input.map((_input: string, index: number) => ({ index, embedding: [1, 0, 0, 0] })) }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanups.push(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }));
+  const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing test gateway.');
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), [
+    { id: 'alpha', name: 'Alpha', description: '测试伙伴', persona: '谨慎', model: '', avatar: 'sister', proactive: false, active: true },
+  ]);
+  cleanups.push(async () => { store.close(); });
+  const conversation = store.openPrivate('alpha');
+  const source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: 'alpha borrowed the blue umbrella.', replyDirective: 'none' });
+  const note = store.request({ type: 'memory.record', companionId: 'alpha', conversationId: conversation.id,
+    candidate: { content: source.content, tags: ['alpha', 'umbrella'], occurredAt: '2026-10-14T01:00:00Z',
+      sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+  const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
+  store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
+  const config = { apiFormat: 'openai_chat' as const, model: 'fixture-chat', apiKey: 'fixture-key', baseUrl: `${baseUrl}/chat` };
+  const cacheRoot = path.join(root, 'views');
+  const services: CompanionMemoryService[] = [];
+  cleanups.push(async () => { for (const service of services) await service.close(); });
+  function createService() {
+    const client = new VcpMemoryClient({ dataRoot: path.join(root, 'runtime'), vendorRoot: path.resolve('vendor/vcp-memory'),
+      workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), launch, maxOpenScopes: 4, requestTimeoutMs: 30000,
+      embedding: { baseUrl: `${baseUrl}/document`, queryBaseUrl: `${baseUrl}/query`, model: 'fixture', modelSignature: 'continuity-test', dimension: 4, apiKey: 'fixture-key' },
+      plugins: { chat: { baseUrl: `${baseUrl}/chat`, model: 'fixture-chat', apiKey: 'fixture-key' } } });
+    const changed = vi.fn(), report = vi.fn(), published = vi.fn();
+    const service = new CompanionMemoryService({ cacheRoot, request: async command => {
+      const response = store.request(command);
+      // This fixture runs the memory host alone; the app's separate world ticker is out of scope.
+      if (response.worldClock) response.worldClock.backlog = false;
+      return response;
+    },
+      configFor: async () => config, runtime: { get: async () => ({ client, profileKey: 'continuity-test' }), close: () => client.close() },
+      fetchFn: fetch, busy: () => false, changed, report,
+      onTimelineArtifacts: async (scope, artifacts, stillValid) => { published({ scope, artifacts, stillValid }); } });
+    services.push(service); return { service, client, changed, report, published };
+  }
+  return { root, store, note, conversation, cacheRoot, controls, pending, createService };
+}
+
+describe('original monthly VCP continuity behind the main memory service', () => {
+  it('generates and persists a real monthly timeline and summary, then reuses them after restart in passive RAG context', async () => {
+    const { createService, cacheRoot, controls, conversation } = await fixture();
+    const first = createService(); first.service.schedule(0);
+    const cache = new CompanionMemoryViewCache(cacheRoot);
+    const identity = `alpha:${conversation.id}`;
+    await vi.waitFor(async () => {
+      const artifacts = await cache.loadArtifacts(identity, 'continuity-test');
+      expect(artifacts?.agents[0]?.months[0], first.report.mock.calls.map(([error]) => String(error)).join('\n')).toMatchObject({ month: '2026-10', summary: expect.stringContaining('TIMELINE_ONLY_VALIDATED_MONTH') });
+    }, { timeout: 20000, interval: 50 });
+    expect(controls.timelineCalls).toBe(2);
+    expect(first.published).toHaveBeenCalledWith(expect.objectContaining({ scope: { companionId: 'alpha', conversationId: conversation.id }, artifacts: expect.objectContaining({ sourceRevision: expect.any(String) }) }));
+    expect(await first.published.mock.calls[0]![0].stillValid()).toBe(true);
+    await first.service.close();
+    const restarted = createService();
+    const replayed = await restarted.service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
+    expect(replayed.memoryContext?.text).toContain('umbrella');
+    expect(replayed.memoryContext?.text).toContain('TIMELINE_ONLY_VALIDATED_MONTH');
+    expect(replayed.memoryContext?.text).not.toContain('[[VCPTimeLine');
+    expect(controls.focusCalls).toBe(1);
+    expect(controls.focusPrompts[0]).toContain('TIMELINE_ONLY_VALIDATED_MONTH');
+    const timeline = vi.spyOn(restarted.client, 'timeline');
+    restarted.service.schedule(0);
+    await vi.waitFor(() => expect(restarted.changed).toHaveBeenCalled(), { timeout: 20000 });
+    expect(timeline).not.toHaveBeenCalled();
+    expect(controls.timelineCalls).toBe(2);
+  });
+
+  it('serves a foreground query during long generation and immediately cancels and purges on source retraction', async () => {
+    const { createService, cacheRoot, controls, conversation, store, note, pending } = await fixture();
+    const { service, client, report } = createService();
+    controls.hangTimeline = true; service.schedule(0);
+    await vi.waitFor(() => expect(pending.size, report.mock.calls.map(([error]) => String(error)).join('\n')).toBe(1), { timeout: 20000 });
+    const front = await service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
+    expect(front.memoryPage?.items[0]?.memory.id).toBe(note.id);
+    store.request({ type: 'memory.forget', companionId: 'alpha', conversationId: conversation.id, id: note.id });
+    const interrupted = vi.spyOn(client, 'interruptScope'), purged = vi.spyOn(client, 'purgeScope');
+    await service.invalidate('alpha', [note.scopeId]);
+    expect(interrupted).toHaveBeenCalled(); expect(purged).toHaveBeenCalled();
+    await vi.waitFor(() => expect(controls.disconnected).toBeGreaterThan(0));
+    expect((await readdir(cacheRoot)).some(file => file.endsWith('.timeline'))).toBe(false);
+    const recalled = await service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
+    expect(recalled.memoryPage?.items).toEqual([]);
+    expect(recalled.memoryContext).toBeUndefined();
+  });
+
+  it('closes while the original timeline model call is pending', async () => {
+    const { createService, controls, pending } = await fixture();
+    const { service, report } = createService(); controls.hangTimeline = true; service.schedule(0);
+    await vi.waitFor(() => expect(pending.size, report.mock.calls.map(([error]) => String(error)).join('\n')).toBe(1), { timeout: 20000 });
+    await service.close();
+    await vi.waitFor(() => expect(controls.disconnected).toBe(1));
+  });
+});

@@ -12,6 +12,7 @@ import type { DshLauncher } from '../../src/main/dsh/launcher';
 import { CompanionService } from '../../src/main/companions/service';
 import type { CompanionFileReader } from '../../src/main/companions/file-reader';
 import type { CompanionMemoryService } from '../../src/main/companions/memory-service';
+import type { CompanionMemoryTagService } from '../../src/main/companions/memory-tags-service';
 import type { BrowserWindow } from 'electron';
 import { COMPANION_REPLY_STREAM_CHANNEL, type CompanionReplyStreamEvent } from '../../src/shared/companions';
 
@@ -29,8 +30,13 @@ vi.mock('../../src/main/companions/storage-client', () => ({ CompanionStorageCli
   close = transport.close;
 } }));
 vi.mock('electron', () => ({
-  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => /memory_(?:extraction|query|maintenance|dream)/u.test(String(init?.body))
-    ? transport.memoryFetch(input, init) : /world_(?:decision|attention)/u.test(String(init?.body)) ? transport.worldFetch(input, init) : transport.fetch(input, init)) }, dialog: { showOpenDialog: vi.fn() }, ipcMain: { handle: vi.fn() },
+  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    let purpose: unknown;
+    try { purpose = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).purpose; } catch { /* Ordinary replies need no purpose. */ }
+    return purpose === 'vcp_experience_journal' || purpose === 'vcp_sleep_reflection'
+      ? transport.memoryFetch(input, init) : purpose === 'world_decision' || purpose === 'world_attention'
+        ? transport.worldFetch(input, init) : transport.fetch(input, init);
+  }) }, dialog: { showOpenDialog: vi.fn() }, ipcMain: { handle: vi.fn() },
   protocol: { handle: vi.fn() }, shell: { showItemInFolder: vi.fn() },
   safeStorage: { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value),
     decryptString: (value: Buffer) => value.toString() },
@@ -55,7 +61,7 @@ beforeEach(() => {
       confidence: .95, evidence: [data.source.content], reason: '测试中实际通知的明确语义分类。' });
     return modelResponseForJson({ action: null, reason: '当前没有需要打扰的世界事件。', appraisals: [] });
   });
-  transport.memoryFetch.mockImplementation(async (_url, init) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(/memory_dream/u.test(String(init?.body)) ? { candidates: [], dream: null } : { candidates: [] }) } }] }),
+  transport.memoryFetch.mockImplementation(async (_url, init) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(/vcp_sleep_reflection/u.test(String(init?.body)) ? { notes: [], dream: null } : { notes: [] }) } }] }),
     { headers: { 'Content-Type': 'application/json' } }));
   transport.fetch.mockImplementation(async () => modelResponse('这次执行未成功，详情保存在行动卡中。'));
 });
@@ -159,6 +165,29 @@ async function finishReset(store: CompanionsStore, id = 'sister') {
   }
   throw new Error('Reset did not finish within the bounded fixture batches.');
 }
+
+it.each(['generated', 'explicit'] as const)('blocks %s TagMaster metadata at the same persistent semantic topic gate as ordinary diary writes', async mode => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+  const scope = { companionId: 'sister', conversationId: f.conversation.id };
+  f.store.request({ type: 'memory.forget', ...scope, tag: '家庭住址', persistent: true });
+  const note = f.store.saveMemory({ ...scope, content: '我刚搬到向阳路八号三楼。' + (mode === 'explicit' ? '\nTag: 搬家地点' : '') });
+  let checks = 0;
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); let data: { purpose?: string; prohibitions?: Array<{ id: string; topics: string[] }>; proposedDiary?: { tags: string[] } } | undefined;
+    try { data = JSON.parse(body.messages[1].content); } catch { /* Original TagMaster receives the unchanged document text. */ }
+    if (data?.purpose === 'vcp_memory_prohibition_check') {
+      checks++; expect(data.proposedDiary?.tags).toEqual(['搬家地点']); expect(data.prohibitions?.[0]?.topics).toEqual(['家庭住址']);
+      return modelResponseForJson({ allowed: false, matchedPolicyIds: [data.prohibitions![0]!.id] });
+    }
+    expect(mode).toBe('generated'); expect(body.messages[0].content).toContain('Knowledge Graph Architect');
+    return new Response(JSON.stringify({ choices: [{ message: { content: '[[Tag: 搬家地点]]' } }] }));
+  });
+  await (f.service as unknown as { memoryTags: CompanionMemoryTagService }).memoryTags.tick();
+  expect(checks).toBe(1);
+  expect(f.store.request({ type: 'memory.library.read', companionId: 'sister', id: note.id }).memoryRead?.memory).toMatchObject({ version: 1, tags: [] });
+  expect(transport.request.mock.calls.some(([command]) => command.type === 'memory.tags.complete')).toBe(false);
+  expect(f.store.request({ type: 'memory.tags.status', companionId: 'sister', noteId: note.id }).memoryTagStatus?.note?.state).toBe('failed');
+});
 
 describe('CompanionService durable factory reset', () => {
   it('drains a late native file commit before acknowledging the reset cleanup boundary', async () => {
@@ -475,7 +504,7 @@ describe('CompanionService actual streaming with SQLite and renderer events', ()
     expect(f.store.request({ type: 'message.search', conversationId: f.conversation.id, query: '流式标记' }).messages).toEqual([]);
     const jobIds: string[] = [];
     for (let i = 0; i < 10; i++) { const job = f.store.request({ type: 'memory.jobs.claim' }).memoryJob; if (!job) break; jobIds.push(...job.sourceMessageIds);
-      f.store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken!, candidates: [] }); }
+      f.store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken!, notes: [] }); }
     expect(jobIds).not.toContain(event.messageId);
     stream.send({ content: '现在已经完整回答。' }, 'stop');
     await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
@@ -517,10 +546,11 @@ describe('CompanionService actual streaming with SQLite and renderer events', ()
     first.send({ content: '旧的未完成草稿' }); await vi.advanceTimersByTimeAsync(800);
     const old = replyEvents().find(event => event.text === '旧的未完成草稿')!;
     expect(f.store.getMessage(old.messageId).replyDraft?.text).toBe('旧的未完成草稿');
-    await f.service.handle({ type: 'reply.cancel', conversationId: f.conversation.id });
-    await vi.waitFor(() => expect(f.store.request({ type: 'reply.checkpoint.get', conversationId: f.conversation.id }).replyRecovery?.status).toBe('interrupted'), { timeout: 5000 });
+    const workId = f.store.request({ type: 'work.list', sourceMessageId: source.id }).works![0]!.id;
+    await f.service.handle({ type: 'reply.cancel', conversationId: f.conversation.id, workId });
+    await vi.waitFor(() => expect(f.store.getMessage(old.messageId).replyProgress?.phase).toBe('cancelled'), { timeout: 5000 });
     expect(first.cancel).toHaveBeenCalled();
-    await f.service.handle({ type: 'reply.resume', conversationId: f.conversation.id });
+    await f.service.handle({ type: 'reply.retry', conversationId: f.conversation.id, workId });
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 5000 });
     const restarted = replyEvents().findLast(event => event.phase === 'streaming' && event.text === '')!;
     expect(restarted.messageId).toBe(old.messageId); expect(restarted.attemptId).not.toBe(old.attemptId);
@@ -1445,8 +1475,9 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     pending[0]!.resolve(modelResponse('这个旧决定必须被重新考虑。'));
     await vi.waitFor(() => expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(item => item.content === '我已按补充改成蓝色。')).toBe(true), { timeout: 5000 });
     const bubbles = f.store.messages({ conversationId: f.conversation.id }).messages.filter(item => item.authorId === 'sister' && item.kind === 'text');
-    expect(bubbles).toHaveLength(5);
-    expect(bubbles.some(item => item.replyToId === queued.message!.id)).toBe(false);
+    expect(bubbles).toHaveLength(6);
+    expect(bubbles.filter(item => item.replyProgress?.phase !== 'cancelled')).toHaveLength(5);
+    expect(bubbles.find(item => item.replyToId === queued.message!.id)).toMatchObject({ content: '', replyProgress: { phase: 'cancelled' } });
     expect(bubbles.find(item => item.replyToId === sources[0])?.content).not.toContain('旧决定');
     expect((await f.service.handle({ type: 'state' })).state?.queue?.some(item => item.sourceMessageId === queued.message!.id)).toBe(false);
   });
@@ -1592,7 +1623,7 @@ describe('CompanionService executor feedback evidence boundary', () => {
     const scope = { companionId: 'sister', conversationId: f.conversation.id };
     const history = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我喜欢REFERENCE_MEMORY_SECRET。', replyDirective: 'none' });
     const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '请反馈这份只读检查的实际结果。', replyDirective: 'none' });
-    const memory = f.store.request({ type: 'memory.record', ...scope, beforeSequence: source.sequence, candidate: { kind: 'preference', subject: 'user', factKey: 'favorite_reference', value: 'REFERENCE_MEMORY_SECRET', content: history.content, sourceMessageIds: [history.id], evidence: [{ sourceMessageId: history.id, quote: history.content }] } }).memories![0]!;
+    const memory = f.store.request({ type: 'memory.record', ...scope, beforeSequence: source.sequence, candidate: { tags: ['用户偏好', 'REFERENCE_MEMORY_SECRET'], content: history.content, sourceMessageIds: [history.id], evidence: [{ sourceMessageId: history.id, quote: history.content }] } }).memories![0]!;
     // Only semantic retrieval selection is fixed; evidence validity remains the real SQLite implementation.
     const serviceMemory = (f.service as unknown as { memory: CompanionMemoryService }).memory;
     vi.spyOn(serviceMemory, 'recall').mockImplementation(async () => ({

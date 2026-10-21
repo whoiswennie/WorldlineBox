@@ -18,7 +18,7 @@ function fixture() {
   for (const rule of store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!) {
     store.request({ type: 'life-rule.update', companionId: 'alice', id: rule.id, expectedRevision: rule.revision, rule: { ...draft(rule), enabled: false } });
   }
-  const rule = store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '问候玩家', action: 'message', targetId: 'user', startMinute: 14 * 60, endMinute: 14 * 60 + 1, probability: 1 } }).lifeRule!;
+  const rule = store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '问候玩家', action: 'message', targetId: 'user', startMinute: 14 * 60, endMinute: 14 * 60 + 2, probability: 1, checkIntervalMinutes: 1 } }).lifeRule!;
   store.request({ type: 'life-event.claim' });
   return { store, file, seeds, rule };
 }
@@ -26,7 +26,7 @@ function draft(rule: CompanionLifeRule) {
   return { title: rule.title, startMinute: rule.startMinute, endMinute: rule.endMinute, probability: rule.probability, action: rule.action, targetId: rule.targetId, durationMinutes: rule.durationMinutes };
 }
 it('persists hazard, sends one formal spontaneous player message, and never rerolls on reopening', () => {
-  const f = fixture(); vi.setSystemTime(Date.now() + 800);
+  const f = fixture(); vi.setSystemTime(Date.now() + 900);
   const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
   expect(claimed).toMatchObject({ ruleId: f.rule.id, status: 'running', targetId: 'user' });
   expect(claimed.hazard).toBeGreaterThan(claimed.threshold);
@@ -40,7 +40,7 @@ it('persists hazard, sends one formal spontaneous player message, and never rero
   expect(reopened.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(occ => occ.id === claimed.id)?.status).toBe('done');
 });
 it('removes a rule from management while retaining its occurrence and rejects a cancelled late result', () => {
-  const f = fixture(); vi.setSystemTime(Date.now() + 800);
+  const f = fixture(); vi.setSystemTime(Date.now() + 900);
   const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
   f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: f.rule.id, expectedRevision: f.rule.revision });
   const page = f.store.request({ type: 'life-rule.list', companionId: 'alice' });

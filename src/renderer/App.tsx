@@ -2814,6 +2814,11 @@ export function AssetManager({
         api.embeddingListServices(),
       ]);
       if (cancelled) return;
+      const global = await api.embeddingGetGlobalSettings();
+      if (cancelled) return;
+      if (global.ok && global.value?.selectionId) {
+        saveSemanticSearchPreferences({ ...loadSemanticSearchPreferences(), modelId: global.value.selectionId });
+      }
       if (binding.ok) setEmbeddingBinding(binding.value);
       if (status.ok) setEmbeddingInstall(status.value);
       if (services.ok && services.value) setEmbeddingServices(services.value);

@@ -11,7 +11,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, spawn: spawnMock };
 });
 
-import { startLlamaEmbeddingSession } from '../../src/main/embedding-llama-session';
+import { startLlamaEmbeddingSession, chooseEmbeddingGpuDevice, embeddingVideoRequestBody } from '../../src/main/embedding-llama-session';
 
 class FakeChild extends EventEmitter {
   exitCode: number | null = null;
@@ -67,9 +67,9 @@ describe('llama.cpp native video embedding', () => {
       '--mmproj', projectorPath,
       '--embedding',
       '--pooling', 'mean',
-      '--ctx-size', '4096',
-      '--batch-size', '4096',
-      '--ubatch-size', '4096',
+      '--ctx-size', '8192',
+      '--batch-size', '8192',
+      '--ubatch-size', '8192',
       '--n-gpu-layers', '99',
       '--mmproj-offload',
       '--video-fps', '1',
@@ -87,6 +87,19 @@ describe('llama.cpp native video embedding', () => {
     await session.close();
   });
 
+  it('prefers an available discrete GPU and refuses insufficient device memory', () => {
+    expect(chooseEmbeddingGpuDevice('  Vulkan0: Intel(R) UHD (16000 MiB, 14000 MiB free)\n  Vulkan1: NVIDIA RTX 5070 (8000 MiB, 7000 MiB free)')).toBe('Vulkan1');
+    expect(chooseEmbeddingGpuDevice('  Vulkan0: Intel(R) UHD (16000 MiB, 14000 MiB free)')).toBe('Vulkan0');
+    expect(chooseEmbeddingGpuDevice('  Vulkan0: Intel(R) UHD (1000 MiB, 500 MiB free)')).toBeNull();
+    expect(chooseEmbeddingGpuDevice('Available devices:')).toBeNull();
+  });
+
+  it('embeds a video window together with its real synchronized audio track', () => {
+    expect(embeddingVideoRequestBody('frames', 'actual-audio')).toEqual({ model: 'embeddinggemma-2', input: [{ content: [
+      { type: 'input_video', input_video: { data: 'frames' } }, { type: 'input_audio', input_audio: { data: 'actual-audio', format: 'wav' } },
+    ] }] });
+  });
+
   it('fails video input clearly when the application has no resolved media runtime', async () => {
     const child = new FakeChild();
     spawnMock.mockReturnValue(child);
@@ -99,6 +112,26 @@ describe('llama.cpp native video embedding', () => {
     });
     expect(() => session.embedVideoPayload(Buffer.from('mp4').toString('base64')))
       .toThrow(/video runtime is unavailable/i);
+    await session.close();
+  });
+
+  it('runs a text encoder on CPU without a projector and preserves batch order', async () => {
+    const child = new FakeChild();
+    spawnMock.mockReturnValue(child);
+    const bodies: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, input?: RequestInit) => {
+      if (String(url).endsWith('/health')) return new Response(null, { status: 200 });
+      bodies.push(JSON.parse(String(input?.body)));
+      return new Response(JSON.stringify({ data: [{ index: 1, embedding: [0, 1] }, { index: 0, embedding: [1, 0] }] }), { status: 200 });
+    }));
+    const session = await startLlamaEmbeddingSession({ executable: path.join(tmpdir(), 'text-runtime', 'llama-server'),
+      files: { corePath: 'text.gguf' }, modelName: 'text-model', contextSize: 512, pooling: 'last', gpuLayers: 0, threads: 4 });
+    expect(await session.embedTexts!(['a', 'b'])).toEqual([[1, 0], [0, 1]]);
+    expect(bodies).toEqual([{ model: 'text-model', input: ['a', 'b'] }]);
+    const launch = JSON.parse(child.stdin.write.mock.calls[0]![0]!);
+    expect(launch.args).not.toContain('--mmproj');
+    expect(launch.args).not.toContain('--mmproj-offload');
+    expect(launch.args).toEqual(expect.arrayContaining(['--pooling', 'last', '--n-gpu-layers', '0', '--threads', '4']));
     await session.close();
   });
 });
