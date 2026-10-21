@@ -46,8 +46,8 @@ test('factory reset restores the built-in, stops an old stream, preserves other 
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const launch = async () => {
-    const app = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
-    const page = await app.firstWindow(), window = await app.browserWindow(page); await window.evaluate(value => { value.unmaximize(); value.setSize(1360, 1000); value.setOpacity(0); value.setFocusable(false); value.webContents.setBackgroundThrottling(false); value.hide(); });
+    const app = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE ? [] : [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_HIDE_WINDOW: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
+    const page = await app.firstWindow(), window = await app.browserWindow(page); await window.evaluate(value => { value.unmaximize(); value.setSize(1360, 1000); value.setOpacity(0); value.setFocusable(false); value.webContents.setBackgroundThrottling(false); value.showInactive(); });
     await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page'); return { app, page };
   };
   try {
@@ -59,6 +59,7 @@ test('factory reset restores the built-in, stops an old stream, preserves other 
     const clock = (offset: number) => String((Math.floor(world.clock.hour) + offset + 24) % 24).padStart(2, '0') + ':00';
     const rooms = new Map<string, string>();
     for (const companionId of ['deepseek-sister', 'deepseek-flash']) {
+      await request(page, { type: 'companion.set-active', id: companionId, active: true });
       const room = (await request(page, { type: 'conversation.open', companionId })).conversation!; rooms.set(companionId, room.id);
       const routine = (await request(page, { type: 'routine.get', companionId, conversationId: room.id })).routine!;
       await request(page, { type: 'routine.configure', companionId, conversationId: room.id, expectedRevision: routine.revision, patch: { timeZone: world.settings.timeZone, wakeAt: clock(-8), sleepAt: clock(8), meals: [], habits: [] } });
@@ -100,7 +101,11 @@ test('factory reset restores the built-in, stops an old stream, preserves other 
     expect(state.conversations.find(room => room.id === group.id)!.memberIds).toEqual(['deepseek-flash']);
     expect((await request(page, { type: 'messages', conversationId: otherRoom })).messages!.some(message => message.id === other.id)).toBe(true);
     expect(state.playerProfile).toMatchObject({ name: '测试玩家', avatarAttachmentId: image.id });
-    expect(await page.evaluate(id => fetch('worldlinebox-companion://attachment/' + id).then(value => value.status), image.id)).toBe(200);
+    const attachment = await application.evaluate(async ({ net }, id) => {
+      const response = await net.fetch('worldlinebox-companion://attachment/' + id);
+      return { status: response.status, bytes: (await response.arrayBuffer()).byteLength };
+    }, image.id);
+    expect(attachment.status).toBe(200); expect(attachment.bytes).toBeGreaterThan(0);
     expect(existsSync(originalFile)).toBe(true); expect(JSON.parse(readFileSync(path.join(profile, 'companions/llm-keys.enc.json'), 'utf8'))[sister.id]).toBeUndefined();
     const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); await page.screenshot({ path: path.join(artifacts, 'verified-companion-reset.png'), animations: 'disabled' });
     await dialog.getByRole('button', { name: '完成', exact: true }).click();

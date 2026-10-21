@@ -60,7 +60,7 @@ export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('settings.save'), settings: captureToolsSettingsSchema }),
   z.strictObject({ type: z.literal('shortcuts.capture'), active: z.boolean() }),
   z.strictObject({ type: z.literal('open'), task: captureToolTaskSchema, source: z.literal('browser').optional() }), z.strictObject({ type: z.literal('close') }),
-  z.strictObject({ type: z.literal('sources.list') }),
+  z.strictObject({ type: z.literal('sources.list'), thumbnails: z.boolean().optional() }),
   z.strictObject({ type: z.literal('screenshot.capture'), sourceId: z.string().max(255).optional() }),
   z.strictObject({ type: z.literal('long.begin'), rect: z.strictObject({ x: z.number().int().nonnegative().max(32768), y: z.number().int().nonnegative().max(32768), width: z.number().int().positive().max(32768), height: z.number().int().positive().max(32768) }), sourceId: z.string().max(255).optional() }),
   z.strictObject({ type: z.literal('long.append') }), z.strictObject({ type: z.literal('long.finish') }), z.strictObject({ type: z.literal('long.cancel') }),

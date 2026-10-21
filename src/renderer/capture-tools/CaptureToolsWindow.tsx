@@ -9,7 +9,6 @@ import { SelectionAssistant } from './SelectionAssistant';
 import { getCaptureToolsApi } from './CaptureToolsSettingsPage';
 import { useCaptureWords } from './messages';
 import './capture-tools.css';
-import { afterStartupPaint } from '../startup-lifecycle';
 
 export function CaptureToolsWindow({ api = getCaptureToolsApi() }: { api?: WorldlineBoxCaptureToolsApi }) {
   const words = useCaptureWords();
@@ -26,14 +25,16 @@ export function CaptureToolsWindow({ api = getCaptureToolsApi() }: { api?: World
   const hasContext = state !== undefined;
   useEffect(() => {
     if (!api || surfaceReported.current || !hasContext && !error) return;
-    let current = true; let cancelPaint: (() => void) | undefined;
+    let current = true;
     const image = document.querySelector<HTMLImageElement>('.desktop-screenshot-surface');
     // Decode the displayed bitmap, rather than showing a loading card over the
     // desktop and swapping it for the captured screen a moment later.
     void (image?.decode().catch(() => undefined) ?? Promise.resolve()).then(() => {
-      if (current) cancelPaint = afterStartupPaint(() => { surfaceReported.current = true; void api.request({ type: 'surface.ready' }).catch(() => undefined); });
+      // Main paints this committed surface with capturePage(stayHidden) before
+      // revealing it. Waiting for hidden animation frames adds seconds here.
+      if (current) { surfaceReported.current = true; void api.request({ type: 'surface.ready' }).catch(() => undefined); }
     });
-    return () => { current = false; cancelPaint?.(); };
+    return () => { current = false; };
   }, [api, hasContext, source, error]);
   useEffect(() => {
     if (!api) return;

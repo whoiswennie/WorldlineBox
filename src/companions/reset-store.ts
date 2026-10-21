@@ -5,6 +5,7 @@ import type { CompanionReset } from '../shared/companion-reset';
 import type { Companion } from '../shared/companions';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand } from '../shared/companion-storage';
+import { companionSearchTokens } from '../shared/companion-search';
 
 type Row = Record<string, string | number | null>;
 type Progress = { step: number; memoryStep: number; roomAfter: string; messageAfter: number; refs: number; taskIds: string[] };
@@ -27,6 +28,7 @@ export class CompanionResetStore {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_reset_jobs(companion_id TEXT PRIMARY KEY,id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,phase TEXT NOT NULL,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS companion_reset_boundaries(companion_id TEXT PRIMARY KEY,through_sequence INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS companion_reset_rooms(job_id TEXT NOT NULL,conversation_id TEXT NOT NULL,PRIMARY KEY(job_id,conversation_id));
+      CREATE TABLE IF NOT EXISTS companion_reset_social_rooms(job_id TEXT NOT NULL,conversation_id TEXT NOT NULL,PRIMARY KEY(job_id,conversation_id));
       CREATE TABLE IF NOT EXISTS companion_reset_messages(job_id TEXT NOT NULL,message_id TEXT NOT NULL,sequence INTEGER NOT NULL,PRIMARY KEY(job_id,message_id));
       CREATE INDEX IF NOT EXISTS companion_reset_message_id ON companion_reset_messages(message_id);
       CREATE TABLE IF NOT EXISTS companion_reset_memories(job_id TEXT NOT NULL,memory_id TEXT NOT NULL,PRIMARY KEY(job_id,memory_id));
@@ -139,6 +141,11 @@ export class CompanionResetStore {
     this.db.prepare('DELETE FROM memory_search WHERE rowid IN(SELECT ordinal FROM memory_records WHERE memory_id=? AND companion_id!=?)').run(memoryId, job.companionId);
   }
   private removeRows(table: string, predicate: string, args: unknown[], limit: number, before?: (items: Row[]) => void): number {
+    if (table === 'companion_social_visit_contacts') {
+      const found = rows(this.db.prepare(`SELECT guest_id,host_id FROM companion_social_visit_contacts WHERE ${predicate} LIMIT ?`).all(...args, limit));
+      for (const item of found) this.db.prepare('DELETE FROM companion_social_visit_contacts WHERE guest_id=? AND host_id=?').run(item.guest_id, item.host_id);
+      return found.length;
+    }
     const found = rows(this.db.prepare(`SELECT rowid AS reset_rowid,* FROM ${ident(table)} WHERE ${predicate} LIMIT ?`).all(...args, limit));
     if (!found.length) return 0; before?.(found);
     const remove = this.db.prepare(`DELETE FROM ${ident(table)} WHERE rowid=?`); for (const item of found) remove.run(item.reset_rowid); return found.length;
@@ -163,6 +170,13 @@ export class CompanionResetStore {
       ['companion_world_perceptions', 'companion_id=?', [id]],
       ['companion_activity_tasks', 'companion_id=?', [id]],
       ['companion_world_suspended', 'companion_id=?', [id]],
+      ['companion_social_jobs', 'conversation_id IN(SELECT conversation_id FROM companion_reset_social_rooms WHERE job_id=?)', [job.id]],
+      ['companion_social_outbox', 'conversation_id IN(SELECT conversation_id FROM companion_reset_social_rooms WHERE job_id=?)', [job.id]],
+      ['companion_social_communication', "EXISTS(SELECT 1 FROM json_each(data,'$.recipientIds') WHERE value=?)", [id]],
+      ['companion_social_visit_contacts', 'guest_id=? OR host_id=?', [id, id]],
+      ['companion_social_delegations', "EXISTS(SELECT 1 FROM json_each(data,'$.recipientIds') WHERE value=?)", [id]],
+      ['companion_social_chains', "id IN(SELECT chain_id FROM companion_social_chain_origins WHERE json_extract(data,'$.ownerId')=? OR json_extract(data,'$.initiatorId')=?)", [id, id]],
+      ['companion_social_chain_origins', "json_extract(data,'$.ownerId')=? OR json_extract(data,'$.initiatorId')=?", [id, id]],
       ...['actorId', 'targetId', 'privateOwner'].map(field => ['companion_world_events', `json_extract(data,'$.${field}')=?`, [id]] as [string, string, unknown[]]),
     ];
   }
@@ -190,10 +204,35 @@ export class CompanionResetStore {
     const found = rows(this.db.prepare('SELECT c.id,c.kind,(SELECT COUNT(*) FROM conversation_members x WHERE x.conversation_id=c.id) AS members,EXISTS(SELECT 1 FROM companion_social_conversations s WHERE s.id=c.id) AS peer FROM conversation_members m JOIN conversations c ON c.id=m.conversation_id WHERE m.companion_id=? AND c.id>? ORDER BY c.id LIMIT ?').all(job.companionId, job.progress.roomAfter, limit));
     for (const item of found) {
       if (item.kind === 'private' || Number(item.members) === 1 || item.peer && Number(item.members) === 2) this.db.prepare('INSERT OR IGNORE INTO companion_reset_rooms(job_id,conversation_id) VALUES(?,?)').run(job.id, item.id);
-      // Peer-room identity is its immutable member set. Preserve that shared
-      // room and isolate this owner's past through the reset evidence boundary.
-      else if (!item.peer) this.db.prepare('DELETE FROM conversation_members WHERE conversation_id=? AND companion_id=?').run(item.id, job.companionId);
+      if (item.peer) {
+        this.db.prepare('INSERT OR IGNORE INTO companion_reset_social_rooms(job_id,conversation_id) VALUES(?,?)').run(job.id, item.id);
+        // Empty histories must not leave a known social relationship behind.
+        // Other participants retain their group messages, with this owner out.
+        // Release the old immutable member key so a future introduction starts
+        // a genuinely fresh room rather than reviving the pre-reset identity.
+        this.db.prepare('UPDATE companion_social_conversations SET member_key=? WHERE id=?').run('reset/' + job.id + '/' + item.id, item.id);
+      }
+      if (item.kind !== 'private') this.db.prepare('DELETE FROM conversation_members WHERE conversation_id=? AND companion_id=?').run(item.id, job.companionId);
       job.progress.roomAfter = String(item.id);
+    }
+    return found.length;
+  }
+  private socialRooms(job: Job, limit: number): number {
+    const found = rows(this.db.prepare('SELECT conversation_id FROM companion_reset_social_rooms WHERE job_id=? LIMIT ?').all(job.id, Math.min(limit, 32)));
+    for (const item of found) {
+      const members = rows(this.db.prepare("SELECT p.id,json_extract(p.data,'$.name') AS name FROM conversation_members m JOIN companions p ON p.id=m.companion_id WHERE m.conversation_id=? ORDER BY p.id").all(item.conversation_id));
+      this.db.prepare('DELETE FROM companion_social_room_search WHERE id=?').run(item.conversation_id);
+      if (members.length < 2) {
+        this.db.prepare('DELETE FROM companion_social_conversations WHERE id=?').run(item.conversation_id);
+        this.db.prepare('DELETE FROM conversation_members WHERE conversation_id=?').run(item.conversation_id);
+        this.db.prepare('DELETE FROM metadata WHERE key=?').run('world-room/' + item.conversation_id);
+        this.db.prepare('UPDATE conversations SET dissolved_at=?,hidden_at=? WHERE id=?').run(stamp(), stamp(), item.conversation_id);
+      } else {
+        const title = members.map(member => member.name).join('、').slice(0, 100);
+        this.db.prepare('UPDATE conversations SET title=? WHERE id=?').run(title, item.conversation_id);
+        this.db.prepare('INSERT INTO companion_social_room_search(id,title) VALUES(?,?)').run(item.conversation_id, companionSearchTokens(title));
+      }
+      this.db.prepare('DELETE FROM companion_reset_social_rooms WHERE job_id=? AND conversation_id=?').run(job.id, item.conversation_id);
     }
     return found.length;
   }
@@ -324,7 +363,8 @@ export class CompanionResetStore {
           if (!step) job.phase = 'metadata';
           else { count = this.removeRows(step[0], step[1], step[2], limit, step[3]); if (!count) job.progress.step++; }
         } else if (job.phase === 'metadata') { count = this.metadata(job, limit); if (!count) job.phase = 'select-messages'; }
-        else if (job.phase === 'select-messages') { count = this.selectMessages(job, limit); job.phase = count ? 'message-links' : 'actions'; }
+        else if (job.phase === 'select-messages') { count = this.selectMessages(job, limit); job.phase = count ? 'message-links' : 'social-rooms'; }
+        else if (job.phase === 'social-rooms') { count = this.socialRooms(job, limit); if (!count) job.phase = 'actions'; }
         else if (job.phase === 'message-links') { count = this.messageLinks(job, limit); if (count < 0) { count = 0; job.phase = 'messages'; } }
         else if (job.phase === 'messages') { count = this.messageMetadata(job, limit); if (!count) job.phase = 'select-messages'; }
         else if (job.phase === 'actions') { count = this.removeRows('actions', 'companion_id=?', [job.companionId], limit, items => { for (const item of items) { this.db.prepare('DELETE FROM companion_state_actions WHERE action_id=?').run(item.id); this.db.prepare('UPDATE messages SET action_id=NULL WHERE action_id=?').run(item.id); this.db.prepare('DELETE FROM metadata WHERE key=? OR key GLOB ?').run('task-checkpoint/' + item.id, 'task-attempt/' + item.id + '/*'); } }); if (!count) job.phase = 'invalidate'; }

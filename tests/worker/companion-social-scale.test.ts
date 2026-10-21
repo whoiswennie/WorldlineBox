@@ -12,7 +12,8 @@ it('queries a real 20,000-person ego network without truncation, large IPC paylo
   const seeds: CompanionSeed[] = [{ id: 'alice', name: 'Alice', persona: '独立生活', description: '', model: '', avatar: 'sister', active: true, proactive: false }];
   let store: CompanionsStore | undefined;
   try {
-    store = new CompanionsStore(filename, seeds); store.openPrivate('alice');
+    store = new CompanionsStore(filename, seeds); const playerRoom = store.openPrivate('alice');
+    store.appendMessage({ conversationId: playerRoom.id, authorId: 'user', content: '真实的玩家关系', replyDirective: 'none' });
     const template = store.request({ type: 'state' }).state!.companions[0]!;
     store.close(); store = undefined;
     // Synthetic authority records in a closed, disposable SQLite fixture. Counts are never mocked.

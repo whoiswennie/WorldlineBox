@@ -76,7 +76,7 @@ it('preserves other group authors, invalidates a peer memory whose source is rem
   f.store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: started.id }); await finish(f.store);
   expect(f.store.request({ type: 'messages', conversationId: group.id }).messages!.map(message => message.id)).toEqual([user.id, other.id]);
   expect(f.store.getMessage(other.id).replyToId).toBeUndefined(); expect(f.store.request({ type: 'messages', conversationId: peer.id }).messages).toEqual([]);
-  expect(f.store.request({ type: 'memory.browse', companionId: 'bob', conversationId: peer.id, status: 'invalid' }).memoryPage!.items.find(item => item.memory.id === memory.id)?.memory.status).toBe('invalid');
+  expect(f.store.request({ type: 'memory.browse', companionId: 'bob', conversationId: f.store.openPrivate('bob').id, status: 'invalid' }).memoryPage!.items.find(item => item.memory.id === memory.id)?.memory.status).toBe('invalid');
   f.store.updateConversation(group.id, { memberIds: ['alice', 'bob'] });
   expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: group.id, ids: [user.id] }).memorySources).toEqual([]);
   expect(() => f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: group.id, candidate: { kind: 'fact', content: user.content, subject: 'user', sourceMessageIds: [user.id], evidence: [{ sourceMessageId: user.id, quote: user.content }] } })).toThrow();
@@ -98,7 +98,7 @@ it('removes only unreferenced managed files and never removes a linked source or
   expect(readFileSync(external, 'utf8')).toBe('keep original'); expect(existsSync(path.join(directory, 'linked.txt'))).toBe(true);
 });
 
-it('preserves unique peer-group membership and other authors while isolating the reset owner from all older group sources', async () => {
+it('leaves peer groups, preserves other authors and starts new social introductions after reset', async () => {
   const f = fixture(), carol = f.store.createCompanion({ name: 'carol', description: '', persona: '第三位伙伴', model: '', avatar: 'custom', proactive: false });
   const members = ['alice', 'bob', carol.id], group = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: members }).socialConversation!;
   const pair = f.store.request({ type: 'social.conversation.ensure', companionId: 'bob', memberIds: ['bob', carol.id] }).socialConversation!;
@@ -106,11 +106,51 @@ it('preserves unique peer-group membership and other authors while isolating the
   append('alice', '重置者的旧发言', 'group-alice'); const retained = append('bob', '其他人的群聊历史', 'group-bob');
   const job = f.store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!; f.store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: job.id }); await finish(f.store);
   expect(f.store.request({ type: 'messages', conversationId: group.id }).messages!.map(message => message.id)).toEqual([retained.id]);
-  expect(f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: members }).socialConversation!.id).toBe(group.id);
+  const resetGraph = f.store.request({ type: 'social.graph', companionId: 'alice' }).socialGraph!;
+  expect(resetGraph.links).toEqual([]); expect(resetGraph.events).toEqual([]); expect(resetGraph.total).toBe(0);
+  const introduced = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: members }).socialConversation!;
+  expect(introduced.id).not.toBe(group.id); expect(introduced.messageCount).toBe(0);
   expect(f.store.request({ type: 'social.conversation.ensure', companionId: 'bob', memberIds: ['bob', carol.id] }).socialConversation!.id).toBe(pair.id);
-  expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: group.id, ids: [retained.id] }).memorySources).toEqual([]);
-  const fresh = append('bob', '重置后新的互动', 'group-new');
-  expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: group.id, ids: [fresh.id] }).memorySources!.map(message => message.id)).toEqual([fresh.id]);
+  expect(() => f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: group.id, ids: [retained.id] })).toThrow('不是聊天成员');
+  const fresh = f.store.request({ type: 'social.message.append', conversationId: introduced.id, authorId: 'bob', content: '重置后新的互动', clientId: 'group-new', virtualCreatedAt: '2026-10-15T12:00:00Z' }).socialMessage!.message;
+  expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: introduced.id, ids: [fresh.id] }).memorySources!.map(message => message.id)).toEqual([fresh.id]);
+});
+
+it('clears both sides of private social history and restores the world without reviving dormant visitors', async () => {
+  const f = fixture(), bobRoom = f.store.openPrivate('bob');
+  const pair = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+  for (const authorId of ['alice', 'bob']) f.store.request({ type: 'social.message.append', conversationId: pair.id, authorId, content: '过去的社交经历-' + authorId, clientId: authorId, virtualCreatedAt: new Date().toISOString() });
+  const own = f.store.appendMessage({ conversationId: f.room.id, authorId: 'user', content: '旧玩家消息' });
+  f.store.appendMessage({ conversationId: f.room.id, authorId: 'alice', content: '旧伙伴回复' });
+  f.store.saveMemory({ companionId: 'alice', content: '应全部清空的记忆', sourceMessageId: own.id, conversationId: f.room.id, origin: 'user' });
+  const retained = f.store.appendMessage({ conversationId: bobRoom.id, authorId: 'user', content: '另一位伙伴的独立生活' });
+  const before = f.store.request({ type: 'world.snapshot' }).world!; close(f.store);
+  const db = new Database(f.file);
+  const world = JSON.parse(String((db.prepare('SELECT data FROM companion_world WHERE id=1').get() as { data: string }).data));
+  const alice = world.actors.find((actor: { companionId: string }) => actor.companionId === 'alice');
+  alice.position = { x: 1, y: 1 }; alice.lastDreamDay = 'OLD_WORLD_STATE';
+  const bob = world.actors.find((actor: { companionId: string }) => actor.companionId === 'bob');
+  bob.sceneId = 'home_alice'; bob.journey = { targetSceneId: 'home_alice' }; bob.meetingHold = { memberIds: ['alice', 'bob'], untilReal: Date.now() + 60000, jobId: 'old-meeting' };
+  db.prepare('INSERT OR REPLACE INTO companion_world_suspended(companion_id,data) VALUES(?,?)').run('bob', JSON.stringify({ actor: bob, since: Date.now() }));
+  world.actors = world.actors.filter((actor: { companionId: string }) => actor.companionId !== 'bob');
+  db.prepare("UPDATE companions SET data=json_set(data,'$.active',json('false')) WHERE id='bob'").run();
+  world.relationships = [{ companionId: 'alice', targetCompanionId: 'bob', affinity: 90, trust: 90 }, { companionId: 'bob', targetCompanionId: 'alice', affinity: 80, trust: 80 }];
+  db.prepare('UPDATE companion_world SET data=? WHERE id=1').run(JSON.stringify(world)); db.close();
+  let store = open(f.file); const job = store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
+  store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: job.id }); await finish(store);
+  expect(store.listMemory('alice')).toEqual([]); expect(store.messages({ conversationId: f.room.id }).messages).toEqual([]);
+  expect(store.messages({ conversationId: bobRoom.id }).messages.some(message => message.id === retained.id)).toBe(true);
+  expect(store.request({ type: 'social.graph', companionId: 'alice' }).socialGraph).toMatchObject({ total: 0, links: [], events: [], visits: [] });
+  let fresh = store.request({ type: 'world.snapshot' }).world!;
+  expect(fresh.settings).toEqual(before.settings); expect(fresh.relationships).toEqual([]); expect(fresh.visits).toEqual([]);
+  expect(fresh.actors.find(actor => actor.companionId === 'alice')?.position).not.toEqual({ x: 1, y: 1 });
+  expect(JSON.stringify(fresh)).not.toContain('OLD_WORLD_STATE');
+  store.setCompanionActive('bob', true); fresh = store.request({ type: 'world.snapshot' }).world!;
+  expect(fresh.actors.find(actor => actor.companionId === 'bob')?.sceneId).toBe('home_bob');
+  close(store); store = open(f.file);
+  expect(store.request({ type: 'social.graph', companionId: 'alice' }).socialGraph!.total).toBe(0);
+  const newPair = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+  expect(newPair.id).not.toBe(pair.id); expect(newPair.messageCount).toBe(0);
 });
 
 it('resumes indexed batches after restart across 100000 messages and 100000 sourced memories', async () => {

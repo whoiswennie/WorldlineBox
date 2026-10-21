@@ -13,6 +13,7 @@ import { CAPTURE_TOOLS_ANSWER_PROGRESS, type CaptureAnswerUpdate } from '../../s
 import type * as SelectedText from '../../src/main/capture-tools/selected-text';
 import type * as DesktopRegions from '../../src/main/capture-tools/desktop-regions';
 import { positionCaptureWindowInPhysicalPixels, readWindowsCaptureMonitor } from '../../src/main/capture-tools/desktop-regions';
+import { windowsSnapshot } from '../../src/main/capture-tools/windows-snapshot';
 
 const mock = vi.hoisted(() => ({ windows: [] as unknown[], png: Buffer.alloc(0), scope: {} as Record<string, unknown>, callbacks: new Map<string, () => void>(), boundaryLoad: undefined as (() => Promise<void>) | undefined }));
 vi.mock('electron', async () => {
@@ -20,7 +21,7 @@ vi.mock('electron', async () => {
   let nextId = 0;
   class Window extends EventEmitter {
     id = ++nextId; destroyed = false; visible = true; focused = false;
-    webContents = Object.assign(new EventEmitter(), { mainFrame: {}, isDestroyed: () => this.destroyed, send: vi.fn(), setWindowOpenHandler: vi.fn() });
+    webContents = Object.assign(new EventEmitter(), { mainFrame: {}, isDestroyed: () => this.destroyed, send: vi.fn(), setWindowOpenHandler: vi.fn(), capturePage: vi.fn(async () => ({})) });
     constructor(readonly options: { show?: boolean }) { super(); this.visible = options.show !== false; mock.windows.push(this); }
     static getAllWindows() { return mock.windows; }
     isDestroyed() { return this.destroyed; } isVisible() { return this.visible; } isFocused() { return this.focused; }
@@ -47,6 +48,7 @@ vi.mock('electron', async () => {
 vi.mock('../../src/main/capture-tools/visual-answer', () => ({ getCaptureAiState: () => ({ configured: true, model: 'vision-test', visionSupported: true }),
   answerCaptureImage: vi.fn(async () => 'Answer from image') }));
 vi.mock('../../src/main/capture-tools/text-answer', () => ({ answerSelectedText: vi.fn(async () => 'Answer from selected text') }));
+vi.mock('../../src/main/capture-tools/windows-snapshot', () => ({ windowsSnapshot: vi.fn(async () => undefined) }));
 vi.mock('../../src/main/capture-tools/selected-text', async importOriginal => ({ ...await importOriginal<typeof SelectedText>(), readFocusedSelectedText: vi.fn(async () => 'Native selected text') }));
 vi.mock('../../src/main/capture-tools/desktop-regions', async importOriginal => ({ ...await importOriginal<typeof DesktopRegions>(), readWindowsCaptureMonitor: vi.fn(() => undefined), positionCaptureWindowInPhysicalPixels: vi.fn(() => true), readWindowsDesktopRegions: vi.fn(() => ({ available: true, windows: [{ id: 'window:123', name: 'External editor', bounds: { x: 100, y: 100, width: 800, height: 600 } }] })) }));
 const roots: string[] = [];
@@ -75,6 +77,13 @@ async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => v
 function handler(name: string) { return mock.scope[name] as (...args: unknown[]) => unknown; }
 
 describe('isolated capture tools authorization and settings', () => {
+  it('starts long capture from a fresh native screen without enumerating a fake source ID', async () => {
+    const { service } = await fixture();
+    vi.mocked(windowsSnapshot).mockResolvedValueOnce(mock.png);
+    await service.open('screenshot'); const tool = mock.windows.at(-1) as BrowserWindow;
+    const result = await service.handle(event(tool), { type: 'long.begin', rect: { x: 0, y: 0, width: 32, height: 64 } });
+    expect(result).toMatchObject({ ok: true, long: { frames: 1, width: 32, height: 64 } });
+  });
   it('sends cumulative bounded answer progress only to the requesting tool and flushes its final snapshot', async () => {
     const changed = vi.fn(); const { service, main, tool, source } = await fixture(undefined, changed);
     let emit!: (update: CaptureAnswerUpdate) => void, resolve!: (text: string) => void;

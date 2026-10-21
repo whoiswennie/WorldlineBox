@@ -17,7 +17,7 @@ const tick = setInterval(() => {
   if (elapsed) elapsed.textContent = `${((performance.now() - started) / 1000).toFixed(1)} 秒`;
   if (!shell?.isConnected) clearInterval(tick);
 }, 250);
-void import('./main').catch(error => {
+void (new URLSearchParams(location.search).get('window') === 'capture-tools' ? import('./capture-tools/entry') : import('./main')).catch(error => {
   clearInterval(tick);
   if (!shell) return;
   shell.querySelector('.boot-shell')?.classList.add('is-error');

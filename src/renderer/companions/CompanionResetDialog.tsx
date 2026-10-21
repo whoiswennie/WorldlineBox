@@ -53,10 +53,10 @@ export function CompanionResetDialog({ companion, initialJob, request, requestEr
         <div className="companion-reset-identity"><Avatar companion={companion} large showPresence={false} /><div><h3>{completed ? '已经重新开始' : running ? '正在整理，稍等片刻' : `让${companion.name}重新开始`}</h3><p>{completed ? '默认人设、形象与设置已恢复，可以重新认识彼此了。' : '保留这位伙伴的身份，清除相处记录并恢复初始设置。'}</p></div></div>
         {!job && <><div className="companion-reset-scope">
           <div><Icon name="message-circle" /><span><strong>聊天与记忆</strong><small>私聊、本人群聊发言与全部个人记忆</small></span></div>
-          <div><Icon name="clock" /><span><strong>任务与日常</strong><small>停止当前任务，清除安排与生活记录</small></span></div>
+          <div><Icon name="clock" /><span><strong>任务与虚拟世界</strong><small>停止任务与拜访，重置小屋、位置、日常与世界状态</small></span></div>
           <div><Icon name="heart" /><span><strong>情绪与关系</strong><small>重置心情、好感与社交经历</small></span></div>
           <div><Icon name="settings" /><span><strong>人设与形象</strong><small>恢复内置设定、头像、三视图与全局模型</small></span></div>
-        </div><p className="companion-reset-boundary">其他伙伴的资料和群聊发言会保留。这位伙伴会退出玩家群聊，伙伴社交群保留原成员；你的用户资料和本机原文件不受影响。</p>
+        </div><p className="companion-reset-boundary">其他伙伴的资料和群聊发言会保留。这位伙伴会退出所有群聊，与其有关的私聊、社交关系、拜访和个人记忆会清空；你的用户资料和本机原文件不受影响。</p>
         <label className="companion-reset-confirm">输入「{companion.name}」以确认<input autoComplete="off" spellCheck={false} aria-label="确认重置的伙伴名字" placeholder={companion.name} value={confirmation} onChange={event => setConfirmation(event.target.value)} disabled={busy} /></label></>}
         {job && <div className={`companion-reset-progress${completed ? ' is-completed' : failed ? ' is-failed' : ''}`} role="status" aria-live="polite"><div><Icon name={completed ? 'check' : failed ? 'alert-circle' : 'loader'} /><strong>{completed ? '重置完成' : failed ? '重置已暂停' : job.phase === 'stopping' ? '正在停止旧任务' : '正在清理伙伴记录'}</strong></div>{running && <progress aria-label="重置进度" />}<p>{completed ? '历史记录已清理，伙伴已恢复默认设置。' : failed ? job.error || '记录已受保护，解决问题后可以继续重置。' : '已处理 ' + job.processed.toLocaleString() + ' 项数据'}</p>{!completed && <small>可以关闭窗口继续使用软件。中途退出后，下次启动会接着处理。</small>}</div>}
         {(error || requestError) && <p className="companion-reset-error" role="alert">{error || requestError}</p>}

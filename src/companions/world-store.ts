@@ -352,10 +352,22 @@ export class CompanionWorldStore {
     const state = this.load();
     state.actors = state.actors.filter(actor => actor.companionId !== id);
     this.db.prepare('DELETE FROM companion_world_suspended WHERE companion_id=?').run(id);
+    // Dormant visitors must not resume an obsolete visit when later activated.
+    this.db.prepare(`UPDATE companion_world_suspended SET data=json_remove(json_set(data,
+      '$.actor.sceneId',json_extract(data,'$.actor.homeSceneId'),'$.actor.position',json('{"x":10,"y":13}'),
+      '$.actor.route',json('[]'),'$.actor.activity','idle'),
+      '$.actor.journey','$.actor.transition','$.actor.furnitureId','$.actor.destinationId','$.actor.arrivalActivity',
+      '$.actor.meetingHold','$.actor.meetingResume','$.actor.socialPause','$.actor.afterWork')
+      WHERE json_extract(data,'$.actor.sceneId')=? OR json_extract(data,'$.actor.journey.targetSceneId')=?`).run('home_' + id, 'home_' + id);
     state.works = state.works.filter(work => work.companionId !== id);
     state.visits = state.visits.filter(visit => visit.guestId !== id && visit.hostId !== id);
     state.relationships = state.relationships.filter(relation => relation.companionId !== id && relation.targetCompanionId !== id);
-    for (const actor of state.actors) if (actor.sceneId === 'home_' + id || actor.route.some(point => point.sceneId === 'home_' + id)) {
+    for (const actor of state.actors) {
+      if (actor.meetingHold?.memberIds.includes(id)) this.releaseMeeting(actor, true);
+      if (actor.socialPause?.authorId === id) { delete actor.socialPause; actor.route = []; actor.activity = 'idle'; }
+      const after = actor.afterWork?.args;
+      if (after && ('targetCompanionId' in after && after.targetCompanionId === id || 'recipientIds' in after && after.recipientIds?.includes(id))) delete actor.afterWork;
+      if (actor.sceneId !== 'home_' + id && !actor.route.some(point => point.sceneId === 'home_' + id) && actor.journey?.targetSceneId !== 'home_' + id) continue;
       const home = this.scenes(state).find(scene => scene.id === actor.homeSceneId);
       if (home) this.move(state, actor, home, { x: 10, y: 13 }, actor.homeSceneId, 'idle');
       for (const work of state.works) if (work.companionId === actor.companionId) { work.status = 'waiting'; delete work.computerId; }

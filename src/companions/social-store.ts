@@ -97,7 +97,8 @@ export class CompanionSocialStore {
       if (members.length < 2 || members.length !== ids.length || !members.includes(owner) || !members.every(id => this.active(id))) throw new Error('社交会话必须由至少两位真实伙伴组成。');
       const key = members.join('|'), existing = this.db.prepare('SELECT id FROM companion_social_conversations WHERE member_key=?').get(key);
       if (existing) return this.conversation(String(row(existing).id));
-      const id = (members.length === 2 ? 'world_pair_' : 'world_group_') + createHash('sha256').update(key).digest('hex').slice(0, 24);
+      const baseId = (members.length === 2 ? 'world_pair_' : 'world_group_') + createHash('sha256').update(key).digest('hex').slice(0, 24);
+      const id = this.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(baseId) ? baseId + '_' + randomUUID().slice(0, 8) : baseId;
       const names = members.map(member => String(row(this.db.prepare("SELECT json_extract(data,'$.name') AS name FROM companions WHERE id=?").get(member)).name));
       this.db.prepare("INSERT OR IGNORE INTO conversations(id,kind,title,private_companion_id,updated_at,hidden_at) VALUES(?,'group',?,NULL,?,?)").run(id, title || names.join('、').slice(0, 100), iso(), iso());
       this.db.prepare('INSERT OR IGNORE INTO metadata(key,value) VALUES(?,?)').run('world-room/' + id, 'true');
@@ -282,7 +283,7 @@ export class CompanionSocialStore {
         ...(between[0] ? { lastAt: String(between[0].virtual_at) } : {}) };
     });
     const events = this.flowEvents(roomIds, [...members, 'user'], { limit: 60, focusId: owner });
-    const playerRoom = this.db.prepare("SELECT id FROM conversations WHERE private_companion_id=? AND dissolved_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_social_conversations s WHERE s.id=conversations.id) LIMIT 1").get(owner);
+    const playerRoom = this.db.prepare("SELECT id FROM conversations WHERE private_companion_id=? AND dissolved_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_social_conversations s WHERE s.id=conversations.id) AND EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=conversations.id AND m.kind='text' AND m.status='sent') LIMIT 1").get(owner);
     let playerEvents: CompanionSocialFlowEvent[] = [];
     if (playerRoom) {
       const roomId = String(row(playerRoom).id);

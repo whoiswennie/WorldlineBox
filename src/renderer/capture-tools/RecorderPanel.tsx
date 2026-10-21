@@ -8,7 +8,6 @@ import { desktopRecordingMedia, recordingBitrate, recordingClock, recordingMimeT
 import type { Rect } from '../browser/screenshot/model';
 import { DesktopScreenshotOverlay } from './DesktopScreenshotOverlay';
 import { RecordingResult } from './RecordingResult';
-import { afterStartupPaint } from '../startup-lifecycle';
 
 type Phase = 'idle' | 'preparing' | 'recording' | 'paused' | 'finalizing' | 'saved' | 'failed' | 'cancelled';
 type Session = {
@@ -50,13 +49,13 @@ export function RecorderPanel({ api, state, onClose, source: desktopSource, onSo
   const revealPath = phase === 'failed' && state.recording?.id === recordingId && state.recording.path ? state.recording.path : savedPath;
   useEffect(() => {
     if (!controlsPrepared || !recordingId) return;
-    return afterStartupPaint(() => { void api.request({ type: 'recording.controls.ready', id: recordingId }).catch(() => undefined); });
+    void api.request({ type: 'recording.controls.ready', id: recordingId }).catch(() => undefined);
   }, [api, controlsPrepared, recordingId]);
 
   async function loadSources() {
     setLoadingSources(true); setError('');
     try {
-      const result = await api.request({ type: 'sources.list' });
+      const result = await api.request({ type: 'sources.list', thumbnails: false });
       if (!alive.current) return;
       if (!result.ok) { setError(result.error); return; }
       const next = result.sources ?? []; setSources(next);

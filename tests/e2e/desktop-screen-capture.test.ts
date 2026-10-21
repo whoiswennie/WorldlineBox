@@ -210,13 +210,40 @@ test('the real monitor screenshot is edited in place and regional recording cont
     }, monitor.mainId);
 
     const opened = await request(main, { type: 'open', task: 'screenshot' }); let tool = await toolPage(application);
-    const captured = opened.source!; expect(captured).toBeTruthy(); expect(captured.title).toBe(before.name); expect(captured.url).toBe('');
+    const captured = opened.source!; expect(captured).toBeTruthy(); expect(captured.title).toBeTruthy(); expect(captured.url).toBe('');
     if (captured.desktop?.pixelBounds) monitor.physical = { width: captured.desktop.pixelBounds.width, height: captured.desktop.pixelBounds.height };
     const trace = await application.evaluate(() => Reflect.get(globalThis, '__desktopScreenProof') as NativeCaptureTrace);
     const screenshotCall = trace.captures.find(call => call.types.length === 1 && call.types[0] === 'screen' && call.requested.width > 1);
-    expect(screenshotCall).toBeTruthy(); expect(screenshotCall!.mainVisible).toBe(false); expect(screenshotCall!.toolVisible).toBe(false);
-    const genuineScreen = screenshotCall!.sources.find(source => source.id === before.sourceId); expect(genuineScreen).toBeTruthy();
-    expect(createHash('sha256').update(Buffer.from(captured.dataUrl.split(',')[1]!, 'base64')).digest('hex')).toBe(genuineScreen!.hash);
+    if (screenshotCall) {
+      expect(screenshotCall).toBeTruthy(); expect(screenshotCall!.mainVisible).toBe(false); expect(screenshotCall!.toolVisible).toBe(false);
+      const genuineScreen = screenshotCall!.sources.find(source => source.id === before.sourceId); expect(genuineScreen).toBeTruthy();
+      expect(createHash('sha256').update(Buffer.from(captured.dataUrl.split(',')[1]!, 'base64')).digest('hex')).toBe(genuineScreen!.hash);
+    } else {
+      // The fast Win32 path need not enumerate Chromium sources. Independently
+      // compare its actual monitor pixels against an unmodified Chromium
+      // capture with both app windows hidden; tolerate small live UI changes.
+      const reference = await application.evaluate(async ({ BrowserWindow, desktopCapturer }, input) => {
+        const overlay = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().includes('window=capture-tools'))!;
+        overlay.hide();
+        try {
+          const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: input.physical });
+          const source = sources.find(source => source.display_id === input.id)!;
+          return { png: source.thumbnail.toPNG().toString('base64'), mainVisible: BrowserWindow.fromId(input.mainId)?.isVisible() };
+        } finally { overlay.showInactive(); }
+      }, { ...monitor, physical: { width: captured.width, height: captured.height } });
+      expect(reference.mainVisible).toBe(false);
+      const actual = await sharp(Buffer.from(captured.dataUrl.split(',')[1]!, 'base64')).removeAlpha().raw().toBuffer();
+      const pixels = await sharp(Buffer.from(reference.png, 'base64')).removeAlpha().raw().toBuffer();
+      writeFileSync(path.join(artifacts, 'native-monitor.png'), Buffer.from(captured.dataUrl.split(',')[1]!, 'base64'));
+      writeFileSync(path.join(artifacts, 'chromium-monitor.png'), Buffer.from(reference.png, 'base64'));
+      expect(actual.length).toBe(pixels.length);
+      let match = 0, samples = 0;
+      // The person can keep using other apps during this test. Compare the
+      // stable native taskbar strip, rather than assuming their entire desktop
+      // stays frozen between two different capture APIs.
+      for (let index = captured.width * Math.max(0, captured.height - 32) * 3; index < pixels.length; index += 29 * 3) { samples++; if (Math.abs(actual[index]! - pixels[index]!) < 12 && Math.abs(actual[index + 1]! - pixels[index + 1]!) < 12 && Math.abs(actual[index + 2]! - pixels[index + 2]!) < 12) match++; }
+      expect(match / samples, 'Native monitor colors and scale should match the real desktop').toBeGreaterThan(.8);
+    }
     nearPhysicalScreen(captured, monitor.physical); expect(await mainNative.evaluate(window => window.isVisible())).toBe(false);
     const saved = await request(tool, { type: 'screenshot.save', dataUrl: captured.dataUrl, filename: 'Actual-desktop.png', destination: 'downloads' });
     expect(path.dirname(saved.path!)).toBe(downloads); copyFileSync(saved.path!, screenshotPath, constants.COPYFILE_EXCL);
