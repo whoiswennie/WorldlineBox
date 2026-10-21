@@ -8,7 +8,9 @@ import { seedNativeRuntime } from './fixtures/dsh-native-runtime';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 test('cold and repeated real native Host starts finish through the launcher with saved phase timings and no inherited user data', async () => {
-  test.setTimeout(300000);
+  // A never-admitted runtime must read every byte once (the verifier itself has
+  // a five-minute bound). Repeated starts have a separate, much tighter limit.
+  test.setTimeout(540000);
   const fixtureFile = process.env.WORLDLINEBOX_DSH_NODE_FIXTURE ?? path.resolve('.tools/dsh-native-node/result.json');
   test.skip(process.platform !== 'win32' || !existsSync(fixtureFile), 'An inspected Windows native runtime is required.');
   const fixture = JSON.parse(readFileSync(fixtureFile, 'utf8')) as { root: string }, manager = path.join(fixture.root, 'manager');
@@ -24,17 +26,25 @@ test('cold and repeated real native Host starts finish through the launcher with
     let page = await app.firstWindow(); await expect(page.locator('[data-dsh-launcher]')).toBeVisible();
     const request = (input: DshLauncherRequest) => page.evaluate(input => (globalThis as unknown as { worldlinebox: { dshLauncher: WorldlineBoxDshLauncherApi } }).worldlinebox.dshLauncher.request(input), input);
     const state = async () => { const result = await request({ type: 'state' }); if (!result.ok || !result.state) throw Error(result.ok ? 'Missing state' : result.error); return result.state; };
-    const complete = async (input: DshLauncherRequest) => {
+    const complete = async (input: DshLauncherRequest, timeout = 60000) => {
       const result = await request(input); if (!result.ok) throw Error(result.error);
       if (!result.operationId) throw Error('Missing operation'); const id = result.operationId;
-      await expect.poll(async () => (await state()).operations.find(operation => operation.id === id)?.status, { timeout: 180000 }).not.toBe('running');
+      try {
+        await expect.poll(async () => (await state()).operations.find(operation => operation.id === id)?.status, { timeout }).not.toBe('running');
+      } catch (error) {
+        const output = path.resolve('.tools/test-output/dsh-startup'); await mkdir(output, { recursive: true });
+        const current = await state();
+        await writeFile(path.join(output, 'failed-startup-state.json'), JSON.stringify({ runtimeVersion: runtime!.version, operation: current.operations.find(operation => operation.id === id) }, null, 2));
+        await writeFile(path.join(output, 'failed-startup.log'), await readFile(path.join(profile, 'dsh-launcher/operations', id + '.log'), 'utf8'));
+        throw error;
+      }
       const operation = (await state()).operations.find(operation => operation.id === id)!; expect(operation.status, operation.error).toBe('succeeded'); return operation;
     };
     await complete({ type: 'instance.create', name: '启动耗时验收', runtimeId: runtime!.id });
     const instance = (await state()).instances[0]!, reports: Array<{ run: number; scenario: string; milliseconds: number; timingLog: string[] }> = [];
     for (const run of [1, 2, 3, 4]) {
       if (run === 4) { await app.close(); app = await launch(); page = await app.firstWindow(); await expect(page.locator('[data-dsh-launcher]')).toBeVisible(); }
-      const started = performance.now(), operation = await complete({ type: 'instance.start', instanceId: instance.id });
+      const started = performance.now(), operation = await complete({ type: 'instance.start', instanceId: instance.id }, run === 1 ? 360000 : 60000);
       const milliseconds = Math.round(performance.now() - started); expect((await state()).instances[0]!.status).toBe('running');
       const log = await readFile(path.join(profile, 'dsh-launcher/operations', operation.id + '.log'), 'utf8');
       expect(log).toContain('Host startup completed'); expect(log).not.toContain('dsh web: http:');

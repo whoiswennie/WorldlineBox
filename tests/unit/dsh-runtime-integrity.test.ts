@@ -5,7 +5,7 @@ import path from 'node:path';
 import { RuntimeIntegrity } from '../../src/main/dsh/runtime-integrity';
 import { CliAdmission } from '../../src/main/dsh/cli-admission';
 import { connect } from 'node:net';
-import { inventoryTree, type TreeHashCacheEntry } from '../../src/main/dsh/files';
+import { inventoryTree, type TreeHashCacheEntry, type TreeInventoryProgress } from '../../src/main/dsh/files';
 
 const roots: string[] = []; const gates: RuntimeIntegrity[] = [];
 afterEach(async () => { for (const gate of gates.splice(0)) gate.close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -50,6 +50,21 @@ test('incremental inventories detect same-size edits even when the old modificat
   expect((await inventoryTree(f.directory, undefined, undefined, cache)).contentSha256).toBe(sealed.contentSha256);
   await writeFile(f.file, 'edited'); await utimes(f.file, before.atime, before.mtime);
   expect((await inventoryTree(f.directory, undefined, undefined, cache)).contentSha256).not.toBe(sealed.contentSha256);
+});
+
+test('inventory progress reports completed work and cache reuse without changing the seal', async () => {
+  const f = await fixture(), cache = new Map<string, TreeHashCacheEntry>(), events: TreeInventoryProgress[] = [];
+  const cold = await inventoryTree(f.directory, undefined, undefined, cache, value => events.push(value));
+  expect(events[0]).toMatchObject({ phase: 'scanning', verifiedFiles: 0 });
+  expect(events.at(-1)).toMatchObject({ phase: 'complete', fileCount: 1, verifiedFiles: 1, cacheHits: 0, verifiedBytes: 6 });
+  events.length = 0;
+  const warm = await inventoryTree(f.directory, undefined, undefined, cache, value => events.push(value));
+  expect(warm).toEqual(cold);
+  expect(events.at(-1)).toMatchObject({ phase: 'complete', verifiedFiles: 1, cacheHits: 1, verifiedBytes: 6 });
+  const cancelled = new AbortController();
+  await expect(inventoryTree(f.directory, cancelled.signal, undefined, cache, value => {
+    if (value.phase === 'hashing') cancelled.abort(Error('cancel cached verification'));
+  })).rejects.toThrow('cancel cached verification');
 });
 test('local CLI admission waits for verification, rejects invalid identities and shuts down without a Host', async () => {
   const f = await fixture(); await mkdir(path.join(f.root, 'cli'));

@@ -11,7 +11,7 @@ import {
   dshInstanceSchema, dshSnapshotSchema, dshSharedDataSchema, type DshInstance, type DshRuntime,
   type DshSnapshot, type DshLauncherRequest, type DshLauncherResponse,
 } from '../../shared/dsh-launcher';
-import { atomicJson, copyTree, inventoryTree, readJson, removeManaged, type TreeInventory } from './files';
+import { atomicJson, copyTree, inventoryTree, readJson, removeManaged, type TreeInventory, type TreeInventoryProgress } from './files';
 import type { OperationStore, OperationContext } from './operations';
 import { auditInstanceConfiguration, rebaseInstanceConfiguration } from './instance-configuration';
 import {
@@ -29,7 +29,7 @@ export interface RuntimeServiceLike {
   get(id: string): DshRuntime;
   directory(id: string): string;
   plan(id: string): RuntimeLaunchPlan;
-  verify(id: string, signal?: AbortSignal): Promise<void>;
+  verify(id: string, signal?: AbortSignal, force?: boolean, observe?: (progress: TreeInventoryProgress) => void): Promise<void>;
 }
 interface Options {
   rootPath: string; runtimes: RuntimeServiceLike; operations: OperationStore; onChanged: () => void;
@@ -352,7 +352,11 @@ export class InstanceService {
     };
     const instance = this.require(id); const root = this.getRoot(id);
     const plan = this.options.runtimes.plan(instance.runtimeId);
-    await waitPhase('Verifying fixed runtime', 5, () => this.options.runtimes.verify(instance.runtimeId, op.signal));
+    let verification: TreeInventoryProgress | undefined;
+    await waitPhase('Verifying fixed runtime', 5, () => this.options.runtimes.verify(instance.runtimeId, op.signal, false, value => { verification = value; }),
+      () => verification?.phase === 'scanning' ? `扫描 ${verification.scannedEntries} 项`
+        : verification ? `${verification.verifiedFiles}/${verification.fileCount} 文件 · 缓存 ${verification.cacheHits}` : undefined);
+    if (verification) await op.log(`Host startup verification: files=${verification.fileCount} reused=${verification.cacheHits} bytes=${verification.verifiedBytes}`);
     const runtimeVersion = this.options.runtimes.get(instance.runtimeId).version;
     const sharedLaunch = await waitPhase('Preparing shared instance data', 15,
       async () => this.options.sharedData?.prepare(instance, runtimeVersion, op, this.processes.size === 0),
@@ -542,34 +546,55 @@ export class InstanceService {
   private async auditLinks(id: string, signal?: AbortSignal): Promise<Set<string>> {
     const instance = this.require(id); const root = await this.ownedRoot(id);
     const runtime = await realpath(this.options.runtimes.directory(instance.runtimeId));
-    const runtimeLinks = new Set<string>(); const seen = new Set<string>();
+    const runtimeLinks = new Set<string>(); let entriesChecked = 0;
+    let active = 0; const queue: Array<() => void> = [];
+    const limit = async <T>(work: () => Promise<T>): Promise<T> => {
+      if (active >= 32) await new Promise<void>(resolve => queue.push(resolve)); else active++;
+      try { signal?.throwIfAborted(); return await work(); }
+      finally { const waiting = queue.shift(); if (waiting) waiting(); else active--; }
+    };
     const inside = (parent: string, value: string) => { const relative = path.relative(parent, value); return !relative.startsWith('..') && !path.isAbsolute(relative); };
-    const walk = async (directory: string, prefix: string) => {
+    const walk = async (directory: string, prefix: string, ancestors = new Set<string>()) => {
       signal?.throwIfAborted();
-      const actual = await realpath(directory);
+      const actual = await limit(() => realpath(directory));
       if (!inside(root, actual)) throw new Error(`Instance data references an external path: ${prefix}.`);
-      if (seen.has(actual.toLowerCase())) return;
-      seen.add(actual.toLowerCase());
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const identity = process.platform === 'win32' ? actual.toLowerCase() : actual;
+      if (ancestors.has(identity)) return;
+      const branch = new Set(ancestors).add(identity);
+      const entries = await limit(() => readdir(directory, { withFileTypes: true }));
+      const visit = async (entry: typeof entries[number]) => {
+        if (++entriesChecked > 500_000) throw new Error('Instance link audit exceeded its entry limit; reduce duplicate directory aliases or disposable caches before starting.');
         const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-        const target = path.join(directory, entry.name); const stat = await lstat(target);
+        const target = path.join(directory, entry.name); const stat = await limit(() => lstat(target));
         if (stat.isSymbolicLink()) {
-          const resolved = await realpath(target);
+          const resolved = await limit(() => realpath(target));
           if (inside(runtime, resolved)) {
             if (!/^home\/profiles\/[^/]+\/node_modules\/@deepseek-ai(?:\/|$)/.test(relative)) throw new Error(`Mutable instance data points into its fixed runtime: ${relative}.`);
             runtimeLinks.add(relative);
           }
-          else if (inside(root, resolved)) { if ((await lstat(resolved)).isDirectory()) await walk(resolved, relative); }
+          else if (inside(root, resolved)) { if ((await limit(() => lstat(resolved))).isDirectory()) await walk(resolved, relative, branch); }
           else throw new Error(`Instance data references an external path: ${relative}. Copy that data into its isolated workspace before cloning or starting.`);
-        } else if (stat.isDirectory()) await walk(target, relative);
+        } else if (stat.isDirectory()) await walk(target, relative, branch);
         else if (stat.isFile() && !skipMutableFile(relative) && prefix.startsWith('home') && !relative.split('/').some(part => ['node_modules', 'sessions', 'storages', 'attachments', 'credentials'].includes(part))
           && /(?:\.(?:json|ya?ml|toml)|(?:^|\/)\.env)$/i.test(relative)) {
           if (stat.size >= 2_000_000) throw new Error(`Instance configuration is too large to audit: ${relative}.`);
-          auditInstanceConfiguration(await readFile(target, 'utf8'), relative, root, runtime);
+          auditInstanceConfiguration(await limit(() => readFile(target, 'utf8')), relative, root, runtime);
         }
-      }
+      };
+      // Audit each logical path independently: a cache alias cannot suppress the
+      // configuration checks performed when that directory is reached from home.
+      // Per-branch identities break cycles; the global entry budget bounds alias expansion.
+      // Join all visitors before returning an error so cleanup cannot race the audit.
+      let next = 0;
+      const results = await Promise.allSettled(Array.from({ length: Math.min(32, entries.length) }, async () => {
+        while (next < entries.length) await visit(entries[next++]!);
+      }));
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
     };
-    for (const part of ['home', 'agents', 'workspace', 'user', 'cache']) await walk(path.join(root, part), part);
+    const roots = await Promise.allSettled(['home', 'agents', 'workspace', 'user', 'cache'].map(part => walk(path.join(root, part), part)));
+    const failed = roots.find(result => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
     return runtimeLinks;
   }
 

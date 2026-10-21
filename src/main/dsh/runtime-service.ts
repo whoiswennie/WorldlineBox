@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { DSH_OFFICIAL_WINDOWS_URL, dshRuntimeSchema, type DshRuntime } from '../../shared/dsh-launcher';
-import { assertOwnedDirectory, contained, copyTree, hashFile, inventoryTree, readJson, removeManaged, safeRelative, type TreeInventory, type TreeHashCacheEntry, atomicJson } from './files';
+import { assertOwnedDirectory, contained, copyTree, hashFile, inventoryTree, readJson, removeManaged, safeRelative, type TreeInventory, type TreeHashCacheEntry, type TreeInventoryProgress, atomicJson } from './files';
 import type { OperationContext } from './operations';
 import { fetchHttpsDownload, type HttpsDownloadFetch } from './https-download';
 import { atomicRuntimeJson, publishSealedArtifact, retryFileOperation } from './runtime-commit';
@@ -24,7 +24,7 @@ export interface RuntimeServiceLike {
   get(id: string): DshRuntime;
   directory(id: string): string;
   plan(id: string): { executable: string; cli: string; env: NodeJS.ProcessEnv };
-  verify(id: string, signal?: AbortSignal): Promise<void>;
+  verify(id: string, signal?: AbortSignal, force?: boolean, observe?: (progress: TreeInventoryProgress) => void): Promise<void>;
 }
 
 /** Read only small manifest entries without executing anything from the supplied ASAR. */
@@ -142,7 +142,13 @@ export class RuntimeService implements RuntimeServiceLike {
     const runtime = this.get(id);
     if (!supportsSharedDataRuntime(runtime)) {
       let pending = this.sharedAdmissions.get(id);
-      if (!pending) { pending = this.compatibility.check(runtime); this.sharedAdmissions.set(id, pending); }
+      if (!pending) {
+        pending = this.compatibility.check(runtime); this.sharedAdmissions.set(id, pending);
+        const admission = pending;
+        // Share only in-flight work. A failed or interrupted check must be retryable,
+        // and completion of an older check cannot remove a newer admission.
+        void admission.finally(() => { if (this.sharedAdmissions.get(id) === admission) this.sharedAdmissions.delete(id); }).catch(() => undefined);
+      }
       if (!signal) await pending;
       else {
         signal.throwIfAborted();
@@ -170,7 +176,7 @@ export class RuntimeService implements RuntimeServiceLike {
     if(receipt.version!==record.version||receipt.nodeVersion!==record.nodeVersion||receipt.sourceSha256!==record.sourceSha256)throw new Error('Node runtime record does not match its sealed source identity.');
     return receipt;
   }
-  async verify(id: string, signal?: AbortSignal, force = false): Promise<void> {
+  async verify(id: string, signal?: AbortSignal, force = false, observe?: (progress: TreeInventoryProgress) => void): Promise<void> {
     const record = this.get(id);
     try {
       await this.integrity.verify(path.dirname(this.directory(id)), async () => {
@@ -186,7 +192,7 @@ export class RuntimeService implements RuntimeServiceLike {
             for (const entry of index.entries) if (Array.isArray(entry) && entry.length === 2 && expected.get(entry[0]) === entry[1]?.sha256 && typeof entry[1]?.fingerprint === 'string' && entry[1].fingerprint.length < 300) cache.set(entry[0], entry[1]);
           }
         }
-        const current = await inventoryTree(this.directory(id), AbortSignal.timeout(300000), undefined, cache);
+        const current = await inventoryTree(this.directory(id), AbortSignal.timeout(300000), undefined, cache, observe);
         if (!sealed || current.contentSha256 !== sealed.contentSha256 || current.contentSha256 !== record.contentSha256) throw new Error('Runtime seal mismatch.');
         await atomicJson(indexPath, { digest: record.contentSha256, entries: current.files.map(file => [file.path, cache.get(file.path)]) });
       }, signal, force);
@@ -279,7 +285,7 @@ export class RuntimeService implements RuntimeServiceLike {
     }
     return undefined;
   }
-  private async commitArtifact(artifact: string, record: DshRuntime, seal: TreeInventory, operation: OperationContext): Promise<DshRuntime> {
+  private async commitArtifact(artifact: string, record: DshRuntime, seal: TreeInventory, operation: OperationContext, sealedCache?: Map<string, TreeHashCacheEntry>): Promise<DshRuntime> {
     const destination = path.join(this.options.rootPath, 'runtimes', record.id);
     const present = await lstat(destination).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
     if (present) {
@@ -297,10 +303,13 @@ export class RuntimeService implements RuntimeServiceLike {
       if (committed?.contentSha256 === record.contentSha256) return this.register(record, operation);
     }
     await operation.update('committing', 96);
+    let committedCache = sealedCache;
     await publishSealedArtifact(artifact, destination, {
       signal: operation.signal,
       verifyCopy: async directory => {
-        const copied = await inventoryTree(path.join(directory, 'program'), operation.signal);
+        // Copies have different file identities; collect proof from every target byte.
+        committedCache = new Map();
+        const copied = await inventoryTree(path.join(directory, 'program'), operation.signal, undefined, committedCache);
         if (JSON.stringify(copied) !== JSON.stringify(seal)) throw new Error('The runtime copy did not match its sealed file inventory.');
       },
       onCopyFallback: async () => {
@@ -308,6 +317,19 @@ export class RuntimeService implements RuntimeServiceLike {
         await operation.log('Windows kept the extracted files open; copying and verifying all bytes before registration.');
       },
     });
+    if (committedCache) {
+      const evidence = committedCache;
+      const directory = path.join(this.options.rootPath, 'integrity');
+      await mkdir(directory, { recursive: true }); await assertOwnedDirectory(this.options.rootPath, directory);
+      await atomicRuntimeJson(path.join(directory, `${record.id}.json`), {
+        digest: seal.contentSha256,
+        entries: seal.files.flatMap(file => {
+          const entry = evidence.get(file.path);
+          return entry?.sha256 === file.sha256 ? [[file.path, entry]] : [];
+        }),
+      }, operation.signal);
+      // Normal registration still inventories the final paths and validates every fingerprint.
+    }
     return this.register(record, operation);
   }
   private async register(record: DshRuntime, operation: OperationContext): Promise<DshRuntime> {
@@ -386,9 +408,10 @@ export class RuntimeService implements RuntimeServiceLike {
       if(expectedLock&&(receipt.dependencyLockSha256!==expectedLock.dependencyLockSha256||receipt.nodeExecutableSha256!==expectedLock.nodeExecutableSha256
         ||receipt.npmVersion!==expectedLock.npmVersion||receipt.nodeVersion!==expectedLock.nodeVersion||receipt.npmIntegrity!==expectedLock.npmIntegrity||receipt.sourceSha256!==expectedLock.sourceSha256))throw new Error('Replayed runtime does not match the portable source identity.');
       await operation.update('sealing official Node runtime', 80);
+      const sealedCache = new Map<string, TreeHashCacheEntry>();
       const seal = await inventoryTree(program, operation.signal, async (count) => {
         if (count % 500 === 0) await operation.update('sealing official Node runtime', Math.min(94, 80 + count / 2000));
-      });
+      }, sealedCache);
       if(expectedLock&&nodeRuntimePayloadShaFromInventory(seal)!==expectedLock.payloadSha256)throw new Error('Replayed runtime SDK and binary payload does not match the portable source identity.');
       await validateNodeRuntimeInventory(program, release.version, seal, operation.signal);
       const existing = this.records.find(record => record.contentSha256 === seal.contentSha256);
@@ -405,7 +428,7 @@ export class RuntimeService implements RuntimeServiceLike {
       await atomicRuntimeJson(path.join(artifact, 'seal.json'), seal, operation.signal);
       await atomicRuntimeJson(path.join(artifact, 'artifact.json'), record, operation.signal);
       retained = true;
-      const committed = await this.commitArtifact(artifact, record, seal, operation);
+      const committed = await this.commitArtifact(artifact, record, seal, operation, sealedCache);
       retained = false; return committed;
     } finally {
       this.installingVersions.delete(release.version);
@@ -481,9 +504,10 @@ export class RuntimeService implements RuntimeServiceLike {
         version=manifest.version;nodeVersion=runtime.release?.nodeVersion??'unknown';electronVersion=manifest.dependencies?.electron??'bundled';
       }
       await operation.update('verifying', 80);
+      const sealedCache = new Map<string, TreeHashCacheEntry>();
       const seal = await inventoryTree(program, operation.signal, async (count, file) => {
         if (count % 250 === 0) await operation.update(`verifying: ${file}`, Math.min(94, 80 + count / 1000));
-      });
+      }, sealedCache);
       if(nodeReceipt)await validateNodeRuntimeInventory(program,version,seal,operation.signal);
       const existing = this.records.find(record => record.contentSha256 === seal.contentSha256);
       if (existing) { await this.verify(existing.id, operation.signal); return { ...existing }; }
@@ -497,7 +521,7 @@ export class RuntimeService implements RuntimeServiceLike {
       await atomicRuntimeJson(path.join(artifactStage, 'seal.json'), seal, operation.signal);
       await atomicRuntimeJson(path.join(artifactStage, 'artifact.json'), record, operation.signal);
       retained = true;
-      const result = await this.commitArtifact(artifactStage, record, seal, operation);
+      const result = await this.commitArtifact(artifactStage, record, seal, operation, sealedCache);
       retained = false; return result;
     } finally {
       this.importing = false;

@@ -41,8 +41,12 @@ export async function hashFile(file: string, signal?: AbortSignal, size?: number
 export interface TreeFile { path: string; sha256: string; size: number }
 export interface TreeInventory { files: TreeFile[]; contentSha256: string; fileCount: number; byteLength: number }
 export interface TreeHashCacheEntry { fingerprint: string; sha256: string }
-export async function inventoryTree(root: string, signal?: AbortSignal, progress?: (count: number, file: string) => Promise<void>, cache?: Map<string, TreeHashCacheEntry>): Promise<TreeInventory> {
+export interface TreeInventoryProgress { phase: 'scanning' | 'hashing' | 'complete'; scannedEntries: number; fileCount: number; verifiedFiles: number; cacheHits: number; verifiedBytes: number }
+export async function inventoryTree(root: string, signal?: AbortSignal, progress?: (count: number, file: string) => Promise<void>, cache?: Map<string, TreeHashCacheEntry>, observe?: (progress: TreeInventoryProgress) => void): Promise<TreeInventory> {
   let active = 0; let count = 0;
+  let verifiedFiles = 0, cacheHits = 0, verifiedBytes = 0;
+  const report = (phase: TreeInventoryProgress['phase'], fileCount = 0) => observe?.({ phase, scannedEntries: count, fileCount, verifiedFiles, cacheHits, verifiedBytes });
+  report('scanning');
   const queue: Array<() => void> = [];
   const fingerprints = new Map<string, string>();
   const fingerprint = (stat: Stats) => JSON.stringify([stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino, stat.dev]);
@@ -58,6 +62,7 @@ export async function inventoryTree(root: string, signal?: AbortSignal, progress
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       safeRelative(relative);
       if (++count > 150_000) throw new Error('Too many entries in managed tree.');
+      if (count % 500 === 0) report('scanning');
       const stat = await limit(() => lstat(path.join(directory, entry.name)));
       if (stat.isSymbolicLink()) throw new Error(`Linked file is not allowed in a sealed tree: ${relative}`);
       if (stat.isDirectory()) return walk(path.join(directory, entry.name), relative);
@@ -70,25 +75,32 @@ export async function inventoryTree(root: string, signal?: AbortSignal, progress
     return groups.flatMap(result => result.status === 'fulfilled' ? result.value : []);
   };
   const files = await walk(root, '');
+  report('hashing', files.length);
   let next = 0;
   // Bounded parallel I/O avoids serial event-loop turns for thousands of tiny dependency files.
   const hashed = await Promise.allSettled(Array.from({ length: Math.min(32, files.length) }, async () => {
     while (next < files.length) {
+      signal?.throwIfAborted();
       const index = next++; const file = files[index]!;
       await progress?.(index, file.path);
       const stamp = fingerprints.get(file.path); const previous = cache?.get(file.path);
-      if (previous && previous.fingerprint === stamp) { file.sha256 = previous.sha256; continue; }
-      file.sha256 = await hashFile(contained(root, file.path), signal, file.size);
-      if (cache) {
-        const after = await lstat(contained(root, file.path));
-        if (!after.isFile() || after.isSymbolicLink() || fingerprint(after) !== stamp) throw new Error('File changed during integrity verification.');
-        cache.set(file.path, { fingerprint: stamp!, sha256: file.sha256 });
+      if (previous && previous.fingerprint === stamp) { file.sha256 = previous.sha256; cacheHits++; }
+      else {
+        file.sha256 = await hashFile(contained(root, file.path), signal, file.size);
+        if (cache) {
+          const after = await lstat(contained(root, file.path));
+          if (!after.isFile() || after.isSymbolicLink() || fingerprint(after) !== stamp) throw new Error('File changed during integrity verification.');
+          cache.set(file.path, { fingerprint: stamp!, sha256: file.sha256 });
+        }
       }
+      verifiedFiles++; verifiedBytes += file.size;
+      if (verifiedFiles % 250 === 0) report('hashing', files.length);
     }
   }));
   const failure = hashed.find(result => result.status === 'rejected');
   if (failure?.status === 'rejected') throw failure.reason;
   const contentSha256 = createHash('sha256').update(JSON.stringify(files)).digest('hex');
+  report('complete', files.length);
   return { files, contentSha256, fileCount: files.length, byteLength: files.reduce((sum, file) => sum + file.size, 0) };
 }
 
