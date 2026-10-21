@@ -18,7 +18,6 @@ import { BrowserAiSettings } from './BrowserAiSettings';
 import type { BrowserAiRequest } from '../../shared/browser-ai';
 import './browser.css';
 import './browser-ai.css';
-import brandLogo from '../../../assets/icons/startup-logo.png';
 
 type Panel = 'bookmarks' | 'history' | 'downloads' | 'settings' | 'more' | 'capture' | 'ai';
 export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreenshot, onSelection }: { api?: WorldlineBoxBrowserApi; active: boolean; onOpenNetwork(): void; onOpenAssets?(): void; onScreenshot?(): void; onSelection?(): void }) {
@@ -35,6 +34,7 @@ export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreen
   const [clear, setClear] = useState({ cache: true, siteData: false, history: false, downloads: false }); const [clearScope, setClearScope] = useState('all'); const [busy, setBusy] = useState(false);
   const [rememberPermission, setRememberPermission] = useState(false);
   const [aiWidth, setAiWidth] = useState(() => { try { return Math.min(800, Math.max(320, Number(localStorage.getItem('worldlinebox.browser.ai-width')) || 420)); } catch { return 420; } });
+  const [aiDraft, setAiDraft] = useState('');
   const accept = useCallback((next: BrowserState) => setSnapshot(previous => previous.browser && next.revision < previous.browser.revision
     ? previous
     : { browser: next, capture: next.capture ?? previous.capture }), []);
@@ -165,8 +165,8 @@ export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreen
         onPointerMove={event => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
           const width = Math.max(300, Math.min(900, (event.currentTarget.parentElement?.clientWidth ?? 1200) - 320, Number(event.currentTarget.dataset.startWidth) + Number(event.currentTarget.dataset.startX) - event.clientX)); setAiWidth(width); }}
         onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); try { localStorage.setItem('worldlinebox.browser.ai-width', String(aiWidth)); } catch { /* Optional layout preference. */ } }} /> : null}
-      {panel ? <aside className={'browser-panel browser-panel-' + panel + (panel === 'capture' ? ' browser-capture-panel' : '')} style={panel === 'ai' ? { width: aiWidth } : undefined} id={panel === 'capture' ? 'browser-capture-panel' : panel === 'ai' ? 'browser-ai-panel' : undefined} aria-label={b(panel === 'capture' ? 'captureTitle' : panel)}><header><div className="browser-panel-heading"><span>{panel === 'ai' ? <img className="browser-brand-mark" src={brandLogo} alt="" /> : <Icon name={panelIcon[panel]} size={18} />}</span><h2>{b(panel === 'capture' ? 'captureTitle' : panel)}</h2></div>{iconButton('close', b('close'), () => setPanel(undefined))}</header>
-        {panel === 'ai' && state ? <BrowserAiPanel state={state} run={run} settings={() => togglePanel('settings')} /> : null}
+      {panel ? <aside className={'browser-panel browser-panel-' + panel + (panel === 'capture' ? ' browser-capture-panel' : '')} style={panel === 'ai' ? { width: aiWidth } : undefined} id={panel === 'capture' ? 'browser-capture-panel' : panel === 'ai' ? 'browser-ai-panel' : undefined} aria-label={b(panel === 'capture' ? 'captureTitle' : panel)}>{panel !== 'ai' ? <header><div className="browser-panel-heading"><span><Icon name={panelIcon[panel]} size={18} /></span><h2>{b(panel === 'capture' ? 'captureTitle' : panel)}</h2></div>{iconButton('close', b('close'), () => setPanel(undefined))}</header> : null}
+        {panel === 'ai' && state ? <BrowserAiPanel state={state} run={run} settings={() => togglePanel('settings')} close={() => setPanel(undefined)} input={aiDraft} setInput={setAiDraft} /> : null}
         {panel === 'settings' ? <BrowserAiSettings config={state?.ai?.config} run={run} /> : null}
         {panel === 'capture' ? <BrowserCapturePanel capture={capture} run={runCapture} onOpenAssets={onOpenAssets} onScreenshot={onScreenshot} documentKey={tab ? JSON.stringify([tab.id, tab.url, tab.loading]) : ''} /> : null}
         {panel === 'bookmarks' && state ? <BrowserBookmarks bookmarks={state.bookmarks} tab={tab} navigate={navigate} run={run} /> : null}

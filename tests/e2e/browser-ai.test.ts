@@ -5,7 +5,7 @@ import path from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { WorldlineBoxBrowserApi, BrowserRequest } from '../../src/shared/browser';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { electronLaunchEnv, openAppSettingsDialog, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 test('native browser agent completes a real page workflow, keeps multi-turn context, resizes/collapses, and independently mutes tabs', async () => {
   test.setTimeout(120000);
@@ -84,6 +84,17 @@ test('native browser agent completes a real page workflow, keeps multi-turn cont
     const field = shell.getByRole('textbox', { name: '与浏览器 AI 对话' });
     // Opening the sidebar refreshes the global model config without a manual reload.
     await expect(shell.locator('.browser-ai-chat-toolbar')).toContainText('native-browser-test-model');
+    await expect(shell.locator('.browser-ai-welcome')).toContainText('打开网页，或直接提问');
+    await shell.getByRole('button', { name: '上下文用量', exact: true }).click();
+    const usage = shell.getByRole('dialog', { name: '上下文用量详情' });
+    await expect(usage).toContainText('600,000'); await expect(usage).toContainText('预估已用');
+    await shell.screenshot({ path: path.join(output, 'sidebar-context-light.png') });
+    await shell.keyboard.press('Escape'); await expect(usage).toHaveCount(0);
+    await expect(shell.getByRole('button', { name: '上下文用量', exact: true })).toBeFocused();
+    await shell.getByRole('button', { name: /搜索查证/ }).click();
+    await expect(field).toBeFocused(); await expect(field).toHaveValue(/优先查阅可靠来源/);
+    expect(round).toBe(0); await field.fill('');
+    await shell.screenshot({ path: path.join(output, 'sidebar-welcome-light.png') });
     await field.fill('打开测试网页，填写查询并运行，然后静音这个标签页。'); await field.press('Enter');
     await expect(shell.locator('.browser-ai-approval')).toBeVisible();
     expect(round).toBe(4); await run({ type: 'tab.zoom', factor: 1.25 });
@@ -162,6 +173,48 @@ test('native browser agent completes a real page workflow, keeps multi-turn cont
     await results.getByRole('button', { name: '阅读正文', exact: true }).click();
     await expect(results.locator('.browser-source-card-content strong')).toHaveText('真实正文样式');
     await shell.getByRole('button', { name: '清空结果', exact: true }).click(); await expect(shell.locator('.browser-start-intro')).toBeVisible();
+    await run({ type: 'tab.select', id: targetId });
+    await shell.getByRole('button', { name: '浏览器 AI', exact: true }).click();
+    await shell.getByRole('button', { name: '新会话', exact: true }).click();
+    await expect(shell.locator('.browser-ai-page-preview')).toContainText('Native browser agent fixture');
+    await shell.screenshot({ path: path.join(output, 'sidebar-page-light.png') });
+    const side = shell.locator('.browser-panel-ai');
+    await side.screenshot({ path: path.join(output, 'sidebar-panel-light.png') });
+    async function sidebarFits() {
+      return side.evaluate(element => {
+        const panel = element.getBoundingClientRect();
+        const controls = [...element.querySelectorAll('.browser-ai-header-actions button, .browser-ai-quick-actions button, .browser-ai-composer-actions button')];
+        const rectangles = controls.map(control => control.getBoundingClientRect());
+        return element.scrollWidth <= element.clientWidth + 1 && rectangles.every(rect => rect.left >= panel.left && rect.right <= panel.right + 1)
+          && rectangles.every(rect => rect.width >= 24 && rect.height >= 24);
+      });
+    }
+    await expect.poll(sidebarFits).toBe(true);
+    const resize = shell.getByRole('separator', { name: '调整 AI 侧栏宽度' }); await resize.focus();
+    for (let index = 0; index < 12; index++) await resize.press('ArrowRight');
+    await expect.poll(async () => Math.round((await side.boundingBox())!.width)).toBe(300);
+    await expect.poll(sidebarFits).toBe(true);
+    await shell.getByRole('button', { name: '上下文用量', exact: true }).click(); await expect(usage).toBeVisible();
+    const popup = await usage.boundingBox(); const panel = await side.boundingBox();
+    expect(popup!.x).toBeGreaterThanOrEqual(panel!.x); expect(popup!.x + popup!.width).toBeLessThanOrEqual(panel!.x + panel!.width);
+    await shell.screenshot({ path: path.join(output, 'sidebar-context-narrow.png') });
+    await field.click(); await expect(usage).toHaveCount(0);
+    await shell.screenshot({ path: path.join(output, 'sidebar-page-narrow.png') });
+    const appearance = await openAppSettingsDialog(application, shell);
+    await appearance.getByRole('tab', { name: '外观', exact: true }).click();
+    await appearance.getByRole('radio', { name: '暗色', exact: true }).click(); await shell.keyboard.press('Escape');
+    await expect.poll(() => shell.locator('.browser-ai-chat').evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe('rgb(255, 255, 255)');
+    await shell.screenshot({ path: path.join(output, 'sidebar-page-dark.png') });
+    await side.screenshot({ path: path.join(output, 'sidebar-panel-dark.png') });
+    const lightAppearance = await openAppSettingsDialog(application, shell);
+    await lightAppearance.getByRole('tab', { name: '外观', exact: true }).click();
+    await lightAppearance.getByRole('radio', { name: '亮色', exact: true }).click(); await shell.keyboard.press('Escape');
+    await field.fill('保留尚未发送的浏览器问题');
+    await shell.getByRole('button', { name: '收起 AI 侧栏', exact: true }).click(); await expect(side).toHaveCount(0);
+    await shell.getByRole('button', { name: '浏览器 AI', exact: true }).click(); await expect(field).toHaveValue('保留尚未发送的浏览器问题');
+    await shell.getByRole('button', { name: '上下文用量', exact: true }).click();
+    await shell.getByRole('button', { name: '调整上下文预算', exact: true }).click(); await expect(shell.locator('.browser-ai-context-setting select')).toHaveValue('600000');
+    await shell.getByRole('button', { name: '浏览器 AI', exact: true }).click(); await expect(field).toHaveValue('保留尚未发送的浏览器问题');
     await test.info().attach('native-agent-model-requests', { body: JSON.stringify(requests.map(({ messages, model }) => ({ model, messageCount: (messages as unknown[]).length }))), contentType: 'application/json' });
   } finally { await application?.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
