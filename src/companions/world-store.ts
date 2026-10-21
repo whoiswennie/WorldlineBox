@@ -133,15 +133,22 @@ export class CompanionWorldStore {
     const found = this.db.prepare('SELECT data FROM companion_world_perceptions WHERE companion_id=?').get(companionId);
     return found ? parse<CompanionWorldPerception>(row(found).data) : undefined;
   }
-  private refreshPerceptions(state: StoredWorld, target: number): void {
+  private refreshPerceptions(state: StoredWorld, target: number, observingCompanionId?: string): void {
     // Perception samples the reached present once, never invents observations
     // along an unobserved offline route or scales with observer window count.
-    if (state.cursor + 1 < target || state.cursor < this.perceptionNextAt) return;
+    if (state.cursor + 1 < target) return;
+    const periodicDue = state.cursor >= this.perceptionNextAt;
+    const observingActor = observingCompanionId ? state.actors.find(actor => actor.companionId === observingCompanionId) : undefined;
+    const priorObservation = observingActor ? this.perception(observingActor.companionId) : undefined;
+    const observerMoved = !!observingActor && (!priorObservation || priorObservation.sceneId !== observingActor.sceneId
+      || priorObservation.activity !== observingActor.activity || Math.hypot(priorObservation.position.x - observingActor.position.x, priorObservation.position.y - observingActor.position.y) > .000001);
+    if (!periodicDue && !observerMoved) return;
     const scenes = this.scenes(state), virtualAt = this.virtualFor(state, state.cursor), climate = companionWorldEnvironment(virtualAt, state.settings.timeZone);
     let nextSampleAt = state.cursor + COMPANION_WORLD_PERCEPTION_INTERVAL_MS;
     for (const actor of state.actors) {
+      if (!periodicDue && actor.companionId !== observingCompanionId) continue;
       const saved = this.db.prepare('SELECT data,last_event_at,last_signature FROM companion_world_perceptions WHERE companion_id=?').get(actor.companionId), previous = saved ? parse<CompanionWorldPerception>(row(saved).data) : undefined;
-      if (previous && previous.sceneId === actor.sceneId && previous.awake === (actor.activity !== 'sleeping')
+      if ((actor.companionId !== observingCompanionId || !observerMoved) && previous && previous.sceneId === actor.sceneId && previous.awake === (actor.activity !== 'sleeping')
         && state.cursor < Date.parse(previous.observedAtReal) + COMPANION_WORLD_PERCEPTION_INTERVAL_MS) {
         nextSampleAt = Math.min(nextSampleAt, Date.parse(previous.observedAtReal) + COMPANION_WORLD_PERCEPTION_INTERVAL_MS); continue;
       }
@@ -160,7 +167,7 @@ export class CompanionWorldStore {
       this.db.prepare('INSERT INTO companion_world_perceptions(companion_id,last_event_at,last_signature,samples,data) VALUES(?,?,?,1,?) ON CONFLICT(companion_id) DO UPDATE SET last_event_at=excluded.last_event_at,last_signature=excluded.last_signature,samples=samples+1,data=excluded.data')
         .run(actor.companionId, lastEvent, lastSignature, JSON.stringify(perception));
     }
-    this.perceptionNextAt = nextSampleAt;
+    this.perceptionNextAt = periodicDue ? nextSampleAt : Math.min(this.perceptionNextAt, nextSampleAt);
   }
   socialContext(observeOnly = false): { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean } {
     const now = Date.now(); if (!observeOnly) this.ensureThrough(now); const state = this.load(), at = this.virtualFor(state, observeOnly ? now : state.cursor), day = companionTimeInZone(at, state.settings.timeZone);
@@ -1230,7 +1237,10 @@ export class CompanionWorldStore {
   }
   snapshot(scope?: CompanionWorldScope): CompanionWorldSnapshot {
     if (scope) this.requireScope(scope);
-    const now = Date.now(); this.ensureThrough(now); return this.atomic(() => { const state = this.load(); this.sync(state); this.refreshPerceptions(state, now); this.save(state);
+    const now = Date.now(); this.ensureThrough(now); return this.atomic(() => { const state = this.load(); this.sync(state);
+    // Explicit actor observation must describe the same instant as its route,
+    // arrival and work receipts. Observer windows retain the periodic throttle.
+    this.refreshPerceptions(state, now, scope?.companionId); this.save(state);
     // A snapshot observes one instant. SQL/projection time after catching up is
     // not new offline simulation debt and must not suppress autonomous events.
     return this.snapshotValue(state, now, scope); });

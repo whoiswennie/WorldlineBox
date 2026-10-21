@@ -61,6 +61,22 @@ function indoors() {
 }
 
 describe('authoritative continuous subjective perception', () => {
+  it('refreshes a moving actor immediately on its explicit observation without resampling other actors or duplicating unchanged reads', () => {
+    const f = indoors();
+    f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: 'alice_door' } });
+    advance(f.store, 4000); observe(f);
+    const before = records(f.filename), beforeBob = before.find(row => row.companion_id === 'bob')!;
+    advance(f.store, 150);
+    const authoritative = f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!;
+    const actual = observe(f);
+    expect(actual.perception!.position).toEqual(authoritative.position);
+    expect(actual.perception!.activity).toBe(authoritative.activity);
+    expect(actual.perception!.observedAtReal).toBe(new Date(Date.now()).toISOString());
+    expect(records(f.filename).find(row => row.companion_id === 'bob')).toEqual(beforeBob);
+    const after = records(f.filename);
+    for (let poll = 0; poll < 40; poll++) { observe(f); f.store.request({ type: 'world.snapshot' }); }
+    expect(records(f.filename)).toEqual(after);
+  });
   it('limits a private tool view to self and locally discovered facts while the observer retains the full world', () => {
     const f = fixture(), observer = f.store.request({ type: 'world.snapshot' }).world!, subjective = observe(f);
     expect(observer.actors.map(actor => actor.companionId)).toEqual(['alice', 'bob']);
