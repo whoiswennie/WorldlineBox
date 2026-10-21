@@ -4566,11 +4566,15 @@ async function startApplication(): Promise<void> {
         },
         dsh: () => dshLauncher, report: error => logger?.error('companions.service', error), onChanged: () => companionWorldWindows?.changed(),
       });
-      companionService.registerIpc({ requests: false });
+      companionService.registerIpc({ requests: false, attachments: false });
       logger?.info('companions.activated', 'Companion services activated by their first request.');
       return companionService;
     })().catch(error => { creatingCompanionService = undefined; throw error; });
   };
+  // Register before creating renderer processes: a late protocol.handle() is
+  // invisible to an already running Chromium URL loader factory. Keep only the
+  // lightweight route eager; storage and companion workers stay demand loaded.
+  protocol.handle('worldlinebox-companion', async request => (await ensureCompanionService()).attachmentResponse(request));
   ipcMain.handle(COMPANIONS_CHANNEL, async (event, input: unknown) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权访问伙伴服务。' };
     try { return await (await ensureCompanionService()).handleRendererRequest(event, input); }

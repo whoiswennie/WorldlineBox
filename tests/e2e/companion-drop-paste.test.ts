@@ -39,6 +39,7 @@ test('accepts native multi-file drops and copied files/images while preserving a
     await page.getByRole('button', { name: '发送', exact: true }).click(); await expect(page.locator('.companions-draft-attachments')).toHaveCount(0);
     const messages = async () => (await page.evaluate(() => (window as unknown as Bridge).worldlinebox.companions.request({ type: 'messages', conversationId: 'private-deepseek-flash', limit: 30 }))).messages!;
     await expect.poll(async () => (await messages()).find(message => message.content === '请处理这两个附件。')?.attachments.map(file => file.path)).toEqual(files);
+    await expect(page.locator('.companions-message.is-own .companions-attachment-images img')).toHaveJSProperty('naturalWidth', 80);
     await application.evaluate(({ clipboard }, paths) => {
       const names = Buffer.from(paths.join('\0') + '\0\0', 'utf16le'), header = Buffer.alloc(20); header.writeUInt32LE(20, 0); header.writeUInt32LE(1, 16);
       const fixture = Buffer.concat([header, names]); clipboard.has = format => format === 'CF_HDROP'; clipboard.readBuffer = format => format === 'CF_HDROP' ? fixture : Buffer.alloc(0);
@@ -52,6 +53,7 @@ test('accepts native multi-file drops and copied files/images while preserving a
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect.poll(async () => (await messages()).filter(message => message.authorId === 'user' && message.attachments.length === 1).length).toBe(1);
     const image = (await messages()).find(message => message.authorId === 'user' && message.attachments.length === 1)!.attachments[0]!;
+    await expect(page.locator('.companions-message.is-own').last().locator('.companions-attachment-images img')).toHaveJSProperty('naturalWidth', 80);
     expect(path.isAbsolute(image.path!)).toBe(true); expect(image.path!.startsWith(profile + path.sep)).toBe(true); expect(existsSync(image.path!)).toBe(true);
     expect(readFileSync(image.path!).subarray(0, 8)).toEqual(Buffer.from([137,80,78,71,13,10,26,10]));
     const layout = await page.locator('[aria-label="消息输入区"]').evaluate(element => ({ width: element.getBoundingClientRect().width, overflow: getComputedStyle(element).overflowX }));

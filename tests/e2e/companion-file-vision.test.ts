@@ -33,6 +33,7 @@ async function openChat(page: Page) {
   await page.locator(`[data-companion-contact="${companionId}"]`).click(); await page.getByRole('button', { name: '发消息', exact: true }).click();
 }
 async function awake(page: Page) {
+  await request(page, { type: 'companion.set-active', id: companionId, active: true });
   const world = (await request(page, { type: 'world.snapshot' })).world!;
   await request(page, { type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
   const routine = (await request(page, { type: 'routine.get', companionId, conversationId })).routine!, hour = Math.floor(world.clock.hour);
@@ -75,6 +76,8 @@ test('reads actual text and image pixels with native tools, sends an existing fi
         else if (context.purpose?.startsWith('memory_')) output = { candidates: [] };
         else {
           const files = context.files as CompanionFileInput[], tools = body.messages.filter((message: { role: string }) => message.role === 'tool');
+          const references = context.messages.flatMap((message: { attachments?: Array<{ type: string; attachmentId: string; path?: string; available: boolean }> }) => message.attachments ?? []);
+          for (const file of files) expect(references).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'local_attachment_reference', attachmentId: file.attachmentId, path: file.path, available: true })]));
           primary.push({ files, toolIds: tools.map((tool: { tool_call_id: string }) => tool.tool_call_id) });
           if (!tools.length) {
             expect(files.map(file => file.name).sort()).toEqual(['现有轻音.wav', '纸船.png', '验收记录.txt'].sort());
@@ -118,7 +121,7 @@ test('reads actual text and image pixels with native tools, sends an existing fi
     await page.getByRole('button', { name: '发送文件或图片', exact: true }).click(); await expect(page.locator('.companions-draft-attachments > span')).toHaveCount(3);
     await page.getByRole('textbox', { name: '输入消息', exact: true }).fill('请直接查看上传的文字和图片，把它们的快照和已有音频附给我；不要修改、运行或创建外部任务。'); await page.getByRole('button', { name: '发送', exact: true }).click();
     let reply: CompanionMessage | undefined;
-    await expect.poll(async () => { const messages = (await request(page, { type: 'messages', conversationId, limit: 30 })).messages!; reply = messages.find(message => message.authorId === companionId && !message.isReplyDraft && message.content.includes(finalText)); return reply?.attachments.length ?? 0; }, { timeout: 45000 }).toBe(3);
+    await expect.poll(async () => { expect(providerErrors).toEqual([]); const messages = (await request(page, { type: 'messages', conversationId, limit: 30 })).messages!; reply = messages.find(message => message.authorId === companionId && !message.isReplyDraft && message.content.includes(finalText)); return reply?.attachments.length ?? 0; }, { timeout: 45000 }).toBe(3);
     expect(providerErrors).toEqual([]); expect(primary).toHaveLength(2); expect(proof).toBeTruthy();
     const source = (await request(page, { type: 'messages', conversationId, limit: 30 })).messages!.find(message => message.authorId === 'user' && message.content.includes('直接查看上传'))!;
     expect(reply!.replyToId).toBe(source.id); expect(reply!.attachments.map(attachment => attachment.mime).sort()).toEqual(['audio/wav', 'image/jpeg', 'text/plain'].sort());

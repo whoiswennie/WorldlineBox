@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 import { expect, it, vi } from 'vitest';
-import { buildCompanionContext, type CompanionReplyInput } from '../../src/main/companions/context';
+import { buildCompanionContext, refreshCompanionFilesContext, type CompanionReplyInput } from '../../src/main/companions/context';
 import { generateCompanionReply, type CompanionModelConfig } from '../../src/main/companions/model';
 import { companionFileToolArgumentsSchemas, type CompanionToolImageReference, type ToolVisualInput } from '../../src/shared/companion-file-tool';
 import { companionLoopTurnSchema, type CompanionLoopTurn } from '../../src/shared/companion-loop';
@@ -50,6 +50,17 @@ it('validates only read-only file arguments and persists references and attachme
   expect(companionFileToolArgumentsSchemas.send_file.parse({ path: 'C:\\user\\clip.mp4' })).toEqual({ path: 'C:\\user\\clip.mp4' });
   const stored = companionLoopTurnSchema.parse(turn()); expect(stored.results?.[0]?.images).toEqual([snapshot()]); expect(stored.results?.[0]?.attachmentIds).toEqual(['image_1']); expect(JSON.stringify(stored)).not.toContain(pixels);
   expect(companionLoopTurnSchema.safeParse({ ...turn(), results: [{ ...turn().results![0], images: [{ ...snapshot(), base64: pixels }] }] }).success).toBe(false);
+});
+it('wraps message attachments in current host-verified absolute path references without serializing payloads into chat text', () => {
+  const value = input(), file = { messageId: 'source', attachmentId: 'upload', name: '照片.png', mime: 'image/png', path: 'C:\\资料\\照片.png', available: true };
+  value.messages = [{ ...value.messages[0]!, attachments: [{ id: file.attachmentId, name: file.name, mime: file.mime, size: 100, path: 'C:\\stale\\photo.png', url: 'data:image/png;base64,' + pixels }] }];
+  const context = buildCompanionContext({ ...value, fileInputs: [file] }), data = JSON.parse(context.user);
+  expect(data.messages[0].content).toBe(value.messages[0]!.content);
+  expect(data.messages[0].attachments).toEqual([{ type: 'local_attachment_reference', attachmentId: 'upload', name: file.name, mime: file.mime, path: file.path, available: true }]);
+  expect(context.user).not.toContain(pixels); expect(context.user).not.toContain('stale');
+  const refreshed = JSON.parse(refreshCompanionFilesContext(context, [{ ...file, available: false }]).user);
+  expect(refreshed.messages[0].attachments[0]).toMatchObject({ available: false }); expect(refreshed.messages[0].attachments[0].path).toBeUndefined();
+  expect(JSON.parse(refreshCompanionFilesContext(context, []).user).messages[0].attachments[0].path).toBeUndefined();
 });
 it.each(formats)('registers read_file/read_image/send_file and parses real calls through %s', async format => {
   const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(envelope(format, 'read_image'));

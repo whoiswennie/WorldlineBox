@@ -213,23 +213,24 @@ export class CompanionService {
       try { return decorateAttachments(await this.handle(request.data)); }
       catch (error) { return { ok: false, error: publicError(error) }; }
   }
-  registerIpc(options: { requests?: boolean } = {}) {
+  registerIpc(options: { requests?: boolean; attachments?: boolean } = {}) {
     if (options.requests !== false) ipcMain.handle(COMPANIONS_CHANNEL, (event, input: unknown) => this.handleRendererRequest(event, input));
-    protocol.handle('worldlinebox-companion', async request => {
-      try {
-        const url = new URL(request.url);
-        if (url.hostname !== 'attachment' || url.search || url.hash) return new Response(null, { status: 404 });
-        const id = companionIdSchema.parse(url.pathname.slice(1));
-        const stored = await this.call({ type: 'attachment.get', id });
-        if (!stored.storedAttachment) return new Response(null, { status: 404 });
-        const file = await this.attachmentPath(stored.storedAttachment.relativePath, stored.storedAttachment.sourcePath);
-        const mime = stored.storedAttachment.attachment.mime;
-        // Unknown content remains a download; never turn an imported HTML/SVG into an executable document.
-        return companionAttachmentResponse(file, /^(?:image\/(?:png|jpeg|webp|gif)|audio\/(?:mpeg|mp4|ogg|wav|flac|webm|aac)|video\/(?:mp4|webm|ogg|quicktime)|application\/pdf|text\/plain)$/u.test(mime) ? mime : 'application/octet-stream', request);
-      } catch { return new Response(null, { status: 404 }); }
-    });
+    if (options.attachments !== false) protocol.handle('worldlinebox-companion', request => this.attachmentResponse(request));
     this.timer = setInterval(() => { void this.checkProactive(); }, 60_000);
     this.timer.unref();
+  }
+  async attachmentResponse(request: Request): Promise<Response> {
+    try {
+      const url = new URL(request.url);
+      if (url.hostname !== 'attachment' || url.search || url.hash) return new Response(null, { status: 404 });
+      const id = companionIdSchema.parse(url.pathname.slice(1));
+      const stored = await this.call({ type: 'attachment.get', id });
+      if (!stored.storedAttachment) return new Response(null, { status: 404 });
+      const file = await this.attachmentPath(stored.storedAttachment.relativePath, stored.storedAttachment.sourcePath);
+      const mime = stored.storedAttachment.attachment.mime;
+      // Unknown content remains a download; never turn an imported HTML/SVG into an executable document.
+      return companionAttachmentResponse(file, /^(?:image\/(?:png|jpeg|webp|gif)|audio\/(?:mpeg|mp4|ogg|wav|flac|webm|aac)|video\/(?:mp4|webm|ogg|quicktime)|application\/pdf|text\/plain)$/u.test(mime) ? mime : 'application/octet-stream', request);
+    } catch { return new Response(null, { status: 404 }); }
   }
   async handle(request: CompanionsRequest): Promise<CompanionsResponse> {
     await this.initialization;

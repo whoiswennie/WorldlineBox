@@ -395,7 +395,9 @@ describe('CompanionService current public player identity', () => {
     expect(f.store.getMessage(source.id).authorId).toBe('user');
     const checkpoint = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
     expect(checkpoint.context!.user).not.toContain('publicProfiles');
-    expect(JSON.stringify(checkpoint)).not.toContain('base64');
+    // Instructions may name an encoding; durable data must not carry pixels.
+    expect(JSON.stringify({ user: JSON.parse(checkpoint.context!.user), turns: checkpoint.turns })).not.toContain('"base64":');
+    expect(JSON.stringify(checkpoint)).not.toContain('data:image/');
   });
 
   it('discards an in-flight response to an outdated profile and retries with the latest identity', async () => {
