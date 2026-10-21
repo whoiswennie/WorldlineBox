@@ -17,7 +17,7 @@ export class SharedInstanceData {
   private preparations: Promise<void> = Promise.resolve();
   constructor(private readonly options: {
     rootPath: string; plan: (runtimeId: string) => RuntimeLaunchPlan;
-    assertCompatible?: (runtimeId: string) => Promise<void>;
+    assertCompatible?: (runtimeId: string, signal?: AbortSignal) => Promise<void>;
     onIssue?: (instanceId: string, message: string) => void;
   }) {
     this.paths = sharedDataPaths(path.join(options.rootPath, 'shared'));
@@ -57,7 +57,8 @@ export class SharedInstanceData {
   }
   async prepare(instance: DshInstance, runtimeVersion: string, operation?: OperationContext, allowLegacyMigration = true): Promise<{ args: string[]; workspacePath: string }> {
     return this.serial(async () => {
-      await this.options.assertCompatible?.(instance.runtimeId);
+      operation?.signal.throwIfAborted();
+      await this.options.assertCompatible?.(instance.runtimeId, operation?.signal);
       await this.init(); operation?.signal.throwIfAborted();
       const prepared = await this.isPrepared(instance);
       const legacySaves = !prepared && (await hasPrivateSaveData(instance.homePath, instance.workspacePath)
@@ -111,7 +112,8 @@ export class SharedInstanceData {
   }
   async restoreFrom(source: string, original: DshSharedData, instance: DshInstance, runtimeVersion: string, operation?: OperationContext): Promise<void> {
     await this.serial(async () => {
-      await this.options.assertCompatible?.(instance.runtimeId);
+      operation?.signal.throwIfAborted();
+      await this.options.assertCompatible?.(instance.runtimeId, operation?.signal);
       await this.init();
       const plan = this.options.plan(instance.runtimeId);
       const env = await instanceEnvironment(path.dirname(instance.homePath), instance, plan);

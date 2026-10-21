@@ -94,7 +94,7 @@ export class DshLauncher {
     this.runtimes = new RuntimeService({ rootPath: this.rootPath, sevenZipPath: path7za.replace(/app\.asar([/\\])/, 'app.asar.unpacked$1'), onChanged, fetch: this.network.fetch,
       nodeTools: () => this.toolchain(), nodeInstallNetwork: signal => this.network.nodeInstallNetwork(signal) });
     this.sharedData = new SharedInstanceData({ rootPath: this.rootPath, plan: id => this.runtimes.plan(id),
-      assertCompatible: id => this.runtimes.assertSharedCompatible(id),
+      assertCompatible: (id, signal) => this.runtimes.assertSharedCompatible(id, signal),
       onIssue: (id, message) => { if (/^[a-z0-9-]{1,80}$/.test(id)) void appendFile(path.join(this.rootPath, 'instances', id, 'logs', 'host.log'), `${message}\n`).catch(() => undefined); },
     });
     this.instances = new InstanceService({ rootPath: this.rootPath, runtimes: this.runtimes, operations: this.operations, onChanged,

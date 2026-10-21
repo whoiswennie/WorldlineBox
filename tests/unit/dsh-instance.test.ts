@@ -66,6 +66,48 @@ afterEach(async () => {
 });
 
 describe('DSH isolated instance management', () => {
+  it('releases the starting state when cancelled during the last journal write before native spawn', async () => {
+    const { service, operations, request } = await setup();
+    const instance = await service.create('Cancel adapter preparation', 'first');
+    const run = operations.run.bind(operations);
+    const intercepted = vi.spyOn(operations, 'run').mockImplementation((kind, label, id, work, retry) => run(kind, label, id, op => work({ ...op,
+      update: async (phase, progress) => { await op.update(phase, progress); if (phase === 'Preparing native Host adapters') operations.cancel(op.id); },
+    }), retry));
+    const response = await service.handle({ type: 'instance.start', instanceId: instance.id });
+    expect(response.ok).toBe(true); await operations.settle(); intercepted.mockRestore();
+    expect(operations.list()[0]?.status).toBe('cancelled');
+    expect(service.get(instance.id).status).toBe('failed');
+    expect(service.get(instance.id).pid).toBeUndefined();
+    await request({ type: 'instance.start', instanceId: instance.id });
+    expect(service.get(instance.id).status).toBe('running');
+    await request({ type: 'instance.stop', instanceId: instance.id });
+  });
+
+  it('reports elapsed integrity admission time and cancels before spawning a Host, then permits retry', async () => {
+    const { service, runtimes, operations, root, request } = await setup();
+    const instance = await service.create('Slow verification', 'first');
+    const original = runtimes.verify;
+    runtimes.verify = async (_id, signal) => new Promise<void>((_resolve, reject) => {
+      if (!signal) throw Error('Verification must receive the caller signal');
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      if (signal.aborted) reject(signal.reason);
+    });
+    const response = await service.handle({ type: 'instance.start', instanceId: instance.id });
+    if (!response.ok || !response.operationId) throw Error('Missing start operation');
+    await vi.waitFor(() => expect(operations.list()[0]?.phase).toMatch(/^Verifying fixed runtime · \d+s$/u), { timeout: 8000, interval: 50 });
+    expect(operations.list()[0]?.progress).toBe(5);
+    expect(service.get(instance.id).pid).toBeUndefined();
+    operations.cancel(response.operationId); await operations.settle();
+    expect(operations.list()[0]?.status).toBe('cancelled');
+    const log = await readFile(path.join(root, 'operations', response.operationId + '.log'), 'utf8');
+    expect(log).not.toContain('Starting isolated Harness Host');
+    runtimes.verify = original;
+    await request({ type: 'instance.start', instanceId: instance.id });
+    expect(service.get(instance.id).status).toBe('running');
+    await request({ type: 'instance.stop', instanceId: instance.id });
+    expect(operations.list().every(operation => operation.status !== 'running')).toBe(true);
+  }, 20000);
+
   it('keeps isolated instances, refuses a second WebUI, and explicitly switches without leaving the old Host alive', async () => {
     const { service, request, openWorkbench, operations } = await setup();
     const a = await service.create('A', 'first'); const b = await service.create('B', 'first');
