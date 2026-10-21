@@ -10,14 +10,18 @@ export function estimateBrowserAgentTokens(value: string): number {
   return Math.ceil(ascii / 3) + other;
 }
 /** Remove only complete call/result groups. Never emit an orphan native tool result. */
-export function compactBrowserAgentHistory(messages: readonly BrowserAgentMessage[], limit: number, previousSummary = ''): {
-  messages: BrowserAgentMessage[]; summary: string; removed: number;
+export function compactBrowserAgentHistory(messages: readonly BrowserAgentMessage[], limit: number, previousSummary = '', unit: 'bytes' | 'tokens' = 'bytes'): {
+  messages: BrowserAgentMessage[]; summary: string; removed: number; changed: boolean;
 } {
+  const measure = (text: string) => unit === 'tokens' ? estimateBrowserAgentTokens(text) : Buffer.byteLength(text);
+  // Large contexts usually fit. Avoid cloning every evidence payload on every
+  // model/tool round, and leave the earlier summary untouched when no work is needed.
+  if (measure(JSON.stringify(messages)) <= limit) return { messages: [...messages], summary: previousSummary, removed: 0, changed: false };
   const retained: BrowserAgentMessage[] = structuredClone([...messages]); const removed: BrowserAgentMessage[] = [];
-  const bytes = () => Buffer.byteLength(JSON.stringify(retained));
+  const size = () => measure(JSON.stringify(retained));
   // First shorten large evidence payloads while retaining the native action and
   // its result. The source cache can supply the full body again by stable ID.
-  if (bytes() > limit) for (const message of retained) {
+  if (size() > limit) for (const message of retained) {
     if (message.role !== 'tool' || Buffer.byteLength(message.text) <= 1800) continue;
     try {
       const value = JSON.parse(message.text);
@@ -33,7 +37,7 @@ export function compactBrowserAgentHistory(messages: readonly BrowserAgentMessag
       message.text = JSON.stringify(Array.isArray(value) ? value.slice(0, 8).map(excerpt) : excerpt(value));
     } catch { message.text = browserAgentTextBytes(message.text, 1200); }
   }
-  while (retained.length > 1 && bytes() > limit) {
+  while (retained.length > 1 && size() > limit) {
     const nextUser = retained.findIndex((message, index) => index > 0 && message.role === 'user');
     if (nextUser > 0) { removed.push(...retained.splice(0, nextUser)); continue; }
     // Retain the current request, and discard a whole older assistant/tool pair.
@@ -43,11 +47,12 @@ export function compactBrowserAgentHistory(messages: readonly BrowserAgentMessag
     if (end === retained.length) break;
     removed.push(...retained.splice(assistant, end - assistant));
   }
-  if (bytes() > limit) {
+  if (size() > limit) {
     for (const message of retained) {
       if (message.role === 'tool') message.text = browserAgentTextBytes(message.text, Math.max(700, Math.floor(limit / Math.max(2, retained.length))));
     }
   }
   const extract = removed.map(message => message.role === 'tool' ? `executed tool ${message.name}: ${browserAgentTextBytes(message.text, 450)}` : `${message.role}: ${browserAgentTextBytes(message.text, 700)}`).join('\n');
-  return { messages: retained, summary: browserAgentTextBytes([previousSummary.slice(-600), extract].filter(Boolean).join('\n').slice(-2400), 2800), removed: removed.length };
+  return { messages: retained, summary: extract ? browserAgentTextBytes([previousSummary.slice(-600), extract].filter(Boolean).join('\n').slice(-2400), 2800) : previousSummary,
+    removed: removed.length, changed: JSON.stringify(retained) !== JSON.stringify(messages) };
 }

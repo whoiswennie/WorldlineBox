@@ -103,6 +103,9 @@ app.whenReady().then(async () => {
     // Native Chromium mouse input, including the middle-button disposition.
     // A shown but transparent, non-focusable owner avoids disturbing the desktop.
     host.setOpacity(0); host.setFocusable(false); host.showInactive();
+    // Wait for the compositor to present the newly shown view before native
+    // input hit testing. DOM readiness alone can precede that first frame.
+    await opener.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const point = await opener.executeJavaScript("(()=>{const r=document.querySelector('#background').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()");
     const beforeBackground = service.state().tabs.length;
     opener.debugger.attach('1.3');

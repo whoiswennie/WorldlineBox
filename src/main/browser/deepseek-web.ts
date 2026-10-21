@@ -35,7 +35,8 @@ export class DeepseekWebTools {
     const seen = new Set<string>();
     return data.data.results.flatMap(item => {
       const url = browserAiPublicUrl(item.url); if (!url || seen.has(url)) return []; seen.add(url);
-      return [{ id: seen.size, title: (item.title || url).slice(0, 1000), url, snippet: (item.summary || item.snippet || '').slice(0, 6000),
+      return [{ id: seen.size, title: (item.title || url).slice(0, 1000), url, snippet: (item.snippet || item.summary || '').slice(0, 6000),
+        ...(item.summary ? { summary: item.summary.slice(0, 6000) } : {}),
         content: options.need_content ? (item.content ?? '').slice(0, 32000) : '', kind: 'search' as const,
         ...(options.need_content && (item.content?.length ?? 0) > 32000 ? { truncated: true } : {}), ...(item.date ? { date: item.date.slice(0, 100) } : {}) }];
     }).slice(0, 20);

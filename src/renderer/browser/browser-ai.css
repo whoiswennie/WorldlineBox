@@ -41,7 +41,11 @@
 .browser-search-results > header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
 .browser-search-results > header span { color: #799182; font-size: 9px; letter-spacing: .12em; }
 .browser-search-results h1 { font-size: 21px; margin: 8px 0 0; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
-.browser-search-results > header > small { font-size: 11px; color: var(--ui-content-tertiary); flex-shrink: 0; }
+.browser-results-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-shrink: 0; flex-wrap: wrap; }
+.browser-results-actions > small { font-size: 11px; color: var(--ui-content-tertiary); }
+.browser-results-actions > button { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--ui-border-subtle); border-radius: 8px; background: var(--ui-surface-raised); color: var(--ui-content-secondary); font-size: 10px; }
+.browser-results-actions > button:hover { color: var(--ui-content-primary); background: var(--ui-surface-field); }
+.browser-results-actions > button:disabled { opacity: .55; cursor: wait; }
 .browser-source-card { margin-bottom: 10px; padding: 14px; border: 1px solid var(--ui-border-subtle); border-radius: 10px; background: var(--ui-surface-raised); }
 .browser-source-card-meta { display: flex; gap: 7px; align-items: center; min-width: 0; font-size: 10px; color: var(--ui-content-secondary); }
 .browser-source-card-meta .browser-site-mark { width: 20px; height: 20px; flex-basis: 20px; font-size: 11px; border-radius: 5px; }
@@ -51,15 +55,18 @@
 .browser-source-card .browser-source-card-title { display: block; width: 100%; padding: 0; margin: 10px 0 6px; border: 0; background: transparent; text-align: left; font-family: inherit; font-weight: 550; font-size: 12px; line-height: 1.65; color: var(--ui-content-primary); cursor: pointer; overflow-wrap: anywhere; }
 .browser-source-card-title:hover { color: #5d8972; }
 .browser-source-card-excerpt { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: 10px; line-height: 1.85; color: var(--ui-content-secondary); margin: 0; overflow-wrap: anywhere; }
+.browser-source-card-excerpt strong { font-weight: 550; color: var(--ui-content-primary); }
+.browser-source-card-title code, .browser-source-card-excerpt code { font: .93em/1.5 'Cascadia Code', monospace; background: var(--ui-surface-field); border-radius: 3px; padding: 1px 3px; }
 .browser-source-card-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 10px; color: var(--ui-content-tertiary); }
-.browser-source-card-actions > time { font-size: 9px; margin-right: auto; }
+.browser-source-card-actions > time { font-size: 9px; margin-right: auto; font-variant-numeric: tabular-nums; }
 .browser-source-card-actions > button { display: flex; align-items: center; gap: 4px; padding: 2px 0; border: 0; color: #658675; background: transparent; font-size: 9px; cursor: pointer; }
 .browser-source-card-actions > button:hover { color: var(--ui-content-primary); }
 .browser-source-card-content { max-height: 400px; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 14px 0 2px; margin-top: 12px; border-top: 1px solid var(--ui-border-subtle); }
 .browser-source-clip-note { padding: 8px 10px; border-radius: 6px; background: var(--ui-surface-field); color: var(--ui-content-secondary); font-size: 9px; line-height: 1.8; margin: 0 0 12px; }
-.browser-search-results > .browser-source-card { padding: 20px 22px; }
-.browser-search-results .browser-source-card-title { font-size: 15px; }
+.browser-search-results > .browser-source-card { padding: 20px 22px; margin-bottom: 13px; border-radius: 12px; }
+.browser-search-results .browser-source-card-title { font-size: 16px; line-height: 1.65; margin: 12px 0 9px; }
 .browser-search-results .browser-source-card-excerpt { font-size: 12px; }
+.browser-search-results .browser-source-card-actions { margin-top: 15px; padding-top: 12px; border-top: 1px solid var(--ui-border-subtle); }
 .browser-search-results .browser-source-card-content { max-height: 600px; }
 .browser-ai-resizer { flex: 0 0 5px; position: relative; z-index: 2; cursor: col-resize; touch-action: none; background: var(--ui-surface-raised); border-left: 1px solid var(--ui-border-subtle); }
 .browser-ai-resizer:hover, .browser-ai-resizer:active { background: color-mix(in srgb, var(--ui-content-accent) 25%, var(--ui-surface-raised)); }

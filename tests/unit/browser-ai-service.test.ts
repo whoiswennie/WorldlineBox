@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ vi.mock('electron', () => ({ safeStorage: { isEncryptionAvailable: () => true,
   encryptString: (text: string) => Buffer.from([...text].reverse().join('')), decryptString: (bytes: Buffer) => [...bytes.toString()].reverse().join('') } }));
 import { BrowserAiService, type BrowserAiHooks } from '../../src/main/browser/ai-service';
 import { browserStateSchema } from '../../src/shared/browser';
+import { browserAiRequestSchema } from '../../src/shared/browser-ai';
 
 function sse(text: string, call?: { name: string; arguments: string; id?: string }): Response {
   const delta = call ? { tool_calls: [{ index: 0, id: call.id ?? 'call1', type: 'function', function: { name: call.name, arguments: call.arguments } }] } : { content: text };
@@ -20,6 +21,47 @@ async function fixture(fetchFn: typeof fetch, extra: Partial<BrowserAiHooks> = {
   const service = new BrowserAiService(root, hooks); await service.init(); return { service, hooks, root };
 }
 async function done(service: BrowserAiService) { await vi.waitFor(() => expect(['completed', 'failed', 'cancelled']).toContain(service.state().task?.status), { timeout: 5000 }); }
+
+it('defaults to 600K, migrates legacy small budgets once, and persists explicit budgets up to 1M', async () => {
+  const { service, root, hooks } = await fixture(vi.fn<typeof fetch>());
+  expect(service.config().contextTokens).toBe(600000); await service.shutdown();
+  await writeFile(path.join(root, 'ai-preferences.json'), JSON.stringify({ contextTokens: 16000 }));
+  const migrated = new BrowserAiService(root, hooks); await migrated.init(); expect(migrated.config().contextTokens).toBe(600000);
+  expect(JSON.parse(await readFile(path.join(root, 'ai-preferences.json'), 'utf8'))).toEqual({ version: 2, contextTokens: 600000 });
+  expect(browserAiRequestSchema.safeParse({ type: 'ai.preferences', contextTokens: 1000000 }).success).toBe(true);
+  expect(browserAiRequestSchema.safeParse({ type: 'ai.preferences', contextTokens: 1000001 }).success).toBe(false);
+  for (const contextTokens of [1000000, 12000]) {
+    await migrated.handle({ type: 'ai.preferences', contextTokens });
+    const restarted = new BrowserAiService(root, hooks); await restarted.init(); expect(restarted.config().contextTokens).toBe(contextTokens); await restarted.shutdown();
+  }
+  await migrated.shutdown();
+});
+
+it('sends a mixed-language conversation well beyond the old cap without premature or repeated compression', async () => {
+  const sent: string[] = []; const fetchFn: typeof fetch = vi.fn(async (_url, init) => { sent.push(String(init?.body)); return sse('页面核实内容和事实结论。'.repeat(900)); });
+  const { service } = await fixture(fetchFn);
+  for (let index = 0; index < 8; index++) {
+    await service.handle({ type: 'ai.start', tabId: 'tab1', mode: 'followup', query: `问题 ${index}: ` + '核实官方文档与页面实际内容。'.repeat(80) }); await done(service);
+    expect(service.state().task!.status).toBe('completed'); expect(service.state().task!.compacted).toBe(0);
+  }
+  expect(service.state().task!.contextTokensUsed).toBeGreaterThan(100000);
+  expect(service.state().task!.contextTokensUsed).toBeLessThan(600000 - 4096);
+  expect(sent.at(-1)).toContain('问题 0:'); await service.shutdown();
+});
+
+it('stops a reset result producer even if its network ignores abort, retaining the independent conversation', async () => {
+  let resolve!: (value: Response) => void;
+  const fetchFn: typeof fetch = vi.fn(async url => String(url).endsWith('/tools/search') ? new Promise<Response>(done => { resolve = done; }) : sse('Keep this conversation.'));
+  const { service, hooks } = await fixture(fetchFn);
+  await service.handle({ type: 'ai.start', tabId: 'tab1', mode: 'followup', query: 'Keep my chat' }); await done(service);
+  await service.handle({ type: 'ai.key.save', key: 'local-test-only' });
+  await service.handle({ type: 'ai.start', tabId: 'tab1', mode: 'search', query: 'Delayed results' });
+  const reset = service.stopForResults('tab1');
+  resolve(new Response('{"results":[{"title":"Late result","url":"https://example.com/"}]}')); await reset;
+  expect(hooks.showResults).not.toHaveBeenCalled(); expect(service.state().task!.status).toBe('cancelled');
+  expect(service.state().task!.messages).toContainEqual({ role: 'assistant', content: 'Keep this conversation.' });
+  await service.shutdown();
+});
 
 it('runs actual native function-call/result rounds, keeps search syntax, citations and follow-up context', async () => {
   const requests: Array<{ url: string; body: Record<string, unknown> }> = []; let round = 0;

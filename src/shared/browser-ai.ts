@@ -1,7 +1,10 @@
 import { z } from 'zod';
 const id = z.string().min(1).max(100);
+export const BROWSER_AI_DEFAULT_CONTEXT_TOKENS = 600_000;
+export const BROWSER_AI_MAX_CONTEXT_TOKENS = 1_000_000;
+const contextTokens = z.number().int().min(8192).max(BROWSER_AI_MAX_CONTEXT_TOKENS);
 export const browserAiSourceSchema = z.object({ id: z.number().int().min(1), title: z.string().max(1000), url: z.string().max(8192),
-  snippet: z.string().max(6000), content: z.string().max(32000), kind: z.enum(['search', 'fetched', 'current']), date: z.string().max(100).optional(), truncated: z.boolean().optional() });
+  snippet: z.string().max(6000), summary: z.string().max(6000).optional(), content: z.string().max(32000), kind: z.enum(['search', 'fetched', 'current']), date: z.string().max(100).optional(), truncated: z.boolean().optional() });
 export type BrowserAiSource = z.infer<typeof browserAiSourceSchema>;
 export const browserAiTaskSchema = z.object({ id, tabId: id, mode: z.enum(['search', 'fetch', 'research', 'page', 'followup']), query: z.string().max(8000),
   status: z.enum(['running', 'completed', 'failed', 'cancelled', 'approval']), stage: z.string().max(300), sources: z.array(browserAiSourceSchema).max(20),
@@ -12,7 +15,7 @@ export const browserAiTaskSchema = z.object({ id, tabId: id, mode: z.enum(['sear
   approval: z.object({ id, description: z.string().max(1000) }).optional(), contextBytes: z.number().min(0), contextTokensUsed: z.number().min(0), compacted: z.number().int().min(0) });
 export type BrowserAiTask = z.infer<typeof browserAiTaskSchema>;
 export const browserAiConfigSchema = z.object({ hasSearchKey: z.boolean(), keySource: z.enum(['browser', 'global', 'none']),
-  hasModel: z.boolean(), model: z.string().max(160), apiFormat: z.string().max(50), contextTokens: z.number().int().min(8192).max(32768), error: z.string().max(500).optional() });
+  hasModel: z.boolean(), model: z.string().max(160), apiFormat: z.string().max(50), contextTokens, error: z.string().max(500).optional() });
 export type BrowserAiConfig = z.infer<typeof browserAiConfigSchema>;
 export const browserAiRequests = [
   z.object({ type: z.literal('ai.key.save'), key: z.string().trim().max(8192).refine(key => !/[\r\n]/.test(key)) }).strict(),
@@ -21,7 +24,7 @@ export const browserAiRequests = [
   z.object({ type: z.literal('ai.cancel'), tabId: id, taskId: id }).strict(),
   z.object({ type: z.literal('ai.clear'), tabId: id }).strict(),
   z.object({ type: z.literal('ai.approve'), taskId: id, actionId: id, allow: z.boolean() }).strict(),
-  z.object({ type: z.literal('ai.preferences'), contextTokens: z.number().int().min(8192).max(32768) }).strict(),
+  z.object({ type: z.literal('ai.preferences'), contextTokens }).strict(),
 ] as const;
 export const browserAiRequestSchema = z.discriminatedUnion('type', browserAiRequests);
 export type BrowserAiRequest = z.infer<typeof browserAiRequestSchema>;

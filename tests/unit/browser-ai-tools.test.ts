@@ -6,7 +6,7 @@ import { browserAgentDeclarations, parseBrowserAgentTool } from '../../src/share
 const signal = () => new AbortController().signal;
 it('uses fixed official tool endpoints, exact search syntax, independent credentials and bounded results', async () => {
   const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ results: [
-    { title: 'Official', url: 'https://www.electronjs.org/docs/latest', summary: 'Official summary', content: 'Full content' },
+    { title: 'Official', url: 'https://www.electronjs.org/docs/latest', snippet: 'Short display snippet', summary: 'Official summary', content: 'Full content' },
     { title: 'Duplicate', url: 'https://www.electronjs.org/docs/latest', summary: 'duplicate' },
     { title: 'Unsafe', url: 'javascript:alert(1)' }, { title: 'Private', url: 'http://127.0.0.1/private' },
   ] })));
@@ -16,7 +16,7 @@ it('uses fixed official tool endpoints, exact search syntax, independent credent
   expect(fetchFn).toHaveBeenCalledWith('https://api.deepseek.com/v1/tools/search', expect.objectContaining({ redirect: 'error', method: 'POST',
     headers: { Authorization: 'Bearer test-browser-key', 'Content-Type': 'application/json' } }));
   expect(JSON.parse(String(fetchFn.mock.calls[0]![1]!.body))).toEqual({ query, count: 3, need_content: true, ori_question: 'Find official documentation' });
-  expect(found).toHaveLength(1); expect(found[0]).toMatchObject({ snippet: 'Official summary', content: 'Full content', kind: 'search' });
+  expect(found).toHaveLength(1); expect(found[0]).toMatchObject({ snippet: 'Short display snippet', summary: 'Official summary', content: 'Full content', kind: 'search' });
 });
 
 it.each([401, 402, 403, 404, 429, 500])('maps HTTP %i to actionable errors without returning response bodies or keys', async status => {

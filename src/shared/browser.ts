@@ -42,6 +42,7 @@ export const browserRequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('tab.command'), id, command: z.enum(['reload', 'duplicate', 'pin', 'closeOthers', 'closeRight']) }).strict(),
   z.object({ type: z.literal('tab.contextMenu'), id, locale: z.enum(['zh-CN', 'en']) }).strict(),
   z.object({ type: z.literal('page.save') }).strict(), z.object({ type: z.literal('page.print') }).strict(),
+  z.object({ type: z.literal('page.results.reset'), id }).strict(),
   z.object({ type: z.literal('tab.navigate'), text: z.string().min(1).max(8192) }),
   z.object({ type: z.literal('tab.action'), action: z.enum(['back', 'forward', 'reload', 'stop', 'home', 'pin', 'mute', 'fullscreen', 'devtools']) }),
   z.object({ type: z.literal('tab.openExternal'), source: z.enum(['page', 'signInSite']).default('page') }).strict(),

@@ -47,7 +47,7 @@ export class BrowserService {
   private readonly selectionFrames = new Map<string, { frame: Electron.WebFrameMain; url: string; documentId: string }>();
   private readonly ai: BrowserAiService;
   private readonly pages = new BrowserPageController(id => this.navigationVersions.get(id) ?? 0);
-  private readonly searchPages = new Map<string, { query: string; sources: BrowserAiSource[] }>();
+  private readonly searchPages = new Map<string, { query: string; sources: BrowserAiSource[]; producerId: string }>();
   private agentClosingTab?: string;
   private aiSearchTabId?: string;
   constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>, private readonly fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => CompanionModelConfig) {
@@ -57,12 +57,12 @@ export class BrowserService {
         tabs: [...this.store.data.tabs].sort((a, b) => Number(b.id === this.store.data.activeTabId) - Number(a.id === this.store.data.activeTabId)).slice(0, 8)
           .map(({ id, title, url, muted, pinned, loading }) => ({ id, title: title.slice(0, 120), url: url.length <= 1500 ? url : '[长地址请通过 browser_tabs 查询]', muted, pinned, loading })) }),
       tool: (name, input, signal, confirm) => this.agentTool(name, input, signal, confirm),
-      showResults: async (id, query, sources) => {
+      showResults: async (id, query, sources, producerId) => {
         let tab = this.store.data.tabs.find(item => item.id === id);
         if (!tab || tab.url !== BROWSER_HOME || tab.nativeBlank) tab = this.store.data.tabs.find(item => item.id === this.aiSearchTabId && item.url === BROWSER_HOME && !item.nativeBlank);
         if (!tab) tab = this.addTab(BROWSER_HOME); else if (tab.id !== this.store.data.activeTabId) this.select(tab.id);
         this.aiSearchTabId = tab.id;
-        this.searchPages.set(tab.id, { query, sources: structuredClone([...sources]) });
+        this.searchPages.set(tab.id, { query, sources: structuredClone([...sources]), producerId });
         tab.title = '搜索 · ' + query.slice(0, 100); this.layout(); this.changed();
       } });
   }
@@ -721,6 +721,16 @@ export class BrowserService {
       case 'tab.command': this.tabCommand(request.id, request.command); return { ok: true, state: this.state() };
       case 'tab.contextMenu': this.tabContextMenu(request.id, request.locale); return { ok: true };
       case 'page.save': await this.savePage(); break;
+      case 'page.results.reset': {
+        const tab = this.store.data.tabs.find(item => item.id === request.id);
+        if (!tab || tab.url !== BROWSER_HOME || tab.nativeBlank) throw Error('当前标签页不是原生搜索结果页。');
+        const producerId = this.searchPages.get(tab.id)?.producerId;
+        // Wait for the producer to stop before removing its result page, so
+        // even a late network response cannot repopulate the reset tab.
+        await this.ai.stopForResults(tab.id, producerId, this.aiSearchTabId === tab.id);
+        this.searchPages.delete(tab.id); if (this.aiSearchTabId === tab.id) this.aiSearchTabId = undefined;
+        tab.title = '新标签页'; delete tab.error; this.layout(); break;
+      }
       case 'page.print': {
         const contents = this.ensureView(this.active()).webContents;
         // Always display the native print dialog; never silently select a printer.

@@ -49,6 +49,25 @@ test('native browser agent completes a real page workflow, keeps multi-turn cont
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_HIDE_WINDOW: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }) });
     const shell = await application.firstWindow(); const native = await application.browserWindow(shell);
     await native.evaluate(window => { window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.showInactive(); });
+    // Exercise the real native Search/Fetch pipeline with deterministic API
+    // responses. This test never sends a fixture key to an external service.
+    await application.evaluate(() => {
+      const original = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (String(url) === 'https://api.deepseek.com/v1/tools/search') {
+          const query = JSON.parse(String(init?.body)).query;
+          if (query === 'Delayed reset') return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(Error('aborted')), { once: true }));
+          return new Response(JSON.stringify({ results: [
+            { title: '<font color=red>天幻网建站五周年</font> &amp; 新闻', url: 'https://squarecn.com/article',
+              snippet: '## 天幻网建站五周年 &amp; 新闻\n\n**社区的发展**与 `Final Fantasy`，从早期的爱好者网站到持续更新的作品资料库。', summary: 'LONG_MODEL_ONLY_SUMMARY', date: '2004-07-13T16:00:00+00:00' },
+            { title: '## 天幻小史与作品资料', url: 'https://bs.ffsky.com/history', snippet: '### 社区的故事\n\n资料、攻略与玩家的共同记忆。', date: '2001-01-26T16:00:00+00:00' },
+            { title: '**原生阅读**与可信来源', url: 'https://example.com/native-reading', snippet: '阅读[原始网页](https://example.com/)，结合**实际证据**核实信息。', date: '2026-10-20' },
+          ] }));
+        }
+        if (String(url) === 'https://api.deepseek.com/v1/tools/fetch') return new Response(JSON.stringify({ title: '# 可阅读的正文', content: '# 可阅读的正文\n\n这是抓取页面的**真实正文样式**。\n\n- 页面资料\n- 来源核实' }));
+        return original(url, init);
+      };
+    });
     await shell.locator('[data-application-module="browser"]').click();
     await expect(shell.locator('.browser-start h1')).toContainText('探索网络');
     await expect(shell.locator('.browser-start .browser-site-mark')).toHaveCount(0);
@@ -60,6 +79,7 @@ test('native browser agent completes a real page workflow, keeps multi-turn cont
     expect(config.ok).toBe(true);
     const state = async () => shell.evaluate(() => (globalThis as unknown as Bridge).worldlinebox.browser.request({ type: 'state' }));
     const run = async (request: BrowserRequest) => shell.evaluate(request => (globalThis as unknown as Bridge).worldlinebox.browser.request(request), request);
+    expect((await state()).ok && ((await state()) as { state?: { ai?: { config: { contextTokens: number } } } }).state?.ai?.config.contextTokens).toBe(600000);
     await shell.getByRole('button', { name: '浏览器 AI', exact: true }).click();
     const field = shell.getByRole('textbox', { name: '与浏览器 AI 对话' });
     // Opening the sidebar refreshes the global model config without a manual reload.
@@ -108,6 +128,40 @@ test('native browser agent completes a real page workflow, keeps multi-turn cont
     await expect.poll(async () => shell.locator('.browser-start').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
     await expect(shell.locator('.browser-start h1')).toBeVisible();
     await shell.screenshot({ path: path.join(output, 'native-chat-compact.png') });
+    await native.evaluate(window => window.setContentSize(1500, 940));
+    await shell.getByRole('button', { name: '浏览器 AI', exact: true }).click();
+    await run({ type: 'ai.key.save', key: 'fixture-key-no-external-requests' });
+    const searchField = shell.getByRole('textbox', { name: '开始探索' });
+    await searchField.fill('天幻网的故事'); await searchField.press('Enter');
+    const results = shell.getByRole('region', { name: '原生搜索结果' });
+    await expect(results.locator('.browser-source-card')).toHaveCount(3);
+    await expect(results.locator('.browser-source-card-title').first()).toHaveText('天幻网建站五周年 & 新闻');
+    await expect(results.locator('.browser-source-card-excerpt').first()).toContainText('社区的发展');
+    await expect(results.locator('.browser-source-card-excerpt strong').first()).toHaveText('社区的发展');
+    await expect(results).not.toContainText(/<font|##|LONG_MODEL_ONLY_SUMMARY|T16:00/);
+    await expect(results.locator('time').first()).toHaveAttribute('datetime', '2004-07-13T16:00:00+00:00');
+    await shell.screenshot({ path: path.join(output, 'search-results-light.png') });
+    const searched = await state(); if (!searched.ok) throw Error('Search state missing');
+    const resultId = searched.state!.activeTabId!;
+    await run({ type: 'tab.command', id: resultId, command: 'duplicate' });
+    const duplicate = await state(); if (!duplicate.ok) throw Error('Duplicate state missing');
+    const duplicateId = duplicate.state!.activeTabId!;
+    await shell.getByRole('button', { name: '清空结果', exact: true }).click();
+    await expect(shell.locator('.browser-start-intro')).toBeVisible(); await expect(searchField).toHaveValue('');
+    const cleared = await state(); if (!cleared.ok) throw Error('Cleared state missing');
+    expect(cleared.state!.ai!.task!.messages).toEqual(searched.state!.ai!.task!.messages);
+    expect(cleared.state!.tabs.find(tab => tab.id === duplicateId)!.title).toBe('新标签页');
+    await run({ type: 'tab.select', id: resultId }); await expect(results.locator('.browser-source-card')).toHaveCount(3);
+    await searchField.fill('Delayed reset'); await searchField.press('Enter');
+    await expect.poll(async () => { const result = await state(); return result.ok ? result.state?.ai?.task?.status : ''; }).toBe('running');
+    await shell.getByRole('button', { name: '清空结果', exact: true }).click();
+    await expect(shell.locator('.browser-start-intro')).toBeVisible(); await expect(results).toHaveCount(0);
+    await shell.getByRole('button', { name: '抓取阅读', exact: true }).click();
+    await searchField.fill('https://example.com/native-reading'); await searchField.press('Enter');
+    await expect(results.locator('.browser-source-card')).toHaveCount(1);
+    await results.getByRole('button', { name: '阅读正文', exact: true }).click();
+    await expect(results.locator('.browser-source-card-content strong')).toHaveText('真实正文样式');
+    await shell.getByRole('button', { name: '清空结果', exact: true }).click(); await expect(shell.locator('.browser-start-intro')).toBeVisible();
     await test.info().attach('native-agent-model-requests', { body: JSON.stringify(requests.map(({ messages, model }) => ({ model, messageCount: (messages as unknown[]).length }))), contentType: 'application/json' });
   } finally { await application?.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });

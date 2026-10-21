@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { browserAgentRequest, parseBrowserAgentReply, type BrowserAgentMessage } from '../../src/main/browser/agent-model';
 import { AI_API_FORMATS } from '../../src/shared/ai-endpoints';
-import { compactBrowserAgentHistory } from '../../src/main/browser/agent-context';
+import { compactBrowserAgentHistory, estimateBrowserAgentTokens } from '../../src/main/browser/agent-context';
 
 const messages: BrowserAgentMessage[] = [
   { role: 'user', text: 'Find official docs' },
@@ -59,4 +59,29 @@ it('preserves grounded element refs, target tab IDs and actual outcomes when com
     { role: 'tool', callId: 'observe1', name: 'browser_observe', text: JSON.stringify({ tabId: 'real-tab', text: 'Long page '.repeat(1200), elements: [{ ref: 'e1', label: 'Run query' }], denied: false }) }];
   const compacted = compactBrowserAgentHistory(observation, 2200).messages.at(-1)!;
   expect(compacted.role).toBe('tool'); expect(compacted.text).toContain('real-tab'); expect(compacted.text).toContain('e1'); expect(compacted.text).toContain('Run query');
+});
+
+it('uses token budgets consistently for mixed CJK/Latin text, retains complete pairs and leaves a stable low-water mark', () => {
+  const history: BrowserAgentMessage[] = Array.from({ length: 100 }, (_, index) => [
+    { role: 'user' as const, text: `Question ${index} ` + '需要核实的内容'.repeat(180) },
+    { role: 'assistant' as const, text: 'Searching actual sources', calls: [{ id: `c${index}`, name: 'browser_search', arguments: '{}' }] },
+    { role: 'tool' as const, callId: `c${index}`, name: 'browser_search', text: JSON.stringify({ id: index, url: 'https://example.com', snippet: 'Actual facts '.repeat(140) }) },
+  ]).flat();
+  history.push({ role: 'user', text: 'Keep the latest request' });
+  expect(estimateBrowserAgentTokens(JSON.stringify(history))).toBeGreaterThan(200000);
+  const result = compactBrowserAgentHistory(history, 80000, '', 'tokens');
+  expect(result.changed).toBe(true); expect(result.removed).toBeGreaterThan(0);
+  expect(estimateBrowserAgentTokens(JSON.stringify(result.messages))).toBeLessThanOrEqual(80000);
+  const ids = new Set(result.messages.flatMap(message => message.role === 'assistant' ? message.calls.map(call => call.id) : []));
+  for (const message of result.messages) if (message.role === 'tool') expect(ids.has(message.callId)).toBe(true);
+  const next = compactBrowserAgentHistory([...result.messages, { role: 'assistant', text: 'A small follow-up', calls: [] }], 100000, result.summary, 'tokens');
+  expect(next.changed).toBe(false); expect(next.summary).toBe(result.summary);
+});
+
+it('retains a near-600K context without cloning or compressing evidence that still fits', () => {
+  const text = '真实网页内容'.repeat(46000);
+  const history: BrowserAgentMessage[] = [{ role: 'user', text: 'Analyze this page' }, { role: 'assistant', text, calls: [] }];
+  expect(estimateBrowserAgentTokens(JSON.stringify(history))).toBeGreaterThan(550000);
+  const result = compactBrowserAgentHistory(history, 595000, 'Earlier verified facts', 'tokens');
+  expect(result.changed).toBe(false); expect(result.messages[1]).toBe(history[1]); expect(result.summary).toBe('Earlier verified facts');
 });

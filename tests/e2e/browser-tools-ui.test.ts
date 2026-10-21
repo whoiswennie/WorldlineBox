@@ -211,6 +211,11 @@ test('browser downloads can be managed without deleting files, more actions affe
     // The field captures actual CDP keyboard down/up events while native global
     // registrations are temporarily suspended. It is not filled programmatically.
     await native.evaluate(window => { window.setFocusable(true); window.setOpacity(.01); window.show(); window.focus(); window.webContents.focus(); });
+    // Window activation is asynchronous on Windows. Let focus/blur events settle
+    // before entering shortcut recording, which intentionally cancels on blur.
+    await expect.poll(() => native.evaluate(window => window.isFocused())).toBe(true);
+    await expect.poll(() => main.evaluate(() => document.hasFocus())).toBe(true);
+    await main.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const screenshotKey = shortcuts.locator('#capture-key-screenshot'); await screenshotKey.click();
     const screenshotRow = shortcuts.locator('.capture-setting-shortcut').filter({ has: main.locator('#capture-key-screenshot') });
     await expect(screenshotKey).toHaveValue('请按下组合键…');

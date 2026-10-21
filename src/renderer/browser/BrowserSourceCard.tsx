@@ -3,6 +3,7 @@ import type { BrowserAiSource } from '../../shared/browser-ai';
 import { Icon } from '../Icons';
 import { SiteMark } from './BrowserBookmarks';
 import { BrowserMarkdown } from './BrowserMarkdown';
+import { BrowserSourcePreview, sourcePreviewText, sourcePreviewDate } from './BrowserSourcePreview';
 
 /** Source bodies mount only when requested; a streamed answer never reparses them. */
 export const BrowserSourceCard = memo(function BrowserSourceCard({ source, open, zh }: {
@@ -13,12 +14,15 @@ export const BrowserSourceCard = memo(function BrowserSourceCard({ source, open,
   try { host = new URL(source.url).hostname.replace(/^www\./, ''); } catch { /* Keep a readable fallback. */ }
   const kind = source.kind === 'fetched' ? (zh ? '已抓取正文' : 'Fetched page')
     : source.kind === 'current' ? (zh ? '浏览器实读' : 'Live page') : (zh ? '搜索结果' : 'Search result');
-  const excerpt = source.snippet || source.content.replace(/[#*>`]/g, '').replace(/\s+/g, ' ').slice(0, 220);
+  const title = sourcePreviewText(source.title) || host;
+  let excerpt = sourcePreviewText(source.snippet || source.content.slice(0, 1200));
+  if (excerpt.startsWith(title)) excerpt = excerpt.slice(title.length).replace(/^[\s|:：—-]+/, '');
+  const date = sourcePreviewDate(source.date, zh);
   return <article className={'browser-source-card is-' + source.kind}>
     <div className="browser-source-card-meta"><SiteMark url={source.url} /><span title={host}>{host}</span><small>{kind}</small><span className="browser-source-number">{source.id}</span></div>
-    <button type="button" className="browser-source-card-title" title={source.url} onClick={() => open(source.url)}>{source.title || host}</button>
-    {excerpt ? <p className="browser-source-card-excerpt">{excerpt.slice(0, 800)}</p> : null}
-    <div className="browser-source-card-actions">{source.date ? <time>{source.date}</time> : null}
+    <button type="button" className="browser-source-card-title" title={source.url} onClick={() => open(source.url)}><BrowserSourcePreview text={title} /></button>
+    {excerpt ? <div className="browser-source-card-excerpt"><BrowserSourcePreview text={excerpt.slice(0, 800)} /></div> : null}
+    <div className="browser-source-card-actions">{date ? <time dateTime={source.date}>{date}</time> : null}
       {source.content ? <button type="button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}><Icon name="file-text" size={12} />{expanded ? (zh ? '收起正文' : 'Hide content') : (zh ? '阅读正文' : 'Read content')}</button> : null}
       <button type="button" onClick={() => open(source.url)}><Icon name="globe" size={12} />{zh ? '打开网页' : 'Open page'}</button>
     </div>

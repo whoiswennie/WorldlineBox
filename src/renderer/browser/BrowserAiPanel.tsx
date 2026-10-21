@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { BrowserState, BrowserRequest } from '../../shared/browser';
+import { BROWSER_AI_DEFAULT_CONTEXT_TOKENS } from '../../shared/browser-ai';
 import { useLocale } from '../i18n';
 import { Icon } from '../Icons';
 import { BrowserMarkdown } from './BrowserMarkdown';
@@ -35,14 +36,14 @@ export function BrowserAiPanel({ state, run, settings }: { state: BrowserState; 
         {task.approval ? <div className="browser-ai-approval"><strong>{zh ? '请确认这次网页操作' : 'Confirm this page action'}</strong><p>{task.approval.description}</p><div><button type="button" onClick={() => void run({ type: 'ai.approve', taskId: task.id, actionId: task.approval!.id, allow: false })}>{zh ? '不执行' : 'Decline'}</button><button type="button" onClick={() => void run({ type: 'ai.approve', taskId: task.id, actionId: task.approval!.id, allow: true })}>{zh ? '允许这次操作' : 'Allow this action'}</button></div></div> : null}
         {task.error ? <p className="browser-ai-error" role="alert">{task.error}</p> : null}
         {task.sources.length ? <BrowserSources sources={task.sources} open={open} zh={zh} /> : null}
-        {task.compacted ? <p className="browser-ai-memory-note"><Icon name="layers" size={12} />{zh ? `已压缩 ${task.compacted} 次早期上下文；网页状态以实时观察为准。` : `Earlier context compacted ${task.compacted} times. Page state comes from live observations.`}</p> : null}
+        {task.compacted ? <p className="browser-ai-memory-note"><Icon name="layers" size={12} />{zh ? `本次会话累计整理 ${task.compacted} 次早期上下文；网页状态以实时观察为准。` : `Earlier context compacted ${task.compacted} times across this conversation. Page state comes from live observations.`}</p> : null}
       </>}
     </div>
     <form className="browser-ai-composer" onSubmit={event => { event.preventDefault(); send(input); }}><textarea ref={composer} aria-label={zh ? '与浏览器 AI 对话' : 'Message browser AI'} value={input} maxLength={8000} rows={3}
       placeholder={zh ? '提问，或告诉我想在网页上做什么…' : 'Ask a question, or tell me what to do on the page…'} onChange={event => setInput(event.target.value)}
       onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(input); } }} />
       <div><button type="button" disabled={busy} onClick={() => send(zh ? '阅读并总结当前网页，保留关键事实及来源。' : 'Read and summarize this page with sources.', 'page')}><Icon name="file-text" size={13} />{zh ? '总结网页' : 'Summarize'}</button>
-        <span title={zh ? '包含工具说明、对话和网页资料的保守估算；另外保留模型回复空间' : 'Conservative estimate including tools, chat and evidence; output capacity is reserved separately'}>≈{Math.ceil(task?.contextTokensUsed ?? 0).toLocaleString()} / {(state.ai?.config.contextTokens ?? 16000).toLocaleString()}</span>
+        <span title={zh ? '包含工具说明、对话和网页资料的保守估算；预算内另预留回复空间' : 'Conservative estimate including tools, chat and evidence; output capacity is reserved within the budget'}>≈{Math.ceil(task?.contextTokensUsed ?? 0).toLocaleString()} / {(state.ai?.config.contextTokens ?? BROWSER_AI_DEFAULT_CONTEXT_TOKENS).toLocaleString()}</span>
         {busy ? <button type="button" className="browser-ai-send" aria-label={zh ? '停止浏览器 AI' : 'Stop browser AI'} onClick={() => task && void run({ type: 'ai.cancel', tabId: task.tabId, taskId: task.id })}>{zh ? '停止' : 'Stop'}</button>
           : <button type="submit" className="browser-ai-send" aria-label={zh ? '发送给浏览器 AI' : 'Send to browser AI'} disabled={!input.trim() || !state.ai?.config.hasModel}>{zh ? '发送' : 'Send'}</button>}</div>
     </form><p className="browser-ai-footer">{zh ? '临时会话 · 关闭软件后清除 · 请核对来源' : 'Temporary chat · Cleared when the app closes · Verify sources'}</p>
