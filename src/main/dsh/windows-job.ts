@@ -12,6 +12,7 @@ interface JobApi {
   createJob(): Handle;
   setLimits(job: Handle, informationClass: number, limits: Buffer, size: number): number;
   openProcess(access: number, inherit: number, pid: number): Handle;
+  getProcessTimes(process: Handle, created: Buffer, exited: Buffer, kernel: Buffer, user: Buffer): number;
   assignProcess(job: Handle, process: Handle): number;
   terminateJob(job: Handle, exitCode: number): number;
   queryAccounting(job: Handle, informationClass: number, information: Buffer, size: number, returnLength: Handle): number;
@@ -75,6 +76,7 @@ function loadJobApi(): JobApi {
     createJob: kernel.func('uintptr_t __stdcall CreateJobObjectW(uintptr_t attributes, uintptr_t name)').bind(null, 0, 0),
     setLimits: kernel.func('int __stdcall SetInformationJobObject(uintptr_t job, int informationClass, uint8_t *information, uint32_t size)'),
     openProcess: kernel.func('uintptr_t __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)'),
+    getProcessTimes: kernel.func('int __stdcall GetProcessTimes(uintptr_t process, uint8_t *created, uint8_t *exited, uint8_t *kernel, uint8_t *user)'),
     assignProcess: kernel.func('int __stdcall AssignProcessToJobObject(uintptr_t job, uintptr_t process)'),
     terminateJob: kernel.func('int __stdcall TerminateJobObject(uintptr_t job, uint32_t exitCode)'),
     queryAccounting: kernel.func('int __stdcall QueryInformationJobObject(uintptr_t job, int informationClass, uint8_t *information, uint32_t size, uintptr_t returnLength)'),
@@ -93,6 +95,26 @@ function win32Error(api: JobApi, operation: string): Error {
 /** Load native bindings before spawning a short-lived helper, so it cannot exit during DLL loading. */
 export function prepareWindowsProcessJob(): void {
   if (process.platform === 'win32') loadJobApi();
+}
+
+/** Identity of a just-spawned owned child, without launching PowerShell/WMI. */
+export function ownedWindowsProcessCreatedAt(pid: number): string | undefined {
+  if (process.platform !== 'win32') return;
+  if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('Invalid process ID.');
+  const native = loadJobApi(), handle = native.openProcess(0x1000, 0, pid);
+  if (isNullHandle(handle)) {
+    if ([87, 1168].includes(native.lastError())) return;
+    throw win32Error(native, 'OpenProcess(query identity)');
+  }
+  try {
+    const created = Buffer.alloc(8);
+    if (!native.getProcessTimes(handle, created, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8))) throw win32Error(native, 'GetProcessTimes');
+    const ticks = created.readBigUInt64LE(), milliseconds = Number(ticks / 10000n - 11644473600000n);
+    // Win32_Process.CreationDate exposes microseconds. Keep its seven-digit .NET
+    // UTC representation so existing persisted process recovery stays exact.
+    const fraction = String(ticks % 10000000n / 10n).padStart(6, '0') + '0';
+    return new Date(milliseconds).toISOString().replace(/\.\d{3}Z$/u, '.' + fraction + 'Z');
+  } finally { native.closeHandle(handle); }
 }
 
 /**

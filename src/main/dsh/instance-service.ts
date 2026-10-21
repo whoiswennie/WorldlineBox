@@ -330,11 +330,19 @@ export class InstanceService {
     return task;
   }
   private async startPrepared(id: string, op: OperationContext): Promise<void> {
+    const started = performance.now(); let lastPhase = started;
+    const phase = async (label: string, progress: number) => {
+      const now = performance.now();
+      await op.log(`Host startup timing: ${label}; previous=${Math.round(now - lastPhase)}ms total=${Math.round(now - started)}ms`);
+      lastPhase = now; await op.update(label, progress); op.signal.throwIfAborted();
+    };
     const instance = this.require(id); const root = this.getRoot(id);
     const plan = this.options.runtimes.plan(instance.runtimeId);
-    await op.update('Verifying fixed runtime', 5); await this.options.runtimes.verify(instance.runtimeId, op.signal);
+    await phase('Verifying fixed runtime', 5); await this.options.runtimes.verify(instance.runtimeId, op.signal);
     const runtimeVersion = this.options.runtimes.get(instance.runtimeId).version;
+    await phase('Preparing shared instance data', 15);
     const sharedLaunch = await this.options.sharedData?.prepare(instance, runtimeVersion, op, this.processes.size === 0);
+    await phase('Preparing isolated environment', 22);
     await this.auditLinks(id, op.signal);
     const env = await this.environment(root, instance, plan);
     let selected = !this.options.onSelectedWebInstance;
@@ -347,7 +355,7 @@ export class InstanceService {
     }
     if (selected) for (const value of this.instances) value.isDefault = value.id === id;
     instance.status = 'starting'; instance.lastError = undefined; instance.lastExitCode = undefined;
-    await this.changed(); await op.update('Starting isolated Harness Host', 30);
+    await this.changed(); await phase('Preparing native Host adapters', 30);
     let managed: ManagedProcess | undefined;
     try {
       op.signal.throwIfAborted();
@@ -355,6 +363,7 @@ export class InstanceService {
       const hostArgs = ['web', ...(sharedLaunch?.args ?? []), ...(uiPatch ? ['--patch', uiPatch] : []), '--no-open', '--host', '127.0.0.1', '--port', '0'];
       const bootstrap = this.options.runtimes.get(instance.runtimeId).adapter === 'node-cli-web-v1'
         ? await prepareManagedHostBootstrap(root, plan.cli) : undefined;
+      await phase('Starting isolated Harness Host', 35);
       const child = await launchCli(bootstrap ? { ...plan, cli: bootstrap.bootstrapPath } : plan,
         bootstrap ? [bootstrap.nativeCli, ...hostArgs] : hostArgs, bootstrap ? { ...env, [HOST_LIFECYCLE_TOKEN_ENV]: bootstrap.token } : env,
         sharedLaunch?.workspacePath ?? instance.workspacePath, { ipc: !!bootstrap });
@@ -376,18 +385,29 @@ export class InstanceService {
         await atomicJson(path.join(root, 'process.json'), identity);
       }
       await this.changed();
+      await phase('Loading native plugins and waiting for workbench', 45);
+      const waitingAt = performance.now(); let updating = false; let progressWrite: Promise<void> | undefined;
+      const progress = setInterval(() => {
+        if (updating || op.signal.aborted) return;
+        updating = true;
+        progressWrite = op.update(`Loading native plugins and waiting for workbench · ${Math.floor((performance.now() - waitingAt) / 1000)}s`, 45)
+          .catch(() => undefined).finally(() => { updating = false; });
+      }, 5000);
+      progress.unref();
       const timeout = setTimeout(() => rejectReady(new Error('Harness did not become ready within 120 seconds. Open logs for details.')), 120_000);
       const abort = () => rejectReady(new Error('Harness start cancelled.'));
       op.signal.addEventListener('abort', abort, { once: true });
       let url: string;
-      try { op.signal.throwIfAborted(); url = await ready; } finally { clearTimeout(timeout); op.signal.removeEventListener('abort', abort); }
-      await op.update('Verifying authenticated workbench', 85);
+      try { op.signal.throwIfAborted(); url = await ready; } finally { clearInterval(progress); clearTimeout(timeout); op.signal.removeEventListener('abort', abort); await progressWrite; }
+      await phase('Verifying authenticated workbench', 85);
       await verifyReadyUrl(url, op.signal);
       if (child.exitCode !== null || child.signalCode !== null || this.processes.get(id) !== managed) throw new Error('Harness exited during readiness verification.');
       managed.url = url; instance.port = Number(new URL(url).port); instance.status = 'running';
+      await phase('Synchronizing workbench settings', 90);
       await this.options.sharedData?.attach(instance, url);
       instance.updatedAt = new Date().toISOString(); await this.changed();
-      op.signal.throwIfAborted(); await this.options.openWorkbench({ ...instance }, url);
+      await phase('Opening workbench', 95); await this.options.openWorkbench({ ...instance }, url);
+      await op.log(`Host startup completed in ${Math.round(performance.now() - started)}ms`);
     } catch (error) {
       await this.options.sharedData?.detach(id);
       if (managed) { managed.stopping = true; await terminateOwnedProcess(managed.child); await managed.finished; }

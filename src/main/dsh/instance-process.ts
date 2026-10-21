@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import type { DshInstance } from '../../shared/dsh-launcher';
 import { redact } from './files';
-import { attachProcessJob, type WindowsProcessJob } from './windows-job';
+import { attachProcessJob, ownedWindowsProcessCreatedAt, type WindowsProcessJob } from './windows-job';
 const processJobs = new WeakMap<ChildProcessWithoutNullStreams, WindowsProcessJob>();
 const processTerminations = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
@@ -196,9 +196,12 @@ export async function inspectProcess(pid: number): Promise<{ executable: string;
 }
 
 /** A short-lived CLI can exit while CIM is formatting its record; an observed exit is authoritative. */
-export async function inspectManagedProcess(child: ChildProcessWithoutNullStreams): Promise<Awaited<ReturnType<typeof inspectProcess>>> {
+export async function inspectManagedProcess(child: ChildProcessWithoutNullStreams): Promise<{ createdAt: string } | undefined> {
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return undefined;
-  try { return await inspectProcess(child.pid); }
+  try {
+    const createdAt = ownedWindowsProcessCreatedAt(child.pid);
+    return createdAt ? { createdAt } : undefined;
+  }
   catch (error) {
     await new Promise(resolve => setTimeout(resolve, 100));
     if (child.exitCode !== null || child.signalCode !== null) return undefined;

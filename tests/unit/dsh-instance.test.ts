@@ -173,9 +173,13 @@ describe('DSH isolated instance management', () => {
     const response = await service.handle({ type: 'instance.start', instanceId: instance.id });
     if (!response.ok || !response.operationId) throw new Error('Missing start operation.');
     await vi.waitFor(() => expect(service.get(instance.id).pid).toBeGreaterThan(0), { timeout: 10_000 });
+    await vi.waitFor(() => expect(operations.list()[0]?.phase).toMatch(/Loading native plugins/u));
+    await vi.waitFor(() => expect(operations.list()[0]?.phase).toMatch(/· \d+s/u), { timeout: 8000 });
     operations.cancel(response.operationId); await operations.settle();
     expect(operations.list()[0]?.status).toBe('cancelled');
     expect(service.get(instance.id).status).toBe('failed'); expect(service.getUrl(instance.id)).toBeUndefined();
+    const log = await readFile(path.join(service.getRoot(instance.id), '../../operations', response.operationId + '.log'), 'utf8');
+    expect(log).toContain('Host startup timing:'); expect(log).not.toContain('private-fixture-token');
     await service.withStoppedInstance(instance.id, async () => undefined);
   }, 30_000);
 

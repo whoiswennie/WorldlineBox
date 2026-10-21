@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { ownedWindowsProcessCreatedAt } from '../../src/main/dsh/windows-job';
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildOwnedProcessTree, inspectOwnedWindowsTree, inspectProcess, stopOwnedWindowsTree, terminateOwnedProcess,
@@ -20,6 +21,16 @@ function toolsFixture() {
 }
 
 describe('owned Windows Harness tree termination', () => {
+  it('records native child creation identity exactly as WMI recovery expects without a PowerShell startup', async () => {
+    if (process.platform !== 'win32') return;
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    try {
+      const start = performance.now(), createdAt = ownedWindowsProcessCreatedAt(child.pid!);
+      const nativeMs = performance.now() - start, beforeCim = performance.now(), recovered = await inspectProcess(child.pid!);
+      expect(createdAt).toBe(recovered!.createdAt);
+      console.log('DSH_IDENTITY_TIMING', JSON.stringify({ nativeMs, cimMs: performance.now() - beforeCim }));
+    } finally { await terminateOwnedProcess(child); }
+  });
   it('accepts taskkill stale-child errors once every saved process identity has disappeared', async () => {
     const { current, tools } = toolsFixture();
     tools.killTree = vi.fn(async () => { current.clear(); throw new Error('A child reported operation not supported.'); });
