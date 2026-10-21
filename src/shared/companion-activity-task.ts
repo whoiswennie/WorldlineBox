@@ -39,6 +39,8 @@ export const activityPublicCommands = [
   scope.extend({ type: z.literal('activity.get'), id }).strict(),
 ] as const;
 export const activityStorageCommands = [...activityPublicCommands,
+  scope.extend({ type: z.literal('activity.motion.ensure'), sourceMessageId: id,
+    arguments: companionWorldArgumentsSchema.refine(value => ['move', 'travel', 'leave'].includes(value.action), '这里只接受需要等待到达的移动动作。') }).strict(),
   scope.extend({ type: z.literal('activity.visit.ensure'), sourceMessageId: id, targetId: id,
     initialMessage: z.strictObject({ urgent: z.boolean().optional(), text: z.string().trim().min(1).max(2000), clientId: id }).optional() }).strict(),
   z.strictObject({ type: z.literal('activity.claim'), excludedIds: z.array(id).max(100).default([]) }),

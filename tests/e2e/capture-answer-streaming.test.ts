@@ -68,7 +68,7 @@ for (const mode of ['selection', 'desktop'] as const) test(`${mode} temporary Q&
     await expect.poll(() => application!.context().pages().some(page => page.url() === origin + '/page')).toBe(true);
     const web = application.context().pages().find(page => page.url() === origin + '/page')!; await expect(web.locator('#passage')).toHaveText(PASSAGE);
     if (mode === 'selection') await web.locator('#passage').evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); });
-    if (mode === 'desktop') await main.locator('.browser-toolbar').getByRole('button', { name: '截图', exact: true }).click();
+    if (mode === 'desktop') await main.locator('.application-capture-tools').getByRole('button', { name: '截图', exact: true }).click();
     else await request(main, { type: 'open', task: 'selection', source: 'browser' });
     await expect.poll(() => application!.windows().some(page => page.url().includes('window=capture-tools')), { timeout: 15000 }).toBe(true);
     const tool = application.windows().find(page => page.url().includes('window=capture-tools'))!;

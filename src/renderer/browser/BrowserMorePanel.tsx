@@ -3,8 +3,9 @@ import { Icon, type IconName } from '../Icons';
 import { useLocale } from '../i18n';
 import { getShortcutRuntimePlatform } from '../shortcut-runtime';
 
-export function BrowserMorePanel({ tab, run, onFind, b }: {
+export function BrowserMorePanel({ tab, run, onFind, b, openPanel }: {
   tab?: BrowserTab; run(request: BrowserRequest): unknown; onFind(): void; b(key: string): string;
+  openPanel?(panel: 'bookmarks' | 'downloads' | 'history'): void;
 }) {
   const { locale } = useLocale();
   const zh = locale === 'zh-CN';
@@ -20,8 +21,10 @@ export function BrowserMorePanel({ tab, run, onFind, b }: {
   </button>;
   const zoom = tab?.zoom ?? 1;
   return <nav className="browser-more" aria-label={b('more')}>
+    {openPanel ? <div className="browser-menu-shortcuts">{(['bookmarks', 'downloads', 'history'] as const).map(item => <button type="button" key={item} onClick={() => openPanel(item)}><Icon name={item === 'bookmarks' ? 'star' : item === 'downloads' ? 'download' : 'clock'} size={19} /><span>{b(item)}</span></button>)}</div> : null}
     {tab ? <div className="browser-more-current" title={tab.url}><span><Icon name="globe" size={18} /></span><div><small>{words.current}</small><strong>{tab.title}</strong></div></div> : null}
     <section aria-label={words.page}><h3>{words.page}</h3>
+      {row('globe', b('home'), action('home'))}
       {row('undo', b('restore'), () => void run({ type: 'tab.restore' }), `${command}+Shift+T`)}
       {row('copy', b('duplicateTab'), () => tab && void run({ type: 'tab.command', id: tab.id, command: 'duplicate' }), undefined, undefined, !tab)}
       {row('pin', tab?.pinned ? words.pinned : words.pin, action('pin'), undefined, tab?.pinned, !tab)}

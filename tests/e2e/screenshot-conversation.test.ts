@@ -104,7 +104,7 @@ test('desktop screenshot conversation sends edited pixels and temporary two-turn
     // the same native desktop overlay, never the removed container editor.
     const openScreenshot = async (legacyBrowserSource = false) => {
       if (legacyBrowserSource) await request(main, { type: 'open', task: 'screenshot', source: 'browser' });
-      else await main.locator('.browser-toolbar').getByRole('button', { name: '截图', exact: true }).click();
+      else await main.locator('.application-capture-tools').getByRole('button', { name: '截图', exact: true }).click();
     };
     const selectAll = async (page: Page) => page.getByRole('button', { name: '使用整个屏幕', exact: true }).click();
     await openScreenshot(); let tool = await toolPage(application);

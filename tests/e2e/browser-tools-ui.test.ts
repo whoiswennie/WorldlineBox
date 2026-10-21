@@ -125,6 +125,36 @@ test('browser downloads can be managed without deleting files, more actions affe
     await expect.poll(() => application!.context().pages().some(page => page.url() === sourceUrl)).toBe(true);
     const web = application.context().pages().find(page => page.url() === sourceUrl)!;
     await expect(web.getByRole('heading', { name: 'Browser tools', exact: true })).toBeVisible();
+    const toolbar = main.locator('.browser-toolbar');
+    await expect(toolbar.getByRole('button', { name: '截图', exact: true })).toHaveCount(0);
+    await expect(toolbar.getByRole('button', { name: '划词助手', exact: true })).toHaveCount(0);
+    await expect(toolbar.getByRole('button', { name: '浏览器设置', exact: true })).toHaveCount(0);
+    const menuTrigger = toolbar.getByRole('button', { name: '设置与更多', exact: true });
+    await menuTrigger.click(); await expect(menuTrigger).toHaveAttribute('aria-expanded', 'true');
+    const menuPanel = main.getByRole('complementary', { name: '设置与更多', exact: true });
+    const quickTab = menuPanel.getByRole('tab', { name: '常用操作', exact: true });
+    await quickTab.focus(); await quickTab.press('ArrowRight');
+    await expect(menuPanel.getByRole('tab', { name: '浏览器设置', exact: true })).toBeFocused();
+    await expect(menuPanel.getByRole('tabpanel')).toContainText('AI 搜索与浏览助手');
+    await expect(menuPanel.getByRole('textbox', { name: '默认主页', exact: true })).toBeVisible();
+    await snapshot('browser-unified-settings.png');
+    await menuPanel.getByRole('textbox', { name: '默认主页', exact: true }).fill(sourceUrl);
+    await menuPanel.getByRole('tab', { name: '浏览器设置', exact: true }).press('ArrowLeft');
+    await expect(quickTab).toBeFocused(); await expect(quickTab).toHaveAttribute('aria-selected', 'true');
+    await quickTab.press('ArrowRight');
+    await expect(menuPanel.getByRole('textbox', { name: '默认主页', exact: true })).toHaveValue(sourceUrl);
+    await menuPanel.getByRole('tab', { name: '浏览器设置', exact: true }).press('ArrowLeft');
+    await snapshot('browser-unified-menu.png');
+    const themeSettings = await openAppSettingsDialog(application, main);
+    await themeSettings.getByRole('tab', { name: '外观', exact: true }).click();
+    await themeSettings.getByRole('radio', { name: '暗色', exact: true }).click(); await main.keyboard.press('Escape');
+    await snapshot('browser-unified-menu-dark.png');
+    const lightSettings = await openAppSettingsDialog(application, main);
+    await lightSettings.getByRole('tab', { name: '外观', exact: true }).click();
+    await lightSettings.getByRole('radio', { name: '亮色', exact: true }).click(); await main.keyboard.press('Escape');
+    await menuTrigger.click(); await expect(menuPanel).toHaveCount(0);
+    await expect(menuTrigger).toHaveAttribute('aria-expanded', 'false');
+    evidence.toolbar = { duplicateCaptureActionsRemoved: true, unifiedSettingsAndMore: true, keyboardTabs: true };
     async function download(filename: string) {
       const previous = new Set((await browserState(main)).downloads.map(item => item.id));
       await web.getByRole('link', { name: 'Download ' + filename, exact: true }).click();
@@ -168,7 +198,7 @@ test('browser downloads can be managed without deleting files, more actions affe
     evidence.downloads = { realFiles: saved.length, individualAndBulkRemoval: true, clearFinished: true, activeAndPausedRetained: true, filesUnchanged: true };
     await panel.getByRole('button', { name: '关闭', exact: true }).click();
 
-    await main.getByRole('button', { name: '更多操作', exact: true }).click();
+    await main.getByRole('button', { name: '设置与更多', exact: true }).click();
     const more = main.getByRole('navigation', { name: '更多操作', exact: true }); await expect(more).toBeVisible();
     await more.getByRole('button', { name: '固定标签页', exact: true }).click();
     await expect(more.getByRole('button', { name: '取消固定标签页', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -196,7 +226,7 @@ test('browser downloads can be managed without deleting files, more actions affe
     await main.getByRole('button', { name: '新建标签页', exact: true }).click(); await location.fill(origin + '/second'); await location.press('Enter');
     await expect.poll(async () => (await browserState(main)).tabs.find(item => item.url === origin + '/second')?.title).toBe('Second browser tools page');
     await main.getByRole('button', { name: '关闭标签页 Second browser tools page', exact: true }).click();
-    await main.getByRole('button', { name: '更多操作', exact: true }).click();
+    await main.getByRole('button', { name: '设置与更多', exact: true }).click();
     await more.getByRole('button', { name: /^恢复关闭的标签页/ }).click();
     await expect.poll(async () => (await browserState(main)).tabs.some(item => item.url === origin + '/second')).toBe(true);
     await expect(more.getByRole('button', { name: '全局网络设置', exact: true })).toHaveCount(0);

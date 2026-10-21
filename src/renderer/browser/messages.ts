@@ -1,4 +1,5 @@
 export const browserZh = {
+  toolbar: '浏览器工具栏', navigation: '网页导航', personalTools: '收藏与记录', menu: '设置与更多', menuActions: '常用操作', captureShort: '保存到资产库', aiShort: 'AI 助手',
   ai: '浏览器 AI', aiResize: '调整 AI 侧栏宽度',
   muteTab: '静音此标签页', unmuteTab: '恢复页面声音', duplicateTab: '复制标签页', savePage: '另存网页', printPage: '打印网页',
   tabAudible: '正在播放声音', tabMuted: '标签页已静音',
@@ -40,6 +41,7 @@ export const browserZh = {
   permission: { media: '摄像头或麦克风', geolocation: '位置', notifications: '通知', 'clipboard-read': '读取剪贴板', pointerLock: '锁定鼠标', keyboardLock: '锁定键盘', 'storage-access': '站点存储' },
 };
 export const browserEn = {
+  toolbar: 'Browser toolbar', navigation: 'Page navigation', personalTools: 'Bookmarks & activity', menu: 'Settings and more', menuActions: 'Quick actions', captureShort: 'Save to library', aiShort: 'AI assistant',
   ai: 'Browser AI', aiResize: 'Resize AI sidebar',
   muteTab: 'Mute tab', unmuteTab: 'Unmute tab', duplicateTab: 'Duplicate tab', savePage: 'Save page as', printPage: 'Print page',
   tabAudible: 'Playing audio', tabMuted: 'Tab muted',

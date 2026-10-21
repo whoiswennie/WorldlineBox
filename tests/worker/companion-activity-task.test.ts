@@ -38,6 +38,45 @@ function invite() {
   store.request({ type: 'world.tool', ...bob, arguments: { action: 'respond', requestId: request.id, decision: 'allow', reason: '欢迎来玩。' } });
   return request;
 }
+it('continues a chat-issued weather check after physical arrival, coalesces repeat moves and survives restart', () => {
+  store.request({ type: 'world.tool', ...alice, arguments: { action: 'move', destinationId: 'alice_computer' } });
+  advance(15000);
+  const source = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '现在外面的天气怎样？请去门口看一眼再告诉我。', replyDirective: 'none' });
+  const input = { type: 'activity.motion.ensure' as const, ...alice, sourceMessageId: source.id, arguments: { action: 'move' as const, destinationId: 'alice_door' } };
+  const first = store.request(input);
+  expect(first.activityTask).toMatchObject({ status: 'waiting', step: 1, goal: source.content, wait: { kind: 'arrival' } });
+  expect(first.world!.actors.find(actor => actor.companionId === 'alice')!.route.length).toBeGreaterThan(0);
+  advance(2000);
+  const beforeRetry = store.request({ type: 'world.observe', ...alice }).world!.actors[0]!;
+  const retry = store.request(input);
+  expect(retry.activityTask!.id).toBe(first.activityTask!.id);
+  expect(retry.world!.actors.find(actor => actor.companionId === 'alice')!.position).toEqual(beforeRetry.position);
+  expect(retry.activityTask!.history).toHaveLength(1);
+  store.close(); store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true })));
+  store.request({ type: 'activity.recover' }); advance(20000);
+  const resumed = claim()!; expect(resumed.id).toBe(first.activityTask!.id);
+  const observed = store.request({ type: 'activity.observe', id: resumed.id, leaseToken: resumed.leaseToken! }).world!;
+  const authoritative = store.request({ type: 'world.snapshot' }).world!;
+  expect(observed.perception!.position).toEqual({ x: 10, y: 15 });
+  expect(observed.perception!.environment.weather).toBe(authoritative.environment.weather);
+  expect(observed.perception!.environment.weatherObservedAtVirtual).toBe(observed.perception!.observedAtVirtual);
+  const summary = '已到门口实际查看，当前天气为 ' + authoritative.environment.weather + '。';
+  expect(commit(resumed, { status: 'complete', action: null, wait: null, summary }).status).toBe('succeeded');
+  const reports = store.messages({ conversationId: alice.conversationId }).messages.filter(message => message.replyToId === source.id && message.content.includes(summary));
+  expect(reports).toHaveLength(1);
+  expect(store.request(input).activityTask!.status).toBe('succeeded');
+  expect(store.messages({ conversationId: alice.conversationId }).messages.filter(message => message.content.includes(summary))).toHaveLength(1);
+});
+it('does not create a continuation or send stale feedback after its source is withdrawn', () => {
+  const source = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '去门口看看天气再回我。', replyDirective: 'none' });
+  const input = { type: 'activity.motion.ensure' as const, ...alice, sourceMessageId: source.id, arguments: { action: 'move' as const, destinationId: 'alice_door' } };
+  const task = store.request(input).activityTask!;
+  store.request({ type: 'memory.forget', ...alice, sourceMessageIds: [source.id] });
+  advance(15000); expect(claim()).toBeUndefined();
+  expect(store.request({ type: 'activity.get', ...alice, id: task.id }).activityTask!.status).toBe('cancelled');
+  expect(() => store.request(input)).toThrow();
+  expect(store.messages({ conversationId: alice.conversationId }).messages.some(message => message.authorId === 'alice' && message.replyToId === source.id)).toBe(false);
+});
 it('atomically retains a visit goal behind a first phone message, coalesces retries and refuses completion before real arrival', () => {
   const source = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '去找bob玩吧。', replyDirective: 'none' });
   const input = { type: 'activity.visit.ensure' as const, ...alice, sourceMessageId: source.id, targetId: 'bob',

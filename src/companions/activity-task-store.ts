@@ -37,6 +37,7 @@ export class CompanionActivityTaskStore {
       CREATE INDEX IF NOT EXISTS companion_activity_owner ON companion_activity_tasks(companion_id,status);
       CREATE INDEX IF NOT EXISTS companion_activity_room ON companion_activity_tasks(conversation_id,next_at);`);
     this.db.exec("CREATE INDEX IF NOT EXISTS companion_activity_day ON companion_activity_tasks(companion_id,json_extract(data,'$.worldDay'))");
+    this.db.exec('CREATE INDEX IF NOT EXISTS companion_activity_source ON companion_activity_tasks(companion_id,source_message_id,conversation_id)');
     this.db.exec("CREATE INDEX IF NOT EXISTS companion_activity_recovery ON companion_activity_tasks(status,json_extract(data,'$.createdAt'))");
     if (!(this.db.prepare('PRAGMA table_info(companion_activity_tasks)').all() as { name: string }[]).some(column => column.name === 'report_pending')) this.db.exec('ALTER TABLE companion_activity_tasks ADD COLUMN report_pending INTEGER NOT NULL DEFAULT 0');
     this.db.exec('CREATE INDEX IF NOT EXISTS companion_activity_reports ON companion_activity_tasks(report_pending,next_at)');
@@ -135,6 +136,31 @@ export class CompanionActivityTaskStore {
     const conversationId = group ? task.peerConversationId! : this.social.ensure(task.companionId, [task.companionId, task.targetId]).id;
     const ids = (this.db.prepare('SELECT id FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 20').all(conversationId) as { id: string }[]).map(row => row.id);
     return this.visible({ companionId: task.companionId, conversationId }, ids).reverse();
+  }
+  /** A chat-issued movement is the first step of the original request, not its
+   * completion. Persist the effect and its arrival predicate in one transaction
+   * so closing/retrying the chat cannot strand it or restart the same route. */
+  private ensureMotion(input: Extract<CompanionStorageCommand, { type: 'activity.motion.ensure' }>): CompanionStorageResponse {
+    return this.db.transaction(() => {
+      const source = this.visible(input, [input.sourceMessageId])[0];
+      if (!source || source.authorId !== 'user') throw new Error('移动后继续处理需要本轮真实玩家消息。');
+      const prior = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE companion_id=? AND conversation_id=? AND source_message_id=? ORDER BY rowid LIMIT 1')
+        .get(input.companionId, input.conversationId, source.id) as Row | undefined;
+      if (prior) {
+        const task = JSON.parse(prior.data) as Stored;
+        if (!this.valid(task)) throw new Error('原行动来源已更新或撤回。');
+        return { ok: true, activityTask: this.public(task), world: this.world.snapshot(task) };
+      }
+      const created = this.start({ type: 'activity.start', companionId: input.companionId, conversationId: input.conversationId,
+        sourceMessageId: source.id, clientId: 'motion_' + createHash('sha256').update(input.companionId + ':' + source.id).digest('hex'),
+        title: '虚拟世界行动', goal: source.content });
+      const task = this.get(created.id);
+      task.status = 'running'; task.leaseToken = randomUUID(); task.leaseUntil = Date.now() + PLANNING_LEASE_MS;
+      this.save(task);
+      const result = this.commit(task.id, task.leaseToken, { status: 'continue', action: input.arguments,
+        wait: { kind: 'arrival' }, summary: '实际到达后继续原请求，重新观察并反馈结果。' });
+      return { ok: true, activityTask: result, world: this.world.snapshot(task) };
+    }).immediate();
   }
   private noteArrival(task: Stored, present: CompanionWorldSnapshot): void {
     const self = present.actors.find(actor => actor.companionId === task.companionId);
@@ -322,6 +348,7 @@ export class CompanionActivityTaskStore {
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {
+      case 'activity.motion.ensure': return this.ensureMotion(command);
       case 'activity.get': { const task = this.get(command.id); if (task.companionId !== command.companionId || task.conversationId !== command.conversationId) throw new Error('行动任务范围不可访问。'); return { ok: true, activityTask: this.public(task) }; }
       case 'activity.recover': {
         const rows = this.db.prepare("SELECT data FROM companion_activity_tasks WHERE status='running' OR (status='failed' AND json_extract(data,'$.stage') IN (?,?) AND json_extract(data,'$.step')<32 AND json_extract(data,'$.createdAt')>=?)").all(LEGACY_WAIT_TIMEOUT, LEGACY_CONTACT_REJECTION, iso(Date.now() - 86400000)) as Row[];

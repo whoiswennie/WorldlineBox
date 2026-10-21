@@ -1228,6 +1228,44 @@ function capabilityResponse(text: string, tasks: Array<{ title: string; prompt: 
     { headers: { 'Content-Type': 'application/json' } });
 }
 describe('one durable bubble per source and native multi-step main loop', () => {
+  it('hands a chat movement to the durable loop and automatically reports freshly observed weather without another player message', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn()));
+    let chatCalls = 0, observations = 0; let expectedLabel = '';
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)), context = JSON.parse(body.messages[1].content);
+      if (context.purpose === 'activity_task_step') {
+        observations++;
+        expect(context.originalRequest.content).toBe('现在天气怎样？去门口看一眼再告诉我。');
+        expect(context.world.actors[0].position).toEqual({ x: 10, y: 15 });
+        expect(context.world.actors[0].route).toHaveLength(0);
+        expect(context.world.environment.weatherStatus).toBe('current');
+        expect(context.world.environment.weatherObservedAtVirtual).toBe(context.world.perception.observedAtVirtual);
+        const authoritative = f.store.request({ type: 'world.snapshot' }).world!;
+        expect(context.world.environment.weather).toBe(authoritative.environment.weather);
+        expectedLabel = context.world.environment.weatherLabel;
+        return modelResponseForJson({ status: 'complete', action: null, wait: null, summary: '我到门口看过了，现在是' + expectedLabel + '。' });
+      }
+      chatCalls++;
+      // Reproduce the user's duplicate native moves. Neither retry may reset the
+      // route or create a second goal, and chat completion must not lose the goal.
+      if (chatCalls <= 2) return new Response(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [
+        { id: 'weather-move-' + chatCalls, type: 'function', function: { name: 'world', arguments: '{"action":"move","destinationId":"sister_door"}' } },
+      ] } }] }), { headers: { 'Content-Type': 'application/json' } });
+      return modelResponse('我到门口核实后告诉你。');
+    });
+    const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '现在天气怎样？去门口看一眼再告诉我。', clientId: 'weather-continuation' })).message!;
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const tasks = f.store.request({ type: 'activity.list', ...scope }).activityTasks!;
+    expect(tasks).toHaveLength(1); expect(tasks[0]).toMatchObject({ status: 'waiting', step: 1 });
+    await vi.advanceTimersByTimeAsync(25000);
+    await vi.waitFor(() => expect(f.store.request({ type: 'activity.get', ...scope, id: tasks[0]!.id }).activityTask?.status).toBe('succeeded'), { timeout: 5000 });
+    await vi.advanceTimersByTimeAsync(2000);
+    const reports = f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.replyToId === source.id && message.content.includes('我到门口看过了'));
+    expect(reports).toHaveLength(1); expect(reports[0]!.content).toContain(expectedLabel); expect(observations).toBe(1); expect(chatCalls).toBe(3);
+    expect(transport.request.mock.calls.filter(([request]) => request.type === 'activity.motion.ensure')).toHaveLength(2);
+    expect(f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'user' && message.content === source.content)).toHaveLength(1);
+  });
   it('processes one retried player submission only once while generating and after completion', async () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn())), pending = deferred<Response>();
     transport.fetch.mockImplementation(() => pending.promise);

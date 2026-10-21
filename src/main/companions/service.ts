@@ -1253,6 +1253,13 @@ export class CompanionService {
           const continuation = await this.call({ type: 'activity.visit.ensure', ...scope, sourceMessageId: source.id, targetId: target.id });
           this.changed(); return continuation;
         }
+        if (currentPlayerRequest && ['move', 'travel', 'leave'].includes(args.action)) {
+          const source = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [...requestMessageIds] })).memorySources?.filter(message => message.authorId === 'user').at(-1);
+          if (!source) throw new Error('本次移动的原始请求已经不可访问。');
+          this.assertReplyActive(signal);
+          const result = await this.call({ type: 'activity.motion.ensure', ...scope, sourceMessageId: source.id, arguments: args });
+          this.changed(); return result;
+        }
         const result = await this.call({ type: 'world.tool', ...scope, beforeSequence, ...(sourceMessageId ? { sourceMessageId } : {}), arguments: args });
         this.changed(); return result;
       }
