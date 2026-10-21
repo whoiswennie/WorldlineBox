@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type * as NodeCrypto from 'node:crypto';
 import type * as NodeModule from 'node:module';
 import type * as Koffi from 'koffi';
+import type * as ElectronNative from 'electron';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -81,10 +82,18 @@ async function visibleInActualMonitor(application: ElectronApplication, page: Pa
   // No fake source, injected overlay or replacement capture implementation is used.
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   const native = await application.browserWindow(page);
-  const expected = await native.evaluate(async (window, area) => ({
-    bounds: window.getBounds(), protected: window.isContentProtected(),
-    png: (await window.webContents.capturePage({ x: Math.floor(area.x), y: Math.floor(area.y), width: Math.floor(area.width), height: Math.floor(area.height) })).toPNG().toString('base64'),
-  }), area);
+  const expected = await native.evaluate(async (window, area) => {
+    const module = process.getBuiltinModule('node:module') as unknown as typeof NodeModule;
+    const ffi = module.createRequire(process.resourcesPath + '/app.asar/package.json');
+    // Resolve through the application's actual root in both packaged and dev builds.
+    const electron = ffi('electron') as typeof ElectronNative;
+    const native = module.createRequire(electron.app.getAppPath() + '/package.json')('koffi') as typeof Koffi;
+    const getRect = native.load('user32.dll').func('int __stdcall GetWindowRect(uintptr_t window, uint8_t *rect)');
+    const handle = window.getNativeWindowHandle(), rect = Buffer.alloc(16);
+    const valid = getRect(handle.length >= 8 ? handle.readBigUInt64LE(0) : handle.readUInt32LE(0), rect);
+    return { bounds: window.getBounds(), physical: valid ? { x: rect.readInt32LE(0), y: rect.readInt32LE(4) } : undefined, protected: window.isContentProtected(),
+      png: (await window.webContents.capturePage({ x: Math.floor(area.x), y: Math.floor(area.y), width: Math.floor(area.width), height: Math.floor(area.height) })).toPNG().toString('base64') };
+  }, area);
   expect(expected.protected).toBe(false);
   const captured = await application.evaluate(async ({ desktopCapturer }, monitor) => {
     const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: monitor.physical, fetchWindowIcons: false });
@@ -95,9 +104,10 @@ async function visibleInActualMonitor(application: ElectronApplication, page: Pa
   const monitorBytes = Buffer.from(captured.png, 'base64'); writeFileSync(file, monitorBytes, { flag: 'wx' });
   nearPhysicalScreen(captured.size, monitor.physical);
   const sx = captured.size.width / monitor.bounds.width; const sy = captured.size.height / monitor.bounds.height;
-  const clip = { left: Math.round((expected.bounds.x + Math.floor(area.x) - monitor.bounds.x) * sx),
-    top: Math.round((expected.bounds.y + Math.floor(area.y) - monitor.bounds.y) * sy),
-    width: Math.round(Math.floor(area.width) * sx), height: Math.round(Math.floor(area.height) * sy) };
+  const expectedSize = await sharp(Buffer.from(expected.png, 'base64')).metadata();
+  const clip = { left: expected.physical ? Math.round(expected.physical.x + Math.floor(area.x) * sx - monitor.bounds.x * sx) : Math.round((expected.bounds.x + Math.floor(area.x) - monitor.bounds.x) * sx),
+    top: expected.physical ? Math.round(expected.physical.y + Math.floor(area.y) * sy - monitor.bounds.y * sy) : Math.round((expected.bounds.y + Math.floor(area.y) - monitor.bounds.y) * sy),
+    width: expectedSize.width!, height: expectedSize.height! };
   expect(clip.left).toBeGreaterThanOrEqual(0); expect(clip.top).toBeGreaterThanOrEqual(0);
   expect(clip.left + clip.width).toBeLessThanOrEqual(captured.size.width); expect(clip.top + clip.height).toBeLessThanOrEqual(captured.size.height);
   const sampleWidth = Math.min(480, clip.width); const sampleHeight = Math.max(1, Math.round(clip.height * sampleWidth / clip.width));
@@ -311,6 +321,15 @@ test('the real monitor screenshot is edited in place and regional recording cont
       const actualDisplay = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
       let display: MediaStream | undefined;
       const trace: Partial<NativeRecordingTrace> = {}; Reflect.set(globalThis, '__nativeScreenRecording', trace);
+      Reflect.set(globalThis, '__readNativeDisplayFrame', async () => {
+        if (!display) throw Error('Missing genuine desktop stream');
+        const video = document.createElement('video'); video.muted = true; video.srcObject = display;
+        try {
+          await video.play(); await new Promise<void>(resolve => video.requestVideoFrameCallback(() => resolve()));
+          const canvas = document.createElement('canvas'); canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+          canvas.getContext('2d')!.drawImage(video, 0, 0); return canvas.toDataURL('image/png');
+        } finally { video.pause(); video.srcObject = null; }
+      });
       navigator.mediaDevices.getDisplayMedia = async options => {
         display = await actualDisplay(options); const video = display.getVideoTracks()[0];
         Object.assign(trace, { video: display.getVideoTracks().length, audio: display.getAudioTracks().length, readyState: video?.readyState, settings: video?.getSettings(),
@@ -393,6 +412,10 @@ test('the real monitor screenshot is edited in place and regional recording cont
       const blueFraction = blue / (pixels.length / 3); expect(blueFraction, 'The real monitor capture must show the recording boundary').toBeGreaterThan(.8);
       borderVisibility.push({ ...border, blueFraction });
     }
+    // Read the genuine live source immediately before stopping. The person may
+    // keep browsing, so a monitor snapshot taken several seconds earlier is not
+    // a valid reference for the recording's last decoded frame.
+    const lastNativeFrame = await tool.evaluate(() => (Reflect.get(globalThis, '__readNativeDisplayFrame') as () => Promise<string>)());
     await tool.getByRole('button', { name: '停止并保存', exact: true }).click();
     await expect(tool.locator('.capture-recording-status')).toHaveClass(/is-saved/u, { timeout: 60000 });
     const actualPlayback = await expectRecordingPlayback(tool);
@@ -419,7 +442,7 @@ test('the real monitor screenshot is edited in place and regional recording cont
     const decoded = spawnSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-sseof', '-1', '-i', videoPath, '-vf', 'reverse', '-frames:v', '1', '-update', '1', '-n', framePath],
       { windowsHide: true, encoding: 'utf8', timeout: 20000, maxBuffer: 65536 });
     expect(decoded.status, decoded.stderr).toBe(0); expect(await nonemptyScreen(framePath)).toEqual(outputSize);
-    const nativeReference = await sharp(controllerPath).extract({ left: recordCrop.x, top: recordCrop.y, width: recordCrop.width, height: recordCrop.height })
+    const nativeReference = await sharp(Buffer.from(lastNativeFrame.split(',')[1]!, 'base64')).extract({ left: recordCrop.x, top: recordCrop.y, width: recordCrop.width, height: recordCrop.height })
       .removeAlpha().resize(320, 180, { fit: 'fill' }).raw().toBuffer();
     const recordedFrame = await sharp(framePath).removeAlpha().resize(320, 180, { fit: 'fill' }).raw().toBuffer();
     const frameMeanError = Array.from(recordedFrame, (value, index) => Math.abs(value - nativeReference[index]!)).reduce((sum, value) => sum + value, 0) / recordedFrame.length;
