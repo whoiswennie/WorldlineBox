@@ -148,6 +148,10 @@ test('browser downloads can be managed without deleting files, more actions affe
     const themeSettings = await openAppSettingsDialog(application, main);
     await themeSettings.getByRole('tab', { name: '外观', exact: true }).click();
     await themeSettings.getByRole('radio', { name: '暗色', exact: true }).click(); await main.keyboard.press('Escape');
+    await expect.poll(() => toolbar.locator('.browser-ai-trigger').evaluate(element => {
+      const channels = getComputedStyle(element).color.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [];
+      return channels.length === 3 && channels.every(channel => channel >= 200);
+    })).toBe(true);
     await snapshot('browser-unified-menu-dark.png');
     const lightSettings = await openAppSettingsDialog(application, main);
     await lightSettings.getByRole('tab', { name: '外观', exact: true }).click();
