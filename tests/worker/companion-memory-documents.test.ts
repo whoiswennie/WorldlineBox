@@ -59,6 +59,21 @@ it('creates a real nested notebook text with authoritative tags, source metadata
   expect(page.documents?.items.some(item => item.path === 'profile.md' && item.readOnly)).toBe(true);
 });
 
+it('locates the exact owned note after a move and refuses another owner or a forgotten note', async () => {
+  const f = fixture(), { call } = f.make();
+  const first = (await call({ type: 'memory.documents.create', path: '日记/同名.md', content: 'Alice的海边约定。', tags: ['约定'] })).document!;
+  const other = (await call({ type: 'memory.documents.create', companionId: 'bob', path: '日记/同名.md', content: 'Bob自己的阅读想法。', tags: ['阅读'] })).document!;
+  const moved = await call({ type: 'memory.documents.move', path: first.document.path, targetPath: '资料/重新整理的约定.md', expectedRevision: first.document.revision });
+  expect(moved.ok, moved.error).toBe(true);
+  const located = await call({ type: 'memory.documents.locate', noteId: first.memory!.id });
+  expect(located.document?.memory?.id).toBe(first.memory!.id);
+  expect(located.document?.document.path).toBe('资料/重新整理的约定.md');
+  expect(located.document?.content).toBe('Alice的海边约定。');
+  expect(await call({ type: 'memory.documents.locate', noteId: other.memory!.id })).toMatchObject({ ok: false });
+  expect((await call({ type: 'memory.documents.delete', path: located.document!.document.path, expectedRevision: located.document!.document.revision })).ok).toBe(true);
+  expect(await call({ type: 'memory.documents.locate', noteId: first.memory!.id })).toMatchObject({ ok: false });
+});
+
 it('paginates all real owner documents beyond 256 files without dropping later notes', async () => {
   const f = fixture(), { library, call } = f.make();
   for (let n = 0; n < 270; n++) f.store.saveMemory({ ...f.scope, content: `分页日记 ${n}` });

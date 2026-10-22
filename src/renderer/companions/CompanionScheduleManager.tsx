@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import type { CompanionSchedule } from '../../shared/companion-schedule';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { CompanionSchedule, CompanionScheduleOccurrence } from '../../shared/companion-schedule';
 import { companionScheduleEntrySchema } from '../../shared/companion-schedule';
 import type { Companion, WorldlineBoxCompanionsApi } from '../../shared/companions';
 import { Avatar } from './CompanionVisuals';
@@ -15,9 +15,19 @@ function inputDateTime(value: string) { const date = new Date(value); const pad 
 function emptyDraft(): ScheduleDraft { return { title: '', prompt: '', kind: 'reminder', runAt: inputDateTime(new Date(Date.now() + 3600_000).toISOString()), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, recurrence: 'once', intervalMinutes: 60, weekDays: [new Date().getDay()], flexible: false }; }
 const DAYS = ['日', '一', '二', '三', '四', '五', '六'];
 
-export function CompanionScheduleManager({ companion, companions = [companion], conversationId, conversationKind = 'private', request, api, onClose, requestError, onDismissError }: { readonly companion: Companion; readonly companions?: Companion[]; readonly conversationId: string; readonly conversationKind?: 'private' | 'group'; readonly request: ScheduleRequest; readonly api?: WorldlineBoxCompanionsApi; readonly onClose: () => void; readonly requestError?: string; readonly onDismissError: () => void }) {
+export function CompanionScheduleManager({ companion, companions = [companion], conversationId, conversationKind = 'private', request, api, onClose, requestError, onDismissError, initialPage = 'plans', initialScheduleId }: { readonly companion: Companion; readonly companions?: Companion[]; readonly conversationId: string; readonly conversationKind?: 'private' | 'group'; readonly request: ScheduleRequest; readonly api?: WorldlineBoxCompanionsApi; readonly onClose: () => void; readonly requestError?: string; readonly onDismissError: () => void; readonly initialPage?: 'plans' | 'routine' | 'life'; readonly initialScheduleId?: string }) {
   useDialogFocusTrap(true, '伙伴日程');
-  const { schedules, occurrences, error: loadError, loading, refresh } = useCompanionSchedules(companion.id, conversationId, request, api);
+  const { schedules: listedSchedules, occurrences: listedOccurrences, error: loadError, loading, refresh } = useCompanionSchedules(companion.id, conversationId, request, api);
+  const [located, setLocated] = useState<{ scope: string; schedule: CompanionSchedule; occurrences: CompanionScheduleOccurrence[] }>();
+  const [locateFailure, setLocateFailure] = useState<{ scope: string; message: string }>();
+  const [locatingScope, setLocatingScope] = useState<string>(), [exactRefresh, setExactRefresh] = useState(0);
+  const scope = `${companion.id}/${conversationId}/${initialScheduleId ?? ''}`, scopeRef = useRef(scope), editorSession = useRef(0);
+  useLayoutEffect(() => { scopeRef.current = scope; }, [scope]);
+  const exact = located?.scope === scope ? located : undefined;
+  const locateError = locateFailure?.scope === scope ? locateFailure.message : '';
+  const schedules = exact ? [listedSchedules.find(item => item.id === exact.schedule.id && item.revision > exact.schedule.revision) ?? exact.schedule,
+    ...listedSchedules.filter(item => item.id !== exact.schedule.id)] : listedSchedules;
+  const occurrences = exact ? [...new Map([...listedOccurrences, ...exact.occurrences].map(item => [item.id, item])).values()] : listedOccurrences;
   const [draft, setDraft] = useState<ScheduleDraft>(emptyDraft);
   const [editing, setEditing] = useState<CompanionSchedule>();
   const [creating, setCreating] = useState(false);
@@ -25,14 +35,41 @@ export function CompanionScheduleManager({ companion, companions = [companion], 
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<'upcoming' | 'completed' | 'all'>('upcoming');
   const [confirmCancel, setConfirmCancel] = useState<string>();
-  const [page, setPage] = useState<'plans' | 'routine' | 'life'>('plans');
+  const [page, setPage] = useState<'plans' | 'routine' | 'life'>(initialPage);
   const clientId = useRef(crypto.randomUUID());
   const submittedEntry = useRef<string | undefined>(undefined);
+  const rememberExact = useCallback((schedule?: CompanionSchedule) => {
+    if (!schedule || schedule.companionId !== companion.id || schedule.conversationId !== conversationId) return;
+    setLocated(current => current?.scope === scope && current.schedule.id === schedule.id ? { ...current, schedule } : current);
+  }, [companion.id, conversationId, scope]);
   useEffect(() => { const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }; document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key); }, [onClose]);
-  function begin(schedule?: CompanionSchedule) {
+  const begin = useCallback((schedule?: CompanionSchedule) => {
+    editorSession.current++;
     setEditing(schedule); setCreating(true); setError(''); clientId.current = crypto.randomUUID(); submittedEntry.current = undefined;
     setDraft(schedule ? { title: schedule.title, prompt: schedule.prompt, kind: schedule.kind, runAt: inputDateTime(schedule.runAt), timeZone: schedule.timeZone, recurrence: schedule.recurrence, intervalMinutes: schedule.intervalMinutes ?? 60, weekDays: schedule.weekDays ?? [new Date(schedule.runAt).getDay()], flexible: schedule.flexible ?? false } : emptyDraft());
-  }
+  }, []);
+  useEffect(() => {
+    if (!initialScheduleId) return;
+    let alive = true; const session = editorSession.current, autoOpen = session === 0;
+    void (async () => {
+      await Promise.resolve();
+      if (!alive || scopeRef.current !== scope) return;
+      setLocatingScope(scope);
+      try {
+        const result = await request({ type: 'schedule.get', companionId: companion.id, conversationId, id: initialScheduleId });
+        if (!alive || scopeRef.current !== scope) return;
+        const target = result?.schedule;
+        if (!result?.ok || !target || target.id !== initialScheduleId || target.companionId !== companion.id || target.conversationId !== conversationId) throw new Error('这条安排不存在或不再属于当前伙伴和聊天，无法打开编辑。');
+        setLocated({ scope, schedule: target, occurrences: (result.scheduleOccurrences ?? []).filter(item => item.scheduleId === target.id && item.companionId === companion.id && item.conversationId === conversationId) });
+        setPage('plans'); setFilter('all');
+        if (target.status === 'cancelled') throw new Error('这条安排已取消，可在清单查看历史，无法继续编辑。');
+        setLocateFailure(undefined);
+        if (autoOpen && editorSession.current === session) begin(target);
+      } catch (cause) { if (alive && scopeRef.current === scope) setLocateFailure({ scope, message: cause instanceof Error ? cause.message : '这条安排暂时无法读取，请刷新后重试。' }); }
+      finally { if (alive && scopeRef.current === scope) setLocatingScope(undefined); }
+    })();
+    return () => { alive = false; };
+  }, [initialScheduleId, companion.id, conversationId, request, begin, exactRefresh, scope]);
   async function save() {
     const parsed = companionScheduleEntrySchema.safeParse({ title: draft.title, prompt: draft.prompt, kind: draft.kind, runAt: editing && draft.runAt === inputDateTime(editing.runAt) ? editing.runAt : Number.isFinite(new Date(draft.runAt).getTime()) ? new Date(draft.runAt).toISOString() : '', timeZone: draft.timeZone, recurrence: draft.recurrence, flexible: draft.flexible, ...(draft.recurrence === 'interval' ? { intervalMinutes: draft.intervalMinutes } : {}), ...(draft.recurrence === 'weekly' ? { weekDays: draft.weekDays } : {}) });
     if (!parsed.success) { setError(parsed.error.issues[0]?.message ?? '请检查时间与安排内容。'); return; }
@@ -45,6 +82,7 @@ export function CompanionScheduleManager({ companion, companions = [companion], 
     const result = editing ? await request({ type: 'schedule.update', companionId: companion.id, conversationId, id: editing.id, expectedRevision: editing.revision, patch: { ...entry, intervalMinutes: entry.intervalMinutes ?? null, weekDays: entry.weekDays ?? null } }) : await request({ type: 'schedule.create', companionId: companion.id, conversationId, clientId: clientId.current, entries: [entry] });
     setBusy(false);
     if (!result?.ok) { setError('安排未保存。可能已发生变化，请刷新后重新编辑。'); return; }
+    rememberExact(result.schedule);
     setCreating(false); setEditing(undefined); clientId.current = crypto.randomUUID(); await refresh();
   }
   async function act(schedule: CompanionSchedule, operation: 'pause' | 'run-now' | 'cancel') {
@@ -53,6 +91,7 @@ export function CompanionScheduleManager({ companion, companions = [companion], 
     const response = operation === 'pause' ? await request({ type: 'schedule.pause', ...scope, paused: schedule.status !== 'paused' }) : operation === 'cancel' ? await request({ type: 'schedule.cancel', ...scope }) : await request({ type: 'schedule.run-now', ...scope });
     setBusy(false);
     if (!response?.ok) { setError('操作未完成，请刷新后重试。'); return; }
+    rememberExact(response.schedule);
     setConfirmCancel(undefined); await refresh();
   }
   const visible = schedules.filter(schedule => filter === 'all' || (filter === 'completed' ? scheduleStatus(schedule) === '已完成' || schedule.status === 'cancelled' : schedule.status !== 'cancelled' && scheduleStatus(schedule) !== '已完成'));
@@ -63,7 +102,8 @@ export function CompanionScheduleManager({ companion, companions = [companion], 
       <nav className="companions-workspace-tabs" aria-label="伙伴日程内容"><button aria-pressed={page === 'plans'} onClick={() => setPage('plans')}><Icon name="clipboard" />日历与待办</button><button aria-pressed={page === 'routine'} onClick={() => setPage('routine')}><Icon name="clock" />作息与习惯</button><button aria-pressed={page === 'life'} onClick={() => setPage('life')}><Icon name="message-circle" />日常事件</button></nav>
       {page === 'life' ? <CompanionLifeEvents companion={companion} companions={companions} request={request} api={api} /> : page === 'routine' ? <CompanionRoutineEditor companionId={companion.id} conversationId={conversationId} readOnly={conversationKind === 'group'} request={request} api={api} /> : <div className="companions-schedule-workspace"><div className="companions-schedule-list">
         <div className="companions-schedule-toolbar"><nav aria-label="日程筛选"><button className={filter === 'upcoming' ? 'is-active' : ''} onClick={() => setFilter('upcoming')}>接下来的安排</button><button className={filter === 'completed' ? 'is-active' : ''} onClick={() => setFilter('completed')}>已结束</button><button className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>全部</button></nav><button className="companion-primary-button" onClick={() => begin()}><Icon name="plus" />添加安排</button></div>
-        {(error || loadError) && <p className="companions-memory-error" role="alert">{error || loadError} <button onClick={() => void refresh()}>刷新</button></p>}
+        {(error || locateError || loadError) && <p className="companions-memory-error" role="alert">{error || locateError || loadError} <button onClick={() => { void refresh(); if (initialScheduleId) setExactRefresh(value => value + 1); }}>刷新</button></p>}
+        {locatingScope === scope && !creating && <p className="companions-subtle">正在定位这条安排…</p>}
         {loading && <p className="companions-subtle">正在读取日程…</p>}
         {!loading && !visible.length && <div className="companions-schedule-empty"><Icon name="clipboard" /><h3>给未来留一张便签</h3><p>可以直接在聊天里告诉伙伴，也可以在这里安排提醒或任务。</p><button className="companion-secondary-button" onClick={() => begin()}>添加一件事</button></div>}
         {visible.map(schedule => <article className="companions-schedule-row" key={schedule.id} data-schedule-id={schedule.id}><div className="companions-schedule-row-date"><strong>{new Date(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt).getDate()}</strong><span>{new Date(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt).toLocaleDateString('zh-CN', { month: 'short' })}</span></div><div className="companions-schedule-row-body"><div><h3>{schedule.title}</h3><span className="companions-schedule-state">{scheduleStatus(schedule)}</span></div><p>{scheduleTime(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt)} · {RECURRENCE_LABELS[schedule.recurrence]} · {schedule.kind === 'task' ? '执行任务' : '提醒'}{schedule.flexible && ' · 时间可调整'}</p>{schedule.blockedReason && <p>{schedule.blockedReason === 'resting' ? '伙伴正在休息，将在可调整的时间处理。' : '正在等待模型连接恢复。'} 原定：{scheduleTime(schedule.nextRunAt ?? schedule.runAt)}</p>}<details><summary>查看完整内容与执行记录</summary><p>{schedule.prompt}</p>{schedule.lastResult && <p>最近结果：{schedule.lastResult}</p>}{schedule.lastError && <p role="alert">{schedule.lastError}</p>}{occurrences.filter(item => item.scheduleId === schedule.id).slice(0, 5).map(item => <small key={item.id}>{companionTimestamp(item.scheduledAt)} · {item.status === 'done' ? '已完成' : item.status === 'failed' ? '失败' : item.status === 'running' || item.status === 'dispatching' ? '执行中' : item.status === 'cancelled' ? '已取消' : '等待执行'}{item.result && ' · ' + item.result}</small>)}</details>

@@ -155,6 +155,9 @@ it('keeps companion navigation usable and preserves the selected folder, documen
   const requests = workspace.mock.calls.length;
   await act(() => vi.advanceTimersByTimeAsync(10_000)); expect(workspace).toHaveBeenCalledTimes(requests);
   await click('消息', nav); expect(manager.hidden).toBe(true); expect(button('消息', nav).getAttribute('aria-pressed')).toBe('true');
+  await click('生活总览', nav); expect(manager.hidden).toBe(true); expect(button('生活总览', nav).getAttribute('aria-pressed')).toBe('true');
+  expect(container!.querySelector<HTMLElement>('[aria-label="伙伴生活总览"]')?.hidden).toBe(false);
+  expect(f.request.mock.calls.some(([command]) => command.type === 'conversation.open')).toBe(false);
   await click('打开伙伴记忆库', nav); await act(() => vi.advanceTimersByTimeAsync(300));
   expect(manager.hidden).toBe(false); expect(container!.querySelector('[aria-label="共同记忆管理"]')).toBe(manager);
   expect(manager.querySelector('textarea[aria-label="共同记忆内容"]')).toBe(editor);
@@ -248,7 +251,7 @@ it('searches and filters the full built-in catalogue and restores the selected r
 it('keeps private and group conversations in the message list and opens the same private conversation from contacts', async () => {
   const f = fixture(); await mount(f.api);
   const navigation = container!.querySelector('nav[aria-label="伙伴导航"]')!;
-  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '记忆', '世界', '社交']);
+  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '生活', '记忆', '世界', '社交']);
   expect(container!.querySelector('[aria-label="伙伴设置"]')).toBeNull();
   expect(container!.querySelectorAll('[data-companion-conversation]')).toHaveLength(2);
   expect(container!.querySelector('[data-companion-conversation]')!.getAttribute('data-companion-conversation')).toBe('private-sister');

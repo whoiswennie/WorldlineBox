@@ -9,8 +9,10 @@ import type { VcpMemoryClient } from '../vcp-memory/client';
 import type { VcpMemoryMessage, VcpMemoryNote, VcpMemoryOwnerIdentity, VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
 import { vcpMemoryNotebookFolder } from '../vcp-memory/contracts';
 import { companionMemoryIdentity, companionMemoryIdentitySignature, sameCompanionMemoryIdentity } from './memory-identity';
-import type { CompanionMemoryProcessingJob } from '../../shared/companion-memory-processing';
+import type { CompanionMemoryJobSchedule, CompanionMemoryOwnerSchedule, CompanionMemoryProcessingJob } from '../../shared/companion-memory-processing';
+import { memoryOwnerSchedule, memorySchedule } from './memory-processing-schedule';
 import { createHash } from 'node:crypto';
+import type { EmbeddingDeviceCapability } from '../../shared/embedding/device-capability';
 
 type MemoryScope = { companionId: string; conversationId: string };
 const identityFor = (scope: MemoryScope) => `${scope.companionId}:${scope.conversationId}`;
@@ -30,6 +32,7 @@ interface MemoryServiceOptions {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   configFor(companion: Companion): Promise<CompanionModelConfig>;
   runtime?: CompanionMemoryRuntime;
+  runtimeAvailability?: () => Pick<EmbeddingDeviceCapability, 'state' | 'message'>;
   cacheRoot?: string;
   fetchFn: typeof fetch; changed(): void; report(error: unknown): void; busy(): boolean;
   blocked?(companionId: string): boolean;
@@ -64,11 +67,66 @@ export class CompanionMemoryService {
   private continuity?: { owner: string; promise: Promise<void> };
   private busySince?: number;
   private captureCursor = 0;
+  private deliveringOwner?: string;
   constructor(private readonly options: MemoryServiceOptions) { this.views = new CompanionMemoryViewCache(options.cacheRoot); }
 
   /** Actual in-process continuity operations; restart does not invent prior history. */
   processingFor(companionId: string): CompanionMemoryProcessingJob[] {
-    return structuredClone(this.timelineProcessing.get(companionId) ?? []);
+    return structuredClone((this.timelineProcessing.get(companionId) ?? []).map(job => {
+      const pending = job.status === 'pending' || job.status === 'failed', retry = job.conversationId ? this.continuityAttempts.get(identityFor({ companionId, conversationId: job.conversationId }))?.retryAt : undefined;
+      const nextAttemptAt = pending && retry && Number.isFinite(retry) ? new Date(retry).toISOString() : pending ? job.nextAttemptAt : undefined;
+      const done = ['completed', 'cancelled', 'stale'].includes(job.status);
+      return { ...job, nextAttemptAt, schedule: memorySchedule('timeline', {
+        scheduleKind: done ? 'finished' : job.status === 'running' ? 'running' : nextAttemptAt && Date.parse(nextAttemptAt) > Date.now() ? 'retry' : 'condition',
+        waitingReason: done || job.status === 'running' ? undefined : job.stage.includes('本月整理间隔') ? 'cooldown' : job.status === 'failed' ? 'retry_backoff' : 'queue',
+        ...(nextAttemptAt ? { nextAttemptAt } : {}), condition: done ? '本次时间线任务已结束，新来源变化后再检查是否需要整理。'
+          : job.status === 'running' ? `正在执行实际后台阶段：${job.stage}。` : '等待前台空闲、月度冷却及模型条件后，在后台轮次重新核验。' }) };
+    }));
+  }
+  /** Read actual host timers and eligibility without loading a model or claiming queued work. */
+  async schedulingFor(companionId: string, tags?: CompanionMemoryJobSchedule): Promise<CompanionMemoryOwnerSchedule> {
+    const [stateResponse, clockResponse] = await Promise.all([
+      this.options.request({ type: 'state', includeConversations: false, includeHidden: true }), this.options.request({ type: 'world.clock.peek' }),
+    ]);
+    const companion = stateResponse.state?.companions.find(item => item.id === companionId);
+    const availability = this.options.runtimeAvailability?.();
+    const reset = stateResponse.state?.resetJobs?.some(item => item.companionId === companionId && item.status !== 'completed');
+    let configured = false;
+    if (companion && companion.active !== false) {
+      try { const config = await this.options.configFor(companion); configured = !!config.model?.trim() && !!config.apiKey?.trim(); } catch { /* A missing configuration is a condition, not a guessed retry time. */ }
+    }
+    const now = Date.now(), nextCheckAt = this.timer && !this.running && this.scheduledAt && this.scheduledAt > now ? new Date(this.scheduledAt).toISOString() : undefined;
+    const lateTimer = !!this.timer && !!this.scheduledAt && this.scheduledAt <= now;
+    const base = (kind: 'capture' | 'index' | 'timeline') => memorySchedule(kind, { ...(nextCheckAt ? { nextCheckAt, scheduleKind: 'timer' as const } : {}),
+      condition: nextCheckAt ? '已安排真实后台检查；届时仍会核验队列、模型与忙闲条件。' : this.running ? '当前后台轮次尚未结束，下一轮检查尚未登记；空出资源后继续核验。' : '等待下一次真实来源变化、手动重试或后台轮次安排检查。' });
+    const schedulers = (['capture', 'index', 'timeline'] as const).map(kind => {
+      let plan = base(kind);
+      const condition = (waitingReason: string, text: string, omitCheck = false) => { plan = { ...plan, scheduleKind: 'condition', waitingReason, condition: text,
+        ...(omitCheck ? { nextCheckAt: undefined } : {}) }; };
+      if (this.closed) condition('app_stopped', '记忆后台服务已停止；应用重新打开并恢复该资产库后继续检查。', true);
+      else if (kind !== 'capture' && availability && ['testing', 'unsupported', 'error'].includes(availability.state)) condition(
+        availability.state === 'testing' ? 'device_testing' : 'embedding_unavailable', availability.state === 'testing'
+          ? '正在执行真实本机模型检测，向量与时间线操作等待同一次检测完成；查看此页面不会重新加载模型。'
+          : `本地向量设备检测尚不可用：${availability.message.slice(0, 350)} 请到“设置 → 设备检测”检查或重新检测。`, true);
+      else if (kind === 'capture' && this.captures.has(companionId)) plan = { ...plan, scheduleKind: 'running', nextCheckAt: undefined, waitingReason: undefined, condition: '正在根据这位伙伴实际见过的来源判断并整理日记；是否产出日记由内容价值决定。' };
+      else if (kind === 'index' && this.deliveringOwner === companionId) plan = { ...plan, scheduleKind: 'running', nextCheckAt: undefined, waitingReason: undefined, condition: '正在投递这位伙伴的实际记忆版本，核验本地向量与 VCP 索引。' };
+      else if (kind === 'timeline' && this.continuity?.owner === companionId) plan = { ...plan, scheduleKind: 'running', nextCheckAt: undefined, waitingReason: undefined, condition: '正在核验这位伙伴的来源或执行月度时间线与摘要整理。' };
+      else if (clockResponse.worldClock?.backlog) condition('world_backlog', '世界时钟尚在追赶，记忆主循环先等待追赶完成；后台检查不等于开始整理。');
+      else if (kind !== 'index' && (reset || this.options.blocked?.(companionId) || companion?.active === false)) condition(reset ? 'reset_in_progress' : companion?.active === false ? 'companion_inactive' : 'companion_paused',
+        reset ? '伙伴重置尚未完成，来源与时间线整理暂停；请先查看重置进度。' : '此伙伴未启用或已暂停活动；请在联系人资料启用伙伴后继续来源与时间线整理。夜间睡眠不会触发这项暂停。', true);
+      else if (kind !== 'capture' && !this.options.runtime) condition('runtime_unavailable', '本地向量与 VCP 服务尚不可用；请在设置中检查本地模型和设备检测。', true);
+      else if (kind !== 'index' && !configured) condition('model_unconfigured', '请在“设置 → 全局模型”配置可用聊天模型（如伙伴使用专属连接，也需补全该连接）。正文和原始来源会保留，下一轮再核验。');
+      else if (kind !== 'index' && this.options.busy()) condition('foreground_busy', kind === 'capture'
+        ? '前台正在生成回复，优先服务聊天；连续忙碌十五秒后来源整理按每轮一个伙伴限流，不保证本轮领取。'
+        : '前台正在生成回复；时间线只在前台空闲的后台轮次整理。');
+      else if (kind === 'timeline' && this.continuity) condition('worker_busy', '时间线后台正在处理其他伙伴，待该轮释放资源后再核验；每个空闲轮次最多新整理一个月份。');
+      else if (this.running) condition('worker_busy', '当前主循环正在处理已领取的投递或来源任务；会在空出资源后继续核验，下一轮时间尚未登记。', true);
+      else if (lateTimer) condition('event_loop_busy', '已到登记的检查时刻，等待主循环获得运行机会；当前没有新的未来检查时间。', true);
+      return { kind, ...plan };
+    });
+    return memoryOwnerSchedule([...schedulers, ...(tags ? [{ kind: 'tags' as const, ...tags,
+      ...(reset ? { scheduleKind: 'condition' as const, waitingReason: 'reset_in_progress', nextCheckAt: undefined,
+        condition: '伙伴重置尚未完成，标签队列不会领取此伙伴的新任务。请先完成或重试重置。' } : {}) }] : [])]);
   }
   /** Explicit retries lift only the failed owner's real continuity cooldowns. */
   retryProcessingFor(companionId: string): number {
@@ -143,6 +201,7 @@ export class CompanionMemoryService {
     this.timer = setTimeout(() => {
       this.timer = undefined;
       this.scheduledAt = undefined;
+      this.options.changed();
       this.running = this.process().catch(this.options.report).finally(() => {
         this.running = undefined;
         if (!this.closed) {
@@ -153,6 +212,7 @@ export class CompanionMemoryService {
       });
     }, delay);
     this.timer.unref();
+    this.options.changed();
   }
 
   async search(query: CompanionMemorySearch, mode: 'active' | 'passive' = 'active'): Promise<CompanionStorageResponse> {
@@ -323,8 +383,9 @@ export class CompanionMemoryService {
         catch (error) { if (!this.closed && this.generation(scope.companionId) === generation) this.options.report(error); }
         if (this.generation(scope.companionId) !== generation) break;
       }
-    }).finally(() => { if (this.continuity?.promise === promise) this.continuity = undefined; });
+    }).finally(() => { if (this.continuity?.promise === promise) { this.continuity = undefined; this.options.changed(); } });
     this.continuity = { owner: candidates[0]![1].companionId, promise };
+    this.options.changed();
   }
   private async runContinuity(scope: MemoryScope, generation: number): Promise<boolean> {
     const identity = identityFor(scope), previous = this.continuityAttempts.get(identity);
@@ -410,9 +471,11 @@ export class CompanionMemoryService {
     return !!month;
     } catch (cause) {
       const cancelled = this.closed || this.generation(scope.companionId) !== generation || this.options.blocked?.(scope.companionId);
+      const retryAt = Date.now() + 300000;
+      if (!cancelled) this.continuityAttempts.set(identity, { revision: snapshot.revision, profileKey: runtime.profileKey, identitySignature, retryAt });
       this.updateTimelineProcessing(processing, { status: cancelled ? 'cancelled' : 'failed', stage: cancelled ? '时间线整理已停止' : '时间线整理未完成，稍后重试',
         error: cancelled ? undefined : (cause instanceof Error && /[\u4e00-\u9fff]/u.test(cause.message) ? cause.message : '时间线服务暂时不可用，请稍后重试。').slice(0, 1000),
-        ...(cancelled ? {} : { nextAttemptAt: new Date(Date.now() + 300000).toISOString() }) });
+        ...(cancelled ? {} : { nextAttemptAt: new Date(retryAt).toISOString() }) });
       throw cause;
     }
   }
@@ -423,6 +486,7 @@ export class CompanionMemoryService {
       const outbox = (await this.options.request({ type: 'memory.outbox.claim', leaseMs: 600000 })).memoryOutbox;
       if (!outbox) return;
       const generation = this.generation(outbox.companionId);
+      this.deliveringOwner = outbox.companionId; this.options.changed();
       try {
         if (this.invalidations.has(outbox.companionId)) throw new Error('记忆可见域正在重建，稍后重试投递。');
         const { client } = await this.options.runtime.get();
@@ -438,7 +502,7 @@ export class CompanionMemoryService {
         await this.options.request({ type: 'memory.outbox.fail', id: outbox.id, leaseToken: outbox.leaseToken,
           error: error instanceof Error ? error.message : 'VCP 记忆投递失败。', retryAfterMs: 30000 });
         this.options.changed(); return;
-      }
+      } finally { this.deliveringOwner = undefined; this.options.changed(); }
     }
     this.again = true;
   }
@@ -477,6 +541,7 @@ export class CompanionMemoryService {
       let settle!: () => void;
       const capture = { controller, settled: new Promise<void>(resolve => { settle = resolve; }) };
       this.captures.set(companion.id, capture);
+      this.options.changed();
       if (this.closed) controller.abort();
       try {
         if (this.options.blocked?.(companion.id)) throw new Error('伙伴当前暂停，日记将稍后处理。');
@@ -511,7 +576,7 @@ export class CompanionMemoryService {
         await this.options.request({ type: 'memory.jobs.fail', id: job.id, leaseToken: job.leaseToken,
           error: error instanceof Error ? error.message : '日记处理失败。', retryAfterMs: this.closed ? 0 : Math.min(300000, 5000 * 2 ** Math.min(job.attempts - 1, 6)) });
         this.options.changed();
-      } finally { settle(); if (this.captures.get(companion.id) === capture) this.captures.delete(companion.id); }
+      } finally { settle(); if (this.captures.get(companion.id) === capture) this.captures.delete(companion.id); this.options.changed(); }
       })().catch(this.options.report);
       capturing.add(task);
       void task.finally(() => capturing.delete(task));

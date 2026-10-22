@@ -1,0 +1,30 @@
+.companions-planner > .companions-memory-life-plan { padding: 14px 0 16px; }
+.companions-memory-life-plan > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.companions-memory-life-plan h4 { font-size: 12px; font-weight: 550; }
+.companions-memory-life-plan header > span { display: flex; gap: 5px; }
+.companions-memory-life-plan header button { display: grid; place-items: center; width: 23px; height: 23px; border: 0; border-radius: 5px; background: transparent; color: var(--ui-content-tertiary); cursor: pointer; }
+.companions-memory-life-plan header button:hover { color: var(--ui-content-accent); background: var(--ui-action-accent-soft); }
+.companions-memory-life-plan ul { display: grid; gap: 13px; margin: 0; padding: 0; list-style: none; }
+.companions-memory-life-plan li { display: grid; grid-template-columns: 15px minmax(0,1fr); gap: 7px; min-width: 0; }
+.memory-life-plan-icon { color: var(--ui-content-tertiary); padding-top: 2px; }
+.companions-memory-life-plan li > div { min-width: 0; }
+.memory-life-plan-title { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 2px 7px; }
+.memory-life-plan-title > strong { min-width: 0; font-size: 11px; line-height: 1.7; font-weight: 500; overflow-wrap: anywhere; }
+.memory-life-plan-title > span { color: var(--ui-content-tertiary); font-size: 10px; white-space: nowrap; }
+.memory-life-plan-title > span[data-state="running"], .memory-life-plan-title > span[data-state="eligible"] { color: var(--ui-content-accent); }
+.memory-life-plan-source, .memory-life-plan-timing, .memory-life-plan-probability { display: block; margin-top: 3px; color: var(--ui-content-secondary); font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.memory-life-plan-source { color: var(--ui-content-tertiary); }
+.memory-life-plan-timing small { color: var(--ui-content-tertiary); font-size: inherit; }
+.memory-life-plan-probability { color: var(--ui-content-tertiary); }
+.memory-life-plan-reason { margin-top: 3px; font-size: 10px; line-height: 1.8; color: var(--ui-content-secondary); }
+.memory-life-plan-reason > summary { display: flex; align-items: start; gap: 3px; list-style: none; cursor: pointer; }
+.memory-life-plan-reason > summary > span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.memory-life-plan-reason > summary > svg { flex: 0 0 11px; margin-top: 4px; color: var(--ui-content-tertiary); }
+.memory-life-plan-reason[open] > summary > span { display: block; }
+.memory-life-plan-reason[open] > summary > svg { transform: rotate(90deg); }
+.memory-life-plan-more { margin-top: 13px; color: var(--ui-content-secondary); font-size: 10px; }
+.memory-life-plan-more > summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; list-style: none; }
+.memory-life-plan-more[open] > summary { margin-bottom: 12px; }
+.memory-life-plan-more[open] > summary > svg { transform: rotate(90deg); }
+.memory-life-plan-note { display: block; margin-top: 11px; color: var(--ui-content-tertiary); font-size: 9px; line-height: 1.8; }
+.companions-memory-life-plan .memory-life-plan-placeholder { margin-top: 8px; color: var(--ui-content-tertiary); font-size: 10px; line-height: 1.8; }

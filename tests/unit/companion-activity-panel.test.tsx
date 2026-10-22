@@ -28,3 +28,15 @@ it('prioritizes current actions over finished records and cancels only the selec
   expect(request).toHaveBeenLastCalledWith({ type: 'activity.cancel', companionId: 'alice', conversationId: 'private-alice', id: 'pending' });
   expect(node!.querySelector('[data-status="cancelled"]')).not.toBeNull();
 });
+
+it('locates an exact older activity task from the overview without confusing it with action history', async () => {
+  const located = task('older-activity', 'succeeded'); located.title = '刚从生活总览点击的拜访';
+  const request = vi.fn<ScheduleRequest>(async command => command.type === 'activity.get' ? { ok: true, activityTask: located }
+    : { ok: true, activityTasks: [task('newer-activity', 'running')] });
+  node = document.createElement('div'); document.body.append(node); root = createRoot(node);
+  await act(async () => root!.render(<CompanionActivityPanel companionId="alice" conversationId="private-alice" request={request} initialTaskId={located.id} />));
+  expect(request).toHaveBeenCalledWith({ type: 'activity.get', companionId: 'alice', conversationId: 'private-alice', id: located.id });
+  expect(request.mock.calls.some(([command]) => command.type === 'action.get')).toBe(false);
+  expect(node.querySelector<HTMLDetailsElement>('details')?.open).toBe(true);
+  expect(node.querySelector('details')?.getAttribute('data-activity-task')).toBe(located.id);
+});

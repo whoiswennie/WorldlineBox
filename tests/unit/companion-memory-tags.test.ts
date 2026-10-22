@@ -70,6 +70,22 @@ it('honors an imported original final Tag line before asking any model', async (
   expect(fetchFn).not.toHaveBeenCalled(); expect(read(f.store, note.id)?.tags).toEqual(['手工原标签', '[项目甲]']);
 });
 
+it('reports the actual tag timer and foreground or model conditions without running the queue', async () => {
+  const f = fixture(), fetchFn = vi.fn<typeof fetch>(); let busy = false;
+  const service = tagger(f.store, fetchFn, 'openai_chat', { busy: () => busy, config: () => { throw new Error('No model'); } });
+  service.start();
+  const initial = await service.schedulingFor('alice');
+  expect(initial).toMatchObject({ scheduleKind: 'condition', waitingReason: 'model_unconfigured', nextCheckAt: new Date(Date.now() + 1000).toISOString() });
+  expect(initial.condition).toContain('明确 Tag 行');
+  busy = true;
+  expect(await service.schedulingFor('alice')).toMatchObject({ waitingReason: 'foreground_busy', nextCheckAt: initial.nextCheckAt });
+  vi.setSystemTime(Date.now() + 2000);
+  expect((await service.schedulingFor('alice')).nextCheckAt).toBeUndefined();
+  expect(fetchFn).not.toHaveBeenCalled();
+  await service.close();
+  expect(await service.schedulingFor('alice')).toMatchObject({ waitingReason: 'app_stopped', nextCheckAt: undefined });
+});
+
 it.each(['hand-tags', 'edit', 'forget', 'delete', 'cancel', 'policy'] as const)('does not publish an old tag result after %s during inference', async change => {
   const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '原始资料版本一。', diaryName: '资料' });
   let resolve!: (value: Response) => void, pause = false; const pending = new Promise<Response>(done => { resolve = done; });

@@ -89,3 +89,87 @@ it('filters completed tasks in SQLite even when pending tasks fill the default p
   expect(completed.jobs).toHaveLength(5); expect(completed.jobs.every(job => job.status === 'completed')).toBe(true); expect(completed.hasMore).toBe(true);
   expect(completed.summary).toMatchObject({ pending: 40, completed: 8 });
 });
+
+it('reports durable retry floors and manual exhaustion without inventing a host timer or start ETA', () => {
+  const { store, room, file } = fixture(); store.appendMessage({ conversationId: room, authorId: 'user', content: '有价值但尚未整理的来源。' });
+  const pending = status(store).jobs[0]!;
+  expect(pending.schedule).toMatchObject({ scheduleKind: 'condition', timeBasis: 'real', waitingReason: 'queue' });
+  expect(pending.schedule?.nextCheckAt).toBeUndefined(); expect(pending.schedule?.explanation).toContain('不保证');
+  const claimed = store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  const before = Date.now();
+  store.request({ type: 'memory.jobs.fail', id: claimed.id, leaseToken: claimed.leaseToken, error: '真实模型请求失败。', retryAfterMs: 5000 });
+  const retry = status(store).jobs[0]!;
+  expect(retry.schedule).toMatchObject({ scheduleKind: 'retry', waitingReason: 'retry_backoff', nextAttemptAt: retry.nextAttemptAt });
+  expect(Date.parse(retry.nextAttemptAt!)).toBeGreaterThanOrEqual(before + 5000);
+  const db = new (Database as { new(file: string): CompanionConnection })(file);
+  try { db.prepare("UPDATE vcp_capture_jobs SET attempts=8 WHERE id=?").run(claimed.id); } finally { db.close(); }
+  const exhausted = status(store).jobs[0]!;
+  expect(exhausted.schedule).toMatchObject({ scheduleKind: 'manual', waitingReason: 'retry_limit' });
+  expect(exhausted.nextAttemptAt).toBeUndefined(); expect(exhausted.schedule?.nextAttemptAt).toBeUndefined();
+});
+
+it('distinguishes capture activation requirements from document tag and index work', () => {
+  const { store, room, file } = fixture();
+  store.appendMessage({ conversationId: room, authorId: 'user', content: '休眠后留在队列的原始来源。' });
+  store.saveMemory({ companionId: 'alice', conversationId: room, content: '手工资料的管理流程不依赖虚拟生活是否激活。' });
+  const db = new (Database as { new(file: string): CompanionConnection })(file);
+  try { db.prepare("UPDATE companions SET data=json_set(data,'$.active',json('false')) WHERE id='alice'").run(); } finally { db.close(); }
+  const jobs = status(store).jobs;
+  expect(jobs.find(job => job.kind === 'capture')?.schedule).toMatchObject({ waitingReason: 'companion_inactive' });
+  expect(jobs.find(job => job.kind === 'tags')?.schedule?.waitingReason).not.toBe('companion_inactive');
+  expect(jobs.find(job => job.kind === 'index')?.schedule?.waitingReason).not.toBe('companion_inactive');
+  expect(store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob).toBeUndefined();
+});
+
+it('shows actual same-scope index contention and never calls a lease expiry an execution time', () => {
+  const { store, room } = fixture();
+  store.saveMemory({ companionId: 'alice', conversationId: room, content: '第一份有明确手工标签的资料。', tags: ['手工'] });
+  store.saveMemory({ companionId: 'alice', conversationId: room, content: '同一记忆范围的第二份资料。', tags: ['手工'] });
+  const running = store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;
+  const queued = status(store).jobs.find(job => job.kind === 'index' && job.id !== running.id)!;
+  expect(queued.schedule).toMatchObject({ scheduleKind: 'condition', waitingReason: 'scope_busy' });
+  expect(queued.schedule?.nextAttemptAt).toBeUndefined(); expect(queued.schedule?.nextCheckAt).toBeUndefined();
+  expect(store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox).toBeUndefined();
+});
+
+it('manual retry recovers exhausted pending work for its owner while preserving other owners', () => {
+  const { store, room, peerRoom, file } = fixture();
+  store.appendMessage({ conversationId: room, authorId: 'user', content: '本人的待收录来源。' });
+  store.appendMessage({ conversationId: peerRoom, authorId: 'user', content: '别人的待收录来源。' });
+  store.saveMemory({ companionId: 'alice', conversationId: room, content: '本人的待索引及标签文档。' });
+  store.saveMemory({ companionId: 'bob', conversationId: peerRoom, content: '别人的待索引及标签文档。' });
+  const db = new (Database as { new(file: string): CompanionConnection })(file);
+  try {
+    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) db.prepare(`UPDATE ${table} SET status='pending',attempts=8,next_attempt=0`).run();
+    expect(status(store).jobs.every(job => job.schedule?.scheduleKind === 'manual')).toBe(true);
+    store.request({ type: 'memory.jobs.retry', companionId: 'alice' }); store.request({ type: 'memory.tags.retry', companionId: 'alice' });
+    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) {
+      expect(db.prepare(`SELECT status,attempts FROM ${table} WHERE companion_id='alice'`).get()).toMatchObject({ status: 'pending', attempts: 0 });
+      expect(db.prepare(`SELECT status,attempts FROM ${table} WHERE companion_id='bob'`).get()).toMatchObject({ status: 'pending', attempts: 8 });
+    }
+    expect(store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob?.attempts).toBe(1);
+    expect(store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox?.attempts).toBe(1);
+    expect(store.request({ type: 'memory.tags.claim' }).memoryTagJob?.companionId).toBe('alice');
+  } finally { db.close(); }
+});
+
+it('retries exhausted expired leases but never resets a valid running lease', () => {
+  const { store, room, file } = fixture();
+  store.appendMessage({ conversationId: room, authorId: 'user', content: '有效租约保护的来源。' });
+  store.saveMemory({ companionId: 'alice', conversationId: room, content: '有效租约保护的文档。' });
+  store.request({ type: 'memory.jobs.claim', companionId: 'alice' }); store.request({ type: 'memory.outbox.claim', companionId: 'alice' }); store.request({ type: 'memory.tags.claim' });
+  const db = new (Database as { new(file: string): CompanionConnection })(file);
+  try {
+    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) db.prepare(`UPDATE ${table} SET attempts=8,lease_until=? WHERE companion_id='alice'`).run(Date.now() + 60000);
+    store.request({ type: 'memory.jobs.retry', companionId: 'alice' }); store.request({ type: 'memory.tags.retry', companionId: 'alice' });
+    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) {
+      const valid = db.prepare(`SELECT status,attempts,lease_token FROM ${table} WHERE companion_id='alice'`).get() as { lease_token: string };
+      expect(valid).toMatchObject({ status: 'running', attempts: 8 }); expect(valid.lease_token).toBeTruthy();
+      db.prepare(`UPDATE ${table} SET lease_until=? WHERE companion_id='alice'`).run(Date.now() - 1);
+    }
+    expect(status(store).jobs.every(job => job.schedule?.waitingReason === 'retry_limit')).toBe(true);
+    store.request({ type: 'memory.jobs.retry', companionId: 'alice' }); store.request({ type: 'memory.tags.retry', companionId: 'alice' });
+    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) expect(db.prepare(`SELECT status,attempts,lease_token,lease_until FROM ${table} WHERE companion_id='alice'`).get())
+      .toMatchObject({ status: 'pending', attempts: 0, lease_token: null, lease_until: null });
+  } finally { db.close(); }
+});

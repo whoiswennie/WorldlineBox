@@ -10,6 +10,9 @@ import { companionWorkSchema, companionLoopDraftSchema } from './companion-loop'
 import { COMPANION_AVATAR_IDS, COMPANION_TEMPLATE_IDS } from './companion-template-ids';
 import { companionMemorySchema, companionMemoryPageSchema, companionMemoryStatusSchema, companionMemoryPublicCommands, companionMemoryPolicySchema } from './companion-memory';
 import { companionMemoryProcessingSchema } from './companion-memory-processing';
+import { companionMemoryLifePlanCommand, companionMemoryLifePlanSchema } from './companion-life-plan';
+import { companionLifeOverviewCommand, companionLifeOverviewSchema } from './companion-life-overview';
+import { companionMemoryTraceListCommand, companionMemoryTraceInspectCommand, companionMemoryTracePageSchema, companionMemoryTraceSchema } from './companion-memory-trace';
 import { companionSchedulePublicCommands, companionScheduleSchema, companionScheduleOccurrenceSchema } from './companion-schedule';
 import { companionStatePublicCommands, companionRuntimeStateSchema } from './companion-state';
 import { companionRoutinePublicCommands, companionRoutineSchema, companionRoutineRuntimeSchema } from './companion-routine';
@@ -168,6 +171,9 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('reply.resume'), conversationId: companionIdSchema }),
   z.strictObject({ type: z.literal('memory.list'), companionId: companionIdSchema }),
   ...companionMemoryPublicCommands,
+  companionMemoryLifePlanCommand,
+  companionLifeOverviewCommand,
+  companionMemoryTraceListCommand, companionMemoryTraceInspectCommand,
   ...companionSchedulePublicCommands,
   ...companionWorkOrderPublicCommands,
   ...companionLifePublicCommands,
@@ -204,6 +210,9 @@ export const companionsResponseSchema = z.object({
   message: messageSchema.optional(), companion: companionSchema.optional(),
   memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(),
   memoryProcessing: companionMemoryProcessingSchema.optional(),
+  memoryLifePlan: companionMemoryLifePlanSchema.optional(),
+  lifeOverview: companionLifeOverviewSchema.optional(),
+  memoryTracePage: companionMemoryTracePageSchema.optional(), memoryTrace: companionMemoryTraceSchema.optional(),
   memoryContext: z.object({ text: z.string().max(1024 * 1024), revision: z.string(), profileKey: z.string() }).optional(),
   memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
   memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),

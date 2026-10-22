@@ -1,6 +1,9 @@
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
 import { z } from 'zod';
 import { companionLearningStorageCommands, companionLearningStatusSchema, companionLearningJobSchema } from './companion-learning';
+import { companionWorldSleepPlanSchema } from './companion-life-plan';
+import { companionLifeOverviewReadCommand, companionLifeOverviewContextSchema } from './companion-life-overview';
+import { companionMemoryTraceListCommand, companionMemoryTraceInspectCommand } from './companion-memory-trace';
 import { companionDocumentCatalogCommands, companionDocumentCatalogPageSchema } from './companion-document-catalog';
 import { activityStorageCommands, activityMemoryIntentSchema } from './companion-activity-task';
 import { companionMemoryTagCommands, companionMemoryTagJobSchema, companionMemoryTagStatusSchema } from './companion-memory-tags';
@@ -89,6 +92,8 @@ export type CompanionProactiveState = z.infer<typeof companionProactiveStateSche
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   ...companionLearningStorageCommands,
+  companionLifeOverviewReadCommand,
+  companionMemoryTraceListCommand, companionMemoryTraceInspectCommand,
   ...companionDocumentCatalogCommands,
   ...companionMemoryTagCommands,
   ...activityStorageCommands, ...companionInterruptionCommands,
@@ -166,6 +171,8 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   resetTaskIds: z.array(z.string().max(200)).optional(),
   companionTaskIds: z.array(z.string().max(200)).optional(),
   worldClock: companionWorldTimeSchema.optional(),
+  worldSleepPlan: companionWorldSleepPlanSchema.optional(),
+  lifeOverviewContext: companionLifeOverviewContextSchema.optional(),
   workOrderClaim: companionWorkOrderClaimSchema.optional(),
   action: actionSchema.optional(),
   proactive: companionProactiveStateSchema.optional(),

@@ -22,6 +22,7 @@ import { CompanionActivityTaskService } from './activity-task-service';
 import { activityArgumentsSchema } from '../../shared/companion-activity-task';
 import { CompanionMemoryService } from './memory-service';
 import { CompanionMemoryTagService } from './memory-tags-service';
+import { memoryProcessingJobSchedule } from './memory-processing-schedule';
 import { validateCompanionMemoryProhibitions } from './memory-model';
 import { CompanionMemoryLibrary } from './memory-library';
 import { CompanionMemoryManagementSearch } from './memory-management-search';
@@ -60,10 +61,14 @@ import type { CompanionTaskCheckpoint } from '../../shared/companion-storage';
 import type { DshTaskRecord } from '../../shared/dsh-tasks';
 import type { CompanionReset } from '../../shared/companion-reset';
 import { companionModelWorld } from './world-perception-context';
+import { projectCompanionMemoryLifePlan } from './life-plan-projection';
+import { projectCompanionLifeOverview } from './life-overview-projection';
+import type { EmbeddingDeviceCapability } from '../../shared/embedding/device-capability';
 
 export interface CompanionServiceOptions {
   learningAssets?: CompanionLearningAssets;
   memoryRuntime?: CompanionMemoryRuntime;
+  memoryDeviceStatus?: () => Pick<EmbeddingDeviceCapability, 'state' | 'message'>;
   dataRoot?: string;
   memoryLibraryRoot?: string;
   userData: string; workerPath: string; appPath?: string; window: () => BrowserWindow | undefined;
@@ -151,6 +156,7 @@ export class CompanionService {
       search: (owner, query, limit, cursor) => this.memoryManagement.search(owner, query, limit, cursor) });
     this.memory = new CompanionMemoryService({ request: command => this.call(command),
       runtime: options.memoryRuntime,
+      runtimeAvailability: options.memoryDeviceStatus,
       cacheRoot: path.join(this.root, 'vcp-context'),
       onTimelineArtifacts: (scope, artifacts, valid) => this.memoryLibrary?.publishTimelines(scope, artifacts, valid) ?? Promise.resolve(),
       configFor: companion => this.configFor(companion),
@@ -329,7 +335,7 @@ export class CompanionService {
     try {
       const response = await job;
       if (response.ok && command.type === 'memory.documents.tags.cancel') this.memoryTags.cancelNote(response.document?.memory?.id);
-      if (response.ok && !['memory.documents.list', 'memory.documents.read', 'memory.documents.tags.status'].includes(command.type)) {
+      if (response.ok && !['memory.documents.list', 'memory.documents.read', 'memory.documents.locate', 'memory.documents.tags.status'].includes(command.type)) {
         this.changed(); if (command.type !== 'memory.documents.tags.cancel') void this.memoryTags.tick().catch(this.options.report);
       }
       return response;
@@ -606,9 +612,39 @@ export class CompanionService {
           sourceMessageId: request.sourceMessageId, conversationId, expectedVersion: request.expectedVersion,
         } }); this.changed(); return response;
       }
+      case 'memory.trace.list': case 'memory.trace.inspect': return this.call(request);
+      case 'life.overview.status': {
+        const companion = (await this.call({ type: 'state', includeConversations: false })).state?.companions.find(item => item.id === request.companionId);
+        if (!companion) throw new Error('伙伴不存在。');
+        const [stored, life, processing] = await Promise.all([
+          this.call({ ...request, type: 'life.overview.read' }),
+          this.handle({ type: 'memory.life-plan.status', companionId: companion.id }),
+          this.handle({ type: 'memory.processing.status', companionId: companion.id, limit: 5 }),
+        ]);
+        if (!stored.lifeOverviewContext || !life.memoryLifePlan) throw new Error('当前伙伴的生活动态暂时无法读取。');
+        return { ok: true, lifeOverview: projectCompanionLifeOverview({ companion, overview: stored.lifeOverviewContext,
+          memoryLifePlan: life.memoryLifePlan, memoryProcessing: processing.memoryProcessing }) };
+      }
+      case 'memory.life-plan.status': {
+        const companion = (await this.call({ type: 'state', includeConversations: false })).state?.companions.find(item => item.id === request.companionId);
+        if (!companion) throw new Error('伙伴不存在。');
+        const [stored, scheduling, companionChatModelConfigured] = await Promise.all([
+          this.call({ type: 'world.sleep-plan', companionId: companion.id }), this.memory.schedulingFor(companion.id),
+          this.configFor(companion).then(config => !!config.model?.trim() && !!config.apiKey?.trim()).catch(() => false),
+        ]);
+        const sleep = stored.worldSleepPlan;
+        if (!sleep || sleep.companionId !== companion.id) throw new Error('当前伙伴的记忆与学习安排暂时无法读取。');
+        const capture = scheduling.schedulers.find(item => item.kind === 'capture');
+        return { ok: true, memoryLifePlan: projectCompanionMemoryLifePlan({ companion, sleep,
+          chatModelConfigured: this.options.hasConfig(), companionChatModelConfigured, capture: { ...sleep.captureQueue,
+            ...(capture ? { nextCheckAt: capture.nextCheckAt, condition: capture.condition,
+              waitingForModel: capture.waitingReason === 'model_unconfigured' } : {}),
+          } }) };
+      }
       case 'memory.processing.status': {
         const response = await this.call(request), report = response.memoryProcessing;
         if (!report) return response;
+        const schedule = await this.memory.schedulingFor(request.companionId, await this.memoryTags.schedulingFor(request.companionId));
         const runtime = this.memory.processingFor(request.companionId);
         const summary = { ...report.summary };
         for (const job of runtime) {
@@ -619,7 +655,8 @@ export class CompanionService {
         const jobs = [...report.jobs, ...runtime.filter(job => filter === 'all' || filter === 'active' && ['pending', 'running', 'waiting_model'].includes(job.status) || filter === 'failed' && job.status === 'failed' || filter === 'completed' && job.status === 'completed')];
         const priority = (status: string) => status === 'running' ? 0 : ['pending', 'waiting_model', 'failed'].includes(status) ? 1 : 2;
         jobs.sort((a, b) => priority(a.status) - priority(b.status) || (b.updatedAt ?? b.createdAt ?? '').localeCompare(a.updatedAt ?? a.createdAt ?? '') || a.id.localeCompare(b.id));
-        return { ok: true, memoryProcessing: { ...report, summary, jobs: jobs.slice(0, request.limit ?? 30), hasMore: report.hasMore || jobs.length > (request.limit ?? 30) } };
+        return { ok: true, memoryProcessing: { ...report, schedule, summary, jobs: jobs.slice(0, request.limit ?? 30).map(job =>
+          memoryProcessingJobSchedule(job, schedule.schedulers.find(worker => worker.kind === job.kind)!)), hasMore: report.hasMore || jobs.length > (request.limit ?? 30) } };
       }
       case 'memory.jobs.retry': {
         const response = await this.call(request);
@@ -725,7 +762,7 @@ export class CompanionService {
         }
         const response = await this.call(request);
         if (!['messages', 'message.get', 'message.search', 'memory.list', 'memory.search', 'memory.browse', 'memory.inspect', 'memory.sources.search', 'memory.sources.filter', 'memory.records.filter', 'memory.read', 'memory.status', 'memory.processing.status', 'actions', 'actions.page', 'action.get',
-          'activity.list', 'activity.get', 'schedule.list', 'state.get', 'state.inspect', 'routine.get', 'world.status', 'world.snapshot', 'world.observe', 'social.conversations', 'social.messages', 'social.days', 'social.flow', 'social.graph', 'work-order.list', 'life-rule.list'].includes(request.type)) this.changed();
+          'activity.list', 'activity.get', 'schedule.list', 'schedule.get', 'state.get', 'state.inspect', 'routine.get', 'world.status', 'world.snapshot', 'world.observe', 'social.conversations', 'social.messages', 'social.days', 'social.flow', 'social.graph', 'work-order.list', 'life-rule.list'].includes(request.type)) this.changed();
         return response;
       }
     }

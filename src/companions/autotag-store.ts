@@ -119,9 +119,10 @@ export class CompanionMemoryTagStore {
       case 'memory.tags.status': return { ok: true, memoryTagStatus: this.status(command.companionId, command.noteId) };
       case 'memory.tags.cancel': this.enable(command.companionId, command.noteId, false); this.db.prepare("UPDATE companion_memory_tag_jobs SET status='cancelled',lease_token=NULL,lease_until=NULL,error=NULL WHERE companion_id=? AND note_id=? AND status NOT IN('completed','stale')")
         .run(command.companionId, command.noteId); return { ok: true };
-      case 'memory.tags.retry': if (command.noteId) this.enable(command.companionId, command.noteId, true); this.db.prepare(`UPDATE companion_memory_tag_jobs SET status='pending',attempts=0,next_attempt=0,error=NULL WHERE companion_id=?
-        AND status IN('waiting_model','failed'${command.noteId ? ",'cancelled','stale'" : ''}) ${command.noteId ? 'AND note_id=?' : ''}`)
-        .run(...(command.noteId ? [command.companionId, command.noteId] : [command.companionId])); return { ok: true };
+      case 'memory.tags.retry': if (command.noteId) this.enable(command.companionId, command.noteId, true); this.db.prepare(`UPDATE companion_memory_tag_jobs SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL WHERE companion_id=?
+        AND (status IN('waiting_model','failed'${command.noteId ? ",'cancelled','stale'" : ''}) OR status='pending' AND attempts>=8
+          OR status='running' AND attempts>=8 AND lease_until<=?) ${command.noteId ? 'AND note_id=?' : ''}`)
+        .run(command.companionId, Date.now(), ...(command.noteId ? [command.noteId] : [])); return { ok: true };
     }
   }
 }

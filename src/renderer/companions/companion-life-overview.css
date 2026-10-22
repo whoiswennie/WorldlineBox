@@ -1,0 +1,83 @@
+.companions-app .companions-life-overview { grid-column: 2 / -1; grid-row: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--companion-chat); container: life-overview / inline-size; }
+.companions-app .companions-life-overview[hidden] { display: none; }
+.companions-life-overview .life-overview-scroll { height: 100%; overflow: auto; scrollbar-width: thin; }
+.companions-life-overview .life-overview-paper { max-width: 1320px; min-width: 0; margin: 0 auto; padding: 28px 42px 50px; }
+.companions-life-overview .life-overview-heading, .companions-life-overview .life-overview-heading > div:last-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.companions-life-overview .life-overview-eyebrow { color: var(--ui-content-tertiary); font-size: 11px; letter-spacing: .08em; }
+.companions-app .companions-life-overview h1 { margin-top: 5px; font-size: 24px; font-weight: 600; letter-spacing: .015em; }
+.companions-app .companions-life-overview button { border: 0; background: transparent; color: var(--ui-content-secondary); }
+.companions-life-overview .life-overview-heading button { display: inline-flex; align-items: center; gap: 7px; border-radius: 8px; padding: 8px; font-size: 11px; }
+.companions-life-overview .life-overview-heading button:hover, .companions-life-overview .life-overview-owner-tools button:hover, .companions-life-overview .life-overview-rhythm-links button:hover { color: var(--ui-content-accent); background: var(--ui-action-accent-soft); }
+.companions-life-overview .life-overview-environment { display: flex; position: relative; align-items: center; justify-content: space-between; gap: 20px; margin-top: 18px; padding: 17px 25px 23px; border: 1px solid color-mix(in srgb, var(--ui-content-accent) 14%, var(--ui-border-subtle)); border-radius: 15px; background: linear-gradient(110deg,color-mix(in srgb,var(--ui-action-accent-soft) 70%,var(--ui-surface-pane)),color-mix(in srgb,#c8b8ee 8%,var(--ui-surface-pane))); }
+.companions-life-overview .life-overview-environment > div:first-child { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px 13px; min-width: 0; }
+.companions-life-overview .life-overview-environment > div:first-child > span { color: var(--ui-content-secondary); font-size: 11px; }
+.companions-life-overview .life-overview-environment > div:first-child > time, .companions-life-overview .life-overview-environment > div:first-child > strong { font-size: 23px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.companions-life-overview .life-overview-environment > div:first-child > small { color: var(--ui-content-tertiary); font-size: 10px; }
+.companions-life-overview .life-overview-weather { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.companions-life-overview .life-overview-weather > span { color: var(--ui-content-accent); font-size: 30px; font-weight: 300; }
+.companions-life-overview .life-overview-weather strong { font-size: 12px; font-weight: 500; }
+.companions-life-overview .life-overview-weather small { display: block; margin-top: 5px; color: var(--ui-content-secondary); font-size: 10px; }
+.companions-life-overview .life-overview-observed { position: absolute; bottom: 8px; right: 25px; color: var(--ui-content-tertiary); font-size: 9px; }
+.companions-life-overview .life-overview-owners { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding: 14px 0 14px; scrollbar-width: thin; }
+.companions-life-overview .life-overview-owners > button { display: flex; align-items: center; gap: 8px; flex-shrink: 0; max-width: 180px; padding: 6px 12px 6px 7px; border: 1px solid transparent; border-radius: 28px; font-size: 11px; }
+.companions-life-overview .life-overview-owners > button[aria-pressed=true] { color: var(--ui-content-accent); border-color: color-mix(in srgb,var(--ui-content-accent) 22%,transparent); background: var(--ui-action-accent-soft); }
+.companions-life-overview .life-overview-owners > button > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.companions-life-overview .life-overview-owners .companion-avatar { width: 31px; height: 31px; min-width: 31px; border-radius: 50%; }
+.companions-life-overview .life-overview-owners .life-overview-manage-owners { gap: 6px; padding-left: 11px; color: var(--ui-content-tertiary); }
+.companions-life-overview .life-overview-owner-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 17px; padding: 3px 0 18px; }
+.companions-life-overview .life-overview-owner-heading > div:first-child { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.companions-life-overview .life-overview-owner-heading .companion-avatar { width: 42px; height: 42px; min-width: 42px; }
+.companions-life-overview .life-overview-owner-heading h2 { font-size: 17px; font-weight: 550; overflow-wrap: anywhere; }
+.companions-life-overview .life-overview-owner-heading p { margin-top: 5px; font-size: 11px; color: var(--ui-content-secondary); overflow-wrap: anywhere; }
+.companions-life-overview .life-overview-owner-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.companions-life-overview .life-overview-owner-tools button { display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; padding: 7px 8px; font-size: 11px; }
+.companions-life-overview .life-overview-layout { display: grid; grid-template-columns: minmax(0,1fr) 255px; gap: 35px; align-items: start; }
+.companions-life-overview .life-overview-feed, .companions-life-overview .life-overview-rhythm { min-width: 0; }
+.companions-life-overview .life-overview-filters { display: flex; flex-wrap: wrap; gap: 7px 16px; margin-bottom: 18px; border-bottom: 1px solid var(--ui-border-subtle); }
+.companions-life-overview .life-overview-filters button { padding: 0 0 10px; border-bottom: 2px solid transparent; font-size: 11px; }
+.companions-life-overview .life-overview-filters button[aria-selected=true] { border-bottom-color: var(--ui-content-accent); color: var(--ui-content-accent); }
+.companions-life-overview .life-overview-timeline { display: flex; flex-direction: column; gap: 15px; margin: 0; padding: 0; list-style: none; }
+.companions-life-overview .life-overview-timeline > li { position: relative; display: grid; grid-template-columns: 13px minmax(0,1fr); gap: 12px; }
+.companions-life-overview .life-overview-timeline > li:not(:last-child)::before { content: ''; position: absolute; top: 19px; bottom: -20px; left: 5px; width: 1px; background: color-mix(in srgb,var(--ui-content-accent) 17%,var(--ui-border-subtle)); }
+.companions-life-overview .life-overview-thread-dot { z-index: 1; width: 7px; height: 7px; margin: 18px 0 0 2px; border-radius: 50%; background: color-mix(in srgb,var(--ui-content-accent) 45%,var(--ui-surface-pane)); box-shadow: 0 0 0 4px var(--companion-chat); }
+.companions-life-overview .life-overview-timeline > li[data-life-section=current] .life-overview-thread-dot { background: var(--ui-content-accent); }
+.companions-life-overview .life-overview-timeline > li > article { min-width: 0; padding: 17px 20px 12px; border: 1px solid var(--ui-border-subtle); border-radius: 12px; background: var(--ui-surface-raised); }
+.companions-life-overview .life-overview-timeline > li[data-life-section=current] > article { border-color: color-mix(in srgb,var(--ui-content-accent) 22%,var(--ui-border-subtle)); }
+.companions-life-overview .life-overview-item-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-content-tertiary); font-size: 10px; }
+.companions-life-overview .life-overview-item-meta > small { font-size: inherit; }
+.companions-life-overview .life-overview-timeline > li[data-life-section=current] .life-overview-item-meta > span { color: var(--ui-content-accent); }
+.companions-app .companions-life-overview .life-overview-timeline h3 { margin: 10px 0 8px; font-size: 14px; font-weight: 500; line-height: 1.8; overflow-wrap: anywhere; }
+.companions-life-overview .life-overview-item-time, .companions-life-overview .life-overview-probability { display: block; color: var(--ui-content-secondary); font-size: 10px; line-height: 1.9; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.companions-life-overview .life-overview-item-time > small { color: var(--ui-content-tertiary); font-size: inherit; }
+.companions-life-overview .life-overview-probability { margin-top: 4px; color: var(--ui-content-tertiary); }
+.companions-life-overview .life-overview-timeline article > footer { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 9px 15px; margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--ui-border-subtle); }
+.companions-life-overview .life-overview-timeline details { flex: 1; min-width: 0; color: var(--ui-content-secondary); font-size: 10px; line-height: 1.9; }
+.companions-life-overview .life-overview-timeline summary { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; list-style: none; color: var(--ui-content-tertiary); }
+.companions-life-overview .life-overview-timeline details[open] summary > svg:last-child { transform: rotate(90deg); }
+.companions-app .companions-life-overview .life-overview-timeline details p { margin-top: 9px; overflow-wrap: anywhere; }
+.companions-life-overview .life-overview-timeline footer > button { display: inline-flex; align-items: center; gap: 4px; align-self: start; padding: 0; color: var(--ui-content-accent); font-size: 10px; }
+.companions-life-overview .life-overview-pagination { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 25px 0 0; font-size: 10px; color: var(--ui-content-tertiary); }
+.companions-life-overview .life-overview-pagination button { padding: 7px 9px; border-radius: 5px; font-size: 10px; }
+.companions-life-overview .life-overview-pagination button:hover:not(:disabled) { color: var(--ui-content-accent); background: var(--ui-action-accent-soft); }
+.companions-life-overview .life-overview-rhythm { padding-left: 23px; border-left: 1px solid var(--ui-border-subtle); }
+.companions-life-overview .life-overview-rhythm .companions-memory-life-plan { padding-top: 21px; }
+.companions-life-overview .life-overview-memory-current { padding-bottom: 21px; border-bottom: 1px solid var(--ui-border-subtle); }
+.companions-life-overview .life-overview-memory-current > header { display: flex; align-items: center; gap: 7px; color: var(--ui-content-accent); }
+.companions-life-overview .life-overview-memory-current h3 { flex: 1; color: var(--ui-content-primary); font-size: 12px; font-weight: 550; }
+.companions-life-overview .life-overview-memory-current header button { display: grid; place-items: center; padding: 4px; color: var(--ui-content-tertiary); }
+.companions-life-overview .life-overview-memory-current > p { margin-top: 11px; color: var(--ui-content-secondary); font-size: 10px; line-height: 1.9; }
+.companions-life-overview .life-overview-memory-current > div { margin-top: 12px; }
+.companions-life-overview .life-overview-memory-current > div > strong { display: block; color: var(--ui-content-secondary); font-size: 11px; font-weight: 400; line-height: 1.8; overflow-wrap: anywhere; }
+.companions-life-overview .life-overview-memory-current small { display: block; margin-top: 4px; color: var(--ui-content-tertiary); font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
+.companions-life-overview .life-overview-memory-next { padding-top: 8px; }
+.companions-life-overview .life-overview-rhythm-links { display: grid; gap: 5px; margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--ui-border-subtle); }
+.companions-life-overview .life-overview-rhythm-links > button { display: flex; align-items: center; gap: 7px; padding: 8px 5px; border-radius: 6px; font-size: 11px; text-align: left; }
+.companions-life-overview .life-overview-rhythm-links > button > svg:last-child { margin-left: auto; }
+.companions-life-overview .life-overview-empty { padding: 42px 22px; color: var(--ui-content-tertiary); text-align: center; font-size: 12px; line-height: 2; }
+.companions-life-overview .life-overview-empty > svg { color: var(--ui-content-accent); margin-bottom: 9px; }
+.companions-life-overview .life-overview-empty h2 { font-size: 17px; color: var(--ui-content-primary); font-weight: 500; }
+.companions-life-overview .life-overview-empty p { margin-top: 8px; }
+.companions-life-overview .life-overview-empty button { margin-top: 15px; padding: 7px 12px; border-radius: 7px; color: var(--ui-content-accent); background: var(--ui-action-accent-soft); font-size: 11px; }
+.companions-life-overview .life-overview-loading { padding: 25px 0; color: var(--ui-content-tertiary); font-size: 11px; }
+@container life-overview (max-width: 920px) { .companions-life-overview .life-overview-paper { padding: 26px 25px 40px; }.companions-life-overview .life-overview-layout { grid-template-columns: minmax(0,1fr); gap: 30px; }.companions-life-overview .life-overview-rhythm { border-left: 0; border-top: 1px solid var(--ui-border-subtle); padding: 24px 0 0; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 24px; }.companions-life-overview .life-overview-memory-current { border: 0; padding: 0; }.companions-life-overview .life-overview-rhythm .companions-memory-life-plan { padding-top: 0; }.companions-life-overview .life-overview-rhythm-links { grid-column: 1 / -1; margin-top: 0; }.companions-life-overview .life-overview-environment { align-items: start; }.companions-life-overview .life-overview-environment > div:first-child { flex-direction: column; gap: 6px; } }
+@container life-overview (max-width: 560px) { .companions-life-overview .life-overview-paper { padding: 22px 17px 35px; }.companions-life-overview .life-overview-heading button > span { display: none; }.companions-life-overview .life-overview-environment { padding: 18px 17px 29px; gap: 12px; }.companions-life-overview .life-overview-environment > div:first-child > time { font-size: 19px; }.companions-life-overview .life-overview-weather { gap: 7px; }.companions-life-overview .life-overview-weather > span { font-size: 23px; }.companions-life-overview .life-overview-weather small { max-width: 85px; line-height: 1.7; }.companions-life-overview .life-overview-observed { right: 17px; }.companions-life-overview .life-overview-owner-tools { gap: 3px; }.companions-life-overview .life-overview-layout { gap: 24px; }.companions-life-overview .life-overview-rhythm { grid-template-columns: minmax(0,1fr); }.companions-life-overview .life-overview-timeline > li { gap: 8px; }.companions-life-overview .life-overview-timeline > li > article { padding: 14px 14px 11px; }.companions-life-overview .life-overview-filters { gap: 8px 12px; }.companions-life-overview .life-overview-filters button { font-size: 10px; } }

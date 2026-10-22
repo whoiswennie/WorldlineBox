@@ -157,6 +157,18 @@ async function closeService(service: CompanionService) {
 function replyEvents(): CompanionReplyStreamEvent[] {
   return transport.send.mock.calls.filter(([channel]) => channel === COMPANION_REPLY_STREAM_CHANNEL).map(([, value]) => value as CompanionReplyStreamEvent);
 }
+
+it('reads an exact owner schedule through the public service without publishing a change notification', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+  await f.service.handle({ type: 'state' });
+  const scope = { companionId: 'sister', conversationId: f.conversation.id };
+  const schedule = f.store.request({ type: 'schedule.create', ...scope, entries: [{ title: '精确只读日程', prompt: '提醒我看书。', kind: 'reminder',
+    runAt: '2026-12-01T02:00:00Z', timeZone: 'UTC', recurrence: 'once', flexible: false }] }).schedules![0]!;
+  const changed = vi.spyOn(f.service as unknown as { changed(): void }, 'changed');
+  const response = await f.service.handle({ type: 'schedule.get', ...scope, id: schedule.id });
+  expect(response.schedule).toEqual(schedule); expect(changed).not.toHaveBeenCalled();
+  expect(transport.request).toHaveBeenCalledWith({ type: 'schedule.get', ...scope, id: schedule.id });
+});
 async function finishReset(store: CompanionsStore, id = 'sister') {
   for (let batch = 0; batch < 500; batch++) {
     const job = store.request({ type: 'companion.reset.status', id }).reset;

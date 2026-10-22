@@ -9,7 +9,10 @@ import { advanceCompanionWorldActor, companionWorldEnvironment, companionWorldRe
 import { companionWorldCellWalkable, findCompanionWorldPath } from '../shared/companion-world-engine';
 import { companionWorldEnergyRate } from '../shared/companion-world-engine';
 import { COMPANION_WORLD_RECOVERY, companionWorldNeedsRecovery } from '../shared/companion-world-recovery';
-import { evaluateCompanionRoutine } from '../shared/companion-routine-time';
+import { defaultCompanionRoutineConfig, evaluateCompanionRoutine } from '../shared/companion-routine-time';
+import type { CompanionWorldSleepPlan } from '../shared/companion-life-plan';
+import type { CompanionLearningGrant } from '../shared/companion-learning';
+import { readCompanionLifeOverviewPage } from './life-overview-store';
 import { resolveCompanionScheduleTimeZone, isCompanionScheduleTimeZone } from '../shared/companion-schedule-time';
 import { applyCompanionAppraisal } from '../shared/companion-affect';
 import { companionWorldExpression } from '../shared/companion-world-expression';
@@ -53,6 +56,11 @@ type StoredWorld = { sceneVersion?: 2; settings: CompanionWorldSettings; anchors
 const iso = (at = Date.now()) => new Date(at).toISOString();
 const parse = <T>(value: unknown): T => JSON.parse(String(value)) as T;
 const row = (value: unknown) => value as Row;
+// The host normally ticks and persists every 500ms. Read-only management views
+// tolerate ten missed cycles before calling a persisted observation a backlog;
+// ordinary time between ticks must not claim the world is still catching up.
+const OBSERVATION_BACKLOG_GRACE_MS = 5_000;
+const observationBacklog = (observedAt: number, now: number) => now - observedAt > OBSERVATION_BACKLOG_GRACE_MS;
 const privateRoom = (id: string) => 'world_' + id;
 const activeVisit = (visit: StoredVisit) => visit.status === 'requested' || visit.status === 'allowed';
 const RECENT_SETTLED_VISITS = 100;
@@ -512,6 +520,15 @@ export class CompanionWorldStore {
     return { realNow: iso(now), virtualNow: iso(this.virtualFor(state, observedAt)), timeZone: state.settings.timeZone,
       mode: state.settings.mode, speed: companionWorldSpeed(state.settings), backlog: observedAt < now,
       ...(since ? { elapsed: since.map(realAt => ({ realAt, milliseconds: this.elapsedVirtual(Date.parse(realAt), observedAt) })) } : {}) };
+  }
+  /** Persisted clock observation only. Do not load, initialize, advance actors or draw events when a management page polls. */
+  private clockPeek() {
+    const now = Date.now(), saved = this.db.prepare('SELECT data FROM companion_world WHERE id=1').get();
+    const state = saved ? parse<StoredWorld>(row(saved).data) : undefined;
+    const settings = state?.settings ?? { ...COMPANION_WORLD_DEFAULT_SETTINGS, revision: 1, timeZone: resolveCompanionScheduleTimeZone('system') };
+    const observedAt = state?.cursor ?? now;
+    return { realNow: iso(now), virtualNow: iso(state ? this.virtualFor(state, observedAt) : observedAt), timeZone: settings.timeZone,
+      mode: settings.mode, speed: companionWorldSpeed(settings), backlog: observationBacklog(observedAt, now) };
   }
   private virtualFor(state: StoredWorld, realAt: number): number {
     const anchor = this.clockAnchor(state.anchors, realAt);
@@ -1244,6 +1261,62 @@ export class CompanionWorldStore {
         ORDER BY first.rowid LIMIT 1)
       ORDER BY n.rowid LIMIT ?`).all(companionId, limit) as Row[]).map(value => ({ id: String(value.id), version: Number(value.version) }));
   }
+  /** Observe persisted scheduling state without ticking the world or drawing a dream. */
+  private sleepPlan(companionId: string): CompanionWorldSleepPlan {
+    const owner = this.db.prepare('SELECT data FROM companions WHERE id=? AND deleted_at IS NULL').get(companionId);
+    if (!owner) throw new Error('伙伴不存在或已移除。');
+    const now = Date.now(), checkedAt = iso(now), saved = this.db.prepare('SELECT data FROM companion_world WHERE id=1').get();
+    const state = saved ? parse<StoredWorld>(row(saved).data) : undefined;
+    const settings = state?.settings ?? { ...COMPANION_WORLD_DEFAULT_SETTINGS, revision: 1, timeZone: resolveCompanionScheduleTimeZone('system') };
+    const observedAt = state?.cursor ?? now, virtualNow = state ? this.virtualFor(state, observedAt) : now;
+    const actor = state?.actors.find(actor => actor.companionId === companionId);
+    let routine = defaultCompanionRoutineConfig(companionId);
+    const storedRoutine = this.db.prepare('SELECT data FROM companion_routines WHERE companion_id=?').get(companionId);
+    if (storedRoutine) {
+      const value = parse<{ config: CompanionRoutineConfig; configurationSources?: Array<{ conversationId: string; messageId: string }> }>(row(storedRoutine).data);
+      let visible = true;
+      for (const source of value.configurationSources ?? []) try {
+        if (!this.visibleSources({ companionId, conversationId: source.conversationId }, [source.messageId]).some(message => message.authorId === 'user')) visible = false;
+      } catch { visible = false; }
+      if (visible) routine = value.config;
+    }
+    // The world owns civil time; do not reintroduce a stale per-routine timezone.
+    routine = { ...routine, timeZone: settings.timeZone };
+    const episodeId = actor?.activity === 'sleeping' ? this.sleepEpisode(actor) : undefined;
+    const episode = episodeId ? this.db.prepare('SELECT admitted FROM companion_world_sleep_episodes WHERE companion_id=? AND episode_id=?').get(companionId, episodeId) : undefined;
+    const prior = this.db.prepare('SELECT MAX(virtual_at) AS at FROM companion_world_sleep_episodes WHERE companion_id=? AND admitted=1').get(companionId);
+    const cooldown = prior && row(prior).at !== null ? Number(row(prior).at) + COMPANION_SLEEP_DREAM_COOLDOWN_MS : undefined;
+    const foundJob = episodeId ? this.db.prepare("SELECT data,lease_until FROM companion_world_jobs WHERE companion_id=? AND kind='dream' AND status IN('pending','running','failed') AND json_extract(data,'$.sleepEpisodeId')=? ORDER BY rowid DESC LIMIT 1").get(companionId, episodeId) : undefined;
+    const job = foundJob ? parse<StoredJob>(row(foundJob).data) : undefined;
+    const capture = row(this.db.prepare(`SELECT
+      COALESCE(SUM(status='pending'),0) AS pending,COALESCE(SUM(status='running'),0) AS running,COALESCE(SUM(status='failed'),0) AS failed,
+      COALESCE(SUM(status='running' AND lease_until>?),0) AS live,COALESCE(SUM(status='running' AND (lease_until IS NULL OR lease_until<=?)),0) AS expired,
+      COALESCE(SUM(status IN('pending','failed') AND attempts>=8),0) AS exhausted,
+      COALESCE(SUM(status IN('pending','failed') AND EXISTS(SELECT 1 FROM vcp_source_policy_holds h WHERE h.companion_id=j.companion_id AND h.conversation_id IN(j.conversation_id,'*') AND h.released_at IS NULL)),0) AS held,
+      COALESCE(SUM(status IN('pending','failed') AND attempts<8 AND next_attempt<=? AND NOT EXISTS(SELECT 1 FROM vcp_source_policy_holds h WHERE h.companion_id=j.companion_id AND h.conversation_id IN(j.conversation_id,'*') AND h.released_at IS NULL)),0) AS eligible,
+      MIN(CASE WHEN status IN('pending','failed') AND attempts<8 AND NOT EXISTS(SELECT 1 FROM vcp_source_policy_holds h WHERE h.companion_id=j.companion_id AND h.conversation_id IN(j.conversation_id,'*') AND h.released_at IS NULL) THEN next_attempt END) AS next
+      FROM vcp_capture_jobs j WHERE companion_id=? AND status IN('pending','running','failed')`).get(now, now, now, companionId));
+    const grants = this.db.prepare('SELECT data,autonomous,revision,next_at,manual,lease_token,lease_until FROM companion_learning_grants WHERE companion_id=? AND enabled=1 ORDER BY rowid LIMIT 48').all(companionId) as Row[];
+    return { companionId, checkedAt, active: parse<{ active?: boolean }>(row(owner).data).active !== false,
+      resetting: !!this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed' LIMIT 1").get(companionId),
+      clock: { realNow: checkedAt, virtualNow: iso(virtualNow), observedRealAt: iso(observedAt), timeZone: settings.timeZone, speed: companionWorldSpeed(settings) }, routine,
+      ...(actor ? { actor: { activity: actor.activity, routinePhase: actor.routinePhase, activityStartedAtReal: actor.activityStartedAtReal, moving: actor.route.length > 0,
+        working: !!state?.works.some(work => work.companionId === companionId && work.status !== 'ended') } } : {}),
+      hasUnconsolidated: this.unseenNotes(companionId, 1).length > 0,
+      admission: episode ? Number(row(episode).admitted) === 1 ? 'admitted' : 'not_admitted' : 'unchecked',
+      ...(cooldown && cooldown > virtualNow ? { dreamCooldownUntilWorld: iso(cooldown) } : {}),
+      ...(job ? { job: { status: job.status as 'pending' | 'running' | 'failed', attempts: job.attempts, dreamAllowed: job.dreamAllowed === true,
+        leaseActive: job.status === 'running' && String(row(foundJob!).lease_until) > checkedAt,
+        ...(job.status === 'failed' && row(foundJob!).lease_until ? { nextAttemptAt: String(row(foundJob!).lease_until) } : {}) } } : {}),
+      captureQueue: { pending: Number(capture.pending), running: Number(capture.running), failed: Number(capture.failed), liveRunning: Number(capture.live), expiredLeases: Number(capture.expired), held: Number(capture.held),
+        retryExhausted: Number(capture.exhausted), eligible: Number(capture.eligible), ...(capture.next !== null && Number(capture.next) > now ? { nextAttemptAt: iso(Number(capture.next)) } : {}) },
+      learning: grants.slice(0, 47).map(found => {
+        const grant = parse<CompanionLearningGrant>(found.data), live = !!found.lease_token && Number(found.lease_until) > now;
+        return { grant: { ...grant, enabled: true, autonomous: Number(found.autonomous) === 1, revision: Number(found.revision), nextAt: iso(Number(found.next_at)),
+          ...(live ? { status: 'reading' as const } : grant.status === 'reading' ? { status: 'waiting' as const, error: '上次阅读的租约已过期，等待后台重新领取。' } : {}) }, manualPending: Number(found.manual) === 1 };
+      }),
+      learningHasMore: grants.length > 47 };
+  }
   private visibleEvent(event: StoredEvent, scope?: CompanionWorldScope): boolean {
     try { return this.sourceEventVisible(event, scope); } catch { return false; }
   }
@@ -1658,6 +1731,21 @@ export class CompanionWorldStore {
     switch (command.type) {
       case 'world.status': return { ok: true, worldStatus: this.status(command.companionIds) };
       case 'world.clock': return { ok: true, worldClock: this.clock(command.since) };
+      case 'world.clock.peek': return { ok: true, worldClock: this.clockPeek() };
+      case 'world.sleep-plan': return { ok: true, worldSleepPlan: this.sleepPlan(command.companionId) };
+      case 'life.overview.read': {
+        const sleep = this.sleepPlan(command.companionId);
+        const saved = this.db.prepare('SELECT data FROM companion_world WHERE id=1').get();
+        const state = saved ? parse<StoredWorld>(row(saved).data) : undefined;
+        const clock = { ...sleep.clock, mode: state?.settings.mode ?? COMPANION_WORLD_DEFAULT_SETTINGS.mode,
+          backlog: observationBacklog(Date.parse(sleep.clock.observedRealAt), Date.parse(sleep.checkedAt)) };
+        const climate = companionWorldEnvironment(Date.parse(clock.virtualNow), clock.timeZone);
+        const labels: Record<string, string> = { idle: '清醒的日常', walking: '正在走路', seating: '正在坐下', sitting: '安静坐着', working: '正在处理工作', sleeping: '在床上睡眠', eating: '正在用餐', resting: '正在休息', habit: '正在进行日常习惯', standingUp: '正在起身', lyingDown: '正在躺下', waking: '正在醒来', turning: '正在转身' };
+        return { ok: true, lifeOverviewContext: { companionId: command.companionId, checkedAt: sleep.checkedAt, clock, environment: climate.environment,
+          ...(sleep.actor ? { current: { activity: sleep.actor.activity, label: labels[sleep.actor.activity] ?? sleep.actor.activity,
+            startedAtReal: sleep.actor.activityStartedAtReal, routinePhase: sleep.actor.routinePhase } } : {}),
+          ...readCompanionLifeOverviewPage(this.db, command, clock) } };
+      }
       case 'world.snapshot': return { ok: true, world: this.tick() };
       case 'world.observe': return { ok: true, world: this.snapshot(command) };
       case 'world.tick': { const now = command.now ? Date.parse(command.now) : Date.now(); this.advance(now); return { ok: true, ...(command.snapshot ? { world: this.snapshotValue(this.load(), now) } : {}) }; }

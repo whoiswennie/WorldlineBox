@@ -4686,6 +4686,7 @@ async function startApplication(): Promise<void> {
       await phase('open-library', () => ensureCompanionLibrary(workspace));
       if (applicationClosing) throw new Error('应用正在关闭。');
       companionService = new CompanionService({
+        memoryDeviceStatus: () => embeddingDevice().snapshot(),
         learningAssets: companionLearningAssets({ memoryRoot: workspace.memoryRoot, request: command => {
           if (!workerClient) throw new Error('资产服务尚未就绪。'); return workerClient.request(command);
         } }),

@@ -1,5 +1,7 @@
 import { CompanionInterruptionStore } from './interruption-store';
 import { CompanionDocumentCatalogStore } from './document-catalog-store';
+import { initializeCompanionLifeOverview } from './life-overview-store';
+import { CompanionMemoryTraceStore } from './memory-trace-store';
 import { CompanionLearningStore } from './learning-store';
 import { CompanionMemoryTagStore } from './autotag-store';
 import { createHash, randomUUID } from 'node:crypto';
@@ -65,6 +67,7 @@ const decode = <T>(value: string | number | null | undefined): T => JSON.parse(S
 export class CompanionsStore {
   readonly #learning: CompanionLearningStore;
   readonly #documents: CompanionDocumentCatalogStore;
+  readonly #trace: CompanionMemoryTraceStore;
   readonly #db: CompanionConnection;
   readonly #memory: CompanionMemoryStore;
   readonly #memoryTags: CompanionMemoryTagStore;
@@ -87,6 +90,11 @@ export class CompanionsStore {
     this.#memory = new CompanionMemoryStore(this.#db, id => this.getMessage(id),
       (scope, proposal) => { this.#runtimeState.update(scope, proposal); }, note => this.#world.learnEntrance(note),
       (id, sourceIds) => { if (!this.#reset?.blocked(id)) { this.#runtimeState.invalidateEvidence(id, sourceIds); this.#world.invalidateEvidence(id, sourceIds); } });
+    this.#trace = new CompanionMemoryTraceStore(this.#db, (owner, id) => {
+      const note = this.#db.prepare('SELECT conversation_id FROM vcp_memory_notes WHERE id=? AND companion_id=?').get(id, owner) as { conversation_id: string } | undefined;
+      if (!note) return false;
+      try { return !!this.#memory.execute({ type: 'memory.records.filter', companionId: owner, conversationId: note.conversation_id, ids: [id] })?.memories?.length; } catch { return false; }
+    }, (owner, conversationId, id) => { try { return this.#memory.sourcesFilter({ companionId: owner, conversationId }, [id]).length === 1; } catch { return false; } });
     this.#learning = new CompanionLearningStore(this.#db, {
       record: (grant, receipt, content) => {
         const conversationId = 'world_' + grant.companionId;
@@ -267,6 +275,8 @@ export class CompanionsStore {
       this.#runtimeState.initialize();
       this.#schedule.initialize();
       this.#life.initialize();
+      initializeCompanionLifeOverview(this.#db);
+      this.#trace.initialize();
       this.#reset.prepareIndexes();
       this.#memory.backfill();
     } catch (error) {
@@ -353,6 +363,7 @@ export class CompanionsStore {
   }
 
   /** Bounded, crash-safe upgrade batches; the worker yields between batches. */
+  backfillTraceIndex(limit = 200): boolean { return this.#trace.backfill(limit); }
   backfillSearchIndex(): boolean {
     return this.#db.transaction(() => {
       const target = Number(row(this.#db.prepare("SELECT value FROM metadata WHERE key='message-index-target'").get()).value);
@@ -1388,6 +1399,7 @@ export class CompanionsStore {
     const tagResponse = this.#memoryTags.execute(command); if (tagResponse) return tagResponse;
     const memoryResponse = this.#memory.execute(command);
     if (memoryResponse) return memoryResponse;
+    const traceResponse = this.#trace.execute(command); if (traceResponse) return traceResponse;
     const documentResponse = this.#documents.execute(command);
     if (documentResponse) return documentResponse;
     const learningResponse = this.#learning.execute(command);

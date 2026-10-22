@@ -35,10 +35,17 @@ export class CompanionMemoryDocuments {
   }
   handle(command: CompanionMemoryDocumentCommand): Promise<CompanionWorkspaceResponse> {
     if (this.closed) return Promise.resolve({ ok: false, error: '伙伴记忆文档管理已关闭。' });
-    const synchronize = !this.initializedOwners.has(command.companionId) || !['memory.documents.list', 'memory.documents.read', 'memory.documents.tags.status'].includes(command.type);
+    const synchronize = !this.initializedOwners.has(command.companionId) || !['memory.documents.list', 'memory.documents.read', 'memory.documents.locate', 'memory.documents.tags.status'].includes(command.type);
     const pending = this.options.library.withDocuments(command.companionId, async session => {
       this.initializedOwners.add(command.companionId);
       switch (command.type) {
+        case 'memory.documents.locate': {
+          const found = Object.entries(session.manifest.files).find(([, entry]) => entry.noteId === command.noteId && entry.state !== 'forgotten');
+          if (!found) throw new Error('这篇记忆的文档已移动、撤回或尚未投影，请返回记忆库核对。');
+          const document = await this.read(session, found[0]);
+          if (document.memory?.id !== command.noteId) throw new Error('文档与记忆的关联已变化，请重新核对。');
+          return { ok: true, document };
+        }
         case 'memory.documents.list': return { ok: true, documents: await this.list(session, command) };
         case 'memory.documents.read': return { ok: true, document: await this.read(session, command.path, command.sourceLimit, command.sourceCursor) };
         case 'memory.documents.tags.status': return { ok: true, document: await this.read(session, command.path) };
@@ -57,7 +64,7 @@ export class CompanionMemoryDocuments {
         case 'memory.documents.mkdir': this.editableDirectory(command.path); await session.directory(command.path); return { ok: true, createdDirectory: command.path };
       }
     }, { synchronize }).then(response => {
-      if (command.type !== 'memory.documents.list' && command.type !== 'memory.documents.read' && command.type !== 'memory.documents.tags.status') {
+      if (!['memory.documents.list', 'memory.documents.read', 'memory.documents.locate', 'memory.documents.tags.status'].includes(command.type)) {
         if ('path' in command) this.catalog.mark(command.companionId, command.path);
         if ('targetPath' in command) this.catalog.mark(command.companionId, command.targetPath);
       }

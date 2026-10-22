@@ -48,14 +48,15 @@ function MemoryLibraryFolders({ folders, selected, onSelect }: { folders: Compan
   return <nav className="memory-library-folders" aria-label="记忆文档目录" ref={host} onScroll={event => { const top = event.currentTarget.scrollTop; setViewport(current => ({ ...current, top })); }}><div style={{ height: rows.length * size, position: 'relative' }}><div style={{ position: 'absolute', top: start * size, left: 0, right: 0 }}>{rows.slice(start, end).map(folder => <button key={folder.path} aria-current={selected === folder.path ? 'page' : undefined} onClick={() => onSelect(folder.path)} style={{ paddingLeft: 14 + Math.min(Math.max(0, folder.path.split('/').length - 1), 5) * 12 }}><Icon name={!folder.path ? 'layers' : folder.path === '时间线' ? 'clock' : folder.path === '自我认识' ? 'heart' : folder.path === '世界经历' ? 'globe' : 'folder'} /><span>{folderLabel(folder.path)}</span>{folder.count >= 0 && <small>{folder.count}</small>}</button>)}</div></div></nav>;
 }
 
-export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, request, draft, onDraftConsumed, onOwnerChange, onLocateSource, authorName, onClose, requestError, onDismissError, initialEditor, onEditorChange, onLearningSources, active = true, processingRequest, onProcessingRequestConsumed }: {
+export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, request, draft, onDraftConsumed, onOwnerChange, onLocateSource, authorName, onClose, requestError, onDismissError, initialEditor, onEditorChange, onLearningSources, onMemoryTrace, active = true, processingRequest, onProcessingRequestConsumed, noteRequest, onNoteRequestConsumed }: {
   companions: Companion[]; companionId: string; api?: WorldlineBoxCompanionsApi;
   request: (input: CompanionsRequest) => Promise<CompanionsResponse | undefined>;
   draft?: CompanionMemoryDraft; onDraftConsumed(): void; onOwnerChange(id: string): void;
   onLocateSource(message: CompanionMessage): void; authorName(id: string): string; onClose(): void;
-  requestError?: string; onDismissError(): void; onLearningSources?(): void;
+  requestError?: string; onDismissError(): void; onLearningSources?(): void; onMemoryTrace?(): void;
   initialEditor?: CompanionMemoryDocumentDraft; onEditorChange?(owner: string, editor?: CompanionMemoryDocumentDraft): void;
   active?: boolean; processingRequest?: number; onProcessingRequestConsumed?(): void;
+  noteRequest?: { noteId: string; nonce: number }; onNoteRequestConsumed?(): void;
 }) {
   const owner = companions.find(item => item.id === companionId);
   const [page, setPage] = useState<CompanionMemoryDocumentsPage>();
@@ -81,6 +82,7 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
   const [policies, setPolicies] = useState<NonNullable<CompanionsResponse['memoryPolicies']>>([]);
   const [libraryName, setLibraryName] = useState(''), [maintenance, setMaintenance] = useState(false);
   const alive = useRef(true), listEpoch = useRef(0), readEpoch = useRef(0), textarea = useRef<HTMLTextAreaElement>(null), fileScroll = useRef<HTMLDivElement>(null), paperScroll = useRef<HTMLDivElement>(null);
+  const locatedNoteRequest = useRef<string | undefined>(undefined);
   const dirty = !!editor && (!editor.original || editor.content !== editor.original.content || editor.tags !== editor.original.document.tags.join('，') || editor.diaryName !== (editor.original.memory?.diaryName ?? ''));
 
   const call = useCallback(async (command: CompanionMemoryDocumentCommand, reportError = true): Promise<CompanionWorkspaceResponse | undefined> => {
@@ -163,7 +165,25 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
     void Promise.resolve().then(() => { setEditor({ path: '日记/聊天摘记.md', content: draft.content, tags: '', diaryName: '日记', sourceMessageId: draft.sourceMessageId }); setMobile('document'); onDraftConsumed(); });
   }, [draft, onDraftConsumed]);
 
-  function navigate(proceed: () => void) { if (dirty) setPendingNavigation({ proceed }); else proceed(); }
+  const navigate = useCallback((proceed: () => void) => { if (dirty) setPendingNavigation({ proceed }); else proceed(); }, [dirty]);
+  useEffect(() => {
+    if (!active || !noteRequest) return;
+    const key = `${companionId}:${noteRequest.noteId}:${noteRequest.nonce}`;
+    if (locatedNoteRequest.current === key) return;
+    locatedNoteRequest.current = key;
+    void Promise.resolve().then(() => {
+      if (!alive.current || locatedNoteRequest.current !== key) return;
+      navigate(() => { void (async () => {
+        const epoch = ++readEpoch.current; setReading(true); setError(''); setShowProcessing(false);
+        const result = await call({ type: 'memory.documents.locate', companionId, noteId: noteRequest.noteId }, false);
+        if (!alive.current || epoch !== readEpoch.current || locatedNoteRequest.current !== key) return;
+        setReading(false);
+        if (!result?.document || result.document.document.noteId !== noteRequest.noteId) { setError(result?.error || '没有找到这条记忆的当前文档，可能已撤回、移动或发生变化。'); return; }
+        ++listEpoch.current; setEditor(undefined); setOperation(undefined); setSelectedPath(result.document.document.path); setRead(result.document); setMobile('document'); setInspector(false); setShowProcessing(false);
+      })(); });
+      onNoteRequestConsumed?.();
+    });
+  }, [active, noteRequest, companionId, call, navigate, onNoteRequestConsumed]);
   function resetSearch() { ++listEpoch.current; setCursor(undefined); setPreviousCursors([]); setError(''); }
   function selectFolder(path: string) { navigate(() => { resetSearch(); setDirectory(path); setQuery(''); setTag(''); setEditor(undefined); setOperation(undefined); setMobile('list'); }); }
   function selectDocument(item: CompanionMemoryDocument) { navigate(() => { ++readEpoch.current; if (selectedPath === item.path) void readDocument(item.path); setEditor(undefined); setOperation(undefined); setSelectedPath(item.path); if (read?.document.path !== item.path) setRead(undefined); setMobile('document'); setInspector(false); setError(''); }); }
@@ -241,7 +261,7 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
     <div className="memory-library-body">
       <aside className="memory-library-sidebar" aria-label="伙伴与日记本"><label className="memory-library-owner"><Avatar companion={owner} showPresence={false} /><span><small>正在管理</small><select aria-label="记忆所属伙伴" value={companionId} onChange={event => { const id = event.target.value; onOwnerChange(id); }}>{companions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></span></label><div className="memory-library-sidebar-heading"><span>日记本</span><button className="memory-library-icon" aria-label="新建记忆文件夹" title="新建文件夹" onClick={() => navigate(() => { setOperation({ kind: 'mkdir', value: directory ? directory + '/新文件夹' : '新文件夹' }); setMobile('document'); })}><Icon name="plus" /></button></div>
         <MemoryLibraryFolders folders={folders} selected={directory} onSelect={selectFolder} />
-        <div className="memory-library-sidebar-footer"><span><i className={processing?.failed ? 'has-error' : working ? 'is-working' : ''} />{processing?.failed ? '有收录需要处理' : working ? '记忆正在更新' : '持续生活，持续记录'}</span>{active && <CompanionMemoryProcessingSummary companionId={companionId} companionName={owner?.name} api={api} request={request} onOpen={() => navigate(() => setShowProcessing(true))} />}<button className="memory-library-quiet" onClick={() => { setMaintenance(value => !value); setMobile('document'); }}><Icon name="sliders" />收录与记录规则</button></div>
+        <div className="memory-library-sidebar-footer"><span><i className={processing?.failed ? 'has-error' : working ? 'is-working' : ''} />{processing?.failed ? '有收录需要处理' : working ? '记忆正在更新' : '持续生活，持续记录'}</span>{active && <CompanionMemoryProcessingSummary companionId={companionId} companionName={owner?.name} api={api} request={request} onOpen={() => navigate(() => setShowProcessing(true))} />}{onMemoryTrace && <button className="memory-library-quiet" onClick={() => navigate(onMemoryTrace)}><Icon name="layers" />成长足迹</button>}<button className="memory-library-quiet" onClick={() => { setMaintenance(value => !value); setMobile('document'); }}><Icon name="sliders" />收录与记录规则</button></div>
       </aside>
       <section className="memory-library-files" aria-label="记忆文件列表"><header><div><h3>{folderLabel(directory)}</h3><span>{page?.index?.state === 'building' ? '已找到 ' : ''}{page?.total ?? items.length}{page?.total === undefined && page?.hasMore ? '+' : ''} 篇</span></div><button className="memory-library-icon" aria-label="新建记忆文档" title="新建文档" onClick={() => create()}><Icon name="plus" /></button></header><label className="memory-library-search"><Icon name="search" /><input type="search" aria-label="搜索全部记忆文档" maxLength={1000} placeholder={searchMode === 'semantic' ? '描述想找的经历或想法' : '搜索全文、标题或文件名'} value={query} onChange={event => { resetSearch(); setQuery(event.target.value); }} /></label><div className="memory-library-search-options">
           <select aria-label="记忆文档搜索方式" value={searchMode} onChange={event => { resetSearch(); setSearchMode(event.target.value as 'keyword' | 'semantic'); }}><option value="keyword">关键词</option><option value="semantic">语义搜索</option></select>

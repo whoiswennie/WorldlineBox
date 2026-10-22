@@ -38,6 +38,7 @@ export const companionMemoryDocumentReadSchema = z.object({
 });
 /** Main-window human file management; never part of companion or execution-agent tools. */
 export const companionMemoryDocumentCommands = [
+  z.strictObject({ type: z.literal('memory.documents.locate'), companionId: owner, noteId: owner }),
   z.strictObject({ type: z.literal('memory.documents.tags.status'), companionId: owner, path: relativePath }),
   z.strictObject({ type: z.literal('memory.documents.tags.retry'), companionId: owner, path: relativePath, expectedRevision: revision }),
   z.strictObject({ type: z.literal('memory.documents.tags.cancel'), companionId: owner, path: relativePath, expectedRevision: revision }),

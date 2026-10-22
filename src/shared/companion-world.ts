@@ -86,7 +86,9 @@ export const companionWorldPublicCommands = [
 ] as const;
 export const companionWorldStorageCommands = [
   ...companionWorldPublicCommands,
+  z.strictObject({ type: z.literal('world.sleep-plan'), companionId: id }),
   z.strictObject({ type: z.literal('world.clock'), since: z.array(z.iso.datetime()).max(10).optional() }),
+  z.strictObject({ type: z.literal('world.clock.peek') }),
   z.strictObject({ type: z.literal('world.tick'), now: z.iso.datetime().optional(), snapshot: z.boolean().default(false) }),
   scope.extend({ type: z.literal('world.attention.record'), sourceMessageId: id, sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/), urgency: z.enum(['urgent', 'ordinary']), confidence: z.number().min(0).max(1), evidence: z.array(z.string().min(1).max(4000)).min(1).max(10), reason: z.string().min(1).max(1000) }).strict(),
   scope.extend({ type: z.literal('world.work.begin'), workId: id, kind: z.enum(['chat', 'action', 'schedule', 'learning']), sourceMessageId: id.optional(), urgent: z.boolean().default(false), fixed: z.boolean().default(false),

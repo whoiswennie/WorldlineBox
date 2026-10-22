@@ -26,7 +26,9 @@ async function fixture() {
     if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-vcp-continuity-')) throw new Error('Unsafe continuity cleanup.');
     await removeOwnedDirectory(root);
   });
-  const controls = { hangTimeline: false, timelineCalls: 0, timelinePrompts: [] as string[], focusCalls: 0, focusPrompts: [] as string[], disconnected: 0 };
+  const controls = { hangTimeline: false, foregroundBusy: false, modelConfigured: true,
+    deviceState: 'unchecked' as 'unchecked' | 'testing' | 'supported' | 'unsupported' | 'error', deviceStatusReads: 0,
+    timelineCalls: 0, timelinePrompts: [] as string[], focusCalls: 0, focusPrompts: [] as string[], disconnected: 0 };
   const pending = new Set<ServerResponse>();
   const server = createServer(async (request, response) => {
     let text = ''; for await (const chunk of request) text += chunk.toString();
@@ -83,8 +85,9 @@ async function fixture() {
       if (response.worldClock) response.worldClock.backlog = false;
       return response;
     },
-      configFor: async () => config, runtime: { get: async () => ({ client, profileKey: 'continuity-test' }), close: () => client.close() },
-      fetchFn: fetch, busy: () => false, changed, report,
+      configFor: async () => ({ ...config, model: controls.modelConfigured ? config.model : '' }), runtime: { get: async () => ({ client, profileKey: 'continuity-test' }), close: () => client.close() },
+      runtimeAvailability: () => { controls.deviceStatusReads++; return { state: controls.deviceState, message: '实际检测快照的公开原因。' }; },
+      fetchFn: fetch, busy: () => controls.foregroundBusy, changed, report,
       onTimelineArtifacts: async (scope, artifacts, stillValid) => { published({ scope, artifacts, stillValid }); } });
     services.push(service); return { service, client, changed, report, published };
   }
@@ -92,6 +95,44 @@ async function fixture() {
 }
 
 describe('original monthly VCP continuity behind the main memory service', () => {
+  it('reports only registered future host checks and explains busy and unconfigured conditions without loading a worker', async () => {
+    const { createService, controls } = await fixture();
+    const { service, client, changed } = createService();
+    const replace = vi.spyOn(client, 'replace'), before = Date.now();
+    service.schedule(10000);
+    const planned = await service.schedulingFor('alpha'), at = planned.schedulers.find(item => item.kind === 'capture')!.nextCheckAt!;
+    expect(Date.parse(at)).toBeGreaterThanOrEqual(before + 10000); expect(changed).toHaveBeenCalled();
+    service.schedule(20000);
+    expect((await service.schedulingFor('alpha')).schedulers.find(item => item.kind === 'capture')?.nextCheckAt).toBe(at);
+    controls.foregroundBusy = true;
+    const busy = await service.schedulingFor('alpha');
+    expect(busy.schedulers.find(item => item.kind === 'capture')).toMatchObject({ waitingReason: 'foreground_busy', nextCheckAt: at });
+    expect(busy.schedulers.find(item => item.kind === 'timeline')?.waitingReason).toBe('foreground_busy');
+    expect(busy.schedulers.find(item => item.kind === 'index')?.waitingReason).not.toBe('foreground_busy');
+    controls.foregroundBusy = false; controls.modelConfigured = false;
+    expect((await service.schedulingFor('alpha')).schedulers.find(item => item.kind === 'capture')?.waitingReason).toBe('model_unconfigured');
+    controls.modelConfigured = true;
+    controls.deviceState = 'testing';
+    const detecting = await service.schedulingFor('alpha');
+    expect(detecting.schedulers.find(item => item.kind === 'index')).toMatchObject({ waitingReason: 'device_testing', nextCheckAt: undefined });
+    expect(detecting.schedulers.find(item => item.kind === 'timeline')?.waitingReason).toBe('device_testing');
+    expect(detecting.schedulers.find(item => item.kind === 'capture')?.waitingReason).not.toBe('device_testing');
+    controls.deviceState = 'unsupported';
+    expect((await service.schedulingFor('alpha')).schedulers.find(item => item.kind === 'index')?.waitingReason).toBe('embedding_unavailable');
+    controls.deviceState = 'unchecked';
+    expect((await service.schedulingFor('alpha')).schedulers.find(item => item.kind === 'index')?.waitingReason).not.toBe('embedding_unavailable');
+    expect(controls.deviceStatusReads).toBeGreaterThan(0);
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(Date.parse(at) + 1000);
+    try {
+      const overdue = await service.schedulingFor('alpha');
+      expect(overdue.nextCheckAt).toBeUndefined(); expect(overdue.schedulers.every(item => !item.nextCheckAt)).toBe(true);
+      expect(overdue.schedulers.find(item => item.kind === 'capture')?.waitingReason).toBe('event_loop_busy');
+    } finally { vi.useRealTimers(); }
+    expect(replace).not.toHaveBeenCalled();
+    await service.close();
+    expect((await service.schedulingFor('alpha')).schedulers.every(item => item.waitingReason === 'app_stopped' && !item.nextCheckAt)).toBe(true);
+  });
+
   it('generates and persists a real monthly timeline and summary, then reuses them after restart in passive RAG context', async () => {
     const { createService, cacheRoot, controls, conversation } = await fixture();
     const first = createService(); first.service.schedule(0);

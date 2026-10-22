@@ -74,6 +74,8 @@ export class CompanionMemoryStore {
       INSERT OR IGNORE INTO metadata(key,value) VALUES('vcp-capture-backfill-through','0');
       INSERT OR IGNORE INTO metadata(key,value) SELECT 'vcp-capture-backfill-target',CAST(COALESCE(MAX(sequence),0) AS TEXT) FROM messages;
     `);
+        const captureColumns = this.db.prepare('PRAGMA table_info(vcp_capture_jobs)').all() as Array<{ name: string }>;
+        for (const name of ['completed_batch_id', 'output_note_versions']) if (!captureColumns.some(column => column.name === name)) this.db.exec(`ALTER TABLE vcp_capture_jobs ADD COLUMN ${name} TEXT`);
         if (!this.db.prepare("SELECT 1 FROM metadata WHERE key='vcp-management-totals-ready'").get()) this.db.transaction(() => {
             this.db.prepare("INSERT OR REPLACE INTO vcp_memory_management_totals SELECT companion_id,COUNT(*) FROM vcp_memory_notes WHERE json_extract(data,'$.status') IN('queued','indexed') GROUP BY companion_id").run();
             this.db.prepare("INSERT OR REPLACE INTO metadata VALUES('vcp-management-totals-ready','1')").run();
@@ -212,6 +214,7 @@ export class CompanionMemoryStore {
     private leased(table: 'vcp_capture_jobs' | 'vcp_memory_outbox', id: string, token: string): Row { const found = this.db.prepare(`SELECT * FROM ${table} WHERE id=? AND status='running' AND lease_token=? AND lease_until>?`).get(id, token, Date.now()); if (!found)
         throw new Error('VCP 投递租约已失效。'); return row(found); }
     complete(id: string, token: string, notes: CompanionMemoryCandidate[], stateProposal?: CompanionStateProposal, expectedProhibitionRevision?: string): CompanionMemory[] {
+        if (notes.length > 100) throw new Error('单批日记候选不能超过100条。');
         return this.db.transaction(() => {
             const job = this.leased('vcp_capture_jobs', id, token), batch = rows(this.db.prepare("SELECT * FROM vcp_capture_jobs WHERE status='running' AND lease_token=?").all(token)), sourceIds = new Set(batch.map(source => String(source.message_id)));
             const scope = { companionId: String(job.companion_id), conversationId: String(job.conversation_id), beforeSequence: Math.max(...batch.map(source => Number(source.through_sequence))) };
@@ -232,13 +235,17 @@ export class CompanionMemoryStore {
             if (stateProposal && !stateProposal.sourceMessageIds.every(source => sourceIds.has(source))) throw new Error('状态提议只能使用本批正式来源。');
             if (stateProposal && this.sources.filter(scope, stateProposal.sourceMessageIds).length === stateProposal.sourceMessageIds.length)
                 this.applyState?.(scope, stateProposal);
-            this.db.prepare("UPDATE vcp_capture_jobs SET status='done',error=NULL,lease_token=NULL,lease_until=NULL WHERE lease_token=?").run(token);
+            const outputs = [...new Map(result.map(note => [note.id + ':' + note.version, { id: note.id, version: note.version }])).values()];
+            this.db.prepare("UPDATE vcp_capture_jobs SET status='done',error=NULL,lease_token=NULL,lease_until=NULL,completed_batch_id=?,output_note_versions=? WHERE lease_token=?")
+                .run(id, JSON.stringify(outputs), token);
             return result;
         }).immediate();
     }
     fail(id: string, token: string, error: string, retryAfterMs = 30000): void { this.leased('vcp_capture_jobs', id, token); this.db.prepare("UPDATE vcp_capture_jobs SET status='failed',error=?,next_attempt=?,lease_token=NULL,lease_until=NULL WHERE lease_token=?").run(error, Date.now() + retryAfterMs, token); }
     retry(companionId?: string): void { for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox'])
-        this.db.prepare(`UPDATE ${table} SET status='pending',attempts=0,next_attempt=0,error=NULL WHERE status='failed' ${companionId ? 'AND companion_id=?' : ''}`).run(...(companionId ? [companionId] : [])); }
+        this.db.prepare(`UPDATE ${table} SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL
+          WHERE (status='failed' OR status='pending' AND attempts>=8 OR status='running' AND attempts>=8 AND lease_until<=?)
+          ${companionId ? 'AND companion_id=?' : ''}`).run(Date.now(), ...(companionId ? [companionId] : [])); }
     record(scope: Scope, input: CompanionMemoryCandidate, revision?: {
         id: string;
         expectedVersion: number;

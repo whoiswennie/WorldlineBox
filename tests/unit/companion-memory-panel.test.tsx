@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, useState } from 'react';
+import { act, useState, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionMemoryLibraryWorkspace } from '../../src/renderer/companions/CompanionMemoryLibraryWorkspace';
@@ -28,6 +28,7 @@ function fixture() {
     if (command.type === 'status') return { ok: true, selected: { displayName: '生活资产库', libraryId: 'lib', libraryPath: 'D:/library', memoryRoot: 'D:/library/伙伴记忆', dataRoot: 'D:/library/.companions' } };
     if (command.type === 'memory.documents.list') return { ok: true, documents: { companionId: command.companionId, directory: command.directory, folders: [{ path: '日记', name: '日记', count: 1 }, { path: '资料', name: '资料', count: 1 }, { path: '自我认识', name: '自我认识', count: 0 }, { path: '世界经历', name: '世界经历', count: 0 }, { path: '时间线', name: '时间线', count: 1 }], items: documents.filter(item => (!command.directory || item.document.path.startsWith(command.directory + '/')) && (!command.query || [item.document.title, item.content].join(' ').includes(command.query)) && (!command.tags?.length || command.tags.every(tag => item.document.tags.includes(tag)))).map(item => item.document), hasMore: false } };
     if (command.type === 'memory.documents.read') { const item = documents.find(item => item.document.path === command.path); return item ? { ok: true, document: item } : { ok: false, error: '文档已移动。' }; }
+    if (command.type === 'memory.documents.locate') { const item = documents.find(item => item.document.noteId === command.noteId); return item ? { ok: true, document: item } : { ok: false, error: '该记忆已撤回或没有可定位的当前文档。' }; }
     if (command.type === 'memory.documents.save') {
       const index = documents.findIndex(item => item.document.path === command.path), previous = documents[index];
       if (!previous || previous.document.revision !== command.expectedRevision) return { ok: false, error: '文档已有新版本，请重新打开后核对。' };
@@ -47,8 +48,9 @@ function fixture() {
 async function mount(f = fixture(), options: { draft?: CompanionMemoryDraft } = {}) {
   vi.useFakeTimers(); container = document.createElement('div'); document.body.append(container); root = createRoot(container);
   const onOwnerChange = vi.fn(), onClose = vi.fn(), onLocateSource = vi.fn(), onDraftConsumed = vi.fn();
-  await act(async () => root!.render(<CompanionMemoryLibraryWorkspace companions={[owner, { ...owner, id: 'other', name: '另一位伙伴' }]} companionId="role" api={f.api} request={f.request} onDraftConsumed={onDraftConsumed} onOwnerChange={onOwnerChange} onLocateSource={onLocateSource} authorName={id => id === 'user' ? '你' : '伙伴'} onClose={onClose} onDismissError={vi.fn()} {...options} />));
-  await advance(); return { ...f, onOwnerChange, onClose, onLocateSource, onDraftConsumed };
+  const props: ComponentProps<typeof CompanionMemoryLibraryWorkspace> = { companions: [owner, { ...owner, id: 'other', name: '另一位伙伴' }], companionId: 'role', api: f.api, request: f.request, onDraftConsumed, onOwnerChange, onLocateSource, authorName: id => id === 'user' ? '你' : '伙伴', onClose, onDismissError: vi.fn(), ...options };
+  const render = async (patch: Partial<typeof props> = {}) => { await act(async () => root!.render(<CompanionMemoryLibraryWorkspace {...props} {...patch} />)); };
+  await render(); await advance(); return { ...f, onOwnerChange, onClose, onLocateSource, onDraftConsumed, render };
 }
 async function advance() { await act(async () => { await vi.advanceTimersByTimeAsync(400); }); }
 function element<T extends HTMLElement>(selector: string) { const found = container!.querySelector<T>(selector); if (!found) throw new Error('Missing element ' + selector); return found; }
@@ -229,4 +231,26 @@ it('sends explicit time sorting and a complete local date range to the server', 
   await fill('记忆开始日期', '2026-10-20'); await fill('记忆结束日期', '2026-10-22'); await advance();
   const latest = f.workspace.mock.calls.filter(([command]) => command.type === 'memory.documents.list').at(-1)![0];
   expect(latest).toMatchObject({ sort: 'created_asc', dateField: 'updatedAt', from: new Date('2026-10-20T00:00:00.000').toISOString(), to: new Date('2026-10-22T23:59:59.999').toISOString() });
+});
+
+it('locates a trace note by its exact owner ID only after resolving the existing unsaved-edit guard', async () => {
+  const f = await mount(); await click('编辑记忆 memory-a'); await fill('共同记忆内容', '还没有保存的真实草稿。');
+  const consumed = vi.fn(); await f.render({ noteRequest: { noteId: 'memory-b', nonce: 1 }, onNoteRequestConsumed: consumed });
+  expect(container!.querySelector('[role="alertdialog"]')).not.toBeNull();
+  expect(f.workspace.mock.calls.some(([command]) => command.type === 'memory.documents.locate')).toBe(false);
+  await click('继续编辑'); expect(element<HTMLTextAreaElement>('textarea').value).toBe('还没有保存的真实草稿。');
+  await f.render({ noteRequest: { noteId: 'memory-b', nonce: 2 }, onNoteRequestConsumed: consumed });
+  await click('放弃修改并离开');
+  expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.locate', companionId: 'role', noteId: 'memory-b' });
+  expect(element('.memory-library-paper h1').textContent).toBe('灯塔路线'); expect(consumed).toHaveBeenCalledTimes(2);
+});
+
+it('reports a mismatched locate result instead of silently opening a different note', async () => {
+  const f = fixture(), base = f.workspace.getMockImplementation()!;
+  f.workspace.mockImplementation(command => command.type === 'memory.documents.locate' ? Promise.resolve({ ok: true, document: readFixture() }) : base(command));
+  const mounted = await mount(f); await mounted.render({ processingRequest: 1 });
+  expect(container!.querySelector('[aria-label="记忆处理进度"]')).not.toBeNull();
+  await mounted.render({ noteRequest: { noteId: 'memory-b', nonce: 1 } }); await advance();
+  expect(container!.querySelector('[aria-label="记忆处理进度"]')).toBeNull();
+  expect(container!.textContent).toContain('没有找到这条记忆的当前文档'); expect(element('.memory-library-paper h1').textContent).toBe('海边散步');
 });

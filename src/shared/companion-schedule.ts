@@ -52,6 +52,7 @@ export type CompanionScheduleOccurrence = z.infer<typeof companionScheduleOccurr
 export const companionScheduleScopeSchema = z.object({ companionId: id, conversationId: id });
 export const companionSchedulePublicCommands = [
   companionScheduleScopeSchema.extend({ type: z.literal('schedule.list'), includeHistory: z.boolean().default(false), limit: z.number().int().min(1).max(200).default(100) }).strict(),
+  companionScheduleScopeSchema.extend({ type: z.literal('schedule.get'), id }).strict(),
   companionScheduleScopeSchema.extend({ type: z.literal('schedule.create'), sourceMessageId: id.optional(), clientId: id.optional(), entries: z.array(companionScheduleEntrySchema).min(1).max(20) }).strict(),
   companionScheduleScopeSchema.extend({ type: z.literal('schedule.update'), id, expectedRevision: z.number().int().positive(), patch: companionSchedulePatchSchema, sourceMessageId: id.optional() }).strict(),
   companionScheduleScopeSchema.extend({ type: z.literal('schedule.pause'), id, expectedRevision: z.number().int().positive(), paused: z.boolean() }).strict(),

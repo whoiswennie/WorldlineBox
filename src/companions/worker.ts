@@ -25,8 +25,9 @@ function indexNextBatch() {
   if (!store) return;
   try {
     const ready = store.backfillSearchIndex();
+    const traceReady = store.backfillTraceIndex(200);
     port!.postMessage({ type: 'storage.index-changed' });
-    if (!ready) indexing = setTimeout(indexNextBatch, 50);
+    if (!ready || !traceReady) indexing = setTimeout(indexNextBatch, 50);
   } catch (error) {
     port!.postMessage({ type: 'storage.index-failed', error: error instanceof Error ? error.message : '消息搜索索引更新失败。' });
   }

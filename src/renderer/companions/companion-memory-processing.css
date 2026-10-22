@@ -52,6 +52,24 @@
 .memory-processing-state[data-status=running] { color: var(--ui-content-accent); }
 .memory-processing-state[data-status=failed] { color: var(--ui-status-danger-content); }
 .memory-processing-stage { font-size: 11px; line-height: 1.7; color: var(--ui-content-secondary); }
+.memory-processing-next-step { display: flex; align-items: start; gap: 5px; color: var(--ui-content-accent); font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
+.memory-processing-next-step > svg { flex: 0 0 12px; margin-top: 3px; }
+.memory-processing-next-step small { font-size: inherit; color: var(--ui-content-tertiary); }
+.memory-processing-summary-next { color: var(--ui-content-accent) !important; }
+.memory-processing-summary-next small { display: inline; font-size: inherit; }
+.memory-processing-next-check { display: flex; flex-shrink: 0; align-items: start; gap: 8px; margin-bottom: 15px; padding: 10px 12px; border-left: 2px solid var(--ui-content-accent); background: var(--ui-surface-hover); color: var(--ui-content-secondary); font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.memory-processing-next-check > svg { flex: 0 0 15px; margin-top: 3px; color: var(--ui-content-accent); }
+.memory-processing-next-check > div { flex: 1; min-width: 0; }
+.memory-processing-next-check > details { flex: 0 0 auto; }
+.companion-memory-processing-panel .memory-processing-next-check p { margin: 0; }
+.memory-processing-next-check div > span { display: block; color: var(--ui-content-accent); }
+.memory-processing-next-check small { color: var(--ui-content-tertiary); font-size: 10px; }
+.memory-processing-next-check div > small { display: block; }
+.memory-processing-execution-plan { margin-top: 20px; padding: 16px 0; border-block: 1px solid var(--ui-border-subtle); }
+.companion-memory-processing-panel .memory-processing-execution-plan p { margin: 0; color: var(--ui-content-secondary); font-size: 12px; line-height: 1.9; overflow-wrap: anywhere; }
+.memory-processing-execution-plan dl { margin-top: 12px; }
+.companion-memory-processing-panel .memory-processing-execution-plan .memory-processing-trigger-rule { margin-top: 12px; font-size: 11px; }
+.memory-processing-execution-plan > small { display: block; margin-top: 7px; color: var(--ui-content-tertiary); font-size: 10px; line-height: 1.8; }
 .memory-processing-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 11px; line-height: 1.8; color: var(--ui-content-secondary); overflow-wrap: anywhere; }
 .memory-processing-job-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-content-tertiary); font-size: 10px; line-height: 1.6; font-variant-numeric: tabular-nums; }
 .memory-processing-job-foot svg { flex-shrink: 0; }

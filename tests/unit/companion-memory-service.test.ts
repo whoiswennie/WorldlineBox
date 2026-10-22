@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
 import { CompanionService } from '../../src/main/companions/service';
 import { VcpMemoryClient } from '../../src/main/vcp-memory/client';
 import type { VcpMemoryNote, VcpMemoryScope, VcpMemoryMessage, VcpMemoryTimelineArtifacts, VcpMemoryPluginName } from '../../src/main/vcp-memory/contracts';
@@ -179,6 +180,44 @@ afterEach(async () => {
 });
 
 describe('VCP companion memory through the main service and real SQLite', () => {
+  it('polls processing, life plan and unified overview without advancing the world, opening chats or loading a model', async () => {
+    const f = fixture();
+    await f.service.handle({ type: 'memory.processing.status', companionId: 'sister', limit: 5 });
+    await vi.advanceTimersByTimeAsync(0);
+    const db = new (Database as { new(file: string): CompanionConnection })(f.databasePath);
+    const capture = () => ({ world: db.prepare('SELECT data FROM companion_world WHERE id=1').get(),
+      conversations: db.prepare('SELECT COUNT(*) AS n FROM conversations').get(), jobs: db.prepare('SELECT COUNT(*) AS n FROM companion_world_jobs').get(),
+      admissions: db.prepare('SELECT COUNT(*) AS n FROM companion_world_sleep_episodes').get(), version: db.prepare('PRAGMA data_version').get() });
+    try {
+      const before = capture(), clock = f.store.request({ type: 'world.clock.peek' }).worldClock!;
+      transport.request.mockClear();
+      for (const fn of [transport.fetch, transport.memoryFetch, transport.worldFetch, transport.prohibitionFetch]) fn.mockClear();
+      const base = Date.now();
+      for (const lag of [500, 4_900, 3_600_000]) {
+        vi.setSystemTime(base + lag);
+        for (let pass = 0; pass < 3; pass++) {
+          const [processing, life, overview] = await Promise.all([
+            f.service.handle({ type: 'memory.processing.status', companionId: 'sister', limit: 5 }),
+            f.service.handle({ type: 'memory.life-plan.status', companionId: 'sister' }),
+            f.service.handle({ type: 'life.overview.status', companionId: 'sister', filter: 'all', limit: 20 }),
+          ]);
+          expect(processing.memoryProcessing?.companionId).toBe('sister'); expect(life.memoryLifePlan?.companionId).toBe('sister');
+          expect(overview.lifeOverview?.clock.virtualNow, transport.request.mock.calls.map(([command]) => command.type).join(',')).toBe(clock.virtualNow);
+          expect(overview.lifeOverview?.clock.backlog, `persisted observation lag ${lag}ms`).toBe(lag > 5_000);
+          expect(processing.memoryProcessing?.schedule?.schedulers.some(item => item.waitingReason === 'world_backlog'), `memory schedule lag ${lag}ms`).toBe(lag > 5_000);
+        }
+      }
+      expect(capture()).toEqual(before);
+      const commands = transport.request.mock.calls.map(([command]) => command.type);
+      const observations = transport.request.mock.calls.map(([command]) => command).filter(command => command.type === 'state');
+      expect(observations.length).toBeGreaterThan(0);
+      expect(observations.every(command => command.includeConversations === false), 'management projections must not load the full conversation list').toBe(true);
+      for (const mutation of ['world.clock', 'world.tick', 'world.job.claim', 'conversation.open']) expect(commands).not.toContain(mutation);
+      for (const fn of [transport.fetch, transport.memoryFetch, transport.worldFetch, transport.prohibitionFetch]) expect(fn).not.toHaveBeenCalled();
+      expect(clients.get(f.root)?.replace).not.toHaveBeenCalled(); expect(clients.get(f.root)?.remember).not.toHaveBeenCalled();
+    } finally { db.close(); }
+  });
+
   it('closes once after a pending storage start without reviving initialization or recovery jobs', async () => {
     let ready!: () => void;
     transport.start.mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve; }));

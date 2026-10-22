@@ -7,6 +7,7 @@ import type { CompanionWorkspaceRequest } from '../../src/shared/companion-works
 import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
 import { electronLaunchEnv, ensureCompanionTestWorkspace, preparePackagedCompanionLaunch, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
 import { openCompanionWorldWindow } from './companion-world-window-helpers';
+import { companionWorldEnvironment } from '../../src/shared/companion-world-engine';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; library: WorldlineBoxLibraryApi } };
 const small = 'deepseek-flash', big = 'deepseek-sister';
@@ -147,8 +148,10 @@ test('opens an existing asset library and exposes actual owner-specific processi
     await page.getByRole('dialog', { name: '使用已有资产库', exact: true }).getByRole('button', { name: '打开其他资产库…', exact: true }).click();
     await expect(page.locator('.companion-workspace-name')).toHaveText(created.value.displayName);
     for (const id of [small, big]) await request(page, { type: 'companion.set-active', id, active: false });
-    const smallNote = await createNote(page, small, '日记/海边的约定.md', '小肥鱼把海边的约定收进今天的日记。等天气暖一点，带上一本书和一壶温水，再一起去旧灯塔走走。');
-    const bigNote = await createNote(page, big, '日记/书页里的银杏.md', '大肥鱼给旧书添了一枚银杏书签。下次读到有意思的段落，想先写下自己的理解，再和大家慢慢讨论。');
+    // An unconfigured real chat model leaves automatic tags pending, so this
+    // fixture exercises actual waiting conditions without delaying/faking inference.
+    const smallNote = await createNote(page, small, '日记/海边的约定.md', '小肥鱼把海边的约定收进今天的日记。等天气暖一点，带上一本书和一壶温水，再一起去旧灯塔走走。', true);
+    const bigNote = await createNote(page, big, '日记/书页里的银杏.md', '大肥鱼给旧书添了一枚银杏书签。下次读到有意思的段落，想先写下自己的理解，再和大家慢慢讨论。', true);
     await enterMemory(page, small);
     await manager(page).getByRole('button', { name: '查看记忆处理进度', exact: true }).click();
     let progress = manager(page).getByRole('region', { name: '记忆处理进度', exact: true });
@@ -157,6 +160,14 @@ test('opens an existing asset library and exposes actual owner-specific processi
     await expect(progress).toContainText('小肥鱼把海边的约定收进今天的日记'); await expect(progress).not.toContainText('大肥鱼给旧书添了一枚银杏书签');
     const smallSnapshot = (await request(page, { type: 'memory.processing.status', companionId: small, limit: 30 })).memoryProcessing!;
     expect(smallSnapshot.jobs.some(job => job.noteId === smallNote.memory!.id)).toBe(true); expect(smallSnapshot.jobs.some(job => job.noteId === bigNote.memory!.id)).toBe(false);
+    expect(smallSnapshot.schedule?.schedulers.map(item => item.kind).sort()).toEqual(['capture', 'index', 'tags', 'timeline']);
+    expect(Number.isFinite(Date.parse(smallSnapshot.schedule!.observedAt))).toBe(true);
+    const queuedNote = smallSnapshot.jobs.find(job => job.noteId === smallNote.memory!.id)!;
+    expect(queuedNote.schedule?.timeBasis).toBe('real');
+    expect(queuedNote.schedule?.condition).toBeTruthy(); expect(queuedNote.schedule?.triggerRule).toBeTruthy();
+    await expect(progress.getByRole('region', { name: '当前伙伴后台检查安排', exact: true })).toBeVisible();
+    await expect(progress.getByRole('region', { name: '任务后续执行安排', exact: true })).toContainText('执行安排');
+    await expect(progress.locator('.memory-processing-next-step').first()).toBeVisible();
     await progress.getByRole('button', { name: '关闭记忆处理进度', exact: true }).click();
     await expect(progress).toHaveCount(0);
     await manager(page).getByRole('combobox', { name: '记忆所属伙伴', exact: true }).selectOption(big);
@@ -174,6 +185,14 @@ test('opens an existing asset library and exposes actual owner-specific processi
     const toggle = page.getByRole('button', { name: '我们之间', exact: true });
     if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
     const planner = page.getByRole('complementary', { name: '伙伴手帐', exact: true }); await expect(planner).toContainText('小肥鱼的日常');
+    const lifeSnapshot = (await request(page, { type: 'memory.life-plan.status', companionId: small })).memoryLifePlan!;
+    expect(lifeSnapshot.companionId).toBe(small);
+    expect(lifeSnapshot.items.map(item => item.kind)).toEqual(expect.arrayContaining(['journal', 'learning', 'sleep_consolidation', 'dream']));
+    expect(lifeSnapshot.items.find(item => item.kind === 'learning')?.state).toBe('unconfigured');
+    const memoryPlans = planner.getByRole('region', { name: '当前伙伴记忆与学习安排', exact: true });
+    await expect(memoryPlans).toBeVisible(); await expect(memoryPlans.locator('[data-memory-plan-kind="learning"]')).toContainText(/未安排|尚未授权/u);
+    await expect(memoryPlans.locator('[data-memory-plan-kind="dream"]')).toContainText(/概率|条件/u);
+    await expect(memoryPlans).not.toContainText('1970');
     await planner.getByRole('button', { name: '查看记忆处理进度', exact: true }).click();
     await expectNavigation(page, 'memory'); await expect(manager(page)).toBeVisible();
     await expect(manager(page).getByRole('combobox', { name: '记忆所属伙伴', exact: true })).toHaveValue(small);
@@ -193,11 +212,85 @@ test('opens an existing asset library and exposes actual owner-specific processi
     await expectNavigation(page, 'messages'); await expect(manager(page)).toBeHidden();
     await expect(planner).toBeVisible();
     const chatShots = await captureWorkspace(page, launched.native, 'chat-side-panel', planner);
+    await navigation(page).getByRole('button', { name: '打开伙伴记忆库', exact: true }).click();
+    await manager(page).getByRole('button', { name: '成长足迹', exact: true }).click();
+    const trace = manager(page).getByRole('region', { name: '伙伴成长足迹', exact: true });
+    await expect(trace).toBeVisible();
+    await trace.getByRole('tablist', { name: '成长足迹类型', exact: true }).getByRole('tab', { name: '日记与认识', exact: true }).click();
+    const journalEntry = trace.locator(`[data-trace-entry="${smallNote.memory!.id}"]`);
+    await expect(journalEntry).toBeVisible(); await journalEntry.getByRole('button').click();
+    const story = trace.getByRole('article', { name: '成长经历链', exact: true });
+    await expect(story).toContainText('小肥鱼把海边的约定'); await expect(story).not.toContainText('大肥鱼给旧书');
+    await trace.getByRole('tablist', { name: '经历链环节', exact: true }).getByRole('tab', { name: '索引投递', exact: true }).click();
+    await expect(trace.getByRole('list', { name: '环节凭证', exact: true }).locator('[data-trace-record]')).not.toHaveCount(0);
+    const traceShots = await captureWorkspace(page, launched.native, 'growth-trace', trace);
+    await navigation(page).getByRole('button', { name: '消息', exact: true }).click(); await expect(trace).toBeHidden();
+    await navigation(page).getByRole('button', { name: '打开伙伴记忆库', exact: true }).click(); await expect(trace).toBeVisible();
+    await expect(trace.getByRole('tab', { name: '索引投递', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await trace.getByRole('tab', { name: '相关记忆', exact: true }).click();
+    await trace.getByRole('button', { name: '查看这篇记忆', exact: true }).first().click();
+    await expect(trace).toHaveCount(0); await expect(manager(page).locator('.memory-library-paper')).toContainText('小肥鱼把海边的约定');
     const proof = { existingLibraryOpenedThroughNativeBoundary: true, libraryId: created.value.libraryId, ownerScopedProcessing: true, chatAndMemoryEntrances: true,
       smallOwnerJobNoteIds: smallSnapshot.jobs.map(job => job.noteId).filter(Boolean), smallNote: smallNote.memory!.id, bigNote: bigNote.memory!.id,
       chatProcessingRoutesToMemoryOwner: true, processingViewRestoresAfterTabSwitch: true,
-      processingScreenshots: processingShots, chatScreenshots: chatShots };
+      actualBackendScheduling: smallSnapshot.schedule, queuedNoteScheduling: queuedNote.schedule, actualOwnerLifePlan: lifeSnapshot,
+      processingScreenshots: processingShots, chatScreenshots: chatShots, traceScreenshots: traceShots,
+      traceOwnerIsolation: true, traceStagePreservedAcrossNavigation: true, traceOpensExactNote: true };
     writeEvidence('processing-proof.json', proof); await testInfo.attach('memory-processing-visibility-proof', { body: JSON.stringify(proof), contentType: 'application/json' });
+  } finally { await application?.close().catch(() => undefined); cleanup(root); }
+});
+
+// eslint-disable-next-line no-empty-pattern
+test('shows a shared world environment and bounded owner-specific future plans in the companion life feed', async ({}, testInfo) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-memory-visibility-'));
+  let application: ElectronApplication | undefined;
+  try {
+    const launched = await launch(root); application = launched.application; const page = launched.page;
+    await ensureCompanionTestWorkspace(page);
+    const initial = (await request(page, { type: 'state' })).state!;
+    for (const role of initial.companions) await request(page, { type: 'companion.set-active', id: role.id, active: role.id === small });
+    const conversation = (await request(page, { type: 'conversation.open', companionId: small })).conversation!;
+    const clock = (await request(page, { type: 'world.status', companionIds: [small] })).worldStatus!.clock;
+    const entries = Array.from({ length: 105 }, (_, index) => ({ title: `海边阅读安排 ${index + 1}`,
+      prompt: '到了约定时间，提醒我带一本书和温水；还未发生的计划不能写成已经完成的经历。',
+      kind: 'reminder' as const, timeZone: clock.timeZone,
+      runAt: new Date(Date.parse(clock.virtualNow) + (60 + index) * 60_000).toISOString(), recurrence: 'once' as const, flexible: false }));
+    for (let offset = 0; offset < entries.length; offset += 20) await request(page, { type: 'schedule.create', companionId: small, conversationId: conversation.id, entries: entries.slice(offset, offset + 20) });
+    await page.locator('[data-application-module="companions"]').click();
+    await navigation(page).getByRole('button', { name: '生活总览', exact: true }).click();
+    const overview = page.getByRole('region', { name: '伙伴生活总览', exact: true });
+    await expect(overview).toBeVisible(); await expect(navigation(page)).toBeVisible();
+    const environment = overview.getByRole('region', { name: '共享世界时间与天气', exact: true });
+    await expect(environment).toBeVisible();
+    const report = (await request(page, { type: 'life.overview.status', companionId: small, filter: 'upcoming', limit: 20 })).lifeOverview!;
+    const other = (await request(page, { type: 'life.overview.status', companionId: big, filter: 'upcoming', limit: 20 })).lifeOverview!;
+    expect(report.companion.id).toBe(small); expect(report.items.length).toBeLessThanOrEqual(20); expect(report.hasMore).toBe(true);
+    for (const observed of [report, other]) expect(observed.environment).toEqual(companionWorldEnvironment(Date.parse(observed.clock.virtualNow), observed.clock.timeZone).environment);
+    expect(report.clock.timeZone).toBe(other.clock.timeZone);
+    expect(other.items.some(item => item.title.startsWith('海边阅读安排'))).toBe(false);
+    await overview.getByRole('tablist', { name: '生活信息流筛选', exact: true }).getByRole('tab', { name: '接下来', exact: true }).click();
+    const feed = overview.getByRole('list', { name: '伙伴生活信息流', exact: true });
+    await expect.poll(() => feed.locator('[data-life-item]').count()).toBe(20);
+    await expect(feed).toContainText('海边阅读安排');
+    const firstIds = await feed.locator('[data-life-item]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-life-item')));
+    // The nearest schedule falls outside the ordinary manager's 100 latest rows.
+    // Feed navigation must locate its exact ID rather than guess from that page.
+    const nearest = feed.locator('[data-life-kind="schedule"]').filter({ has: page.getByRole('heading', { name: '海边阅读安排 1', exact: true }) });
+    await nearest.getByRole('button', { name: '查看与调整', exact: true }).click();
+    const scheduleEditor = page.getByRole('dialog', { name: '伙伴日程', exact: true });
+    await expect(scheduleEditor.getByRole('textbox', { name: '安排标题', exact: true })).toHaveValue('海边阅读安排 1');
+    await scheduleEditor.getByRole('button', { name: '关闭伙伴日程', exact: true }).click(); await expect(scheduleEditor).toHaveCount(0);
+    await overview.getByRole('button', { name: '下一页', exact: true }).click();
+    await expect.poll(async () => JSON.stringify(await feed.locator('[data-life-item]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-life-item'))))).not.toBe(JSON.stringify(firstIds));
+    const secondIds = await feed.locator('[data-life-item]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-life-item')));
+    expect(secondIds.length).toBeLessThanOrEqual(20); expect(secondIds.some(id => firstIds.includes(id))).toBe(false);
+    expect(await overview.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    const screenshots = await captureWorkspace(page, launched.native, 'life-overview', overview);
+    await navigation(page).getByRole('button', { name: '消息', exact: true }).click(); await expect(overview).toBeHidden();
+    await navigation(page).getByRole('button', { name: '生活总览', exact: true }).click(); await expect(overview).toBeVisible();
+    const proof = { sharedEnvironment: report.environment, clock: report.clock, owner: report.companion,
+      firstIds, secondIds, screenshots, exactScheduleBeyondHundred: true, boundedDom: true, secondaryNavigationPreserved: true, inactiveOwnerExcludedFromPlans: true };
+    writeEvidence('life-overview-proof.json', proof); await testInfo.attach('life-overview-proof', { body: JSON.stringify(proof), contentType: 'application/json' });
   } finally { await application?.close().catch(() => undefined); cleanup(root); }
 });
 
@@ -217,8 +310,8 @@ async function request(page: Page, command: CompanionsRequest) {
   const result = await page.evaluate(command => (window as unknown as Bridge).worldlinebox.companions.request(command), command);
   expect(result.ok, result.error).toBe(true); return result;
 }
-async function createNote(page: Page, companionId: string, file: string, content: string) {
-  const response = await workspace(page, { type: 'memory.documents.create', companionId, path: file, content, tags: [companionId], autoTags: false });
+async function createNote(page: Page, companionId: string, file: string, content: string, autoTags = false) {
+  const response = await workspace(page, { type: 'memory.documents.create', companionId, path: file, content, tags: autoTags ? [] : [companionId], autoTags });
   expect(response.document?.memory).toBeDefined(); return response.document!;
 }
 async function enterMemory(page: Page, owner: string) {
@@ -243,7 +336,7 @@ async function setTheme(page: Page, theme: 'light' | 'dark') {
 }
 async function captureWorkspace(page: Page, native: Awaited<ReturnType<ElectronApplication['browserWindow']>>, prefix: string, subject: Locator) {
   const screenshots: Array<{ theme: string; requestedWidth: number; innerWidth: number; devicePixelRatio: number; surface: string; horizontalOverflow: boolean; headingOverflow: boolean; headerButtonOverflow: boolean }> = [];
-  const conditions = [['light', 1440], ['dark', 1440], ['light', 1040], ...(prefix === 'processing' ? [['light', 680]] : [])] as Array<['light' | 'dark', number]>;
+  const conditions = [['light', 1440], ['dark', 1440], ['light', 1040], ...(['processing', 'growth-trace', 'life-overview'].includes(prefix) ? [['light', 680]] : [])] as Array<['light' | 'dark', number]>;
   for (const [theme, width] of conditions) {
     await native.evaluate((win, width) => win.setContentSize(width, 960), width); await setTheme(page, theme); await expect(subject).toBeVisible();
     const processing = prefix === 'processing';
@@ -254,7 +347,7 @@ async function captureWorkspace(page: Page, native: Awaited<ReturnType<ElectronA
       // statistic cards. A narrow observer starts from the usable task list.
       await expect(subject.locator('.memory-processing-overview,[data-processing-count]')).toHaveCount(0);
       await expect(subject.getByRole('tablist', { name: '记忆处理状态筛选', exact: true }).getByRole('tab')).toHaveCount(4);
-      const rules = subject.locator('details.memory-processing-rules');
+      const rules = subject.locator('.memory-processing-toolbar details.memory-processing-rules');
       await expect(rules).toBeVisible(); expect(await rules.getAttribute('open')).toBeNull(); await expect(rules.locator('p')).toBeHidden();
       await rules.locator('summary').click(); await expect(rules.locator('p')).toBeVisible(); await expect(rules).toContainText('无需写日记');
       await expect(rules).not.toContainText('已经学会'); await rules.locator('summary').click(); await expect(rules.locator('p')).toBeHidden();
@@ -271,8 +364,8 @@ async function captureWorkspace(page: Page, native: Awaited<ReturnType<ElectronA
     }
     const geometry = await subject.evaluate(node => {
       const boundary = node.getBoundingClientRect();
-      const headings = [...node.querySelectorAll<HTMLElement>('.memory-library-paper h1')];
-      const buttons = [...node.querySelectorAll<HTMLElement>('.memory-library-header button,.memory-library-document-toolbar button,.memory-processing-header button,.companions-planner > header button,.companion-memory-processing-summary,.companions-planner-current-actions button')].filter(button => button.getClientRects().length);
+      const headings = [...node.querySelectorAll<HTMLElement>('.memory-library-paper h1,.memory-trace-story-heading h3')];
+      const buttons = [...node.querySelectorAll<HTMLElement>('.memory-library-header button,.memory-library-document-toolbar button,.memory-processing-header button,.memory-trace-header button,.memory-trace-actions button,.companions-planner > header button,.companion-memory-processing-summary,.companions-planner-current-actions button')].filter(button => button.getClientRects().length);
       // Include the subject's own planner controls while excluding scrollable
       // calendar/history content, where overflow is intentionally clipped.
       if (node.matches('.companions-planner')) buttons.push(...node.querySelectorAll<HTMLElement>(':scope > header button'));
@@ -282,6 +375,8 @@ async function captureWorkspace(page: Page, native: Awaited<ReturnType<ElectronA
         headerButtonOverflow: buttons.some(button => { const box = button.getBoundingClientRect(); return box.left < boundary.left - 1 || box.right > boundary.right + 1; }) };
     });
     expect(geometry.innerWidth).toBe(width); expect(geometry.horizontalOverflow).toBe(false); expect(geometry.headingOverflow).toBe(false); expect(geometry.headerButtonOverflow).toBe(false);
+    // Let ordinary transient sync notices expire before documenting the layout.
+    await expect(page.getByText(/^已自动同步 \d+ 项磁盘变化/u)).toHaveCount(0, { timeout: 8000 });
     await page.screenshot({ path: evidencePath(`${prefix}-${theme}-${geometry.innerWidth}.png`), animations: 'disabled' });
     screenshots.push({ theme, requestedWidth: width, ...geometry });
     if (processing && panelWidth <= 1100) {

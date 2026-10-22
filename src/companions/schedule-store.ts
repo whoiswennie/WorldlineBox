@@ -172,6 +172,16 @@ export class CompanionScheduleStore {
     const scheduleOccurrences = ids.length ? rows(this.db.prepare(`SELECT data FROM companion_schedule_occurrences WHERE schedule_id IN (${ids.map(() => '?').join(',')}) ORDER BY scheduled_at DESC LIMIT 200`).all(...ids)).map(item => decode<CompanionScheduleOccurrence>(item.data)) : [];
     return { schedules, scheduleOccurrences };
   }
+  get(scope: Scope, id: string): { schedule: CompanionSchedule; scheduleOccurrences: CompanionScheduleOccurrence[] } {
+    this.requireScope(scope);
+    const found = this.db.prepare('SELECT data FROM companion_schedules WHERE id=? AND companion_id=? AND conversation_id=?').get(id, scope.companionId, scope.conversationId);
+    if (!found) throw new Error('这条安排不存在或不属于当前伙伴和聊天。');
+    const schedule = decode<CompanionSchedule>(row(found).data);
+    if (schedule.id !== id || schedule.companionId !== scope.companionId || schedule.conversationId !== scope.conversationId) throw new Error('这条安排的归属已变化，请重新核对。');
+    const scheduleOccurrences = rows(this.db.prepare('SELECT data FROM companion_schedule_occurrences WHERE schedule_id=? ORDER BY scheduled_at DESC LIMIT 20').all(id))
+      .map(item => decode<CompanionScheduleOccurrence>(item.data)).filter(item => item.scheduleId === id && item.companionId === scope.companionId && item.conversationId === scope.conversationId);
+    return { schedule, scheduleOccurrences };
+  }
   private valid(schedule: CompanionSchedule): boolean {
     try {
       this.requireScope(schedule);
@@ -303,6 +313,7 @@ export class CompanionScheduleStore {
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {
       case 'schedule.list': return { ok: true, ...this.list(command, command.includeHistory, command.limit) };
+      case 'schedule.get': return { ok: true, ...this.get(command, command.id) };
       case 'schedule.create': return { ok: true, schedules: this.create(command, command.entries, command.sourceMessageId, command.clientId) };
       case 'schedule.update': return { ok: true, schedule: this.update(command, command.id, command.expectedRevision, command.patch, command.sourceMessageId) };
       case 'schedule.pause': return { ok: true, schedule: this.pause(command, command.id, command.expectedRevision, command.paused) };

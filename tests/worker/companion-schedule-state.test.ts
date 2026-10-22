@@ -30,6 +30,30 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(time); });
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); vi.useRealTimers(); });
 
 describe('persistent companion schedules', () => {
+  it('gets the exact near-term schedule beyond a 100-row descending page without mutating data or crossing owner and conversation boundaries', () => {
+    const { store, scope } = fixture();
+    const created = Array.from({ length: 6 }, (_, batch) => store.request({ type: 'schedule.create', ...scope, clientId: 'page_boundary_' + batch,
+      entries: Array.from({ length: Math.min(20, 101 - batch * 20) }, (_, index) => entry({ title: '未来安排 ' + (batch * 20 + index),
+        runAt: new Date(Date.parse(time) + (batch * 20 + index + 1) * 60_000).toISOString() })) }).schedules!).flat();
+    expect(created).toHaveLength(101);
+    const near = created[0]!;
+    const listed = store.request({ type: 'schedule.list', ...scope, includeHistory: true, limit: 100 }).schedules!;
+    expect(listed).toHaveLength(100); expect(listed.some(item => item.id === near.id)).toBe(false);
+    const before = store.request({ type: 'messages', conversationId: scope.conversationId, limit: 100 }).messages!;
+    const memoryBefore = store.request({ type: 'memory.status', ...scope }).memoryStatus;
+    const result = store.request({ type: 'schedule.get', ...scope, id: near.id });
+    expect(result.schedule).toEqual(near); expect(result.scheduleOccurrences).toEqual([]);
+    expect(store.request({ type: 'schedule.get', ...scope, id: near.id }).schedule).toEqual(near);
+    expect(store.request({ type: 'messages', conversationId: scope.conversationId, limit: 100 }).messages).toEqual(before);
+    expect(store.request({ type: 'memory.status', ...scope }).memoryStatus).toEqual(memoryBefore);
+    const bobRoom = store.openPrivate('bob');
+    expect(() => store.request({ type: 'schedule.get', companionId: 'bob', conversationId: bobRoom.id, id: near.id })).toThrow('不属于');
+    const otherRoom = store.createConversation('同一伙伴的其他房间', ['alice']);
+    expect(() => store.request({ type: 'schedule.get', companionId: 'alice', conversationId: otherRoom.id, id: near.id })).toThrow('不属于');
+    const groupSchedule = store.request({ type: 'schedule.create', companionId: 'alice', conversationId: otherRoom.id, entries: [entry({ title: '群里的另一份安排' })] }).schedules![0]!;
+    expect(() => store.request({ type: 'schedule.get', ...scope, id: groupSchedule.id })).toThrow('不属于');
+    expect(() => store.request({ type: 'schedule.get', ...scope, id: 'missing-schedule' })).toThrow('不存在');
+  });
   it('recovers a natural-language activity occurrence and binds completion to its actual agent task without a DSH action', () => {
     const f = fixture();
     const schedule = f.store.request({ type: 'schedule.create', ...f.scope, clientId: 'activity_schedule_form',
