@@ -65,6 +65,20 @@ it('opens the full owner document space independently of the current chat and ex
   expect(f.request.mock.calls.some(([command]) => command.type === 'memory.browse' || command.type === 'memory.search')).toBe(false);
   await click('学习资料1'); expect(f.workspace).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'memory.documents.read', path: '资料/灯塔路线.md' }));
 });
+it('guards unfinished document edits before entering the unified companion recall validator', async () => {
+  const f = await mount(), openProbe = vi.fn(); await f.render({ onMemoryProbe: openProbe });
+  await click('编辑记忆 memory-a'); await fill('共同记忆内容', '这段还没有保存的修正。');
+  await click('回忆'); expect(openProbe).not.toHaveBeenCalled();
+  expect(container!.querySelector('[aria-label="保留未保存的修改"]')).not.toBeNull();
+  await click('继续编辑'); expect(element<HTMLTextAreaElement>('textarea').value).toBe('这段还没有保存的修正。');
+  await click('回忆'); await click('放弃修改并离开'); expect(openProbe).toHaveBeenCalledOnce();
+});
+it('passes the document-search query to the VCP native ranking shortcut without running another search backend', async () => {
+  const f = await mount(), openProbe = vi.fn(); await f.render({ onMemoryProbe: openProbe });
+  await fill('搜索全部记忆文档', '旧灯塔边的约定'); await click('用 VCP 回忆');
+  expect(openProbe).toHaveBeenCalledExactlyOnceWith('旧灯塔边的约定');
+  expect(f.request.mock.calls.some(([command]) => command.type === 'memory.recall.test')).toBe(false);
+});
 it('reads full Markdown and exposes literal provenance without duplicating it in the file list', async () => {
   const f = await mount(); expect(element('.memory-library-paper h1').textContent).toBe('海边散步'); await click('查看记忆来源 memory-a'); expect(element('.memory-library-source p').textContent).toBe(source.content); await click('定位记忆来源 source'); expect(f.onLocateSource).toHaveBeenCalledWith(source);
 });
@@ -138,12 +152,13 @@ it('keeps background changes from discarding dirty text or forcing narrow naviga
 it('shows owner-wide processing and explicit release of future topic restrictions', async () => {
   const f = await mount(); await click('收录与记录规则'); expect(container!.textContent).toContain('收录服务暂不可用'); expect(container!.textContent).toContain('饮料偏好'); await click('重试失败收录'); expect(f.request).toHaveBeenCalledWith({ type: 'memory.jobs.retry', companionId: 'role' }); await click('重建记忆索引'); expect(f.request).toHaveBeenCalledWith({ type: 'memory.index.rebuild', companionId: 'role' }); await click('允许今后记录此主题'); expect(f.request).toHaveBeenCalledWith({ type: 'memory.policy.release', companionId: 'role', id: 'rule' }); expect(container!.textContent).toContain('旧的已遗忘来源仍被排除');
 });
-it('sends keyword, semantic and arbitrary tag searches to the server instead of filtering the first page', async () => {
-  const f = await mount(); await fill('搜索全部记忆文档', '海岸的漫步'); await advance();
+it('keeps full-text and tag browsing while routing semantic recall into the same companion VCP tool', async () => {
+  const f = await mount(), openProbe = vi.fn(); await f.render({ onMemoryProbe: openProbe }); await fill('搜索全部记忆文档', '海岸的漫步'); await advance();
   expect(f.workspace).toHaveBeenCalledWith(expect.objectContaining({ type: 'memory.documents.list', query: '海岸的漫步', mode: 'keyword' }));
   const select = element<HTMLSelectElement>('[aria-label="记忆文档搜索方式"]');
-  await act(async () => { select.value = 'semantic'; select.dispatchEvent(new Event('change', { bubbles: true })); }); await advance();
-  expect(f.workspace).toHaveBeenCalledWith(expect.objectContaining({ type: 'memory.documents.list', query: '海岸的漫步', mode: 'semantic' }));
+  await act(async () => { select.value = 'recall'; select.dispatchEvent(new Event('change', { bubbles: true })); }); await advance();
+  expect(openProbe).toHaveBeenCalledExactlyOnceWith('海岸的漫步');
+  expect(f.workspace.mock.calls.some(([command]) => command.type === 'memory.documents.list' && command.mode === 'semantic')).toBe(false);
   await fill('按标签筛选记忆文档', '第九万篇的标签，学习'); await advance();
   expect(f.workspace).toHaveBeenCalledWith(expect.objectContaining({ type: 'memory.documents.list', tags: ['第九万篇的标签', '学习'] }));
 });

@@ -274,6 +274,7 @@ export class CompanionWorldStore {
     return { source_id: String(value.source_id), author_id: String(value.author_id), conversation_id: String(value.conversation_id) };
   }
   socialAvailable(owner: string, channel: 'phone' | 'face_to_face', recipients: string[]): boolean {
+    if (![owner, ...recipients].every(id => this.db.prepare("SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL AND json_extract(data,'$.active')=1").get(id))) return false;
     const state = this.load(), actor = state.actors.find(actor => actor.companionId === owner);
     if (!actor) return false;
     if (channel === 'phone') return this.phoneAvailable(state, actor);
@@ -1537,7 +1538,7 @@ export class CompanionWorldStore {
       this.save(state); return this.snapshotValue(state, Date.now(), scope);
     }
     const scenes = this.scenes(state);
-    if ('targetCompanionId' in args && args.targetCompanionId && ['visit'].includes(args.action) && this.contactState(args.targetCompanionId) === 'dormant') throw new Error('对方伙伴已休眠，虚拟世界未加载；可以留言等待玩家激活，不能自动唤醒或入屋。');
+    if ('targetCompanionId' in args && args.targetCompanionId && ['visit'].includes(args.action) && this.contactState(args.targetCompanionId) === 'dormant') throw new Error('对方伙伴已休眠；请等待玩家手动激活后再联系或拜访，不能自动唤醒或入屋。');
     if (actor.parkWalk && ['move', 'travel', 'visit', 'interact', 'leave'].includes(args.action)) this.finishParkWalk(state, actor, '收到新的行动安排，结束这次散步', false);
     if (args.action === 'share_entrance') {
       if (!this.social || args.recipientIds.includes(actor.companionId) || new Set(args.recipientIds).size !== args.recipientIds.length) throw new Error('地址接收伙伴无效。');

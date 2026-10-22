@@ -36,7 +36,17 @@ export const companionMemorySearchSchema = companionMemoryScopeSchema.extend({
     limit: z.number().int().min(1).max(100).default(20), cursor: z.number().int().nonnegative().optional(),
 });
 export type CompanionMemorySearch = z.input<typeof companionMemorySearchSchema>;
-export const companionMemoryHitSchema = z.object({ memory: companionMemorySchema, score: z.number().optional(), reasons: z.array(z.string()), path: z.array(id) });
+/** VCP's actual returned fields. Missing components remain absent, never zero-filled. */
+export const companionMemoryScoreDetailsSchema = z.object({
+    engine: z.enum(['river', 'knn']), rank: z.number().int().positive(), nativeRank: z.number().int().positive().optional(),
+    finalScore: z.number().finite().optional(), originalScore: z.number().finite().optional(), vectorScore: z.number().finite().optional(),
+    baseScore: z.number().finite().optional(), topologyBonus: z.number().finite().optional(), anchorBonus: z.number().finite().optional(), omega: z.number().finite().optional(),
+    role: z.string().max(100).optional(), riverRegime: z.string().max(100).optional(),
+    matchedTags: z.array(z.string().max(1024)).max(50).optional(), coreTagsMatched: z.array(z.string().max(1024)).max(50).optional(),
+    candidateSources: z.array(z.string().max(100)).max(32).optional(), algorithmVersion: z.string().max(100).optional(), queryMode: z.string().max(100).optional(),
+});
+export type CompanionMemoryScoreDetails = z.infer<typeof companionMemoryScoreDetailsSchema>;
+export const companionMemoryHitSchema = z.object({ memory: companionMemorySchema, score: z.number().optional(), scoreDetails: companionMemoryScoreDetailsSchema.optional(), reasons: z.array(z.string()), path: z.array(id) });
 export const companionMemoryPageSchema = z.object({ items: z.array(companionMemoryHitSchema), hasMore: z.boolean(), nextCursor: z.number().int().nonnegative().optional() });
 export type CompanionMemoryPage = z.infer<typeof companionMemoryPageSchema>;
 export const companionMemoryJobSchema = z.object({

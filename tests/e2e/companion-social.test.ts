@@ -61,7 +61,8 @@ async function launch(root: string, baseUrl: string) {
   const state = (await request(page, { type: 'state' })).state!, extra = state.companions.filter(member => ![sender, receiver].includes(member.id)).slice(0, 2).map(member => member.id);
   const ids = [sender, receiver, ...extra]; expect(ids).toHaveLength(4);
   const snapshot = await world(page); await request(page, { type: 'world.configure', expectedRevision: snapshot.settings.revision, patch: { mode: 'realtime' } });
-  for (const companionId of ids) { const conversationId = (await request(page, { type: 'conversation.open', companionId })).conversation!.id;
+  for (const companionId of ids) { await request(page, { type: 'companion.set-active', id: companionId, active: true });
+    const conversationId = (await request(page, { type: 'conversation.open', companionId })).conversation!.id;
     const routine = (await request(page, { type: 'routine.get', companionId, conversationId })).routine!, current = await world(page);
     await request(page, { type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision,
       patch: { timeZone: current.settings.timeZone, wakeAt: clock(current.clock.hour - 8), sleepAt: clock(current.clock.hour + 8), meals: [], habits: [] } }); }
@@ -80,6 +81,41 @@ async function verifyQuietPlayerQueues(page: Page, logs: Record[]) {
   for (const conversationId of new Set([...state.conversations.map(room => room.id), ...peers.map(room => room.id)])) expect((await request(page, { type: 'actions', conversationId })).actions).toEqual([]);
   expect(logs.some(log => log.purpose === 'primary_reply')).toBe(false); expect(logs.filter(log => log.purpose === 'world_social').every(log => !log.tools && !log.participants!.includes('user'))).toBe(true);
 }
+
+// eslint-disable-next-line no-empty-pattern
+test('refuses a dormant peer and cancels an in-flight reply when a participant deactivates', async ({}, testInfo) => {
+  test.setTimeout(120000); const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-social-e2e-')), fixture = await provider(); let application: ElectronApplication | undefined;
+  try {
+    const started = await launch(root, fixture.baseUrl); application = started.application; const { page } = started;
+    await request(page, { type: 'companion.set-active', id: receiver, active: false });
+    const rejected = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), {
+      type: 'world.tool', companionId: sender, conversationId: 'private-' + sender,
+      arguments: { action: 'message', recipientIds: [receiver], text: '不能向休眠的伙伴主动发出这条消息。' },
+    } satisfies CompanionsRequest);
+    expect(rejected.ok).toBe(false); expect(rejected.error).toContain('激活');
+    expect((await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items).toEqual([]);
+    expect(fixture.logs.filter(log => log.purpose === 'world_social')).toEqual([]);
+    expect((await request(page, { type: 'state' })).state!.companions.find(role => role.id === receiver)!.active).toBe(false);
+
+    await request(page, { type: 'companion.set-active', id: receiver, active: true });
+    await request(page, { type: 'world.tool', companionId: sender, conversationId: 'private-' + sender,
+      arguments: { action: 'message', recipientIds: [receiver], text: opening } });
+    await expect.poll(async () => (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items.some(room => room.memberIds.includes(sender) && room.memberIds.includes(receiver)), { timeout: 20000 }).toBe(true);
+    const room = (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items.find(room => room.memberIds.includes(sender) && room.memberIds.includes(receiver))!;
+    await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!.total, { timeout: 20000 }).toBe(1);
+    await expect.poll(() => fixture.logs.filter(log => log.purpose === 'world_social').length, { timeout: 25000 }).toBe(1);
+    await request(page, { type: 'companion.set-active', id: sender, active: false }); fixture.finishReplies();
+    await expect.poll(async () => (await world(page)).actors.some(actor => actor.companionId === receiver && actor.communication?.phase === 'typing'), { timeout: 10000 }).toBe(false);
+    await page.waitForTimeout(1800);
+    expect((await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!.total).toBe(1);
+    await request(page, { type: 'companion.set-active', id: sender, active: true }); await page.waitForTimeout(1800);
+    const history = (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!;
+    expect(history.total).toBe(1); expect(history.items[0]!.message.authorId).toBe(sender);
+    expect(fixture.logs.filter(log => log.purpose === 'world_social')).toHaveLength(1);
+    await testInfo.attach('activation-boundary-evidence', { body: JSON.stringify({ rejected, roomId: room.id, delivered: history.items.map(item => ({ id: item.message.id, authorId: item.message.authorId })), modelCalls: fixture.logs }), contentType: 'application/json' });
+  } finally { await application?.close().catch(() => undefined); await fixture.close(); cleanup(root); }
+});
+
 for (const group of [false, true]) {
   // eslint-disable-next-line no-empty-pattern
   test(group ? 'autonomous phone group keeps real identities, one reusable room and a four-message chain' : 'autonomous private phone waits for the sleeping recipient and uses actual source identity', async ({}, testInfo) => {

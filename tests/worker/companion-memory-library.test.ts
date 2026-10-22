@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -186,7 +186,7 @@ it('publishes original native timelines as readable revision-bound projections w
   const f = fixture(), library = f.make(); await library.sync();
   const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
   await library.publishTimelines(f.scope, timeline(revision), async () => true);
-  const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.conversationId}-2026-10.md`);
+  const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.companionId}-2026-10.md`);
   expect(readFileSync(file, 'utf8')).toBe(timeline(revision).agents[0]!.months[0]!.content);
   expect(JSON.parse(readFileSync(file + '.meta.json', 'utf8')).sourceRevision).toBe(revision);
   for (let n = 0; n < 3; n++) await library.sync();
@@ -199,8 +199,31 @@ it('publishes original native timelines as readable revision-bound projections w
 it('removes an in-flight timeline projection if its authorization changes before publication finishes', async () => {
   const f = fixture(), library = f.make(); let checks = 0;
   await library.publishTimelines(f.scope, timeline('revision'), async () => ++checks < 3);
-  const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.conversationId}-2026-10.md`);
+  const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.companionId}-2026-10.md`);
   expect(checks).toBe(3); expect(existsSync(file)).toBe(false); expect(existsSync(file + '.meta.json')).toBe(false);
+});
+it('publishes one owner monthly timeline across entrances and replaces only its managed legacy copies', async () => {
+  const f = fixture(), library = f.make(); await library.sync();
+  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
+  await library.publishTimelines(f.scope, timeline(revision), async () => true);
+  const folder = path.join(f.directory, 'alice', '时间线'), stable = 'VCP-alice-2026-10.md';
+  const legacy = `VCP-${f.scope.conversationId}-2026-10.md`, manifestFile = path.join(f.directory, 'alice', '.时间线索引.json');
+  const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+  manifest.files[legacy] = manifest.files[stable]; delete manifest.files[stable];
+  renameSync(path.join(folder, stable), path.join(folder, legacy));
+  renameSync(path.join(folder, stable + '.meta.json'), path.join(folder, legacy + '.meta.json'));
+  writeFileSync(manifestFile, JSON.stringify(manifest));
+  const unmanaged = path.join(folder, '用户自己留存的旧日记.md'); writeFileSync(unmanaged, '用户自留文本');
+  const group = f.store.createConversation('另一个入口', ['alice']), second = { companionId: 'alice', conversationId: group.id };
+  expect(f.store.request({ type: 'memory.snapshot', ...second }).memorySnapshot!.revision).toBe(revision);
+  await library.publishTimelines(second, timeline(revision), async () => true);
+  expect(readdirSync(folder).filter(name => /^VCP-.*\.md$/u.test(name)).sort()).toEqual(['VCP-alice-2026-10.md', 'VCP-alice-2026-10.summary.md']);
+  expect(existsSync(path.join(folder, legacy))).toBe(false);
+  expect(existsSync(path.join(folder, legacy + '.meta.json'))).toBe(false);
+  expect(readFileSync(unmanaged, 'utf8')).toBe('用户自留文本');
+  expect(JSON.parse(readFileSync(path.join(folder, stable + '.meta.json'), 'utf8')).scope).toEqual(second);
+  expect(await library.withDocuments('alice', session => session.timelineValid('时间线/' + stable), { synchronize: false })).toBe(true);
+  expect(f.store.listMemory('alice')).toEqual([]);
 });
 it('cleans stale automatic timelines from their source revision after restart', async () => {
   const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '真实时间线来源。' });
@@ -210,7 +233,7 @@ it('cleans stale automatic timelines from their source revision after restart', 
   await library.publishTimelines(f.scope, timeline(revision), async () => true); await library.close();
   f.store.request({ type: 'memory.forget', ...f.scope, id: note.id });
   const restarted = f.make(); await restarted.sync();
-  const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.conversationId}-2026-10.md`);
+  const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.companionId}-2026-10.md`);
   expect(existsSync(file)).toBe(false); expect(existsSync(file + '.meta.json')).toBe(false);
 });
 
@@ -219,7 +242,7 @@ it('withdraws legacy brand-authored projections without modifying their authorit
   await library.sync();
   const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
   await library.publishTimelines(f.scope, timeline(revision), async () => true);
-  const root = path.join(f.directory, 'alice'), file = path.join(root, '时间线', `VCP-${f.scope.conversationId}-2026-10.md`);
+  const root = path.join(f.directory, 'alice'), file = path.join(root, '时间线', `VCP-${f.scope.companionId}-2026-10.md`);
   const manifestPath = path.join(root, '.时间线索引.json'), manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   for (const entry of Object.values(manifest.files) as Array<{ ownerIdentity?: unknown }>) delete entry.ownerIdentity;
   writeFileSync(manifestPath, JSON.stringify(manifest)); writeFileSync(file, 'WorldlineBox 与伙伴一起看海。');
@@ -238,7 +261,7 @@ it('rejects another resident identity even if its display name matches, and inva
   const legacy = timeline(revision); delete legacy.owner;
   await expect(library.publishTimelines(f.scope, legacy, async () => true)).rejects.toThrow('归属身份');
   await library.publishTimelines(f.scope, timeline(revision), async () => true);
-  const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.conversationId}-2026-10.md`);
+  const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.companionId}-2026-10.md`);
   const owner = f.store.state().companions.find(role => role.id === 'alice')!;
   f.store.updateCompanion(owner.id, { ...owner, name: 'Alice 新名字' }, owner.revision);
   expect(await library.withDocuments('alice', session => session.timelineValid('时间线/' + path.basename(file)), { synchronize: false })).toBe(false);

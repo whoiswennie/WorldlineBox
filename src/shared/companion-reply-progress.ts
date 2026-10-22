@@ -7,7 +7,7 @@ export const companionReplyProgressSchema = z.strictObject({
   revision: z.number().int().positive(),
   phase: z.enum(['queued', 'waiting', 'context', 'memory', 'thinking', 'tools', 'streaming', 'completed', 'failed', 'cancelled', 'interrupted']),
   detail: z.string().max(500), updatedAt: z.string(), startedAt: z.string(),
-  memory: z.strictObject({ status: z.enum(['running', 'completed', 'unavailable']), count: z.number().int().nonnegative().optional(), injected: z.boolean().optional() }).optional(),
+  memory: z.strictObject({ status: z.enum(['running', 'completed', 'unavailable']), count: z.number().int().nonnegative().optional(), injected: z.boolean().optional(), pending: z.boolean().optional() }).optional(),
 });
 export type CompanionReplyProgress = z.infer<typeof companionReplyProgressSchema>;
 export const terminalReplyPhases = new Set<CompanionReplyProgress['phase']>(['completed', 'failed', 'cancelled', 'interrupted']);

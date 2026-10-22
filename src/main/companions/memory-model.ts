@@ -38,7 +38,7 @@ export async function generateCompanionMemoryDream(input: CompanionJournalInput,
 async function generate(input: CompanionJournalInput, config: CompanionModelConfig, signal: AbortSignal | undefined,
   options: ModelOptions, sleeping: boolean): Promise<CompanionJournalResult & { dream?: z.output<typeof dreamSchema> | null }> {
   const existing = (input.relevantMemories ?? []).filter(note => note.companionId === input.companion.id
-    && !['forgotten', 'invalid'].includes(note.status) && (sleeping && input.conversation.kind === 'private' || note.sourceConversationId === input.conversation.id));
+    && !['forgotten', 'invalid'].includes(note.status));
   const knownSources = new Set(existing.flatMap(note => note.sources.map(source => source.messageId)));
   const messages = input.messages.filter(message => message.status === 'sent' && !message.isReplyDraft && !message.replyDraft
     && (message.conversationId === input.conversation.id || sleeping && input.conversation.kind === 'private' && knownSources.has(message.id)));
@@ -47,7 +47,7 @@ async function generate(input: CompanionJournalInput, config: CompanionModelConf
     system: `你是这个持续生活的虚拟伙伴自己的日记与反思职能，基于 VCP 日记范式保存可以再次回忆的真实经历。只返回 outputSchema 的严格 JSON，不回复用户、不调用工具。
 一事一记，写成完整、具体、可独立理解的日记正文。保留人物身份、原话限定与否定、时间、情境、实际过程和结果。重要细节优先于空泛摘要；寒暄或没有值得记住的新变化时 notes=[]。不要把旧记忆重新抄成新的独立经历。
 identity 与每条 messages 的 authorId/speaker 是宿主确认的真实身份。authorId=user 永远是独立真人玩家，不是上一条发言的伙伴，也不沿用上下文中的最近人名；作者说“我”只指该条真实作者。self 固定为当前 companion，其他伙伴各有独立 ID，不能互换；旧日记若误归人物必须依据新证据更正，不延续错误人名。
-只有可持续使用的新约定、具体偏好变化、实际结果、可追溯学习或确有形成背景的新认识才值得落笔。问候、附和、重复确认和单纯措辞变化不另记。若新证据延续、纠正或完成了同一来源域中的已读旧日记，在正文写清前后变化，relatedMemoryIds 可关联实际贡献的旧条目；新条目的 sourceMessageIds 仍只引用本批 messages，不把旧来源冒充新证据。其他可见域的旧记忆只作背景，不混写或关联进本篇。
+只有可持续使用的新约定、具体偏好变化、实际结果、可追溯学习或确有形成背景的新认识才值得落笔。真人首次明确介绍自己的姓名、希望如何称呼、与伙伴相识关系属于稳定且可持续使用的信息，即使以“你好”开头也应记下真实自我介绍；不能把这种首次身份信息当普通寒暄省略，不能用伙伴角色名替代真人姓名。相同身份的重复询问或确认不再另记。问候、附和、重复确认和单纯措辞变化不另记。若新证据延续、纠正或完成了同一来源域中的已读旧日记，在正文写清前后变化，relatedMemoryIds 可关联实际贡献的旧条目；新条目的 sourceMessageIds 仍只引用本批 messages，不把旧来源冒充新证据。来自其他入口的本人旧记忆可用于认出人物、理解背景和避免重复，但本批仍保留来源域用于溯源，不把旧来源冒充新证据。
 单纯查询、复述或重新确认已有记忆而没有新增事实、约定或认识时，不另建“用户问了什么、我又回答了一次”的日记；关联旧条目也不是重新抄写的理由。不要把对正确回答的格式要求记录成新的生活经历。
 ${sleeping ? '' : '只是问候、附和、语气保持不变时省略 stateProposal；查询旧记忆、复述答案、回答格式要求和例行配置通知也不自动产生当前状态变化。确有变化才提议，来源ID和逐字证据必须来自本批messages，不能引用contextMessages或旧日记。无变化不能填写 null 或空对象。'}
 diaryName 使用“日记”“资料”或“自我认识”：亲历互动和虚拟生活写日记，实际读过并可追溯的学习内容写资料，对经历形成的主观感悟、三观、价值判断和自己的变化写自我认识。自我认识须以自己的视角说明形成背景、适用范围和不确定性，不能改写稳定人格，不能把用户的观点写成自己的既定信念，也不能仅因模型生成过就声称已真正学会或亲历。

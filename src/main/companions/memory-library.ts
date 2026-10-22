@@ -564,11 +564,13 @@ export class CompanionMemoryLibrary {
       for (const agent of artifacts.agents) for (const month of agent.months) {
         if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month.month)) throw new Error('时间线月份无效。');
         const suffix = artifacts.agents.length > 1 ? '-' + digest(agent.agentName).slice(0, 8) : '';
-        const base = `VCP-${scope.conversationId}-${month.month}${suffix}`;
+        // One owner has one monthly history. Entering through another chat must
+        // not publish a second copy of the same unified cognitive timeline.
+        const base = `VCP-${scope.companionId}-${month.month}${suffix}`;
         if (month.content !== undefined) output.set(base + '.md', month.content);
         if (month.summary !== undefined) output.set(base + '.summary.md', month.summary);
       }
-      for (const file of Object.keys(manifest.files)) if (manifest.files[file]!.scope.conversationId === scope.conversationId && !output.has(file)) {
+      for (const file of Object.keys(manifest.files)) if (manifest.files[file]!.scope.companionId === scope.companionId && !output.has(file)) {
         await this.removeTimeline(root, file); delete manifest.files[file];
       }
       for (const file of output.keys()) manifest.files[file] = { scope, sourceRevision: artifacts.sourceRevision, ownerIdentity: artifacts.owner };

@@ -100,11 +100,20 @@ it('distinguishes native candidates from the focused context and keeps guide on 
       startedAt: message.createdAt, updatedAt: message.createdAt, memory: { status: 'completed', count: 3, injected: false } } };
   await act(() => root!.render(<CompanionMessageBubble message={queued} actions={[]} now={0} streamStore={new CompanionReplyStreamStore()} interrupted={false}
     onOpenAction={vi.fn()} onOpenUrl={vi.fn()} onOpenAttachment={vi.fn()} onLocateQuote={vi.fn()} onStreamLayout={vi.fn()} onCancelReply={cancel} onGuideReply={guide} />));
-  expect(container.textContent).toContain('已筛选 3 条候选 · 无需注入'); expect(container.textContent).not.toContain('已注入');
+  expect(container.textContent).toContain('已筛选 3 条候选 · 未纳入话题上下文'); expect(container.textContent).not.toContain('已注入');
   expect(container.querySelector('.companions-bubble-progress-detail')).toBeNull();
   const buttons = [...container.querySelectorAll<HTMLButtonElement>('button')];
   await act(() => buttons.find(button => button.textContent === '立即引导')!.click());
   expect(guide).toHaveBeenCalledExactlyOnceWith('queued-source');
   await act(() => buttons.find(button => button.getAttribute('aria-label') === '取消这条回复')!.click());
   expect(cancel).toHaveBeenCalledExactlyOnceWith('queued-work');
+});
+
+it('distinguishes unfinished memory capture from an empty settled corpus', async () => {
+  await mount({ ...message, replyProgress: { revision: 1, phase: 'completed', detail: '回复已完成', startedAt: message.createdAt, updatedAt: message.createdAt,
+    memory: { status: 'completed', count: 0, injected: false, pending: true } } });
+  expect(container!.textContent).toContain('记忆仍在整理 · 本轮未命中'); expect(container!.textContent).not.toContain('无相关记忆');
+  await mount({ ...message, replyProgress: { revision: 2, phase: 'completed', detail: '回复已完成', startedAt: message.createdAt, updatedAt: message.createdAt,
+    memory: { status: 'completed', count: 0, injected: false, pending: false } } });
+  expect(container!.textContent).toContain('被动召回完成 · 无相关记忆'); expect(container!.textContent).not.toContain('仍在整理');
 });

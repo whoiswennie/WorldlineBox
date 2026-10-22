@@ -29,6 +29,46 @@ function initial(store: CompanionsStore, conversationId: string, clientId = 'fir
 }
 function complete(store: CompanionsStore, job: CompanionSocialJob, text: string | null) { advance(store, Math.max(1, Date.parse(job.typingNotBefore) - Date.now() + 1)); return store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text }); }
 
+it.each(['alice', 'bob', 'carol'])('requires every participant to be activated before sending a new group message (%s dormant)', dormant => {
+  const { store, filename } = fixture(), group = room(store, ['alice', 'bob', 'carol']);
+  const historical = append(store, group.id, 0, '2026-10-15T10:00:00Z', '之前实际发生过的交流。');
+  store.setCompanionActive(dormant, false);
+  const command = { type: 'social.send' as const, companionId: 'alice', conversationId: group.id, channel: 'phone' as const, content: '不能向休眠伙伴发送。', clientId: 'dormant_' + dormant };
+  expect(() => store.request(command)).toThrow('激活');
+  expect(store.request({ type: 'social.messages', conversationId: group.id }).socialMessagePage!.items.map(item => item.message.id)).toEqual([historical.message.id]);
+  expect(store.request({ type: 'state' }).state!.companions.find(role => role.id === dormant)?.active).toBe(false);
+  const db = new Database(filename); try {
+    expect(db.prepare('SELECT COUNT(*) AS n FROM companion_social_outbox').get()).toMatchObject({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM companion_social_jobs').get()).toMatchObject({ n: 0 });
+  } finally { db.close(); }
+});
+
+it('cancels a queued message and typing when its recipient is deactivated, without replaying on reactivation', () => {
+  const { store, filename } = fixture(), pair = room(store);
+  const command = { type: 'social.send' as const, companionId: 'alice', conversationId: pair.id, channel: 'phone' as const, content: '开始输入但尚未发送。', clientId: 'deactivated_during_typing' };
+  expect(store.request(command).socialPending).toBe(true);
+  expect(store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.communication?.phase).toBe('typing');
+  store.setCompanionActive('bob', false); advance(store, 1500);
+  expect(store.request({ type: 'social.job.claim' }).socialMessage).toBeUndefined();
+  expect(store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.communication).toBeUndefined();
+  store.setCompanionActive('bob', true); advance(store, 1500);
+  expect(store.request({ type: 'social.job.claim' }).socialMessage).toBeUndefined();
+  expect(store.request({ type: 'social.messages', conversationId: pair.id }).socialMessagePage!.total).toBe(0);
+  expect(() => store.request(command)).toThrow('取消');
+  const db = new Database(filename); try { expect(db.prepare('SELECT status FROM companion_social_outbox WHERE client_id=?').get(command.clientId)).toMatchObject({ status: 'cancelled' }); } finally { db.close(); }
+});
+
+it.each(['alice', 'bob'])('rejects a late generated reply when %s deactivates and keeps the actual sent evidence', dormant => {
+  const { store, filename } = fixture(), pair = room(store), sent = initial(store, pair.id);
+  const job = store.request({ type: 'social.job.claim' }).socialJob!; expect(job.companionId).toBe('bob');
+  store.setCompanionActive(dormant, false); advance(store, 1500);
+  expect(() => store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '这条旧生成结果不能提交。' })).toThrow('失效');
+  store.setCompanionActive(dormant, true);
+  expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
+  expect(store.request({ type: 'social.messages', conversationId: pair.id }).socialMessagePage!.items.map(item => item.message.id)).toEqual([sent.message.id]);
+  const db = new Database(filename); try { expect(db.prepare('SELECT status FROM companion_social_jobs WHERE id=?').get(job.id)).toMatchObject({ status: 'cancelled' }); } finally { db.close(); }
+});
+
 it('uses indexed Chinese/title search, exact calendar scope, keyset pages and scoped conversation previews', () => {
   const { store } = fixture(), pair = room(store), other = room(store, ['alice', 'carol'], '完全不同');
   const all = Array.from({ length: 9 }, (_, index) => { vi.setSystemTime(Date.now() + 1000); return append(store, pair.id, index, index < 6 ? '2026-10-14T11:00:00Z' : '2026-10-15T11:00:00Z', index < 6 ? '旧日月亮 ' + index : '未来秘密 ' + index); });

@@ -23,8 +23,32 @@ export interface VcpMemoryNote {
   metadata?: Record<string, unknown>;
 }
 
+/** Unweighted values copied from upstream's final ordered result; not probabilities. */
+export interface VcpMemoryScoreDetails {
+  engine: 'river' | 'knn';
+  /** Original returned chunk position, before host note deduplication or visibility filtering. */
+  rank: number;
+  nativeRank?: number;
+  finalScore?: number;
+  originalScore?: number;
+  vectorScore?: number;
+  /** Continuous field and closure base; not a pure semantic/cosine score. */
+  baseScore?: number;
+  topologyBonus?: number;
+  anchorBonus?: number;
+  /** Query river observability, not confidence that a memory is correct. */
+  omega?: number;
+  role?: string;
+  riverRegime?: string;
+  matchedTags?: string[];
+  coreTagsMatched?: string[];
+  candidateSources?: string[];
+  algorithmVersion?: string;
+  queryMode?: string;
+}
 export interface VcpMemorySearchHit extends VcpMemoryNote {
-  score: number;
+  score?: number;
+  scoreDetails?: VcpMemoryScoreDetails;
   sourceFile: string;
   engine: 'river' | 'knn';
 }
@@ -33,6 +57,15 @@ export interface VcpMemorySearchResult {
   results: VcpMemorySearchHit[];
   diagnostics: Record<string, unknown>;
   degraded: boolean;
+  retrieval?: {
+    embeddingDimension: number;
+    diaryCount: number;
+    matchedTags: string[];
+    coreTagsMatched: string[];
+    counts: Partial<Record<'offeredCandidates' | 'projectedCandidates' | 'selectedCandidates' | 'rankedCandidates' | 'returnedCandidates' | 'artifactNodes' | 'artifactEdges', number>>;
+    hits: Array<{ id: string; rank: number; text?: string; sourcePath?: string; matchedTags: string[]; coreTagsMatched: string[];
+      anchor?: Partial<Record<'contactedSeeds' | 'exactContacts' | 'semanticContacts' | 'anchorReliability' | 'meanClosure', number>> }>;
+  };
 }
 
 export interface VcpMemoryWorkerConfiguration {

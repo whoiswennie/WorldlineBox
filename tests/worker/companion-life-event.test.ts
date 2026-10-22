@@ -57,3 +57,33 @@ it('respects an existing opt-out and never sends a backlog of greetings after a 
   for (let index = 0; index < 100; index++) { if (!f.store.request({ type: 'world.clock' }).worldClock!.backlog) break; f.store.request({ type: 'world.tick' }); }
   expect(f.store.request({ type: 'life-event.claim' }).lifeOccurrence).toBeUndefined();
 });
+
+it('selects only activated autonomous contacts and can reconsider after the player activates the first peer', () => {
+  const f = fixture();
+  f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: f.rule.id, expectedRevision: f.rule.revision });
+  const peer = f.store.createCompanion({ name: 'Bob', description: '', persona: '独立伙伴', model: '', avatar: 'sister', proactive: false });
+  const rule = f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '与激活的朋友交流', action: 'message', startMinute: 14 * 60, endMinute: 15 * 60, probability: 1, checkIntervalMinutes: 1 } }).lifeRule!;
+  f.store.request({ type: 'life-event.tick' }); vi.setSystemTime(Date.now() + 900);
+  expect(f.store.request({ type: 'life-event.claim' }).lifeOccurrence).toBeUndefined();
+  const waiting = f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(occ => occ.ruleId === rule.id)!;
+  expect(waiting).toMatchObject({ status: 'observing', multiplier: 0 }); expect(waiting.targetId).toBeUndefined();
+  expect(f.store.state().companions.find(role => role.id === peer.id)?.active).toBe(false);
+  f.store.setCompanionActive(peer.id, true); vi.setSystemTime(Date.now() + 900);
+  const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
+  expect(claimed).toMatchObject({ ruleId: rule.id, companionId: 'alice', targetId: peer.id, status: 'running' });
+});
+
+it('does not claim a configured dormant contact or submit a late life message after the target is deactivated', () => {
+  const f = fixture();
+  f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: f.rule.id, expectedRevision: f.rule.revision });
+  const peer = f.store.createCompanion({ name: 'Bob', description: '', persona: '独立伙伴', model: '', avatar: 'sister', proactive: false });
+  const rule = f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '联系指定朋友', action: 'message', targetId: peer.id, startMinute: 14 * 60, endMinute: 15 * 60, probability: 1, checkIntervalMinutes: 1 } }).lifeRule!;
+  f.store.request({ type: 'life-event.tick' }); vi.setSystemTime(Date.now() + 900);
+  expect(f.store.request({ type: 'life-event.claim' }).lifeOccurrence).toBeUndefined();
+  f.store.setCompanionActive(peer.id, true); vi.setSystemTime(Date.now() + 900);
+  const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
+  expect(claimed).toMatchObject({ ruleId: rule.id, targetId: peer.id, status: 'running' });
+  f.store.setCompanionActive(peer.id, false);
+  expect(() => f.store.request({ type: 'life-event.complete', id: claimed.id, leaseToken: claimed.leaseToken!, text: '不能向已休眠的伙伴发起交流。' })).toThrow('激活');
+  expect(f.store.request({ type: 'social.conversations', companionId: 'alice' }).socialConversationPage!.items).toEqual([]);
+});

@@ -464,6 +464,28 @@ it('keeps each group member presence distinct and updates the open status panel 
   expect(container!.querySelector('[aria-label="伙伴状态"]')).toBeNull();
 });
 
+it('uses readable status badges consistently across contacts, profile and chat, with activation overriding stale work', async () => {
+  const statuses = ['ready', 'working', 'waiting', 'dormant', 'offline'] as const;
+  const roles = sisters.map((role, index) => ({ ...role, active: index !== 3, availability: index === 3 ? 'working' as const : statuses[index] ?? 'ready',
+    ...(index === 1 ? { activeCount: 2 } : {}), ...(index === 4 ? { availabilityReason: '模型服务暂时未连接' } : {}) }));
+  const f = fixture({ companions: roles }); await mount(f.api);
+  expect(container!.querySelector('.companions-chat-header .companion-status-badge')?.getAttribute('data-status')).toBe('ready');
+  await click('联系人');
+  for (const [index, status] of statuses.entries()) {
+    const row = container!.querySelector(`[data-companion-contact="${roles[index]!.id}"]`)!;
+    const badge = row.querySelector('.companion-status-badge')!;
+    expect(badge.getAttribute('data-status')).toBe(status);
+    expect(badge.textContent).toContain(['就绪', '工作中 · 2', '等待中', '休眠', '离线'][index]);
+    expect(badge.querySelector('i')?.getAttribute('aria-hidden')).toBe('true');
+    expect(row.querySelector('.companion-avatar-presence')?.getAttribute('data-status')).toBe(status);
+  }
+  await act(() => container!.querySelector<HTMLButtonElement>(`[data-companion-contact="${roles[3]!.id}"]`)!.click());
+  expect(container!.querySelector('.companions-profile-heading .companion-status-badge')?.getAttribute('data-status')).toBe('dormant');
+  await f.publish({ companions: roles.map((role, index) => index === 3 ? { ...role, active: true, availability: 'ready' } : role) });
+  expect(container!.querySelector('.companions-profile-heading .companion-status-badge')?.textContent).toBe('就绪');
+  expect(container!.querySelector(`[data-companion-contact="${roles[3]!.id}"] .companion-status-badge`)?.getAttribute('data-status')).toBe('ready');
+});
+
 it('keeps a queued loop in its existing bubble and reserves the queue dock for an old item without a reply identity', async () => {
   const room = 'group-home', source = message(1, '正在处理的消息', { conversationId: room }), later = message(3, '随后的一条消息', { conversationId: room });
   const draft = (sequence: number, phase: 'thinking' | 'queued', sourceMessageId: string, workId: string) => message(sequence, '', {

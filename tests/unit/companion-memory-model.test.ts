@@ -40,7 +40,7 @@ function request(fetchFn: ReturnType<typeof fetchFor>) {
 }
 
 describe('source-grounded VCP experience journals', () => {
-  it('labels the real player and self explicitly after a peer topic, without exposing other-domain diaries', async () => {
+  it('labels the real player and self while using its own retrieved memories across entrances', async () => {
     const fetchFn = fetchFor({ notes: [] });
     await generateCompanionJournal({ ...input, participants: [{ id: 'peer', name: '周岚' }, { id: companion.id, name: companion.name }],
       contextMessages: [message('self', 1, '我刚才和周岚聊了观察表。', { authorId: companion.id })],
@@ -49,9 +49,10 @@ describe('source-grounded VCP experience journals', () => {
     expect(sent.payload.identity).toMatchObject({ self: { id: companion.id, name: companion.name }, player: { id: 'user', kind: 'human_player' } });
     expect(sent.payload.messages[0]).toMatchObject({ authorId: 'user', speaker: 'human_player' });
     expect(sent.payload.contextMessages[0]).toMatchObject({ authorId: companion.id, speaker: 'self' });
-    expect(sent.payload.relevantMemories).toEqual([]);
-    expect(JSON.stringify(sent.payload)).not.toContain('OTHER_SCOPE_JOURNAL');
+    expect(sent.payload.relevantMemories).toHaveLength(1);
+    expect(JSON.stringify(sent.payload)).toContain('OTHER_SCOPE_JOURNAL');
     expect(sent.system).toContain('authorId=user 永远是独立真人玩家');
+    expect(sent.system).toContain('真人首次明确介绍自己的姓名');
   });
   it.each<AiApiFormat>(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native'])(
     'uses the supplied global chat model and ordinary structured transport for %s', async format => {
@@ -119,7 +120,7 @@ describe('source-grounded VCP experience journals', () => {
       await expect(generateCompanionJournal({ ...input, messages: [message('coffee', 4, input.messages[0]!.content, overrides)] }, config, undefined,
         { fetchFn: fetchFor({ notes: [note] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
     });
-  it('keeps group evidence and context within its group even when private memories are supplied', async () => {
+  it('keeps new group evidence local while allowing its own retrieved background across entrances', async () => {
     const group = { ...conversation, id: 'group_current', kind: 'group' as const };
     const visible = message('group_source', 9, '这个群的聊天导出已经上线。', { conversationId: group.id });
     const fetchFn = fetchFor({ notes: [] });
@@ -130,7 +131,7 @@ describe('source-grounded VCP experience journals', () => {
     const { payload } = request(fetchFn);
     expect(payload.messages.map((source: { id: string }) => source.id)).toEqual(['group_source']);
     expect(payload.contextMessages).toEqual([]);
-    expect(payload.relevantMemories.map((item: { id: string }) => item.id)).toEqual(['same_group']);
+    expect(payload.relevantMemories.map((item: { id: string }) => item.id)).toEqual(['coffee_note', 'another_group', 'same_group']);
     await expect(generateCompanionJournal({ ...input, conversation: group, messages: [visible] }, config, undefined,
       { fetchFn: fetchFor({ notes: [note] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });

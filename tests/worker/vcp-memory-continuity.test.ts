@@ -137,7 +137,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     const { createService, cacheRoot, controls, conversation } = await fixture();
     const first = createService(); first.service.schedule(0);
     const cache = new CompanionMemoryViewCache(cacheRoot);
-    const identity = `alpha:${conversation.id}`;
+    const identity = 'alpha:owner-v2';
     await vi.waitFor(async () => {
       const artifacts = await cache.loadArtifacts(identity, 'continuity-test');
       expect(artifacts?.agents[0]?.months[0], first.report.mock.calls.map(([error]) => String(error)).join('\n')).toMatchObject({ month: '2026-10', summary: expect.stringContaining('TIMELINE_ONLY_VALIDATED_MONTH') });
@@ -174,7 +174,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
 
   it('does not reuse legacy brand-authored artifacts or an old owner name after a resident rename', async () => {
     const { createService, cacheRoot, controls, conversation, store, note } = await fixture();
-    const identity = `alpha:${conversation.id}`, cache = new CompanionMemoryViewCache(cacheRoot);
+    const identity = 'alpha:owner-v2', cache = new CompanionMemoryViewCache(cacheRoot);
     const revision = store.request({ type: 'memory.snapshot', companionId: 'alpha', conversationId: conversation.id }).memorySnapshot!.revision;
     await cache.saveArtifacts(identity, 'continuity-test', { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision,
       agents: [{ agentName: 'WorldlineBox', months: [{ month: '2026-10', sourceDigest: 'a'.repeat(64), content: 'STALE_BRAND_OWNER', summary: 'STALE_BRAND_OWNER' }] }] });

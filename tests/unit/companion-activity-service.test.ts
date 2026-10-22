@@ -162,21 +162,16 @@ it('rejects an in-flight result after cancellation, rather than dispatching its 
   expect(store.request({ type: 'activity.get', companionId: scope.companionId, conversationId: scope.conversationId, id: scope.task.id }).activityTask!.status).toBe('cancelled');
 });
 
-it.each(['private', 'group', 'world', 'world-private-denied', 'private-own-revise', 'private-own-organize'] as const)(
+it.each(['private', 'group', 'world', 'world-private-owned', 'private-own-revise', 'private-own-organize'] as const)(
   'reads a real owned material and records sourced personal understanding within the original %s domain', async domain => {
-    let materialId = '', sourceId = '', quote = '', learnedId = '', blockedRead = false;
+    let materialId = '', sourceId = '', quote = '', learnedId = '';
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
       const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
       expect(data.purpose).toBe('activity_task_step');
-      if (domain === 'world-private-denied') expect(JSON.stringify(data)).not.toContain('PRIVATE_MATERIAL_DETAIL');
       if (data.task.step === 0) return response({ status: 'continue', action: null, wait: null,
         memory: { operation: 'read', id: materialId }, summary: '先实际阅读这一份本人可见资料，再决定是否形成认识。' });
       const read = data.task.history.find((item: { action: string }) => item.action === 'memory.read');
       expect(read).toBeDefined();
-      if (domain === 'world-private-denied') {
-        expect(read.ok).toBe(false); blockedRead = true;
-        return response({ status: 'blocked', action: null, wait: null, summary: '这份资料不属于当前世界任务可读范围，没有读到内容，也没有形成新的学习笔记。' });
-      }
       expect(read.ok).toBe(true);
       const actualRead = JSON.parse(read.result);
       expect(actualRead.memories[0]).toMatchObject({ id: materialId, version: 1, sourceMessageIds: [sourceId] });
@@ -198,10 +193,10 @@ it.each(['private', 'group', 'world', 'world-private-denied', 'private-own-revis
     await service!.close();
     const scope = { companionId: 'alice', conversationId: domain === 'group' ? store.createConversation('本人的学习小组', ['alice']).id
       : domain.startsWith('world') ? 'world_alice' : base.conversationId };
-    const materialScope = domain === 'world-private-denied' ? { companionId: 'alice', conversationId: base.conversationId } : scope;
+    const materialScope = domain === 'world-private-owned' ? { companionId: 'alice', conversationId: base.conversationId } : scope;
     const source = domain === 'world' ? store.request({ type: 'memory.world_query', ...scope, category: 'observations', query: '', limit: 2 }).memorySources![0]!
       : store.appendMessage({ conversationId: materialScope.conversationId, authorId: 'user',
-        content: domain === 'world-private-denied' ? 'PRIVATE_MATERIAL_DETAIL' : '读资料时保存原始出处，区分实际观察、作者解释和自己的推测，不把一次观察升级为普遍结论。', replyDirective: 'none' });
+        content: domain === 'world-private-owned' ? 'PRIVATE_MATERIAL_DETAIL' : '读资料时保存原始出处，区分实际观察、作者解释和自己的推测，不把一次观察升级为普遍结论。', replyDirective: 'none' });
     sourceId = source.id; quote = source.content.slice(0, 180);
     materialId = store.request({ type: 'memory.record', ...materialScope, candidate: { diaryName: '学习资料', content: source.content, tags: ['学习资料', '阅读方法'],
       sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!.id;
@@ -218,11 +213,8 @@ it.each(['private', 'group', 'world', 'world-private-denied', 'private-own-revis
       await service.tick(); await new Promise(resolve => setImmediate(resolve));
       vi.setSystemTime(Date.now() + 2000); store.request({ type: 'world.tick' });
     }
-    expect(get().status).toBe(domain === 'world-private-denied' ? 'failed' : 'succeeded');
+    expect(get().status).toBe('succeeded');
     expect(calls.find(input => input.type === 'memory.read')).toMatchObject({ ...scope, id: materialId });
-    if (domain === 'world-private-denied') {
-      expect(blockedRead).toBe(true); expect(calls.some(input => input.type === 'memory.record')).toBe(false); expect(learnedId).toBe(''); return;
-    }
     expect(calls.filter(input => input.type === 'memory.record')).toHaveLength(1);
     const learned = store.request({ type: 'memory.read', ...scope, id: learnedId }).memoryRead!.memory;
     expect(learned).toMatchObject({ diaryName: '自我认识', sourceConversationId: materialScope.conversationId });

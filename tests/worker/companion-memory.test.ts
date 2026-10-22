@@ -40,7 +40,29 @@ describe('VCP journal host ledger', () => {
     it('rejects invented evidence and rolls back the complete journal batch', () => { const { store, scope } = fixture(); const message = source(store, scope.conversationId, '今天一起在花园躲雨。'); const job = store.request({ type: 'memory.jobs.claim' }).memoryJob!; expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate(message), candidate(message, { content: '捏造', evidence: [{ sourceMessageId: message.id, quote: '并未说过' }] })] })).toThrow(); expect(store.request({ type: 'memory.browse', ...scope }).memoryPage?.items).toHaveLength(0); expect(store.request({ type: 'memory.outbox.claim' }).memoryOutbox).toBeUndefined(); });
     it('preserves tag order, journals idempotently and publishes only after VCP index acknowledgement', () => { const { store, scope } = fixture(); const message = source(store, scope.conversationId, '花园里的雨和借伞约定。'); const draft = candidate(message, { tags: ['花园', '雨', '借伞', '归还约定'] }); const note = store.request({ type: 'memory.record', ...scope, candidate: draft }).memories![0]!; expect(note.tags).toEqual(draft.tags); expect(note.status).toBe('queued'); expect(store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot?.notes).toHaveLength(0); expect(store.request({ type: 'memory.record', ...scope, candidate: draft }).memories?.[0]?.id).toBe(note.id); const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!; expect(() => store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: false })).toThrow('索引'); store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true }); expect(store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot?.notes.map(note => note.id)).toEqual([note.id]); expect(store.request({ type: 'memory.outbox.claim' }).memoryOutbox).toBeUndefined(); });
     it('does not provide a hidden text, tag or raw-history retrieval fallback', () => { const { store, scope } = fixture(); expect(() => store.request({ type: 'memory.search', ...scope, query: '雨' })).toThrow('VCP'); expect(() => store.request({ type: 'memory.browse', ...scope, query: '雨' })).toThrow('VCP'); });
-    it('isolates graph snapshots by resident, group audience and source cutoff', () => { const { store, scope } = fixture(); const secret = source(store, scope.conversationId, '这是私人回忆'); const privateNote = store.request({ type: 'memory.record', ...scope, candidate: candidate(secret) }).memories![0]!; const group = store.createConversation('群', ['alice', 'bob']); const common = source(store, group.id, '这是群里的经历'); const groupScope = { companionId: 'alice', conversationId: group.id }; const groupNote = store.request({ type: 'memory.record', ...groupScope, candidate: candidate(common) }).memories![0]!; const bobNote = store.request({ type: 'memory.record', companionId: 'bob', conversationId: group.id, candidate: candidate(common) }).memories![0]!; index(store); expect(privateNote.scopeId).not.toBe(groupNote.scopeId); expect(groupNote.scopeId).not.toBe(bobNote.scopeId); expect(store.request({ type: 'memory.snapshot', ...groupScope }).memorySnapshot?.notes.map(note => note.id)).toEqual([groupNote.id]); const privateView = store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!; const historical = store.request({ type: 'memory.snapshot', ...scope, beforeSequence: secret.sequence }).memorySnapshot!; expect(privateView.notes).toHaveLength(2); expect(historical.notes.map(note => note.id)).toEqual([privateNote.id]); expect(historical.scopeId).not.toBe(privateView.scopeId); expect(() => store.request({ type: 'memory.read', ...groupScope, id: privateNote.id })).toThrow(); expect(() => store.request({ type: 'memory.read', companionId: 'bob', conversationId: group.id, id: groupNote.id })).toThrow(); });
+    it('shares one cognitive snapshot across the same owners entrances while preserving other owners and source cutoffs', () => {
+        const { store, scope } = fixture();
+        const secret = source(store, scope.conversationId, '这是我已见过的私聊经历');
+        const privateNote = store.request({ type: 'memory.record', ...scope, candidate: candidate(secret) }).memories![0]!;
+        const group = store.createConversation('群', ['alice', 'bob']);
+        const common = source(store, group.id, '这是群里的经历');
+        const groupScope = { companionId: 'alice', conversationId: group.id };
+        const groupNote = store.request({ type: 'memory.record', ...groupScope, candidate: candidate(common) }).memories![0]!;
+        const bobNote = store.request({ type: 'memory.record', companionId: 'bob', conversationId: group.id, candidate: candidate(common) }).memories![0]!;
+        index(store);
+        expect(privateNote.scopeId).not.toBe(groupNote.scopeId); // Original source containers remain provenance.
+        expect(groupNote.scopeId).not.toBe(bobNote.scopeId);
+        const privateView = store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!;
+        const groupView = store.request({ type: 'memory.snapshot', ...groupScope }).memorySnapshot!;
+        expect(groupView.notes.map(note => note.id).sort()).toEqual([privateNote.id, groupNote.id].sort());
+        expect(groupView.revision).toBe(privateView.revision);
+        const historical = store.request({ type: 'memory.snapshot', ...groupScope, beforeSequence: secret.sequence }).memorySnapshot!;
+        expect(historical.notes.map(note => note.id)).toEqual([privateNote.id]);
+        expect(historical.scopeId).not.toBe(privateView.scopeId);
+        expect(store.request({ type: 'memory.read', ...groupScope, id: privateNote.id }).memoryRead!.memory.id).toBe(privateNote.id);
+        expect(() => store.request({ type: 'memory.read', companionId: 'bob', conversationId: group.id, id: privateNote.id })).toThrow();
+        expect(() => store.request({ type: 'memory.read', companionId: 'bob', conversationId: group.id, id: groupNote.id })).toThrow();
+    });
     it('requires all contributing sources to belong to one visibility domain', () => { const { store, scope } = fixture(); const privateSource = source(store, scope.conversationId, '私人'); const group = store.createConversation('群', ['alice']); const groupSource = source(store, group.id, '群公开'); expect(() => store.request({ type: 'memory.record', ...scope, candidate: { content: '混合', sourceMessageIds: [privateSource.id, groupSource.id], evidence: [{ sourceMessageId: privateSource.id, quote: privateSource.content }, { sourceMessageId: groupSource.id, quote: groupSource.content }] } })).toThrow('可见域'); });
     it('invalidates a snapshot immediately when a contributing source changes', () => { const { store, scope, filename } = fixture(); const message = source(store, scope.conversationId, '原来的约定'); store.request({ type: 'memory.record', ...scope, candidate: candidate(message) }); index(store); const before = store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!; const db = new Database(filename); try {
         db.function('companion_search_tokens', { deterministic: true }, companionSearchTokens);
@@ -59,6 +81,44 @@ describe('VCP journal host ledger', () => {
     it('does not publish a stale native acknowledgement over a newer journal revision', () => { const { store, scope } = fixture(); const message = source(store, scope.conversationId, '我们的经历'); const note = store.request({ type: 'memory.record', ...scope, candidate: candidate(message) }).memories![0]!; const old = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!; store.request({ type: 'memory.revise', ...scope, id: note.id, expectedVersion: note.version, candidate: candidate(message, { content: '更详细的经历' }) }); store.request({ type: 'memory.outbox.complete', id: old.id, leaseToken: old.leaseToken, indexed: true }); expect(store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot?.notes).toHaveLength(0); index(store); expect(store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot?.notes[0]?.content).toBe('更详细的经历'); });
     it('records manual form input as explicit provenance rather than a fabricated chat turn', () => { const { store, scope } = fixture(); const note = store.saveMemory({ ...scope, content: '手工写下的日记', tags: ['手写'] }); expect(note.sources[0]?.sourceType).toBe('manual_input'); const receipt = store.getMessage(note.sourceMessageId!); expect(receipt.kind).toBe('notice'); expect(receipt.memoryEvidenceOnly).toBe(true); expect(store.request({ type: 'memory.status', companionId: 'alice' }).memoryStatus?.pending).toBe(0); });
     it('requeues VCP ingestion for index repair without creating a memory FTS index', () => { const { store, scope } = fixture(); const message = source(store, scope.conversationId, '用于重建的经历'); const note = store.request({ type: 'memory.record', ...scope, candidate: candidate(message) }).memories![0]!; index(store); expect(store.request({ type: 'memory.index.rebuild', companionId: 'alice' }).rebuiltCount).toBe(1); expect(store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot?.notes).toHaveLength(0); const job = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!; expect(job.noteId).toBe(note.id); expect(job.operation).toBe('remember'); });
+});
+it('recalls the same owners indexed identity in peer and world entrances without sharing another owners corpus', () => {
+    const { store, scope } = fixture();
+    const introduction = source(store, scope.conversationId, '你好，我叫天幻呀。');
+    const note = store.request({ type: 'memory.record', ...scope, candidate: candidate(introduction, { tags: ['玩家', '姓名'] }) }).memories![0]!;
+    const peer = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+    const peerScope = { companionId: 'alice', conversationId: peer.id }, worldScope = { companionId: 'alice', conversationId: 'world_alice' };
+    // Saving text and acknowledging its native index are distinct milestones.
+    expect(store.request({ type: 'memory.snapshot', ...peerScope }).memorySnapshot?.notes).toEqual([]);
+    expect(store.request({ type: 'memory.status', companionId: 'alice' }).memoryStatus?.pendingIndex).toBe(1);
+    index(store);
+    for (const entrance of [scope, peerScope, worldScope]) {
+        expect(store.request({ type: 'memory.snapshot', ...entrance }).memorySnapshot?.notes.map(note => note.id)).toEqual([note.id]);
+        expect(store.request({ type: 'memory.sources.filter', ...entrance, ids: [introduction.id] }).memorySources?.map(message => message.id)).toEqual([introduction.id]);
+    }
+    expect(store.request({ type: 'memory.snapshot', companionId: 'bob', conversationId: peer.id }).memorySnapshot?.notes).toEqual([]);
+    expect(store.request({ type: 'memory.sources.filter', companionId: 'bob', conversationId: peer.id, ids: [introduction.id] }).memorySources).toEqual([]);
+    store.request({ type: 'memory.forget', ...peerScope, id: note.id });
+    for (const entrance of [scope, peerScope, worldScope]) {
+        expect(store.request({ type: 'memory.snapshot', ...entrance }).memorySnapshot?.notes).toEqual([]);
+        expect(store.request({ type: 'memory.sources.filter', ...entrance, ids: [introduction.id] }).memorySources).toEqual([]);
+    }
+});
+it('uses historical observer receipts rather than todays membership when recalling group experiences', () => {
+    const { store, scope } = fixture();
+    const group = store.createConversation('历史经历', ['alice']);
+    const witnessed = source(store, group.id, '当时只有alice参与这次读书讨论。');
+    const note = store.request({ type: 'memory.record', companionId: 'alice', conversationId: group.id, candidate: candidate(witnessed) }).memories![0]!;
+    index(store);
+    store.updateConversation(group.id, { memberIds: ['bob'] });
+    const later = source(store, group.id, 'alice离开后才产生的讨论。');
+    expect(store.request({ type: 'memory.read', ...scope, id: note.id }).memoryRead?.memory.id).toBe(note.id);
+    expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [later.id] }).memorySources).toEqual([]);
+    const bob = { companionId: 'bob', conversationId: group.id };
+    expect(store.request({ type: 'memory.sources.filter', ...bob, ids: [witnessed.id] }).memorySources).toEqual([]);
+    expect(() => store.request({ type: 'memory.record', ...bob, candidate: candidate(witnessed) })).toThrow('来源不可见');
+    store.request({ type: 'memory.jobs.backfill' });
+    expect(store.request({ type: 'memory.sources.filter', ...bob, ids: [witnessed.id] }).memorySources).toEqual([]);
 });
 it('persists idempotent journal edit receipts across a crash before the activity acknowledgement', () => {
     const { store, scope, filename } = fixture();
@@ -97,7 +157,7 @@ it('places an observation journal in its actual group audience rather than the p
     index(store);
     expect(store.request({ type: 'memory.snapshot', ...groupScope }).memorySnapshot?.notes.map(note => note.id)).toEqual([note.id]);
     const other = store.createConversation('其它群聊', ['alice']);
-    expect(store.request({ type: 'memory.snapshot', companionId: 'alice', conversationId: other.id }).memorySnapshot?.notes).toEqual([]);
+    expect(store.request({ type: 'memory.snapshot', companionId: 'alice', conversationId: other.id }).memorySnapshot?.notes.map(note => note.id)).toEqual([note.id]);
     expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [receipt.id] }).memorySources).toHaveLength(1);
 });
 it('keeps a one-time topic forget distinct from a persistent prohibition', () => {
@@ -206,7 +266,7 @@ it('resolves semantic policy checks from actual note and observation domains wit
     expect(byNote.memoryProhibitionRevision).toBe(policy.memoryProhibitionRevision);
     expect(() => store.request({ type: 'memory.prohibitions', companionId: 'bob', conversationId: group.id, noteId: note.id })).toThrow('不可见');
     const other = store.createConversation('不共享受众', ['alice']);
-    expect(() => store.request({ type: 'memory.prohibitions', companionId: 'alice', conversationId: other.id, sourceMessageIds: [observation.id] })).toThrow('不可见');
+    expect(store.request({ type: 'memory.prohibitions', companionId: 'alice', conversationId: other.id, sourceMessageIds: [observation.id] }).memoryProhibitionRevision).toBe(policy.memoryProhibitionRevision);
 });
 it('preserves the exact user prohibition receipt for its completion reply while skipping automatic capture', () => {
     const { store, scope } = fixture();
@@ -230,7 +290,7 @@ it('preserves the exact user prohibition receipt for its completion reply while 
     store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [request.id] });
     expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [request.id] }).memorySources).toEqual([]);
 });
-it('keeps player-private evidence out of internal world recall even in a legacy private world container', () => {
+it('keeps the same owners evidence available in its world cognition including a legacy private world container', () => {
     const { store, scope, filename } = fixture();
     const secret = source(store, scope.conversationId, 'PLAYER_PRIVATE_DO_NOT_SHARE');
     store.request({ type: 'memory.record', ...scope, candidate: candidate(secret) });
@@ -238,15 +298,15 @@ it('keeps player-private evidence out of internal world recall even in a legacy 
     store.request({ type: 'memory.record', ...scope, candidate: candidate(observation) });
     index(store);
     const worldScope = { companionId: 'alice', conversationId: 'world_alice' };
-    expect(store.request({ type: 'memory.sources.filter', ...worldScope, ids: [secret.id, observation.id] }).memorySources).toEqual([]);
-    expect(store.request({ type: 'memory.snapshot', ...worldScope }).memorySnapshot?.notes).toEqual([]);
+    expect(store.request({ type: 'memory.sources.filter', ...worldScope, ids: [secret.id, observation.id] }).memorySources).toHaveLength(2);
+    expect(store.request({ type: 'memory.snapshot', ...worldScope }).memorySnapshot?.notes).toHaveLength(2);
     const db = new Database(filename);
     try {
         db.prepare("UPDATE conversations SET kind='group',private_companion_id=NULL WHERE id=?").run(scope.conversationId);
         db.prepare("UPDATE conversations SET kind='private',private_companion_id='alice' WHERE id='world_alice'").run();
     } finally { db.close(); }
-    expect(store.request({ type: 'memory.sources.filter', ...worldScope, ids: [secret.id, observation.id] }).memorySources).toEqual([]);
-    expect(store.request({ type: 'memory.snapshot', ...worldScope }).memorySnapshot?.notes).toEqual([]);
+    expect(store.request({ type: 'memory.sources.filter', ...worldScope, ids: [secret.id, observation.id] }).memorySources).toHaveLength(2);
+    expect(store.request({ type: 'memory.snapshot', ...worldScope }).memorySnapshot?.notes).toHaveLength(2);
 });
 it('forgets every historical source of a manually revised journal across restart and backfill', () => {
     const { store, scope, filename } = fixture();

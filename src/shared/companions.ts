@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { companionReplyProgressSchema } from './companion-reply-progress';
+import { companionReplyMemoryCommand, companionReplyMemorySchema } from './companion-reply-memory';
+import { companionMemoryCorpusStateCommand, companionMemoryProbeCommand, companionMemoryProbeSchema } from './companion-memory-probe';
+import { companionMemoryRetrievalSchema } from './companion-memory-retrieval';
 import type { CompanionWorkspaceRequest, CompanionWorkspaceResponse } from './companion-workspace';
 import { companionWorldObservationSchema } from './companion-knowledge';
 import { companionContactReceiptSchema } from './companion-contact';
@@ -143,6 +146,8 @@ export const companionDraftSchema = companionSchema.pick({ name: true, descripti
   .extend({ llm: companionLlmSchema.omit({ hasKey: true }).optional() });
 export type CompanionDraft = z.infer<typeof companionDraftSchema>;
 export const companionsRequestSchema = z.discriminatedUnion('type', [
+  companionMemoryProbeCommand, companionMemoryCorpusStateCommand,
+  companionReplyMemoryCommand,
   ...activityPublicCommands,
   z.strictObject({ type: z.literal('message.guide'), id: companionIdSchema, targetSourceMessageId: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('state') }),
@@ -198,6 +203,9 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
 export const companionsResponseSchema = z.object({
+  memoryProbe: companionMemoryProbeSchema.optional(),
+  memoryCorpusStamp: z.string().min(1).max(1000).optional(),
+  replyMemory: companionReplyMemorySchema.optional(),
   activityTask: activityTaskSchema.optional(), activityTasks: z.array(activityTaskSchema).max(50).optional(), activityMessages: z.array(messageSchema).max(20).optional(),
   ok: z.boolean(), error: z.string().optional(), state: companionStateSchema.optional(),
   playerProfile: playerProfileSchema.optional(),
@@ -208,12 +216,13 @@ export const companionsResponseSchema = z.object({
   action: actionSchema.optional(), actionPage: companionActionPageSchema.optional(),
   taskRecord: dshRecordPageSchema.optional(),
   message: messageSchema.optional(), companion: companionSchema.optional(),
-  memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(),
+  memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(), memoryRetrieval: companionMemoryRetrievalSchema.optional(),
   memoryProcessing: companionMemoryProcessingSchema.optional(),
   memoryLifePlan: companionMemoryLifePlanSchema.optional(),
   lifeOverview: companionLifeOverviewSchema.optional(),
   memoryTracePage: companionMemoryTracePageSchema.optional(), memoryTrace: companionMemoryTraceSchema.optional(),
-  memoryContext: z.object({ text: z.string().max(1024 * 1024), revision: z.string(), profileKey: z.string() }).optional(),
+  memoryContext: z.object({ text: z.string().max(1024 * 1024), revision: z.string(), profileKey: z.string(),
+    evidence: z.object({ capturedAt: z.string(), corpusHash: z.string(), beforeSequence: z.number().int().nonnegative().optional() }).optional() }).optional(),
   memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
   memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),
   memorySources: z.array(messageSchema).optional(), forgottenCount: z.number().int().nonnegative().optional(),

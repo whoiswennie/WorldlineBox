@@ -119,7 +119,8 @@ it.skipIf(!enabled)('audits three distinct companions using real global chat jou
       detail: { warmMs: performance.now() - warmStarted, cacheMaximum: 32, ttlMs: 60000 } });
     const groupSecretQuestion = append(group, 'user', '大家知道我的合成收藏代号和旅行箱具体放哪儿吗？没有群聊来源就说不知道。');
     const groupSecret = await respond(lin, group, groupSecretQuestion, true);
-    assertions.push({ name: 'private source never enters group context or reply', passed: !/星桥|书房门后/u.test(JSON.stringify(groupSecret)), detail: groupSecret });
+    assertions.push({ name: 'the same owner can recall private experience while respecting the explicit instruction not to disclose it in this group reply',
+      passed: !/星桥|书房门后/u.test(groupSecret.text), detail: groupSecret });
     const privateNote = notes('lin').find(note => note.sources.some(source => source.messageId === privateSource.id));
     if (!privateNote) throw new Error('PRIVATE_FIXTURE_NOTE_MISSING');
     store.request({ type: 'memory.library.delete', companionId: 'lin', id: privateNote.id, expectedVersion: privateNote.version });

@@ -3,6 +3,7 @@ import type { Companion, CompanionConversation } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionWorldJob, CompanionWorldScope, CompanionWorldSnapshot } from '../../shared/companion-world';
 import type { CompanionModelConfig } from './model';
+import type { CompanionMemoryRecall, CompanionMemoryService } from './memory-service';
 import { CompanionModelError } from './model';
 import { generateCompanionWorldDecision } from './world-model';
 import { generateCompanionMemoryDream } from './memory-model';
@@ -26,6 +27,7 @@ interface WorldServiceOptions {
   profiles?(input: { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>;
     sourceAuthorId?: string; audience?: 'player' | 'peers'; directory?: boolean }): Promise<CompanionProfileInput>;
   memoryContextValid?(scope: CompanionWorldScope, context?: { revision: string; profileKey: string }): Promise<boolean>;
+  recall?(input: Parameters<CompanionMemoryService['recall']>[0]): Promise<CompanionMemoryRecall>;
 }
 
 /** Physics and reservations keep ticking while semantic decisions run separately. */
@@ -135,23 +137,27 @@ export class CompanionWorldService {
       if (!world) throw new Error('伙伴当前世界不可访问。');
       const routine = (await this.options.request({ type: 'routine.get', ...scope })).routine;
       const runtime = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
-      const recalled = await this.options.request({ type: 'memory.search', ...scope, query: source.content.slice(0, 16000), limit: 8 })
-        .catch(error => { this.options.report(error); return undefined; });
+      const config = await this.options.configFor(companion);
+      const recalled = this.options.recall ? await this.options.recall({ companion, conversation, messages: sources,
+        currentMessage: source, beforeSequence: job.throughSequence, config, signal })
+        : await this.options.request({ type: 'memory.search', ...scope, query: source.content.slice(0, 16000), limit: 8 })
+          .then(response => ({ memories: response.memoryPage?.items.map(hit => hit.memory) ?? [], context: response.memoryContext }))
+          .catch(error => { this.options.report(error); return undefined; });
       if (signal.aborted || this.closed) throw cancelled();
       const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, sourceAuthorId: source.authorId, audience: 'peers' });
       const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world, routine, ...profiles,
-        memories: recalled?.memoryPage?.items.map(hit => hit.memory) ?? [], memoryContext: recalled?.memoryContext?.text,
+        memories: recalled?.memories ?? [], memoryContext: recalled?.context?.text,
         ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression, affect: runtime.affect } } : {}),
         members: state!.companions.filter(member => conversation.memberIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) },
-      await this.options.configFor(companion), signal, { fetchFn: this.options.fetchFn });
+      config, signal, { fetchFn: this.options.fetchFn });
       const wait = Date.parse(job.typingNotBefore) - Date.now();
       if (wait > 0) await delay(wait, signal);
       if (signal.aborted || this.closed) throw cancelled();
-      if (this.options.memoryContextValid && !await this.options.memoryContextValid(scope, recalled?.memoryContext)) {
+      if (this.options.memoryContextValid && !await this.options.memoryContextValid(scope, recalled?.context)) {
         throw new Error('伙伴回忆来源已经变化，本轮发言将重新读取。');
       }
       await this.options.request({ type: 'social.job.complete', id: job.id, leaseToken, text: result.text,
-        ...(recalled?.memoryContext ? { expectedMemoryRevision: recalled.memoryContext.revision } : {}),
+        ...(recalled?.context ? { expectedMemoryRevision: recalled.context.revision } : {}),
         ...(result.shareAddress ? { shareAddress: true } : {}),
         ...(result.nextRecipientId ? { nextRecipientId: result.nextRecipientId } : {}), ...(result.workOffer ? { workOffer: result.workOffer } : {}) });
     } catch (error) {

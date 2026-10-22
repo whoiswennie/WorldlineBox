@@ -498,7 +498,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(f.store.messages({ conversationId: f.conversation.id }).messages.at(-1)?.content).toContain('玫瑰浇水');
   });
 
-  it('records an observed group agreement for a silent witness and isolates it from other groups', async () => {
+  it('records an observed group agreement for a silent witness and recalls it across that owners other entrances', async () => {
     const f = fixture([...seeds,
       { id: 'flash', name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false },
       { id: 'comet', name: '阿星', description: '朋友', persona: '安静', model: '', avatar: 'sister', proactive: false }]);
@@ -512,7 +512,8 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     await background();
     expect(active(f.store, group.id, 'flash')[0]).toMatchObject({ sourceMessageId: source.id, sourceConversationId: group.id, content: expect.stringContaining('东门'), status: 'indexed' });
     const other = f.store.createConversation('另一个群', ['sister', 'flash', 'comet']);
-    expect(active(f.store, other.id, 'flash')).toHaveLength(0);
+    expect(active(f.store, other.id, 'flash')).toHaveLength(1);
+    expect(active(f.store, other.id, 'comet')).toHaveLength(0);
     const hit = await f.service.handle({ type: 'memory.search', companionId: 'flash', conversationId: group.id, query: '东门集合', tags: [], limit: 20 });
     expect(hit.memoryPage?.items[0]?.memory.content).toContain('东门');
   });

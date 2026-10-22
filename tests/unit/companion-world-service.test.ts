@@ -6,6 +6,7 @@ import { CompanionsStore, type CompanionSeed } from '../../src/companions/store'
 import { CompanionWorldService } from '../../src/main/companions/world-service';
 import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory';
 import type { CompanionStorageResponse } from '../../src/shared/companion-storage';
+import type { CompanionMemoryService } from '../../src/main/companions/memory-service';
 
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: id === 'alice' ? '安静友好，喜欢阅读。' : '坦率，尊重彼此边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), services = new Set<CompanionWorldService>(), roots: string[] = [];
@@ -37,9 +38,15 @@ function fixture(fetchFn: typeof fetch, asleep = true, members = seeds) {
   });
   const memoryContextValid = vi.fn(async (scope: { companionId: string; conversationId: string; beforeSequence?: number }, context?: { revision: string }) =>
     !context || store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!.revision === context.revision);
+  const recall = vi.fn(async (input: Parameters<CompanionMemoryService['recall']>[0]) => {
+    const response = await request({ type: 'memory.search', companionId: input.companion.id, conversationId: input.conversation.id,
+      beforeSequence: input.beforeSequence, query: input.currentMessage.content, limit: 8 });
+    return { memories: response.memoryPage?.items.map(hit => hit.memory) ?? [], sources: [], reasons: [], pending: false, degraded: false,
+      context: response.memoryContext };
+  });
   const service = new CompanionWorldService({ request, fetchFn, configFor: async () => ({ apiFormat: 'openai_chat', model: 'test-model', apiKey: 'private-key', baseUrl: 'https://provider.invalid' }),
-    changed: vi.fn(), wakeWaiting: vi.fn(), report: vi.fn(), memoryContextValid }); services.add(service);
-  return { store, service, alice, bob, request, memoryContextValid, root };
+    changed: vi.fn(), wakeWaiting: vi.fn(), report: vi.fn(), memoryContextValid, recall }); services.add(service);
+  return { store, service, alice, bob, request, memoryContextValid, recall, root };
 }
 function advance(store: CompanionsStore, milliseconds: number) { vi.setSystemTime(Date.now() + milliseconds); return store.request({ type: 'world.tick' }).world!; }
 function indexNotes(store: CompanionsStore) {
@@ -140,15 +147,15 @@ describe('semantic world background service with actual SQLite sources', () => {
   });
 
   it.each(['unchanged', 'forget-during-inference', 'forget-after-validation', 'other-private-note'] as const)(
-    'uses peer-scoped VCP recollections and revalidates publication when %s', async change => {
+    'uses focused owner-wide VCP recollections and revalidates publication when %s', async change => {
       let resolve!: (value: Response) => void, requested = false;
       const pending = new Promise<Response>(done => { resolve = done; });
       const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
         const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
         if (data.purpose !== 'world_social') return response({ action: null, reason: '没有新的世界事项。', appraisals: [] });
         expect(data.identity.self.id).toBe('bob');
-        expect(data.memories).toHaveLength(1); expect(data.memories[0].content).toContain('先核实出处');
-        expect(data.memoryContext).toContain('先核实出处'); expect(JSON.stringify(data)).not.toContain('PRIVATE_PLAYER_DETAIL');
+        expect(data.memories).toHaveLength(0);
+        expect(data.memoryContext).toContain('先核实出处'); expect(data.memoryContext).toContain('PRIVATE_PLAYER_DETAIL');
         requested = true; return pending;
       });
       const f = fixture(fetchFn, false); advance(f.store, 30000);
@@ -172,6 +179,8 @@ describe('semantic world background service with actual SQLite sources', () => {
       }
       resolve(response({ text: '我会先核实出处，再形成暂时的判断。', reason: '延续自己在本段交流形成的阅读认识。' }));
       await vi.advanceTimersByTimeAsync(1500);
+      // A newly observed fact after this question's sequence is outside this
+      // turn's historical cutoff, even in the unified owner corpus.
       const rejected = change.startsWith('forget');
       await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === (rejected ? 'social.job.fail' : 'social.job.complete'))).toBe(true));
       const replies = f.store.request({ type: 'social.messages', conversationId: room.id }).socialMessagePage!.items.filter(item => item.message.authorId === 'bob');
@@ -179,6 +188,9 @@ describe('semantic world background service with actual SQLite sources', () => {
       const search = f.request.mock.calls.find(([command]) => command.type === 'memory.search' && command.companionId === 'bob')?.[0];
       const sent = f.store.request({ type: 'social.messages', conversationId: room.id }).socialMessagePage!.items.find(item => item.message.content === '读书时你现在怎样看待材料的出处？')!;
       expect(search).toMatchObject({ ...scope, beforeSequence: sent.message.sequence });
+      expect(f.recall).toHaveBeenCalledWith(expect.objectContaining({ companion: expect.objectContaining({ id: 'bob' }),
+        conversation: expect.objectContaining({ id: room.id }), currentMessage: expect.objectContaining({ id: sent.message.id }),
+        beforeSequence: sent.message.sequence, config: expect.objectContaining({ model: 'test-model' }) }));
       expect(f.memoryContextValid).toHaveBeenCalled();
     });
   it('automatically returns a committed delegated peer answer to its real human requester with proactive disabled', async () => {

@@ -20,6 +20,12 @@ beforeEach(() => {
 });
 
 describe('one bundled global embedding encoder', () => {
+  it('invalidates subscribed derived vector caches immediately and permits observers to detach', async () => {
+    const encoder = new GlobalEmbeddingService({ userDataPath: '.' }), notify = vi.fn();
+    const detach = encoder.subscribeInvalidation(notify);
+    await encoder.invalidate(); expect(notify).toHaveBeenCalledOnce();
+    detach(); await encoder.invalidate(); await encoder.close(); expect(notify).toHaveBeenCalledOnce();
+  });
   it('keeps metadata readable but never starts the local encoder when the device gate refuses it', async () => {
     const startLocalSession = vi.fn(), ensureDeviceCapability = vi.fn(async () => { throw new Error('当前设备内存不足，向量能力已暂停。'); });
     const encoder = new GlobalEmbeddingService({ userDataPath: '.', startLocalSession, ensureDeviceCapability });

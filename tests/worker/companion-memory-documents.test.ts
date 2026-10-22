@@ -205,7 +205,7 @@ it('keeps stable persona and generated native timeline files read-only while all
   await library.publishTimelines(f.scope, { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision,
     owner: companionMemoryIdentity({ id: 'alice', name: 'alice' }),
     agents: [{ agentName: 'alice', months: [{ month: '2026-10', sourceDigest: 'digest', content: '原版生成的时间线正文。' }] }] }, async () => true);
-  const file = `时间线/VCP-${f.scope.conversationId}-2026-10.md`;
+  const file = `时间线/VCP-${f.scope.companionId}-2026-10.md`;
   for (const relative of ['profile.md', file]) {
     const read = (await call({ type: 'memory.documents.read', path: relative, sourceLimit: 30 })).document!;
     expect(read.document.readOnly).toBe(true);
@@ -318,7 +318,7 @@ it('reports physical edits as pending until their content really reaches the exi
 it('reads long automatic timeline text and rejects a restored stale automatic export without recapturing it', async () => {
   const f = fixture(), { library, call } = f.make(); await library.sync();
   const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
-  const content = '原版时间线完整正文。'.repeat(10000), relative = `时间线/VCP-${f.scope.conversationId}-2026-10.md`;
+  const content = '原版时间线完整正文。'.repeat(10000), relative = `时间线/VCP-${f.scope.companionId}-2026-10.md`;
   await library.publishTimelines(f.scope, { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision,
     owner: companionMemoryIdentity({ id: 'alice', name: 'alice' }),
     agents: [{ agentName: 'alice', months: [{ month: '2026-10', sourceDigest: 'digest', content }] }] }, async () => true);

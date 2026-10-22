@@ -1,0 +1,75 @@
+import type { z } from 'zod';
+import type { CompanionMemory, CompanionMessage } from '../../shared/companions';
+import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
+import type { companionReplyMemoryCommand, CompanionReplyMemory } from '../../shared/companion-reply-memory';
+import { recallCorpusHash } from './recall-evidence';
+
+type Request = z.infer<typeof companionReplyMemoryCommand>;
+type Transport = (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>;
+type SavedContext = { memories?: Array<{ id: string; version: number }>; memoryRecall?: {
+  reasons?: Array<{ id: string; version?: number }>;
+  pending?: boolean; degraded?: boolean; continuation?: { query?: { query?: string } };
+  context?: { text: string; revision: string; evidence?: { capturedAt: string; corpusHash: string; beforeSequence?: number } };
+} };
+
+/** Inspect the saved native result, never rerun retrieval or initialize a model. */
+export async function inspectCompanionReplyMemory(input: Request, request: Transport): Promise<CompanionReplyMemory> {
+  const base: CompanionReplyMemory = { companionId: input.companionId, conversationId: input.conversationId,
+    messageId: input.messageId, observedAt: new Date().toISOString(), state: 'unavailable', contextCharacters: 0,
+    contextOffset: 0, contextTruncated: false, candidates: [], pending: false, degraded: false,
+    explanation: '这条回复没有保存可查看的召回详情。历史记录不会补造召回内容。' };
+  const message = (await request({ type: 'message.get', id: input.messageId })).message;
+  if (!message || message.authorId !== input.companionId || message.conversationId !== input.conversationId) return base;
+  const checkpoint = (await request({ type: 'loop.for-message', messageId: input.messageId })).loop;
+  if (!checkpoint?.context || checkpoint.companionId !== input.companionId || checkpoint.conversationId !== input.conversationId
+    || checkpoint.messageId !== input.messageId) return base;
+  let data: SavedContext;
+  try { data = JSON.parse(checkpoint.context.user) as SavedContext; } catch { return base; }
+  if (!data?.memoryRecall) return base;
+  const scope = { companionId: input.companionId, conversationId: input.conversationId,
+    beforeSequence: data.memoryRecall.context?.evidence?.beforeSequence ?? checkpoint.contextThroughSequence ?? undefined };
+  const source = (await request({ type: 'memory.sources.filter', ...scope, ids: [checkpoint.sourceMessageId] })).memorySources?.[0];
+  const withdrawn = (): CompanionReplyMemory => ({ ...base, state: 'withdrawn',
+    explanation: '这条回复引用的来源或记忆已经修改、撤回或不再获权。历史上下文已隐藏，不重新推测当时想起了什么。' });
+  if (!source) return withdrawn();
+  const context = data.memoryRecall.context;
+  const snapshot = (await request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
+  if (!snapshot) return withdrawn();
+  const valid = (notes: readonly CompanionMemory[], revision: string) => !context || (context.evidence
+    ? recallCorpusHash(notes.filter(note => Date.parse(note.createdAt) <= Date.parse(context.evidence!.capturedAt))) === context.evidence.corpusHash
+    : revision === context.revision);
+  if (!valid(snapshot.notes, snapshot.revision)) return withdrawn();
+  const original = [...new Map([...(data.memories ?? []), ...(data.memoryRecall.reasons ?? [])
+    .flatMap(item => item.version ? [{ id: item.id, version: item.version }] : [])].map(item => [item.id, item])).values()].slice(0, 12);
+  const current = new Map(snapshot.notes.filter(note => note.companionId === input.companionId).map(note => [note.id, note]));
+  const notes = original.flatMap(note => {
+    const found = current.get(note.id);
+    return found?.version === note.version ? [found] : [];
+  });
+  if (notes.length !== original.length) return withdrawn();
+  const sourceIds = [...new Set(notes.flatMap(note => note.sources.slice(0, 3).map(item => item.messageId)))];
+  const sources = sourceIds.length ? (await request({ type: 'memory.sources.filter', ...scope, ids: sourceIds })).memorySources ?? [] : [];
+  const sourcesById = new Map<string, CompanionMessage>(sources.map(item => [item.id, item]));
+  const verified = (await request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
+  if (!verified || !valid(verified.notes, verified.revision)) return withdrawn();
+  // The exact native text can contain topic-focused synthesis; top-K candidates
+  // are evidence candidates, not a fabricated list of what VCP finally injected.
+  const text = context?.text ?? '', start = Math.min(input.contextOffset, text.length), end = Math.min(start + input.contextLimit, text.length);
+  return { ...base, state: 'ready', observedAt: context?.evidence?.capturedAt ?? checkpoint.progress?.updatedAt ?? base.observedAt,
+    query: (data.memoryRecall.continuation?.query?.query ?? source.content).slice(0, 16000),
+    contextText: text.slice(start, end), contextCharacters: text.length, contextOffset: start,
+    ...(end < text.length ? { nextContextOffset: end } : {}), contextTruncated: start > 0 || end < text.length,
+    pending: data.memoryRecall.pending === true, degraded: data.memoryRecall.degraded === true,
+    candidates: notes.map(note => ({ id: note.id, version: note.version,
+      title: String(note.metadata?.title ?? note.content.split('\n').find(line => line.trim()) ?? note.diaryName ?? '记忆').slice(0, 160),
+      content: note.content.slice(0, 2000), contentTruncated: note.content.length > 2000, tags: note.tags.slice(0, 50), createdAt: note.createdAt,
+      sourceCount: note.sources.length, sources: note.sources.slice(0, 3).flatMap(ref => {
+        const item = sourcesById.get(ref.messageId);
+        return item ? [{ messageId: item.id, conversationId: item.conversationId, authorId: item.authorId,
+          createdAt: item.createdAt, excerpt: item.content.slice(0, 600) }] : [];
+      }) })),
+    explanation: text ? '这是本轮保存的 VCP 被动召回原文；候选记忆另列，不代表每条候选都被注入。'
+      : data.memoryRecall.degraded ? '本轮被动召回未能正常完成，没有注入 VCP 记忆正文。'
+        : '本轮没有注入相关的 VCP 记忆正文；近期会话消息与长期记忆召回是不同来源。',
+  };
+}

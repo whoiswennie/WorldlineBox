@@ -44,6 +44,25 @@ function normalizeNote(input) {
   // The JSON boundary also rejects cyclic metadata before any file mutation.
   return JSON.parse(JSON.stringify({ id, content, tags, occurredAt: input.occurredAt, author: input.author, diaryName: input.diaryName?.trim(), metadata: input.metadata }));
 }
+/** Copy upstream observables only. The host does not score, clamp, combine or reorder candidates. */
+function projectNativeScoreDetails(hit, result, rank) {
+  const details = { engine: hit.retrievalEngine === 'knn' ? 'knn' : 'river', rank };
+  for (const field of ['originalScore', 'vectorScore', 'baseScore', 'topologyBonus', 'anchorBonus', 'omega']) {
+    if (typeof hit[field] === 'number' && Number.isFinite(hit[field])) details[field] = hit[field];
+  }
+  if (typeof hit.score === 'number' && Number.isFinite(hit.score)) details.finalScore = hit.score;
+  if (Number.isSafeInteger(hit.rank) && hit.rank > 0) details.nativeRank = hit.rank;
+  for (const field of ['role', 'riverRegime']) if (typeof hit[field] === 'string' && hit[field].length <= 100) details[field] = hit[field];
+  for (const field of ['matchedTags', 'coreTagsMatched']) {
+    if (Array.isArray(hit[field])) details[field] = hit[field].filter(value => typeof value === 'string' && value.length <= 1024).slice(0, 50);
+  }
+  if (Array.isArray(hit.candidateSources)) details.candidateSources = hit.candidateSources
+    .map(value => typeof value === 'string' ? value : value?.source).filter(value => typeof value === 'string' && value.length <= 100).slice(0, 32);
+  if (typeof result.algorithmVersion === 'string' && result.algorithmVersion.length <= 100) details.algorithmVersion = result.algorithmVersion;
+  const mode = result.diagnostics?.queryProfile?.mode;
+  if (typeof mode === 'string' && mode.length <= 100) details.queryMode = mode;
+  return details;
+}
 async function atomicJson(file, value) {
   const temporary = `${file}.${randomUUID()}.tmp`;
   try { await fs.writeFile(temporary, JSON.stringify(value), 'utf8'); await fs.rename(temporary, file); }
@@ -407,10 +426,11 @@ class VcpMemoryRuntime {
     // queries. This is upstream geometry/graph computation, not a host algorithm.
     await this.ensureArtifacts();
     const result = await this.kb.withMemoObservationScope(() => this.kb.executeNativeRiverQuery(
-      { text, vector }, { diaryNames, topK, fallbackToLegacy: false }));
+      { text, vector }, { diaryNames, topK, fallbackToLegacy: false, includeTrace: true }));
     const seen = new Set();
     const results = [];
-    for (const hit of result.results || []) {
+    const traceHits = [];
+    for (const [index, hit] of (result.results || []).entries()) {
       const sourceFile = String(hit.fullPath || hit.sourceFile || '').replaceAll('\\', '/');
       const cached = this.records.get(this.fileIds.get(path.basename(sourceFile)));
       let record = cached ? normalizeNote(cached) : undefined;
@@ -418,10 +438,26 @@ class VcpMemoryRuntime {
       if (!record) record = { id: `vcp:${sourceFile}`, content: String(hit.text || ''), tags: hit.matchedTags || [], metadata: { vcpDiaryName: hit.diaryName } };
       if (seen.has(record.id)) continue;
       seen.add(record.id);
-      results.push({ ...record, score: Number(hit.score) || 0, sourceFile,
-        engine: hit.retrievalEngine === 'knn' ? 'knn' : 'river' });
+      const scoreDetails = projectNativeScoreDetails(hit, result, index + 1);
+      results.push({ ...record, ...(scoreDetails.finalScore !== undefined ? { score: scoreDetails.finalScore } : {}), sourceFile,
+        engine: scoreDetails.engine, scoreDetails });
+      const anchor = {};
+      for (const key of ['contactedSeeds', 'exactContacts', 'semanticContacts', 'anchorReliability', 'meanClosure']) {
+        const value = hit.topologyV3?.[key]; if (typeof value === 'number' && Number.isFinite(value)) anchor[key] = value;
+      }
+      traceHits.push({ id: record.id, rank: scoreDetails.nativeRank || scoreDetails.rank,
+        ...(cached ? { sourcePath: this.paths(record.id).note } : {}),
+        ...(typeof hit.text === 'string' ? { text: hit.text.slice(0, 300) } : {}), matchedTags: scoreDetails.matchedTags || [], coreTagsMatched: scoreDetails.coreTagsMatched || [],
+        ...(Object.keys(anchor).length ? { anchor } : {}) });
     }
-    return { results, diagnostics: result.diagnostics || {}, degraded: result.diagnostics?.degraded === true };
+    const counts = {}, diagnostics = result.diagnostics || {}, native = diagnostics.nativeTopologyV3 || {};
+    for (const key of ['offeredCandidates', 'projectedCandidates', 'selectedCandidates', 'rankedCandidates', 'returnedCandidates', 'artifactNodes', 'artifactEdges']) {
+      if (Number.isSafeInteger(native[key]) && native[key] >= 0) counts[key] = native[key];
+    }
+    const tags = values => Array.isArray(values) ? values.filter(value => typeof value === 'string' && value.length <= 1024).slice(0, 50) : [];
+    return { results, diagnostics, degraded: diagnostics.degraded === true,
+      retrieval: { embeddingDimension: vector.length, diaryCount: diaryNames.length, matchedTags: tags(result.queryTags?.matchedTags),
+        coreTagsMatched: tags(result.queryTags?.coreTagsMatched), counts, hits: traceHits } };
   }
   async queryEmbedding(text) {
     const vectors = await this.getEmbeddingsBatch([text], { ...this.embedding, apiUrl: this.embedding.queryApiUrl || this.embedding.apiUrl });
@@ -465,4 +501,4 @@ class VcpMemoryRuntime {
   }
 }
 
-module.exports = { VcpMemoryRuntime, embeddingConfiguration, normalizeNote, notebookFolder, unlinkRuntimeDependency, removeOwnedDirectory };
+module.exports = { VcpMemoryRuntime, embeddingConfiguration, normalizeNote, projectNativeScoreDetails, notebookFolder, unlinkRuntimeDependency, removeOwnedDirectory };

@@ -66,7 +66,7 @@ export class CompanionSocialStore {
     // Register authoritative peer rooms and reconstruct only their derived search/calendar index.
     for (const existing of this.db.prepare("SELECT c.id FROM conversations c JOIN metadata d ON d.key='world-room/'||c.id WHERE c.dissolved_at IS NULL AND (SELECT COUNT(*) FROM conversation_members x WHERE x.conversation_id=c.id)>=2").all() as Row[]) {
       const members = this.members(String(existing.id));
-      if (!members.every(id => this.active(id))) continue;
+      if (!members.every(id => this.exists(id))) continue;
       this.db.prepare('INSERT OR IGNORE INTO companion_social_conversations(id,member_key) VALUES(?,?)').run(existing.id, members.join('|'));
     }
     this.db.transaction(() => { this.db.prepare('DELETE FROM companion_social_room_search').run(); for (const value of this.db.prepare('SELECT c.id,c.title FROM companion_social_conversations s JOIN conversations c ON c.id=s.id').all() as Row[]) this.db.prepare('INSERT INTO companion_social_room_search(id,title) VALUES(?,?)').run(value.id, companionSearchTokens(String(value.title))); }).immediate();
@@ -83,18 +83,35 @@ export class CompanionSocialStore {
     }
     initializeSocialFlowIndex(this.db);
   }
-  private active(id: string): boolean { return !!this.db.prepare("SELECT 1 FROM companions c WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=c.id AND r.status!='completed')").get(id); }
+  private exists(id: string): boolean { return !!this.db.prepare("SELECT 1 FROM companions c WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=c.id AND r.status!='completed')").get(id); }
+  private activated(id: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM companions c WHERE id=? AND deleted_at IS NULL AND json_extract(data,'$.active')=1 AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=c.id AND r.status!='completed')").get(id);
+  }
+  private participantsActivated(members: string[]): boolean { return members.every(id => this.activated(id)); }
+  /** Stop live work when a participant is manually deactivated; retain the real conversation history. */
+  stopInactive(id: string): void {
+    const rooms = (this.db.prepare('SELECT s.id FROM companion_social_conversations s JOIN conversation_members m ON m.conversation_id=s.id WHERE m.companion_id=?').all(id) as Row[]).map(value => String(value.id));
+    for (const conversationId of rooms) {
+      this.db.prepare("UPDATE companion_social_outbox SET status='cancelled' WHERE conversation_id=? AND status='pending'").run(conversationId);
+      for (const value of this.db.prepare("SELECT data FROM companion_social_jobs WHERE conversation_id=? AND status IN('pending','running','failed')").all(conversationId) as Row[]) {
+        const job = parse<StoredJob>(value.data); job.status = 'cancelled'; delete job.leaseToken; delete job.readSet; this.saveJob(job);
+        this.db.prepare("UPDATE companion_social_chains SET status='done' WHERE id=?").run(job.chainId);
+        if (job.urgent) this.options.endInterrupt?.(job.companionId, job.sourceMessageId);
+      }
+      this.db.prepare("DELETE FROM companion_social_communication WHERE json_extract(data,'$.conversationId')=?").run(conversationId);
+    }
+  }
   private members(id: string): string[] { return (this.db.prepare('SELECT companion_id FROM conversation_members WHERE conversation_id=? ORDER BY companion_id').all(id) as Row[]).map(value => String(value.companion_id)); }
   private requireRoom(id: string, owner?: string): string[] {
     const exists = this.db.prepare('SELECT 1 FROM companion_social_conversations s JOIN conversations c ON c.id=s.id WHERE s.id=? AND c.dissolved_at IS NULL').get(id);
     const members = this.members(id);
-    if (!exists || members.length < 2 || !members.every(member => this.active(member)) || owner && !members.includes(owner)) throw new Error('这不是当前伙伴之间的有效社交会话。');
+    if (!exists || members.length < 2 || !members.every(member => this.exists(member)) || owner && !members.includes(owner)) throw new Error('这不是当前伙伴之间的有效社交会话。');
     return members;
   }
   ensure(owner: string, ids: string[], title = ''): CompanionSocialConversation {
     return this.db.transaction(() => {
       const members = [...new Set(ids)].sort();
-      if (members.length < 2 || members.length !== ids.length || !members.includes(owner) || !members.every(id => this.active(id))) throw new Error('社交会话必须由至少两位真实伙伴组成。');
+      if (members.length < 2 || members.length !== ids.length || !members.includes(owner) || !members.every(id => this.exists(id))) throw new Error('社交会话必须由至少两位真实伙伴组成。');
       const key = members.join('|'), existing = this.db.prepare('SELECT id FROM companion_social_conversations WHERE member_key=?').get(key);
       if (existing) return this.conversation(String(row(existing).id));
       const baseId = (members.length === 2 ? 'world_pair_' : 'world_group_') + createHash('sha256').update(key).digest('hex').slice(0, 24);
@@ -145,7 +162,7 @@ export class CompanionSocialStore {
   }
   private filter(input: { companionId?: string; day?: string; month?: string; query?: string }, context: Calendar): { where: string[]; args: unknown[] } {
     const where = ['c.dissolved_at IS NULL', 'NOT EXISTS(SELECT 1 FROM conversation_members cm JOIN companions p ON p.id=cm.companion_id WHERE cm.conversation_id=c.id AND p.deleted_at IS NOT NULL)'], args: unknown[] = [];
-    if (input.companionId) { if (!this.active(input.companionId)) throw new Error('伙伴不存在。'); where.push('EXISTS(SELECT 1 FROM conversation_members cm WHERE cm.conversation_id=c.id AND cm.companion_id=?)'); args.push(input.companionId); }
+    if (input.companionId) { if (!this.exists(input.companionId)) throw new Error('伙伴不存在。'); where.push('EXISTS(SELECT 1 FROM conversation_members cm WHERE cm.conversation_id=c.id AND cm.companion_id=?)'); args.push(input.companionId); }
     if (input.day || input.month) { const [from, to] = this.range(input.day ?? input.month!, context.timeZone, !!input.month); where.push('s.virtual_at>=? AND s.virtual_at<?'); args.push(from, to); }
     if (input.query?.trim()) { where.push('(c.id IN(SELECT id FROM companion_social_room_search WHERE companion_social_room_search MATCH ?) OR s.sequence IN(SELECT rowid FROM companion_social_search WHERE companion_social_search MATCH ?))'); const match = companionSearchMatch(input.query); args.push(match, match); }
     return { where, args };
@@ -239,7 +256,7 @@ export class CompanionSocialStore {
     return { ...this.observationCalendar(), ...this.flowEvents([input.conversationId], members, input), visits: this.observedVisits(members) };
   }
   graph(owner: string, input: Extract<CompanionStorageCommand, { type: 'social.graph' }>): CompanionSocialGraph {
-    if (!this.active(owner)) throw new Error('伙伴不存在。');
+    if (!this.exists(owner)) throw new Error('伙伴不存在。');
     // SQL counts the entire ego network; only the requested bounded neighbourhood crosses IPC.
     const relation = `WITH focus AS(SELECT ? AS id), related AS(
       SELECT peer.companion_id AS id FROM focus,conversation_members own JOIN companion_social_conversations r ON r.id=own.conversation_id
@@ -338,8 +355,10 @@ export class CompanionSocialStore {
   send(input: Send): CompanionStorageResponse {
     const context = this.calendar();
     const result: CompanionStorageResponse = this.db.transaction(() => {
-      this.requireRoom(input.conversationId, input.companionId); const fingerprint = hash(input), existing = this.db.prepare('SELECT * FROM companion_social_outbox WHERE client_id=?').get(input.clientId);
-      if (existing) { const value = row(existing), pending = parse<PendingSend>(value.data); if (pending.fingerprint !== fingerprint) throw new Error('社交发送的重试标识已经被其他内容使用。'); if (value.status === 'cancelled') throw new Error('这次待发消息的来源已经撤回。'); const delivered = value.message_id ? this.wrap(String(value.message_id)) : this.deliver(pending, context); return { ok: true, ...(delivered ? { socialMessage: delivered } : { socialPending: true }) }; }
+      const members = this.requireRoom(input.conversationId, input.companionId); const fingerprint = hash(input), existing = this.db.prepare('SELECT * FROM companion_social_outbox WHERE client_id=?').get(input.clientId);
+      if (existing && row(existing).message_id) { const pending = parse<PendingSend>(row(existing).data); if (pending.fingerprint !== fingerprint) throw new Error('社交发送的重试标识已经被其他内容使用。'); return { ok: true, socialMessage: this.wrap(String(row(existing).message_id)) }; }
+      if (!this.participantsActivated(members)) throw new Error('发起联系前，所有参与伙伴都需要由玩家手动激活；休眠伙伴不会收到新消息。');
+      if (existing) { const value = row(existing), pending = parse<PendingSend>(value.data); if (pending.fingerprint !== fingerprint) throw new Error('社交发送的重试标识已经被其他内容使用。'); if (value.status === 'cancelled') throw new Error('参与伙伴已休眠或待发来源已修改、撤回，消息已取消，请重新发起。'); const delivered = this.deliver(pending, context); return { ok: true, ...(delivered ? { socialMessage: delivered } : { socialPending: true }) }; }
       if (input.urgent && this.db.prepare("SELECT 1 FROM companion_social_outbox WHERE companion_id=? AND json_extract(data,'$.urgent')=1 AND status IN('pending','sent') AND created_at>? LIMIT 1").get(input.companionId, iso(Date.now() - 120000))) throw new Error('刚刚已经发起紧急联系，请等待对方处理，不要重复打扰。');
       const sourceChecksums = this.sources(input), recipients = this.requireRoom(input.conversationId, input.companionId).filter(id => id !== input.companionId);
       const authorization = input.authorizationMessageId ? this.message(input.authorizationMessageId) : undefined;
@@ -358,8 +377,8 @@ export class CompanionSocialStore {
     return result;
   }
   private deliver(send: PendingSend, context: Calendar): CompanionSocialMessage | undefined {
-    if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(send.companionId)) return undefined;
     const members = this.requireRoom(send.conversationId, send.companionId), recipients = members.filter(id => id !== send.companionId), current = this.sources(send);
+    if (!this.participantsActivated(members)) { for (const id of members.filter(id => !this.activated(id))) this.stopInactive(id); return undefined; }
     if (current.sourceChecksum !== send.sourceChecksum || current.authorizationChecksum !== send.authorizationChecksum) throw new Error('待发送消息的来源已经修改。');
     if (send.originId && !this.continuity.validOrigin(send.originId)) throw new Error('这次社交委托已经失效。');
     if (send.channel === 'face_to_face' && !this.available(send.companionId, send.channel, recipients)) {
@@ -452,7 +471,7 @@ export class CompanionSocialStore {
       for (const owner of jobOwners) for (const value of this.candidates('companion_social_jobs', String(owner.companion_id), jobPredicate, [now])) {
         this.scanned('companion_social_jobs', String(owner.companion_id), Number(value.ordinal));
         const job = parse<StoredJob>(value.data);
-        if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(job.companionId)) continue;
+        if (!this.participantsActivated(job.memberIds)) { for (const id of job.memberIds.filter(id => !this.activated(id))) this.stopInactive(id); continue; }
         if (this.phoneBusy(job.companionId, 'job:' + job.id)) continue;
         if (this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(job.companionId, iso())) continue;
         try { this.requireRoom(job.conversationId, job.companionId); } catch { job.status = 'cancelled'; this.saveJob(job); continue; }
@@ -476,6 +495,7 @@ export class CompanionSocialStore {
     const context = this.calendar(); return this.db.transaction(() => {
       const existing = this.db.prepare('SELECT * FROM companion_social_jobs WHERE id=?').get(input.id); if (!existing) throw new Error('社交回复任务不存在。'); const job = parse<StoredJob>(row(existing).data);
       if (job.status !== 'running' || job.leaseToken !== input.leaseToken || Date.parse(String(row(existing).lease_until)) < Date.now()) throw new Error('这次社交回复的租约已经失效。');
+      if (!this.participantsActivated(job.memberIds)) { for (const id of job.memberIds.filter(id => !this.activated(id))) this.stopInactive(id); return { ok: true }; }
       if (input.expectedMemoryRevision && this.options.memoryRevision?.({ companionId: job.companionId, conversationId: job.conversationId, beforeSequence: job.throughSequence }) !== input.expectedMemoryRevision) throw new Error('社交回复引用的记忆已经变化，请重新回忆后再发言。');
       this.requireRoom(job.conversationId, job.companionId); if (!this.validRead(job) || !this.continuity.chainValid(job.chainId)) throw new Error('已观察的社交来源或原玩家委托已经撤回或修改，请重新读取。');
       if (job.channel === 'face_to_face' && !this.available(job.companionId, job.channel, job.memberIds.filter(id => id !== job.companionId))) { job.status = 'cancelled'; delete job.leaseToken; this.saveJob(job); this.clearFace(job.conversationId); return { ok: true }; }

@@ -48,12 +48,12 @@ function MemoryLibraryFolders({ folders, selected, onSelect }: { folders: Compan
   return <nav className="memory-library-folders" aria-label="记忆文档目录" ref={host} onScroll={event => { const top = event.currentTarget.scrollTop; setViewport(current => ({ ...current, top })); }}><div style={{ height: rows.length * size, position: 'relative' }}><div style={{ position: 'absolute', top: start * size, left: 0, right: 0 }}>{rows.slice(start, end).map(folder => <button key={folder.path} aria-current={selected === folder.path ? 'page' : undefined} onClick={() => onSelect(folder.path)} style={{ paddingLeft: 14 + Math.min(Math.max(0, folder.path.split('/').length - 1), 5) * 12 }}><Icon name={!folder.path ? 'layers' : folder.path === '时间线' ? 'clock' : folder.path === '自我认识' ? 'heart' : folder.path === '世界经历' ? 'globe' : 'folder'} /><span>{folderLabel(folder.path)}</span>{folder.count >= 0 && <small>{folder.count}</small>}</button>)}</div></div></nav>;
 }
 
-export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, request, draft, onDraftConsumed, onOwnerChange, onLocateSource, authorName, onClose, requestError, onDismissError, initialEditor, onEditorChange, onLearningSources, onMemoryTrace, active = true, processingRequest, onProcessingRequestConsumed, noteRequest, onNoteRequestConsumed }: {
+export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, request, draft, onDraftConsumed, onOwnerChange, onLocateSource, authorName, onClose, requestError, onDismissError, initialEditor, onEditorChange, onLearningSources, onMemoryTrace, onMemoryProbe, active = true, processingRequest, onProcessingRequestConsumed, noteRequest, onNoteRequestConsumed }: {
   companions: Companion[]; companionId: string; api?: WorldlineBoxCompanionsApi;
   request: (input: CompanionsRequest) => Promise<CompanionsResponse | undefined>;
   draft?: CompanionMemoryDraft; onDraftConsumed(): void; onOwnerChange(id: string): void;
   onLocateSource(message: CompanionMessage): void; authorName(id: string): string; onClose(): void;
-  requestError?: string; onDismissError(): void; onLearningSources?(): void; onMemoryTrace?(): void;
+  requestError?: string; onDismissError(): void; onLearningSources?(): void; onMemoryTrace?(): void; onMemoryProbe?(query?: string): void;
   initialEditor?: CompanionMemoryDocumentDraft; onEditorChange?(owner: string, editor?: CompanionMemoryDocumentDraft): void;
   active?: boolean; processingRequest?: number; onProcessingRequestConsumed?(): void;
   noteRequest?: { noteId: string; nonce: number }; onNoteRequestConsumed?(): void;
@@ -61,7 +61,6 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
   const owner = companions.find(item => item.id === companionId);
   const [page, setPage] = useState<CompanionMemoryDocumentsPage>();
   const [directory, setDirectory] = useState(''), [query, setQuery] = useState(''), [tag, setTag] = useState('');
-  const [searchMode, setSearchMode] = useState<'keyword' | 'semantic'>('keyword');
   const [sort, setSort] = useState<'updated_desc' | 'created_desc' | 'created_asc'>('updated_desc');
   const [filters, setFilters] = useState(false), [dateField, setDateField] = useState<'createdAt' | 'updatedAt'>('updatedAt');
   const [fromDate, setFromDate] = useState(''), [toDate, setToDate] = useState('');
@@ -96,7 +95,7 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
     if (fromDate && toDate && fromDate > toDate) { setError('开始日期不能晚于结束日期。'); setLoading(false); return; }
     const result = await call({ type: 'memory.documents.list', companionId, directory, limit: 64, ...(sort !== 'updated_desc' ? { sort } : {}),
       ...(fromDate || toDate ? { dateField, ...(fromDate ? { from: memoryFilterDate(fromDate, false) } : {}), ...(toDate ? { to: memoryFilterDate(toDate, true) } : {}) } : {}),
-      ...(query.trim() ? { query: query.trim(), mode: searchMode } : {}), ...(parseTags(tag).length ? { tags: parseTags(tag) } : {}), ...(pageCursor ? { cursor: pageCursor } : {}) }, false);
+      ...(query.trim() ? { query: query.trim(), mode: 'keyword' } : {}), ...(parseTags(tag).length ? { tags: parseTags(tag) } : {}), ...(pageCursor ? { cursor: pageCursor } : {}) }, false);
     if (!alive.current || epoch !== listEpoch.current) return;
     setLoading(false);
     if (result?.documents) {
@@ -104,7 +103,7 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
       setSelectedPath(current => current && (preserveSelection || result.documents!.items.some(item => item.path === current)) ? current : result.documents!.items.find(item => item.category === 'diary')?.path ?? result.documents!.items.find(item => item.kind === 'note')?.path ?? result.documents!.items[0]?.path);
       return result.documents;
     } else { setPage(undefined); setError(result?.error || '文档列表暂时无法读取。'); }
-  }, [call, companionId, directory, cursor, query, tag, searchMode, sort, dateField, fromDate, toDate]);
+  }, [call, companionId, directory, cursor, query, tag, sort, dateField, fromDate, toDate]);
   const readDocument = useCallback(async (path: string, sourceCursor?: number) => {
     const epoch = ++readEpoch.current; setReading(true);
     const result = await call({ type: 'memory.documents.read', companionId, path, sourceLimit: 30, ...(sourceCursor === undefined ? {} : { sourceCursor }) }, false);
@@ -120,7 +119,7 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { onEditorChange?.(companionId, editor); }, [companionId, editor, onEditorChange]);
   useEffect(() => { if (!active) return; const timer = setTimeout(() => { if (alive.current) void load(); }, 240); return () => clearTimeout(timer); }, [load, active]);
-  useEffect(() => { if (fileScroll.current) fileScroll.current.scrollTop = 0; }, [cursor, query, tag, directory, searchMode, sort, dateField, fromDate, toDate]);
+  useEffect(() => { if (fileScroll.current) fileScroll.current.scrollTop = 0; }, [cursor, query, tag, directory, sort, dateField, fromDate, toDate]);
   useEffect(() => { if (paperScroll.current) paperScroll.current.scrollTop = 0; }, [selectedPath]);
   useEffect(() => {
     if (!active || page?.index?.state !== 'building' || editor) return;
@@ -261,13 +260,14 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
     <div className="memory-library-body">
       <aside className="memory-library-sidebar" aria-label="伙伴与日记本"><label className="memory-library-owner"><Avatar companion={owner} showPresence={false} /><span><small>正在管理</small><select aria-label="记忆所属伙伴" value={companionId} onChange={event => { const id = event.target.value; onOwnerChange(id); }}>{companions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></span></label><div className="memory-library-sidebar-heading"><span>日记本</span><button className="memory-library-icon" aria-label="新建记忆文件夹" title="新建文件夹" onClick={() => navigate(() => { setOperation({ kind: 'mkdir', value: directory ? directory + '/新文件夹' : '新文件夹' }); setMobile('document'); })}><Icon name="plus" /></button></div>
         <MemoryLibraryFolders folders={folders} selected={directory} onSelect={selectFolder} />
-        <div className="memory-library-sidebar-footer"><span><i className={processing?.failed ? 'has-error' : working ? 'is-working' : ''} />{processing?.failed ? '有收录需要处理' : working ? '记忆正在更新' : '持续生活，持续记录'}</span>{active && <CompanionMemoryProcessingSummary companionId={companionId} companionName={owner?.name} api={api} request={request} onOpen={() => navigate(() => setShowProcessing(true))} />}{onMemoryTrace && <button className="memory-library-quiet" onClick={() => navigate(onMemoryTrace)}><Icon name="layers" />成长足迹</button>}<button className="memory-library-quiet" onClick={() => { setMaintenance(value => !value); setMobile('document'); }}><Icon name="sliders" />收录与记录规则</button></div>
+        <div className="memory-library-sidebar-footer"><span><i className={processing?.failed ? 'has-error' : working ? 'is-working' : ''} />{processing?.failed ? '有收录需要处理' : working ? '记忆正在更新' : '持续生活，持续记录'}</span>{active && <CompanionMemoryProcessingSummary companionId={companionId} companionName={owner?.name} api={api} request={request} onOpen={() => navigate(() => setShowProcessing(true))} />}{onMemoryProbe && <button className="memory-library-quiet" onClick={() => navigate(onMemoryProbe)}><Icon name="search" />回忆</button>}{onMemoryTrace && <button className="memory-library-quiet" onClick={() => navigate(onMemoryTrace)}><Icon name="layers" />成长足迹</button>}<button className="memory-library-quiet" onClick={() => { setMaintenance(value => !value); setMobile('document'); }}><Icon name="sliders" />收录与记录规则</button></div>
       </aside>
-      <section className="memory-library-files" aria-label="记忆文件列表"><header><div><h3>{folderLabel(directory)}</h3><span>{page?.index?.state === 'building' ? '已找到 ' : ''}{page?.total ?? items.length}{page?.total === undefined && page?.hasMore ? '+' : ''} 篇</span></div><button className="memory-library-icon" aria-label="新建记忆文档" title="新建文档" onClick={() => create()}><Icon name="plus" /></button></header><label className="memory-library-search"><Icon name="search" /><input type="search" aria-label="搜索全部记忆文档" maxLength={1000} placeholder={searchMode === 'semantic' ? '描述想找的经历或想法' : '搜索全文、标题或文件名'} value={query} onChange={event => { resetSearch(); setQuery(event.target.value); }} /></label><div className="memory-library-search-options">
-          <select aria-label="记忆文档搜索方式" value={searchMode} onChange={event => { resetSearch(); setSearchMode(event.target.value as 'keyword' | 'semantic'); }}><option value="keyword">关键词</option><option value="semantic">语义搜索</option></select>
-          <select aria-label="记忆文档排序" value={sort} disabled={searchMode === 'semantic' && !!query.trim()} onChange={event => { resetSearch(); setSort(event.target.value as typeof sort); }}><option value="updated_desc">最近修改</option><option value="created_desc">最近创建</option><option value="created_asc">最早创建</option></select>
+      <section className="memory-library-files" aria-label="记忆文件列表"><header><div><h3>{folderLabel(directory)}</h3><span>{page?.index?.state === 'building' ? '已找到 ' : ''}{page?.total ?? items.length}{page?.total === undefined && page?.hasMore ? '+' : ''} 篇</span></div><button className="memory-library-icon" aria-label="新建记忆文档" title="新建文档" onClick={() => create()}><Icon name="plus" /></button></header><label className="memory-library-search"><Icon name="search" /><input type="search" aria-label="搜索全部记忆文档" maxLength={1000} placeholder="搜索全文、标题或文件名" value={query} onChange={event => { resetSearch(); setQuery(event.target.value); }} /></label><div className="memory-library-search-options">
+          <select aria-label="记忆文档搜索方式" value="keyword" onChange={event => { if (event.target.value === 'recall' && onMemoryProbe) navigate(() => onMemoryProbe(query)); }}><option value="keyword">文档全文</option>{onMemoryProbe && <option value="recall">伙伴回忆</option>}</select>
+          <select aria-label="记忆文档排序" value={sort} onChange={event => { resetSearch(); setSort(event.target.value as typeof sort); }}><option value="updated_desc">最近修改</option><option value="created_desc">最近创建</option><option value="created_asc">最早创建</option></select>
           <button className={'memory-library-filter-toggle' + (filters || tag || fromDate || toDate ? ' is-active' : '')} aria-label="高级筛选记忆文档" aria-expanded={filters} onClick={() => setFilters(value => !value)}><Icon name="sliders" /></button>
         </div>
+        {onMemoryProbe && <button className="memory-library-vcp-entry" type="button" onClick={() => navigate(() => onMemoryProbe(query))}><Icon name="sparkles" size={13} />用 VCP 回忆<Icon name="chevron-right" size={12} /></button>}
         <div className="memory-library-advanced-filters" hidden={!filters}>
           <label>标签<input aria-label="按标签筛选记忆文档" placeholder="多个标签用逗号分隔" value={tag} onChange={event => { resetSearch(); setTag(event.target.value); }} /></label>
           <label>时间范围<select aria-label="记忆筛选时间类型" value={dateField} onChange={event => { resetSearch(); setDateField(event.target.value as typeof dateField); }}><option value="updatedAt">修改时间</option><option value="createdAt">创建时间</option></select></label>

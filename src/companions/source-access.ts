@@ -7,8 +7,6 @@ export type CompanionSourceScope = {
     companionId: string;
     conversationId: string;
     beforeSequence?: number;
-    /** Internal recursion flag; never a model/tool argument. */
-    excludePlayerSources?: boolean;
 };
 type Row = Record<string, string | number | null>;
 const row = (value: unknown) => value as Row;
@@ -39,6 +37,13 @@ export class CompanionSourceAccess {
         if (!conversation || !this.db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(scope.conversationId, scope.companionId))
             throw new Error('伙伴不是聊天成员。');
         return row(conversation);
+    }
+    /** Existing host-owned entrance, never opens or creates a conversation. */
+    ownerScope(companionId: string): CompanionSourceScope {
+        const found = this.db.prepare(`SELECT c.id FROM conversations c JOIN conversation_members m ON m.conversation_id=c.id
+          WHERE m.companion_id=? ORDER BY CASE WHEN c.id=? THEN 0 WHEN c.kind='private' THEN 1 ELSE 2 END,c.rowid LIMIT 1`)
+            .get(companionId, 'world_' + companionId);
+        return { companionId, conversationId: found ? String(row(found).id) : 'world_' + companionId };
     }
     observe(messageId: string, companionId: string): void {
         this.db.prepare('INSERT OR IGNORE INTO vcp_source_observers(message_id,companion_id) VALUES(?,?)').run(messageId, companionId);
@@ -111,7 +116,14 @@ export class CompanionSourceAccess {
         });
     }
     prohibitions(scope: CompanionSourceScope): Array<z.infer<typeof companionMemoryProhibitionSchema>> {
-        this.requireScope(scope);
+        try { this.requireScope(scope); }
+        catch (error) {
+            // A departed room still identifies the policies of this owner's
+            // actually captured sources. Public callers validate their current
+            // entrance before requesting this internal provenance lookup.
+            this.requireScope(this.ownerScope(scope.companionId));
+            if (!this.db.prepare('SELECT 1 FROM vcp_memory_scopes WHERE companion_id=? AND conversation_id=?').get(scope.companionId, scope.conversationId)) throw error;
+        }
         return this.db.prepare("SELECT id,tag,conversation_id,through_sequence,persistent FROM vcp_source_prohibitions WHERE companion_id=? AND conversation_id IN(?,'*') ORDER BY id").all(scope.companionId, scope.conversationId)
             .map(value => {
                 const rule = row(value);
@@ -165,9 +177,8 @@ export class CompanionSourceAccess {
         return false;
     }
     visible(scope: CompanionSourceScope, source: Row, visited = new Set<string>()): boolean {
-        const conversation = this.requireScope(scope), id = String(source.id);
-        const peerContext = scope.excludePlayerSources || this.worldScope(scope.conversationId);
-        if (peerContext && !this.worldScope(String(source.conversation_id))) return false;
+        this.requireScope(scope);
+        const id = String(source.id);
         if (visited.has(id))
             return false;
         visited.add(id);
@@ -184,12 +195,11 @@ export class CompanionSourceAccess {
             }>;
         }>(row(observationRow).value) : undefined;
         if (observation?.assetRead && !this.db.prepare("SELECT 1 FROM companion_learning_reads r JOIN companion_learning_grants g ON g.id=r.grant_id WHERE r.id=? AND r.source_message_id=? AND r.companion_id=? AND r.status='read' AND g.enabled=1").get(observation.assetRead, id, scope.companionId)) return false;
-        if (peerContext && observation && !this.worldScope(observation.forConversationId)) return false;
-        if (observation && (observation.companionId !== scope.companionId || conversation.kind === 'group' && observation.forConversationId !== scope.conversationId && source.conversation_id !== scope.conversationId
+        if (observation && (observation.companionId !== scope.companionId
             || observation.sources.some(reference => {
                 const original = this.db.prepare('SELECT * FROM messages WHERE id=?').get(reference.id);
                 return !original || companionSourceChecksum(String(row(original).content)) !== reference.checksum
-                    || !this.visible({ ...scope, conversationId: reference.conversationId, excludePlayerSources: peerContext }, row(original), new Set(visited));
+                    || !this.visible(scope, row(original), new Set(visited));
             })))
             return false;
         const currentObservation = !!observation && observation.forConversationId === scope.conversationId
@@ -208,8 +218,9 @@ export class CompanionSourceAccess {
         const publication = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + id);
         if (scope.beforeSequence !== undefined && publication && scope.beforeSequence <= Number(row(publication).value))
             return false;
-        if (!currentObservation && conversation.kind === 'group' && source.conversation_id !== scope.conversationId)
-            return false;
+        // Conversation is an interaction entrance, not a second identity. The
+        // persisted observer is the proof this owner actually witnessed a source;
+        // joining a room later must never make its old messages knowable.
         if (!this.db.prepare('SELECT 1 FROM vcp_source_observers WHERE message_id=? AND companion_id=?').get(id, scope.companionId))
             return false;
         return this.formal(source) && !this.forgotten(scope, source);

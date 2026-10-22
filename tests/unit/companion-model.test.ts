@@ -44,6 +44,17 @@ it.each(['', '这是我获取的所有相关知识/记忆[[未找到相关记忆
   expect(JSON.stringify(payload)).not.toContain('PRIVATE_UNRELATED_CANDIDATE');
   expect(payload.memoryRecall.context.text).toBe(text);
 });
+it('keeps dated and first-person source wording as evidence rather than assigning it to the current speaker', () => {
+  const text = '2026年8月1日，玩家原话：“我梦见纸船”。同日记录：“当前南门维修”。';
+  const context = buildCompanionContext({ ...input, memories: [], memoryRecall: { reasons: [], pending: false, degraded: false,
+    context: { text, revision: 'dated', profileKey: 'local-gemma' } } });
+  const payload = JSON.parse(context.user);
+  expect(payload.memoryRecall.context.text).toBe(text);
+  expect(payload.identity.self.id).toBe('sister');
+  expect(context.system).toContain('旧记录中的维修、天气、位置、权限或约定不能仅因被召回就改写成此刻仍有效');
+  expect(context.system).toContain('引用和转述按实际来源作者归因');
+  expect(context.system).toContain('没有足够身份依据时用“这段记录”');
+});
 it.each(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native'] as const)('retains original VCP plain-text output across %s without forcing JSON mode', async apiFormat => {
   const envelope = (text: string) => apiFormat === 'openai_responses' ? { output: [{ type: 'message', content: [{ type: 'output_text', text }] }] }
     : apiFormat === 'anthropic' ? { content: [{ type: 'text', text }] }
@@ -90,7 +101,7 @@ describe('persistent companion model context', () => {
     expect(context.user).toContain('用户喜欢海洋');
     expect(context.user).not.toContain('PRIVATE SISTER SECRET');
   });
-  it('isolates group history, speakers and memory provenance from private conversations', () => {
+  it('keeps group dialogue local while recalling the same character memories across entrances', () => {
     const context = buildCompanionContext({ ...input,
       conversation: { ...input.conversation, id: 'group', kind: 'group', memberIds: ['sister', 'flash'] },
       messages: [message('private_message', 1, 'PRIVATE HISTORY'),
@@ -100,13 +111,15 @@ describe('persistent companion model context', () => {
         memory('manual', 'sister', 'PRIVATE MANUAL MEMORY'), memory('public', 'sister', '公开群约定', 'group_user', 'group'),
         memory('other', 'flash', 'OTHER PERSONA MEMORY', 'group_user', 'group')],
     });
-    expect(context.user).not.toContain('PRIVATE');
+    expect(context.user).not.toContain('PRIVATE HISTORY');
+    expect(context.user).toContain('PRIVATE MEMORY');
+    expect(context.user).toContain('PRIVATE MANUAL MEMORY');
     expect(context.user).not.toContain('OTHER PERSONA');
     expect(context.user).toContain('公开群约定');
     expect(JSON.parse(context.user).messages).toMatchObject([{ speaker: 'user' }, { speaker: 'other_companion', authorId: 'flash' }]);
     expect(context.system).toContain('你只写自己的下一条消息');
   });
-  it('recalls old memories of the current group while excluding private and other-group provenance', () => {
+  it('recalls its own source-verified memory across group and private entrances', () => {
     const context = buildCompanionContext({ ...input,
       conversation: { ...input.conversation, id: 'group', kind: 'group', memberIds: ['sister', 'flash'] },
       messages: [message('new_group_message', 90, '接着聊之前的约定', { conversationId: 'group' })],
@@ -117,9 +130,9 @@ describe('persistent companion model context', () => {
         memory('legacy_unknown', 'sister', 'LEGACY UNKNOWN SECRET', 'long_ago')],
     });
     expect(context.user).toContain('这个群约定周末讨论旅行');
-    expect(context.user).not.toContain('PRIVATE');
-    expect(context.user).not.toContain('OTHER GROUP SECRET');
-    expect(context.user).not.toContain('LEGACY UNKNOWN SECRET');
+    expect(context.user).toContain('PRIVATE OLD MEMORY');
+    expect(context.user).toContain('OTHER GROUP SECRET');
+    expect(context.user).toContain('LEGACY UNKNOWN SECRET');
     expect(context.system).toContain('合理选择不发言');
   });
   it('preserves all text in the recent message-count window and every relevant memory without a character quota', () => {

@@ -1,5 +1,7 @@
 import path from 'node:path';
 import type { CompanionReplyProgress } from '../../shared/companion-reply-progress';
+import { inspectCompanionReplyMemory } from './reply-memory-inspection';
+import { probeCompanionMemory } from './memory-probe';
 import { existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
@@ -179,6 +181,7 @@ export class CompanionService {
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), report: options.report, busy: () => [...this.activities.values()].some(activity => activity.status === 'thinking') });
     this.world = new CompanionWorldService({ request: command => this.call(command), configFor: companion => this.configFor(companion),
+      recall: input => this.memory.recall(input),
       profiles: input => this.profiles.prepare(input),
       memoryContextValid: (scope, context) => this.memory.contextValid(scope, context),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
@@ -393,6 +396,11 @@ export class CompanionService {
     await this.initialization;
     if (this.closed) throw new Error('伙伴服务正在关闭。');
     switch (request.type) {
+      case 'reply.memory.inspect': return { ok: true, replyMemory: await inspectCompanionReplyMemory(request, command => this.call(command)) };
+      case 'memory.recall.state': return { ok: true, memoryCorpusStamp: (await this.call({ type: 'memory.corpus.stamp', companionId: request.companionId })).memoryCorpusStamp };
+      case 'memory.recall.test': return { ok: true, memoryProbe: await probeCompanionMemory(request, {
+        request: command => this.call(command), search: (query, mode) => this.memory.search(query, mode),
+      }) };
       case 'activity.cancel': {
         const result = await this.call(request); this.activityTasks.cancel(request.id); this.changed(); return result;
       }
@@ -1050,7 +1058,7 @@ export class CompanionService {
           referencedMessage: reference?.conversationId === conversationId ? reference : undefined, config, signal: controller.signal });
         const memories = recalled.memories;
         updateActivity('thinking', recalled.degraded ? '被动记忆召回暂不可用，正在准备对话上下文' : '被动记忆召回已完成，正在准备对话上下文', 'context',
-          { status: recalled.degraded ? 'unavailable' : 'completed', count: memories.length, injected: !!recalled.context?.text });
+          { status: recalled.degraded ? 'unavailable' : 'completed', count: memories.length, injected: !!recalled.context?.text, pending: recalled.pending });
         let step = checkpoint.turns.length ? checkpoint.turns.length - 1 : 0;
         if (!checkpoint.context) {
           checkpoint.context = buildCompanionContext({ companion, conversation, messages: replyMessages, memories,
@@ -1331,8 +1339,8 @@ export class CompanionService {
     const scope = { companionId, conversationId, beforeSequence: await this.memoryBoundary(checkpoint, sourceSequence) };
     const data = JSON.parse(checkpoint.context.user) as {
       messages?: Array<{ id: string }>; memories?: Array<{ id: string; status?: string; sources?: Array<{ messageId: string }> }>;
-      memorySources?: Array<{ id: string }>; memoryRecall?: { reasons?: Array<{ id: string }>; continuation?: { query?: { query?: string } };
-        context?: { text: string; revision: string; profileKey: string }; pending?: boolean; degraded?: boolean };
+      memorySources?: Array<{ id: string }>; memoryRecall?: { reasons?: Array<{ id: string; version?: number; reasons?: string[]; path?: string[] }>; continuation?: { query?: { query?: string } };
+        context?: { text: string; revision: string; profileKey: string; evidence?: { capturedAt: string; corpusHash: string } }; pending?: boolean; degraded?: boolean };
       taskRequest?: { sourceMessageId: string; prompt: string; replyReference?: { id: string; content: string } };
       earlierConversationSummary?: string;
       memoryOperations?: Array<{ name: string; ok: boolean; forgottenCount?: number }>;
@@ -1356,17 +1364,19 @@ export class CompanionService {
       const checked = await this.call({ type: 'memory.sources.filter', ...scope, ids: sourceIds.slice(start, start + 100) });
       for (const message of checked.memorySources ?? []) allowedSources.add(message.id);
     }
-    const records = await this.call({ type: 'memory.records.filter', ...scope, ids: (data.memories ?? []).map(memory => memory.id) });
+    const records = await this.call({ type: 'memory.records.filter', ...scope,
+      ids: [...new Set([...(data.memories ?? []).map(memory => memory.id), ...(data.memoryRecall?.reasons ?? []).map(reason => reason.id)])].slice(0, 100) });
     const allowedRecords = new Set((records.memories ?? []).map(memory => memory.id));
     const lostSource = sourceIds.some(id => !allowedSources.has(id));
     data.messages = data.messages?.filter(message => allowedSources.has(message.id));
     data.memorySources = data.memorySources?.filter(message => allowedSources.has(message.id));
-    data.memories = records.memories ?? [];
+    data.memories = data.memoryRecall?.context ? [] : records.memories ?? [];
     if (data.taskRequest?.replyReference && !allowedSources.has(data.taskRequest.replyReference.id)) delete data.taskRequest.replyReference;
     if (data.taskRequest && !allowedSources.has(data.taskRequest.sourceMessageId)) {
       data.taskRequest.prompt = '本次来源内容已依据遗忘规则撤回。仅根据仍有效的工具状态作出说明，不继续执行撤回资料中的历史任务。';
     }
-    if (data.memoryRecall?.reasons) data.memoryRecall.reasons = data.memoryRecall.reasons.filter(reason => allowedRecords.has(reason.id));
+    if (data.memoryRecall?.reasons) data.memoryRecall.reasons = data.memoryRecall.reasons.filter(reason => allowedRecords.has(reason.id)
+      && (!reason.version || records.memories?.some(note => note.id === reason.id && note.version === reason.version)));
     // A resumed loop must not replay memory evidence withdrawn since its checkpoint was written.
     const completedForget = currentTurns.some(turn => turn.calls.some(call => call.name === 'memory.forget'
       && turn.results?.some(result => result.callId === call.id && (JSON.parse(result.content) as { ok?: boolean }).ok === true)));
@@ -1379,7 +1389,10 @@ export class CompanionService {
       if (query && data.memoryRecall) {
         const fresh = await this.memory.search({ ...scope, query, limit: 12 }, 'passive').catch(() => undefined);
         data.memoryRecall.context = fresh?.memoryContext;
-        if (fresh?.memoryPage) data.memories = fresh.memoryPage.items.map(hit => hit.memory);
+        if (fresh?.memoryPage) {
+          data.memories = fresh.memoryContext ? [] : fresh.memoryPage.items.map(hit => hit.memory);
+          data.memoryRecall.reasons = fresh.memoryPage.items.map(hit => ({ id: hit.memory.id, version: hit.memory.version, reasons: hit.reasons, path: hit.path }));
+        } else data.memoryRecall.reasons = [];
       }
       if (data.memoryRecall) delete data.memoryRecall.continuation;
       data.earlierConversationSummary = '';
@@ -1498,6 +1511,7 @@ export class CompanionService {
           const owner = state?.companions.find(member => member.id === scope.companionId);
           const recipients = state?.companions.filter(member => recipientIds.includes(member.id)).map(member => ({ id: member.id, name: member.name })) ?? [];
           if (!source || !owner || new Set(recipientIds).size !== recipientIds.length || recipients.length !== recipientIds.length || recipientIds.includes(owner.id)) throw new Error('本次联系的来源或收件人无效。');
+          if (!owner.active || recipientIds.some(id => !state?.companions.find(member => member.id === id)?.active)) throw new Error('联系双方都需要先由玩家手动激活；不能向休眠伙伴发起聊天，也不会自动唤醒对方。');
           const contact = await authorizeCompanionContact({ source, recipients, text: args.text }, await this.configFor(owner), signal,
             { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
           if (!contact.allowed) throw new Error('拟发内容或收件人超出了本次联系目标。请收敛为你自己的必要问候或邀约并自行重试，不转发玩家私人信息；无需玩家改口或提供消息模板。');

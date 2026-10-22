@@ -86,13 +86,13 @@ describe('source-based VCP sleep reflection', () => {
     await expect(generateCompanionMemoryDream({ ...input, relevantMemories: [revoked] }, config, undefined,
       { fetchFn: fetchFor({ notes: [], dream }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
-  it('does not read another companion’s journal or a different group’s sources during group sleep', async () => {
+  it('keeps new group sources local while retaining only the sleepers own retrieved background', async () => {
     const fetchFn = fetchFor({ notes: [], dream: null });
     await generateCompanionMemoryDream({ ...input, conversation: { ...input.conversation, id: 'group_current', kind: 'group' },
       messages: [source, { ...source, id: 'other_group_source', conversationId: 'group_other' }],
       relevantMemories: [journal, { ...journal, id: 'other_companion', companionId: 'other', sourceConversationId: 'group_current' }] },
     config, undefined, { fetchFn });
-    expect(request(fetchFn).payload.messages).toEqual([]); expect(request(fetchFn).payload.relevantMemories).toEqual([]);
+    expect(request(fetchFn).payload.messages).toEqual([]); expect(request(fetchFn).payload.relevantMemories).toEqual([journal]);
   });
   it.each<Partial<CompanionMessage>>([{ status: 'failed' }, { isReplyDraft: true },
     { replyDraft: { step: 0, attemptId: 'attempt', text: 'unfinished dream evidence' } }])(

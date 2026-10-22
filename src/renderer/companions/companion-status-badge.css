@@ -1,0 +1,31 @@
+.companion-status-badge {
+  --presence-ink: #237554;
+  --presence-dot: #3d9a75;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--presence-dot) 13%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--presence-dot) 8%, transparent);
+  color: var(--presence-ink);
+  font-size: 10px;
+  font-weight: 450;
+  line-height: 1.5;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.companion-status-badge > i { display: block; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--presence-dot); }
+.companion-status-badge[data-status="working"] { --presence-ink: #3a63b5; --presence-dot: #628de0; }
+.companion-status-badge[data-status="waiting"] { --presence-ink: #91621d; --presence-dot: #c39343; }
+.companion-status-badge[data-status="dormant"] { --presence-ink: #727784; --presence-dot: #9298a5; }
+.companion-status-badge[data-status="offline"] { --presence-ink: #ac4656; --presence-dot: #d16c7a; }
+:root[data-theme="dark"] .companion-status-badge {
+  --presence-ink: #88cdb1;
+  --presence-dot: #79bc9d;
+}
+:root[data-theme="dark"] .companion-status-badge[data-status="working"] { --presence-ink: #9db8ee; --presence-dot: #87a8e8; }
+:root[data-theme="dark"] .companion-status-badge[data-status="waiting"] { --presence-ink: #dfbd80; --presence-dot: #c9a564; }
+:root[data-theme="dark"] .companion-status-badge[data-status="dormant"] { --presence-ink: #b4b8c2; --presence-dot: #9298a5; }
+:root[data-theme="dark"] .companion-status-badge[data-status="offline"] { --presence-ink: #e4a0ac; --presence-dot: #d78594; }

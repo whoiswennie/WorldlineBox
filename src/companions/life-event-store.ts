@@ -90,12 +90,18 @@ export class CompanionLifeEventStore {
   }
   private available(world: CompanionWorldSnapshot, id: string): boolean {
     const actor = world.actors.find(actor => actor.companionId === id);
-    return !!actor && !actor.parkWalk && !['sleeping', 'eating'].includes(actor.routinePhase) && !['working', 'eating', 'sleeping', 'lyingDown', 'waking', 'seating', 'standingUp'].includes(actor.activity)
+    return this.activated(id) && !!actor && !actor.parkWalk && !['sleeping', 'eating'].includes(actor.routinePhase) && !['working', 'eating', 'sleeping', 'lyingDown', 'waking', 'seating', 'standingUp'].includes(actor.activity)
       && !world.works.some(work => work.companionId === id && work.kind !== 'chat' && work.status !== 'ended');
+  }
+  private activated(id: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM companions c WHERE id=? AND deleted_at IS NULL AND json_extract(data,'$.active')=1 AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=c.id AND r.status!='completed')").get(id);
+  }
+  private targetActivated(rule: CompanionLifeRule, targetId?: string): boolean {
+    return !['message', 'visit'].includes(rule.action) || targetId === 'user' || !!targetId && this.activated(targetId);
   }
   private multiplier(world: CompanionWorldSnapshot, rule: CompanionLifeRule, targetId?: string): number {
     const actor = world.actors.find(actor => actor.companionId === rule.companionId);
-    if (!actor) return 0;
+    if (!actor || !this.targetActivated(rule, targetId)) return 0;
     const relationship = targetId === 'user' ? this.db.prepare('SELECT data FROM companion_runtime_states WHERE companion_id=?').get(rule.companionId) : undefined;
     const player = relationship ? read<{ relationship: { affinity: number; trust: number } }>(relationship).relationship : undefined;
     const peer = world.relationships.find(edge => edge.companionId === rule.companionId && edge.targetCompanionId === targetId);
@@ -118,7 +124,7 @@ export class CompanionLifeEventStore {
   }
   private chooseTarget(world: CompanionWorldSnapshot, rule: CompanionLifeRule, key: string): string | undefined {
     if (rule.targetId || !['message', 'visit'].includes(rule.action)) return rule.targetId;
-    const peers = world.residents.filter(peer => peer.companionId !== rule.companionId).sort((a, b) => a.companionId.localeCompare(b.companionId));
+    const peers = world.residents.filter(peer => peer.companionId !== rule.companionId && peer.active !== false && this.activated(peer.companionId)).sort((a, b) => a.companionId.localeCompare(b.companionId));
     // Exponential race gives affinity-weighted selection without a biased sort.
     return peers.map(peer => ({ id: peer.companionId, score: companionLifeThreshold(key + '/' + peer.companionId)
       / Math.exp(((world.relationships.find(edge => edge.companionId === rule.companionId && edge.targetCompanionId === peer.companionId)?.affinity ?? 50) - 50) / 50) }))
@@ -152,6 +158,10 @@ export class CompanionLifeEventStore {
           windowStart: start, windowEnd: iso(window.end), status: 'observing', hazard: 0, threshold: companionLifeThreshold(rule.id + '/' + start),
           lastRealAt: iso(real), lastEvaluatedAt: iso(now), multiplier: 0, attempts: 0, targetId: this.chooseTarget(world, rule, rule.id + '/' + start) };
         if (occurrence.status !== 'observing') continue;
+        if (!rule.targetId && ['message', 'visit'].includes(rule.action) && (!occurrence.targetId || !this.activated(occurrence.targetId))) {
+          const targetId = this.chooseTarget(world, rule, rule.id + '/' + start);
+          if (targetId !== occurrence.targetId) { occurrence.targetId = targetId; occurrence.hazard = 0; }
+        }
         const previous = Date.parse(occurrence.lastRealAt);
         // A long unobserved offline gap has unknown intermediate availability.
         // Do not invent old social activity, or emit months of delayed greetings.
@@ -200,7 +210,7 @@ export class CompanionLifeEventStore {
           const occ = read<CompanionLifeOccurrence>(row);
           if (command.excludedCompanionIds?.includes(occ.companionId)) continue;
           try { if (!this.owner(occ.companionId).proactive || !this.ownerRuleEnabled(occ.ruleId) || !this.available(world, occ.companionId)
-            || !this.socialCooldownReady(world, occ)) continue; } catch { continue; }
+            || !this.targetActivated(occ.rule, occ.targetId) || !this.socialCooldownReady(world, occ)) continue; } catch { continue; }
           occ.status = 'running'; occ.leaseToken = randomUUID(); occ.leaseUntil = iso(Date.now() + 120000); occ.attempts++; this.save(occ);
           return { ok: true, lifeOccurrence: occ };
         }
@@ -215,7 +225,7 @@ export class CompanionLifeEventStore {
           if (command.expectedMemoryRevision !== undefined && this.options.memoryRevision?.({ companionId: occ.companionId, conversationId: 'world_' + occ.companionId }) !== command.expectedMemoryRevision)
             throw new Error('这次生活发言使用的回忆已经变化。');
           if (!this.owner(occ.companionId).proactive || !this.ownerRuleEnabled(occ.ruleId) || !this.available(world, occ.companionId)
-            || !this.socialCooldownReady(world, occ)) throw new Error('伙伴此刻无法发起这个生活事件。');
+            || !this.targetActivated(occ.rule, occ.targetId) || !this.socialCooldownReady(world, occ)) throw new Error('伙伴此刻无法发起这个生活事件，联系双方需要保持激活。');
           if (command.silent) {
             if (!['message', 'visit'].includes(occ.rule.action) || command.text?.trim()) throw new Error('沉默结果不能同时发言或执行动作。');
             occ.status = 'silent'; occ.reason = command.reason ?? '这次没有想分享的新内容，继续自己的生活。';

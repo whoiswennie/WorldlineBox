@@ -11,9 +11,10 @@
 .companion-icon-button.is-active { color: var(--ui-content-primary); background: var(--companion-selected); }
 .companion-avatar { position: relative; display: inline-grid; flex: 0 0 auto; place-items: center; width: 40px; height: 40px; overflow: visible; border-radius: 50%; color: var(--ui-content-secondary); background-color: var(--companion-selected); font-size: 16px; font-weight: 500; background-repeat: no-repeat; }
 .companion-avatar-presence { position: absolute; width: 10px; height: 10px; right: -1px; bottom: -1px; box-sizing: content-box; border: 2px solid var(--companion-pane); border-radius: 50%; background: #42ad83; }
-.companion-avatar-presence[data-status="working"] { background: #dfa149; }
-.companion-avatar-presence[data-status="waiting"] { background: #9587c8; }
-.companion-avatar-presence[data-status="offline"] { background: #a1a7b2; }
+.companion-avatar-presence[data-status="working"] { background: #628de0; }
+.companion-avatar-presence[data-status="waiting"] { background: #c39343; }
+.companion-avatar-presence[data-status="offline"] { background: #d16c7a; }
+.companion-avatar-presence[data-status="dormant"] { background: #a1a5ae; }
 .companion-group-avatar .companion-avatar-presence { width: 7px; height: 7px; border-width: 1.5px; }
 .companion-avatar.has-image { background-size: 630%; background-position: 10% 14%; background-color: var(--ui-surface-raised); }
 .companion-avatar.has-local-image { background-size: cover; background-position: center; }

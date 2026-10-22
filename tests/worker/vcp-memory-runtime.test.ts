@@ -186,7 +186,15 @@ describe('unchanged VCP core behind isolated worker processes', () => {
     const recalled = await client.search(scope, { text: 'alpha umbrella', topK: 4 });
     expect(recalled.results[0]?.id).toBe(note.id);
     expect(recalled.results[0]?.engine).toBe('river');
+    expect(recalled.results[0]?.scoreDetails).toMatchObject({ engine: 'river', rank: 1, nativeRank: 1, finalScore: recalled.results[0]?.score,
+      originalScore: expect.any(Number), baseScore: expect.any(Number), topologyBonus: expect.any(Number), anchorBonus: expect.any(Number),
+      omega: expect.any(Number), role: expect.any(String), riverRegime: expect.any(String), matchedTags: expect.any(Array),
+      coreTagsMatched: expect.any(Array), candidateSources: expect.any(Array), algorithmVersion: 'rivermemo.topology-v3.1' });
     expect(recalled.diagnostics.nativeTopologyV3).toMatchObject({ jointUsed: true });
+    expect(recalled.retrieval).toMatchObject({ embeddingDimension: 4, diaryCount: 1,
+      counts: { offeredCandidates: expect.any(Number), projectedCandidates: expect.any(Number), rankedCandidates: expect.any(Number), artifactNodes: expect.any(Number), artifactEdges: expect.any(Number) },
+      hits: [{ id: note.id, rank: 1, text: expect.stringContaining('alpha'), sourcePath: expect.stringContaining('.md'),
+        anchor: { contactedSeeds: expect.any(Number), exactContacts: expect.any(Number), semanticContacts: expect.any(Number), anchorReliability: expect.any(Number) } }] });
     expect(requests.some(request => request.path === '/document/v1/embeddings')).toBe(true);
     expect(requests.some(request => request.path === '/query/v1/embeddings')).toBe(true);
     expect(requests.every(request => request.dimensions === 4 && request.model === 'synthetic-fixture')).toBe(true);

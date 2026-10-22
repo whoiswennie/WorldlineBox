@@ -93,8 +93,8 @@ export class CompanionsStore {
     this.#trace = new CompanionMemoryTraceStore(this.#db, (owner, id) => {
       const note = this.#db.prepare('SELECT conversation_id FROM vcp_memory_notes WHERE id=? AND companion_id=?').get(id, owner) as { conversation_id: string } | undefined;
       if (!note) return false;
-      try { return !!this.#memory.execute({ type: 'memory.records.filter', companionId: owner, conversationId: note.conversation_id, ids: [id] })?.memories?.length; } catch { return false; }
-    }, (owner, conversationId, id) => { try { return this.#memory.sourcesFilter({ companionId: owner, conversationId }, [id]).length === 1; } catch { return false; } });
+      try { return !!this.#memory.execute({ type: 'memory.records.filter', ...this.#memory.sources.ownerScope(owner), ids: [id] })?.memories?.length; } catch { return false; }
+    }, (owner, _conversationId, id) => { try { return this.#memory.sourcesFilter(this.#memory.sources.ownerScope(owner), [id]).length === 1; } catch { return false; } });
     this.#learning = new CompanionLearningStore(this.#db, {
       record: (grant, receipt, content) => {
         const conversationId = 'world_' + grant.companionId;
@@ -613,6 +613,7 @@ export class CompanionsStore {
       const now = Date.now();
       this.#db.prepare("UPDATE companion_runtime_states SET energy_clock=?,data=json_set(data,'$.updatedAt',?) WHERE companion_id=?").run(now, new Date(now).toISOString(), id);
       if (!active) {
+        this.#social.stopInactive(id);
         for (const found of rows(this.#db.prepare("SELECT data FROM companion_work_queue WHERE companion_id=? AND status='running'").all(id))) this.workStatus(decode<CompanionWork>(found.data).id, 'interrupted');
         for (const found of rows(this.#db.prepare("SELECT data FROM actions WHERE companion_id=? AND status IN('queued','running')").all(id))) {
           const action = decode<CompanionAction>(found.data);
@@ -1469,6 +1470,19 @@ export class CompanionsStore {
       case 'action.resume': return { ok: true, action: this.resumeAction(command.id) };
       case 'reply.checkpoint.get': return { ok: true, replyRecovery: this.replyCheckpoint(command.conversationId, command.sourceMessageId) };
       case 'loop.get': return { ok: true, loop: this.loopCheckpoint(command.sourceMessageId, command.companionId, command.proactiveWorkId) };
+      case 'loop.for-message': {
+        this.getMessage(command.messageId);
+        const saved = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + command.messageId);
+        return { ok: true, ...(saved ? { loop: companionLoopCheckpointSchema.parse(decode(row(saved).value)) } : {}) };
+      }
+      case 'memory.corpus.stamp': {
+        this.#requireCompanion(command.companionId);
+        const epoch = this.#db.prepare('SELECT revision FROM vcp_memory_management_epochs WHERE companion_id=?').get(command.companionId);
+        const scopes = this.#db.prepare('SELECT COUNT(*) AS total,COALESCE(SUM(revision),0) AS revisions FROM vcp_memory_scopes WHERE companion_id=?').get(command.companionId);
+        const notes = this.#db.prepare("SELECT COUNT(*) AS total,COALESCE(SUM(json_extract(data,'$.status')='indexed'),0) AS indexed,COALESCE(SUM(json_extract(data,'$.version')),0) AS versions FROM vcp_memory_notes WHERE companion_id=?").get(command.companionId);
+        return { ok: true, memoryCorpusStamp: JSON.stringify([command.companionId, epoch ? row(epoch).revision : 0,
+          row(scopes).total, row(scopes).revisions, row(notes).total, row(notes).indexed, row(notes).versions]) };
+      }
       case 'loop.save': this.saveLoop(command.checkpoint); return { ok: true };
       case 'work.enqueue': this.enqueueWork(command.work, command.resume); return { ok: true };
       case 'work.claim': return { ok: true, work: this.claimWork() };

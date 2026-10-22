@@ -52,7 +52,10 @@ export class GlobalEmbeddingService {
   #closed = false;
   #active = new Set<AbortController>();
   #runtimeController: AbortController | null = null;
+  #invalidationListeners = new Set<() => void>();
   constructor(private readonly options: GlobalEmbeddingServiceOptions) {}
+
+  subscribeInvalidation(listener: () => void): () => void { this.#invalidationListeners.add(listener); return () => { this.#invalidationListeners.delete(listener); }; }
 
   async resolveProfile(selectionId = GLOBAL_EMBEDDING_SELECTION_ID): Promise<GlobalEmbeddingProfile> {
     if (selectionId !== GLOBAL_EMBEDDING_SELECTION_ID && !isLocalTextEmbeddingModelId(selectionId)) {
@@ -117,6 +120,7 @@ export class GlobalEmbeddingService {
 
   async invalidate(): Promise<void> {
     this.#generation++;
+    for (const listener of this.#invalidationListeners) { try { listener(); } catch { /* A cache observer cannot prevent model teardown. */ } }
     for (const controller of this.#active) controller.abort(new EmbeddingProfileChangedError());
     this.#runtimeController?.abort(new EmbeddingProfileChangedError());
     await this.#queue;

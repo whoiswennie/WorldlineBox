@@ -113,7 +113,7 @@ it('rebuilds physical scopes after revision or source retraction and never retur
   expect((await f.ready(manager, '记录')).hits).toEqual([]);
 });
 
-it('uses original note scopes for human management, separates owners, and invalidates removed group membership', async () => {
+it('keeps witnessed group history in owner management after leaving while separating other owners', async () => {
   const f = fixture(), group = f.store.createConversation('真实群范围', ['alice', 'bob']);
   const groupNote = f.store.saveMemory({ companionId: 'alice', conversationId: group.id, content: '群里的记录。' });
   const bob = f.store.saveMemory({ companionId: 'bob', conversationId: f.store.openPrivate('bob').id, content: 'Bob的私密记录。' });
@@ -122,7 +122,8 @@ it('uses original note scopes for human management, separates owners, and invali
   const epoch = f.store.request({ type: 'memory.library.index-state', companionId: 'alice' }).memoryLibraryIndexState!.resetRevision;
   f.store.updateConversation(group.id, { memberIds: ['bob'] });
   expect(f.store.request({ type: 'memory.library.index-state', companionId: 'alice' }).memoryLibraryIndexState!.resetRevision).toBeGreaterThan(epoch);
-  expect((await f.ready(manager)).hits).toEqual([]);
+  expect((await f.ready(manager)).hits).toEqual([{ noteId: groupNote.id, version: 1 }]);
+  expect(f.store.request({ type: 'memory.library.read', companionId: 'alice', id: groupNote.id }).memoryRead?.memory.id).toBe(groupNote.id);
 });
 
 it('does not release a stale native hit when forgetting happens during the query', async () => {

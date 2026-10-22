@@ -1526,6 +1526,7 @@ describe('CompanionService native work and life management', () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
     await f.service.handle({ type: 'state' });
     const target = f.store.createCompanion({ name: '妹妹', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+    f.store.setCompanionActive(target.id, true);
     const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: intent === 'visit' ? '你去找妹妹玩吧。' : '你发消息问问妹妹有空吗。', replyDirective: 'none' });
     transport.fetch.mockImplementation(async (_url, init) => {
       const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
@@ -1537,6 +1538,20 @@ describe('CompanionService native work and life management', () => {
     expect(sent.ok).toBe(true); expect(sent.socialPending).toBe(true);
     expect(sent.activityTask?.visitTargetId).toBe(intent === 'visit' ? target.id : undefined);
     expect(f.store.request({ type: 'activity.list', ...scope }).activityTasks).toHaveLength(intent === 'visit' ? 1 : 0);
+    await closeService(f.service);
+  });
+  it('rejects native contact with a dormant peer before invoking authorization or creating an outbox', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const target = f.store.createCompanion({ name: '休眠的妹妹', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '问问妹妹最近读了什么书。', replyDirective: 'none' });
+    transport.fetch.mockClear();
+    const result = await native(f.service, 'world', { action: 'message', recipientIds: [target.id], text: '最近读了什么？' },
+      { companionId: 'sister', conversationId: f.conversation.id }, [source.id], 'dormant_native_contact', source.sequence);
+    expect(result.ok).toBe(false); expect(result.error).toContain('激活');
+    expect(transport.fetch).not.toHaveBeenCalled();
+    expect(f.store.request({ type: 'social.conversations', companionId: 'sister' }).socialConversationPage!.items).toEqual([]);
+    expect(f.store.state().companions.find(role => role.id === target.id)?.active).toBe(false);
     await closeService(f.service);
   });
   it.each(['visit', 'message'] as const)('checks a direct native visit against the real user goal=%s before retaining movement', async intent => {
