@@ -78,7 +78,7 @@
 .companions-chat-identity > .companion-avatar, .companions-chat-identity > .companion-group-avatar { width: 34px; height: 34px; }
 .companions-chat-identity > div { min-width: 0; }
 .companions-chat-header h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
-.companions-chat-header h2 > span { color: var(--ui-content-secondary); font-size: 15px; font-weight: 400; }
+.companions-chat-header h2 > span:not(.companion-status-badge) { color: var(--ui-content-secondary); font-size: 15px; font-weight: 400; }
 .companions-chat-header h2 { display: flex; align-items: center; gap: 9px; }
 .companions-chat-header h2 > .companions-chat-name { font-size: inherit; font-weight: 600; color: var(--ui-content-primary); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .companions-chat-header h2 > .companions-presence-label { flex-shrink: 0; }

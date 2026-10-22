@@ -80,7 +80,7 @@ export class CompanionLearningStore {
       }).immediate();
       case 'learning.revoke': return this.db.transaction(() => {
         const row = this.expected(command.companionId, command.id, command.expectedRevision);
-        const sourceIds = (this.db.prepare("SELECT source_message_id FROM companion_learning_reads WHERE grant_id=? AND status='read'").all(row.id) as Array<{ source_message_id: string }>).map(row => row.source_message_id);
+        const sourceIds = (this.db.prepare("SELECT source_message_id FROM companion_learning_reads WHERE grant_id=? AND status='read' UNION SELECT source_message_id FROM companion_learning_goal_sources WHERE grant_id=?").all(row.id, row.id) as Array<{ source_message_id: string }>).map(row => row.source_message_id);
         this.db.prepare('UPDATE companion_learning_grants SET enabled=0,revision=revision+1,manual=0,lease_token=NULL,lease_until=0 WHERE id=?').run(row.id);
         this.db.prepare("UPDATE companion_learning_reads SET status='withdrawn' WHERE grant_id=?").run(row.id);
         this.options.withdraw(command.companionId, sourceIds);

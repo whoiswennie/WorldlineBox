@@ -3,7 +3,7 @@ import { buildCompanionContext, refreshCompanionContextClock } from '../../src/m
 import { generateCompanionReply } from '../../src/main/companions/model';
 import { generateCompanionWorldDecision } from '../../src/main/companions/world-model';
 import { generateCompanionSocialReply } from '../../src/main/companions/social-model';
-import { companionModelWorld } from '../../src/main/companions/world-perception-context';
+import { companionModelWorld, companionPerceivedToolTurns } from '../../src/main/companions/world-perception-context';
 import { createCompanionWorldHome } from '../../src/shared/companion-world-engine';
 import type { Companion, CompanionConversation, CompanionMessage } from '../../src/shared/companions';
 import type { CompanionWorldActor, CompanionWorldSnapshot } from '../../src/shared/companion-world';
@@ -128,7 +128,11 @@ it('sanitizes actual chat request and recovered world tool history before provid
   raw.user = JSON.stringify({ ...JSON.parse(raw.user), world }); // Simulate a checkpoint made before the model boundary was tightened.
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content); checkBoundary(data.world);
-    const tool = body.messages.find((message: { role: string }) => message.role === 'tool'); checkBoundary(JSON.parse(tool.content).world);
+    const tool = body.messages.find((message: { role: string }) => message.role === 'tool'), historical = JSON.parse(tool.content).world;
+    expect(historical.observation).toMatchObject({ status: 'historical', requiresReobservation: true, asOfReal: now, comparedToReal: now });
+    expect(historical.perception.visibleCompanionIds).toEqual([]); expect(historical.perception.visibleObjectIds).toEqual([]);
+    expect(historical.actors.every((actor: { visible?: boolean }) => actor.visible !== true)).toBe(true);
+    expect(historical.environment.weatherStatus).toBe('remembered');
     expect(body.messages[0].content).toContain('weather缺省就是未知');
     expect(JSON.stringify(body)).not.toContain('PRIVATE_PEER_PLAN');
     return response({ text: '我上次在门边看到下雨，但现在还没有重新确认；不知道远处朋友的当前状态。' });
@@ -138,6 +142,69 @@ it('sanitizes actual chat request and recovered world tool history before provid
       results: [{ callId: 'inspect', content: JSON.stringify({ ok: true, world }) }] }] });
   expect(fetchFn).toHaveBeenCalledOnce();
   checkBoundary(JSON.parse(refreshCompanionContextClock(raw, world, 'self').user).world);
+});
+
+it('keeps earlier weather and peer positions explicitly historical when a newer authorized observation exists', () => {
+  const earlier = fixture(), current = fixture();
+  earlier.perception!.observedAtReal = old; earlier.perception!.observedAtVirtual = old; earlier.perception!.environment.time = old;
+  earlier.perception!.environment.weather = 'clear'; earlier.perception!.environment.weatherObservedAtReal = old;
+  earlier.perception!.environment.weatherObservedAtVirtual = old; earlier.perception!.people[0]!.lastObservedAt = old;
+  current.perception!.environment.weatherObservedAtVirtual = now; current.perception!.environment.weatherObservedAtReal = now;
+  const original = JSON.stringify(earlier);
+  const result = companionPerceivedToolTurns([{ text: '', rawText: '', calls: [{ id: 'world-old', name: 'world', arguments: '{"action":"inspect"}' }],
+    results: [{ callId: 'world-old', content: JSON.stringify({ ok: true, world: earlier }) }] }], 'self', current);
+  const history = JSON.parse(result[0]!.results![0]!.content).world;
+  expect(history.observation).toMatchObject({ status: 'historical', asOfReal: old, asOfVirtual: old, comparedToReal: now, comparedToVirtual: now });
+  expect(history.environment).toMatchObject({ weatherStatus: 'remembered', lastWeatherObservation: { weather: 'clear', weatherObservedAtVirtual: old } });
+  expect(history.environment).not.toHaveProperty('weather'); expect(history.perception.people[0]).toMatchObject({ visible: false, lastObservedAt: old });
+  expect(history.perception.visibleCompanionIds).toEqual([]); expect(history.perception.objects.every((object: { visible: boolean }) => !object.visible)).toBe(true);
+  expect(companionModelWorld(current, 'self')!.environment).toMatchObject({ weatherStatus: 'current', weather: 'rain' });
+  expect(JSON.stringify(earlier)).toBe(original); expect(JSON.stringify(history)).not.toContain('snow'); expect(JSON.stringify(history)).not.toContain('PRIVATE_PEER_PLAN');
+});
+
+it('does not certify an old checkpoint clock as the time of this request when no fresh world was supplied', () => {
+  const world = fixture(); world.perception!.observedAtReal = old; world.perception!.observedAtVirtual = old; world.perception!.environment.time = old;
+  world.perception!.environment.weatherObservedAtVirtual = old; world.perception!.environment.weatherObservedAtReal = old;
+  const frozen = buildCompanionContext(modelInput(world)), refreshed = JSON.parse(refreshCompanionContextClock(frozen, undefined, 'self').user);
+  expect(refreshed.worldClock).toMatchObject({ now: old, asOfVirtual: old, asOfReal: old, status: 'historical', requiresRefresh: true, trust: 'host_world_clock_at_recorded_observation' });
+  expect(refreshed.worldClock.trust).not.toBe('host_world_clock_at_request_time'); expect(refreshed.world.observation.status).toBe('historical');
+  expect(refreshed.world.environment.weatherStatus).toBe('remembered'); expect(refreshed.world.perception.visibleCompanionIds).toEqual([]);
+});
+
+it('marks a simulation backlog as an observed past without turning old visibility or weather into current facts', () => {
+  const world = fixture(); world.backlog = true; world.perception!.environment.weatherObservedAtVirtual = now; world.perception!.environment.weatherObservedAtReal = now;
+  const context = JSON.parse(buildCompanionContext(modelInput(world)).user);
+  expect(context.worldClock).toMatchObject({ status: 'historical', backlog: true, requiresRefresh: true, asOfVirtual: now, asOfReal: now });
+  expect(context.world.observation).toMatchObject({ status: 'historical', backlog: true, requiresReobservation: true });
+  expect(context.world.environment.weatherStatus).toBe('remembered'); expect(context.world.perception.visibleObjectIds).toEqual([]);
+});
+
+it('sends fresh world facts separately from historical tool receipts at the real provider boundary', async () => {
+  const previous = fixture(), current = fixture();
+  previous.perception!.environment.weather = 'clear'; previous.perception!.environment.time = old;
+  previous.perception!.observedAtVirtual = old; previous.perception!.observedAtReal = old;
+  previous.perception!.environment.weatherObservedAtVirtual = old; previous.perception!.environment.weatherObservedAtReal = old;
+  current.perception!.environment.weatherObservedAtVirtual = now; current.perception!.environment.weatherObservedAtReal = now;
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const messages = JSON.parse(String(init?.body)).messages, data = JSON.parse(messages[1].content);
+    expect(data.world.environment).toMatchObject({ weatherStatus: 'current', weather: 'rain' });
+    expect(data.worldClock).toMatchObject({ status: 'current', asOfVirtual: now, trust: 'host_world_clock_at_current_observation' });
+    const tool = JSON.parse(messages.find((item: { role: string }) => item.role === 'tool').content);
+    expect(tool.world.environment).toMatchObject({ weatherStatus: 'remembered', lastWeatherObservation: { weather: 'clear' } });
+    expect(tool.world.observation).toMatchObject({ status: 'historical', comparedToReal: now, asOfReal: old });
+    expect(tool.world.perception.visibleCompanionIds).toEqual([]);
+    return response({ text: '本次实际观察下雨，之前晴天属于旧见闻。' });
+  });
+  await generateCompanionReply(modelInput(current), config, undefined, { fetchFn, loop: true,
+    turns: [{ text: '', rawText: '', calls: [{ id: 'prior', name: 'world', arguments: '{"action":"inspect"}' }], results: [{ callId: 'prior', content: JSON.stringify({ ok: true, world: previous }) }] }] });
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
+
+it('leaves non-world receipts untouched and still sanitizes unavailable world observations without a reference', () => {
+  const other = { callId: 'memory', content: '{"ok":true,"content":"literal"}' };
+  const turns = companionPerceivedToolTurns([{ text: '', rawText: '', calls: [{ id: 'memory', name: 'memory', arguments: '{}' }, { id: 'world', name: 'world', arguments: '{}' }],
+    results: [other, { callId: 'world', content: 'invalid old snapshot' }] }], 'self');
+  expect(turns[0]!.results![0]).toBe(other); expect(JSON.parse(turns[0]!.results![1]!.content)).toMatchObject({ ok: false });
 });
 
 it('keeps world decision and phone reply provider payloads within the same finite perception', async () => {

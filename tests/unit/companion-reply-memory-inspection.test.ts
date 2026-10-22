@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CompanionMemory, CompanionMessage } from '../../src/shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import { companionReplyMemoryCommand, companionReplyMemorySchema } from '../../src/shared/companion-reply-memory';
-import { inspectCompanionReplyMemory } from '../../src/main/companions/reply-memory-inspection';
+import { inspectCompanionReplyMemory, inspectCompanionSocialReplyMemory } from '../../src/main/companions/reply-memory-inspection';
 import { recallCorpusHash } from '../../src/main/companions/recall-evidence';
+import { createHash } from 'node:crypto';
+import type { CompanionSocialReplyReceipt } from '../../src/shared/companion-social-reply';
 
 const createdAt = '2026-10-22T02:00:00.000Z', capturedAt = '2026-10-22T02:01:00.000Z';
 function fixture() {
@@ -34,6 +36,23 @@ function fixture() {
 }
 
 describe('persisted per-reply native recall inspection', () => {
+  it('rechecks a pending peer lease after loading sources and refuses a replacement attempt', async () => {
+    const f = fixture(); let reads = 0;
+    const receipt: CompanionSocialReplyReceipt = { companionId: 'alice', conversationId: f.source.conversationId, messageId: 'peer_job',
+      sourceMessageId: f.source.id, contextThroughSequence: 10, leaseToken: 'first_lease',
+      sourceChecksum: createHash('sha256').update(f.source.content).digest('hex'), context: { user: JSON.stringify(f.data) },
+      progress: { revision: 1, phase: 'thinking', detail: '回应中', startedAt: createdAt, updatedAt: capturedAt } };
+    const request = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+      if (command.type === 'social.reply.for-job') return { ok: true, socialReplyReceipt: { ...receipt, leaseToken: ++reads === 1 ? 'first_lease' : 'second_lease' } };
+      return f.request(command);
+    };
+    const result = await inspectCompanionSocialReplyMemory({ type: 'social.reply.memory.inspect', companionId: 'alice', conversationId: f.source.conversationId,
+      jobId: 'peer_job', contextOffset: 0, contextLimit: 8192 }, request);
+    expect(result).toMatchObject({ state: 'withdrawn', messageId: 'peer_job', candidates: [], contextCharacters: 0 });
+    expect(reads).toBe(2);
+    expect(JSON.stringify(result)).not.toContain('天幻');
+    expect(f.request.mock.calls.every(([command]) => command.type !== 'message.get')).toBe(true);
+  });
   it('returns exact bounded pages and distinct authorized candidate/source evidence, without rerunning recall', async () => {
     const f = fixture(), first = await f.inspect();
     expect(first).toMatchObject({ state: 'ready', query: f.source.content, contextText: f.contextText.slice(0, 8192), contextOffset: 0,

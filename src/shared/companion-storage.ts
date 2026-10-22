@@ -1,6 +1,8 @@
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
+import { companionSocialReplyReceiptSchema } from './companion-social-reply';
 import { z } from 'zod';
 import { companionLearningStorageCommands, companionLearningStatusSchema, companionLearningJobSchema } from './companion-learning';
+import { companionLearningGoalStorageCommands, companionLearningGoalSchema, companionLearningGoalPageSchema, companionLearningGoalRoundPageSchema, companionLearningGoalJobSchema } from './companion-learning-goals';
 import { companionWorldSleepPlanSchema } from './companion-life-plan';
 import { companionLifeOverviewReadCommand, companionLifeOverviewContextSchema } from './companion-life-overview';
 import { companionMemoryTraceListCommand, companionMemoryTraceInspectCommand } from './companion-memory-trace';
@@ -92,6 +94,7 @@ export type CompanionProactiveState = z.infer<typeof companionProactiveStateSche
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   ...companionLearningStorageCommands,
+  ...companionLearningGoalStorageCommands,
   companionLifeOverviewReadCommand,
   companionMemoryTraceListCommand, companionMemoryTraceInspectCommand,
   ...companionDocumentCatalogCommands,
@@ -198,12 +201,15 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   documentCatalog: companionDocumentCatalogPageSchema.optional(),
   documentCatalogUnchanged: z.boolean().optional(),
   learning: companionLearningStatusSchema.optional(), learningJob: companionLearningJobSchema.optional(),
+  learningGoal: companionLearningGoalSchema.optional(), learningGoals: companionLearningGoalPageSchema.optional(),
+  learningRounds: companionLearningGoalRoundPageSchema.optional(), learningGoalJob: companionLearningGoalJobSchema.optional(),
   rebuiltCount: z.number().int().nonnegative().optional(),
   schedule: companionScheduleSchema.optional(), schedules: z.array(companionScheduleSchema).optional(),
   scheduleOccurrence: companionScheduleOccurrenceSchema.optional(), scheduleOccurrences: z.array(companionScheduleOccurrenceSchema).optional(),
   runtimeState: companionRuntimeStateSchema.optional(),
   world: companionWorldSnapshotSchema.optional(), worldWork: companionWorldWorkSchema.optional(), worldJob: companionWorldJobSchema.optional(),
   socialConversation: companionSocialConversationSchema.optional(), socialMessage: companionSocialMessageSchema.optional(), socialJob: companionSocialJobSchema.optional(),
+  socialReplyReceipt: companionSocialReplyReceiptSchema.optional(),
   socialPending: z.boolean().optional(), socialNotification: companionSocialNotificationSchema.optional(),
 });
 export type CompanionStorageResponse = z.infer<typeof companionStorageResponseSchema>;

@@ -3,6 +3,8 @@ import type { CompanionMemory, CompanionMessage } from '../../shared/companions'
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { companionReplyMemoryCommand, CompanionReplyMemory } from '../../shared/companion-reply-memory';
 import { recallCorpusHash } from './recall-evidence';
+import { createHash } from 'node:crypto';
+import type { CompanionSocialReplyMemoryRequest, CompanionSocialReplyReceipt } from '../../shared/companion-social-reply';
 
 type Request = z.infer<typeof companionReplyMemoryCommand>;
 type Transport = (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>;
@@ -12,15 +14,39 @@ type SavedContext = { memories?: Array<{ id: string; version: number }>; memoryR
   context?: { text: string; revision: string; evidence?: { capturedAt: string; corpusHash: string; beforeSequence?: number } };
 } };
 
-/** Inspect the saved native result, never rerun retrieval or initialize a model. */
-export async function inspectCompanionReplyMemory(input: Request, request: Transport): Promise<CompanionReplyMemory> {
-  const base: CompanionReplyMemory = { companionId: input.companionId, conversationId: input.conversationId,
+const emptyReceipt = (input: Pick<Request, 'companionId' | 'conversationId' | 'messageId'>): CompanionReplyMemory => ({ companionId: input.companionId, conversationId: input.conversationId,
     messageId: input.messageId, observedAt: new Date().toISOString(), state: 'unavailable', contextCharacters: 0,
     contextOffset: 0, contextTruncated: false, candidates: [], pending: false, degraded: false,
-    explanation: '这条回复没有保存可查看的召回详情。历史记录不会补造召回内容。' };
+    explanation: '这条回复没有保存可查看的召回详情。历史记录不会补造召回内容。' });
+/** Inspect the saved native result, never rerun retrieval or initialize a model. */
+export async function inspectCompanionReplyMemory(input: Request, request: Transport): Promise<CompanionReplyMemory> {
+  const base = emptyReceipt(input);
   const message = (await request({ type: 'message.get', id: input.messageId })).message;
   if (!message || message.authorId !== input.companionId || message.conversationId !== input.conversationId) return base;
-  const checkpoint = (await request({ type: 'loop.for-message', messageId: input.messageId })).loop;
+  const loop = (await request({ type: 'loop.for-message', messageId: input.messageId })).loop;
+  const social = !loop ? (await request({ type: 'social.reply.for-message', messageId: input.messageId })).socialReplyReceipt : undefined;
+  const checkpoint = loop ?? social;
+  return inspectSavedRecall(input, checkpoint, request, base, social?.sourceChecksum);
+}
+
+/** Pending target IDs are job IDs, never synthetic messages or learning sources. */
+export async function inspectCompanionSocialReplyMemory(input: CompanionSocialReplyMemoryRequest, request: Transport): Promise<CompanionReplyMemory> {
+  const target = { ...input, messageId: input.jobId }, base = { ...emptyReceipt(target),
+    explanation: '这轮伙伴回应尚未完成回忆，或该次任务已经结束、取消或进入重试。此标识是任务，不是正式消息。' };
+  const checkpoint = (await request({ type: 'social.reply.for-job', jobId: input.jobId })).socialReplyReceipt;
+  return inspectSavedRecall(target, checkpoint, request, base, checkpoint?.sourceChecksum, async () => {
+    const current = (await request({ type: 'social.reply.for-job', jobId: input.jobId })).socialReplyReceipt;
+    return !!current && current.companionId === checkpoint?.companionId && current.conversationId === checkpoint.conversationId
+      && !!checkpoint.leaseToken && current.leaseToken === checkpoint.leaseToken
+      && current.sourceChecksum === checkpoint.sourceChecksum && current.context.user === checkpoint.context.user;
+  });
+}
+
+type Checkpoint = Pick<CompanionSocialReplyReceipt, 'companionId' | 'conversationId' | 'sourceMessageId'> & {
+  messageId?: string; contextThroughSequence?: number; context?: { user: string }; progress?: { updatedAt: string };
+};
+async function inspectSavedRecall(input: Omit<Request, 'type'>, checkpoint: Checkpoint | undefined, request: Transport,
+  base: CompanionReplyMemory, sourceChecksum?: string, stillValid?: () => Promise<boolean>): Promise<CompanionReplyMemory> {
   if (!checkpoint?.context || checkpoint.companionId !== input.companionId || checkpoint.conversationId !== input.conversationId
     || checkpoint.messageId !== input.messageId) return base;
   let data: SavedContext;
@@ -32,6 +58,7 @@ export async function inspectCompanionReplyMemory(input: Request, request: Trans
   const withdrawn = (): CompanionReplyMemory => ({ ...base, state: 'withdrawn',
     explanation: '这条回复引用的来源或记忆已经修改、撤回或不再获权。历史上下文已隐藏，不重新推测当时想起了什么。' });
   if (!source) return withdrawn();
+  if (sourceChecksum && createHash('sha256').update(source.content).digest('hex') !== sourceChecksum) return withdrawn();
   const context = data.memoryRecall.context;
   const snapshot = (await request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
   if (!snapshot) return withdrawn();
@@ -52,6 +79,7 @@ export async function inspectCompanionReplyMemory(input: Request, request: Trans
   const sourcesById = new Map<string, CompanionMessage>(sources.map(item => [item.id, item]));
   const verified = (await request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
   if (!verified || !valid(verified.notes, verified.revision)) return withdrawn();
+  if (stillValid && !await stillValid()) return withdrawn();
   // The exact native text can contain topic-focused synthesis; top-K candidates
   // are evidence candidates, not a fabricated list of what VCP finally injected.
   const text = context?.text ?? '', start = Math.min(input.contextOffset, text.length), end = Math.min(start + input.contextLimit, text.length);

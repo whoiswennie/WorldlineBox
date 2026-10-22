@@ -572,15 +572,17 @@ export class CompanionMemoryService {
         catch { /* Capture remains queued for indexing while a model is unavailable. */ }
         controller.signal.throwIfAborted();
         const prohibitions = await this.options.request({ type: 'memory.prohibitions', ...scope, sourceMessageIds: job.sourceMessageIds });
+        const runtimeState = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
+        const characterDevelopment = (await this.options.request({ type: 'character.development', companionId: companion.id, conversationId: conversation.id, limit: 12 })).characterDevelopment;
         const journal = await generateCompanionJournal({ companion, conversation, messages: sources, contextMessages: before, relevantMemories,
           participants: state?.companions.map(peer => ({ id: peer.id, name: peer.name })),
           prohibitions: prohibitions.memoryProhibitions,
-          runtimeState: (await this.options.request({ type: 'state.get', ...scope })).runtimeState }, config, controller.signal, { fetchFn: this.options.fetchFn });
+          runtimeState, characterDevelopment }, config, controller.signal, { fetchFn: this.options.fetchFn });
         controller.signal.throwIfAborted();
         await this.options.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken,
           expectedProhibitionRevision: prohibitions.memoryProhibitionRevision,
           notes: journal.notes.map(note => ({ ...note, sourceChecksums: job.sourceChecksums })),
-          ...(journal.stateProposal ? { stateProposal: journal.stateProposal } : {}) });
+          ...(journal.stateProposal ? { stateProposal: journal.stateProposal, expectedStateRevision: runtimeState?.revision } : {}) });
         this.options.changed(); this.again = true;
       } catch (error) {
         await this.options.request({ type: 'memory.jobs.fail', id: job.id, leaseToken: job.leaseToken,

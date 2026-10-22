@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { companionWorldQuerySchema } from './companion-knowledge';
 import { companionStateProposalSchema } from './companion-state';
 import { companionMemoryProcessingCommand } from './companion-memory-processing';
+import { companionCharacterDevelopmentCommand, companionCharacterDevelopmentDraftSchema } from './companion-character-development';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 /** Ordered VCP tags; the host has no tag inference or retrieval algorithm. */
 export const companionMemoryTagSchema = z.string().trim().min(1).max(100);
@@ -17,6 +18,7 @@ export const companionMemoryCandidateSchema = z.strictObject({
     sourceMessageIds: z.array(id).min(1).max(100), sourceChecksums: z.record(id, z.string().max(128)).optional(),
     evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().min(1).max(16000) })).min(1).max(100),
     relatedMemoryIds: z.array(id).max(50).default([]), metadata: z.record(z.string(), z.unknown()).optional(),
+    selfDevelopment: companionCharacterDevelopmentDraftSchema.optional(),
     learnedEntranceSourceId: id.optional(),
 });
 export type CompanionMemoryCandidate = z.input<typeof companionMemoryCandidateSchema>;
@@ -88,6 +90,7 @@ export const companionMemoryForgetSchema = companionMemoryScopeSchema.extend({
     persistent: z.boolean().default(false), requestMessageId: id.optional(),
 });
 export const companionMemoryPublicCommands = [
+    companionCharacterDevelopmentCommand,
     companionMemoryProcessingCommand,
     companionMemoryScopeSchema.merge(companionWorldQuerySchema).extend({ type: z.literal('memory.world_query') }).strict(),
     companionMemorySearchSchema.extend({ type: z.literal('memory.search') }).strict(),
@@ -118,7 +121,7 @@ export const companionMemoryStorageCommands = [
     companionMemoryScopeSchema.extend({ type: z.literal('memory.snapshot') }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.prohibitions'), sourceMessageIds: z.array(id).min(1).max(100).optional(), noteId: id.optional(), worldJobId: id.optional() }).strict(),
     z.strictObject({ type: z.literal('memory.jobs.claim'), companionId: id.optional(), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
-    z.strictObject({ type: z.literal('memory.jobs.complete'), id, leaseToken: id, notes: z.array(companionMemoryCandidateSchema).max(100), stateProposal: companionStateProposalSchema.optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }),
+    z.strictObject({ type: z.literal('memory.jobs.complete'), id, leaseToken: id, notes: z.array(companionMemoryCandidateSchema).max(100), stateProposal: companionStateProposalSchema.optional(), expectedStateRevision: z.number().int().positive().optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }),
     z.strictObject({ type: z.literal('memory.jobs.fail'), id, leaseToken: id, error: z.string().max(1000), retryAfterMs: z.number().int().min(0).max(86400000).default(30000) }),
     z.strictObject({ type: z.literal('memory.jobs.backfill'), limit: z.number().int().min(1).max(500).default(200) }),
     z.strictObject({ type: z.literal('memory.outbox.claim'), companionId: id.optional(), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),

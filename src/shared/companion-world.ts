@@ -5,6 +5,7 @@ import { companionMemoryCandidateSchema } from './companion-memory';
 import { COMPANION_WORLD_ART_ACTIONS } from './companion-world-actions';
 import { companionWorldPerceptionSchema } from './companion-world-perception';
 import { companionHomeAddressSchema } from './companion-world-address';
+import { companionStateToolProposalSchema } from './companion-state-tool';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const point = z.object({ x: z.number().finite(), y: z.number().finite() });
@@ -99,7 +100,7 @@ export const companionWorldStorageCommands = [
   z.strictObject({ type: z.literal('world.job.check'), id, leaseToken: id }),
   z.strictObject({ type: z.literal('world.job.bind-memories'), id, leaseToken: id,
     memoryVersions: z.array(z.strictObject({ id, version: z.number().int().positive() })).min(1).max(20) }),
-  z.strictObject({ type: z.literal('world.job.complete'), id, leaseToken: id, expectedMemoryRevision: z.string().min(1).max(128).optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional(), activityTask: z.strictObject({ title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(16000) }).optional(), action: companionWorldArgumentsSchema.optional(), sourceMemoryIds: z.array(id).max(30).default([]), memoryCandidates: z.array(companionMemoryCandidateSchema).max(20).default([]),
+  z.strictObject({ type: z.literal('world.job.complete'), id, leaseToken: id, expectedMemoryRevision: z.string().min(1).max(128).optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional(), stateProposal: companionStateToolProposalSchema.optional(), expectedStateRevision: z.number().int().positive().optional(), activityTask: z.strictObject({ title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(16000) }).optional(), action: companionWorldArgumentsSchema.optional(), sourceMemoryIds: z.array(id).max(30).default([]), memoryCandidates: z.array(companionMemoryCandidateSchema).max(20).default([]),
     dream: z.strictObject({ text: z.string().max(8000), sourceMessageIds: z.array(id).min(1).max(30), relatedMemoryIds: z.array(id).min(1).max(30), evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().min(1).max(4000) })).min(1).max(60) }).optional(),
     appraisals: z.array(z.strictObject({ eventId: id, targetCompanionId: id, type: z.enum(['support', 'respect', 'boundary_violation', 'hostility', 'shared_success', 'repair', 'disappointment']), intensity: z.number().min(0).max(1), confidence: z.number().min(0).max(1) })).max(10).default([]) }),
   z.strictObject({ type: z.literal('world.job.fail'), id, leaseToken: id, error: z.string().max(2000) }),

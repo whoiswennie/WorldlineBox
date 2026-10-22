@@ -110,7 +110,10 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const [memoryProcessingRequest, setMemoryProcessingRequest] = useState<{ owner: string; nonce: number }>();
   const [memoryLearningRequest, setMemoryLearningRequest] = useState<{ owner: string; nonce: number }>();
   const [memoryTraceRequest, setMemoryTraceRequest] = useState<{ owner: string; nonce: number }>();
+  const [memoryNoteRequest, setMemoryNoteRequest] = useState<{ owner: string; noteId: string; nonce: number }>();
   const memoryRequestSequence = useRef(0);
+  const stateNavigation = useRef<{ owner?: string; conversationId?: string; page: string }>({ page: 'messages' });
+  const stateSourceSequence = useRef(0);
   const [showScheduleManager, setShowScheduleManager] = useState(false);
   const [scheduleSelection, setScheduleSelection] = useState<{ page: 'plans' | 'routine' | 'life'; id?: string }>();
   const [showWorkManager, setShowWorkManager] = useState(false);
@@ -174,6 +177,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   }, [api]);
 
   const clearResetCaches = useCallback((companionId: string) => {
+    setMemoryNoteRequest(current => current?.owner === companionId ? undefined : current); ++stateSourceSequence.current;
     const affected = new Set(stateRef.current?.conversations.filter(room => room.memberIds.includes(companionId)).map(room => room.id));
     setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !affected.has(id))));
     setActions(current => current.filter(action => action.companionId !== companionId));
@@ -306,6 +310,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const selectedReset = selected?.kind === 'private' ? state?.resetJobs?.find(job => job.status !== 'completed' && selected.memberIds.includes(job.companionId)) : undefined;
   const resetCompanion = companions.find(item => item.id === resetCompanionId);
   const memoryOwner = members.find(item => item.id === memoryOwnerId) ?? primary;
+  useLayoutEffect(() => { stateNavigation.current = { owner: memoryOwner?.id, conversationId: selectedId ?? undefined, page }; }, [memoryOwner?.id, selectedId, page]);
   const documentOwner = companions.find(item => item.id === documentOwnerId) ?? memoryOwner ?? companions[0];
   const overviewOwner = companions.find(item => item.id === overviewOwnerId && item.active !== false) ?? companions.find(item => item.active !== false);
   useLayoutEffect(() => { overviewNavigation.current = { owner: overviewOwner?.id, page }; }, [overviewOwner?.id, page]);
@@ -313,6 +318,33 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const owner = memoryOwner?.id ?? companions[0]?.id;
     setDocumentOwnerId(owner ?? null); setShowMemoryManager(true); setPage('memory');
     if (processing && owner) setMemoryProcessingRequest({ owner, nonce: ++memoryRequestSequence.current });
+  }
+  function openStateMemory(owner: string, noteId: string) {
+    setDocumentOwnerId(owner); setShowMemoryManager(true); setMemoryNoteRequest({ owner, noteId, nonce: ++memoryRequestSequence.current }); setPage('memory');
+  }
+  async function openStateSource(owner: string, currentRoom: string, sourceRoom: string, messageId: string) {
+    const attempt = ++stateSourceSequence.current;
+    const current = () => aliveRef.current && stateSourceSequence.current === attempt && stateNavigation.current.owner === owner && stateNavigation.current.conversationId === currentRoom && stateNavigation.current.page === 'messages';
+    // Revalidate the actual scoped receipt before navigating out of this conversation.
+    const verified = await request({ type: 'state.get', companionId: owner, conversationId: currentRoom });
+    if (!current()) return;
+    const receipt = verified?.runtimeState?.companionId === owner ? verified.runtimeState.recentChanges?.find(item => item.sourceConversationId === sourceRoom && item.sourceMessageIds.includes(messageId)) : undefined;
+    if (!verified?.ok || !receipt) { setError('这条状态来源已变化或不可访问，请重新核对状态详情。'); return; }
+    const source = (await request({ type: 'message.get', id: messageId }))?.message;
+    if (!current()) return;
+    if (!source || source.conversationId !== sourceRoom || source.status !== 'sent' || source.isReplyDraft || source.replyDraft) { setError('来源消息当前不可访问。'); return; }
+    if (source.memoryEvidenceOnly && !source.actionId) {
+      if (receipt.memoryIds?.[0]) openStateMemory(owner, receipt.memoryIds[0]);
+      else setError('这是一条内部来源凭证，请在相关记忆记录中查阅。');
+      return;
+    }
+    if (sourceRoom === selectedRef.current) { if (source.memoryEvidenceOnly && source.actionId) openTaskProgress(source.actionId); else await jumpToMessage(source); return; }
+    const room = state?.conversations.find(item => item.id === sourceRoom) ?? (await request({ type: 'conversation.reopen', id: sourceRoom }))?.conversation;
+    if (!current()) return;
+    if (!room || !room.memberIds.includes(owner)) { setError('来源聊天当前不可访问。'); return; }
+    if (source.memoryEvidenceOnly && source.actionId) { selectConversation(room); openTaskProgress(source.actionId); }
+    else { pendingJump.current = { ...source, excerpt: source.content.slice(0, 600) }; selectConversation(room); }
+    void refreshState();
   }
   const timelineMessages = messages.filter(message => !message.memoryEvidenceOnly);
   const draft = selectedId ? drafts[selectedId] ?? EMPTY_DRAFT : EMPTY_DRAFT;
@@ -651,11 +683,11 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
               <div className="companions-composer-toolbar"><div className="companions-composer-tools"><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{selectedReset ? '伙伴正在重置' : sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={!!selectedReset || sending || addingFiles || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
             </section>
           </section>
-          {showPanel && memoryOwner && <CompanionPlanner active={isActive && page === 'messages'} initialActivityTaskId={selectedActivityTaskId} key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} members={members} conversationId={selected.id} conversationKind={selected.kind} actions={actions} request={request} api={api} onOwnerChange={id => { setMemoryOwnerId(id); setMemoryDraft(undefined); setSelectedActivityTaskId(undefined); }} onClose={() => setShowPanel(false)} onProfile={() => { setContactId(memoryOwner.id); setPage('contacts'); }} onMemory={() => openMemoryManager()} onMemoryProcessing={() => openMemoryManager(true)} onTasks={(view = 'active', ownerId) => { setSelectedTaskActionId(undefined); setTaskView(view); setTaskOwnerId(ownerId); setShowTaskMonitor(true); }} onSchedules={() => { setScheduleSelection(undefined); setShowScheduleManager(true); }} onWork={id => { setSelectedWorkOrderId(id); setShowWorkManager(true); }} onWorld={() => void openWorld(memoryOwner.id)} />}
+          {showPanel && memoryOwner && <CompanionPlanner active={isActive && page === 'messages'} initialActivityTaskId={selectedActivityTaskId} key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} members={members} conversationId={selected.id} conversationKind={selected.kind} actions={actions} request={request} api={api} onOwnerChange={id => { setMemoryOwnerId(id); setMemoryDraft(undefined); setSelectedActivityTaskId(undefined); }} onClose={() => setShowPanel(false)} onProfile={() => { setContactId(memoryOwner.id); setPage('contacts'); }} onMemory={() => openMemoryManager()} onLocateStateSource={(room, messageId) => void openStateSource(memoryOwner.id, selected.id, room, messageId)} onStateMemory={noteId => openStateMemory(memoryOwner.id, noteId)} onMemoryProcessing={() => openMemoryManager(true)} onTasks={(view = 'active', ownerId) => { setSelectedTaskActionId(undefined); setTaskView(view); setTaskOwnerId(ownerId); setShowTaskMonitor(true); }} onSchedules={() => { setScheduleSelection(undefined); setShowScheduleManager(true); }} onWork={id => { setSelectedWorkOrderId(id); setShowWorkManager(true); }} onWorld={() => void openWorld(memoryOwner.id)} />}
         </div>}
     </main>
     <CompanionLifeOverview companions={companions} companionId={overviewOwner?.id} active={page === 'overview' && isActive} api={api} request={request} onOwnerChange={setOverviewOwnerId} onOpen={(kind, item) => void openOverviewDestination(kind, item)} onOpenTrace={() => void openOverviewDestination('trace')} />
-    {showMemoryManager && documentOwner && <CompanionMemoryManager active={page === 'memory' && isActive} traceRequest={memoryTraceRequest?.owner === documentOwner.id ? memoryTraceRequest.nonce : undefined} onTraceRequestConsumed={() => setMemoryTraceRequest(undefined)} learningRequest={memoryLearningRequest?.owner === documentOwner.id ? memoryLearningRequest.nonce : undefined} onLearningRequestConsumed={() => setMemoryLearningRequest(undefined)} processingRequest={memoryProcessingRequest?.owner === documentOwner.id ? memoryProcessingRequest.nonce : undefined} onProcessingRequestConsumed={() => setMemoryProcessingRequest(undefined)} companions={companions} ownerId={documentOwner.id} conversation={selected} request={request} api={api} draft={memoryDraft} onDraftConsumed={() => setMemoryDraft(undefined)} requestError={error} onDismissError={() => setError('')} authorName={authorName} onOwnerChange={id => { setDocumentOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setPage('messages')} onLocateSource={source => {
+    {showMemoryManager && documentOwner && <CompanionMemoryManager memoryNoteRequest={memoryNoteRequest} onMemoryNoteRequestConsumed={() => setMemoryNoteRequest(undefined)} active={page === 'memory' && isActive} traceRequest={memoryTraceRequest?.owner === documentOwner.id ? memoryTraceRequest.nonce : undefined} onTraceRequestConsumed={() => setMemoryTraceRequest(undefined)} learningRequest={memoryLearningRequest?.owner === documentOwner.id ? memoryLearningRequest.nonce : undefined} onLearningRequestConsumed={() => setMemoryLearningRequest(undefined)} processingRequest={memoryProcessingRequest?.owner === documentOwner.id ? memoryProcessingRequest.nonce : undefined} onProcessingRequestConsumed={() => setMemoryProcessingRequest(undefined)} companions={companions} ownerId={documentOwner.id} conversation={selected} request={request} api={api} draft={memoryDraft} onDraftConsumed={() => setMemoryDraft(undefined)} requestError={error} onDismissError={() => setError('')} authorName={authorName} onOwnerChange={id => { setDocumentOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setPage('messages')} onLocateSource={source => {
       setPage('messages');
       if (source.conversationId === selectedRef.current) { if (source.memoryEvidenceOnly && source.actionId) openTaskProgress(source.actionId); else void jumpToMessage(source); return; }
       void (async () => {

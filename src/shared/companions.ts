@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { companionReplyProgressSchema } from './companion-reply-progress';
+import { companionSocialReplyProgressEntrySchema } from './companion-social-reply';
 import { companionReplyMemoryCommand, companionReplyMemorySchema } from './companion-reply-memory';
 import { companionMemoryCorpusStateCommand, companionMemoryProbeCommand, companionMemoryProbeSchema } from './companion-memory-probe';
 import { companionMemoryRetrievalSchema } from './companion-memory-retrieval';
@@ -18,6 +19,7 @@ import { companionLifeOverviewCommand, companionLifeOverviewSchema } from './com
 import { companionMemoryTraceListCommand, companionMemoryTraceInspectCommand, companionMemoryTracePageSchema, companionMemoryTraceSchema } from './companion-memory-trace';
 import { companionSchedulePublicCommands, companionScheduleSchema, companionScheduleOccurrenceSchema } from './companion-schedule';
 import { companionStatePublicCommands, companionRuntimeStateSchema } from './companion-state';
+import { companionCharacterDevelopmentSchema } from './companion-character-development';
 import { companionRoutinePublicCommands, companionRoutineSchema, companionRoutineRuntimeSchema } from './companion-routine';
 import { companionWorldPublicCommands, companionWorldStatusSchema, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema } from './companion-world';
 import { companionSocialPublicCommands, companionSocialConversationPageSchema, companionSocialMessagePageSchema, companionSocialDaysSchema, companionSocialFlowPageSchema, companionSocialGraphSchema } from './companion-social';
@@ -64,7 +66,7 @@ export type CompanionAttachment = z.infer<typeof attachmentSchema>;
 export const messageSchema = z.object({
   id: companionIdSchema, sequence: z.number().int().min(1), conversationId: companionIdSchema,
   authorId: companionIdSchema, kind: z.enum(['text', 'notice', 'action']), content: z.string().max(65536),
-  createdAt: z.string(), worldCreatedAt: z.string().optional(), replyToId: companionIdSchema.optional(),
+  createdAt: z.string(), worldCreatedAt: z.string().optional(), worldTimeZone: z.string().optional(), replyToId: companionIdSchema.optional(),
   status: z.enum(['sent', 'failed']), actionId: companionIdSchema.optional(),
   attachments: z.array(attachmentSchema).max(10),
   worldObservation: companionWorldObservationSchema.optional(),
@@ -232,6 +234,7 @@ export const companionsResponseSchema = z.object({
   workOrder: companionWorkOrderSchema.optional(), workOrderPage: companionWorkOrderPageSchema.optional(),
   lifeRule: companionLifeRuleSchema.optional(), lifeRules: z.array(companionLifeRuleSchema).optional(), lifeOccurrence: companionLifeOccurrenceSchema.optional(), lifeOccurrences: z.array(companionLifeOccurrenceSchema).optional(),
   runtimeState: companionRuntimeStateSchema.optional(),
+  characterDevelopment: companionCharacterDevelopmentSchema.optional(),
   routine: companionRoutineSchema.optional(),
   routineRuntime: companionRoutineRuntimeSchema.optional(),
   worldKnowledge: z.object({ category: z.enum(['contacts', 'scenes', 'social', 'observations']), observedAt: z.iso.datetime(), observedAtVirtual: z.iso.datetime(), internalized: z.literal(false), items: z.array(z.record(z.string(), z.unknown())).max(20), hasMore: z.boolean().optional(), evidenceMessageId: companionIdSchema }).optional(),
@@ -244,6 +247,7 @@ export const companionsResponseSchema = z.object({
   socialGraph: companionSocialGraphSchema.optional(),
   socialFlowPage: companionSocialFlowPageSchema.optional(),
   socialMessagePage: companionSocialMessagePageSchema.optional(),
+  socialReplyProgress: z.array(companionSocialReplyProgressEntrySchema).max(50).optional(),
   socialDays: companionSocialDaysSchema.optional(),
 });
 export type CompanionsResponse = z.infer<typeof companionsResponseSchema>;

@@ -186,22 +186,16 @@ export class CompanionRoutineStore {
       (at, reference) => this.virtualTime(at, reference), this.worldClock.clockBoundaries(start, end));
   }
   allowWork(companionId: string, sourceMessageId: string, now = Date.now(), proactive = false): boolean {
-    // A wake window belongs to a specific urgent interaction, not the owner's
-    // entire backlog. Fixed commitments also must not release old queued chat.
-    if (!['sleeping', 'eating'].includes(evaluateCompanionRoutine(this.configuration(companionId), iso(this.virtualTime(now))).phase)) return true;
-    if (proactive) return false;
+    // Incoming conversations own a cognitive lane. Physical sleep/meals and
+    // background work do not have to end before an activated owner can reply.
+    // Unsolicited contact still follows the owner's ordinary contact windows.
+    if (proactive) return !['sleeping', 'eating'].includes(evaluateCompanionRoutine(this.configuration(companionId), iso(this.virtualTime(now))).phase);
     const message = this.db.prepare('SELECT conversation_id FROM messages WHERE id=?').get(sourceMessageId);
     if (!message) return false;
     const scope = { companionId, conversationId: String(row(message).conversation_id) };
     const source = this.visibleSources(scope, [sourceMessageId])[0];
     if (!source || source.authorId !== 'user') return false;
-    if (this.worldClock.urgent(companionId, sourceMessageId, now)) return this.interrupt(scope, sourceMessageId, now).canRespond;
-    const active = this.db.prepare('SELECT source_message_id FROM companion_routine_interruptions WHERE companion_id=? AND starts_at<=? AND ends_at>? AND source_message_id IS NOT NULL').all(companionId, iso(now), iso(now)) as Row[];
-    return active.some(window => {
-      const original = this.visibleSources(scope, [String(window.source_message_id)])[0];
-      return original?.authorId === 'user' && original.conversationId === source.conversationId
-        && source.sequence >= original.sequence && this.worldClock.urgent(companionId, original.id, now);
-    });
+    return true;
   }
   interrupt(scope: Scope, sourceMessageId: string, now = Date.now()): CompanionRoutineRuntime {
     this.requireScope(scope); const source = this.visibleSources(scope, [sourceMessageId])[0];

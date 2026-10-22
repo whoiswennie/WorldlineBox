@@ -27,6 +27,21 @@ const page = (store: CompanionsStore, input: { companionId?: string; filter?: 'a
   store.request({ type: 'life.overview.read', companionId: 'alice', ...input }).lifeOverviewContext!;
 
 describe('bounded unified life overview', () => {
+  it('projects ongoing learning goal metadata into the same owner feed without loading source bodies', () => {
+    const { store } = fixture();
+    const created = store.request({ type: 'learning.goals.create', companionId: 'alice', text: '持续学习植物知识，每轮核对证据并自测', materials: [], allowWeb: false,
+      schedule: { intervalMinutes: 60, windows: [], timeZone: 'Asia/Shanghai' } }).learningGoal!;
+    const upcoming = page(store, { filter: 'upcoming' }).items.find(item => item.kind === 'learning_goal')!;
+    expect(upcoming).toMatchObject({ title: '学习 · 持续学习植物知识，每轮核对证据并自测', section: 'upcoming', destination: { kind: 'learning', id: created.id }, timing: { clock: 'real', kind: 'eligibility' } });
+    expect(page(store, { companionId: 'bob' }).items.some(item => item.kind === 'learning_goal')).toBe(false);
+    const claimed = store.request({ type: 'learning.goals.claim' }).learningGoalJob!;
+    store.request({ type: 'learning.goals.checkpoint', id: created.id, leaseToken: claimed.leaseToken,
+      round: { ...claimed.round, phase: 'reading', reads: [{ id: 'large_source', kind: 'web', title: '不应传入总览', uri: 'https://example.org', revision: 'one', readAt: new Date().toISOString(), characters: 12000,
+        contentHash: 'a'.repeat(64), excerpt: '只留在学习页的原文'.repeat(1000).slice(0, 12000), truncated: true }] } });
+    const current = page(store, { filter: 'current' });
+    expect(current.items.find(item => item.kind === 'learning_goal')).toMatchObject({ status: 'running', section: 'current', condition: expect.stringContaining('读取并核实材料') });
+    expect(JSON.stringify(current)).not.toContain('只留在学习页的原文');
+  });
   it('observes the shared clock/weather snapshot without advancing time, inventing activity or writing defaults', () => {
     const { store, db } = fixture(), initial = page(store), before = db.prepare('PRAGMA data_version').get();
     expect(companionLifeOverviewContextSchema.parse(initial)).toEqual(initial);

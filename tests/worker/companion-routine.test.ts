@@ -99,7 +99,7 @@ describe('persistent virtual routine source and clock behavior', () => {
     store.request({ type: 'routine.interrupt', ...scope, sourceMessageId: source.id });
     const action = store.createAction({ ...scope, sourceMessageId: source.id, title: '只读检查', status: 'running' });
     vi.setSystemTime('2026-10-15T00:10:00Z');
-    expect(store.request({ type: 'routine.get', ...scope }).routine?.runtime).toMatchObject({ phase: 'awake', canRespond: false, activity: '正在电脑前处理已答应的事' });
+    expect(store.request({ type: 'routine.get', ...scope }).routine?.runtime).toMatchObject({ phase: 'awake', canRespond: true, activity: '正在电脑前处理已答应的事' });
     store.updateAction(action.id, { status: 'succeeded', result: '实际完成检查' });
     store.request({ type: 'world.work.end', companionId: 'alice', workId: 'long_work' }); vi.setSystemTime(Date.now() + 10000);
     expect(store.request({ type: 'routine.get', ...scope }).routine?.runtime.phase).toBe('sleeping');

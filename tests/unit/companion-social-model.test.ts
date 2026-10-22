@@ -24,6 +24,19 @@ const input = () => ({ companion, conversation, source, messages: [source], job,
     people: [], objects: [], visibleObjectIds: [], visibleCompanionIds: [] },
 } as CompanionWorldSnapshot });
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
+it('uses only the currently verified own-scope self-understanding and retains its uncertainty in peer speech', async () => {
+  const characterDevelopment = { companionId: companion.id, conversationId: conversation.id, observedAt: source.createdAt, truncated: false,
+    items: [{ memoryId: 'self_note', memoryVersion: 2, kind: 'voice' as const, topic: '讨论节奏', statement: '我愿意先核实出处再慢慢讨论。', basis: 'reflection' as const,
+      qualification: '仅是这次共同阅读形成的暂定认识。', updatedAt: source.createdAt, sourceMessageIds: [source.id] }] };
+  const bodies: Array<Record<string, unknown>> = [];
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => { const request = JSON.parse(String(init?.body)); bodies.push(JSON.parse(request.messages[1].content)); return response({ text: '姐姐，我想先核对出处。', reason: '保留自己的有条件判断。' }); });
+  await generateCompanionSocialReply({ ...input(), characterDevelopment }, config, undefined, { fetchFn });
+  expect(bodies[0]!.characterDevelopment).toEqual(characterDevelopment);
+  for (const invalid of [{ ...characterDevelopment, companionId: 'other' }, { ...characterDevelopment, conversationId: 'private_flash' }]) {
+    await generateCompanionSocialReply({ ...input(), characterDevelopment: invalid }, config, undefined, { fetchFn });
+  }
+  expect(bodies.slice(1).every(body => !('characterDevelopment' in body))).toBe(true);
+});
 it.each(['phone', 'face_to_face'] as const)('composes ordinary %s visit speech from actual peer facts without importing the private planner or reauthorizing it', async channel => {
   const task: CompanionActivityTask = { id: 'task', companionId: companion.id, conversationId: 'private_flash', sourceMessageId: 'user_request',
     title: 'PRIVATE_TITLE', goal: 'PRIVATE_USER_REQUEST', status: 'running', step: 9, attempts: 1, createdAt: source.createdAt,
@@ -34,11 +47,22 @@ it.each(['phone', 'face_to_face'] as const)('composes ordinary %s visit speech f
     const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
     expect(data.purpose).toBe('visit_peer_speech'); expect(data.channel).toBe(channel);
     expect(data.progress).toEqual({ arrived: true, exchangedInPerson: true });
+    expect(data.runtimeState).toMatchObject({ energy: 23, mood: 'tired', expression: 'reserved', revision: 9 });
+    expect(data.runtimeState).not.toHaveProperty('sourceMessageIds');
+    expect(data.runtimeState).not.toHaveProperty('recentChanges');
+    expect(data.runtimeBehavior.responseLength).toBe('brief');
+    expect(data.characterDevelopment.items[0].statement).toBe('我想先慢慢核实。');
     expect(data.messages).toEqual([{ authorId: source.authorId, content: source.content, sequence: source.sequence }]);
     expect(JSON.stringify(data)).not.toMatch(/PRIVATE_|UNSENT_|OTHER_PEER/); expect(request.tools).toBeUndefined();
     return response({ text: '姐姐，我们已经见面啦，坐一会儿吧。' });
   });
   expect(await generateCompanionVisitSpeech({ companion, target: members[1]!, channel, task, world: input().world,
+    runtimeState: { companionId: companion.id, energy: 23, mood: 'tired', expression: 'reserved', revision: 9,
+      affect: { pleasure: -0.1, arousal: 0.1, dominance: 0 }, relationship: { affinity: 50, trust: 50, respect: 50 },
+      familiarity: { stage: 'new', interactionCount: 1, sharedEventCount: 0 }, updatedAt: source.createdAt,
+      focus: 'PRIVATE_FOCUS', reason: 'PRIVATE_REASON', sourceConversationId: 'private_flash', sourceMessageIds: ['PRIVATE_SOURCE'], evidence: [] },
+    characterDevelopment: { companionId: companion.id, conversationId: conversation.id, observedAt: source.createdAt, truncated: false,
+      items: [{ memoryId: 'own_note', memoryVersion: 2, kind: 'voice', topic: '节奏', statement: '我想先慢慢核实。', basis: 'self_expression', updatedAt: source.createdAt, sourceMessageIds: [source.id] }] },
     peerConversationId: conversation.id, messages: [source, { ...source, authorId: 'user', content: 'PRIVATE_PLAYER_DATA' },
       { ...source, authorId: companion.id, conversationId: 'private_flash', content: 'PRIVATE_SELF_REPLY' },
       { ...source, authorId: 'friend', content: 'OTHER_PEER' }, { ...source, isReplyDraft: true, content: 'UNSENT_DRAFT' }] },

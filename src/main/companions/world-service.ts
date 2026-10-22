@@ -122,7 +122,15 @@ export class CompanionWorldService {
   private async processSocial(job: CompanionSocialJob, signal: AbortSignal): Promise<void> {
     if (!job.leaseToken) return;
     const leaseToken = job.leaseToken; let interruptionId: string | undefined;
+    const progress = async (phase: 'context' | 'memory' | 'thinking' | 'waiting', detail: string,
+      memory?: { status: 'running' | 'completed' | 'unavailable'; count?: number; injected?: boolean; pending?: boolean }, recalled?: Partial<CompanionMemoryRecall>) => {
+      await this.options.request({ type: 'social.job.progress', id: job.id, leaseToken, phase, detail, ...(memory ? { memory } : {}),
+        ...(recalled ? { memoryRecall: { reasons: recalled.reasons ?? [], pending: recalled.pending === true,
+          degraded: recalled.degraded === true, ...(recalled.context ? { context: recalled.context } : {}) } } : {}) });
+      this.options.changed();
+    };
     try {
+      await progress('context', '正在核验这条来信与实际参与者');
       if (job.urgent) interruptionId = await this.options.beginPriority?.(job.companionId, job.conversationId, job.sourceMessageId);
       const state = (await this.options.request({ type: 'state', includeHidden: true, conversationId: job.conversationId })).state;
       const companion = state?.companions.find(member => member.id === job.companionId);
@@ -136,30 +144,44 @@ export class CompanionWorldService {
       const world = await this.observe(scope);
       if (!world) throw new Error('伙伴当前世界不可访问。');
       const routine = (await this.options.request({ type: 'routine.get', ...scope })).routine;
-      const runtime = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
       const config = await this.options.configFor(companion);
-      const recalled = this.options.recall ? await this.options.recall({ companion, conversation, messages: sources,
+      await progress('memory', '正在回忆与这条来信有关的经历', { status: 'running' });
+      const recalled: Partial<CompanionMemoryRecall> | undefined = this.options.recall ? await this.options.recall({ companion, conversation, messages: sources,
         currentMessage: source, beforeSequence: job.throughSequence, config, signal })
         : await this.options.request({ type: 'memory.search', ...scope, query: source.content.slice(0, 16000), limit: 8 })
           .then(response => ({ memories: response.memoryPage?.items.map(hit => hit.memory) ?? [], context: response.memoryContext }))
           .catch(error => { this.options.report(error); return undefined; });
       if (signal.aborted || this.closed) throw cancelled();
+      await progress('thinking', '正在组织给伙伴的回应', { status: recalled?.degraded ? 'unavailable' : 'completed',
+        count: recalled?.reasons?.length ?? recalled?.memories?.length ?? 0, injected: !!recalled?.context?.text.trim(), pending: recalled?.pending === true }, recalled);
       const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, sourceAuthorId: source.authorId, audience: 'peers' });
-      const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world, routine, ...profiles,
+      const currentScope = { companionId: companion.id, conversationId: conversation.id };
+      const [stateResponse, developmentResponse, latestWorld] = await Promise.all([
+        this.options.request({ type: 'state.get', ...currentScope }),
+        this.options.request({ type: 'character.development', ...currentScope, limit: 12 }), this.observe(currentScope),
+      ]);
+      const runtime = stateResponse.runtimeState;
+      if (!latestWorld) throw new Error('伙伴最新世界状态不可访问。');
+      const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world: latestWorld, routine, ...profiles,
+        characterDevelopment: developmentResponse.characterDevelopment,
         memories: recalled?.memories ?? [], memoryContext: recalled?.context?.text,
         ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression, affect: runtime.affect } } : {}),
         members: state!.companions.filter(member => conversation.memberIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) },
       config, signal, { fetchFn: this.options.fetchFn });
       const wait = Date.parse(job.typingNotBefore) - Date.now();
+      await progress('waiting', '回应已准备好，正在核验并发送');
       if (wait > 0) await delay(wait, signal);
       if (signal.aborted || this.closed) throw cancelled();
       if (this.options.memoryContextValid && !await this.options.memoryContextValid(scope, recalled?.context)) {
         throw new Error('伙伴回忆来源已经变化，本轮发言将重新读取。');
       }
       await this.options.request({ type: 'social.job.complete', id: job.id, leaseToken, text: result.text,
+        memoryRecall: { reasons: recalled?.reasons ?? [], pending: recalled?.pending === true, degraded: recalled?.degraded === true,
+          ...(recalled?.context ? { context: recalled.context } : {}) },
         ...(recalled?.context ? { expectedMemoryRevision: recalled.context.revision } : {}),
         ...(result.shareAddress ? { shareAddress: true } : {}),
         ...(result.nextRecipientId ? { nextRecipientId: result.nextRecipientId } : {}), ...(result.workOffer ? { workOffer: result.workOffer } : {}) });
+      this.options.changed();
     } catch (error) {
       await this.options.request({ type: 'social.job.fail', id: job.id, leaseToken,
         error: error instanceof CompanionModelError ? error.message : '伙伴通信稍后继续。' });
@@ -202,15 +224,19 @@ export class CompanionWorldService {
       const config = await this.options.configFor(companion);
       if (kind === 'decision') {
         const routine = (await this.options.request({ type: 'routine.get', ...scope })).routine;
-        const runtime = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
         const memoryQuery = world.events.slice(-8).map(event => event.text).filter(Boolean).join('\n').slice(0, 4000)
           || '我自己的真实世界经历、实际学习过的资料，以及在这些经历中形成的个人认识、兴趣和价值判断';
         const memoryResponse = await this.options.request({ type: 'memory.search', ...scope,
           query: memoryQuery, limit: 8 }).catch(() => undefined);
         const memories = memoryResponse?.memoryPage?.items.map(hit => hit.memory) ?? [];
+        const [runtimeResponse, developmentResponse, latestWorld] = await Promise.all([
+          this.options.request({ type: 'state.get', ...scope }), this.options.request({ type: 'character.development', ...scope, limit: 12 }), this.observe(scope),
+        ]);
+        const runtime = runtimeResponse.runtimeState;
+        if (!latestWorld) throw new Error('伙伴最新世界状态不可访问。');
         const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, audience: 'peers', directory: false,
           sourceAuthorId: world.events.findLast(event => event.targetId === companion.id && event.actorId !== companion.id)?.actorId });
-        const decision = await generateCompanionWorldDecision({ companion, world, job,
+        const decision = await generateCompanionWorldDecision({ companion, world: latestWorld, job, characterDevelopment: developmentResponse.characterDevelopment,
           memories, memoryContext: memoryResponse?.memoryContext?.text,
           ...profiles, routine, ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression,
             affect: runtime.affect, focus: runtime.focus, busy: world.works.some(work => work.companionId === companion.id && work.status !== 'ended') } } : {}),
@@ -265,13 +291,17 @@ export class CompanionWorldService {
       await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, sourceMemoryIds: [] }); return;
     }
     const prohibitions = await this.options.request({ type: 'memory.prohibitions', ...scope, worldJobId: job.id });
+    const runtimeState = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
+    const characterDevelopment = (await this.options.request({ type: 'character.development', ...scope, limit: 12 })).characterDevelopment;
     const result = await generateCompanionMemoryDream({ companion, conversation, messages: [...sources.values()], relevantMemories: atoms,
+      runtimeState, characterDevelopment,
       dreamAllowed: job.dreamAllowed === true,
       prohibitions: prohibitions.memoryProhibitions,
       intent: '本批日记只属于同一来源可见域。睡眠中整理这些真实经历、学习资料与自己的主观认识，保留原始细节、逐字证据和可撤回来源，不混入其它会话或世界范围。' }, config, signal, { fetchFn: this.options.fetchFn });
     if (signal.aborted || this.closed) throw cancelled();
     await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, ...(result.dream ? { dream: result.dream } : {}),
       expectedProhibitionRevision: prohibitions.memoryProhibitionRevision,
+      ...(result.stateProposal ? { stateProposal: result.stateProposal, expectedStateRevision: runtimeState?.revision } : {}),
       sourceMemoryIds: [...new Set([...(result.dream?.relatedMemoryIds ?? []), ...result.notes.flatMap(note => note.relatedMemoryIds ?? [])])],
       memoryCandidates: result.notes.map(candidate => ({ ...candidate,
         sourceChecksums: Object.fromEntries(candidate.sourceMessageIds.map(id => [id, createHash('sha256').update(sources.get(id)!.content).digest('hex')])) })) });

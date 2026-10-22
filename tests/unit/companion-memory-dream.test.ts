@@ -110,6 +110,22 @@ describe('source-based VCP sleep reflection', () => {
     await expect(generateCompanionMemoryDream(input, config, undefined, { fetchFn: fetchFor({ notes: [], dream, stateProposal }) }))
       .rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
+  it('allows a present, source-backed integration focus only alongside a newly saved qualified reflection', async () => {
+    const stateProposal = { reason: '这次整理后，下次处理类似故障时先确认可恢复副本。', expression: 'direct', focus: '下次修复先核验备份',
+      sourceMessageIds: [source.id], evidence: dream.evidence, appraisals: [{ type: 'shared_success', target: 'task', intensity: .3, confidence: .9 }] };
+    const result = await generateCompanionMemoryDream(input, config, undefined, { fetchFn: fetchFor({ notes: [reflection], dream: null, stateProposal }) });
+    expect(result.stateProposal).toEqual(stateProposal);
+    await expect(generateCompanionMemoryDream(input, config, undefined, { fetchFn: fetchFor({ notes: [reflection], dream: null,
+      stateProposal: { ...stateProposal, appraisals: [{ type: 'shared_success', target: 'user', intensity: .3, confidence: .9 }] } }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+  it('preserves a qualified self-understanding projection grounded in the sleepers own actual action', async () => {
+    const statement = '我愿意先保留可恢复副本。', qualification = '仅是这次修复支持的暂定做法，不保证适用于所有故障。';
+    const note = { ...reflection, content: statement + qualification, diaryName: '自我认识', selfDevelopment: { kind: 'value', topic: '可恢复性', statement, basis: 'reflection', qualification } };
+    const result = await generateCompanionMemoryDream(input, config, undefined, { fetchFn: fetchFor({ notes: [note], dream: null }) });
+    expect(result.notes[0]?.selfDevelopment).toMatchObject({ statement, qualification, basis: 'reflection' });
+    await expect(generateCompanionMemoryDream({ ...input, messages: [{ ...source, authorId: 'user' }] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [note], dream: null }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
   it('keeps model-authored persona, permissions and host state fields outside the strict sleep result', async () => {
     for (const extra of [{ persona: 'overwrite' }, { permissions: ['filesystem.write'] }, { energy: 100 }]) {
       await expect(generateCompanionMemoryDream(input, config, undefined, { fetchFn: fetchFor({ notes: [], dream, ...extra }) }))

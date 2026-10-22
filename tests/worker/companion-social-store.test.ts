@@ -6,6 +6,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed, type CompanionConnection } from '../../src/companions/store';
 import { companionStorageResponseSchema } from '../../src/shared/companion-storage';
 import type { CompanionSocialJob } from '../../src/shared/companion-social';
+import { inspectCompanionReplyMemory, inspectCompanionSocialReplyMemory } from '../../src/main/companions/reply-memory-inspection';
+import { recallCorpusHash } from '../../src/main/companions/recall-evidence';
 
 const seeds: CompanionSeed[] = ['alice', 'bob', 'carol', 'dave'].map(id => ({ id, name: id, persona: '独立且尊重边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const Database = BetterSqlite3 as { new(filename: string): CompanionConnection };
@@ -28,6 +30,77 @@ function initial(store: CompanionsStore, conversationId: string, clientId = 'fir
   expect(store.request(command).socialPending).toBe(true); advance(store, 1300); return store.request(command).socialMessage!;
 }
 function complete(store: CompanionsStore, job: CompanionSocialJob, text: string | null) { advance(store, Math.max(1, Date.parse(job.typingNotBefore) - Date.now() + 1)); return store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text }); }
+
+it('preserves a peer reply exact recall during its live lease and after formal publication, then redacts withdrawn evidence', async () => {
+  const { store } = fixture(), pair = room(store), privateRoom = store.openPrivate('bob');
+  const introduction = store.appendMessage({ conversationId: privateRoom.id, authorId: 'user', content: '我叫天幻岚。', replyDirective: 'none' });
+  const note = store.request({ type: 'memory.record', companionId: 'bob', conversationId: privateRoom.id,
+    candidate: { content: '玩家向我介绍自己叫天幻岚。', tags: ['玩家', '姓名'], sourceMessageIds: [introduction.id], evidence: [{ sourceMessageId: introduction.id, quote: introduction.content }] } }).memories![0]!;
+  for (;;) { const job = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!job) break;
+    store.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true }); }
+  initial(store, pair.id); const job = store.request({ type: 'social.job.claim' }).socialJob!;
+  const scope = { companionId: 'bob', conversationId: pair.id, beforeSequence: job.throughSequence };
+  const snapshot = store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!;
+  const recall = { reasons: [{ id: note.id, version: note.version, reasons: ['VCP river'], path: [note.id] }], pending: false, degraded: false,
+    context: { text: 'VCP实际聚焦：玩家叫天幻岚。', revision: snapshot.revision, profileKey: 'test-native',
+      evidence: { capturedAt: new Date().toISOString(), corpusHash: recallCorpusHash(snapshot.notes), beforeSequence: job.throughSequence } } };
+  expect(() => store.request({ type: 'social.job.progress', id: job.id, leaseToken: 'wrong', phase: 'memory', detail: '不应保存' })).toThrow('租约');
+  store.request({ type: 'social.job.progress', id: job.id, leaseToken: job.leaseToken!, phase: 'thinking', detail: '组织回应',
+    memory: { status: 'completed', injected: true, count: 1 }, memoryRecall: recall });
+  const request = async (command: Parameters<CompanionsStore['request']>[0]) => store.request(command);
+  const pendingInput = { type: 'social.reply.memory.inspect' as const, jobId: job.id, companionId: 'bob', conversationId: pair.id, contextOffset: 0, contextLimit: 8192 };
+  expect(await inspectCompanionSocialReplyMemory(pendingInput, request)).toMatchObject({ state: 'ready', messageId: job.id, contextText: recall.context.text,
+    candidates: [{ id: note.id, sources: [{ messageId: introduction.id }] }] });
+  expect(store.request({ type: 'social.reply.progress', conversationId: pair.id }).socialReplyProgress).toMatchObject([{ jobId: job.id,
+    progress: { phase: 'thinking', memory: { injected: true } } }]);
+  advance(store, 1500);
+  const reply = store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '我记得玩家叫天幻岚。',
+    memoryRecall: recall, expectedMemoryRevision: snapshot.revision }).socialMessage!;
+  expect(reply.message.replyProgress?.phase).toBe('completed');
+  expect((await inspectCompanionSocialReplyMemory(pendingInput, request)).state).toBe('unavailable');
+  const completedInput = { type: 'reply.memory.inspect' as const, companionId: 'bob', conversationId: pair.id, messageId: reply.message.id, contextOffset: 0, contextLimit: 8192 };
+  expect(await inspectCompanionReplyMemory(completedInput, request)).toMatchObject({ state: 'ready', contextText: recall.context.text });
+  expect((await inspectCompanionReplyMemory({ ...completedInput, companionId: 'alice' }, request)).state).toBe('unavailable');
+  store.request({ type: 'memory.forget', companionId: 'bob', conversationId: privateRoom.id, id: note.id });
+  expect(await inspectCompanionReplyMemory(completedInput, request)).toMatchObject({ state: 'withdrawn', candidates: [], contextCharacters: 0 });
+});
+
+it.each(['skipped', 'exhausted-scope-failure'] as const)('reconsiders old %s peer episodes once without inventing observers or reviving forgotten sources', mode => {
+  const { store, filename } = fixture(), pair = room(store), source = append(store, pair.id, 0, '2026-10-15T10:00:00Z', '姐姐专门来问我玩家的名字。');
+  for (;;) { const job = store.request({ type: 'memory.jobs.claim' }).memoryJob; if (!job) break;
+    store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] }); }
+  store.request({ type: 'memory.forget', companionId: 'bob', conversationId: pair.id, sourceMessageIds: [source.message.id] });
+  store.close(); stores.delete(store);
+  const db = new Database(filename); db.prepare("DELETE FROM metadata WHERE key LIKE 'vcp-peer-episode-backfill-%'").run();
+  if (mode === 'exhausted-scope-failure') db.prepare("UPDATE vcp_capture_jobs SET status='failed',attempts=8,error='新日记不能关联其他来源域的旧记忆。' WHERE companion_id='alice'").run();
+  db.close();
+  const reopened = new CompanionsStore(filename, seeds); stores.add(reopened);
+  const retried = reopened.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  expect(retried.sourceMessageIds).toEqual([source.message.id]);
+  reopened.request({ type: 'memory.jobs.complete', id: retried.id, leaseToken: retried.leaseToken, notes: [] });
+  expect(reopened.request({ type: 'memory.jobs.claim', companionId: 'bob' }).memoryJob).toBeUndefined();
+  expect(reopened.request({ type: 'memory.sources.filter', companionId: 'carol', conversationId: reopened.openPrivate('carol').id, ids: [source.message.id] }).memorySources).toEqual([]);
+  reopened.close(); stores.delete(reopened);
+  const again = new CompanionsStore(filename, seeds); stores.add(again);
+  expect(again.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob).toBeUndefined();
+});
+
+it('links a new peer episode to the same owners private knowledge and cascades its withdrawal across entrances', () => {
+  const { store } = fixture(), pair = room(store), scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
+  const intro = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我的名字叫天幻岚。', replyDirective: 'none' });
+  const original = store.request({ type: 'memory.record', ...scope, candidate: { content: '玩家介绍自己叫天幻岚。', tags: ['姓名'],
+    sourceMessageIds: [intro.id], evidence: [{ sourceMessageId: intro.id, quote: intro.content }] } }).memories![0]!;
+  const question = append(store, pair.id, 1, '2026-10-15T10:00:00Z', '你还记得玩家亲口介绍的名字吗？');
+  const answer = append(store, pair.id, 2, '2026-10-15T10:00:01Z', '我记得他亲口介绍叫天幻岚。');
+  const candidate = { content: 'bob专门来问玩家姓名，我据自己的旧记忆回答天幻岚。', diaryName: '日记', tags: ['bob', '姓名询问'], relatedMemoryIds: [original.id],
+    sourceMessageIds: [question.message.id, answer.message.id], evidence: [{ sourceMessageId: question.message.id, quote: question.message.content }, { sourceMessageId: answer.message.id, quote: answer.message.content }] };
+  const episode = store.request({ type: 'memory.record', companionId: 'alice', conversationId: pair.id, candidate }).memories![0]!;
+  expect(episode.sourceConversationId).toBe(pair.id);
+  expect(episode.sources.map(source => source.messageId)).toEqual([question.message.id, answer.message.id]);
+  expect(() => store.request({ type: 'memory.record', companionId: 'bob', conversationId: pair.id, candidate })).toThrow('本人记忆');
+  store.request({ type: 'memory.forget', ...scope, id: original.id });
+  expect(store.request({ type: 'memory.browse', companionId: 'alice', conversationId: pair.id }).memoryPage?.items.some(hit => hit.memory.id === episode.id)).toBe(false);
+});
 
 it.each(['alice', 'bob', 'carol'])('requires every participant to be activated before sending a new group message (%s dormant)', dormant => {
   const { store, filename } = fixture(), group = room(store, ['alice', 'bob', 'carol']);
@@ -103,15 +176,14 @@ it('keeps the phone draft unrecorded until real typing completes and validates e
   const done = complete(store, claimed.socialJob!, null); expect(companionStorageResponseSchema.safeParse(done).success).toBe(true);
   for (const response of [store.request({ type: 'social.conversations' }), store.request({ type: 'social.messages', conversationId: pair.id }), store.request({ type: 'social.days' })]) expect(companionStorageResponseSchema.safeParse(response).success).toBe(true);
 });
-it('recovers a sleeping sender outbox after restart and cancels a withdrawn private authorization without copying it to peer sources', () => {
+it('recovers the phone outbox during virtual sleep after restart and still cancels withdrawn private authorization', () => {
   const f = fixture(), pair = room(f.store), scope = { companionId: 'alice', conversationId: f.store.openPrivate('alice').id }, routine = f.store.request({ type: 'routine.get', ...scope }).routine!;
   f.store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { sleepAt: '09:00', wakeAt: '11:00' } }); advance(f.store, 12000);
   const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '把这句公开问候发送给Bob。', replyDirective: 'none' });
   const input = { type: 'social.send', companionId: 'alice', conversationId: pair.id, content: '早上好。', channel: 'phone', clientId: 'after_restart', authorizationMessageId: source.id } as const;
   expect(f.store.request(input).socialPending).toBe(true); f.store.close(); stores.delete(f.store);
-  const store = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); const latest = store.request({ type: 'routine.get', ...scope }).routine!;
-  store.request({ type: 'routine.configure', ...scope, expectedRevision: latest.revision, patch: { sleepAt: '23:00', wakeAt: '07:00' } }); advance(store, 12000);
-  expect(store.request(input).socialPending).toBe(true); advance(store, 1300); const delivered = store.request(input).socialMessage!;
+  const store = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
+  advance(store, 1300); const delivered = store.request(input).socialMessage!;
   expect(delivered.message.authorId).toBe('alice'); expect(JSON.stringify(delivered)).not.toContain(source.id);
   const next = { ...input, clientId: 'withdrawn' }; expect(store.request(next).socialPending).toBe(true); store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] }); advance(store, 1300); store.request({ type: 'social.job.claim' });
   expect(() => store.request(next)).toThrow('撤回'); expect(store.request({ type: 'social.messages', conversationId: pair.id }).socialMessagePage!.total).toBe(1);

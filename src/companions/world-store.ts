@@ -19,7 +19,7 @@ import { companionWorldExpression } from '../shared/companion-world-expression';
 import type { CompanionRoutineConfig } from '../shared/companion-routine';
 import type { CompanionWorldArguments } from '../shared/companion-world-tool';
 import type { CompanionMessage, CompanionMemory } from '../shared/companions';
-import type { CompanionRuntimeState } from '../shared/companion-state';
+import type { CompanionRuntimeState, CompanionStateProposal } from '../shared/companion-state';
 import type { CompanionMemoryCandidate } from '../shared/companion-memory';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
@@ -88,9 +88,11 @@ export class CompanionWorldStore {
     private readonly visibleSources: (scope: CompanionWorldScope, ids: string[]) => CompanionMessage[],
     private readonly runtime: (id: string) => Pick<CompanionRuntimeState, 'energy' | 'mood' | 'expression' | 'affect'>,
     private readonly applyEffect: (event: CompanionWorldEvent) => void,
-    private readonly recordMemory: (scope: CompanionWorldScope, candidate: CompanionMemoryCandidate) => void,
+    private readonly recordMemory: (scope: CompanionWorldScope, candidate: CompanionMemoryCandidate) => CompanionMemory | undefined,
     private readonly memoryRevision: (scope: CompanionWorldScope) => string,
-    private readonly prohibitionRevision: (scope: CompanionWorldScope, noteIds?: readonly string[]) => string) {}
+    private readonly prohibitionRevision: (scope: CompanionWorldScope, noteIds?: readonly string[]) => string,
+    private readonly integrateMemory?: (scope: CompanionWorldScope, notes: readonly CompanionMemory[], proposal: CompanionStateProposal,
+      event: { eventKey: string; kind: 'sleep'; expectedRevision?: number }) => void) {}
 
   connectKnowledge(query: NonNullable<CompanionWorldStore['knowledge']>): void { this.knowledge = query; }
   queryKnowledge(scope: CompanionWorldScope, args: Extract<CompanionWorldArguments, { action: 'query' }>): CompanionStorageResponse {
@@ -246,11 +248,13 @@ export class CompanionWorldStore {
     return { clock, environment: companionWorldEnvironment(Date.parse(clock.virtualNow), clock.timeZone).environment, contacts, interactions: interactions.slice(0, 60) };
   }
   recordPriorityEvent(kind: 'social_interrupt' | 'social_resume', owner: string, sourceId: string): void {
-    const source = this.db.prepare('SELECT author_id FROM messages WHERE id=?').get(sourceId) as { author_id: string } | undefined;
+    const source = this.db.prepare('SELECT author_id,conversation_id FROM messages WHERE id=?').get(sourceId) as { author_id: string; conversation_id: string } | undefined;
     if (source?.author_id !== 'user') return;
     const state = this.load();
-    this.event(state, { kind, actorId: kind === 'social_interrupt' ? 'user' : owner, targetId: kind === 'social_interrupt' ? owner : 'user',
+    const event = this.event(state, { kind, actorId: kind === 'social_interrupt' ? 'user' : owner, targetId: kind === 'social_interrupt' ? owner : 'user',
+      sourceMessageId: sourceId, conversationId: source.conversation_id, privateOwner: owner,
       text: kind === 'social_interrupt' ? '开始优先处理玩家的真实紧急联系。' : '紧急处理结束，恢复保留的原有安排。' });
+    if (kind === 'social_interrupt') this.applyEffect(event);
     this.save(state);
   }
   interruptSocial(owner: string, source: CompanionSocialMessage): void {
@@ -260,7 +264,8 @@ export class CompanionWorldStore {
     if (existing) return;
     if (this.db.prepare('SELECT 1 FROM companion_social_interruptions WHERE companion_id=? AND author_id=? AND starts_at>? LIMIT 1').get(owner, source.message.authorId, state.cursor - 120000)) return;
     this.db.prepare("INSERT INTO companion_social_interruptions VALUES(?,?,?,?,?,?,'active',?)").run(owner, source.message.id, source.message.authorId, source.message.conversationId, state.cursor, state.cursor + 120000, createHash('sha256').update(source.message.content).digest('hex'));
-    this.event(state, { kind: 'social_interrupt', actorId: source.message.authorId, targetId: owner, text: '收到真实伙伴的紧急联系，暂缓当前活动以处理来信。', sourceMessageId: source.message.id, conversationId: source.message.conversationId });
+    const event = this.event(state, { kind: 'social_interrupt', actorId: source.message.authorId, targetId: owner, text: '收到真实伙伴的紧急联系，暂缓当前活动以处理来信。', sourceMessageId: source.message.id, conversationId: source.message.conversationId });
+    this.applyEffect(event);
     this.planRoutine(state, actor); this.dirty = true; this.save(state);
   }
   endSocialInterrupt(owner: string, sourceId: string): void {
@@ -277,7 +282,9 @@ export class CompanionWorldStore {
     if (![owner, ...recipients].every(id => this.db.prepare("SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL AND json_extract(data,'$.active')=1").get(id))) return false;
     const state = this.load(), actor = state.actors.find(actor => actor.companionId === owner);
     if (!actor) return false;
-    if (channel === 'phone') return this.phoneAvailable(state, actor);
+    // Message processing is independent of the single rendered body. Actual
+    // visits and face-to-face speech still require physical admission below.
+    if (channel === 'phone') return true;
     return this.faceGroupAvailable(state, [owner, ...recipients]);
   }
   private faceMemberAvailable(state: StoredWorld, actor: StoredActor): boolean {
@@ -306,7 +313,8 @@ export class CompanionWorldStore {
   }
   routineCanRespond(owner: string, allowWake: boolean): boolean {
     const state = this.advancing && this.activeWorld ? this.activeWorld : this.load(), actor = state.actors.find(actor => actor.companionId === owner);
-    return !!actor && this.phoneAvailable(state, actor, allowWake);
+    void allowWake;
+    return !!actor && !!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL AND json_extract(data,'$.active')=1").get(owner);
   }
   private phoneAvailable(state: StoredWorld, actor: StoredActor, allowWake = false): boolean {
     const urgent = !!this.socialInterrupt(actor.companionId, state.cursor); allowWake ||= urgent;
@@ -771,11 +779,12 @@ export class CompanionWorldStore {
     const phase = evaluateCompanionRoutine(this.routineConfig(actor.companionId), iso(this.virtualFor(state, state.cursor)));
     actor.routinePhase = phase.phase;
     const computer = active.filter(work => work.kind !== 'chat'), phone = active.filter(work => work.kind === 'chat');
+    if (phone.length) this.planPhone(state, actor, phone, computer);
     const interruption = this.socialInterrupt(actor.companionId, state.cursor);
     if (interruption && !active.some(work => work.urgent)) {
       if (!actor.socialPause) actor.socialPause = { sourceId: interruption.source_id, authorId: interruption.author_id, route: actor.route, journey: actor.journey, activity: actor.activity };
       actor.route = []; delete actor.journey; this.releaseMeeting(actor, true);
-      for (const work of active) { work.status = 'waiting'; work.reason = '正在处理紧急联系，原工作保留'; }
+      for (const work of computer) { work.status = 'waiting'; work.reason = '正在处理紧急联系，原工作保留'; }
       if (['sleeping', 'lyingDown', 'eating'].includes(actor.activity)) this.enterFurniture(state, actor, 'idle', state.cursor);
       if (!actor.transition || actor.transition.until <= state.cursor) { this.holdPhone(actor, state.cursor); if (actor.activity === 'working') actor.activity = 'sitting'; }
       return;
@@ -799,9 +808,10 @@ export class CompanionWorldStore {
     if (actor.phoneResume && (computer.length || !phone.some(work => work.status === 'ready') && !(peerPhone && this.phoneAvailable(state, actor)))) this.releasePhone(actor, state.cursor);
     if (computer.length) this.planComputer(state, actor, computer);
     const recovering = this.planRecovery(state, actor, phase.phase, computer.length > 0);
-    if (phone.length) this.planPhone(state, actor, phone, computer);
     if (recovering) return;
-    if (active.some(work => work.status !== 'waiting')) return;
+    if (computer.some(work => work.status !== 'waiting')) return;
+    if (phone.some(work => work.status === 'ready') && this.phoneAvailable(state, actor)
+      && !['sleeping', 'eating'].includes(phase.phase)) return;
     if (peerPhone && this.phoneAvailable(state, actor)) {
       if (!actor.transition) this.holdPhone(actor, state.cursor);
       return;
@@ -1034,34 +1044,23 @@ export class CompanionWorldStore {
     actor.activityStartedAtReal = iso(now);
   }
   private planPhone(state: StoredWorld, actor: StoredActor, phones: StoredWork[], computers: StoredWork[]): void {
-    // A reply awaiting its own computer work cannot also hold the walking actor
-    // on the phone. A distinct urgent message may still interrupt that work.
-    const awaitingComputer = (phone: StoredWork) => !!phone.sourceMessageId && computers.some(work => work.conversationId === phone.conversationId && work.sourceMessageId === phone.sourceMessageId);
-    const urgentSources = phones.filter(work => work.urgent && work.sourceMessageId && !awaitingComputer(work)).flatMap(work => this.db.prepare('SELECT sequence,conversation_id FROM messages WHERE id=?').all(work.sourceMessageId) as Row[]);
-    const ordinaryAllowed = this.phoneAvailable(state, actor) && !this.peerPhoneActive(actor.companionId, state.cursor);
-    const eligible = phones.filter(work => work.requestedAtReal <= state.cursor && !awaitingComputer(work) && (ordinaryAllowed || work.urgent || work.sourceMessageId && urgentSources.some(source => source.conversation_id === work.conversationId && Number(row(this.db.prepare('SELECT sequence FROM messages WHERE id=?').get(work.sourceMessageId)).sequence) >= Number(source.sequence))));
+    // All admitted replies are independent durable jobs. A physical animation
+    // is optional and must never hold up a different conversation or task.
+    const eligible = phones.filter(work => work.requestedAtReal <= state.cursor);
     for (const work of phones) {
       delete work.computerId; work.nextCheckAt = iso(Math.max(state.cursor + 500, work.requestedAtReal));
-      if (!eligible.includes(work)) { work.status = 'waiting'; work.reason = work.requestedAtReal > state.cursor ? '正在补算世界存档' : awaitingComputer(work) ? '这条请求正在电脑执行，等待实际结果后继续手机回复' : this.peerPhoneActive(actor.companionId, state.cursor) ? '正在用手机处理先前消息，稍后依次回复' : '正在工作、用餐或睡眠，稍后用手机回复'; }
+      if (!eligible.includes(work)) { work.status = 'waiting'; work.reason = '正在补算世界存档'; }
     }
     if (!eligible.length) { if (!this.peerPhoneActive(actor.companionId, state.cursor) || !this.phoneAvailable(state, actor)) this.releasePhone(actor, state.cursor); return; }
-    if (['sleeping', 'lyingDown'].includes(actor.activity)) this.enterFurniture(state, actor, 'idle', state.cursor);
-    else if (actor.activity === 'eating') this.enterFurniture(state, actor, 'idle', state.cursor);
-    if (actor.recovery?.furnitureId === actor.destinationId && actor.route.length) {
-      this.releasePhone(actor, state.cursor);
-      for (const work of eligible) { work.status = 'moving'; work.reason = '正在到沙发休息，坐稳后用手机回复'; }
-      return;
-    }
-    if (actor.transition && actor.transition.until > state.cursor) { for (const work of eligible) { work.status = 'moving'; work.reason = '正在结束当前姿态，准备查看手机'; } return; }
-    this.holdPhone(actor, state.cursor);
+    if (!computers.length && this.phoneAvailable(state, actor) && !actor.transition && !actor.route.length) this.holdPhone(actor, state.cursor);
     for (const work of eligible) { work.status = 'ready'; delete work.reason; }
   }
   private planComputer(state: StoredWorld, actor: StoredActor, works: StoredWork[]): void {
-    const phase = evaluateCompanionRoutine(this.routineConfig(actor.companionId), iso(this.virtualFor(state, state.cursor)));
-    const urgentSources = works.filter(work => work.urgent && work.sourceMessageId).flatMap(work => this.db.prepare('SELECT sequence,conversation_id FROM messages WHERE id=?').all(work.sourceMessageId) as Row[]);
-    const eligible = works.filter(work => work.requestedAtReal <= state.cursor && (phase.canRespond || work.urgent || work.fixed || ['moving', 'seating', 'ready'].includes(work.status) || work.sourceMessageId &&
-      urgentSources.some(source => source.conversation_id === work.conversationId && Number(row(this.db.prepare('SELECT sequence FROM messages WHERE id=?').get(work.sourceMessageId)).sequence) >= Number(source.sequence))));
-    for (const work of works.filter(work => !eligible.includes(work))) { work.status = 'waiting'; work.reason = work.requestedAtReal > state.cursor ? '正在补算世界存档，尚未到达这次请求的实际时刻' : '按照世界作息休息，等待醒来'; work.nextCheckAt = iso(Math.max(work.requestedAtReal, this.realFor(state, Date.parse(phase.nextTransitionAt)))); delete work.computerId; }
+    // Admission already verified the source or scheduled commitment. Work may
+    // start during a routine; only actual travel and shared computer capacity
+    // constrain execution. A long sleep window is not a global task mutex.
+    const eligible = works.filter(work => work.requestedAtReal <= state.cursor);
+    for (const work of works.filter(work => !eligible.includes(work))) { work.status = 'waiting'; work.reason = '正在补算世界存档，尚未到达这次请求的实际时刻'; work.nextCheckAt = iso(work.requestedAtReal); delete work.computerId; }
     if (!eligible.length) return;
     const scenes = this.scenes(state), current = scenes.find(scene => scene.id === actor.sceneId)!;
     const foreign = current.kind === 'home' && current.ownerId !== actor.companionId && current.ownerId && this.permitted(state, actor.companionId, current.ownerId) ? current : undefined;
@@ -1388,7 +1387,7 @@ export class CompanionWorldStore {
         const chat = state.works.find(work => work.companionId === actor.companionId && work.kind === 'chat' && work.status === 'ready');
         const communication: CompanionWorldActor['communication'] = chat ? { channel: 'phone', phase: 'responding', conversationId: chat.conversationId, recipientIds: ['user'], untilReal: iso(observedAt + 5000) }
           : storedCommunication ? { channel: storedCommunication.channel, phase: storedCommunication.phase, conversationId: storedCommunication.conversationId, recipientIds: storedCommunication.recipientIds, untilReal: storedCommunication.untilReal } : noticeCommunication;
-        const phonePose = ['typing', 'responding'].includes(communication?.phase ?? '') && ['idle', 'sitting', 'resting', 'working'].includes(actor.activity) ? ['sitting', 'resting', 'working'].includes(actor.activity) ? 'phoneTypingSeated' : 'phoneTypingStanding' : undefined;
+        const phonePose = ['typing', 'responding'].includes(communication?.phase ?? '') && !['sleeping', 'eating', 'working'].includes(actor.routinePhase) && ['idle', 'sitting', 'resting'].includes(actor.activity) ? ['sitting', 'resting'].includes(actor.activity) ? 'phoneTypingSeated' : 'phoneTypingStanding' : undefined;
         return { ...actor, travel: actor.journey ? { targetSceneId: actor.journey.targetSceneId, exitId: actor.journey.exitId, entryId: actor.journey.entryId } : undefined,
         frame: actor.transition ? Math.min(2, Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / (actor.transition.until - Date.parse(actor.activityStartedAtReal)) * 3)) :
             Math.floor(Math.max(0, observedAt - Date.parse(actor.activityStartedAtReal)) / (actor.activity === 'walking' ? 180 : 700)) % 3,
@@ -1684,9 +1683,15 @@ export class CompanionWorldStore {
         if (!this.sleepingForJob(state, job)) throw new Error('伙伴已经醒来，本次睡眠回顾已停止。');
         if (memoryIds.some(id => !this.db.prepare("SELECT 1 FROM vcp_memory_notes WHERE id=? AND companion_id=? AND json_extract(data,'$.status')='indexed'").get(id, job.companionId))) throw new Error('梦的记忆依赖已失效。');
       }
+      const savedNotes: CompanionMemory[] = [];
       for (const candidate of command.memoryCandidates ?? []) {
         if (job.kind !== 'dream' || !candidate.relatedMemoryIds?.length || candidate.relatedMemoryIds.some(id => !memoryIds.includes(id))) throw new Error('睡眠整理只能基于本次真实原子记忆形成可追溯回顾。');
-        this.recordMemory(scope, { ...candidate, metadata: { ...candidate.metadata, consolidation: true } });
+        const note = this.recordMemory(scope, { ...candidate, metadata: { ...candidate.metadata, consolidation: true } });
+        if (note) savedNotes.push(note);
+      }
+      if (command.stateProposal) {
+        if (job.kind !== 'dream' || !savedNotes.length || !this.integrateMemory) throw new Error('睡眠状态变化需要本次实际保存的反思记忆。');
+        this.integrateMemory(scope, savedNotes, command.stateProposal, { eventKey: 'sleep:' + job.id, kind: 'sleep', expectedRevision: command.expectedStateRevision });
       }
       if (command.dream) {
         if (job.kind !== 'dream' || !job.dreamAllowed) throw new Error('本次睡眠没有通过入梦条件，不能伪造梦境。');

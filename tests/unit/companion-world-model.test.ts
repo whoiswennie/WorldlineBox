@@ -39,6 +39,17 @@ function envelope(format: AiApiFormat, value: unknown, tool = false) {
           : { output: { choices: [{ message: tool ? { content: null, tool_calls: [{ id: fn.id, type: 'function', function: { name: fn.name, arguments: text } }] } : { content: text } }] } }), { headers: { 'Content-Type': 'application/json' } });
 }
 describe('world reasoning and native tools', () => {
+  it('takes current verified interests as conditional self-understanding without reviving another scope', async () => {
+    const characterDevelopment = { companionId: input.companion.id, conversationId: job.conversationId, observedAt: at, truncated: false,
+      items: [{ memoryId: 'own_note', memoryVersion: 3, kind: 'preference' as const, topic: '阅读', statement: '我更愿意先读有出处的资料。',
+        basis: 'self_expression' as const, updatedAt: at, sourceMessageIds: ['own_source'] }] };
+    const observed: Array<Record<string, unknown>> = [];
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => { const request = JSON.parse(String(init?.body)); observed.push(JSON.parse(request.messages[1].content)); return envelope('openai_chat', { action: null, reason: '先核对来源再决定。', appraisals: [] }); });
+    await generateCompanionWorldDecision({ companion: input.companion, world, job, members: [input.companion], characterDevelopment }, config, undefined, { fetchFn });
+    expect(observed[0]!.characterDevelopment).toEqual(characterDevelopment);
+    await generateCompanionWorldDecision({ companion: input.companion, world, job, members: [input.companion], characterDevelopment: { ...characterDevelopment, conversationId: 'private_other' } }, config, undefined, { fetchFn });
+    expect(observed[1]).not.toHaveProperty('characterDevelopment');
+  });
   it.each([
     ['两分钟后就截止了，快救我看看哪里写错。', 'urgent'], ['如果电脑占用就马上帮我换。', 'ordinary'],
     ['新闻写着“紧急任务”。', 'ordinary'], ['不紧急，你睡醒再说。', 'ordinary'],

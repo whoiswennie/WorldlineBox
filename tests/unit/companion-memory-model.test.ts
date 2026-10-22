@@ -40,6 +40,22 @@ function request(fetchFn: ReturnType<typeof fetchFor>) {
 }
 
 describe('source-grounded VCP experience journals', () => {
+  it('distinguishes a new peer enquiry episode from repeating the already-known name fact', async () => {
+    const peerRoom = { ...conversation, id: 'peer_sisters', kind: 'group' as const, memberIds: ['sister', 'younger'] };
+    const question = message('peer_question', 5, '姐姐，那位玩家让我来问，你还记得他叫什么吗？', { conversationId: peerRoom.id, authorId: 'younger' });
+    const answer = message('peer_answer', 6, '我记得，他亲口向我介绍过自己叫天幻。', { conversationId: peerRoom.id, authorId: companion.id });
+    const draft = { content: '妹妹来询问那位玩家的姓名，我依据自己的旧记忆回答天幻；这是本次实际发生的交流。', diaryName: '日记', tags: ['妹妹', '姓名询问'],
+      sourceMessageIds: [question.id, answer.id], relatedMemoryIds: ['coffee_note'], evidence: [{ sourceMessageId: question.id, quote: question.content }, { sourceMessageId: answer.id, quote: answer.content }] };
+    const fetchFn = fetchFor({ notes: [draft] });
+    const result = await generateCompanionJournal({ companion, conversation: peerRoom, messages: [question, answer],
+      relevantMemories: [memory({ content: '玩家之前已向我介绍自己叫天幻。' })], participants: [{ id: 'younger', name: '妹妹' }] }, config, undefined, { fetchFn });
+    const sent = request(fetchFn);
+    expect(sent.system).toContain('区分知识重复与经历新增');
+    expect(sent.system).toContain('文字来信或“来问我”只证明实际发生了联系');
+    expect(sent.payload.messages.map((source: { speaker: string }) => source.speaker)).toEqual(['other_companion', 'self']);
+    expect(result.notes[0]?.sourceMessageIds).toEqual([question.id, answer.id]);
+    expect(result.notes[0]?.evidence).toEqual(draft.evidence);
+  });
   it('labels the real player and self while using its own retrieved memories across entrances', async () => {
     const fetchFn = fetchFor({ notes: [] });
     await generateCompanionJournal({ ...input, participants: [{ id: 'peer', name: '周岚' }, { id: companion.id, name: companion.name }],
@@ -79,6 +95,12 @@ describe('source-grounded VCP experience journals', () => {
   });
   it('accepts a no-change batch without manufacturing a journal or state update', async () => {
     expect(await generateCompanionJournal(input, config, undefined, { fetchFn: fetchFor({ notes: [] }) })).toEqual({ notes: [] });
+  });
+  it('keeps valid diaries when optional state prose contains no actual change', async () => {
+    const result = await generateCompanionJournal(input, config, undefined, { fetchFn: fetchFor({ notes: [note], stateProposal: {
+      reason: '状态保持不变。', sourceMessageIds: ['coffee'], evidence: note.evidence,
+    } }) });
+    expect(result.notes).toHaveLength(1); expect(result).not.toHaveProperty('stateProposal');
   });
   it.each([
     { ...note, sourceMessageIds: ['invented'] }, { ...note, sourceMessageIds: ['coffee', 'coffee'] },
@@ -135,15 +157,37 @@ describe('source-grounded VCP experience journals', () => {
     await expect(generateCompanionJournal({ ...input, conversation: group, messages: [visible] }, config, undefined,
       { fetchFn: fetchFor({ notes: [note] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
-  it('links a new correction to an actually read same-domain old diary without treating old sources as new evidence', async () => {
+  it('links a new correction to actually read own diaries across entrances without treating old sources as new evidence', async () => {
     const old = memory({ sources: [{ ...memory().sources[0]!, messageId: 'coffee' }] });
     const linked = { ...note, relatedMemoryIds: [old.id] };
     expect((await generateCompanionJournal({ ...input, relevantMemories: [old] }, config, undefined,
       { fetchFn: fetchFor({ notes: [linked] }) })).notes[0]?.relatedMemoryIds).toEqual([old.id]);
     expect((await generateCompanionJournal({ ...input, relevantMemories: [memory()] }, config, undefined,
       { fetchFn: fetchFor({ notes: [linked] }) })).notes[0]?.relatedMemoryIds).toEqual([old.id]);
-    await expect(generateCompanionJournal({ ...input, relevantMemories: [memory({ sourceConversationId: 'other_domain' })] }, config, undefined,
+    expect((await generateCompanionJournal({ ...input, relevantMemories: [memory({ sourceConversationId: 'other_domain' })] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [linked] }) })).notes[0]?.relatedMemoryIds).toEqual([old.id]);
+    await expect(generateCompanionJournal({ ...input, relevantMemories: [memory({ companionId: 'another_owner' })] }, config, undefined,
       { fetchFn: fetchFor({ notes: [linked] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+  it('uses each source historical world time zone without replacing event time by the current wall clock', async () => {
+    const fetchFn = fetchFor({ notes: [] });
+    await generateCompanionJournal({ ...input, messages: [message('dated', 1, '实际来过。', {
+      createdAt: '2026-10-22T09:37:00.000Z', worldCreatedAt: '2026-08-04T09:37:00.000Z', worldTimeZone: 'Asia/Shanghai' })] }, config, undefined, { fetchFn });
+    expect(request(fetchFn).payload.messages[0]).toMatchObject({ createdAt: '2026-08-04T09:37:00.000Z', realCreatedAt: '2026-10-22T09:37:00.000Z',
+      eventTimeZone: 'Asia/Shanghai', eventLocalTime: '2026-08-04 17:37:00' });
+    expect(request(fetchFn).system).toContain('不能把不带时区的eventLocalTime复制到该字段');
+    const noZone = fetchFor({ notes: [] });
+    await generateCompanionJournal(input, config, undefined, { fetchFn: noZone });
+    expect(request(noZone).payload.messages[0]).not.toHaveProperty('eventLocalTime');
+  });
+  it('keeps transient world snapshots out of automatic diaries without erasing meaningful dated experience', async () => {
+    const fetchFn = fetchFor({ notes: [] });
+    await generateCompanionJournal({ ...input, messages: [message('snapshot', 9, '当前天气小雨18度，我仍在家里忙着。', { authorId: companion.id })] }, config, undefined, { fetchFn });
+    const sent = request(fetchFn);
+    expect(sent.system).toContain('仅刷新这些瞬态快照、没有其他意义时不单独写长期日记');
+    expect(sent.system).toContain('有意义的变化、实际感受、赴约受天气影响');
+    expect(sent.system).toContain('保留原始来源与有价值的历史，不删除旧观察');
+    expect(sent.payload.messages[0].content).toBe('当前天气小雨18度，我仍在家里忙着。');
   });
   it('rejects conversational or partial JSON instead of reporting capture success', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: '好的，我已经记住了。' } }] })));

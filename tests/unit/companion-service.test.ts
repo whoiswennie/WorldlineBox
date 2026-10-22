@@ -94,9 +94,9 @@ function sourceContext(serialized: string) {
   // The source window stays frozen. Current host facts (including the public
   // identity projection) are intentionally refreshed on each inference.
   const { worldClock: _clock, runtimeState: _state, runtimeBehavior: _behavior, world: _world, worldTrust: _worldTrust,
-    identity: _identity, publicProfiles: _profiles, visionManifest: _vision, visionNotice: _notice, ...sources } = JSON.parse(serialized);
+    identity: _identity, characterDevelopment: _character, publicProfiles: _profiles, visionManifest: _vision, visionNotice: _notice, ...sources } = JSON.parse(serialized);
   void _clock; void _state; void _behavior; void _world; void _worldTrust;
-  void _identity; void _profiles; void _vision; void _notice;
+  void _identity; void _character; void _profiles; void _vision; void _notice;
   return sources;
 }
 function taskRecord(status: DshTaskRecord['status'] = 'running'): DshTaskRecord {
@@ -608,13 +608,13 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true });
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), requestTask), false, false);
     const pending = deferred<Response>(); transport.fetch.mockImplementation(() => pending.promise);
-    const initial = f.store.request({ type: 'world.snapshot' }).world!.actors[0]!, before = initial.position, beforeRoute = initial.route;
     await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '请解释这段代码。', clientId: 'walking-before-inference' });
     await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledOnce(), { timeout: 5000 });
     const phone = f.store.request({ type: 'world.snapshot' }).world!;
     expect(phone.works.some(work => work.kind === 'chat' && work.status === 'ready' && !work.computerId)).toBe(true);
-    expect(phone.actors[0]!.position).toEqual(before); expect(phone.actors[0]!.route).toEqual(beforeRoute);
+    expect(phone.actors[0]!.furnitureId).not.toBe('sister_computer');
+    expect(phone.scenes.flatMap(scene => scene.objects).some(object => object.reservedBy)).toBe(false);
     expect(phone.actors[0]!.communication?.phase).toBe('responding'); expect(requestTask).not.toHaveBeenCalled();
     await f.service.handle({ type: 'reply.cancel', conversationId: f.conversation.id });
     pending.resolve(modelResponse('已取消的迟到手机回答不能发送。'));
@@ -664,23 +664,23 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     });
     const ordinary = [];
     for (const [index, content] of ordinaryTexts.entries()) ordinary.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content, clientId: 'ordinary-notification-' + index })).message!);
-    await vi.advanceTimersByTimeAsync(1000); expect(transport.fetch).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(ordinaryTexts.length), { timeout: 5000 });
+    expect(f.store.request({ type: 'world.snapshot' }).world!.actors[0]!.activity).toBe('sleeping');
     const urgent = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: deadline, clientId: 'implicit-deadline' })).message!;
     await vi.advanceTimersByTimeAsync(1000);
-    expect(transport.fetch).not.toHaveBeenCalled();
-    const preparing = f.store.request({ type: 'world.snapshot' }).world!.actors[0]!;
-    expect(['waking', 'standingUp', 'idle']).toContain(preparing.activity); expect(preparing.route).toEqual([]);
     await vi.advanceTimersByTimeAsync(12000);
     // Current identity images are prepared through real file/Sharp I/O, which
     // is not completed merely by advancing the deterministic world clock.
     await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: urgent.id }).works?.[0]?.status).toBe('done'), { timeout: 5000 });
-    expect(transport.fetch).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(JSON.parse(String(transport.fetch.mock.calls[0]?.[1]?.body)).messages[1].content).taskRequest.prompt).toBe(deadline);
-    for (const source of ordinary) expect(f.store.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('queued');
+    expect(transport.fetch).toHaveBeenCalledTimes(ordinaryTexts.length + 1);
+    expect(transport.fetch.mock.calls.some(([, init]) => JSON.parse(JSON.parse(String(init?.body)).messages[1].content).taskRequest.prompt === deadline)).toBe(true);
+    for (const source of ordinary) expect(f.store.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('done');
   });
 
   it('calls the primary model from the actual phone position and returns the same location in a native inspection', async () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    await vi.advanceTimersByTimeAsync(15000);
     const position = f.store.request({ type: 'world.snapshot' }).world!.actors[0]!.position;
     let observed = false;
     transport.fetch.mockImplementation(async (_url, init) => {
@@ -787,8 +787,10 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
       const context = JSON.parse(body.messages[1].content); contexts.push(context);
       if (step++ === 0) return native('state-inspect', { action: 'inspect' });
       if (step === 2) {
-        const inspected = JSON.parse(body.messages.findLast((message: { role: string }) => message.role === 'tool').content).runtimeState;
-        return native('state-support', { action: 'update', expectedRevision: inspected.revision, proposal: {
+        const inspected = JSON.parse(body.messages.findLast((message: { role: string }) => message.role === 'tool').content);
+        expect(inspected.stateObservation.status).toBe('historical');
+        expect(inspected).not.toHaveProperty('runtimeState');
+        return native('state-support', { action: 'update', expectedRevision: context.runtimeState.revision, proposal: {
           expression: 'gentle', reason: '用户明确表达感谢和支持。', sourceMessageIds: [context.taskRequest.sourceMessageId],
           evidence: [{ sourceMessageId: context.taskRequest.sourceMessageId, quote: context.taskRequest.prompt }],
           appraisals: [{ type: 'support', target: 'user', intensity: 0.8, confidence: 0.95 }],
@@ -854,11 +856,12 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     expect(f.store.request({ type: 'schedule.list', companionId: 'sister', conversationId: f.conversation.id }).schedules![0]!.nextRunAt).toBeUndefined();
   });
 
-  it.each([false, true])('queues ordinary sleeping chat and wakes for urgent contact, explicit priority=%s', async explicit => {
+  it.each([false, true])('answers independent ordinary and urgent conversations during sleep, explicit priority=%s', async explicit => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
     const routine = (await f.service.handle({ type: 'routine.get', companionId: 'sister', conversationId: f.conversation.id })).routine!;
     await f.service.handle({ type: 'routine.configure', companionId: 'sister', conversationId: f.conversation.id,
       expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '01:00', wakeAt: '03:00', meals: [], habits: [] } });
+    await vi.advanceTimersByTimeAsync(15000);
     const observed: string[] = [];
     transport.fetch.mockImplementation(async (_url, init) => {
       const context = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
@@ -868,19 +871,19 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     });
     const ordinary = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '有空时陪我聊聊吧。', clientId: 'sleeping-ordinary' })).message!;
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(transport.fetch).not.toHaveBeenCalled();
-    expect(f.store.request({ type: 'work.list', sourceMessageId: ordinary.id }).works?.[0]?.status).toBe('queued');
+    await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: ordinary.id }).works?.[0]?.status).toBe('done'), { timeout: 5000 });
+    expect((await f.service.handle({ type: 'routine.get', companionId: 'sister', conversationId: f.conversation.id })).routine?.runtime.phase).toBe('sleeping');
     const urgentText = explicit ? '请先帮我处理这件事。' : '醒醒，有件紧急的事需要你帮忙。';
     const urgent = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: urgentText, ...(explicit ? { priority: 'urgent' as const } : {}), clientId: 'actual-urgent' })).message!;
     await vi.advanceTimersByTimeAsync(12000); // Finish any actual wake, turn, walk and sit transitions.
     await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: urgent.id }).works?.[0]?.status).toBe('done'), { timeout: 5000 });
-    expect(observed).toEqual([urgentText]);
-    expect(f.store.request({ type: 'work.list', sourceMessageId: ordinary.id }).works?.[0]?.status).toBe('queued');
+    expect(observed).toEqual(['有空时陪我聊聊吧。', urgentText]);
+    expect(f.store.request({ type: 'work.list', sourceMessageId: ordinary.id }).works?.[0]?.status).toBe('done');
     await vi.advanceTimersByTimeAsync(10000); // Returning to bed is physical movement, not an immediate phase label.
     expect((await f.service.handle({ type: 'routine.get', companionId: 'sister', conversationId: f.conversation.id })).routine?.runtime.phase).toBe('sleeping');
     vi.setSystemTime('2026-10-13T03:00:00Z'); await vi.advanceTimersByTimeAsync(12_000);
     await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: ordinary.id }).works?.[0]?.status).toBe('done'), { timeout: 5000 });
-    expect(observed).toEqual([urgentText, '有空时陪我聊聊吧。']);
+    expect(observed).toEqual(['有空时陪我聊聊吧。', urgentText]);
   });
 
   it('reports offline on an observed authentication failure and clears that observation after the connection changes', async () => {
@@ -1290,6 +1293,11 @@ describe('one durable bubble per source and native multi-step main loop', () => 
         return modelResponseForJson({ status: 'complete', action: null, wait: null, summary: '我到门口看过了，现在是' + expectedLabel + '。' });
       }
       chatCalls++;
+      // The reply boundary receives the same freshly observed snapshot used by
+      // this inference, rather than treating the saved checkpoint as current.
+      expect(context.world.observation.status).toBe('current');
+      expect(context.world.observation.asOfReal).toBeDefined();
+      expect(context.world.observation.requiresReobservation).toBe(false);
       // Reproduce the user's duplicate native moves. Neither retry may reset the
       // route or create a second goal, and chat completion must not lose the goal.
       if (chatCalls <= 2) return new Response(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [
@@ -1323,7 +1331,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     const related = f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'sister' && message.replyToId === first.id);
     expect(related).toHaveLength(1); expect(transport.fetch).toHaveBeenCalledOnce(); await closeService(f.service);
   });
-  it('keeps weather and queued clock requests in separate loops while the current computer work finishes first', async () => {
+  it('runs weather and clock requests concurrently while preserving each source, result and bubble', async () => {
     const jobs: DshTaskRecord[] = [];
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => {
       if (request.type === 'task.run') {
@@ -1347,9 +1355,14 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     const weather = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '上海天气如何', clientId: 'weather-source' })).message!;
     await vi.waitFor(() => expect(jobs).toHaveLength(1), { timeout: 5000 });
     const clock = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '现在几点了', clientId: 'clock-source' })).message!;
-    await vi.advanceTimersByTimeAsync(1000); expect(jobs).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(jobs).toHaveLength(2), { timeout: 5000 });
     const weatherSnapshot = f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop!.context!;
     expect(weatherSnapshot.user).not.toContain('现在几点了');
+    expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('running');
+    // A newer task may finish first without completing or replacing the first.
+    jobs[1]!.status = 'succeeded'; await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: clock.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
     expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('running');
     jobs[0]!.status = 'succeeded'; await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });

@@ -9,7 +9,7 @@ import type { CompanionSocialConversation, CompanionSocialMessage } from '../../
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined, container: HTMLDivElement | undefined;
-afterEach(async () => { await act(() => root?.unmount()); container?.remove(); root = undefined; container = undefined; vi.useRealTimers(); });
+afterEach(async () => { await act(() => root?.unmount()); container?.remove(); root = undefined; container = undefined; delete (window as unknown as { worldlinebox?: unknown }).worldlinebox; vi.useRealTimers(); });
 const at = '2026-10-15T01:00:00.000Z', virtual = '2098-04-10T10:00:00.000Z';
 const companions: Companion[] = BUILTIN_COMPANIONS.slice(0, 2).map(item => ({ ...item, builtin: true, createdAt: at }));
 const [one, two] = companions as [Companion, Companion];
@@ -48,6 +48,41 @@ it('opens the actual virtual day and reuses chat bubbles with two real companion
   expect(container!.querySelector('[data-social-message="message_51"]')!.classList.contains('is-own')).toBe(false);
   expect(container!.querySelectorAll('textarea, [contenteditable="true"]')).toHaveLength(0);
   expect(request.mock.calls.every(([input]) => input.type.startsWith('social.'))).toBe(true);
+});
+
+it('shows each peer reply milestone and reads its actual pending and completed memory receipt through the shared bubble', async () => {
+  const listeners = new Set<() => void>(); let completed = false;
+  const base = fixture(), progress = { revision: 2, phase: 'thinking' as const, detail: '正在回应伙伴来信', startedAt: at, updatedAt: at,
+    memory: { status: 'completed' as const, count: 1, injected: true } };
+  const request = vi.fn(async (input: CompanionsRequest): Promise<CompanionsResponse> => {
+    if (input.type === 'social.reply.progress') return { ok: true, socialReplyProgress: [{ jobId: 'peer_job', companionId: two.id, conversationId: 'pair', sourceMessageId: 'message_51',
+      ...(completed ? { messageId: 'message_52' } : {}), status: completed ? 'done' : 'running', progress: { ...progress, phase: completed ? 'completed' : 'thinking' } }] };
+    if (input.type === 'social.messages') { const response = await base(input); return { ...response, socialMessagePage: { ...response.socialMessagePage!,
+      items: completed ? [latest[0]!, { ...latest[1]!, message: { ...latest[1]!.message, replyProgress: { ...progress, phase: 'completed' } } }] : [latest[0]!] } }; }
+    if (input.type === 'memory.recall.state') return { ok: true, memoryCorpusStamp: 'same_owner_corpus' };
+    if (input.type === 'social.reply.memory.inspect' || input.type === 'reply.memory.inspect') return { ok: true, replyMemory: {
+      state: 'ready', companionId: two.id, conversationId: 'pair', messageId: input.type === 'social.reply.memory.inspect' ? input.jobId : input.messageId,
+      observedAt: at, query: '姐姐来问过我什么', explanation: '实际保存的VCP回忆', contextText: '姐姐曾询问玩家姓名。', contextCharacters: 11,
+      contextOffset: 0, contextTruncated: false, pending: false, degraded: false, candidates: [] } };
+    return base(input);
+  });
+  const api = { request, onReplyStream: () => () => undefined, onChanged: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } } as WorldlineBoxCompanionsApi;
+  Object.defineProperty(window, 'worldlinebox', { configurable: true, value: { companions: api } });
+  vi.useFakeTimers(); container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  await act(async () => root!.render(<CompanionSocialMonitor companions={companions} request={request} api={api} onClose={vi.fn()} onOpenUrl={vi.fn()} />));
+  await click('往来记录');
+  const pending = container!.querySelector('[data-social-pending="peer_job"]')!;
+  expect(pending.textContent).toContain('正在思考');
+  expect(pending.textContent).toContain('已注入话题相关的记忆上下文');
+  await act(async () => { const details = pending.querySelector('details')!; details.open = true; details.dispatchEvent(new Event('toggle')); });
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: 'social.reply.memory.inspect', jobId: 'peer_job', companionId: two.id }));
+  expect(pending.textContent).toContain('姐姐曾询问玩家姓名。');
+  completed = true;
+  await act(async () => { for (const listener of listeners) listener(); await vi.advanceTimersByTimeAsync(800); });
+  expect(container!.querySelectorAll('[data-social-pending]')).toHaveLength(0);
+  expect(container!.querySelector('[data-social-message="message_52"]')!.textContent).toContain('回复完成');
+  await act(async () => { const details = container!.querySelector<HTMLDetailsElement>('[data-social-message="message_52"] .companions-bubble-memory')!; details.open = true; details.dispatchEvent(new Event('toggle')); });
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: 'reply.memory.inspect', messageId: 'message_52', companionId: two.id }));
 });
 
 it('paginates durable messages and conversations and scopes date, owner and search without creating conversations', async () => {

@@ -98,6 +98,9 @@ test('automatically records ordinary conversation, exposes sources and progress,
     await testInfo.attach('actual-reply-vcp-context', { body: JSON.stringify(await request(page, { type: 'reply.memory.inspect', companionId, conversationId,
       messageId: (await recalledBubble.getAttribute('data-companion-message'))!, contextOffset: 0, contextLimit: 8192 }), null, 2), contentType: 'application/json' });
     const recallArtifacts = path.resolve('artifacts/vcp-validation/owner-memory-ui'); mkdirSync(recallArtifacts, { recursive: true });
+    const badge = await page.locator('.companions-chat-header .companion-status-badge').evaluate(element => ({ height: element.getBoundingClientRect().height,
+      font: Number.parseFloat(getComputedStyle(element).fontSize), background: getComputedStyle(element).backgroundColor }));
+    expect(badge.height).toBeLessThanOrEqual(16); expect(badge.font).toBeLessThanOrEqual(11); expect(badge.background).toBe('rgba(0, 0, 0, 0)');
     await page.screenshot({ path: path.join(recallArtifacts, 'actual-injected-context.png') });
     await recalledBubble.locator('.companions-bubble-memory > summary').click();
     expect(provider.memoryRequests.some(item => ['memory_extraction', 'memory_query', 'memory_maintenance'].includes(item.purpose))).toBe(false);
@@ -111,6 +114,27 @@ test('automatically records ordinary conversation, exposes sources and progress,
     await journal.getByRole('button', { name: '管理共同记忆', exact: true }).click();
     const manager = page.getByRole('region', { name: '共同记忆管理', exact: true, includeHidden: true });
     const panel = manager.getByRole('region', { name: '伙伴记忆库' });
+    await expect(panel).toBeVisible();
+    await panel.getByRole('button', { name: '学习与成长', exact: true }).click();
+    const growth = manager.getByRole('region', { name: '伙伴学习与成长', exact: true });
+    await expect(growth).toBeVisible();
+    await growth.getByRole('button', { name: '新建学习目标', exact: true }).click();
+    await growth.getByRole('textbox', { name: '持续学习目标', exact: true }).fill('持续学习近岸海洋生态，每轮聚焦一个问题。用实际阅读的材料支持结论，留下未理解之处，并通过真实回忆进行自测。');
+    const growthArtifacts = path.resolve('artifacts/vcp-validation/concurrent-learning-ui'); mkdirSync(growthArtifacts, { recursive: true });
+    await page.screenshot({ path: path.join(growthArtifacts, 'learning-goal-editor-light.png') });
+    await growth.getByRole('button', { name: '创建持续学习目标', exact: true }).click();
+    await expect(growth.getByRole('button', { name: '暂停学习', exact: true })).toBeVisible();
+    await expect(growth).toContainText('请添加学习材料，或允许探索公开网页', { timeout: 30000 });
+    await page.screenshot({ path: path.join(growthArtifacts, 'learning-goal-waiting-light.png') });
+    await growth.getByRole('button', { name: '暂停学习', exact: true }).click();
+    await expect(growth.getByRole('button', { name: '恢复学习', exact: true })).toBeVisible();
+    await theme(page, '暗色');
+    const growthWindow = await application.browserWindow(page); await growthWindow.evaluate(window => window.setSize(1040, 900));
+    const growthGeometry = await growth.evaluate(element => ({ width: element.clientWidth, scroll: element.scrollWidth }));
+    expect(growthGeometry.scroll).toBeLessThanOrEqual(growthGeometry.width + 1);
+    await page.screenshot({ path: path.join(growthArtifacts, 'learning-goal-paused-dark-1040.png') });
+    await growthWindow.evaluate(window => window.setSize(1440, 900)); await theme(page, '亮色');
+    await growth.getByRole('button', { name: '返回记忆库', exact: true }).click();
     await expect(panel).toBeVisible();
     await panel.getByRole('button', { name: '回忆', exact: true }).click();
     const probe = manager.getByRole('region', { name: '伙伴回忆', exact: true });
@@ -816,6 +840,58 @@ test('launcher persists the shared DSH access policy, defaulting every companion
   } finally { if (application) await application.close(); cleanup(root); }
 });
 
+// eslint-disable-next-line no-empty-pattern
+test('renders an actual goal reading, indexed VCP self-test and linked memory in the learning workspace', async ({}, testInfo) => {
+  test.setTimeout(180000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-goal-'));
+  const provider = await providerFixture(); let application: ElectronApplication | undefined;
+  try {
+    const started = await launch(path.join(root, 'profile')); application = started.application; const { page } = started;
+    await setGlobal(page, { apiFormat: 'openai_chat', baseUrl: provider.baseUrl, model: 'fixture-learning', apiKey: 'fixture-learning-key' });
+    await page.locator('[data-application-module="companions"]').click();
+    await page.getByRole('button', { name: '发起聊天', exact: true }).click();
+    await page.getByRole('dialog', { name: '发起聊天' }).locator('.companions-start-chat-list button').filter({ has: page.getByText('大肥鱼', { exact: true }) }).click();
+    await ensureAwakeRoutine(page, 'deepseek-sister', 'private-deepseek-sister');
+    const textbook = path.join(root, '青岚借阅规则.md');
+    writeFileSync(textbook, '# 合成教材\n普通读者最多同时借三本书，每本借期十四天。续借需要在到期前申请，若已有其他读者预约则不能续借。', 'utf8');
+    await application.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }); }, textbook);
+    await page.getByRole('button', { name: '我们之间', exact: true }).click();
+    await page.getByRole('complementary', { name: '伙伴手帐' }).getByRole('button', { name: '管理共同记忆', exact: true }).click();
+    const manager = page.getByRole('region', { name: '共同记忆管理', exact: true, includeHidden: true });
+    await manager.getByRole('button', { name: '学习与成长', exact: true }).click();
+    const growth = manager.getByRole('region', { name: '伙伴学习与成长', exact: true });
+    await growth.getByRole('button', { name: '新建学习目标', exact: true }).click();
+    await growth.getByRole('textbox', { name: '持续学习目标', exact: true }).fill('持续学习青岚借阅规则，用真实材料与VCP回忆核实理解，每轮保留不足及下一步计划。');
+    await growth.getByRole('button', { name: '选择本地文件', exact: true }).click();
+    await expect(growth).toContainText('青岚借阅规则.md');
+    await growth.getByRole('button', { name: '创建持续学习目标', exact: true }).click();
+    const detail = growth.getByRole('article', { name: '第 1 轮学习详情', exact: true });
+    await expect(detail.locator('.learning-round-integration')).toContainText('新的学习记忆', { timeout: 90000 });
+    await expect(detail).toContainText('自评有材料支持 1 项', { timeout: 90000 });
+    await detail.getByRole('button', { name: '青岚借阅规则.md', exact: true }).click();
+    await expect(detail.locator('.learning-round-read-detail')).toContainText('每本借期十四天');
+    await detail.locator('summary').filter({ hasText: '道自测题与回答' }).click();
+    await expect(detail.locator('.learning-round-questions')).toContainText('最多同时借三本书，每本借期十四天。');
+    const artifacts = path.resolve('artifacts/vcp-validation/concurrent-learning-ui'); mkdirSync(artifacts, { recursive: true });
+    await detail.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(artifacts, 'learning-actual-round-light.png') });
+    await theme(page, '暗色'); await page.screenshot({ path: path.join(artifacts, 'learning-actual-round-dark.png') });
+    const goals = await page.evaluate(() => (window as unknown as CompanionBridgeWindow).worldlinebox.companions.workspace!({ type: 'memory.learning.goals.list', companionId: 'deepseek-sister', cursor: 0, limit: 20 }));
+    const goal = goals.learningGoals!.items[0]!; expect(goal.state).toBe('active'); expect(goal.totalRounds).toBe(1);
+    await testInfo.attach('actual-learning-round', { body: JSON.stringify(await page.evaluate(id => (window as unknown as CompanionBridgeWindow).worldlinebox.companions.workspace!({ type: 'memory.learning.goals.rounds', companionId: 'deepseek-sister', id, cursor: 0, limit: 10 }), goal.id)), contentType: 'application/json' });
+    await detail.getByRole('button', { name: '查看记忆 1', exact: true }).click();
+    await expect(manager.getByRole('region', { name: '伙伴记忆库' }).locator('.memory-library-paper')).toContainText('普通读者最多同时借三本书');
+  } catch (error) {
+    const page = application ? await application.firstWindow().catch(() => undefined) : undefined;
+    if (page) await testInfo.attach('learning-failure-state', { body: JSON.stringify(await page.evaluate(async () => {
+      const api = (window as unknown as CompanionBridgeWindow).worldlinebox.companions;
+      const goals = await api.workspace!({ type: 'memory.learning.goals.list', companionId: 'deepseek-sister', cursor: 0, limit: 20 });
+      return { goals, rounds: goals.learningGoals?.items[0] ? await api.workspace!({ type: 'memory.learning.goals.rounds', companionId: 'deepseek-sister', id: goals.learningGoals.items[0].id, cursor: 0, limit: 10 }) : undefined,
+        memory: await api.request({ type: 'memory.status', companionId: 'deepseek-sister' }) };
+    })), contentType: 'application/json' });
+    throw error;
+  } finally { await application?.close().catch(() => undefined); await provider.close(); cleanup(root); }
+});
+
 // This fixture replaces only the external provider. Every application call below
 // uses the actual preload, Main IPC, storage UtilityProcess and SQLite database.
 const preparedResidents = new WeakMap<Page, Set<string>>();
@@ -870,6 +946,22 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
         const userContext = payload.messages.filter(message => message.role === 'user').at(-1)?.content;
         if (!userContext) throw new Error('Missing actual companion context.');
         const systemContext = payload.messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
+        if (systemContext.includes('用户明确设置的持续学习目标')) {
+          // This fixture replaces only chat inference. Files, source receipts,
+          // policy checks, native embedding, VCP and the rendered round are real.
+          const stage = /阶段=(\w+)/u.exec(systemContext)?.[1];
+          const data = JSON.parse(userContext).data;
+          const quote = '普通读者最多同时借三本书，每本借期十四天。';
+          const citation = [{ sourceId: data.reads?.[0]?.id, quote }];
+          const output = stage === 'plan' ? { focus: '借阅规则与预约限制', questions: ['借阅数量与期限是什么？'], searchQueries: [] }
+            : stage === 'learn' ? { summary: '从实际教材整理借阅规则，尚未声称掌握其他制度。', claims: [{ text: quote, evidence: citation }] }
+              : stage === 'questions' ? { questions: ['普通读者最多借几本书，借期多久？'] }
+                : stage === 'answer' ? { answers: [String(data.recalled).includes('十四天') ? '最多同时借三本书，每本借期十四天。' : '不知道'] }
+                  : stage === 'assess' ? { evaluations: [{ evaluation: 'supported', rationale: '实际回答与本轮材料中的数量和期限一致。', evidence: citation }], gaps: ['预约限制尚需进一步形成记忆。'], nextPlan: ['下轮阅读续借与预约的实际材料。'] }
+                    : { action: 'new', content: quote, reason: '新的有出处主题。' };
+          response.setHeader('Content-Type', 'application/json');
+          response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(output) } }] })); return;
+        }
         if (/个人记忆时间线|月度时间线摘要器/.test(systemContext)) {
           // Only the global chat provider is replaced. The original VCP timeline
           // still builds its files and vectors through the real native runtime.

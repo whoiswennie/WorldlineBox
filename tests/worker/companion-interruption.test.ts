@@ -51,12 +51,12 @@ it.each(['sleeping', 'eating', 'resting', 'working'])('interrupts a real %s peer
 
 it('keeps a manually dormant peer unloaded even when an urgent source exists', () => {
   store.setCompanionActive('bob', false); const alice = scope('alice');
-  store.request({ type: 'world.tool', ...alice, arguments: { action: 'message', recipientIds: ['bob'], text: '急事，需要你回应。', urgent: true } });
+  expect(() => store.request({ type: 'world.tool', ...alice, arguments: { action: 'message', recipientIds: ['bob'], text: '急事，需要你回应。', urgent: true } })).toThrow('手动激活');
   advance(1300); expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
   advance(10000); expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
   const world = store.request({ type: 'world.snapshot' }).world!;
   expect(world.actors.some(actor => actor.companionId === 'bob')).toBe(false); expect(world.scenes.some(scene => scene.ownerId === 'bob')).toBe(false);
-  expect(store.request({ type: 'social.graph', companionId: 'alice' }).socialGraph!.nodes.find(node => node.id === 'bob')).toMatchObject({ state: 'dormant' });
+  expect(store.request({ type: 'social.graph', companionId: 'alice' }).socialGraph!.nodes.find(node => node.id === 'bob')).toBeUndefined(); // Rejected contact cannot invent a relationship.
 });
 
 it.each([false, true])('durably pauses and restores original work while respecting a later human edit=%s', edited => {

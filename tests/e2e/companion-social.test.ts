@@ -81,6 +81,16 @@ async function verifyQuietPlayerQueues(page: Page, logs: Record[]) {
   for (const conversationId of new Set([...state.conversations.map(room => room.id), ...peers.map(room => room.id)])) expect((await request(page, { type: 'actions', conversationId })).actions).toEqual([]);
   expect(logs.some(log => log.purpose === 'primary_reply')).toBe(false); expect(logs.filter(log => log.purpose === 'world_social').every(log => !log.tools && !log.participants!.includes('user'))).toBe(true);
 }
+async function openHistory(page: Page, conversationId: string) {
+  await page.getByRole('button', { name: '打开伙伴社交观察' }).click();
+  const observer = page.getByRole('dialog', { name: '伙伴社交观察' }); await expect(observer).toBeVisible();
+  await observer.getByRole('tab', { name: '往来记录', exact: true }).click();
+  // The user-facing records default to the observed day. These fixtures verify
+  // one exact durable room regardless of the simulated calendar's initial day.
+  await observer.getByRole('combobox', { name: '筛选社交伙伴', exact: true }).selectOption('');
+  await observer.getByRole('button', { name: '所有日期', exact: true }).click();
+  await observer.locator(`[data-social-conversation="${conversationId}"]`).click();
+}
 
 // eslint-disable-next-line no-empty-pattern
 test('refuses a dormant peer and cancels an in-flight reply when a participant deactivates', async ({}, testInfo) => {
@@ -104,7 +114,19 @@ test('refuses a dormant peer and cancels an in-flight reply when a participant d
     const room = (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items.find(room => room.memberIds.includes(sender) && room.memberIds.includes(receiver))!;
     await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!.total, { timeout: 20000 }).toBe(1);
     await expect.poll(() => fixture.logs.filter(log => log.purpose === 'world_social').length, { timeout: 25000 }).toBe(1);
+    await openHistory(page, room.id);
+    const pending = page.locator('[data-social-pending]');
+    await expect(pending).toBeVisible();
+    await expect(pending).toContainText('正在');
+    await pending.locator('.companions-bubble-memory > summary').click();
+    const pendingMemory = pending.getByLabel('本轮回忆详情', { exact: true });
+    await expect(pendingMemory).toBeVisible(); await expect(pendingMemory).toHaveAttribute('aria-busy', 'false');
+    await expect(pendingMemory.getByRole('alert')).toHaveCount(0);
+    await expect(pendingMemory).toContainText('这轮没有注入长期记忆原文');
+    const proof = path.resolve('artifacts/vcp-validation/concurrent-learning-ui'); mkdirSync(proof, { recursive: true });
+    await page.screenshot({ path: path.join(proof, 'social-pending-context.png') });
     await request(page, { type: 'companion.set-active', id: sender, active: false }); fixture.finishReplies();
+    await expect(pending).toHaveCount(0);
     await expect.poll(async () => (await world(page)).actors.some(actor => actor.companionId === receiver && actor.communication?.phase === 'typing'), { timeout: 10000 }).toBe(false);
     await page.waitForTimeout(1800);
     expect((await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!.total).toBe(1);
@@ -113,12 +135,16 @@ test('refuses a dormant peer and cancels an in-flight reply when a participant d
     expect(history.total).toBe(1); expect(history.items[0]!.message.authorId).toBe(sender);
     expect(fixture.logs.filter(log => log.purpose === 'world_social')).toHaveLength(1);
     await testInfo.attach('activation-boundary-evidence', { body: JSON.stringify({ rejected, roomId: room.id, delivered: history.items.map(item => ({ id: item.message.id, authorId: item.message.authorId })), modelCalls: fixture.logs }), contentType: 'application/json' });
+  } catch (error) {
+    const page = application?.windows()[0];
+    if (page && !page.isClosed()) { await testInfo.attach('social-ui-failure', { body: await page.locator('body').innerText(), contentType: 'text/plain' }); await testInfo.attach('social-ui-screenshot', { body: await page.screenshot(), contentType: 'image/png' }); }
+    throw error;
   } finally { await application?.close().catch(() => undefined); await fixture.close(); cleanup(root); }
 });
 
 for (const group of [false, true]) {
   // eslint-disable-next-line no-empty-pattern
-  test(group ? 'autonomous phone group keeps real identities, one reusable room and a four-message chain' : 'autonomous private phone waits for the sleeping recipient and uses actual source identity', async ({}, testInfo) => {
+  test(group ? 'autonomous phone group keeps real identities, one reusable room and a four-message chain' : 'autonomous private phone responds independently of sleep and uses actual source identity', async ({}, testInfo) => {
     test.setTimeout(150000); const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-social-e2e-')), fixture = await provider(); let application: ElectronApplication | undefined;
     try {
       const started = await launch(root, fixture.baseUrl); application = started.application; const { page, ids } = started;
@@ -129,19 +155,18 @@ for (const group of [false, true]) {
       await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage?.items.length, { timeout: 15000 }).toBe(1);
       const initial = (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!.items[0]!;
       expect(initial.message.authorId).toBe(sender); expect(initial.message.content).toBe(opening); expect(new Set(initial.recipientIds)).toEqual(new Set(group ? [receiver, ids[2]!] : [receiver]));
-      if (!group) { await page.waitForTimeout(1600); expect(fixture.logs.filter(log => log.purpose === 'world_social')).toHaveLength(0);
-        const scope = { companionId: receiver, conversationId: 'private-' + receiver }; expect((await request(page, { type: 'state.get', ...scope })).runtimeState!.routine!.phase).toBe('sleeping');
-        const routine = (await request(page, { type: 'routine.get', ...scope })).routine!, current = await world(page);
-        await request(page, { type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { wakeAt: clock(current.clock.hour - 8), sleepAt: clock(current.clock.hour + 8) } }); }
       await expect.poll(() => fixture.logs.filter(log => log.purpose === 'world_social').length, { timeout: 25000 }).toBe(1);
       const typing = await world(page), typingOwner = fixture.logs.find(log => log.purpose === 'world_social')!.self!;
-      expect(typing.actors.find(actor => actor.companionId === typingOwner)!.artAction).toMatch(/^phoneTyping(?:Standing|Seated)$/u);
+      if (!group) { expect(typing.actors.find(actor => actor.companionId === receiver)!.routinePhase).toBe('sleeping');
+        expect(typing.actors.find(actor => actor.companionId === receiver)!.artAction).not.toMatch(/^phoneTyping/u); }
+      else expect(typing.actors.find(actor => actor.companionId === typingOwner)!.artAction).toMatch(/^phoneTyping(?:Standing|Seated)$/u);
       expect(fixture.logs.find(log => log.purpose === 'world_social')).toMatchObject({ sourceId: initial.message.id, speaker: sender });
       fixture.finishReplies();
       await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage?.total, { timeout: 30000 }).toBe(4);
       await page.waitForTimeout(1800); expect(fixture.logs.filter(log => log.purpose === 'world_social')).toHaveLength(3);
       const messages = (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!.items;
       expect(messages.every(item => item.message.authorId !== 'user' && item.recipientIds.every(id => id !== item.message.authorId && room.memberIds.includes(id)))).toBe(true);
+      for (const item of messages.slice(1)) expect(item.message.replyProgress).toMatchObject({ phase: 'completed', memory: { status: 'completed', injected: false } });
       if (group) expect(new Set(messages.map(item => item.message.authorId))).toEqual(new Set(room.memberIds));
       await verifyQuietPlayerQueues(page, fixture.logs);
       fixture.stopReplies();
@@ -150,12 +175,19 @@ for (const group of [false, true]) {
       await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage?.total, { timeout: 20000 }).toBe(5);
       const rooms = (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items.filter(item => item.memberIds.length === room.memberIds.length && item.memberIds.every(id => room.memberIds.includes(id)));
       expect(rooms).toHaveLength(1); expect(rooms[0]!.id).toBe(room.id);
-      await page.getByRole('button', { name: '打开伙伴社交观察' }).click(); await expect(page.getByRole('dialog', { name: '伙伴社交观察' })).toBeVisible();
-      await page.locator(`[data-social-conversation="${room.id}"]`).click(); await expect(page.locator(`[data-social-message="${initial.message.id}"]`)).toBeVisible();
+      await openHistory(page, room.id); await expect(page.locator(`[data-social-message="${initial.message.id}"]`)).toBeVisible();
+      const completed = page.locator(`[data-social-message="${messages[1]!.message.id}"]`);
+      await expect(completed.locator('[data-reply-stage="completed"]')).toBeVisible();
+      await completed.locator('.companions-bubble-memory > summary').click();
+      const completedMemory = completed.getByLabel('本轮回忆详情', { exact: true });
+      await expect(completedMemory).toHaveAttribute('aria-busy', 'false'); await expect(completedMemory.getByRole('alert')).toHaveCount(0);
+      await expect(completedMemory).toContainText('这轮没有注入长期记忆原文');
       const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); await page.screenshot({ path: path.join(artifacts, group ? 'verified-social-phone-group.png' : 'verified-social-phone-private.png') });
       await testInfo.attach('real-peer-phone-chain', { body: JSON.stringify({ room, messages, logs: fixture.logs, typing: typing.actors.find(actor => actor.companionId === typingOwner) }), contentType: 'application/json' });
     } catch (error) {
       await testInfo.attach('social-failure', { body: JSON.stringify({ error: error instanceof Error ? error.message : String(error), logs: fixture.logs }), contentType: 'application/json' });
+      const page = application?.windows()[0];
+      if (page && !page.isClosed()) { await testInfo.attach('social-ui-failure', { body: await page.locator('body').innerText(), contentType: 'text/plain' }); await testInfo.attach('social-ui-screenshot', { body: await page.screenshot(), contentType: 'image/png' }); }
       throw error;
     } finally { await application?.close().catch(() => undefined); await fixture.close(); cleanup(root); }
   });

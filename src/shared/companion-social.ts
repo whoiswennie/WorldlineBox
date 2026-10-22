@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { messageSchema, type CompanionMessage } from './companions';
 import { companionSocialWorkOfferSchema } from './companion-social-work';
 import { COMPANION_AVATAR_IDS } from './companion-template-ids';
+import { companionReplyProgressSchema } from './companion-reply-progress';
+import { companionSocialRecallSchema, companionSocialReplyProgressCommand, companionSocialReplyMemoryCommand } from './companion-social-reply';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionSocialDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
@@ -81,6 +83,8 @@ export const companionSocialNotificationSchema = z.strictObject({
   leaseToken: id.optional(), createdAt: z.iso.datetime(),
 });
 export const companionSocialPublicCommands = [
+  companionSocialReplyProgressCommand,
+  companionSocialReplyMemoryCommand,
   z.strictObject({ type: z.literal('social.graph'), companionId: id, query: z.string().trim().max(100).optional(), group: companionSocialGraphGroupSchema.optional(), afterPeerId: id.optional(), peerId: id.optional(), limit: z.number().int().min(1).max(40).optional() }),
   z.strictObject({ type: z.literal('social.flow'), conversationId: id, day: companionSocialDaySchema.optional(), before: companionSocialFlowCursorSchema.optional(), limit: z.number().int().min(1).max(100).default(60) }),
   z.strictObject({ type: z.literal('social.conversations'), companionId: id.optional(), day: companionSocialDaySchema.optional(), query: z.string().trim().max(500).optional(), before: companionSocialConversationCursorSchema.optional(), limit: z.number().int().min(1).max(100).default(20) }),
@@ -92,7 +96,12 @@ export const companionSocialStorageCommands = [...companionSocialPublicCommands,
   z.strictObject({ type: z.literal('social.message.append'), conversationId: id, authorId: id, content: z.string().min(1).max(65536), virtualCreatedAt: z.iso.datetime(), clientId: id, recipientIds: z.array(id).max(20).optional(), replyToId: id.optional() }),
   z.strictObject({ type: z.literal('social.send'), urgent: z.boolean().optional(), companionId: id, conversationId: id, content: z.string().min(1).max(2000), channel: z.enum(['phone', 'face_to_face']), sourceMessageId: id.optional(), authorizationMessageId: id.optional(), replyToId: id.optional(), clientId: id }),
   z.strictObject({ type: z.literal('social.job.claim') }),
-  z.strictObject({ type: z.literal('social.job.complete'), id, leaseToken: id, text: z.string().trim().max(2000).nullable().optional(), nextRecipientId: id.optional(), workOffer: companionSocialWorkOfferSchema.optional(), shareAddress: z.boolean().optional(), expectedMemoryRevision: z.string().min(1).max(160).optional() }),
+  z.strictObject({ type: z.literal('social.job.complete'), id, leaseToken: id, text: z.string().trim().max(2000).nullable().optional(), nextRecipientId: id.optional(), workOffer: companionSocialWorkOfferSchema.optional(), shareAddress: z.boolean().optional(), expectedMemoryRevision: z.string().min(1).max(160).optional(), memoryRecall: companionSocialRecallSchema.optional() }),
+  z.strictObject({ type: z.literal('social.job.progress'), id, leaseToken: id,
+    phase: z.enum(['context', 'memory', 'thinking', 'waiting']), detail: z.string().max(500),
+    memory: companionReplyProgressSchema.shape.memory, memoryRecall: companionSocialRecallSchema.optional() }),
+  z.strictObject({ type: z.literal('social.reply.for-message'), messageId: id }),
+  z.strictObject({ type: z.literal('social.reply.for-job'), jobId: id }),
   z.strictObject({ type: z.literal('social.job.fail'), id, leaseToken: id, error: z.string().max(2000) }),
   z.strictObject({ type: z.literal('social.delegation.record'), companionId: id, conversationId: id, sourceMessageId: id,
     recipientIds: z.array(id).min(1).max(19), sharedText: z.string().trim().min(1).max(2000), visitId: id.optional(), intent: z.enum(['visit', 'message']).default('visit') }),

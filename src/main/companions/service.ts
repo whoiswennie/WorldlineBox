@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { CompanionReplyProgress } from '../../shared/companion-reply-progress';
-import { inspectCompanionReplyMemory } from './reply-memory-inspection';
+import { inspectCompanionReplyMemory, inspectCompanionSocialReplyMemory } from './reply-memory-inspection';
 import { probeCompanionMemory } from './memory-probe';
 import { existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -17,7 +17,7 @@ import { CompanionStorageClient } from './storage-client';
 import { CompanionCredentials } from './credentials';
 import { CompanionCapacity } from './capacity';
 import { CompanionModelError, generateCompanionReply, type CompanionModelConfig } from './model';
-import { buildCompanionContext, refreshCompanionRuntimeStateContext } from './context';
+import { buildCompanionContext, refreshCompanionRuntimeStateContext, refreshCompanionCharacterDevelopmentContext } from './context';
 import { companionScheduleClock } from '../../shared/companion-schedule-time';
 import { CompanionAutonomyService } from './autonomy-service';
 import { CompanionActivityTaskService } from './activity-task-service';
@@ -31,6 +31,9 @@ import { CompanionMemoryManagementSearch } from './memory-management-search';
 import { CompanionMemoryDocuments } from './memory-documents';
 import { CompanionLearningService, type CompanionLearningAssets } from './learning-service';
 import type { CompanionLearningWorkspaceCommand } from '../../shared/companion-learning';
+import type { CompanionLearningGoalWorkspaceCommand } from '../../shared/companion-learning-goals';
+import type { CompanionLearningGoalService } from './learning-goal-service';
+import { createCompanionLearningGoalService } from './learning-goal-integration';
 import type { CompanionMemoryDocumentCommand } from '../../shared/companion-memory-documents';
 import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
 import type { CompanionMemoryRuntime } from './vcp-runtime';
@@ -82,6 +85,7 @@ export interface CompanionServiceOptions {
 /** Owns conversations' reasoning lifecycles; SQLite belongs exclusively to the utility worker. */
 export class CompanionService {
   private readonly learning?: CompanionLearningService;
+  private readonly learningGoals?: CompanionLearningGoalService;
   private readonly storage: CompanionStorageClient;
   private readonly credentials: CompanionCredentials;
   private readonly memory: CompanionMemoryService;
@@ -241,6 +245,21 @@ export class CompanionService {
         if (!actor || ['sleeping', 'eating'].includes(actor.routinePhase) || ['working', 'sleeping', 'lyingDown', 'waking', 'eating'].includes(actor.activity)) return false;
         await this.world.ready({ ...scope, workId, kind: 'learning', learningGrantId: job.id, learningLeaseToken: job.leaseToken, fixed: false }, AbortSignal.any([signal, AbortSignal.timeout(10000)])); return true;
       }, end: (owner, workId) => this.world.end(owner, workId), changed: () => this.changed(), report: options.report });
+    if (options.learningAssets) this.learningGoals = createCompanionLearningGoalService({
+      request: command => this.call(command), configFor: companion => this.configFor(companion), assets: options.learningAssets,
+      files: this.files, attachmentPath: (relative, source) => this.attachmentPath(relative, source), memory: this.memory,
+      validateWrite: (command, signal) => this.checkedMemoryWrite(command, signal),
+      fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
+      blocked: owner => this.resettingCompanions.has(owner) || this.dormantCompanions.has(owner),
+      ready: async goal => {
+        const scope = { companionId: goal.companionId, conversationId: 'world_' + goal.companionId };
+        const routine = (await this.call({ type: 'routine.get', ...scope })).routine?.runtime;
+        if (routine && ['sleeping', 'eating'].includes(routine.phase)) return { ready: false,
+          reason: routine.phase === 'sleeping' ? '等本次睡眠结束后继续学习；消息仍可独立回应。' : '用餐后继续学习；消息仍可独立回应。',
+          retryAfterMs: Math.max(30000, Math.min(30 * 60000, Date.parse(routine.nextTransitionAt) - Date.now())) };
+        return { ready: true };
+      }, changed: () => this.changed(), report: options.report,
+    });
     this.initialization = this.storage.start().then(async () => {
       for (const type of ['action.interrupt-pending', 'work-order.interrupt-pending', 'interruption.recover',
         'work.interrupt-running', 'activity.recover', 'schedule.recover-activities'] as const) {
@@ -261,17 +280,12 @@ export class CompanionService {
     void this.initialization.then(() => { if (!this.closed) this.activityTasks.start(); }).catch(options.report);
     void this.initialization.then(() => { if (!this.closed) this.world.start(); }).catch(options.report);
     void this.initialization.then(() => { if (!this.closed) this.learning?.start(); }).catch(options.report);
+    void this.initialization.then(() => { if (!this.closed) this.learningGoals?.start(); }).catch(options.report);
   }
   private async call(command: CompanionStorageCommand, signal?: AbortSignal): Promise<CompanionStorageResponse> {
     if (command.type === 'memory.search') return this.memory.search(command);
     if (command.type === 'memory.record' || command.type === 'memory.revise' || command.type === 'memory.save' || command.type === 'memory.library.organize') {
-      const controller = new AbortController();
-      const owner = command.type === 'memory.save' ? command.memory.companionId : command.companionId;
-      this.memoryValidationControllers.set(controller, owner);
-      const checking = this.validateMemoryWrite(command, AbortSignal.any([controller.signal, this.attentionController.signal, ...(signal ? [signal] : [])]));
-      this.memoryValidationJobs.add(checking);
-      try { await checking; }
-      finally { this.memoryValidationJobs.delete(checking); this.memoryValidationControllers.delete(controller); }
+      await this.checkedMemoryWrite(command, signal);
     }
     const response = await this.storage.request(command);
     if (!response.ok) throw new Error(response.error ?? '伙伴存储暂时不可用。');
@@ -287,6 +301,15 @@ export class CompanionService {
       || command.type === 'action.update' && command.patch.result !== undefined
       || ['memory.record', 'memory.revise', 'memory.organize', 'memory.save', 'memory.delete', 'memory.forget', 'memory.index.rebuild', 'memory.policy.release', 'memory.library.organize', 'memory.library.delete', 'memory.tags.complete'].includes(command.type)) this.memory.schedule();
     return response;
+  }
+  private async checkedMemoryWrite(command: Extract<CompanionStorageCommand, { type: 'memory.record' | 'memory.revise' | 'memory.save' | 'memory.library.organize' }>, signal?: AbortSignal): Promise<void> {
+    const controller = new AbortController();
+    const owner = command.type === 'memory.save' ? command.memory.companionId : command.companionId;
+    this.memoryValidationControllers.set(controller, owner);
+    const checking = this.validateMemoryWrite(command, AbortSignal.any([controller.signal, this.attentionController.signal, ...(signal ? [signal] : [])]));
+    this.memoryValidationJobs.add(checking);
+    try { await checking; }
+    finally { this.memoryValidationJobs.delete(checking); this.memoryValidationControllers.delete(controller); }
   }
   /** Every new diary entrance shares the same policy gate, including UI and file imports. */
   private async validateMemoryWrite(command: Extract<CompanionStorageCommand, { type: 'memory.record' | 'memory.revise' | 'memory.save' | 'memory.library.organize' }>, signal: AbortSignal): Promise<void> {
@@ -325,10 +348,14 @@ export class CompanionService {
     if (!allowed) throw new Error('这篇日记涉及已要求今后不再记录的主题，尚未保存。');
   }
   /** Human-only natural-document management; agent tools have no route to this API. */
-  async manageLearningSources(command: CompanionLearningWorkspaceCommand): Promise<CompanionWorkspaceResponse> {
+  async manageLearningSources(command: CompanionLearningWorkspaceCommand | CompanionLearningGoalWorkspaceCommand): Promise<CompanionWorkspaceResponse> {
     await this.initialization;
+    if (command.type.startsWith('memory.learning.goals.')) {
+      if (this.closed || !this.learningGoals) throw new Error('学习目标服务暂不可用。');
+      return this.learningGoals.handle(command as CompanionLearningGoalWorkspaceCommand);
+    }
     if (this.closed || !this.learning) throw new Error('学习来源服务暂不可用。');
-    return this.learning.handle(command);
+    return this.learning.handle(command as CompanionLearningWorkspaceCommand);
   }
   async manageMemoryDocuments(command: CompanionMemoryDocumentCommand): Promise<CompanionWorkspaceResponse> {
     await this.initialization;
@@ -397,6 +424,7 @@ export class CompanionService {
     if (this.closed) throw new Error('伙伴服务正在关闭。');
     switch (request.type) {
       case 'reply.memory.inspect': return { ok: true, replyMemory: await inspectCompanionReplyMemory(request, command => this.call(command)) };
+      case 'social.reply.memory.inspect': return { ok: true, replyMemory: await inspectCompanionSocialReplyMemory(request, command => this.call(command)) };
       case 'memory.recall.state': return { ok: true, memoryCorpusStamp: (await this.call({ type: 'memory.corpus.stamp', companionId: request.companionId })).memoryCorpusStamp };
       case 'memory.recall.test': return { ok: true, memoryProbe: await probeCompanionMemory(request, {
         request: command => this.call(command), search: (query, mode) => this.memory.search(query, mode),
@@ -770,7 +798,7 @@ export class CompanionService {
         }
         const response = await this.call(request);
         if (!['messages', 'message.get', 'message.search', 'memory.list', 'memory.search', 'memory.browse', 'memory.inspect', 'memory.sources.search', 'memory.sources.filter', 'memory.records.filter', 'memory.read', 'memory.status', 'memory.processing.status', 'actions', 'actions.page', 'action.get',
-          'activity.list', 'activity.get', 'schedule.list', 'schedule.get', 'state.get', 'state.inspect', 'routine.get', 'world.status', 'world.snapshot', 'world.observe', 'social.conversations', 'social.messages', 'social.days', 'social.flow', 'social.graph', 'work-order.list', 'life-rule.list'].includes(request.type)) this.changed();
+          'activity.list', 'activity.get', 'schedule.list', 'schedule.get', 'state.get', 'state.inspect', 'character.development', 'routine.get', 'world.status', 'world.snapshot', 'world.observe', 'social.conversations', 'social.messages', 'social.days', 'social.flow', 'social.graph', 'work-order.list', 'life-rule.list'].includes(request.type)) this.changed();
         return response;
       }
     }
@@ -806,6 +834,7 @@ export class CompanionService {
   }
   private async stopCompanion(companionId: string, knownTaskIds: readonly string[] = []): Promise<void> {
     this.learning?.cancel(companionId);
+    this.learningGoals?.cancel(companionId);
     for (const [controller, owner] of this.memoryValidationControllers) if (owner === companionId) controller.abort();
     const replies = [...this.replies.values()].filter(value => this.replyOwners.get(value.controller) === companionId);
     for (const reply of replies) { this.resetReplyControllers.add(reply.controller); reply.controller.abort(); }
@@ -837,7 +866,7 @@ export class CompanionService {
     // ID durably before stopping it; never infer process exit from UI status.
     await collect(); const failures = await terminate();
     await Promise.allSettled([...replies.map(reply => reply.promise), ...[...this.attentionJobs.entries()].filter(([key]) => key.startsWith(companionId + ':')).map(([, promise]) => promise),
-      ...[...(this.fileReadJobs.get(companionId) ?? [])], this.learning?.drain(companionId), this.activityTasks.drainCompanion(companionId), this.memory.drainCompanion(companionId), this.world.drainCompanion(companionId), this.schedules.drainCompanion(companionId), this.autonomy.drainCompanion(companionId)]);
+      ...[...(this.fileReadJobs.get(companionId) ?? [])], this.learning?.drain(companionId), this.learningGoals?.drain(companionId), this.activityTasks.drainCompanion(companionId), this.memory.drainCompanion(companionId), this.world.drainCompanion(companionId), this.schedules.drainCompanion(companionId), this.autonomy.drainCompanion(companionId)]);
     if (failures.length) throw new Error('部分旧任务进程尚未确认停止，请重试。', { cause: failures[0] });
     for (const [key, activity] of this.activities) if (activity.companionId === companionId) this.activities.delete(key);
     this.unavailableCompanions.delete(companionId);
@@ -926,7 +955,7 @@ export class CompanionService {
       await this.call({ type: 'world.attention.record', ...scope, sourceMessageId,
         sourceChecksum: createHash('sha256').update(source.content).digest('hex'), ...result });
       this.assessedAttention.add(key);
-    })().catch(error => { if (!this.closed && !signal.aborted) this.options.report(error instanceof CompanionModelError ? error : new Error('伙伴暂时无法判断通知，消息继续等待。')); })
+    })().catch(error => { if (!this.closed && !signal.aborted) this.options.report(error instanceof CompanionModelError ? error : new Error('伙伴暂时无法判断通知优先级，消息仍可独立处理。')); })
       .finally(() => { this.attentionJobs.delete(key); this.attentionControllers.delete(key); if (!this.closed) void this.pumpQueue(); });
     this.attentionJobs.set(key, promise); return promise;
   }
@@ -1038,7 +1067,9 @@ export class CompanionService {
       updateActivity('waiting', '消息已收到，正在确认当前活动');
       let connection: string | undefined, interruptionId: string | undefined;
       try {
-        if (!proactive) await this.assessAttention(id, userMessage.id);
+        // Incoming dialogue has its own lane: an auxiliary urgency assessment
+        // must not hold it behind sleep, a meal or another ongoing task.
+        if (!proactive) void this.assessAttention(id, userMessage.id);
         if (!proactive) interruptionId = await this.beginPriority(id, conversationId, userMessage.id);
         await phoneReady();
         // An unsolicited opportunity observes the conversation now, rather than the
@@ -1097,7 +1128,7 @@ export class CompanionService {
                 stream = new CompanionReplyStream({ checkpoint, step,
                   publish: event => this.publishReplyStream(event), save: () => this.call({ type: 'loop.save', checkpoint }) });
                 updateActivity('thinking', retry ? '模型连接重试中' : '正在生成回复');
-                reply = await generateCompanionReply({ companion, conversation, messages: replyMessages, memories, proactive, ...profiles, fileInputs,
+                reply = await generateCompanionReply({ companion, conversation, messages: replyMessages, memories, proactive, ...profiles, fileInputs, world: inference.world, runtimeState: inference.runtimeState, characterDevelopment: inference.characterDevelopment,
                   sourceMessage: userMessage, identityDirectory: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name })), addressedCompanionIds: speakers,
                   members: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name, description: role.description })) }, config, controller.signal,
                   { loop: true, ...inference, toolImages, onTextDelta: text => { if (text && checkpoint.progress?.phase !== 'streaming') updateActivity('thinking', '正在输出回复', 'streaming'); stream!.onTextDelta(text); },
@@ -1408,14 +1439,19 @@ export class CompanionService {
     // Restart provider history after withdrawal; opaque protocol signatures can retain the old context too.
     const turns = withdrawMemoryResults ? [] : currentTurns;
     checkpoint.supplements = checkpoint.supplements.filter(item => allowedSources.has(item.id));
-    const runtimeState = (await this.call({ type: 'state.get', ...scope })).runtimeState;
+    const [stateResponse, developmentResponse] = await Promise.all([
+      this.call({ type: 'state.get', ...scope }),
+      this.call({ type: 'character.development', companionId, conversationId, limit: 12 }).catch(error => { this.options.report(error); return undefined; }),
+    ]);
+    const runtimeState = stateResponse.runtimeState, characterDevelopment = developmentResponse?.characterDevelopment;
     const conversation = (await this.call({ type: 'state', includeHidden: true })).state?.conversations.find(item => item.id === conversationId);
     const context = { system: checkpoint.context.system, user: JSON.stringify({ ...data, ...(world ? { world: companionModelWorld(world, companionId),
       worldTrust: 'host_simulation_facts_and_peer_quotes_not_player_authorization' } : {}) }) };
     // Persist the clean base and cutoff so a past withdrawal cannot discard later authorized tool results forever.
     checkpoint.context = { ...context };
-    return { context: conversation ? refreshCompanionRuntimeStateContext(context, runtimeState, companionId, conversation) : context, turns,
-      supplements: checkpoint.supplements.filter(item => allowedSources.has(item.id)) };
+    const latest = refreshCompanionCharacterDevelopmentContext(context, characterDevelopment, companionId, conversationId);
+    return { context: conversation ? refreshCompanionRuntimeStateContext(latest, runtimeState, companionId, conversation) : latest, turns,
+      supplements: checkpoint.supplements.filter(item => allowedSources.has(item.id)), world, runtimeState, characterDevelopment };
   }
 
   private async cancelWithdrawnScheduleActions(response: CompanionStorageResponse) {
@@ -2096,6 +2132,7 @@ export class CompanionService {
   private async shutdownOnce(): Promise<void> {
     this.closed = true;
     const learningClosing = this.learning?.close();
+    const learningGoalsClosing = this.learningGoals?.close();
     this.attentionController.abort();
     for (const controller of this.memoryValidationControllers.keys()) controller.abort();
     const managementClosing = this.memoryManagement.close();
@@ -2109,6 +2146,7 @@ export class CompanionService {
       await managementClosing;
       await this.memoryTags.close();
       await learningClosing;
+      await learningGoalsClosing;
       await Promise.allSettled([this.memoryLibrary?.close(), this.memory.close(), this.storage.close(), this.credentials.flush()]);
       return;
     }
@@ -2121,6 +2159,7 @@ export class CompanionService {
     await this.autonomy.close();
     await this.activityTasks.close();
     await learningClosing;
+    await learningGoalsClosing;
     await this.world.close();
     await this.memory.close();
     for (const controller of this.replyControllers.keys()) controller.abort();

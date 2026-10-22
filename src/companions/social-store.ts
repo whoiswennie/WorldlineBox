@@ -7,8 +7,9 @@ import type { CompanionWorldScope } from '../shared/companion-world';
 import type { CompanionSocialConversation, CompanionSocialConversationPage, CompanionSocialMessage, CompanionSocialMessagePage, CompanionSocialDays, CompanionSocialJob, CompanionSocialFlowPage, CompanionSocialFlowEvent, CompanionSocialGraph } from '../shared/companion-social';
 import { companionSearchTokens, companionSearchMatch } from '../shared/companion-search';
 import { companionCivilInstantInZone, companionTimeInZone } from '../shared/companion-schedule-time';
-import { CompanionSocialContinuityStore, companionPlayerPhoneBusy } from './social-continuity-store';
+import { CompanionSocialContinuityStore } from './social-continuity-store';
 import { initializeSocialFlowIndex, recentSocialFacts, recentSocialMessageCounts } from './social-flow-index';
+import { CompanionSocialReplyStore } from './social-reply-store';
 
 type Row = Record<string, string | number | null>;
 type Calendar = { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean };
@@ -27,6 +28,7 @@ const dayAt = (at: number, zone: string) => { const date = companionTimeInZone(a
 /** Peer rooms use the existing formal message authority; scheduling drafts never become evidence. */
 export class CompanionSocialStore {
   readonly continuity: CompanionSocialContinuityStore;
+  private readonly replies: CompanionSocialReplyStore;
   constructor(private readonly db: CompanionConnection,
     private readonly append: (input: AppendCompanionMessage) => CompanionMessage,
     private readonly message: (id: string) => CompanionMessage,
@@ -38,6 +40,7 @@ export class CompanionSocialStore {
     private readonly options: { observationCalendar?(): Calendar; memoryRevision?(scope: { companionId: string; conversationId: string; beforeSequence: number }): string; interrupt?(owner: string, source: CompanionSocialMessage): void; endInterrupt?(owner: string, sourceId: string): void; contactState?(owner: string): CompanionContactState; createPeerWork?(input: CompanionPeerWorkInput): void; addressText?(owner: string): string; shareHome?(owner: string, recipients: string[], source: CompanionMessage): void } = {}) {
     this.continuity = new CompanionSocialContinuityStore(db, append, message, visible,
       owner => available(owner, 'phone', []), () => calendar().backlog);
+    this.replies = new CompanionSocialReplyStore(db);
   }
   private observationCalendar(): Calendar { return this.options.observationCalendar?.() ?? this.calendar(); }
 
@@ -59,6 +62,7 @@ export class CompanionSocialStore {
       CREATE INDEX IF NOT EXISTS companion_social_job_owner ON companion_social_jobs(companion_id,status);
       CREATE TABLE IF NOT EXISTS companion_social_budget(message_id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,kind TEXT NOT NULL,virtual_at TEXT NOT NULL,real_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS companion_social_budget_owner ON companion_social_budget(companion_id,kind,virtual_at DESC);`);
+    this.replies.initialize();
     if (!(this.db.prepare('PRAGMA table_info(companion_social_messages)').all() as Row[]).some(column => column.name === 'channel')) this.db.exec('ALTER TABLE companion_social_messages ADD COLUMN channel TEXT');
     this.db.exec('CREATE INDEX IF NOT EXISTS companion_social_member_owner ON conversation_members(companion_id,conversation_id); CREATE INDEX IF NOT EXISTS companion_social_room_virtual ON companion_social_messages(conversation_id,virtual_at DESC,message_id)');
     this.db.exec('CREATE TABLE IF NOT EXISTS companion_social_communication(companion_id TEXT PRIMARY KEY,until_real TEXT NOT NULL,data TEXT NOT NULL)');
@@ -127,7 +131,8 @@ export class CompanionSocialStore {
   }
   private wrap(id: string): CompanionSocialMessage {
     const found = this.db.prepare('SELECT * FROM companion_social_messages WHERE message_id=?').get(id); if (!found) throw new Error('社交消息不存在。');
-    const value = row(found); return { message: this.message(id), virtualCreatedAt: String(value.virtual_at), recipientIds: parse<string[]>(value.recipient_ids),
+    const value = row(found), progress = this.replies.receipt(id)?.progress;
+    return { message: { ...this.message(id), ...(progress ? { replyProgress: progress } : {}) }, virtualCreatedAt: String(value.virtual_at), recipientIds: parse<string[]>(value.recipient_ids),
       ...(value.channel === 'phone' || value.channel === 'face_to_face' ? { channel: value.channel } : {}) };
   }
   private conversation(id: string): CompanionSocialConversation {
@@ -411,7 +416,10 @@ export class CompanionSocialStore {
     const job: StoredJob = { urgent, id: randomUUID(), companionId: owner, conversationId: source.message.conversationId, sourceMessageId: source.message.id, throughSequence: source.message.sequence, chainId, remainingTurns, memberIds: this.members(source.message.conversationId), channel, status: 'pending', attempts: 0, typingNotBefore: iso(), createdAt: iso() };
     this.db.prepare('INSERT INTO companion_social_jobs(id,companion_id,conversation_id,status,created_at,data) VALUES(?,?,?,?,?,?)').run(job.id, owner, job.conversationId, job.status, job.createdAt, JSON.stringify(job));
   }
-  private saveJob(job: StoredJob, leaseUntil?: string): void { this.db.prepare('UPDATE companion_social_jobs SET status=?,lease_until=?,data=? WHERE id=?').run(job.status, leaseUntil ?? null, JSON.stringify(job), job.id); }
+  private saveJob(job: StoredJob, leaseUntil?: string): void {
+    this.db.prepare('UPDATE companion_social_jobs SET status=?,lease_until=?,data=? WHERE id=?').run(job.status, leaseUntil ?? null, JSON.stringify(job), job.id);
+    this.replies.terminal(job);
+  }
   private publicJob(job: StoredJob): CompanionSocialJob {
     return { id: job.id, companionId: job.companionId, conversationId: job.conversationId, sourceMessageId: job.sourceMessageId,
       throughSequence: job.throughSequence, chainId: job.chainId, remainingTurns: job.remainingTurns, memberIds: job.memberIds,
@@ -419,7 +427,9 @@ export class CompanionSocialStore {
       origin: this.continuity.forChain(job.chainId) };
   }
   private phoneBusy(owner: string, leaseId: string): boolean {
-    return companionPlayerPhoneBusy(this.db, owner) || !!this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing' AND json_extract(data,'$.leaseId')!=?").get(owner, iso(), leaseId)
+    // Player work/reply lanes do not reserve this peer conversation. Keep only
+    // the explicit peer delivery lane, not the actor's whole daily routine.
+    return !!this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing' AND json_extract(data,'$.leaseId')!=?").get(owner, iso(), leaseId)
       || !!this.db.prepare("SELECT 1 FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>?").get(owner, iso());
   }
   private clearCommunication(owner: string, leaseId: string): void { this.db.prepare("DELETE FROM companion_social_communication WHERE companion_id=? AND json_extract(data,'$.leaseId')=?").run(owner, leaseId); }
@@ -514,9 +524,10 @@ export class CompanionSocialStore {
       job.status = 'done'; delete job.leaseToken;
       if (job.urgent) this.options.endInterrupt?.(job.companionId, job.sourceMessageId);
       this.clearCommunication(job.companionId, 'job:' + job.id);
-      if (!input.text?.trim()) { this.saveJob(job); this.db.prepare("UPDATE companion_social_chains SET status='done' WHERE id=?").run(job.chainId); if (job.channel === 'face_to_face') this.clearFace(job.conversationId); return { ok: true }; }
+      if (!input.text?.trim()) { this.saveJob(job); this.replies.complete(job, undefined, this.message(job.sourceMessageId).content, input.memoryRecall); this.db.prepare("UPDATE companion_social_chains SET status='done' WHERE id=?").run(job.chainId); if (job.channel === 'face_to_face') this.clearFace(job.conversationId); return { ok: true }; }
       const content = input.text + (input.shareAddress ? '\n\n' + this.options.addressText?.(job.companionId) : '');
       const source = this.append({ conversationId: job.conversationId, authorId: job.companionId, content, replyToId: job.sourceMessageId, clientId: 'social_' + job.id });
+      this.replies.complete(job, source.id, this.message(job.sourceMessageId).content, input.memoryRecall);
       const recipients = job.memberIds.filter(id => id !== job.companionId); this.index(source, context.virtualNow, recipients, job.channel); const message = this.wrap(source.id);
       if (input.shareAddress) this.options.shareHome?.(job.companionId, recipients, source);
       this.db.prepare('UPDATE companion_social_chains SET used=used+1 WHERE id=?').run(job.chainId);
@@ -546,6 +557,10 @@ export class CompanionSocialStore {
       case 'social.flow': return { ok: true, socialFlowPage: this.flow(command) };
       case 'social.graph': return { ok: true, socialGraph: this.graph(command.companionId, command) };
       case 'social.days': return { ok: true, socialDays: this.days(command) };
+      case 'social.reply.progress': this.requireRoom(command.conversationId, command.companionId); return { ok: true, socialReplyProgress: this.replies.list(command.conversationId, command.companionId, command.limit ?? 20) };
+      case 'social.reply.for-message': return { ok: true, socialReplyReceipt: this.replies.receipt(command.messageId) };
+      case 'social.reply.for-job': return { ok: true, socialReplyReceipt: this.replies.pending(command.jobId) };
+      case 'social.job.progress': this.replies.update(command); return { ok: true };
       case 'social.send': return this.send(command);
       case 'social.job.claim': return this.claim();
       case 'social.job.complete': return this.complete(command);

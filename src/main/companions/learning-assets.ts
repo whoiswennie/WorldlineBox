@@ -41,6 +41,12 @@ export function companionLearningAssets(options: { request(command: WorkerComman
       if (result.type !== 'asset.learning.page') throw new Error('无法分页读取授权资料。');
       return { ...result, assets: result.assets.filter(asset => asset.mediaType === 'text' && !asset.deletedAt && !reserved(asset.relativeFilePath)) };
     },
+    asset: async (grant, assetId) => {
+      await ensure(grant);
+      const result = await request({ type: 'asset.learning.page', libraryId: grant.libraryId, folderId: grant.folderId, assetId, limit: 1 });
+      if (result.type !== 'asset.learning.page') throw new Error('无法核对学习资产。');
+      return result.assets.find(asset => asset.assetId === assetId && asset.mediaType === 'text' && !asset.deletedAt && !reserved(asset.relativeFilePath));
+    },
     read: async (grant, asset) => {
       await ensure(grant);
       // Membership is checked again immediately before the actual read.

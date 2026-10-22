@@ -7,12 +7,12 @@ export const companionLifeOverviewFilterSchema = z.enum(['all', 'current', 'upco
 const page = { companionId: id, filter: companionLifeOverviewFilterSchema.default('all'), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(40).default(20) };
 export const companionLifeOverviewCommand = z.strictObject({ type: z.literal('life.overview.status'), ...page });
 export const companionLifeOverviewReadCommand = z.strictObject({ type: z.literal('life.overview.read'), ...page });
-export const companionLifeOverviewItemSchema = z.object({ id: z.string().max(180), kind: z.enum(['action', 'activity', 'schedule', 'life_event', 'life_rule']),
+export const companionLifeOverviewItemSchema = z.object({ id: z.string().max(180), kind: z.enum(['action', 'activity', 'schedule', 'life_event', 'life_rule', 'learning_goal']),
   title: z.string().max(160), status: z.string().max(30), section: z.enum(['current', 'upcoming', 'attention', 'events']), condition: z.string().max(500),
   timing: z.object({ kind: z.enum(['scheduled', 'eligibility', 'retry', 'window', 'conditional', 'none']), clock: z.enum(['real', 'world']),
     timeZone: z.string().max(100).optional(), at: instant.optional(), windowStart: instant.optional(), windowEnd: instant.optional() }),
   updatedAt: instant.optional(), probability: z.number().min(0).max(1).optional(),
-  destination: z.object({ kind: z.enum(['work', 'activity', 'schedules', 'life_rules']), id, conversationId: id.optional() }),
+  destination: z.object({ kind: z.enum(['work', 'activity', 'schedules', 'life_rules', 'learning']), id, conversationId: id.optional() }),
 });
 export const companionLifeOverviewContextSchema = z.object({ companionId: id, checkedAt: instant,
   clock: z.object({ realNow: instant, virtualNow: instant, observedRealAt: instant, timeZone: z.string(), speed: z.number().positive(), mode: z.enum(['realtime', 'compressed']), backlog: z.boolean() }),

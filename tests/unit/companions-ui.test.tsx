@@ -7,6 +7,9 @@ import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import type { Companion, CompanionAction, CompanionAttachment, CompanionConversation, CompanionMemory, CompanionMessage, CompanionReplyStreamEvent, CompanionState, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionMemoryDocumentRead } from '../../src/shared/companion-memory-documents';
 import type { CompanionWorkspaceRequest, CompanionWorkspaceResponse } from '../../src/shared/companion-workspace';
+import type { CompanionRuntimeState } from '../../src/shared/companion-state';
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
@@ -129,6 +132,8 @@ function memoryWorkspaceFixture() {
   }));
   return vi.fn(async (input: CompanionWorkspaceRequest): Promise<CompanionWorkspaceResponse> => {
     if (input.type === 'status') return { ok: true };
+    if (input.type === 'memory.learning.goals.list') return { ok: true, learningGoals: { items: [], hasMore: false } };
+    if (input.type === 'memory.learning.status') return { ok: true, learning: { grants: [], reads: [], libraries: [] } };
     if (input.type === 'memory.documents.list') return { ok: true, documents: { companionId: input.companionId, directory: input.directory,
       folders: [{ path: '日记', name: '日记', count: 1 }, { path: '资料', name: '资料', count: 1 }],
       items: documents.filter(item => !input.directory || item.document.directory === input.directory).map(item => item.document), hasMore: false } };
@@ -136,6 +141,38 @@ function memoryWorkspaceFixture() {
     return { ok: true };
   });
 }
+
+function stateReceiptFixture() {
+  const f = fixture({}, [message(1), message(2), message(3, '这是状态变化对应的真实群聊来源。', { conversationId: 'group-home' })]);
+  const base = f.request.getMockImplementation()!; let withdrawn = false;
+  f.request.mockImplementation(input => input.type === 'state.get' ? Promise.resolve({ ok: true, runtimeState: {
+    companionId: input.companionId, energy: 82, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: -.1, dominance: .1 }, relationship: { affinity: 45, trust: 50, respect: 60 }, familiarity: { stage: 'acquainted', interactionCount: 4, sharedEventCount: 1 }, updatedAt: date, revision: 1,
+    recentChanges: withdrawn ? [] : [{ id: 'formal-state', kind: 'memory', appliedAt: date, occurredAt: date, reason: '有真实来源的理解影响。', affectDelta: { pleasure: .05, arousal: 0, dominance: 0 }, relationshipDelta: { affinity: 0, trust: 0, respect: 0 }, energyDelta: 0, sourceConversationId: 'group-home', sourceMessageIds: ['message-3'], memoryIds: ['note-1'] }],
+  } satisfies CompanionRuntimeState }) : base(input));
+  return { ...f, withdraw: () => { withdrawn = true; } };
+}
+async function openStateReceiptSources() {
+  await click('我们之间'); await click('查看当前伙伴状态详情');
+  for (const text of ['状态变化的来处', '查看来源']) { const summary = [...container!.querySelectorAll('summary')].find(item => item.textContent?.includes(text))!; await act(() => { const details = summary.parentElement as HTMLDetailsElement; details.open = true; details.dispatchEvent(new Event('toggle')); }); }
+}
+
+it('revalidates a state source before navigating to its actual cross-conversation message', async () => {
+  const f = stateReceiptFixture(); await mount(f.api); await openStateReceiptSources(); await click('查看来源消息 1');
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'state.get').length).toBeGreaterThanOrEqual(2); expect(f.request).toHaveBeenCalledWith({ type: 'message.get', id: 'message-3' });
+  expect(container!.querySelector('.companions-chat-name')?.textContent).toContain('海边小屋'); expect(container!.textContent).toContain('这是状态变化对应的真实群聊来源。');
+});
+
+it('keeps a withdrawn state source from opening an obsolete or unrelated conversation', async () => {
+  const f = stateReceiptFixture(); await mount(f.api); await openStateReceiptSources(); f.withdraw(); await click('查看来源消息 1');
+  expect(container!.textContent).toContain('这条状态来源已变化或不可访问'); expect(f.request).not.toHaveBeenCalledWith({ type: 'message.get', id: 'message-3' }); expect(container!.querySelector('.companions-chat-name')?.textContent).not.toContain('海边小屋');
+});
+
+it('opens the exact current owner memory document from a committed state receipt', async () => {
+  vi.useFakeTimers(); const f = stateReceiptFixture(), base = memoryWorkspaceFixture();
+  const workspace = vi.fn((input: CompanionWorkspaceRequest) => input.type === 'memory.documents.locate' ? base({ type: 'memory.documents.read', companionId: input.companionId, path: '资料/学习摘记.md', sourceLimit: 20 }) : base(input));
+  await mount({ ...f.api, workspace }); await openStateReceiptSources(); await click('查看相关记忆 1'); await act(() => vi.advanceTimersByTimeAsync(400));
+  expect(workspace).toHaveBeenCalledWith({ type: 'memory.documents.locate', companionId: 'deepseek-sister', noteId: 'note-1' }); expect(container!.querySelector('.memory-library-paper')?.textContent ?? container!.textContent).toContain('今天读到的一段资料。');
+});
 
 it('keeps companion navigation usable and preserves the selected folder, document and unsaved edit across memory tabs', async () => {
   vi.useFakeTimers();
@@ -188,11 +225,11 @@ it('routes the current chat processing entrance into the memory tab and leaves n
   await click('消息', nav); await click('打开伙伴记忆库', nav);
   expect(manager.querySelector('[aria-label="记忆处理进度"]')).toBeNull();
   expect(manager.querySelector('[aria-label="伙伴记忆库"]')).not.toBeNull();
-  await click('学习来源');
-  expect(manager.querySelector('[role="region"][aria-label="学习来源管理"]')).not.toBeNull();
+  await click('学习与成长');
+  expect(manager.querySelector('[aria-label="伙伴学习与成长"]')).not.toBeNull();
   await click('消息', nav);
   await click('查看记忆处理进度', container!.querySelector('[aria-label="伙伴手帐"]')!);
-  expect(manager.querySelector('[aria-label="学习来源管理"]')).toBeNull();
+  expect(manager.querySelector('[aria-label="伙伴学习与成长"]')).toBeNull();
   expect(manager.querySelector('[role="region"][aria-label="记忆处理进度"]')).not.toBeNull();
 });
 async function fill(selector: string, value: string) {

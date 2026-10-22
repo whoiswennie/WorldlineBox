@@ -60,6 +60,16 @@ it('does not display the previous companion mood, focus or schedule under a newl
   expect(container!.textContent).not.toContain('旅行相册'); expect(container!.querySelector('[role="progressbar"]')?.hasAttribute('aria-valuenow')).toBe(false);
 });
 
+it('distinguishes manual dormancy from an active companion whose body is asleep', async () => {
+  const base = fixture(), request: Request = input => input.type === 'routine.get' ? Promise.resolve({ ok: true, routine: { ...routine, runtime: { ...routine.runtime, phase: 'sleeping', activity: '正在睡觉', canRespond: false } } }) : base(input);
+  const props = { members: [companion], conversationId: 'room', actions: [], request, onOwnerChange: vi.fn(), onClose: vi.fn(), onProfile: vi.fn(), onMemory: vi.fn(), onTasks: vi.fn(), onSchedules: vi.fn(), onWork: vi.fn() };
+  await mount(<CompanionPlanner companion={{ ...companion, active: false }} {...props} />);
+  expect(container!.querySelector('.companions-planner-routine-current')?.textContent).toContain('正在睡觉激活后可交流');
+  await act(async () => root!.render(<CompanionPlanner companion={{ ...companion, active: true }} {...props} />));
+  expect(container!.querySelector('.companions-planner-routine-current')?.textContent).toContain('正在睡觉可以交流');
+  expect(container!.textContent).not.toContain('休息后回复'); expect(container!.textContent).not.toContain('激活后可交流');
+});
+
 it('preserves revision and timing when editing, clears repeat-only fields, and distinguishes pause from cancellation', async () => {
   const request = fixture(); await mount(<CompanionScheduleManager companion={companion} conversationId="room" request={request} onClose={vi.fn()} onDismissError={vi.fn()} />);
   await click('编辑'); await fill('安排标题', '整理照片与笔记'); await choose('安排重复', 'daily'); await click('保存安排修改');

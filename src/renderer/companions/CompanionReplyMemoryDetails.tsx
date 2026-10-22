@@ -3,7 +3,7 @@ import type { WorldlineBoxCompanionsApi } from '../../shared/companions';
 import type { CompanionReplyMemory } from '../../shared/companion-reply-memory';
 import { Icon } from '../Icons';
 
-export type ReplyMemoryScope = { companionId: string; conversationId: string; messageId: string };
+export type ReplyMemoryScope = { companionId: string; conversationId: string; messageId: string; socialJobId?: string };
 function dateLabel(value: string) {
   return Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '时间未记录';
 }
@@ -41,7 +41,9 @@ function CompanionReplyMemoryBody({ scope, refreshKey, api = (window as Window &
       try {
         if (!api) throw new Error('记忆详情暂时无法读取。');
         const [result, state] = await Promise.all([
-          api.request({ type: 'reply.memory.inspect', companionId: scope.companionId, conversationId: scope.conversationId, messageId: scope.messageId, contextOffset, contextLimit: 8192 }),
+          api.request(scope.socialJobId
+            ? { type: 'social.reply.memory.inspect', companionId: scope.companionId, conversationId: scope.conversationId, jobId: scope.socialJobId, contextOffset, contextLimit: 8192 }
+            : { type: 'reply.memory.inspect', companionId: scope.companionId, conversationId: scope.conversationId, messageId: scope.messageId, contextOffset, contextLimit: 8192 }),
           api.request({ type: 'memory.recall.state', companionId: scope.companionId }),
         ]);
         if (!alive || epoch !== requests.epoch) return;
@@ -68,7 +70,7 @@ function CompanionReplyMemoryBody({ scope, refreshKey, api = (window as Window &
     const visibility = () => { corpusStamp = undefined; invalidate(); if (timer) { clearTimeout(timer); timer = undefined; } if (document.visibilityState !== 'hidden') void read(); };
     document.addEventListener('visibilitychange', visibility);
     return () => { alive = false; requests.epoch++; if (timer) clearTimeout(timer); unsubscribe?.(); document.removeEventListener('visibilitychange', visibility); };
-  }, [api, reload, refreshKey, contextOffset, scope.companionId, scope.conversationId, scope.messageId]);
+  }, [api, reload, refreshKey, contextOffset, scope.companionId, scope.conversationId, scope.messageId, scope.socialJobId]);
   const current = receipt?.companionId === scope.companionId && receipt.conversationId === scope.conversationId && receipt.messageId === scope.messageId && (receipt.state !== 'ready' || receipt.contextOffset === contextOffset) ? receipt : undefined;
   // A withdrawn/unavailable receipt is metadata only. Even a malformed response
   // must never cause a cached excerpt to reappear in the rendered body.

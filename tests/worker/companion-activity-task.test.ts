@@ -129,13 +129,11 @@ it('atomically retains a visit goal behind a first phone message, coalesces retr
     expect(observation.activityTask!.visitArrivedAt).toBeDefined();
     expect(commit(arrived, { status: 'complete', action: null, wait: null, summary: '实际抵达bob的小屋了。' }).status).toBe('queued');
 });
-it('keeps a dormant recipient unloaded while retaining one persistent visit goal and queued contact', () => {
+it('keeps a dormant recipient unloaded and refuses a new contact without queuing it', () => {
     store.setCompanionActive('bob', false);
     const source = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '去找bob玩吧。', replyDirective: 'none' });
-    const ensured = store.request({ type: 'activity.visit.ensure', ...alice, sourceMessageId: source.id, targetId: 'bob',
-        initialMessage: { text: '方便时回我吧，想找你玩。', clientId: 'dormant_visit_phone' } });
-    expect(ensured.activityTask?.status).toBe('queued');
-    expect(ensured.socialPending).toBe(true);
+    expect(() => store.request({ type: 'activity.visit.ensure', ...alice, sourceMessageId: source.id, targetId: 'bob',
+        initialMessage: { text: '方便时回我吧，想找你玩。', clientId: 'dormant_visit_phone' } })).toThrow('手动激活');
     const world = advance(10000);
     expect(world.actors.some(actor => actor.companionId === 'bob')).toBe(false);
     expect(world.scenes.some(scene => scene.ownerId === 'bob')).toBe(false);

@@ -290,7 +290,7 @@ describe('virtual routine scheduling and offline energy', () => {
     expect(state.routine?.phase).toBe('sleeping');
   });
 
-  it('keeps ordinary sleeping work queued, admits a real urgent source and returns to the clock phase', () => {
+  it('admits ordinary and urgent dialogue during sleep without duplicating work or changing the body phase', () => {
     const { store, scope } = fixture();
     const routine = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'Asia/Shanghai', sleepAt: '23:00', wakeAt: '07:00', meals: [] } });
@@ -298,7 +298,7 @@ describe('virtual routine scheduling and offline energy', () => {
     const ordinary = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '明天再说普通话题。' });
     const enqueue = (id: string, message: CompanionMessage, proactive = false) => store.request({ type: 'work.enqueue', work: { id, ...scope, sourceMessageId: message.id, proactive, status: 'queued', createdAt: message.createdAt, updatedAt: message.createdAt } });
     enqueue('ordinary', ordinary);
-    expect(store.request({ type: 'work.claim' }).work).toBeUndefined();
+    expect(store.request({ type: 'work.claim' }).work?.id).toBe('ordinary');
     const urgent = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '紧急，马上醒来帮我处理。' }); enqueue('urgent', urgent);
     recordUrgentAttention(store, 'alice', urgent);
     expect(store.request({ type: 'work.claim' }).work?.id).toBe('urgent');
@@ -309,12 +309,14 @@ describe('virtual routine scheduling and offline energy', () => {
     expect(store.request({ type: 'work.claim' }).work?.id).toBe('followup');
     store.request({ type: 'work.status', id: 'followup', status: 'done' });
     store.request({ type: 'work.status', id: 'urgent', status: 'done' });
+    store.request({ type: 'work.status', id: 'ordinary', status: 'done' });
     expect(store.request({ type: 'state.get', ...scope }).runtimeState?.routine?.phase).toBe('sleeping');
     vi.setSystemTime('2026-10-15T00:00:00Z');
-    expect(store.request({ type: 'work.claim' }).work?.id).toBe('ordinary');
+    expect(store.request({ type: 'work.claim' }).work?.id).toBe('proactive');
+    expect(store.request({ type: 'work.claim' }).work).toBeUndefined();
   });
 
-  it('defers flexible tasks without consuming their period while a fixed commitment can wake', () => {
+  it('defers flexible computer tasks without consuming their period while chat remains available and a fixed commitment can wake', () => {
     const { store, scope } = fixture();
     const routine = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'Asia/Shanghai', sleepAt: '23:00', wakeAt: '07:00', meals: [] } });
@@ -326,6 +328,8 @@ describe('virtual routine scheduling and offline energy', () => {
     expect(store.request({ type: 'schedule.due.claim' }).scheduleOccurrence).toBeUndefined();
     const deferred = store.request({ type: 'schedule.list', ...scope }).schedules![0]!;
     expect(deferred.nextRunAt).toBe(flexible.nextRunAt); expect(deferred.deferredUntil).toBe('2026-10-14T23:00:00.000Z');
+    expect(store.request({ type: 'work.claim' }).work?.id).toBe('sleeping_chat');
+    store.request({ type: 'work.status', id: 'sleeping_chat', status: 'done' });
     store.request({ type: 'schedule.create', ...scope, entries: [entry({ title: '固定提醒', runAt })] });
     const fixed = store.request({ type: 'schedule.due.claim' });
     expect(fixed.schedule?.title).toBe('固定提醒'); expect(fixed.scheduleOccurrence).toBeDefined();

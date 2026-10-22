@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { companionRoutineRuntimeSchema } from './companion-routine';
+import { companionStateChangeSchema } from './companion-state-change';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionMoodSchema = z.enum(['calm', 'bright', 'focused', 'tired', 'low']);
@@ -26,6 +27,7 @@ export const companionRuntimeStateSchema = z.object({
   evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().max(4000) })).optional(),
   familiarity: z.object({ stage: z.enum(['new', 'acquainted', 'close']), interactionCount: z.number().int().nonnegative(), sharedEventCount: z.number().int().nonnegative() }),
   routine: companionRoutineRuntimeSchema.optional(),
+  recentChanges: z.array(companionStateChangeSchema).max(5).optional(),
   updatedAt: z.iso.datetime(), revision: z.number().int().positive(),
 });
 export type CompanionRuntimeState = z.infer<typeof companionRuntimeStateSchema>;

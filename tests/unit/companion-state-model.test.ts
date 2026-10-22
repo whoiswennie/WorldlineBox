@@ -5,6 +5,8 @@ import { generateCompanionJournal } from '../../src/main/companions/memory-model
 import { companionStateArgumentsSchema } from '../../src/shared/companion-state-tool';
 import type { CompanionRuntimeState } from '../../src/shared/companion-state';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
+import type { CompanionCharacterDevelopment } from '../../src/shared/companion-character-development';
+import { companionStateToolTurns } from '../../src/main/companions/state-context';
 
 const runtimeState: CompanionRuntimeState = { companionId: 'sister', energy: 20, mood: 'tired', expression: 'gentle',
   affect: { pleasure: -0.25, arousal: 0.4, dominance: -0.1 }, relationship: { affinity: 60, trust: 60, respect: 60 },
@@ -48,10 +50,12 @@ describe('continuous companion state affects behavior without replacing persona 
       await generateCompanionReply(input, { ...config, apiFormat: format }, undefined, { fetchFn, loop: true,
         turns: [{ ...reply.turn!, results: [{ callId: 'state_1', content: result }] }] });
       const next = JSON.parse(String(fetchFn.mock.calls[1]?.[1]?.body));
-      if (format === 'openai_chat' || format === 'dashscope_native') expect((format === 'openai_chat' ? next.messages : next.input.messages).at(-1)).toEqual({ role: 'tool', tool_call_id: 'state_1', content: result });
-      else if (format === 'openai_responses') expect(next.input.at(-1)).toEqual({ type: 'function_call_output', call_id: 'state_1', output: result });
-      else if (format === 'anthropic') expect(next.messages.at(-1).content[0]).toEqual({ type: 'tool_result', tool_use_id: 'state_1', content: result });
-      else expect(next.contents.at(-1).parts[0].functionResponse).toEqual({ id: 'state_1', name: 'state', response: { result } });
+      const receipt = format === 'openai_chat' || format === 'dashscope_native' ? (format === 'openai_chat' ? next.messages : next.input.messages).at(-1).content
+        : format === 'openai_responses' ? next.input.at(-1).output : format === 'anthropic' ? next.messages.at(-1).content[0].content
+          : next.contents.at(-1).parts[0].functionResponse.response.result;
+      expect(JSON.parse(receipt)).toMatchObject({ ok: true, stateObservation: { status: 'historical', revision: 2, asOf: runtimeState.updatedAt } });
+      expect(receipt).not.toContain('WorldlineBox 聊天开发');
+      expect(JSON.parse(receipt)).not.toHaveProperty('runtimeState');
     });
   it('maps PAD and separate affinity/trust/respect to calm expression, initiative and boundaries', () => {
     const behavior = companionRuntimeBehavior({ ...runtimeState, energy: 80, mood: 'low', relationship: { affinity: 70, trust: 20, respect: 20 } });
@@ -74,6 +78,35 @@ describe('continuous companion state affects behavior without replacing persona 
     const data = JSON.parse(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)).messages[1].content);
     expect(data.runtimeState.revision).toBe(2);
     expect(data.runtimeBehavior.responseLength).toBe('brief');
+  });
+  it('drops checkpoint state and character data when current host reads are absent', async () => {
+    const characterDevelopment: CompanionCharacterDevelopment = { companionId: 'sister', conversationId: 'private_sister', observedAt: '2026-10-22T00:00:00Z', truncated: false,
+      items: [{ memoryId: 'old_note', memoryVersion: 1, kind: 'preference', topic: 'drink', statement: 'OLD_ONLY_SECRET_TEA', basis: 'self_expression', updatedAt: '2026-10-22T00:00:00Z', sourceMessageIds: ['self_expression'] }] };
+    const context = buildCompanionContext({ ...input, characterDevelopment });
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat'));
+    await generateCompanionReply({ ...input, runtimeState: undefined }, config, undefined, { fetchFn, context, loop: true });
+    const data = JSON.parse(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)).messages[1].content);
+    expect(data).not.toHaveProperty('runtimeState'); expect(data).not.toHaveProperty('runtimeBehavior');
+    expect(data).not.toHaveProperty('characterDevelopment'); expect(JSON.stringify(data)).not.toContain('OLD_ONLY_SECRET_TEA');
+  });
+  it('uses the current source-backed character version, scoped to this owner and room', async () => {
+    const characterDevelopment: CompanionCharacterDevelopment = { companionId: 'sister', conversationId: 'private_sister', observedAt: '2026-10-22T00:00:00Z', truncated: false,
+      items: [{ memoryId: 'new_note', memoryVersion: 2, kind: 'preference', topic: 'drink', statement: '现在更喜欢不甜的茶', basis: 'self_expression', updatedAt: '2026-10-22T00:00:00Z', sourceMessageIds: ['new_self_expression'] }] };
+    const context = buildCompanionContext({ ...input, characterDevelopment: { ...characterDevelopment, items: [{ ...characterDevelopment.items[0]!, statement: 'OLD_PREFERENCE' }] } });
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat'));
+    await generateCompanionReply({ ...input, characterDevelopment }, config, undefined, { fetchFn, context, loop: true });
+    const data = JSON.parse(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)).messages[1].content);
+    expect(data.characterDevelopment.items).toEqual(characterDevelopment.items); expect(JSON.stringify(data)).not.toContain('OLD_PREFERENCE');
+    expect(JSON.parse(buildCompanionContext({ ...input, characterDevelopment: { ...characterDevelopment, companionId: 'other' } }).user)).not.toHaveProperty('characterDevelopment');
+    expect(JSON.parse(buildCompanionContext({ ...input, characterDevelopment: { ...characterDevelopment, conversationId: 'other_room' } }).user)).not.toHaveProperty('characterDevelopment');
+  });
+  it('keeps change receipts out of inference and never forwards old private state tool fields', () => {
+    const data = JSON.parse(buildCompanionContext({ ...input, runtimeState: { ...runtimeState, recentChanges: [{ reason: 'PRIVATE_CHANGE_REASON' }] as CompanionRuntimeState['recentChanges'] } }).user);
+    expect(data.runtimeState).not.toHaveProperty('recentChanges');
+    const turns = [{ text: '', rawText: '', calls: [{ id: 'old_state', name: 'state', arguments: '{}' }], results: [{ callId: 'old_state', content: JSON.stringify({ ok: true, runtimeState: { ...runtimeState, focus: 'REVOKED_FOCUS' } }) }] }];
+    const projected = companionStateToolTurns(turns);
+    expect(JSON.stringify(projected)).not.toContain('REVOKED_FOCUS'); expect(turns[0]!.results[0]!.content).toContain('REVOKED_FOCUS');
+    expect(companionStateToolTurns([{ ...turns[0]!, results: [{ callId: 'old_state', content: '{broken' }] }])[0]!.results![0]!.content).toContain('请重新读取当前状态');
   });
   it('shows only high-level state in a group and never another companion owner', () => {
     const context = buildCompanionContext({ ...input, conversation: { ...input.conversation, id: 'group', kind: 'group' },

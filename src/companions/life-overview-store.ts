@@ -38,17 +38,28 @@ export function readCompanionLifeOverviewPage(db: CompanionConnection, request: 
     "json_extract(o.data,'$.nextEligibleAt') AS at,json_extract(o.data,'$.windowStart') AS window_start,json_extract(o.data,'$.windowEnd') AS window_end,json_extract(o.data,'$.rule.probability') AS probability,NULL AS start_minute,NULL AS end_minute,NULL AS check_minutes,'world' AS clock");
   // A rule is a configured opportunity, not an execution or a promise that it will fire.
   const rules = `SELECT 'life_rule:'||r.id AS uid,r.id AS id,'life_rule' AS kind,SUBSTR(COALESCE(json_extract(r.data,'$.title'),''),1,160) AS title,'enabled' AS status,'events' AS section,6 AS rank,COALESCE(json_extract(r.data,'$.createdAt'),'') AS sort_at,'' AS stage,NULL AS conversation_id,NULL AS updated_at,NULL AS at,NULL AS window_start,NULL AS window_end,json_extract(r.data,'$.probability') AS probability,json_extract(r.data,'$.startMinute') AS start_minute,json_extract(r.data,'$.endMinute') AS end_minute,COALESCE(json_extract(r.data,'$.checkIntervalMinutes'),15) AS check_minutes,'world' AS clock FROM companion_life_rules r WHERE r.companion_id=@owner AND r.enabled=1 AND NOT EXISTS(SELECT 1 FROM metadata m WHERE m.key='life-rule-removed/'||r.id)`;
+  const hasGoals = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='companion_learning_goals'").get();
+  const goalAt = "strftime('%Y-%m-%dT%H:%M:%fZ',g.next_at/1000.0,'unixepoch')";
+  const goals = hasGoals ? `UNION ALL SELECT ${columns('learning_goal', 'g', "'学习 · '||json_extract(g.data,'$.text')",
+    "CASE WHEN g.status='running' THEN 'current' WHEN g.status='paused' THEN 'attention' ELSE 'upcoming' END",
+    "CASE WHEN g.status='running' THEN 1 WHEN g.status='paused' THEN 3 ELSE 4 END", goalAt,
+    "CASE WHEN g.status='running' THEN COALESCE((SELECT json_extract(r.data,'$.phase') FROM companion_learning_goal_rounds r WHERE r.id=g.round_id),json_extract(g.data,'$.phase')) ELSE COALESCE(json_extract(g.data,'$.waitReason'),json_extract(g.data,'$.phase')) END", 'NULL',
+    `${goalAt} AS at,NULL AS window_start,NULL AS window_end,NULL AS probability,NULL AS start_minute,NULL AS end_minute,NULL AS check_minutes,'real' AS clock`)}
+    FROM (SELECT *,CASE WHEN lease_token IS NOT NULL AND lease_until>@real_now THEN 'running' WHEN state='paused' THEN 'paused' ELSE 'scheduled' END AS status
+      FROM companion_learning_goals WHERE companion_id=@owner AND state!='stopped') g` : '';
   const sql = `WITH candidates AS (
     SELECT ${action} FROM actions a WHERE a.companion_id=@owner AND a.status IN('queued','running','interrupted','failed') AND ${liveConversation('a')}
     UNION ALL SELECT ${activity} FROM companion_activity_tasks a WHERE a.companion_id=@owner AND a.status IN('queued','running','waiting','failed') AND ${liveConversation('a')}
     UNION ALL SELECT ${schedule} FROM companion_schedules s WHERE s.companion_id=@owner AND s.status IN('active','paused') AND (s.next_run_at IS NOT NULL OR s.status='paused') AND ${liveConversation('s')}
     UNION ALL SELECT ${occurrence} FROM companion_life_occurrences o JOIN companion_life_rules r ON r.id=o.rule_id AND r.enabled=1 WHERE o.companion_id=@owner AND (o.status IN('observing','pending','running','active') OR o.status='failed' AND json_extract(o.data,'$.nextEligibleAt')>@world_now)
     UNION ALL ${rules}
+    ${goals}
   ) SELECT * FROM candidates WHERE (@filter='all' OR section=@filter OR @filter='events' AND kind IN('life_event','life_rule') OR @filter='upcoming' AND kind='life_rule')
     AND (@has_cursor=0 OR rank>@rank OR rank=@rank AND (sort_at>@at OR sort_at=@at AND uid>@key))
     ORDER BY rank,sort_at,uid LIMIT @limit`;
   const found = db.prepare(sql).all({ owner: query.companionId, filter: query.filter, has_cursor: cursor ? 1 : 0,
-    rank: cursor?.rank ?? 0, at: cursor?.at ?? '', key: cursor?.key ?? '', limit: query.limit + 1, world_now: clock.virtualNow }) as Row[];
+    rank: cursor?.rank ?? 0, at: cursor?.at ?? '', key: cursor?.key ?? '', limit: query.limit + 1, world_now: clock.virtualNow,
+    ...(hasGoals ? { real_now: Date.parse(clock.realNow) } : {}) }) as Row[];
   const hasMore = found.length > query.limit, rows = found.slice(0, query.limit), last = rows.at(-1);
   return { items: rows.map(item => projectItem(item, clock)), hasMore,
     ...(hasMore && last ? { nextCursor: Buffer.from(JSON.stringify({ v: 1, owner: query.companionId, filter: query.filter, rank: Number(last.rank), at: last.sort_at, key: last.uid })).toString('base64url') } : {}) };
@@ -68,10 +79,15 @@ function nextWindow(clock: CompanionLifeOverviewContext['clock'], startMinute: n
 }
 function projectItem(row: Row, clock: CompanionLifeOverviewContext['clock']): CompanionLifeOverviewItem {
   const kind = String(row.kind) as CompanionLifeOverviewItem['kind'], status = String(row.status), at = instant(row.at), updatedAt = instant(row.updated_at);
-  const destination = { kind: kind === 'action' ? 'work' : kind === 'activity' ? 'activity' : kind === 'schedule' ? 'schedules' : 'life_rules', id: String(row.id),
+  const destination = { kind: kind === 'action' ? 'work' : kind === 'activity' ? 'activity' : kind === 'schedule' ? 'schedules' : kind === 'learning_goal' ? 'learning' : 'life_rules', id: String(row.id),
     ...(row.conversation_id ? { conversationId: String(row.conversation_id) } : {}) } as CompanionLifeOverviewItem['destination'];
   let condition = String(row.stage || ''), timing: CompanionLifeOverviewItem['timing'] = { kind: 'none', clock: 'real' };
-  if (kind === 'schedule') {
+  if (kind === 'learning_goal') {
+    const phases: Record<string, string> = { planning: '规划本轮学习', reading: '读取并核实材料', integrating: '整合到个人记忆', testing: '从记忆中回答自测题', reflecting: '核对自测依据与不足', idle: '按学习目标持续安排下一轮', waiting: '等待学习时段或可用条件' };
+    condition = status === 'paused' ? '学习目标已暂停，可在学习与成长中恢复。' : phases[condition] ?? condition;
+    condition = (condition || '按目标持续推进学习、自测与记忆整合。') + '；与消息处理独立，不保证具体完成时刻。';
+    timing = { kind: status === 'running' ? 'none' : 'eligibility', clock: 'real', ...(status !== 'running' && at ? { at } : {}) };
+  } else if (kind === 'schedule') {
     const deferred = row.clock === 'real';
     condition = status === 'paused' ? '这项安排已暂停，需恢复后才会执行。' : condition === 'resting' ? '伙伴正在休息；现实时间到达延期资格后再检查。'
       : condition === 'unavailable' ? '等待伙伴或模型恢复可用。' : '已有明确授权的行程时间；具体执行仍受当前工作与可用条件影响。';
