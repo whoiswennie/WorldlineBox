@@ -57,6 +57,22 @@ test('automatically records ordinary conversation, exposes sources and progress,
     expect(learned).toMatchObject({ origin: 'user', captureMethod: 'automatic', status: 'indexed', diaryName: '生活日记', sourceMessageId: source.id });
     expect(learned.tags).toEqual(['用户', '看海']);
     expect(provider.memoryRequests.some(item => item.purpose === 'vcp_experience_journal' && item.sourceIds.includes(source.id))).toBe(true);
+    // Only the external model provider is a fixture. Inspect the actual host's
+    // committed capture receipt before an edit changes this note's version.
+    const captureTrace = (await request(page, { type: 'memory.trace.inspect', companionId, kind: 'journal', id: learned.id, stage: 'capture', limit: 10 })).memoryTrace!;
+    expect(captureTrace).toMatchObject({ companionId, root: { id: learned.id, redacted: false, version: learned.version } });
+    const captureReceipt = captureTrace.stages.find(stage => stage.kind === 'capture')?.records.find(record => record.sourceMessageId === source.id);
+    expect(captureReceipt).toBeDefined();
+    expect(captureReceipt).toMatchObject({ kind: 'capture', status: 'done', relation: 'batch_output', confidence: 'exact', outputCount: 1,
+      outputs: [{ noteId: learned.id, version: learned.version }] });
+    expect(captureReceipt!.captureBatchId).toMatch(/^[a-zA-Z0-9_-]{1,100}$/u);
+    await testInfo.attach('capture-batch-receipt-before-edit', { body: JSON.stringify({
+      actualPackagedApplication: await application.evaluate(({ app }) => app.isPackaged),
+      providerBoundary: 'Deterministic local chat/journal provider; actual application capture, receipt, SQLite, bundled embedding and VCP pipeline.',
+      companionId, sourceMessageId: source.id, noteId: learned.id, noteVersion: learned.version,
+      recordId: captureReceipt!.id, captureBatchId: captureReceipt!.captureBatchId, relation: captureReceipt!.relation,
+      confidence: captureReceipt!.confidence, outputCount: captureReceipt!.outputCount, outputs: captureReceipt!.outputs,
+    }, null, 2), contentType: 'application/json' });
     const recalled = await request(page, { type: 'memory.search', companionId, conversationId, query: '用户喜欢什么休闲活动？', tags: [], limit: 20 });
     const nativeHit = recalled.memoryPage!.items.find(hit => hit.memory.id === learned.id)!;
     expect(nativeHit).toBeDefined(); expect(nativeHit.score).toEqual(expect.any(Number));
@@ -147,6 +163,11 @@ test('automatically records ordinary conversation, exposes sources and progress,
     expect((await request(page, { type: 'memory.search', companionId, conversationId, query: '看海 看山 看森林', tags: [], limit: 20 })).memoryPage!.items).toHaveLength(0);
     expect((await request(page, { type: 'memory.sources.filter', companionId, conversationId, ids: [source.id] })).memorySources).toEqual([]);
     expect((await messages(page, conversationId)).some(message => message.id === source.id && message.content === '我喜欢看海')).toBe(true);
+    const forgottenTrace = (await request(page, { type: 'memory.trace.inspect', companionId, kind: 'journal', id: learned.id, stage: 'capture', limit: 10 })).memoryTrace!;
+    expect(forgottenTrace).toMatchObject({ companionId, root: { id: learned.id, status: 'forgotten', redacted: true } });
+    expect(forgottenTrace.stages).toEqual([]);
+    await testInfo.attach('capture-trace-redacted-after-restart', { body: JSON.stringify({ companionId, noteId: learned.id,
+      status: forgottenTrace.root.status, redacted: forgottenTrace.root.redacted, stages: forgottenTrace.stages }, null, 2), contentType: 'application/json' });
   } catch (error) {
     if (application) {
       const live = await application.windows()[0]?.evaluate(async () => {

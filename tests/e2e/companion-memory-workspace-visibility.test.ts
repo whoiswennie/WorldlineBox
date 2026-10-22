@@ -375,8 +375,15 @@ async function captureWorkspace(page: Page, native: Awaited<ReturnType<ElectronA
         headerButtonOverflow: buttons.some(button => { const box = button.getBoundingClientRect(); return box.left < boundary.left - 1 || box.right > boundary.right + 1; }) };
     });
     expect(geometry.innerWidth).toBe(width); expect(geometry.horizontalOverflow).toBe(false); expect(geometry.headingOverflow).toBe(false); expect(geometry.headerButtonOverflow).toBe(false);
-    // Let ordinary transient sync notices expire before documenting the layout.
-    await expect(page.getByText(/^已自动同步 \d+ 项磁盘变化/u)).toHaveCount(0, { timeout: 8000 });
+    // A background watcher can legitimately emit another success notice while
+    // files are indexed. Acknowledge only the currently visible sync notices
+    // through their normal close buttons; keep all functional assertions above.
+    const notices = page.locator('.workspace-notice-item:not(.is-closing)').filter({ hasText: /^已自动同步 \d+ 项磁盘变化/u });
+    const noticeIds = await notices.evaluateAll(nodes => nodes.map(node => node.getAttribute('data-toast-id')));
+    for (const id of noticeIds) {
+      const notice = page.locator(`.workspace-notice-item:not(.is-closing)[data-toast-id="${id}"]`);
+      await notice.getByRole('button').click({ timeout: 1000 }).catch(async error => { if (await notice.isVisible()) throw error; });
+    }
     await page.screenshot({ path: evidencePath(`${prefix}-${theme}-${geometry.innerWidth}.png`), animations: 'disabled' });
     screenshots.push({ theme, requestedWidth: width, ...geometry });
     if (processing && panelWidth <= 1100) {
