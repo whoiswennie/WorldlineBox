@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { companionLearningAssetPageSchema } from '../companion-learning-assets';
 import { globalEmbeddingSettingsSchema } from '../embedding/global-settings';
 import { localTextEmbeddingInstallStatusSchema } from '../embedding/text-install-status';
+import { embeddingDeviceCapabilitySchema } from '../embedding/device-capability';
 
 import { EMBEDDING_HTTP_ADAPTERS, isEmbeddingSelectionId } from '../embedding/http-service';
 import {
@@ -2735,6 +2736,8 @@ const rendererSuccessResultSchema = z.discriminatedUnion('type', [
     settings: globalEmbeddingSettingsSchema,
   }),
   z.strictObject({ ok: z.literal(true), type: z.literal('embedding.local-text.status'), status: localTextEmbeddingInstallStatusSchema }),
+  z.strictObject({ ok: z.literal(true), type: z.literal('embedding.device.status'), capability: embeddingDeviceCapabilitySchema }),
+  z.strictObject({ ok: z.literal(true), type: z.literal('device.hardware.status'), totalMemoryBytes: z.number().nonnegative(), availableMemoryBytes: z.number().nonnegative() }),
   z.strictObject({
     ok: z.literal(true),
     type: z.literal('embedding.service.saved'),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import type { Companion, WorldlineBoxCompanionsApi } from '../../../shared/companions';
 import type { CompanionWorldSettings, CompanionWorldSnapshot } from '../../../shared/companion-world';
 import { Icon } from '../../Icons';
@@ -9,11 +9,14 @@ import { WORLD_VISIT_LABELS, WORLD_WEATHER_LABELS, worldActorStatus, worldWorkLa
 import './companion-world.css';
 import { StartupScreen } from '../../StartupScreen';
 import { companionWeatherSymbol } from '../../../shared/companion-weather';
+import { checkWorldGraphicsCapability, getWorldGraphicsCapability, markWorldGraphicsUnavailable, subscribeWorldGraphicsCapability } from '../../device-capabilities/world-graphics-probe';
+import { WorldGraphicsGate } from './WorldGraphicsGate';
 
-export function CompanionWorld({ api, companions, initialCompanionId, initialSceneId, observerKey, visibleWindowCount = 1, active = true, onClose, onOpenWindow }: {
+export function CompanionWorld({ api, companions, initialCompanionId, initialSceneId, observerKey, visibleWindowCount = 1, active = true, totalMemoryBytes, onClose, onOpenWindow }: {
   readonly api?: WorldlineBoxCompanionsApi;
   readonly companions: Pick<Companion, 'id' | 'name' | 'avatar' | 'avatarAttachmentId'>[];
   readonly initialCompanionId?: string; readonly initialSceneId?: string; readonly observerKey?: string; readonly visibleWindowCount?: number; readonly active?: boolean;
+  readonly totalMemoryBytes?: number;
   readonly onClose: () => void; readonly onOpenWindow?: (sceneId?: string) => void;
 }) {
   const [savedObserver] = useState(() => readWorldObserverPreferences(undefined, observerKey));
@@ -24,6 +27,8 @@ export function CompanionWorld({ api, companions, initialCompanionId, initialSce
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [error, setError] = useState('');
   const [renderError, setRenderError] = useState('');
+  const graphics = useSyncExternalStore(subscribeWorldGraphicsCapability, getWorldGraphicsCapability, getWorldGraphicsCapability);
+  const [checkingGraphics, setCheckingGraphics] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [settings, setSettings] = useState<CompanionWorldSettings>();
@@ -39,7 +44,7 @@ export function CompanionWorld({ api, companions, initialCompanionId, initialSce
   const currentScene = dormantResident ? undefined : scenes.find(scene => scene.id === (followedActor?.sceneId ?? sceneId)) ?? scenes.find(scene => scene.ownerId === initialCompanionId) ?? scenes.find(scene => scene.kind === 'home') ?? scenes[0];
   const owner = companions.find(companion => companion.id === currentScene?.ownerId);
   const isPark = currentScene?.kind === 'park';
-  const canRender = !!snapshot && !dormantResident;
+  const canRender = !!snapshot && !dormantResident && graphics?.status === 'available';
   const currentViewId = currentScene?.id;
   const visibleActors = snapshot?.actors.filter(actor => actor.sceneId === currentScene?.id) ?? [];
   const name = useCallback((id: string | undefined) => companions.find(item => item.id === id)?.name ?? '伙伴', [companions]);
@@ -48,6 +53,19 @@ export function CompanionWorld({ api, companions, initialCompanionId, initialSce
     if (view && id) observerPreferences.current.views[id] = view;
     saveWorldObserverPreferences(observerPreferences.current, undefined, observerKey);
   }, [observerKey]);
+  const checkGraphics = useCallback(() => {
+    setCheckingGraphics(true); setRenderError('');
+    void Promise.resolve().then(() => {
+      if (!alive.current) return;
+      checkWorldGraphicsCapability({ totalMemoryBytes }); setCheckingGraphics(false);
+    });
+  }, [totalMemoryBytes]);
+  useEffect(() => {
+    const cached = getWorldGraphicsCapability();
+    if (active && (!cached || totalMemoryBytes !== undefined && cached.memoryGiB !== totalMemoryBytes / 1024 ** 3)) {
+      void Promise.resolve().then(() => { if (alive.current) checkGraphics(); });
+    }
+  }, [active, checkGraphics, totalMemoryBytes]);
   const changeFollow = useCallback((id: string | undefined) => { observerPreferences.current.followId = id; if (!id && drawnScene.current) setSceneId(drawnScene.current); setFollowId(id); }, []);
   const load = useCallback(async () => {
     if (!api || loadInFlight.current || document.hidden) return;
@@ -67,12 +85,13 @@ export function CompanionWorld({ api, companions, initialCompanionId, initialSce
   }, [load, active]);
   useEffect(() => {
     if (!viewport.current || !canRender) return;
-    try { engine.current = createWorldViewport(viewport.current, setRenderError, changeFollow, rememberView); }
-    catch { void Promise.resolve().then(() => { if (alive.current) setRenderError('当前设备未能创建三维画面。仍可在右侧查看伙伴的真实状态。'); }); }
-    return () => { rememberView(); engine.current?.dispose(); engine.current = undefined; };
+    try { engine.current = createWorldViewport(viewport.current, setRenderError, changeFollow, rememberView,
+      () => markWorldGraphicsUnavailable('context_lost', '图形上下文已中断。可在此重新检测后恢复画面，世界生活仍会继续。')); }
+    catch { void Promise.resolve().then(() => { if (alive.current) markWorldGraphicsUnavailable('probe_failed', '基础检测通过，但三维场景未能初始化。请关闭其他图形程序后重新检测。'); }); }
+    return () => { rememberView(); engine.current?.dispose(); engine.current = undefined; drawnScene.current = undefined; };
   }, [changeFollow, rememberView, canRender]);
   useEffect(() => {
-    if (!snapshot || !currentScene) return;
+    if (!snapshot || !currentScene || !canRender || !engine.current) return;
     const changed = drawnScene.current !== currentViewId;
     if (changed) rememberView();
     engine.current?.update(snapshot, currentScene, companions);
@@ -87,7 +106,7 @@ export function CompanionWorld({ api, companions, initialCompanionId, initialSce
     observerPreferences.current.sceneId = currentViewId;
     observerPreferences.current.followId = followId;
     if (changed) rememberView();
-  }, [snapshot, currentScene, companions, followId, rememberView, currentViewId, isPark]);
+  }, [snapshot, currentScene, companions, followId, rememberView, currentViewId, isPark, canRender]);
   useEffect(() => {
     const timer = setInterval(rememberView, 1000);
     const onVisibility = () => { if (document.hidden) rememberView(); };
@@ -95,7 +114,7 @@ export function CompanionWorld({ api, companions, initialCompanionId, initialSce
     return () => { clearInterval(timer); window.removeEventListener('beforeunload', rememberView); document.removeEventListener('visibilitychange', onVisibility); };
   }, [rememberView]);
   useEffect(() => { engine.current?.setActive(active && !settingsOpen); if (!active) rememberView(); }, [active, settingsOpen, rememberView, canRender]);
-  useEffect(() => { engine.current?.setVisibleWindowCount(visibleWindowCount); }, [visibleWindowCount]);
+  useEffect(() => { engine.current?.setVisibleWindowCount(visibleWindowCount); }, [visibleWindowCount, canRender]);
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { if (settingsOpen) setSettingsOpen(false); else onClose(); } }; document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, [onClose, settingsOpen]);
   async function saveSettings(event: FormEvent) {
     event.preventDefault(); if (!settings || !api || saving) return; setSaving(true); setError('');
@@ -123,10 +142,11 @@ export function CompanionWorld({ api, companions, initialCompanionId, initialSce
         {!snapshot && <StartupScreen title="正在连接伙伴世界" detail={error || "读取时间、伙伴位置与场景"} stage="读取世界状态" compact />}
         {dormantResident && <div className="companion-world-dormant" role="status"><Icon name="clock" /><h3>{dormantResident.name}已休眠</h3><p>虚拟世界未加载，也不会进行后台活动。</p><p>聊天和存档已保留，请回到联系人资料手动激活。</p></div>}
         <div className="companion-world-view" hidden={!!dormantResident} ref={viewport} data-world-scene={currentScene?.id} data-world-observation={isPark ? 'park' : 'home'} />
+        {snapshot && !dormantResident && (!graphics || graphics.status !== 'available' || checkingGraphics) && <WorldGraphicsGate report={graphics} checking={checkingGraphics || !graphics} onRecheck={checkGraphics} />}
         {snapshot?.backlog && <div className="companion-world-continuing" role="status"><Icon name="loader" />正在接续离线期间的生活…</div>}
         <div className="companion-world-place"><h3>{isPark ? '公共花园' : owner ? owner.name + '的小屋' : currentScene?.name ?? '正在连接世界'}</h3>{isPark && <p className="companion-world-place-detail">树荫下散步，在长椅上歇一会儿</p>}{followId && <button className="companion-world-following" onClick={() => { changeFollow(undefined); engine.current?.reset(); }}>正在跟随 {name(followId)} <Icon name="close" /></button>}</div>
         {(error || renderError) && <div className="companion-world-notice" role="alert">{error || renderError}{error && <button onClick={() => void load()}>重试</button>}</div>}
-        <div className="companion-world-camera" aria-label="世界视角控制"><button aria-label="放大世界" onClick={() => engine.current?.zoom(1.2)}><Icon name="plus" /></button><button aria-label="缩小世界" onClick={() => engine.current?.zoom(1 / 1.2)}>−</button>{<><i /><button aria-label="向左旋转世界" onClick={() => engine.current?.rotate(-Math.PI / 8)}><Icon name="rotate-ccw" /></button><button aria-label="向右旋转世界" onClick={() => engine.current?.rotate(Math.PI / 8)}><Icon name="rotate-cw" /></button></>}<i /><button aria-label="重置世界视角" onClick={() => engine.current?.reset()}><Icon name="fit-window" /></button></div>
+        <div className="companion-world-camera" aria-label="世界视角控制"><button disabled={!canRender} aria-label="放大世界" onClick={() => engine.current?.zoom(1.2)}><Icon name="plus" /></button><button disabled={!canRender} aria-label="缩小世界" onClick={() => engine.current?.zoom(1 / 1.2)}>−</button>{<><i /><button disabled={!canRender} aria-label="向左旋转世界" onClick={() => engine.current?.rotate(-Math.PI / 8)}><Icon name="rotate-ccw" /></button><button disabled={!canRender} aria-label="向右旋转世界" onClick={() => engine.current?.rotate(Math.PI / 8)}><Icon name="rotate-cw" /></button></>}<i /><button disabled={!canRender} aria-label="重置世界视角" onClick={() => engine.current?.reset()}><Icon name="fit-window" /></button></div>
         <footer className="companion-world-stage-footer"><span>{'拖动旋转 · 右键平移 · 滚轮缩放'}</span><span>{snapshot?.settings.mode === 'realtime' ? '跟随现实时间' : snapshot ? `现实 ${snapshot.settings.dayDurationMinutes} 分钟 · 世界一天` : ''}</span></footer>
       </div><aside className="companion-world-inspector" aria-label="世界中的伙伴" hidden={!inspectorOpen}><div className="companion-world-location"><label htmlFor="companion-world-location">去哪里看看</label><select id="companion-world-location" aria-label="观测地点" value={dormantResident ? 'home_' + dormantResident.companionId : currentViewId ?? ''} onChange={event => { changeFollow(undefined); setSceneId(event.target.value); }}>{scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.kind === 'park' ? scene.name : name(scene.ownerId) + '的小屋'}</option>)}{snapshot?.residents.filter(resident => resident.active === false).map(resident => <option key={resident.companionId} value={'home_' + resident.companionId}>{resident.name} · 休眠</option>)}</select></div>
         <section className="companion-world-residents"><div className="companion-world-section-title"><h3>此刻的生活</h3><span>{visibleActors.length} 位在这里</span></div>{!visibleActors.length && <p className="companion-world-empty">这里暂时很安静。<br />可以选择其他已开放的场景。</p>}{visibleActors.map(actor => { const companion = companions.find(item => item.id === actor.companionId), work = snapshot?.works.find(item => item.companionId === actor.companionId && item.status !== 'ended'), behavior = worldActorStatus(actor, snapshot!, companions); return <article className="companion-world-resident" key={actor.companionId} data-world-actor={actor.companionId} data-world-activity={actor.activity}><div><Avatar companion={companion} showPresence={false} /><span><strong>{companion?.name ?? '伙伴'}</strong><small title={behavior.detail}>{behavior.label}</small></span><button aria-label={'在场景中找到' + name(actor.companionId)} onClick={() => engine.current?.focus(actor.companionId)}><Icon name="eye" /></button></div>{work && <p className="companion-world-work" data-world-work={work.status}><i />{worldWorkLabel(work)}{work.reason && <small>{work.reason}</small>}</p>}<p className="companion-world-resident-state"><span>精力 {Math.round(actor.state.energy)}%</span><span>{({ calm: '平静', bright: '心情明亮', focused: '专注', tired: '有些疲惫', low: '情绪低落' } as const)[actor.state.mood]}</span><span>{actor.state.thermalComfort < .45 ? '温度不太舒适' : '体感舒适'}</span></p><footer><span>位置 {actor.position.x.toFixed(1)}, {actor.position.y.toFixed(1)}</span><span>{({ north: '朝北', east: '朝东', south: '朝南', west: '朝西' } as const)[actor.facing]}</span></footer></article>; })}</section>

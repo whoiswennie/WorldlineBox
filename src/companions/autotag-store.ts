@@ -3,6 +3,7 @@ import type { CompanionMemory } from '../shared/companions';
 import type { CompanionMemoryTagJob } from '../shared/companion-memory-tags';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionConnection } from './store';
+import { initializeMemoryProcessingJournal } from './memory-processing-store';
 
 type Job = { id: string; companion_id: string; note_id: string; note_version: number; content_hash: string; status: string;
   attempts: number; lease_token?: string; lease_until?: number; prohibition_revision?: string; error?: string };
@@ -25,6 +26,7 @@ export class CompanionMemoryTagStore {
       CREATE INDEX IF NOT EXISTS companion_memory_tag_untagged ON vcp_memory_notes(companion_id)
         WHERE json_extract(data,'$.captureMethod')='manual' AND json_array_length(json_extract(data,'$.tags'))=0
         AND json_extract(data,'$.status') IN('queued','indexed');`);
+    initializeMemoryProcessingJournal(this.db, ['tags']);
   }
   observe(note: CompanionMemory): void {
     if (!eligible(note)) return;

@@ -9,6 +9,7 @@ import type { CompanionMemoryDocumentCommand } from '../shared/companion-memory-
 import type { CompanionLearningWorkspaceCommand } from '../shared/companion-learning';
 import { companionLearningAssets } from './companions/learning-assets';
 import { GlobalEmbeddingService, createManagedTextEmbeddingService } from './embedding-global-service';
+import { EmbeddingDeviceCapabilityService } from './embedding-device-capability';
 import { LocalTextEmbeddingInstaller } from './embedding-text-model-install';
 import { VcpEmbeddingGateway } from './vcp-embedding-gateway';
 import { VcpChatGateway } from './vcp-chat-gateway';
@@ -27,7 +28,7 @@ import { parseLinkedVirtualFolderId } from '../shared/linked-folder-tree';
 import { COMPANIONS_CHANNEL } from '../shared/companions';
 import { DSH_LAUNCHER_CHANNEL } from '../shared/dsh-launcher';
 import { spawn } from "node:child_process";
-import { tmpdir } from "node:os";
+import { freemem, tmpdir, totalmem } from "node:os";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -635,6 +636,7 @@ let workerClient: LibraryWorkerClient | undefined;
 let embeddingTestIndex: EmbeddingTestIndex | undefined;
 let embeddingHttpIndex: EmbeddingHttpIndex | undefined;
 let globalEmbeddingService: GlobalEmbeddingService | undefined;
+let embeddingDeviceCapability: EmbeddingDeviceCapabilityService | undefined;
 let vcpEmbeddingGateway: VcpEmbeddingGateway | undefined;
 let vcpChatGateway: VcpChatGateway | undefined;
 let localTextEmbeddingInstaller: LocalTextEmbeddingInstaller | undefined;
@@ -655,6 +657,16 @@ function globalEmbedding(): GlobalEmbeddingService {
     userDataPath: app.getPath('userData'),
     bundleDirectory: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'embedding-models'),
     ...(process.platform === 'win32' ? { koffiPath: createRequire(path.join(app.getAppPath(), 'package.json')).resolve('koffi') } : {}),
+    ensureDeviceCapability: signal => embeddingDevice().ensureSupported(signal),
+    devicePreference: () => embeddingDevice().snapshot(),
+  });
+}
+
+function embeddingDevice(): EmbeddingDeviceCapabilityService {
+  return embeddingDeviceCapability ??= new EmbeddingDeviceCapabilityService({
+    userDataPath: app.getPath('userData'),
+    bundleDirectory: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'embedding-models'),
+    ...(process.platform === 'win32' ? { koffiPath: createRequire(path.join(app.getAppPath(), 'package.json')).resolve('koffi') } : {}),
   });
 }
 
@@ -671,6 +683,8 @@ async function vcpEmbeddingConfiguration() {
 
 function embeddingIndex(): EmbeddingTestIndex {
   embeddingTestIndex ??= new EmbeddingTestIndex({
+    ensureDeviceCapability: signal => embeddingDevice().ensureSupported(signal),
+    devicePreference: () => embeddingDevice().snapshot(),
     configDirectories: [process.cwd(), app.getAppPath()],
     ...(process.platform === "win32"
       ? { koffiPath: createRequire(path.join(app.getAppPath(), "package.json")).resolve("koffi") }
@@ -3348,6 +3362,10 @@ async function commandFor(
     case "embedding.local-text.status.request":
     case "embedding.local-text.install.request":
     case "embedding.local-text.delete.request":
+    case "embedding.device.status.request":
+    case "embedding.device.test.request":
+    case "embedding.device.cancel.request":
+    case "device.hardware.status.request":
     case "embedding.models.upsert.request":
     case "embedding.models.delete.request":
     case "embedding.models.set-default.request":
@@ -3506,6 +3524,20 @@ async function handleLibraryRequest(
     });
     if (syncOwnedResult) return syncOwnedResult;
 
+    if (request.type === 'device.hardware.status.request') return { ok: true, type: 'device.hardware.status', totalMemoryBytes: totalmem(), availableMemoryBytes: freemem() };
+    if (request.type === 'embedding.device.status.request') return { ok: true, type: 'embedding.device.status', capability: await embeddingDevice().status() };
+    if (request.type === 'embedding.device.cancel.request') {
+      await embeddingDevice().cancel();
+      return { ok: true, type: 'embedding.device.status', capability: embeddingDevice().snapshot() };
+    }
+    if (request.type === 'embedding.device.test.request') {
+      // Publish the testing state before draining resident encoders so new
+      // vector requests wait for this same check instead of reopening a model.
+      void embeddingDevice().test({ force: request.force, beforeTest: async () => {
+        await Promise.all([globalEmbeddingService?.invalidate(), embeddingTestIndex?.close(), embeddingHttpIndex?.close()]);
+      } }).catch(error => logger?.error('embedding.device.test', error));
+      return { ok: true, type: 'embedding.device.status', capability: embeddingDevice().snapshot() };
+    }
     if (request.type === 'embedding.index.status.request' || request.type === 'embedding.search.request' || request.type === 'embedding.similar.request') await prepareBundledEmbedding();
     if (request.type === 'embedding.local-text.status.request' || request.type === 'embedding.install.status.request') await prepareBundledEmbedding();
     const embeddingModelResult = await tryHandleEmbeddingModelRequest(request, {
@@ -4714,7 +4746,7 @@ async function startApplication(): Promise<void> {
           title: '选择所有伙伴共同使用的 WorldlineBox 资产库', properties: ['openDirectory'], buttonLabel: '使用此资产库' });
         if (chosen.canceled || !chosen.filePaths[0]) return { ok: true, cancelled: true, libraries };
         const opened = await workerClient?.request({ type: 'library.open', selectedLibraryPath: chosen.filePaths[0] });
-        if (!opened?.ok || opened.type !== 'library.opened' || opened.library.readOnly) throw new Error('请选择可写的 WorldlineBox 资产库；可先在资产管理中创建。');
+        if (!opened?.ok || opened.type !== 'library.opened' || opened.library.readOnly) throw new Error('请选择已有的可写 WorldlineBox 资产库，或返回创建伙伴资产库。');
         library = opened.library;
         rememberOpenedLibrary(library.libraryPath, library.displayName, library.libraryId);
         publishLifecycle({ type: 'library.opened', library: { libraryId: library.libraryId, displayName: library.displayName, displayPath: library.libraryPath } });
@@ -7430,7 +7462,7 @@ if (!hasSingleInstanceLock) {
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !companionService && !creatingCompanionService && !closeGlobalNetwork)) return;
+    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !embeddingDeviceCapability && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !companionService && !creatingCompanionService && !closeGlobalNetwork)) return;
     event.preventDefault();
     if (applicationShutdownPromise) return;
 
@@ -7457,10 +7489,11 @@ if (!hasSingleInstanceLock) {
         globalEmbeddingService?.close(),
         vcpEmbeddingGateway?.close(),
         vcpChatGateway?.close(),
+        embeddingDeviceCapability?.close(),
       ]);
       for (const [index, result] of results.entries()) {
         if (result.status !== "rejected") continue;
-        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown", "capture-tools.shutdown", "embedding.global.close", "embedding.gateway.close", "vcp.chat.close"][index]
+        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown", "capture-tools.shutdown", "embedding.global.close", "embedding.gateway.close", "vcp.chat.close", "embedding.device.close"][index]
           ?? "application.shutdown.close";
         logger?.error(source, result.reason, { reason: "application-quit" });
       }

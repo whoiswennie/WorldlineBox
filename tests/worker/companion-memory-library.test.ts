@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import BetterSqlite3 from 'better-sqlite3';
 import { CompanionsStore, type CompanionSeed, type CompanionConnection } from '../../src/companions/store';
 import { CompanionMemoryLibrary } from '../../src/main/companions/memory-library';
+import { companionMemoryIdentity } from '../../src/main/companions/memory-identity';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import type { VcpMemoryTimelineArtifacts } from '../../src/main/vcp-memory/contracts';
 
@@ -178,7 +179,8 @@ it('rotates through more than thirty-two residents instead of starving later dir
 });
 
 function timeline(revision: string): VcpMemoryTimelineArtifacts {
-  return { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision, agents: [{ agentName: 'WorldlineBox', months: [{ month: '2026-10', sourceDigest: 'real-source-digest', content: '# 十月\n\n基于真实日记的完整时间线。', summary: '十月的真实经历。' }] }] };
+  return { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision, owner: companionMemoryIdentity({ id: 'alice', name: 'Alice' }),
+    agents: [{ agentName: 'Alice', months: [{ month: '2026-10', sourceDigest: 'real-source-digest', content: '# 十月\n\n基于真实日记的完整时间线。', summary: '十月的真实经历。' }] }] };
 }
 it('publishes original native timelines as readable revision-bound projections without recapturing its own output', async () => {
   const f = fixture(), library = f.make(); await library.sync();
@@ -210,6 +212,37 @@ it('cleans stale automatic timelines from their source revision after restart', 
   const restarted = f.make(); await restarted.sync();
   const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.conversationId}-2026-10.md`);
   expect(existsSync(file)).toBe(false); expect(existsSync(file + '.meta.json')).toBe(false);
+});
+
+it('withdraws legacy brand-authored projections without modifying their authoritative diaries', async () => {
+  const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '我想起和伙伴一起看海的经历。' }), library = f.make();
+  await library.sync();
+  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
+  await library.publishTimelines(f.scope, timeline(revision), async () => true);
+  const root = path.join(f.directory, 'alice'), file = path.join(root, '时间线', `VCP-${f.scope.conversationId}-2026-10.md`);
+  const manifestPath = path.join(root, '.时间线索引.json'), manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  for (const entry of Object.values(manifest.files) as Array<{ ownerIdentity?: unknown }>) delete entry.ownerIdentity;
+  writeFileSync(manifestPath, JSON.stringify(manifest)); writeFileSync(file, 'WorldlineBox 与伙伴一起看海。');
+  expect(await library.withDocuments('alice', session => session.timelineValid('时间线/' + path.basename(file)), { synchronize: false })).toBe(false);
+  await library.close(); const restarted = f.make(); await restarted.sync();
+  expect(existsSync(file)).toBe(false); expect(existsSync(file + '.meta.json')).toBe(false);
+  expect(readFileSync(path.join(root, '日记', note.id + '.md'), 'utf8')).toBe(note.content);
+  expect(f.store.request({ type: 'memory.read', ...f.scope, id: note.id }).memoryRead!.memory).toMatchObject({ id: note.id, version: note.version, content: note.content });
+});
+
+it('rejects another resident identity even if its display name matches, and invalidates renamed derived timelines', async () => {
+  const f = fixture(), library = f.make(); await library.sync();
+  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
+  const wrong = timeline(revision); wrong.owner = companionMemoryIdentity({ id: 'other', name: 'Alice' });
+  await expect(library.publishTimelines(f.scope, wrong, async () => true)).rejects.toThrow('归属身份');
+  const legacy = timeline(revision); delete legacy.owner;
+  await expect(library.publishTimelines(f.scope, legacy, async () => true)).rejects.toThrow('归属身份');
+  await library.publishTimelines(f.scope, timeline(revision), async () => true);
+  const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.conversationId}-2026-10.md`);
+  const owner = f.store.state().companions.find(role => role.id === 'alice')!;
+  f.store.updateCompanion(owner.id, { ...owner, name: 'Alice 新名字' }, owner.revision);
+  expect(await library.withDocuments('alice', session => session.timelineValid('时间线/' + path.basename(file)), { synchronize: false })).toBe(false);
+  await library.sync(); expect(existsSync(file)).toBe(false);
 });
 
 it('keeps the note identity, version and evidence when only its readable filename changes', async () => {

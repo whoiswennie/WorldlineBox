@@ -318,6 +318,7 @@ export function AppSettingsDialog({
                 section="search"
                 libraryId={libraryId}
                 servicesApi={embeddingServicesApi}
+                onOpenDeviceSettings={() => onActiveCategoryChange('ai')}
               />
             ) : null}
             {!showingPluginSettings && activeCategory === "mcp" ? <McpSettingsPage api={mcpApi} onOpenAppLog={onOpenAppLog} /> : null}

@@ -1,0 +1,4 @@
+.semantic-search-device-notice { display: flex; flex-direction: column; align-items: start; gap: 7px; margin-top: 12px; padding: 12px 14px; border-radius: var(--ui-radius-control); color: var(--ui-status-warning-content); background: var(--ui-status-warning-surface); }
+.semantic-search-device-notice p { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: var(--ui-font-size-caption); line-height: var(--ui-line-height-relaxed); overflow-wrap: anywhere; }
+.semantic-search-device-notice p > strong { font-weight: var(--ui-font-weight-medium); }
+.semantic-search-device-notice p + p { color: var(--ui-content-secondary); }

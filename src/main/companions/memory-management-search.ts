@@ -4,8 +4,9 @@ import path from 'node:path';
 import type { CompanionMemory } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { VcpMemoryClient } from '../vcp-memory/client';
-import type { VcpMemoryNote } from '../vcp-memory/contracts';
+import type { VcpMemoryNote, VcpMemoryOwnerIdentity } from '../vcp-memory/contracts';
 import type { CompanionMemoryRuntime } from './vcp-runtime';
+import { companionMemoryIdentity, companionMemoryIdentitySignature } from './memory-identity';
 
 export interface CompanionMemoryManagementSearchResult {
   hits: Array<{ noteId: string; version: number }>;
@@ -22,14 +23,14 @@ export interface CompanionMemoryManagementSearchOptions {
 }
 type IndexState = NonNullable<CompanionStorageResponse['memoryLibraryIndexState']>;
 type Manifest = { schema: 1; owner: string; profileKey: string; scopeId: string; resetRevision: number; throughOrdinal: number;
-  baseThrough: number; afterId?: string; bootstrapped: boolean; indexed: number };
+  baseThrough: number; afterId?: string; bootstrapped: boolean; indexed: number; identitySignature?: string };
 type Owner = { owner: string; generation: number; manifest?: Manifest; loaded: boolean; warmed: boolean; total: number; state: CompanionMemoryManagementSearchResult['state']; error?: string;
   runtime?: { client: VcpMemoryClient; profileKey: string }; work?: Promise<void>; retryAt: number };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const validOwner = /^[a-zA-Z0-9_-]{1,100}$/u;
-const runtimeNote = (note: CompanionMemory): VcpMemoryNote => ({ id: note.id, content: note.content, tags: note.tags, diaryName: note.diaryName,
-  author: 'WorldlineBox', occurredAt: note.occurredAt ?? note.sources.at(-1)?.worldCreatedAt ?? note.sources.at(-1)?.createdAt ?? note.createdAt,
-  metadata: { ...note.metadata, worldlineboxManagementVersion: note.version } });
+const runtimeNote = (note: CompanionMemory, identity: VcpMemoryOwnerIdentity): VcpMemoryNote => ({ id: note.id, content: note.content, tags: note.tags, diaryName: note.diaryName,
+  author: identity.agentName, occurredAt: note.occurredAt ?? note.sources.at(-1)?.worldCreatedAt ?? note.sources.at(-1)?.createdAt ?? note.createdAt,
+  metadata: { ...note.metadata, hostMemoryOwner: identity, worldlineboxManagementVersion: note.version } });
 
 /** Human-only owner corpus. Agent recall continues to use physically scoped conversation views. */
 export class CompanionMemoryManagementSearch {
@@ -51,6 +52,11 @@ export class CompanionMemoryManagementSearch {
     const state = (await this.request({ type: 'memory.library.index-state', companionId: owner })).memoryLibraryIndexState;
     if (!state) throw new Error('伙伴管理索引状态不可用。'); return state;
   }
+  private async identity(owner: string): Promise<VcpMemoryOwnerIdentity> {
+    const companion = (await this.request({ type: 'state', includeHidden: true, includeConversations: false })).state?.companions.find(item => item.id === owner);
+    if (!companion) throw new Error('记忆所属伙伴不存在。');
+    return companionMemoryIdentity(companion);
+  }
   private file(owner: string): string { return path.join(this.options.cacheRoot!, `${digest(owner)}.json`); }
   private scopePrefix(owner: string): string { return `management_${digest(owner).slice(0, 16)}_`; }
   private async load(local: Owner): Promise<void> {
@@ -61,6 +67,7 @@ export class CompanionMemoryManagementSearch {
       if (value && typeof value === 'object' && !Array.isArray(value) && value.schema === 1 && value.owner === local.owner && typeof value.profileKey === 'string' && typeof value.scopeId === 'string'
         && value.scopeId.startsWith(this.scopePrefix(local.owner)) && /^[a-f0-9]{32}$/u.test(value.scopeId.slice(this.scopePrefix(local.owner).length))
         && [value.resetRevision, value.throughOrdinal, value.baseThrough, value.indexed].every(value => Number.isSafeInteger(value) && value >= 0)
+        && (value.identitySignature === undefined || /^[a-f0-9]{64}$/u.test(value.identitySignature))
         && typeof value.bootstrapped === 'boolean' && (value.afterId === undefined || typeof value.afterId === 'string' && validOwner.test(value.afterId))) local.manifest = value;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
   }
@@ -126,10 +133,11 @@ export class CompanionMemoryManagementSearch {
     if (local.runtime && local.runtime.profileKey !== runtime.profileKey) await this.discard(local);
     local.runtime = runtime;
     const state = await this.state(local.owner); local.total = state.total;
-    if (local.manifest && (local.manifest.profileKey !== local.runtime.profileKey || local.manifest.resetRevision !== state.resetRevision || local.manifest.throughOrdinal > state.throughOrdinal)) await this.discard(local);
+    const identity = await this.identity(local.owner), identitySignature = companionMemoryIdentitySignature(identity); this.assertCurrent(local, generation);
+    if (local.manifest && (local.manifest.identitySignature !== identitySignature || local.manifest.profileKey !== local.runtime.profileKey || local.manifest.resetRevision !== state.resetRevision || local.manifest.throughOrdinal > state.throughOrdinal)) await this.discard(local);
     if (!local.manifest) {
       local.manifest = { schema: 1, owner: local.owner, profileKey: local.runtime.profileKey, scopeId: this.scopePrefix(local.owner) + randomUUID().replaceAll('-', ''),
-        resetRevision: state.resetRevision, throughOrdinal: 0, baseThrough: state.throughOrdinal, bootstrapped: false, indexed: 0 };
+        resetRevision: state.resetRevision, throughOrdinal: 0, baseThrough: state.throughOrdinal, bootstrapped: false, indexed: 0, identitySignature };
       await this.save(local);
     }
     const manifest = local.manifest, client = local.runtime.client, batch = Math.max(1, Math.min(256, this.options.batchSize ?? 32));
@@ -138,7 +146,7 @@ export class CompanionMemoryManagementSearch {
       const page = (await this.request({ type: 'memory.library.index-page', companionId: local.owner, resetRevision: manifest.resetRevision,
         throughOrdinal: manifest.baseThrough, afterId: manifest.afterId, limit: batch })).memoryLibraryIndexPage;
       if (!page) throw new Error('管理索引初始分页不可用。');
-      for (const note of page.notes) { this.assertCurrent(local, generation); await client.remember(manifest, runtimeNote(note)); }
+      for (const note of page.notes) { this.assertCurrent(local, generation); await client.remember(manifest, runtimeNote(note, identity)); }
       this.assertCurrent(local, generation);
       if ((await this.state(local.owner)).resetRevision !== manifest.resetRevision) throw new Error('管理索引来源已变化。');
       manifest.indexed += page.notes.length;
@@ -153,7 +161,7 @@ export class CompanionMemoryManagementSearch {
       if (page.changes.some(change => change.operation !== 'remember' || !change.note || change.version !== 1)) {
         await this.discard(local); return;
       }
-      for (const change of page.changes) { this.assertCurrent(local, generation); await client.remember(manifest, runtimeNote(change.note!)); }
+      for (const change of page.changes) { this.assertCurrent(local, generation); await client.remember(manifest, runtimeNote(change.note!, identity)); }
       this.assertCurrent(local, generation);
       if ((await this.state(local.owner)).resetRevision !== manifest.resetRevision) throw new Error('管理索引来源已变化。');
       manifest.indexed += page.changes.length; manifest.throughOrdinal = page.nextOrdinal;
@@ -173,6 +181,8 @@ export class CompanionMemoryManagementSearch {
     limit = Math.min(100, limit);
     await this.load(local);
     const state = await this.state(owner); local.total = state.total;
+    const identitySignature = companionMemoryIdentitySignature(await this.identity(owner));
+    if (local.manifest && local.runtime && local.manifest.identitySignature !== identitySignature) await this.invalidate(owner);
     const manifest = local.manifest;
     if (!manifest || !local.runtime || !local.warmed || local.state !== 'ready' || manifest.resetRevision !== state.resetRevision || manifest.throughOrdinal !== state.throughOrdinal
       || manifest.indexed > 0 && !local.runtime.client.hasOpenScope(manifest)) {
@@ -197,7 +207,7 @@ export class CompanionMemoryManagementSearch {
         && current.diaryName === hit.diaryName && JSON.stringify(current.tags) === JSON.stringify(hit.tags)) hits.push({ noteId: current.id, version: current.version });
     }
     const verified = await this.state(owner); this.assertCurrent(local, generation);
-    if (verified.resetRevision !== state.resetRevision || verified.throughOrdinal !== state.throughOrdinal) {
+    if (verified.resetRevision !== state.resetRevision || verified.throughOrdinal !== state.throughOrdinal || companionMemoryIdentitySignature(await this.identity(owner)) !== identitySignature) {
       local.state = 'building'; this.schedule(local); return this.result(local);
     }
     const end = offset + limit;

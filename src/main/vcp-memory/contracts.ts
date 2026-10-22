@@ -53,16 +53,25 @@ export interface VcpMemoryMessage {
   [key: string]: unknown;
 }
 export type VcpMemoryPluginName = 'DailyNote' | 'DailyNoteManager' | 'LightMemo';
+export interface VcpMemoryOwnerIdentity {
+  version: 2;
+  companionId: string;
+  name: string;
+  agentName: string;
+}
 export interface VcpMemoryTimelineRequest {
   operation: 'listAgents' | 'getAgentDetail' | 'generateTimelines' | 'generateSummaries' | 'saveTimelineFile' | 'saveSummary';
   agentName?: string;
   month?: string;
   content?: string;
   options?: Record<string, unknown>;
+  owner?: VcpMemoryOwnerIdentity;
 }
 export interface VcpMemoryTimelineArtifacts {
   schema: 'worldlinebox.vcp-timeline-artifacts';
   sourceRevision: string;
+  /** Host provenance; legacy artifacts without this must be regenerated for a resident. */
+  owner?: VcpMemoryOwnerIdentity;
   agents: Array<{ agentName: string; months: Array<{ month: string; sourceDigest: string; content?: string; summary?: string }> }>;
 }
 

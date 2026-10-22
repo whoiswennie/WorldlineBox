@@ -66,7 +66,7 @@ function bytes(value: number) { return value < 1024 ? `${value} B` : value < 102
 
 export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { readonly api?: WorldlineBoxCompanionsApi; readonly dshApi?: WorldlineBoxDshLauncherApi; readonly onOpenSettings: () => void; readonly isActive?: boolean }): ReactNode {
   const [state, setState] = useState<CompanionState | null>(null);
-  const [page, setPage] = useState<'messages' | 'contacts'>('messages');
+  const [page, setPage] = useState<'messages' | 'contacts' | 'memory'>('messages');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [contactId, setContactId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CompanionMessage[]>([]);
@@ -101,6 +101,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const [showPanel, setShowPanel] = useState(false);
   const [showMemoryManager, setShowMemoryManager] = useState(false);
   const [documentOwnerId, setDocumentOwnerId] = useState<string | null>(null);
+  const [memoryProcessingRequest, setMemoryProcessingRequest] = useState<{ owner: string; nonce: number }>();
   const [showScheduleManager, setShowScheduleManager] = useState(false);
   const [showWorkManager, setShowWorkManager] = useState(false);
   const [selectedWorkOrderId, setSelectedWorkOrderId] = useState<string>();
@@ -171,7 +172,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       messagesRef.current = []; setMessages([]); latestSequence.current = 0; loadedConversation.current = null;
       historyRef.current = false; stickyRef.current = true; setHistoryMode(false); setHasMore(false); setHasNewer(false); setHighlightedId(null); setNewMessages(false);
       setReferencedMessages({}); setPreviewAttachment(null); setPreviewImages([]); setMemoryDraft(undefined);
-      setShowMemoryManager(false); setShowScheduleManager(false); setShowWorkManager(false); setShowTaskMonitor(false);
+      setShowMemoryManager(false); setPage(current => current === 'memory' ? 'messages' : current); setShowScheduleManager(false); setShowWorkManager(false); setShowTaskMonitor(false);
     }
   }, []);
 
@@ -296,7 +297,11 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const resetCompanion = companions.find(item => item.id === resetCompanionId);
   const memoryOwner = members.find(item => item.id === memoryOwnerId) ?? primary;
   const documentOwner = companions.find(item => item.id === documentOwnerId) ?? memoryOwner ?? companions[0];
-  function openMemoryManager() { setDocumentOwnerId(memoryOwner?.id ?? companions[0]?.id ?? null); setShowMemoryManager(true); }
+  function openMemoryManager(processing = false) {
+    const owner = memoryOwner?.id ?? companions[0]?.id;
+    setDocumentOwnerId(owner ?? null); setShowMemoryManager(true); setPage('memory');
+    if (processing && owner) setMemoryProcessingRequest(current => ({ owner, nonce: (current?.nonce ?? 0) + 1 }));
+  }
   const timelineMessages = messages.filter(message => !message.memoryEvidenceOnly);
   const draft = selectedId ? drafts[selectedId] ?? EMPTY_DRAFT : EMPTY_DRAFT;
   useLayoutEffect(() => {
@@ -522,10 +527,10 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     <nav className="companions-navigation" aria-label="伙伴导航">
       <button className={page === 'messages' ? 'is-active' : ''} aria-pressed={page === 'messages'} onClick={() => { setPage('messages'); setFilter(''); }}><ChatGlyph name="chat" /><span>消息</span>{!!state?.conversations.reduce((sum, item) => sum + item.unread, 0) && <i className="companions-nav-dot" />}</button>
       <button className={page === 'contacts' ? 'is-active' : ''} aria-pressed={page === 'contacts'} onClick={() => { setPage('contacts'); setFilter(''); }}><ChatGlyph name="contacts" /><span>联系人</span></button>
-      <button aria-label="打开伙伴记忆库" disabled={!companions.length} onClick={openMemoryManager}><Icon name="file-text" /><span>记忆</span></button>
+      <button aria-label="打开伙伴记忆库" className={page === 'memory' ? 'is-active' : ''} aria-pressed={page === 'memory'} disabled={!companions.length} onClick={() => { setShowMemoryManager(true); setPage('memory'); }}><Icon name="file-text" /><span>记忆</span></button>
       <button aria-label="打开伙伴世界" onClick={() => void openWorld()}><Icon name="globe" /><span>世界</span></button><button aria-label="打开伙伴社交观察" onClick={() => observeSocial()}><Icon name="users" /><span>社交</span></button>
     </nav>
-    <aside className="companions-list-pane" aria-label={page === 'messages' ? '消息列表' : '联系人列表'}>
+    <aside className="companions-list-pane" hidden={page === 'memory'} aria-label={page === 'messages' ? '消息列表' : '联系人列表'}>
       <header className="companions-list-title"><h1>{page === 'messages' ? '消息' : '联系人'}</h1><button className="companion-icon-button" aria-label={page === 'messages' ? '发起聊天' : '添加联系人'} title={page === 'messages' ? '发起聊天' : '添加联系人'} onClick={() => setDialog({ kind: page === 'messages' ? 'chat' : 'companion' })}><Icon name="plus" /></button></header>
       <div className="companions-list-search"><Icon name="search" /><input aria-label={page === 'messages' ? '搜索会话' : '搜索联系人'} placeholder={page === 'messages' ? '搜索消息和群聊' : '搜索联系人'} value={filter} onChange={event => setFilter(event.target.value)} />{filter && <button aria-label="清空搜索" className="companion-icon-button" onClick={() => setFilter('')}>×</button>}</div>
       {page === 'messages' ? <>
@@ -539,8 +544,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       </div>}
       <footer className="companions-list-footer"><span className="companions-local-dot" />消息保存在本机</footer>
     </aside>
-    <main className="companions-main">
-      {error && !showMemoryManager && !showScheduleManager && !showWorkManager && <div className="companions-error" role="alert"><Icon name="alert-circle" /><span>{error}</span><button className="companion-icon-button" aria-label="关闭错误提示" onClick={() => setError('')}>×</button></div>}
+    <main className="companions-main" hidden={page === 'memory'}>
+      {error && page !== 'memory' && !showScheduleManager && !showWorkManager && <div className="companions-error" role="alert"><Icon name="alert-circle" /><span>{error}</span><button className="companion-icon-button" aria-label="关闭错误提示" onClick={() => setError('')}>×</button></div>}
       {!state ? <div className="companions-empty"><ChatGlyph name="chat" /><h2>{api ? '正在打开伙伴的消息…' : '伙伴服务暂不可用'}</h2>{error && <button className="companion-secondary-button" onClick={() => void refreshState()}>重新加载</button>}</div>
         : page === 'contacts' ? selectedContact ? <div className="companions-contact-profile"><header className="companions-profile-label">联系人资料</header><div className="companions-profile-heading"><Avatar companion={selectedContact} large /><div><h2>{selectedContact.name}</h2><p>{selectedContact.description}</p>{selectedContact.builtin && <span className="companions-profile-tag">{builtinCompanionProfile(selectedContact.id)?.sourceSummary ?? '内置伙伴'}</span>}</div></div>
           <div className="companions-profile-body"><div>{contactReset && <div className="companions-reset-note"><Icon name="refresh" /><span>{contactReset.status === 'failed' ? '伙伴重置已暂停' : '伙伴正在重置'}</span><button onClick={() => setResetCompanionId(selectedContact.id)}>查看进度</button></div>}<section><h3>关于她</h3><p className="companions-introduction">{contactIntroduction(selectedContact)}</p><details key={selectedContact.id} className="companions-persona-details"><summary>查看角色设定</summary><p className="companions-persona">{selectedContact.persona}</p></details></section><PublicAppearanceSheet attachmentId={selectedContact.appearanceAttachmentId} fallbackSource={companionAppearance(selectedContact)} name={selectedContact.name} description="这位伙伴的公开正面、侧面与背面设定板。可在编辑资料中上传或移除。" /><section className="companions-activation"><div className="companions-activation-heading"><h3>伙伴生活</h3><span className="companions-activation-status" data-status={selectedContact.active === false ? 'dormant' : 'ready'}>{selectedContact.active === false ? '休眠中' : '已激活'}</span></div><p className="companions-subtle">{selectedContact.active === false ? '虚拟世界未加载，不进行后台活动。聊天和存档保留，手动激活后继续生活。' : '虚拟世界正在运行。休眠会停止后台活动和当前任务，保留聊天与存档。'}</p><div className="companions-activation-actions"><button className={selectedContact.active === false ? 'companion-primary-button' : 'companion-secondary-button'} disabled={!!contactReset || !!activationPending} onClick={() => void toggleActive(selectedContact)}>{activationPending === selectedContact.id ? '正在切换…' : selectedContact.active === false ? '激活伙伴' : '让伙伴休眠'}</button><button className="companion-secondary-button" onClick={() => observeSocial(selectedContact.id)}><Icon name="users" />查看她与谁交互</button></div></section><section><h3>联系习惯</h3><label className="companions-checkbox"><input type="checkbox" disabled={!!contactReset} checked={selectedContact.proactive} onChange={event => void toggleProactive(selectedContact, event.target.checked)} />允许她主动联系我</label><p className="companions-subtle">应用运行时，她可以延续你们的话题。夜间会保持安静。</p></section><section><h3>模型与能力</h3><p>{selectedContact.llm ? '使用此伙伴的独立 LLM 服务' : '共用设置中的全局 LLM 服务'}</p><p className="companions-subtle">{selectedContact.llm ? `模型：${selectedContact.llm.model}` : '跟随全局模型'} · 可以使用自己的能力查看文件、查资料和处理任务</p></section><div className="companions-profile-actions"><button className="companion-primary-button" onClick={() => void openPrivate(selectedContact.id)}><ChatGlyph name="chat" />发消息</button><button className="companion-secondary-button" onClick={() => void openWorld(selectedContact.id)}><Icon name="globe" />看看她的小屋</button><button className="companion-secondary-button" disabled={!!contactReset} onClick={() => setDialog({ kind: 'companion', companion: selectedContact })}>编辑资料</button>{selectedContact.builtin ? <button className="companion-text-danger" onClick={() => setResetCompanionId(selectedContact.id)}>{contactReset ? '查看重置进度' : '重置伙伴'}</button> : <button className="companion-text-danger" onClick={() => setDialog({ kind: 'delete', companion: selectedContact })}>移除联系人</button>}</div></div>
@@ -600,11 +605,11 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
               <div className="companions-composer-toolbar"><div className="companions-composer-tools"><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{selectedReset ? '伙伴正在重置' : sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={!!selectedReset || sending || addingFiles || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
             </section>
           </section>
-          {showPanel && memoryOwner && <CompanionPlanner key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} members={members} conversationId={selected.id} conversationKind={selected.kind} actions={actions} request={request} api={api} onOwnerChange={id => { setMemoryOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setShowPanel(false)} onProfile={() => { setContactId(memoryOwner.id); setPage('contacts'); }} onMemory={openMemoryManager} onTasks={(view = 'active', ownerId) => { setSelectedTaskActionId(undefined); setTaskView(view); setTaskOwnerId(ownerId); setShowTaskMonitor(true); }} onSchedules={() => setShowScheduleManager(true)} onWork={id => { setSelectedWorkOrderId(id); setShowWorkManager(true); }} onWorld={() => void openWorld(memoryOwner.id)} />}
+          {showPanel && memoryOwner && <CompanionPlanner key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} members={members} conversationId={selected.id} conversationKind={selected.kind} actions={actions} request={request} api={api} onOwnerChange={id => { setMemoryOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setShowPanel(false)} onProfile={() => { setContactId(memoryOwner.id); setPage('contacts'); }} onMemory={() => openMemoryManager()} onMemoryProcessing={() => openMemoryManager(true)} onTasks={(view = 'active', ownerId) => { setSelectedTaskActionId(undefined); setTaskView(view); setTaskOwnerId(ownerId); setShowTaskMonitor(true); }} onSchedules={() => setShowScheduleManager(true)} onWork={id => { setSelectedWorkOrderId(id); setShowWorkManager(true); }} onWorld={() => void openWorld(memoryOwner.id)} />}
         </div>}
     </main>
-    {showMemoryManager && documentOwner && <CompanionMemoryManager companions={companions} ownerId={documentOwner.id} conversation={selected} request={request} api={api} draft={memoryDraft} onDraftConsumed={() => setMemoryDraft(undefined)} requestError={error} onDismissError={() => setError('')} authorName={authorName} onOwnerChange={id => { setDocumentOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setShowMemoryManager(false)} onLocateSource={source => {
-      setShowMemoryManager(false);
+    {showMemoryManager && documentOwner && <CompanionMemoryManager active={page === 'memory' && isActive} processingRequest={memoryProcessingRequest?.owner === documentOwner.id ? memoryProcessingRequest.nonce : undefined} onProcessingRequestConsumed={() => setMemoryProcessingRequest(undefined)} companions={companions} ownerId={documentOwner.id} conversation={selected} request={request} api={api} draft={memoryDraft} onDraftConsumed={() => setMemoryDraft(undefined)} requestError={error} onDismissError={() => setError('')} authorName={authorName} onOwnerChange={id => { setDocumentOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setPage('messages')} onLocateSource={source => {
+      setPage('messages');
       if (source.conversationId === selectedRef.current) { if (source.memoryEvidenceOnly && source.actionId) openTaskProgress(source.actionId); else void jumpToMessage(source); return; }
       void (async () => {
         const room = state?.conversations.find(item => item.id === source.conversationId) ?? (await request({ type: 'conversation.reopen', id: source.conversationId }))?.conversation;

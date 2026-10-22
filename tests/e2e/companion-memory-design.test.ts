@@ -37,7 +37,7 @@ test('manages each companion document library and reads several real documents i
     expect((await page.evaluate(() => (window as unknown as Bridge).worldlinebox.companions.request({ type: 'state' }))).state?.conversations).toHaveLength(0);
     await expect.poll(async () => (await page.evaluate(owner => (window as unknown as Bridge).worldlinebox.companions.request({ type: 'memory.status', companionId: owner }), companionId)).memoryStatus?.indexed, { timeout: 150_000 }).toBe(6);
     await page.locator('[data-application-module="companions"]').click();
-    const manager = page.getByRole('dialog', { name: '共同记忆管理', exact: true });
+    const manager = page.getByRole('region', { name: '共同记忆管理', exact: true, includeHidden: true });
     async function open() {
       await page.getByRole('button', { name: '打开伙伴记忆库', exact: true }).click();
       await manager.getByRole('combobox', { name: '记忆所属伙伴', exact: true }).selectOption(companionId);

@@ -21,7 +21,7 @@ afterEach(async () => {
   }
 });
 const metadata = (index: number, tags = ['日常']): CompanionMemoryDocument => ({ path: `日记/${String(index).padStart(7, '0')}.md`, name: `${index}.md`, title: `第 ${index} 篇日记`, directory: '日记',
-  kind: 'document', category: 'diary', updatedAt: '2026-10-21T00:00:00.000Z', bytes: 100, revision: 'r' + index, contentHash: 'a'.repeat(64), tags, readOnly: false, syncState: 'untracked' });
+  kind: 'document', category: 'diary', createdAt: new Date(Date.UTC(2026, 0, 1) + index * 3600_000).toISOString(), updatedAt: '2026-10-21T00:00:00.000Z', bytes: 100, revision: 'r' + index, contentHash: 'a'.repeat(64), tags, readOnly: false, syncState: 'untracked' });
 
 it('queries 100,000 persisted documents with bounded pages and Chinese full-text/tag search beyond the first page', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-document-catalog-')); roots.push(root);
@@ -45,11 +45,16 @@ it('queries 100,000 persisted documents with bounded pages and Chinese full-text
   expect(cold.result.paths).toEqual(['日记/0099999.md']);
   expect(shortChinese.result.paths).toEqual(cold.result.paths); expect(combined.result.paths).toEqual(cold.result.paths);
   expect(page.result.paths).toHaveLength(64); expect(page.result.total).toBe(100_000); expect(page.result.hasMore).toBe(true);
+  const datedAt = performance.now();
+  const dated = catalog.execute({ type: 'document.catalog.query', companionId: 'alice', directory: '', query: '', tags: [], limit: 64,
+    sort: 'created_desc', dateField: 'createdAt', from: '2026-10-21T00:00:00Z', to: '2026-10-21T23:59:59.999Z' })!.documentCatalog!;
+  const datedPageMs = performance.now() - datedAt;
+  expect(dated.paths).toHaveLength(24); expect(dated.total).toBe(24); expect(dated.hasMore).toBe(false);
   const repeated = Array.from({ length: 10 }, () => query('防波堤').ms).sort((a, b) => a - b);
   // These generous bounds detect accidental hydration of all 100k documents, not machine-specific speed.
   expect(Math.max(cold.ms, shortChinese.ms, page.ms)).toBeLessThan(3000);
   const report = { documents: 100_000, indexedMs, firstPageMs: page.ms, chineseTrigramMs: cold.ms, twoCharacterChineseMs: shortChinese.ms, tagCombinedMs: combined.ms,
-    repeatedMedianMs: repeated[5], rssDeltaMiB: (process.memoryUsage().rss - rss) / 1048576, maxReturnedDocuments: page.result.paths.length };
+    datedPageMs, datedDocuments: dated.total, repeatedMedianMs: repeated[5], rssDeltaMiB: (process.memoryUsage().rss - rss) / 1048576, maxReturnedDocuments: page.result.paths.length };
   const output = path.resolve('artifacts/vcp-validation'); mkdirSync(output, { recursive: true }); writeFileSync(path.join(output, 'document-catalog-100k.json'), JSON.stringify(report, null, 2));
   console.log('DOCUMENT_CATALOG_100K', JSON.stringify(report));
   db.close(); closes.pop();
@@ -84,6 +89,33 @@ it('removes vanished empty folders after a complete generation while preserving 
   catalog.execute({ type: 'document.catalog.finish', companionId: 'alice', generation: 'after' });
   const page = catalog.execute({ type: 'document.catalog.query', companionId: 'alice', directory: '', query: '', tags: [], limit: 64 })!.documentCatalog!;
   expect(page.folders).toEqual([{ path: '资料/保留目录', name: '保留目录', count: 0 }]);
+});
+
+it('orders dates with stable keyset pages, filters the chosen timestamp, and rejects cursors from another search', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-document-catalog-')); roots.push(root);
+  const db = new Database(path.join(root, 'catalog.sqlite')); closes.push(() => db.close());
+  const catalog = new CompanionDocumentCatalogStore(db); catalog.initialize();
+  const documents = Array.from({ length: 31 }, (_, index) => ({ ...metadata(index), createdAt: new Date(Date.UTC(2026, 9, 1 + Math.floor(index / 2))).toISOString(),
+    updatedAt: new Date(Date.UTC(2026, 9, 31 - Math.floor(index / 3))).toISOString() }));
+  catalog.execute({ type: 'document.catalog.put', companionId: 'alice', generation: 'dates', entries: documents.map(document => ({ document, text: '日记文本', stamp: document.path })) });
+  const query = (options: { sort?: 'updated_desc' | 'created_desc' | 'created_asc'; dateField?: 'createdAt' | 'updatedAt'; from?: string; to?: string; cursor?: string; query?: string; tags?: string[] } = {}) =>
+    catalog.execute({ type: 'document.catalog.query', companionId: 'alice', directory: '日记', query: '', tags: [], limit: 7, ...options })!.documentCatalog!;
+  for (const sort of ['updated_desc', 'created_desc', 'created_asc'] as const) {
+    let cursor: string | undefined; const found: string[] = [];
+    do { const page = query({ sort, cursor }); expect(page.paths.length).toBeLessThanOrEqual(7); found.push(...page.paths); cursor = page.nextCursor; } while (cursor);
+    const field = sort === 'updated_desc' ? 'updatedAt' : 'createdAt';
+    const expected = [...documents].sort((a, b) => (sort === 'created_asc' ? a[field].localeCompare(b[field]) : b[field].localeCompare(a[field])) || a.path.localeCompare(b.path)).map(document => document.path);
+    expect(found).toEqual(expected); expect(new Set(found).size).toBe(31);
+  }
+  expect(query().paths).toEqual(query({ sort: 'updated_desc' }).paths);
+  const selected = query({ dateField: 'createdAt', from: '2026-10-05T08:00:00+08:00', to: '2026-10-05T23:59:59Z' });
+  expect(selected.total).toBe(2); expect(selected.paths).toEqual(documents.filter(document => document.createdAt.startsWith('2026-10-05')).map(document => document.path));
+  const first = query(); expect(first.nextCursor).toBeTruthy();
+  for (const changed of [{ sort: 'created_asc' as const }, { query: '其他' }, { tags: ['日常'] }, { dateField: 'createdAt' as const }, { from: '2026-10-01T00:00:00Z' }])
+    expect(() => query({ cursor: first.nextCursor, ...changed })).toThrow('搜索条件或排序已经变化');
+  expect(() => query({ from: '2026-10-20T00:00:00Z', to: '2026-10-01T00:00:00Z' })).toThrow('开始时间不能晚于结束时间');
+  const plan = db.prepare('EXPLAIN QUERY PLAN SELECT path FROM companion_document_catalog WHERE companion_id=? ORDER BY updated_at DESC,path DESC LIMIT 65').all('alice') as Array<{ detail: string }>;
+  expect(plan.some(row => row.detail.includes('companion_document_updated'))).toBe(true);
 });
 
 it('opens a real 3,000-file library incrementally and performs repeat searches without rescanning its tree', async () => {

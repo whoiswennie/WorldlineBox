@@ -212,3 +212,21 @@ it('does not surface stale search errors after a newer full-library query succee
   await act(async () => rejectOld!({ ok: false, error: '已经过时的搜索错误' }));
   expect(container!.textContent).not.toContain('已经过时的搜索错误'); expect(element('.memory-library-files').textContent).toContain('海边散步');
 });
+
+it('refreshes metadata without repeatedly transferring an unchanged selected document on unrelated background events', async () => {
+  const f = await mount();
+  const readCalls = () => f.workspace.mock.calls.filter(([command]) => command.type === 'memory.documents.read').length;
+  const previous = readCalls();
+  await act(async () => { f.emit(); f.emit(); }); await advance();
+  expect(readCalls()).toBe(previous);
+  expect(element('.memory-library-paper h1').textContent).toBe('海边散步');
+});
+
+it('sends explicit time sorting and a complete local date range to the server', async () => {
+  const f = await mount(); await click('高级筛选记忆文档');
+  const sort = element<HTMLSelectElement>('[aria-label="记忆文档排序"]');
+  await act(async () => { sort.value = 'created_asc'; sort.dispatchEvent(new Event('change', { bubbles: true })); });
+  await fill('记忆开始日期', '2026-10-20'); await fill('记忆结束日期', '2026-10-22'); await advance();
+  const latest = f.workspace.mock.calls.filter(([command]) => command.type === 'memory.documents.list').at(-1)![0];
+  expect(latest).toMatchObject({ sort: 'created_asc', dateField: 'updatedAt', from: new Date('2026-10-20T00:00:00.000').toISOString(), to: new Date('2026-10-22T23:59:59.999').toISOString() });
+});

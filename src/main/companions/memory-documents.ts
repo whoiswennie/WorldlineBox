@@ -100,7 +100,7 @@ export class CompanionMemoryDocuments {
     }
     return result;
   }
-  private describe(relative: string, content: string, updatedAt: string, note?: CompanionMemory, entry?: MemoryLibraryDocumentSession['manifest']['files'][string]): CompanionMemoryDocument {
+  private describe(relative: string, content: string, updatedAt: string, note?: CompanionMemory, entry?: MemoryLibraryDocumentSession['manifest']['files'][string], fileCreatedAt?: string): CompanionMemoryDocument {
     const readOnly = automatic(relative), contentHash = hash(content), name = path.posix.basename(relative);
     const revision = hash(JSON.stringify([relative, contentHash, note?.id, note?.version, note?.tags, note?.diaryName, note?.metadata?.autoTags, readOnly]));
     const naturalTitle = note && /^note_[a-f0-9]{48}\.(?:md|txt)$/iu.test(name)
@@ -108,7 +108,10 @@ export class CompanionMemoryDocuments {
       : undefined;
     return { path: relative, name, title: naturalTitle || name.replace(/\.(?:md|txt)$/iu, ''), directory: path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative),
       kind: relative === 'profile.md' ? 'profile' : relative.startsWith('时间线/') && name.startsWith('VCP-') ? 'timeline' : note ? 'note' : 'document',
-      category: category(relative), updatedAt, bytes: Buffer.byteLength(content), revision, contentHash, readOnly, tags: note?.tags ?? [],
+      category: category(relative), updatedAt: note && Date.parse(note.updatedAt) > Date.parse(updatedAt) ? note.updatedAt : updatedAt,
+      ...(note ? { createdAt: note.createdAt, createdAtSource: 'memory' as const, ...(note.occurredAt ? { occurredAt: note.occurredAt } : {}) }
+        : fileCreatedAt ? { createdAt: fileCreatedAt, createdAtSource: 'file_birthtime' as const } : {}),
+      bytes: Buffer.byteLength(content), revision, contentHash, readOnly, tags: note?.tags ?? [],
       syncState: readOnly ? 'generated' : entry?.conflict || note && entry?.version !== note.version ? 'conflict'
         : entry?.pending || note?.status === 'queued' || note && contentHash !== hash(note.content) ? 'pending' : note?.status === 'indexed' ? 'indexed' : 'untracked',
       ...(note ? { noteId: note.id, version: note.version, sourceConversationId: note.sourceConversationId, sourceCount: note.sources.length, captureMethod: note.captureMethod, autoTagsEnabled: note.metadata?.autoTags !== false } : {}),
@@ -134,7 +137,7 @@ export class CompanionMemoryDocuments {
       await this.remove(session, relative); throw Object.assign(new Error('自动时间线的来源在读取过程中变化，旧文档已撤回。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
     }
     const tagStatus = ledger ? (await session.request({ type: 'memory.tags.status', companionId: session.owner.id, noteId: ledger.memory.id })).memoryTagStatus : undefined;
-    return { document: this.describe(relative, content, info.mtime.toISOString(), ledger?.memory, session.manifest.files[relative]), content,
+    return { document: this.describe(relative, content, info.mtime.toISOString(), ledger?.memory, session.manifest.files[relative], info.birthtimeMs > 0 ? info.birthtime.toISOString() : undefined), content,
       ...(tagStatus ? { tagStatus } : {}),
       ...(ledger ? { memory: ledger.memory } : {}), sources: ledger?.sources ?? [], hasMoreSources: ledger?.hasMore ?? false,
       ...(ledger?.nextSourceCursor !== undefined ? { nextSourceCursor: ledger.nextSourceCursor } : {}) };
@@ -142,10 +145,24 @@ export class CompanionMemoryDocuments {
   private async list(session: MemoryLibraryDocumentSession, command: Extract<CompanionMemoryDocumentCommand, { type: 'memory.documents.list' }>): Promise<CompanionMemoryDocumentsPage> {
     if (command.directory) memoryLibraryPathParts(command.directory);
     const state = await this.catalog.ensure(session), query = command.query?.trim() ?? '', tags = command.tags ?? [];
-    const semantic = command.mode === 'semantic' && query ? await this.options.search?.(session.owner.id, query, command.limit, command.cursor) : undefined;
+    const from = command.from ? new Date(command.from).toISOString() : undefined, to = command.to ? new Date(command.to).toISOString() : undefined;
+    if (from && to && from > to) throw new Error('开始时间不能晚于结束时间。');
+    const sort = command.sort ?? 'updated_desc', dateField = command.dateField ?? 'updatedAt';
+    const semanticMode = command.mode === 'semantic' && !!query;
+    const fingerprint = hash(JSON.stringify([session.owner.id, command.directory, query, [...tags].sort(), sort, dateField, from ?? null, to ?? null]));
+    let semanticCursor: string | undefined;
+    if (semanticMode && command.cursor) {
+      try {
+        const value = JSON.parse(Buffer.from(command.cursor, 'base64url').toString('utf8')) as { kind: string; fingerprint: string; inner: string };
+        if (value.kind !== 'memory-documents-semantic-v1' || value.fingerprint !== fingerprint || typeof value.inner !== 'string' || value.inner.length > 2048) throw new Error();
+        semanticCursor = value.inner;
+      } catch { throw new Error('搜索条件或排序已经变化，请从第一页重新查询。'); }
+    }
+    const semantic = semanticMode ? await this.options.search?.(session.owner.id, query, command.limit, semanticCursor) : undefined;
     if (command.mode === 'semantic' && query && !this.options.search) throw new Error('原版 VCP 语义检索暂不可用。');
     const result = await session.request({ type: 'document.catalog.query', companionId: session.owner.id, directory: command.directory,
-      query: semantic ? '' : query, tags, ...(semantic ? { noteIds: semantic.hits.map(hit => hit.noteId) } : { cursor: command.cursor }), limit: command.limit });
+      query: semantic ? '' : query, tags, sort, dateField, from, to,
+      ...(semantic ? { noteIds: semantic.hits.map(hit => hit.noteId) } : { cursor: command.cursor }), limit: command.limit });
     const page = result.documentCatalog;
     if (!page) throw new Error('记忆文档目录索引不可用。');
     const paths = semantic ? page.paths.sort((a, b) => {
@@ -163,6 +180,8 @@ export class CompanionMemoryDocuments {
         const searchable = (item.title + '\n' + read.content + '\n' + item.tags.join(' ')).toLowerCase();
         if (!semantic && query.toLowerCase().split(/\s+/u).some(token => !searchable.includes(token))) { this.catalog.mark(session.owner.id, file); continue; }
         if (tags.some(tag => !item.tags.includes(tag))) { this.catalog.mark(session.owner.id, file); continue; }
+        const date = item[dateField];
+        if ((from || to) && (!date || from && Date.parse(date) < Date.parse(from) || to && Date.parse(date) > Date.parse(to))) { this.catalog.mark(session.owner.id, file); continue; }
         items.push(item);
       } catch (error) {
         if (session.manifest.files[file]?.state !== 'forgotten' && (error as NodeJS.ErrnoException).code !== 'ENOENT'
@@ -174,10 +193,13 @@ export class CompanionMemoryDocuments {
     const index = semantic ? { state: semantic.state === 'ready' && (!state.complete || pendingImport > 0) ? 'building' as const : semantic.state,
       indexed: semantic.indexed, total: semantic.total + pendingImport, ...(semantic.error ? { error: semantic.error } : {}) }
       : { state: state.error ? 'error' as const : state.complete ? 'ready' as const : 'building' as const, indexed: state.indexed, ...(state.error ? { error: state.error } : {}) };
+    const nextCursor = semantic ? semantic.nextCursor ? Buffer.from(JSON.stringify({ kind: 'memory-documents-semantic-v1', fingerprint, inner: semantic.nextCursor })).toString('base64url') : undefined : page.nextCursor;
     return { companionId: session.owner.id, directory: command.directory, folders: page.folders, items,
-      total: semantic ? semantic.total : page.total, index,
+      // River returns a bounded ranked candidate set, not an exact corpus match
+      // count. Keep corpus progress in index.total and avoid a misleading total.
+      ...(semantic ? {} : { total: page.total }), index,
       hasMore: semantic ? !!semantic.nextCursor : page.hasMore,
-      ...((semantic?.nextCursor ?? page.nextCursor) ? { nextCursor: semantic?.nextCursor ?? page.nextCursor } : {}) };
+      ...(nextCursor ? { nextCursor } : {}) };
   }
 
   private requireRevision(read: CompanionMemoryDocumentRead, expected: string): void {

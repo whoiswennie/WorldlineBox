@@ -1,3 +1,4 @@
+import { totalmem } from 'node:os';
 import { isCurrentDocumentReload } from '../renderer-navigation';
 import { COMPANION_WORLD_WINDOW_ARGUMENT, COMPANION_WORLD_WINDOW_CHANNEL, COMPANION_WORLD_WINDOW_CHANGED_CHANNEL,
   COMPANION_WORLD_WINDOW_VISIBILITY_CHANNEL, companionWorldContactSchema, companionWorldWindowCommandSchema,
@@ -80,6 +81,7 @@ export class CompanionWorldWindowManager {
     const contacts = await this.contacts.promise;
     return { observerKey: 'companion-world-observer' + (entry.slot ? '-' + entry.slot : ''), ...entry.input,
       companions: contacts,
+      totalMemoryBytes: totalmem(),
       visible: entry.window.isVisible() && !entry.window.isMinimized(), visibleWindowCount: this.visibleWindowCount() };
   }
   private async open(event: WorldObserverIpcEvent, input: CompanionWorldWindowOpen): Promise<CompanionWorldWindowResult> {

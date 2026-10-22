@@ -2,6 +2,7 @@ import type { EmbeddingInstallProgress } from "./embedding/install-progress";
 import type { EmbeddingGemmaTier, EmbeddingIndexSnapshot, EmbeddingModelSummary, SemanticSearchModelId } from './embedding/profile';
 import type { EmbeddingHttpAdapter, EmbeddingServiceDestination, EmbeddingProbeFailure, EmbeddingTextStatus } from './embedding/http-service';
 import type { EmbeddingModality } from './embedding/modalities';
+import type { EmbeddingDeviceCapability } from './embedding/device-capability';
 import type { PublicError, PublicErrorReason } from './protocol/errors';
 import type { LibraryNavigationSummary } from './library-navigation';
 import type { MutationReceipt } from './performance-contract';
@@ -787,6 +788,12 @@ export interface WorldlineBoxLibraryApi {
   embeddingLocalTextStatus(): Promise<LibraryApiResult<LocalTextEmbeddingInstallStatus>>;
   embeddingLocalTextInstall(input: { update?: boolean }): Promise<LibraryApiResult<LocalTextEmbeddingInstallStatus>>;
   embeddingLocalTextDelete(): Promise<LibraryApiResult<LocalTextEmbeddingInstallStatus>>;
+  /** Cached device result only; never starts inference. */
+  embeddingDeviceStatus(): Promise<LibraryApiResult<EmbeddingDeviceCapability>>;
+  embeddingDeviceTest(input?: { force?: boolean }): Promise<LibraryApiResult<EmbeddingDeviceCapability>>;
+  embeddingDeviceCancel(): Promise<LibraryApiResult<EmbeddingDeviceCapability>>;
+  /** Lightweight host memory snapshot for the independent 3D capability check. */
+  deviceHardwareStatus(): Promise<LibraryApiResult<{ totalMemoryBytes: number; availableMemoryBytes: number }>>;
   embeddingSaveGlobalSettings(input: { selectionId: string | null }): Promise<LibraryApiResult<GlobalEmbeddingSettings>>;
   embeddingSaveModel(input: {
     id?: string;

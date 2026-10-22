@@ -9,20 +9,47 @@
 .companion-workspace-bar button { display: inline-flex; align-items: center; gap: 5px; font: inherit; color: var(--secondary); border: 0; border-radius: 5px; background: transparent; cursor: pointer; padding: 5px 7px; white-space: nowrap; transition: color 120ms, background 120ms; }
 .companion-workspace-bar button:hover { color: var(--text); background: var(--hover); }
 .companion-workspace-bar button:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
-.companion-workspace-picker { height: 100%; display: grid; place-items: center; overflow: auto; padding: 40px; box-sizing: border-box; }
-.companion-workspace-picker > div { width: min(720px, 100%); }
-.companion-workspace-picker h1 { font-size: 28px; font-weight: 600; margin: 16px 0; }
-.companion-workspace-picker p { line-height: 1.8; opacity: .8; }
-.companion-workspace-eyebrow { font-size: 12px; letter-spacing: .1em; }
-.companion-workspace-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0; }
-.companion-workspace-picker button { font: inherit; color: inherit; padding: 12px 18px; border: 1px solid var(--border-color, #8884); background: var(--surface-color, #8881); border-radius: 10px; cursor: pointer; }
-.companion-workspace-picker button:disabled { opacity: .5; cursor: wait; }
-.companion-workspace-libraries { display: grid; gap: 10px; margin-top: 24px; }
-.companion-workspace-libraries button { display: grid; gap: 6px; text-align: left; }
-.companion-workspace-libraries span { opacity: .6; font-size: 12px; overflow-wrap: anywhere; }
+.companion-workspace-empty { height: 100%; display: grid; place-items: center; padding: 28px; box-sizing: border-box; text-align: center; }
+.companion-workspace-empty-icon { display: inline-flex; align-items: center; justify-content: center; width: 60px; height: 60px; border-radius: 20px; color: var(--accent-soft-fg); background: var(--accent-soft); }
+.companion-workspace-empty h1 { margin: 18px 0 8px; font-size: 22px; font-weight: 600; }
+.companion-workspace-empty p { margin: 0 0 24px; color: var(--secondary); font-size: 13px; }
+.companion-workspace-empty .primary-button { margin-inline: auto; }
+.companion-library-dialog { width: min(460px, calc(100vw - 40px)); max-height: calc(100dvh - 48px); display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.companion-library-dialog > [data-dialog-header="true"] { padding: 25px 28px 19px; border-bottom: 1px solid var(--divider-soft); gap: 9px; }
+.companion-library-dialog > [data-dialog-header="true"] h2 { font-size: 20px; letter-spacing: .01em; }
+.companion-library-dialog > [data-dialog-header="true"] p { max-width: 31em; font-size: 12px; line-height: 1.8; }
+.companion-library-dialog > [data-dialog-content="true"] { padding: 0; }
+.companion-library-content { padding: 23px 28px 0; }
+.companion-library-summary { display: flex; align-items: center; gap: 13px; margin-bottom: 25px; }
+.companion-library-summary > span { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 46px; height: 46px; border-radius: 15px; color: var(--accent-soft-fg); background: var(--accent-soft); }
+.companion-library-summary strong { font-size: 13px; font-weight: 550; }
+.companion-library-summary p { margin: 4px 0 0; color: var(--tertiary); font-size: 11px; }
+.companion-library-dialog .field-label { display: block; margin-bottom: 9px; font-size: 12px; }
+.companion-library-dialog .text-field { width: 100%; box-sizing: border-box; min-height: 39px; }
+.companion-library-help { margin: 11px 0 0; color: var(--secondary); font-size: 11px; line-height: 1.8; }
+.companion-library-create { width: 100%; justify-content: center; gap: 7px; margin-top: 23px; min-height: 39px; }
+.companion-library-alternative { display: flex; justify-content: center; margin-top: 23px; padding: 18px 0 20px; border-top: 1px solid var(--divider-soft); }
+.companion-library-alternative button { display: inline-flex; align-items: center; gap: 5px; padding: 4px; border: 0; background: transparent; color: var(--secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.companion-library-alternative button span { display: inline-flex; align-items: center; gap: 2px; color: var(--accent-soft-fg); }
+.companion-library-alternative button:hover { color: var(--text); }
+.companion-library-dialog button:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 3px; }
+.companion-library-dialog button:disabled { opacity: .5; cursor: default; }
+.companion-library-error { margin: 15px 0 0; padding: 10px 12px; border-radius: 7px; background: color-mix(in srgb, var(--ui-status-danger, #e07885) 8%, transparent); color: var(--ui-status-danger, #e07885); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.companion-library-list { display: grid; gap: 7px; max-height: 240px; overflow: auto; }
+.companion-library-option { display: flex; align-items: center; gap: 11px; min-width: 0; width: 100%; padding: 12px; border: 1px solid var(--divider-soft); border-radius: 9px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.companion-library-option:hover { background: var(--hover); border-color: var(--accent-ring); }
+.companion-library-folder { color: var(--accent-soft-fg); }
+.companion-library-option-text { flex: 1; min-width: 0; }
+.companion-library-option strong { display: block; font-size: 12px; font-weight: 550; }
+.companion-library-option small { display: block; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--tertiary); font-size: 10px; }
+.companion-library-option > svg { color: var(--tertiary); flex-shrink: 0; }
+.companion-library-current { flex-shrink: 0; color: var(--tertiary); font-size: 10px; }
+.companion-library-open { width: 100%; margin-top: 13px; justify-content: center; gap: 7px; min-height: 39px; }
+:root[data-platform="windows"] .companion-workspace-bar { padding-right: calc(3 * var(--windows-caption-width, 46px) + 18px); }
 @media (max-width: 700px) {
   .companion-workspace-bar { padding-inline: 10px; gap: 6px; }
   .companion-workspace-label { display: none; }
   .companion-workspace-bar-actions { gap: 1px; }
-  .companion-workspace-picker { padding: 24px; }
+  .companion-library-dialog > [data-dialog-header="true"] { padding-inline: 22px; }
+  .companion-library-content { padding-inline: 22px; }
 }

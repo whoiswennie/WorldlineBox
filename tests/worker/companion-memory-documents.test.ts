@@ -10,6 +10,7 @@ import { CompanionMemoryLibrary } from '../../src/main/companions/memory-library
 import type { companionMemoryDocumentCommands } from '../../src/shared/companion-memory-documents';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import { companionWorkspaceRequestSchema } from '../../src/shared/companion-workspace';
+import { companionMemoryIdentity } from '../../src/main/companions/memory-identity';
 
 const roots: string[] = [], stores: CompanionsStore[] = [], libraries: CompanionMemoryLibrary[] = [], documents: CompanionMemoryDocuments[] = [];
 type CommandInput<T = z.input<(typeof companionMemoryDocumentCommands)[number]>> = T extends unknown ? Omit<T, 'companionId'> & { companionId?: string } : never;
@@ -50,6 +51,7 @@ it('creates a real nested notebook text with authoritative tags, source metadata
   expect(created.document?.memory).toMatchObject({ companionId: 'alice', content: '每周六给阳台植物浇水。', tags: ['植物'], diaryName: '植物资料', version: 1, sources: [{ sourceType: 'manual_input' }] });
   expect(created.document?.document).toMatchObject({ path: '资料/研究/植物/浇水.md', category: 'material', syncState: 'pending', noteId: created.document?.memory?.id });
   expect(created.document?.document.contentHash).toBe(createHash('sha256').update('每周六给阳台植物浇水。').digest('hex'));
+  expect(created.document?.document).toMatchObject({ createdAt: created.document?.memory?.createdAt, createdAtSource: 'memory' });
   expect(readFileSync(path.join(f.directory, 'alice', '资料/研究/植物/浇水.md'), 'utf8')).toBe('每周六给阳台植物浇水。');
   expect(f.store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox).toMatchObject({ operation: 'remember', noteId: created.document?.memory?.id });
   const page = await call({ type: 'memory.documents.list', directory: '', limit: 64 });
@@ -75,6 +77,28 @@ it('paginates all real owner documents beyond 256 files without dropping later n
   expect(seen.size).toBe(270); expect(pages).toBe(8);
 });
 
+it('binds semantic continuation to all human filters while preserving relevance order', async () => {
+  const f = fixture(), { library, call: create } = f.make();
+  const first = (await create({ type: 'memory.documents.create', path: '资料/甲.md', content: '第一份实际资料。', tags: ['成长'] })).document!;
+  const second = (await create({ type: 'memory.documents.create', path: '资料/乙.md', content: '第二份实际资料。', tags: ['成长'] })).document!;
+  const searchCalls: Array<string | undefined> = [];
+  const manager = new CompanionMemoryDocuments({ libraryDirectory: f.directory, library, requestStorage: f.request,
+    search: async (_owner, _query, _limit, cursor) => {
+      searchCalls.push(cursor);
+      return { hits: [{ noteId: (cursor ? first : second).memory!.id, version: 1 }], state: 'ready', indexed: 2, total: 2, ...(cursor ? {} : { nextCursor: 'native-page-2' }) };
+    } }); documents.push(manager);
+  const call = (options: object) => manager.handle(companionWorkspaceRequestSchema.parse({ type: 'memory.documents.list', companionId: 'alice', directory: '资料', query: '成长', mode: 'semantic', tags: ['成长'], limit: 1, ...options }) as Parameters<typeof manager.handle>[0]);
+  const ready = await call({}); expect(ready.ok, ready.error).toBe(true);
+  expect(ready.documents?.items.map(item => item.path)).toEqual(['资料/乙.md']);
+  const cursor = ready.documents!.nextCursor; expect(cursor).toBeTruthy();
+  const next = await call({ cursor }); expect(next.documents?.items.map(item => item.path)).toEqual(['资料/甲.md']);
+  expect(searchCalls).toEqual([undefined, 'native-page-2']);
+  for (const changed of [{ directory: '日记' }, { tags: [] }, { sort: 'created_asc' }, { from: '2026-10-01T00:00:00Z' }, { dateField: 'createdAt' }]) {
+    expect(await call({ cursor, ...changed })).toMatchObject({ ok: false, error: '搜索条件或排序已经变化，请从第一页重新查询。' });
+  }
+  expect(searchCalls).toHaveLength(2);
+});
+
 it('keeps note identity, version, sources and diary metadata unchanged when moving a real file', async () => {
   const f = fixture(), { call, library } = f.make();
   const created = (await call({ type: 'memory.documents.create', path: '日记/原名.md', content: '同一篇真实日记。', tags: ['原标签'], diaryName: '原日记本' })).document!;
@@ -93,6 +117,8 @@ it('revises explicit content through manual evidence and changes only metadata w
   const created = (await call({ type: 'memory.documents.create', path: '日记/编辑.md', content: '原始正文。', tags: ['旧'] })).document!;
   const edited = (await call({ type: 'memory.documents.save', path: created.document.path, content: '用户明确编辑的新正文。', expectedRevision: created.document.revision })).document!;
   expect(edited.memory).toMatchObject({ id: created.memory!.id, version: 2, content: '用户明确编辑的新正文。' });
+  expect(edited.document.createdAt).toBe(created.document.createdAt);
+  expect(Date.parse(edited.document.updatedAt)).toBeGreaterThanOrEqual(Date.parse(created.document.updatedAt));
   const previousSources = edited.memory!.sources;
   const metadata = await call({ type: 'memory.documents.save', path: edited.document.path, content: edited.content, expectedRevision: edited.document.revision, tags: ['新'], diaryName: '学习' });
   expect(metadata.ok, metadata.error).toBe(true);
@@ -162,7 +188,8 @@ it('keeps stable persona and generated native timeline files read-only while all
   const f = fixture(), { call, library } = f.make(); await library.sync();
   const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
   await library.publishTimelines(f.scope, { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision,
-    agents: [{ agentName: 'WorldlineBox', months: [{ month: '2026-10', sourceDigest: 'digest', content: '原版生成的时间线正文。' }] }] }, async () => true);
+    owner: companionMemoryIdentity({ id: 'alice', name: 'alice' }),
+    agents: [{ agentName: 'alice', months: [{ month: '2026-10', sourceDigest: 'digest', content: '原版生成的时间线正文。' }] }] }, async () => true);
   const file = `时间线/VCP-${f.scope.conversationId}-2026-10.md`;
   for (const relative of ['profile.md', file]) {
     const read = (await call({ type: 'memory.documents.read', path: relative, sourceLimit: 30 })).document!;
@@ -278,7 +305,8 @@ it('reads long automatic timeline text and rejects a restored stale automatic ex
   const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
   const content = '原版时间线完整正文。'.repeat(10000), relative = `时间线/VCP-${f.scope.conversationId}-2026-10.md`;
   await library.publishTimelines(f.scope, { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision,
-    agents: [{ agentName: 'WorldlineBox', months: [{ month: '2026-10', sourceDigest: 'digest', content }] }] }, async () => true);
+    owner: companionMemoryIdentity({ id: 'alice', name: 'alice' }),
+    agents: [{ agentName: 'alice', months: [{ month: '2026-10', sourceDigest: 'digest', content }] }] }, async () => true);
   const long = await call({ type: 'memory.documents.read', path: relative, sourceLimit: 30 });
   expect(long.ok, long.error).toBe(true); expect(long.document?.content).toBe(content); expect(content.length).toBeGreaterThan(65536);
   await library.invalidate('alice'); writeFileSync(path.join(f.directory, 'alice', relative), 'STALE_TIMELINE_COPY');

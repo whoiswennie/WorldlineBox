@@ -9,6 +9,7 @@ import { dshExecutionAccessModeSchema } from './dsh-access';
 import { companionWorkSchema, companionLoopDraftSchema } from './companion-loop';
 import { COMPANION_AVATAR_IDS, COMPANION_TEMPLATE_IDS } from './companion-template-ids';
 import { companionMemorySchema, companionMemoryPageSchema, companionMemoryStatusSchema, companionMemoryPublicCommands, companionMemoryPolicySchema } from './companion-memory';
+import { companionMemoryProcessingSchema } from './companion-memory-processing';
 import { companionSchedulePublicCommands, companionScheduleSchema, companionScheduleOccurrenceSchema } from './companion-schedule';
 import { companionStatePublicCommands, companionRuntimeStateSchema } from './companion-state';
 import { companionRoutinePublicCommands, companionRoutineSchema, companionRoutineRuntimeSchema } from './companion-routine';
@@ -202,6 +203,7 @@ export const companionsResponseSchema = z.object({
   taskRecord: dshRecordPageSchema.optional(),
   message: messageSchema.optional(), companion: companionSchema.optional(),
   memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(),
+  memoryProcessing: companionMemoryProcessingSchema.optional(),
   memoryContext: z.object({ text: z.string().max(1024 * 1024), revision: z.string(), profileKey: z.string() }).optional(),
   memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
   memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),

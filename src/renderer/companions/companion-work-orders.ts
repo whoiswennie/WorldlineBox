@@ -12,24 +12,29 @@ export function useCompanionWorkOrders(companionId: string, conversationId: stri
   const [orders, setOrders] = useState<CompanionWorkOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState('');
+  const [failure, setError] = useState<{ scope: string; message: string }>();
   const [hasMore, setHasMore] = useState(false);
+  const [loadedScope, setLoadedScope] = useState<string>();
+  const scope = companionId + '/' + conversationId;
+  const loaded = useRef<string>(undefined);
   const before = useRef<number | undefined>(undefined), epoch = useRef(0), paging = useRef(false);
   const load = useCallback(async (append = false) => {
-    if (append && (paging.current || before.current === undefined)) return;
+    if (append && (paging.current || before.current === undefined || loaded.current !== scope)) return;
     const current = append ? epoch.current : ++epoch.current;
     if (append) { paging.current = true; setLoadingMore(true); }
     try {
       const response = await request({ type: 'work-order.list', companionId, conversationId, includeHistory, limit, ...(append ? { before: before.current } : {}) });
       if (current !== epoch.current) return;
-      if (!response?.workOrderPage) { setError(response?.error || '工作暂时无法读取，请刷新重试。'); return; }
+      if (!response?.workOrderPage) { setError({ scope, message: response?.error || '工作暂时无法读取，请刷新重试。' }); return; }
       const page = response.workOrderPage;
-      setOrders(previous => append ? [...new Map([...previous, ...page.items].map(order => [order.id, order])).values()] : page.items);
-      before.current = page.nextBefore; setHasMore(page.hasMore); setError('');
-    } catch (cause) { if (current === epoch.current) setError(cause instanceof Error ? cause.message : '工作暂时无法读取。'); }
+      const visible = page.items.filter(item => item.companionId === companionId && item.conversationId === conversationId);
+      setOrders(previous => append ? [...new Map([...previous, ...visible].map(order => [order.id, order])).values()] : visible);
+      loaded.current = scope; setLoadedScope(scope); before.current = page.nextBefore; setHasMore(page.hasMore); setError(undefined);
+    } catch (cause) { if (current === epoch.current) setError({ scope, message: cause instanceof Error ? cause.message : '工作暂时无法读取。' }); }
     finally { if (current === epoch.current) { setLoading(false); setLoadingMore(false); } paging.current = false; }
-  }, [companionId, conversationId, request, includeHistory, limit]);
+  }, [companionId, conversationId, request, includeHistory, limit, scope]);
   useEffect(() => { const counter = epoch; void Promise.resolve().then(() => load()); return () => { counter.current++; }; }, [load]);
   useEffect(() => { let timer: ReturnType<typeof setTimeout> | undefined; const unsubscribe = api?.onChanged(() => { clearTimeout(timer); timer = setTimeout(() => void load(), 200); }); return () => { unsubscribe?.(); clearTimeout(timer); }; }, [api, load]);
-  return { orders, loading, loadingMore, hasMore, error, refresh: () => load(), loadMore: () => load(true) };
+  return { orders: orders.filter(item => item.companionId === companionId && item.conversationId === conversationId), loading: loadedScope !== scope || loading,
+    loadingMore: loadedScope === scope && loadingMore, hasMore: loadedScope === scope && hasMore, error: failure?.scope === scope ? failure.message : '', refresh: () => load(), loadMore: () => load(true) };
 }

@@ -4,7 +4,8 @@ import { lstat, mkdir, opendir, readFile, realpath, rename, unlink, writeFile } 
 import path from 'node:path';
 import type { Companion, CompanionMemory } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
-import type { VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
+import type { VcpMemoryOwnerIdentity, VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
+import { companionMemoryIdentity, sameCompanionMemoryIdentity } from './memory-identity';
 
 export const companionMemoryLibraryCategories = ['日记', '资料', '自我认识', '世界经历', '时间线'] as const;
 const categories = companionMemoryLibraryCategories;
@@ -25,7 +26,7 @@ export type MemoryLibraryManifest = { version: 1; files: Record<string, Entry>; 
 type Manifest = MemoryLibraryManifest;
 type Scan = { category: number; notebooks?: string[]; directories?: Array<{ relative: string; directory: Dir }> };
 export interface MemoryLibraryTimelineScope { companionId: string; conversationId: string; beforeSequence?: number }
-type TimelineManifest = { version: 1; files: Record<string, { scope: MemoryLibraryTimelineScope; sourceRevision: string }>; cursor: number };
+type TimelineManifest = { version: 1; files: Record<string, { scope: MemoryLibraryTimelineScope; sourceRevision: string; ownerIdentity?: VcpMemoryOwnerIdentity }>; cursor: number };
 export interface MemoryLibrarySyncReport {
   exported: number; imported: number; forgotten: number;
   conflicts: Array<{ companionId: string; file: string; message: string }>;
@@ -272,7 +273,8 @@ export class CompanionMemoryLibrary {
         recoverMove: () => this.recoverMove(root, manifest),
         timelineValid: async relative => {
           const file = relative.slice('时间线/'.length), timelines = await this.timelineManifest(root), entry = timelines.files[file];
-          if (!relative.startsWith('时间线/') || file.includes('/') || !entry || entry.scope.companionId !== owner.id) return false;
+          if (!relative.startsWith('时间线/') || file.includes('/') || !entry || entry.scope.companionId !== owner.id
+            || !sameCompanionMemoryIdentity(entry.ownerIdentity, companionMemoryIdentity(owner))) return false;
           const revision = (await this.call({ type: 'memory.snapshot', ...entry.scope })).memorySnapshot?.revision;
           return revision === entry.sourceRevision;
         },
@@ -293,7 +295,7 @@ export class CompanionMemoryLibrary {
     for (const name of categories) await this.directory(root, name);
     const manifest = await this.load(root), limit = Math.max(1, Math.min(256, this.options.maxFilesPerOwner ?? 32));
     await this.recoverMove(root, manifest);
-    await this.pruneTimelines(owner.id, root, limit);
+    await this.pruneTimelines(owner, root, limit);
     const profile = `# ${owner.name}\n\n伙伴标识：${owner.id}\n\n## 稳定人格\n\n${owner.persona}\n\n此文件供查阅；日记、学习资料和自我认识不会自动改写稳定人格。请在伙伴资料管理中修改人格。\n`;
     const profileFile = path.join(root, 'profile.md'), currentProfile = await this.text(profileFile, true);
     if (currentProfile === undefined || manifest.profileHash === digest(currentProfile)) {
@@ -525,12 +527,15 @@ export class CompanionMemoryLibrary {
       await unlink(target).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
     }
   }
-  private async pruneTimelines(owner: string, root: string, limit: number): Promise<void> {
+  private async pruneTimelines(owner: Companion, root: string, limit: number): Promise<void> {
     const manifest = await this.timelineManifest(root), files = Object.keys(manifest.files);
     const revisions = new Map<string, string | undefined>();
     for (let n = 0; n < Math.min(limit, files.length); n++) {
       const file = files[manifest.cursor++ % files.length]!, entry = manifest.files[file]!;
-      if (entry.scope.companionId !== owner) throw new Error('时间线投影不属于该伙伴。');
+      if (entry.scope.companionId !== owner.id) throw new Error('时间线投影不属于该伙伴。');
+      if (!sameCompanionMemoryIdentity(entry.ownerIdentity, companionMemoryIdentity(owner))) {
+        await this.removeTimeline(root, file); delete manifest.files[file]; continue;
+      }
       const key = JSON.stringify(entry.scope);
       if (!revisions.has(key)) revisions.set(key, (await this.call({ type: 'memory.snapshot', ...entry.scope })).memorySnapshot?.revision);
       if (revisions.get(key) !== entry.sourceRevision) { await this.removeTimeline(root, file); delete manifest.files[file]; }
@@ -549,6 +554,10 @@ export class CompanionMemoryLibrary {
     if (!await stillValid()) return;
     await this.timelineSerial(scope.companionId, async () => {
       if (this.closed || !await stillValid() || generation !== (this.timelineGenerations.get(scope.companionId) ?? 0)) return;
+      const state = (await this.call({ type: 'state', includeConversations: false, includeHidden: true })).state;
+      const owner = state?.companions.find(companion => companion.id === scope.companionId);
+      if (!owner || !sameCompanionMemoryIdentity(artifacts.owner, companionMemoryIdentity(owner))
+        || artifacts.agents.some(agent => agent.agentName !== artifacts.owner!.agentName)) throw new Error('时间线归属身份已变化，需要基于该伙伴的原始日记重新整理。');
       await this.initializeRoot();
       const root = await this.directory(this.root!, scope.companionId); await this.directory(root, '时间线');
       const manifest = await this.timelineManifest(root), output = new Map<string, string>();
@@ -562,11 +571,11 @@ export class CompanionMemoryLibrary {
       for (const file of Object.keys(manifest.files)) if (manifest.files[file]!.scope.conversationId === scope.conversationId && !output.has(file)) {
         await this.removeTimeline(root, file); delete manifest.files[file];
       }
-      for (const file of output.keys()) manifest.files[file] = { scope, sourceRevision: artifacts.sourceRevision };
+      for (const file of output.keys()) manifest.files[file] = { scope, sourceRevision: artifacts.sourceRevision, ownerIdentity: artifacts.owner };
       await this.atomic(path.join(root, '.时间线索引.json'), JSON.stringify(manifest, null, 2) + '\n');
       for (const [file, content] of output) {
         await this.atomic(path.join(root, '时间线', file), content);
-        await this.atomic(path.join(root, '时间线', file + '.meta.json'), JSON.stringify({ sourceRevision: artifacts.sourceRevision, scope, automatic: true,
+        await this.atomic(path.join(root, '时间线', file + '.meta.json'), JSON.stringify({ sourceRevision: artifacts.sourceRevision, scope, ownerIdentity: artifacts.owner, automatic: true,
           authority: 'VCP自动时间线；修改不会自动成为新记忆，需要学习时请另存到资料或自我认识。' }, null, 2) + '\n');
       }
       if (!await stillValid() || generation !== (this.timelineGenerations.get(scope.companionId) ?? 0)) {

@@ -48,6 +48,18 @@ it('keeps detailed state out of the journal until opened and refreshes actual sc
   expect(base).toHaveBeenCalledWith({ type: 'schedule.list', companionId: companion.id, conversationId: 'room', includeHistory: true, limit: 100 });
 });
 
+it('does not display the previous companion mood, focus or schedule under a newly selected companion name', async () => {
+  let finish: ((result: CompanionsResponse) => void) | undefined;
+  const base = fixture(), other = { ...companion, id: 'other-companion', name: '另一个伙伴' };
+  const request: Request = input => input.type === 'state.get' && input.companionId === other.id ? new Promise(resolve => { finish = resolve; }) : base(input);
+  const props = { members: [companion, other], conversationId: 'room', actions: [], request, onOwnerChange: vi.fn(), onClose: vi.fn(), onProfile: vi.fn(), onMemory: vi.fn(), onTasks: vi.fn(), onSchedules: vi.fn(), onWork: vi.fn() };
+  await mount(<CompanionPlanner companion={companion} {...props} />); expect(container!.textContent).toContain('旅行相册');
+  await act(async () => root!.render(<CompanionPlanner companion={other} {...props} />)); await advance();
+  expect(container!.textContent).toContain('另一个伙伴的日常'); expect(container!.textContent).not.toContain('旅行相册'); expect(container!.textContent).not.toContain('心情明亮'); expect(container!.textContent).not.toContain('一起整理相册');
+  await act(async () => finish!({ ok: true, runtimeState: runtime }));
+  expect(container!.textContent).not.toContain('旅行相册'); expect(container!.querySelector('[role="progressbar"]')?.hasAttribute('aria-valuenow')).toBe(false);
+});
+
 it('preserves revision and timing when editing, clears repeat-only fields, and distinguishes pause from cancellation', async () => {
   const request = fixture(); await mount(<CompanionScheduleManager companion={companion} conversationId="room" request={request} onClose={vi.fn()} onDismissError={vi.fn()} />);
   await click('编辑'); await fill('安排标题', '整理照片与笔记'); await choose('安排重复', 'daily'); await click('保存安排修改');

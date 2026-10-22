@@ -1,49 +1,77 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { WorldlineBoxCompanionsApi } from '../../shared/companions';
-import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
+import type { CompanionWorkspaceLibrary, CompanionWorkspaceResponse } from '../../shared/companion-workspace';
+import type { WorldlineBoxLibraryApi } from '../../shared/library-api';
 import { Icon } from '../Icons';
+import { CompanionLibraryDialog } from './CompanionLibraryDialog';
 import './companion-workspace.css';
 
-export function CompanionWorkspace({ api, children, onOpenAssets }: {
-  api?: WorldlineBoxCompanionsApi; children: ReactNode; onOpenAssets(): void;
+export function CompanionWorkspace({ api, libraryApi, children }: {
+  api?: WorldlineBoxCompanionsApi; libraryApi?: WorldlineBoxLibraryApi; children: ReactNode;
 }) {
   const [state, setState] = useState<CompanionWorkspaceResponse>();
   const [busy, setBusy] = useState(false);
-  const [choosing, setChoosing] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(true);
+  const [created, setCreated] = useState<CompanionWorkspaceLibrary>();
   const [error, setError] = useState('');
-  const load = useCallback(async () => {
-    if (!api?.workspace) return;
-    try { const value = await api.workspace({ type: 'status' }); setState(value); if (!value.ok) setError(value.error ?? '无法读取伙伴资产库。'); }
-    catch { setError('无法读取伙伴资产库，请重试。'); }
-  }, [api]);
-  useEffect(() => { const timer = setTimeout(() => { void load(); }, 0); return () => clearTimeout(timer); }, [load]);
-  const choose = async (libraryId?: string) => {
-    if (!api?.workspace || busy) return;
-    setBusy(true); setError('');
+  const lock = useRef(false), serial = useRef({ epoch: 0 });
+  const load = useCallback(async (preserveDialog = false) => {
+    if (!api?.workspace || lock.current) return;
+    const epoch = ++serial.current.epoch;
     try {
+      const value = await api.workspace({ type: 'status' });
+      if (epoch !== serial.current.epoch) return;
+      setState(current => value.ok ? value : current ?? value); setError(value.ok ? '' : value.error ?? '无法读取伙伴资产库。');
+      if (value.ok && !preserveDialog) setDialogOpen(!value.selected);
+    } catch { if (epoch === serial.current.epoch) setError('无法读取伙伴资产库，请重试。'); }
+  }, [api]);
+  useEffect(() => {
+    const requests = serial.current;
+    const timer = setTimeout(() => { void load(); }, 0);
+    return () => { clearTimeout(timer); ++requests.epoch; };
+  }, [load]);
+  const openWorkspace = async (input: { libraryId?: string; createName?: string }) => {
+    if (!api?.workspace || lock.current) return;
+    lock.current = true; ++serial.current.epoch; setBusy(true); setError('');
+    try {
+      let libraryId = input.libraryId;
+      if (input.createName) {
+        if (!libraryApi) throw new Error('资产库创建功能暂不可用，请重新打开应用。');
+        if (created) libraryId = created.libraryId;
+        else {
+          const result = await libraryApi.create({ displayName: input.createName });
+          if (!result.ok) {
+            if (result.error.code === 'CANCELLED') return;
+            throw new Error(result.error.message || '无法创建资产库，请换一个保存位置重试。');
+          }
+          libraryId = result.value.libraryId;
+          const library = { libraryId, displayName: result.value.displayName, libraryPath: result.value.displayPath };
+          // A successful create must never be repeated when only binding failed.
+          setCreated(library);
+          setState(current => current ? { ...current, libraries: [...(current.libraries ?? []).filter(item => item.libraryId !== libraryId), library] } : current);
+        }
+      }
       const result = await api.workspace(libraryId ? { type: 'select', libraryId } : { type: 'choose' });
       if (!result.ok) setError(result.error ?? '无法选择伙伴资产库。');
-      else if (!result.cancelled) { setState(result); setChoosing(false); }
-    } catch { setError('无法选择伙伴资产库，请重试。'); }
-    finally { setBusy(false); }
+      else if (!result.cancelled && result.selected) { setState(result); setDialogOpen(false); setCreated(undefined); }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '无法打开伙伴资产库，请重试。'); }
+    finally { lock.current = false; setBusy(false); }
   };
   if (!api?.workspace) return <>{children}</>;
-  if (state?.selected && !choosing) return <div className="companion-workspace-bound" key={state.selected.libraryPath}>
+  return <>
+  {state?.selected ? <div className="companion-workspace-bound" key={state.selected.libraryPath}>
     <div className="companion-workspace-bar"><div className="companion-workspace-location" title={state.selected.libraryPath}><Icon name="folder" size={15} /><span className="companion-workspace-label">记忆资产库</span><span className="companion-workspace-name">{state.selected.displayName}</span></div>
       <div className="companion-workspace-bar-actions"><button type="button" onClick={() => { void api.workspace!({ type: 'reveal' }).then(result => { if (!result.ok) setError(result.error ?? '无法打开目录。'); }).catch(() => setError('无法打开伙伴记忆目录。')); }}>打开记忆目录<Icon name="external-link" size={13} /></button>
-      <button type="button" onClick={() => { setChoosing(true); void load(); }}>更换资产库</button></div></div>
-    {error ? <p role="alert">{error}</p> : null}{children}
-  </div>;
-  return <section className="companion-workspace-picker" aria-label="伙伴资产库">
-    <div><p className="companion-workspace-eyebrow">WorldlineBox · 持续生活</p><h1>为伙伴安置一个共同的资产库</h1>
-      <p>每位伙伴拥有自己的子目录，保存日记、学习资料、自我认识和时间线。聊天、世界状态与向量索引也保存在这个资产库中。</p>
-      {state?.libraries?.length ? <div className="companion-workspace-libraries">{state.libraries.map(library => <button disabled={busy} type="button" key={library.libraryId} onClick={() => { void choose(library.libraryId); }}>
-        <strong>{library.displayName}</strong><span>{library.libraryPath}</span></button>)}</div> : null}
-      <div className="companion-workspace-actions"><button type="button" disabled={busy} onClick={() => { void choose(); }}>{busy ? '正在准备资产库…' : '选择资产库目录'}</button>
-        <button type="button" disabled={busy} onClick={onOpenAssets}>前往资产管理创建资产库</button>
-        {state?.selected ? <button type="button" disabled={busy} onClick={() => setChoosing(false)}>返回伙伴</button> : null}</div>
-      {error ? <p role="alert">{error}</p> : null}
-      {!state && !error ? <p role="status">正在读取资产库…</p> : null}
+      <button type="button" onClick={() => { setError(''); setDialogOpen(true); void load(true); }}>更换资产库</button></div></div>
+    {error && !dialogOpen ? <p role="alert">{error}</p> : null}{children}
+  </div> : <section className="companion-workspace-empty" aria-label="伙伴资产库">
+    <div><span className="companion-workspace-empty-icon"><Icon name="users" size={28} /></span><h1>伙伴</h1>
+      <p>从一个伙伴资产库，开始你们的共同生活。</p>
+      {!state && !error ? <p role="status">正在读取资产库…</p> : <button className="primary-button" type="button" onClick={() => { setDialogOpen(true); void load(true); }}>{state?.ok ? '创建伙伴资产库' : '重试'}</button>}
+      {error && (!dialogOpen || !state?.ok) ? <p role="alert">{error}</p> : null}
     </div>
-  </section>;
+  </section>}
+  {state?.ok && dialogOpen && <CompanionLibraryDialog libraries={state.libraries ?? []} selectedId={state.selected?.libraryId} busy={busy} error={error} createdName={created?.displayName}
+    onCreate={name => { void openWorkspace({ createName: name }); }} onChoose={libraryId => { void openWorkspace({ libraryId }); }} onClose={() => { if (!lock.current) { setDialogOpen(false); setError(''); } }} />}
+  </>;
 }

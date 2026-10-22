@@ -30,7 +30,7 @@ test('searches full text beyond the first document page and isolates semantic an
     await documents(page, { type: 'memory.documents.create', companionId, path: '资料/zy-海岸步道.md', content: '海岸步道适合清晨散步，从车站经过码头到旧灯塔。', tags: ['旅行', '散步'], diaryName: '旅行资料' });
     await documents(page, { type: 'memory.documents.create', companionId: otherOwner, path: '资料/另一位伙伴的档案.md', content: '铁杉档案属于另一位伙伴，记录了一份植物标本的名称。', tags: ['植物'], diaryName: '学习资料' });
     await expect.poll(async () => (await documents(page, { type: 'memory.documents.list', companionId, directory: '', limit: 64 })).documents?.index?.state, { timeout: 60_000 }).toBe('ready');
-    const first = (await documents(page, { type: 'memory.documents.list', companionId, directory: '', limit: 64 })).documents!;
+    const first = (await documents(page, { type: 'memory.documents.list', companionId, directory: '', sort: 'created_asc', limit: 64 })).documents!;
     expect(first.items).toHaveLength(64); expect(first.hasMore).toBe(true); expect(first.items.some(item => item.path === targetPath)).toBe(false);
     const keyword = (await documents(page, { type: 'memory.documents.list', companionId, directory: '', query: '蓝灯书屋', mode: 'keyword', limit: 64 })).documents!;
     expect(keyword.items.some(item => item.noteId === target.document.noteId)).toBe(true);
@@ -46,8 +46,9 @@ test('searches full text beyond the first document page and isolates semantic an
     expect(semantic.items.some(item => item.noteId === target.document.noteId)).toBe(true);
     expect((await documents(page, { type: 'memory.documents.list', companionId: otherOwner, directory: '', query: '蓝灯书屋', mode: 'keyword', limit: 64 })).documents!.items).toHaveLength(0);
     await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '打开伙伴记忆库', exact: true }).click();
-    const manager = page.getByRole('dialog', { name: '共同记忆管理', exact: true });
+    const manager = page.getByRole('region', { name: '共同记忆管理', exact: true, includeHidden: true });
     await manager.getByRole('combobox', { name: '记忆所属伙伴', exact: true }).selectOption(companionId);
+    await manager.getByRole('combobox', { name: '记忆文档排序', exact: true }).selectOption('created_asc');
     await expect(manager.locator('.memory-library-file')).toHaveCount(64);
     await manager.getByRole('button', { name: '下一页文档', exact: true }).click();
     await expect(manager.locator(`[data-memory-document="${targetPath}"]`)).toBeVisible();

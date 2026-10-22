@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { companionWorldQuerySchema } from './companion-knowledge';
 import { companionStateProposalSchema } from './companion-state';
+import { companionMemoryProcessingCommand } from './companion-memory-processing';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 /** Ordered VCP tags; the host has no tag inference or retrieval algorithm. */
 export const companionMemoryTagSchema = z.string().trim().min(1).max(100);
@@ -77,6 +78,7 @@ export const companionMemoryForgetSchema = companionMemoryScopeSchema.extend({
     persistent: z.boolean().default(false), requestMessageId: id.optional(),
 });
 export const companionMemoryPublicCommands = [
+    companionMemoryProcessingCommand,
     companionMemoryScopeSchema.merge(companionWorldQuerySchema).extend({ type: z.literal('memory.world_query') }).strict(),
     companionMemorySearchSchema.extend({ type: z.literal('memory.search') }).strict(),
     companionMemorySearchSchema.extend({ type: z.literal('memory.browse') }).strict(),

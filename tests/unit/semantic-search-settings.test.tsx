@@ -7,6 +7,7 @@ import { LocalTextEmbeddingSettings } from '../../src/renderer/LocalTextEmbeddin
 import { LocaleProvider } from '../../src/renderer/i18n';
 import { LOCAL_TEXT_EMBEDDING_MODEL, type LocalTextEmbeddingInstallStatus } from '../../src/shared/embedding/global-profile';
 import { loadSemanticSearchPreferences, SEMANTIC_SEARCH_PREF_KEY } from '../../src/renderer/semantic-search-preferences';
+import type { EmbeddingDeviceCapability } from '../../src/shared/embedding/device-capability';
 
 let root: Root | undefined, container: HTMLDivElement | undefined;
 const reactEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
@@ -47,13 +48,49 @@ function expectNoConfiguration(api: ReturnType<typeof fixture>) {
     expect(method).not.toHaveBeenCalled();
   }
 }
+function device(state: EmbeddingDeviceCapability['state']): EmbeddingDeviceCapability {
+  return { version: 1, benchmarkVersion: 'embeddinggemma2-device-v1', state, stage: '', message: '设备可用内存不足，请关闭其他应用后复测。', retryable: true, cacheUsed: false,
+    budgets: { minimumAvailableMemoryBytes: 1, textMedianMs: 1, imageMs: 1, startupMs: 1, totalMs: 1 } };
+}
 
 describe('fixed built-in multimodal embedding settings', () => {
+  it.each(['unsupported', 'error'] as const)('keeps the asset switch off when the real device result is %s and links to device checks', async state => {
+    const onOpen = vi.fn();
+    const api = { ...fixture(), embeddingDeviceStatus: vi.fn(async () => ({ ok: true as const, value: device(state) })), embeddingDeviceTest: vi.fn() };
+    await mount(<SemanticSearchSettings servicesApi={api} section="search" onOpenDeviceSettings={onOpen} />);
+    const toggle = container!.querySelector<HTMLInputElement>('[role="switch"]')!;
+    expect(toggle.checked).toBe(false); expect(toggle.disabled).toBe(true);
+    expect(loadSemanticSearchPreferences().enabled).toBe(false);
+    expect(container!.textContent).toContain('设备可用内存不足');
+    expect(container!.textContent).toContain('普通资产全文搜索和已有文档查阅仍可使用');
+    await act(() => button(/前往全局模型检测/u).click()); expect(onOpen).toHaveBeenCalledOnce();
+    expect(api.embeddingDeviceTest).not.toHaveBeenCalled();
+  });
+  it('allows turning a previously enabled asset preference off even when vector support has failed', async () => {
+    window.localStorage.setItem(SEMANTIC_SEARCH_PREF_KEY, JSON.stringify({ version: 1, enabled: true, modelId: 'embeddinggemma-2-compact', pageSize: 50 }));
+    const api = { ...fixture(), embeddingDeviceStatus: vi.fn(async () => ({ ok: true as const, value: device('unsupported') })) };
+    await mount(<SemanticSearchSettings servicesApi={api} section="search" />);
+    const toggle = container!.querySelector<HTMLInputElement>('[role="switch"]')!;
+    expect(toggle.disabled).toBe(false); expect(toggle.checked).toBe(true);
+    await act(() => toggle.click());
+    expect(loadSemanticSearchPreferences().enabled).toBe(false);
+    expect(toggle.checked).toBe(false); expect(toggle.disabled).toBe(true);
+  });
+  it('permits explicit enable with an unchecked device without launching a model from settings', async () => {
+    const api = { ...fixture(), embeddingDeviceStatus: vi.fn(async () => ({ ok: true as const, value: device('unchecked') })), embeddingDeviceTest: vi.fn() };
+    await mount(<SemanticSearchSettings servicesApi={api} section="search" />);
+    const toggle = container!.querySelector<HTMLInputElement>('[role="switch"]')!;
+    expect(toggle.disabled).toBe(false); expect(toggle.checked).toBe(false);
+    await act(() => toggle.click());
+    expect(loadSemanticSearchPreferences().enabled).toBe(true);
+    expect(api.embeddingDeviceTest).not.toHaveBeenCalled();
+    expect(container!.textContent).not.toContain('本地向量功能暂不可用');
+  });
   it.each(['zh-CN', 'en'] as const)('shows a single bundled Gemma with status and no model/API configuration in %s', async locale => {
     const api = fixture(); await mount(<SemanticSearchSettings servicesApi={api} section="models" />, locale);
     expect(container!.textContent).toContain('EmbeddingGemma');
     expect(container!.textContent).toContain('768');
-    expect(container!.textContent).toContain(locale === 'zh-CN' ? '已就绪' : 'Ready');
+    expect(container!.textContent).toContain(locale === 'zh-CN' ? '文件已就绪' : 'Files ready');
     expect(container!.querySelectorAll('[role="listitem"]')).toHaveLength(1);
     expect(api.embeddingLocalTextStatus).toHaveBeenCalledOnce();
     expect(api.embeddingLocalTextInstall).not.toHaveBeenCalled(); expect(api.embeddingLocalTextDelete).not.toHaveBeenCalled();

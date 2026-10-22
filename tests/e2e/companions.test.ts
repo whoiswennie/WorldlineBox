@@ -81,7 +81,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
     const geometry = await journal.evaluate(element => ({ width: element.getBoundingClientRect().width, client: element.clientWidth, scroll: element.scrollWidth }));
     expect(geometry.width).toBe(320); expect(geometry.scroll).toBeLessThanOrEqual(geometry.client + 1);
     await journal.getByRole('button', { name: '管理共同记忆', exact: true }).click();
-    const manager = page.getByRole('dialog', { name: '共同记忆管理', exact: true });
+    const manager = page.getByRole('region', { name: '共同记忆管理', exact: true, includeHidden: true });
     const panel = manager.getByRole('region', { name: '伙伴记忆库' });
     await expect(panel).toBeVisible();
     await panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true }).click();
@@ -106,8 +106,9 @@ test('automatically records ordinary conversation, exposes sources and progress,
       await theme(page, mode);
       await journal.getByRole('button', { name: '管理共同记忆', exact: true }).click();
       await panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true }).click();
-      await panel.getByRole('button', { name: `查看记忆来源 ${learned.id}`, exact: true }).click();
-      await panel.locator('.memory-library-source summary').click();
+      const sourceButton = panel.getByRole('button', { name: `查看记忆来源 ${learned.id}`, exact: true });
+      if (await sourceButton.getAttribute('aria-expanded') !== 'true') await sourceButton.click();
+      if (await panel.locator('.memory-library-source').getAttribute('open') === null) await panel.locator('.memory-library-source summary').click();
       await page.screenshot({ path: path.join(artifacts, name) });
     }
     await panel.getByRole('button', { name: `编辑记忆 ${learned.id}`, exact: true }).click();

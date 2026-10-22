@@ -2314,6 +2314,30 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
     if (result.type !== 'embedding.local-text.status') throw new Error('Unexpected local text model response.');
     return { ok: true as const, value: result.status };
   },
+  async embeddingDeviceStatus() {
+    const result = await request({ type: 'embedding.device.status.request' });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.device.status') throw new Error('Unexpected embedding device response.');
+    return { ok: true as const, value: result.capability };
+  },
+  async embeddingDeviceTest(input: { force?: boolean } = {}) {
+    const result = await request({ type: 'embedding.device.test.request', ...input });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.device.status') throw new Error('Unexpected embedding device response.');
+    return { ok: true as const, value: result.capability };
+  },
+  async embeddingDeviceCancel() {
+    const result = await request({ type: 'embedding.device.cancel.request' });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'embedding.device.status') throw new Error('Unexpected embedding device response.');
+    return { ok: true as const, value: result.capability };
+  },
+  async deviceHardwareStatus() {
+    const result = await request({ type: 'device.hardware.status.request' });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'device.hardware.status') throw new Error('Unexpected device hardware response.');
+    return { ok: true as const, value: { totalMemoryBytes: result.totalMemoryBytes, availableMemoryBytes: result.availableMemoryBytes } };
+  },
   async embeddingSaveGlobalSettings({ selectionId }: { selectionId: string | null }) {
     const result = await request({ type: 'embedding.global.save.request', selectionId });
     if (!result.ok) return failure(result);

@@ -606,8 +606,26 @@ export class CompanionService {
           sourceMessageId: request.sourceMessageId, conversationId, expectedVersion: request.expectedVersion,
         } }); this.changed(); return response;
       }
+      case 'memory.processing.status': {
+        const response = await this.call(request), report = response.memoryProcessing;
+        if (!report) return response;
+        const runtime = this.memory.processingFor(request.companionId);
+        const summary = { ...report.summary };
+        for (const job of runtime) {
+          const state = job.status === 'waiting_model' ? 'pending' : job.status === 'stale' ? 'cancelled' : job.status;
+          summary[state]++;
+        }
+        const filter = request.filter ?? 'all';
+        const jobs = [...report.jobs, ...runtime.filter(job => filter === 'all' || filter === 'active' && ['pending', 'running', 'waiting_model'].includes(job.status) || filter === 'failed' && job.status === 'failed' || filter === 'completed' && job.status === 'completed')];
+        const priority = (status: string) => status === 'running' ? 0 : ['pending', 'waiting_model', 'failed'].includes(status) ? 1 : 2;
+        jobs.sort((a, b) => priority(a.status) - priority(b.status) || (b.updatedAt ?? b.createdAt ?? '').localeCompare(a.updatedAt ?? a.createdAt ?? '') || a.id.localeCompare(b.id));
+        return { ok: true, memoryProcessing: { ...report, summary, jobs: jobs.slice(0, request.limit ?? 30), hasMore: report.hasMore || jobs.length > (request.limit ?? 30) } };
+      }
       case 'memory.jobs.retry': {
-        const response = await this.call(request); this.memory.schedule(0); this.changed(); return response;
+        const response = await this.call(request);
+        if (request.companionId) await this.call({ type: 'memory.tags.retry', companionId: request.companionId });
+        if (request.companionId) this.memory.retryProcessingFor(request.companionId);
+        this.memory.schedule(0); void this.memoryTags.tick().catch(this.options.report); this.changed(); return response;
       }
       case 'action.run': return this.launchAction(request);
       case 'action.record': {
@@ -706,8 +724,8 @@ export class CompanionService {
           this.replies.get(request.id)?.controller.abort();
         }
         const response = await this.call(request);
-        if (!['messages', 'message.get', 'message.search', 'memory.list', 'memory.search', 'memory.browse', 'memory.inspect', 'memory.sources.search', 'memory.sources.filter', 'memory.records.filter', 'memory.read', 'memory.status', 'actions', 'actions.page', 'action.get',
-          'schedule.list', 'state.get', 'state.inspect', 'routine.get', 'world.status', 'world.snapshot', 'world.observe', 'social.conversations', 'social.messages', 'social.days', 'social.flow', 'social.graph', 'work-order.list', 'life-rule.list'].includes(request.type)) this.changed();
+        if (!['messages', 'message.get', 'message.search', 'memory.list', 'memory.search', 'memory.browse', 'memory.inspect', 'memory.sources.search', 'memory.sources.filter', 'memory.records.filter', 'memory.read', 'memory.status', 'memory.processing.status', 'actions', 'actions.page', 'action.get',
+          'activity.list', 'activity.get', 'schedule.list', 'state.get', 'state.inspect', 'routine.get', 'world.status', 'world.snapshot', 'world.observe', 'social.conversations', 'social.messages', 'social.days', 'social.flow', 'social.graph', 'work-order.list', 'life-rule.list'].includes(request.type)) this.changed();
         return response;
       }
     }

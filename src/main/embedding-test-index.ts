@@ -175,6 +175,8 @@ export class EmbeddingTestIndex {
     resolveMediaBinaries?: () => LlamaEmbeddingMediaBinaries | undefined;
     koffiPath?: string;
     startSession?: typeof startLlamaEmbeddingSession;
+    ensureDeviceCapability?: (signal?: AbortSignal) => Promise<void>;
+    devicePreference?: () => { backend?: 'cpu' | 'gpu'; deviceId?: string };
   }) {}
 
   close(libraryId?: string): Promise<void> {
@@ -699,6 +701,8 @@ export class EmbeddingTestIndex {
     modelId: SemanticSearchModelId,
     signal: AbortSignal,
   ): Promise<LlamaEmbeddingSession> {
+    await this.options.ensureDeviceCapability?.(signal);
+    signal.throwIfAborted();
     const model = SEMANTIC_SEARCH_MODELS.find((entry) => entry.id === modelId);
     if (!model) throw new Error("Unknown semantic model.");
     const files = EMBEDDING_GEMMA2_TIER_FILES[model.tier];
@@ -708,6 +712,7 @@ export class EmbeddingTestIndex {
     };
     const mediaBinaries = this.options.resolveMediaBinaries?.();
     const startSession = this.options.startSession ?? startLlamaEmbeddingSession;
+    const preference = this.options.devicePreference?.();
     const baseSessionOptions = {
       executable: config.runtimePath,
       files: sessionFiles,
@@ -717,12 +722,15 @@ export class EmbeddingTestIndex {
     try {
       return await startSession({
         ...baseSessionOptions,
-        gpuLayers: 99,
+        gpuLayers: preference?.backend === 'cpu' ? 0 : 99,
+        ...(preference?.backend === 'cpu' ? { executable: config.cpuRuntimePath ?? config.runtimePath } : {}),
+        ...(preference?.backend === 'gpu' && preference.deviceId ? { device: preference.deviceId } : {}),
         signal,
       });
     } catch (error: unknown) {
       if (signal.aborted) throw signal.reason ?? new Error("Semantic runtime startup was cancelled.");
       if (error instanceof AggregateError) throw error;
+      if (preference?.backend) throw new Error('已通过检测的向量运行设备未能启动，请在设置的全局模型中重新检测。', { cause: error });
       return startSession({
         ...baseSessionOptions,
         executable: config.cpuRuntimePath ?? config.runtimePath,

@@ -20,6 +20,50 @@ beforeEach(() => {
 });
 
 describe('one bundled global embedding encoder', () => {
+  it('keeps metadata readable but never starts the local encoder when the device gate refuses it', async () => {
+    const startLocalSession = vi.fn(), ensureDeviceCapability = vi.fn(async () => { throw new Error('当前设备内存不足，向量能力已暂停。'); });
+    const encoder = new GlobalEmbeddingService({ userDataPath: '.', startLocalSession, ensureDeviceCapability });
+    expect((await encoder.resolveProfile()).dimension).toBe(768);
+    expect(ensureDeviceCapability).not.toHaveBeenCalled();
+    await expect(encoder.embed(['需要索引的真实记忆'], { purpose: 'document' })).rejects.toThrow('内存不足');
+    expect(startLocalSession).not.toHaveBeenCalled();
+    expect(disk.sha).not.toHaveBeenCalled();
+    await encoder.close();
+  });
+
+  it('checks the loading budget once for a resident encoder and checks again after its release', async () => {
+    const ensureDeviceCapability = vi.fn(async () => undefined), local = session();
+    const encoder = new GlobalEmbeddingService({ userDataPath: '.', startLocalSession: async () => local, ensureDeviceCapability });
+    await encoder.embed(['第一篇'], { purpose: 'document' });
+    await encoder.embed(['第二篇'], { purpose: 'document' });
+    expect(ensureDeviceCapability).toHaveBeenCalledOnce();
+    await encoder.invalidate();
+    ensureDeviceCapability.mockRejectedValueOnce(new Error('重新加载前设备受限'));
+    await expect(encoder.embed(['第三篇'], { purpose: 'document' })).rejects.toThrow('设备受限');
+    expect(ensureDeviceCapability).toHaveBeenCalledTimes(2);
+    await encoder.close();
+  });
+
+  it.each(['cpu', 'gpu'] as const)('uses the %s backend that passed detection instead of a stale automatic device choice', async backend => {
+    const startLocalSession = vi.fn(async () => session());
+    disk.resolveLayout.mockReturnValue({ corePath: 'readonly/core.gguf', runtimePath: 'readonly/runtime-vulkan/llama-server.exe', cpuRuntimePath: 'readonly/runtime-cpu/llama-server.exe' });
+    const encoder = new GlobalEmbeddingService({ userDataPath: '.', startLocalSession,
+      ensureDeviceCapability: async () => undefined, devicePreference: () => ({ backend, ...(backend === 'gpu' ? { deviceId: 'Vulkan1' } : {}) }) });
+    await encoder.embed(['同一语义空间'], { purpose: 'document' });
+    expect(startLocalSession).toHaveBeenCalledWith(expect.objectContaining(backend === 'gpu'
+      ? { gpuLayers: 99, device: 'Vulkan1', executable: 'readonly/runtime-vulkan/llama-server.exe' }
+      : { gpuLayers: 0, executable: 'readonly/runtime-cpu/llama-server.exe' }));
+    await encoder.close();
+  });
+
+  it('does not fall back to an unmeasured CPU when the tested GPU can no longer start', async () => {
+    const startLocalSession = vi.fn(async () => { throw new Error('GPU unavailable'); });
+    const encoder = new GlobalEmbeddingService({ userDataPath: '.', startLocalSession,
+      ensureDeviceCapability: async () => undefined, devicePreference: () => ({ backend: 'gpu', deviceId: 'Vulkan0' }) });
+    await expect(encoder.embed(['真实记忆'], { purpose: 'document' })).rejects.toThrow('重新检测');
+    expect(startLocalSession).toHaveBeenCalledOnce();
+    await encoder.close();
+  });
   it('resolves the same fixed multimodal profile without consulting legacy selection, external services or keys', async () => {
     const getSelectionId = vi.fn(() => 'svc_external'), loadService = vi.fn(() => null), readKey = vi.fn(() => 'never-read-secret');
     const encoder = new GlobalEmbeddingService({ userDataPath: '.', getSelectionId, loadService, readKey });

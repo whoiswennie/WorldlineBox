@@ -26,7 +26,7 @@ test('binds the first companion entry to a real asset library and keeps readable
     application.process().stderr?.on('data', chunk => diagnostics.push(String(chunk)));
     await page.locator('[data-application-module="companions"]').click();
     await expect(page.getByRole('region', { name: '伙伴资产库', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: '为伙伴安置一个共同的资产库', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '创建伙伴资产库', exact: true })).toBeVisible();
     expect((await workspace(page, { type: 'status' })).selected).toBeUndefined();
     const refused = await page.evaluate(() => (window as unknown as BridgeWindow).worldlinebox.companions.request({ type: 'state' }));
     expect(refused.ok).toBe(false); expect(refused.error).toBeTruthy();
@@ -40,6 +40,8 @@ test('binds the first companion entry to a real asset library and keeps readable
     expect(selected.memoryRoot).toBe(path.join(selected.libraryPath, '伙伴记忆'));
     expect(selected.dataRoot).toBe(path.join(selected.libraryPath, '.worldlinebox', 'companions'));
     expect(path.dirname(selected.libraryPath)).toBe(root);
+    // The API-driven selection above does not submit the renderer's first-entry form.
+    await page.getByRole('dialog', { name: '创建伙伴资产库', exact: true }).getByRole('button', { name: '关闭伙伴资产库设置', exact: true }).click();
     // Remount the first-entry boundary after selecting through the real preload API.
     await page.locator('[data-application-module="dsh"]').click();
     await page.locator('[data-application-module="companions"]').click();

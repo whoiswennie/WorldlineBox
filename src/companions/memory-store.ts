@@ -6,6 +6,7 @@ import type { CompanionStateProposal } from '../shared/companion-state';
 import type { CompanionConnection } from './store';
 import { CompanionSourceAccess, companionSourceChecksum, type CompanionSourceScope as Scope } from './source-access';
 import { retireFactMemory } from './memory-migration';
+import { initializeMemoryProcessingJournal, memoryProcessingStatus } from './memory-processing-store';
 type Row = Record<string, string | number | null>;
 const row = (value: unknown) => value as Row;
 const rows = (value: unknown[]) => value.map(row);
@@ -78,6 +79,7 @@ export class CompanionMemoryStore {
             this.db.prepare("INSERT OR REPLACE INTO metadata VALUES('vcp-management-totals-ready','1')").run();
         }).immediate();
         retireFactMemory(this.db);
+        initializeMemoryProcessingJournal(this.db, ['capture', 'index']);
     }
     private scope(owner: string, conversationId: string): string {
         const id = 'scope_' + hash([owner, conversationId]).slice(0, 48);
@@ -650,6 +652,16 @@ export class CompanionMemoryStore {
             case 'memory.organize': return this.operation(command, () => ({ ok: true, memories: this.organize(command, command.ids, command.tags ?? [], command.expectedProhibitionRevision) }));
             case 'memory.forget': return { ok: true, forgottenCount: this.forget(command) };
             case 'memory.status': return { ok: true, memoryStatus: this.status(command.companionId, command.conversationId) };
+            case 'memory.processing.status': return { ok: true, memoryProcessing: memoryProcessingStatus(this.db, command.companionId, command.limit, command.filter, item => {
+                try {
+                    if (item.noteId) { const note = this.load(item.noteId); return item.sourceRevision === String(note.version) && this.visible({ companionId: command.companionId, conversationId: note.sourceConversationId }, note) ? note.content : undefined; }
+                    if (item.sourceMessageId && item.conversationId) {
+                        const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(item.sourceMessageId);
+                        return source && item.sourceRevision === `${row(source).revision ?? 1}:${companionSourceChecksum(String(row(source).content))}` && this.sources.visible({ companionId: command.companionId, conversationId: item.conversationId }, row(source)) ? String(row(source).content) : undefined;
+                    }
+                } catch { /* Withdrawn or no-longer-visible evidence has no preview. */ }
+                return undefined;
+            }) };
             case 'memory.policy.list': return { ok: true, memoryPolicies: this.policies(command.companionId) };
             case 'memory.policy.release': return { ok: true, memoryPolicies: this.releasePolicy(command.companionId, command.id) };
             case 'memory.jobs.backfill': return { ok: true, backfillComplete: this.backfill(command.limit) };

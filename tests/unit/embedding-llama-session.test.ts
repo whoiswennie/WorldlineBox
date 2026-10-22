@@ -94,6 +94,17 @@ describe('llama.cpp native video embedding', () => {
     expect(chooseEmbeddingGpuDevice('Available devices:')).toBeNull();
   });
 
+  it('uses an explicitly inventoried GPU for an isolated capability probe', async () => {
+    const child = new FakeChild(); spawnMock.mockReturnValue(child);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+    const executable = path.join(tmpdir(), 'device-probe-runtime', 'runtime-vulkan', 'llama-server');
+    const session = await startLlamaEmbeddingSession({ executable, files: { corePath: 'model.gguf' }, gpuLayers: 99, device: 'Vulkan3' });
+    const launch = JSON.parse(child.stdin.write.mock.calls[0]![0]!);
+    expect(launch.args).toEqual(expect.arrayContaining(['--device', 'Vulkan3', '--split-mode', 'none']));
+    await session.close();
+    await expect(startLlamaEmbeddingSession({ executable, files: { corePath: 'model.gguf' }, gpuLayers: 99, device: '--invalid-device' })).rejects.toThrow('Invalid embedding GPU device');
+  });
+
   it('embeds a video window together with its real synchronized audio track', () => {
     expect(embeddingVideoRequestBody('frames', 'actual-audio')).toEqual({ model: 'embeddinggemma-2', input: [{ content: [
       { type: 'input_video', input_video: { data: 'frames' } }, { type: 'input_audio', input_audio: { data: 'actual-audio', format: 'wav' } },

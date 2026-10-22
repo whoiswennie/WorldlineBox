@@ -10,7 +10,7 @@ type State = { generation: string; frames: Array<{ relative: string; dir: Dir }>
 interface Options {
   library: CompanionMemoryLibrary;
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
-  describe(relative: string, content: string, updatedAt: string, note?: CompanionMemory, entry?: MemoryLibraryDocumentSession['manifest']['files'][string]): CompanionMemoryDocument;
+  describe(relative: string, content: string, updatedAt: string, note?: CompanionMemory, entry?: MemoryLibraryDocumentSession['manifest']['files'][string], fileCreatedAt?: string): CompanionMemoryDocument;
 }
 /** Incremental, persistent file catalogue. Only bounded pages are hydrated through the authoritative document reader. */
 export class CompanionMemoryDocumentCatalog {
@@ -58,13 +58,14 @@ export class CompanionMemoryDocumentCatalog {
       await this.options.request({ type: 'document.catalog.drop', companionId: session.owner.id, paths: [relative] }); return;
     }
     if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1) throw new Error(`记忆目录不能包含链接或目录联接：${relative}`);
-    const stamp = `${info.mtimeMs}:${info.ctimeMs}:${info.size}:${entry?.version ?? ''}:${entry?.hash ?? ''}:${entry?.state ?? ''}`;
+    // Version the stat stamp so older derived rows acquire their time columns.
+    const stamp = `v2:${info.mtimeMs}:${info.ctimeMs}:${info.size}:${entry?.version ?? ''}:${entry?.hash ?? ''}:${entry?.state ?? ''}`;
     if (!force && (await this.options.request({ type: 'document.catalog.touch', companionId: session.owner.id, path: relative, stamp, generation: state.generation })).documentCatalogUnchanged) return;
     if (info.size > 8_000_000) return;
     const content = await session.text(relative, true); if (content === undefined || content.length > 2_000_000) return;
     const note = entry?.noteId ? await session.current(entry) : undefined;
     if (entry?.noteId && !note) { await this.options.request({ type: 'document.catalog.drop', companionId: session.owner.id, paths: [relative] }); return; }
-    const document = this.options.describe(relative, content, info.mtime.toISOString(), note, entry);
+    const document = this.options.describe(relative, content, info.mtime.toISOString(), note, entry, info.birthtimeMs > 0 ? info.birthtime.toISOString() : undefined);
     await this.options.request({ type: 'document.catalog.put', companionId: session.owner.id, generation: state.generation,
       entries: [{ document, text: content, stamp }] });
   }

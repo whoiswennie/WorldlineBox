@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { CompanionMemory } from '../../shared/companions';
 import type { VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
 
-type View = { scopeId: string; identity: string; profileKey: string; dirty: boolean; notes: Record<string, string> };
+type View = { scopeId: string; identity: string; profileKey: string; dirty: boolean; notes: Record<string, string>; projectionSignature?: string };
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 function fingerprints(notes: readonly CompanionMemory[]) {
   return Object.fromEntries(notes.map(note => [note.id, hash(JSON.stringify([note.version, note.content, note.tags, note.occurredAt,
@@ -25,7 +25,7 @@ export class CompanionMemoryViewCache {
     await writeFile(temporary, JSON.stringify(view), { encoding: 'utf8', mode: 0o600 });
     await rename(temporary, file);
   }
-  async prepare(identity: string, profileKey: string, notes: readonly CompanionMemory[]) {
+  async prepare(identity: string, profileKey: string, notes: readonly CompanionMemory[], projectionSignature?: string) {
     const key = `${identity}\n${profileKey}`;
     let previous = this.memory.get(key);
     if (!previous && this.directory) {
@@ -40,10 +40,10 @@ export class CompanionMemoryViewCache {
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
     }
     const target = fingerprints(notes);
-    const reusable = previous && !previous.dirty && previous.profileKey === profileKey
+    const reusable = previous && !previous.dirty && previous.profileKey === profileKey && previous.projectionSignature === projectionSignature
       && Object.entries(previous.notes).every(([id, fingerprint]) => target[id] === fingerprint);
     const scopeId = reusable && previous ? previous.scopeId : `view_${randomUUID().replaceAll('-', '')}`;
-    const view: View = { scopeId, identity, profileKey, dirty: true, notes: target };
+    const view: View = { scopeId, identity, profileKey, dirty: true, notes: target, projectionSignature };
     await this.save(key, view);
     return { scopeId, replacedScopeId: previous && previous.scopeId !== scopeId ? previous.scopeId : undefined,
       commit: async () => { await this.save(key, { ...view, dirty: false }); } };

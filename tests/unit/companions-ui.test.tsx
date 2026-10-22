@@ -121,6 +121,77 @@ function button(label: string, scope: ParentNode = container!): HTMLButtonElemen
   if (!found) throw new Error(`Button missing: ${label}`); return found;
 }
 async function click(label: string, scope?: ParentNode) { await act(() => button(label, scope).click()); }
+function memoryWorkspaceFixture() {
+  const documents: CompanionMemoryDocumentRead[] = ['日记/晨间札记.md', '资料/学习摘记.md'].map((path, index) => ({
+    document: { path, name: path.split('/').at(-1)!, title: index ? '学习摘记' : '晨间札记', directory: index ? '资料' : '日记', kind: 'note', category: index ? 'material' : 'diary',
+      createdAt: date, updatedAt: date, bytes: 40, revision: 'version-1', contentHash: 'a'.repeat(64), readOnly: false, tags: [], syncState: 'indexed', noteId: 'note-' + index, version: 1, sourceCount: 0 },
+    content: index ? '今天读到的一段资料。' : '今天的晨间札记。', sources: [], hasMoreSources: false,
+  }));
+  return vi.fn(async (input: CompanionWorkspaceRequest): Promise<CompanionWorkspaceResponse> => {
+    if (input.type === 'status') return { ok: true };
+    if (input.type === 'memory.documents.list') return { ok: true, documents: { companionId: input.companionId, directory: input.directory,
+      folders: [{ path: '日记', name: '日记', count: 1 }, { path: '资料', name: '资料', count: 1 }],
+      items: documents.filter(item => !input.directory || item.document.directory === input.directory).map(item => item.document), hasMore: false } };
+    if (input.type === 'memory.documents.read') return { ok: true, document: documents.find(item => item.document.path === input.path) };
+    return { ok: true };
+  });
+}
+
+it('keeps companion navigation usable and preserves the selected folder, document and unsaved edit across memory tabs', async () => {
+  vi.useFakeTimers();
+  const f = fixture(), workspace = memoryWorkspaceFixture();
+  await mount({ ...f.api, workspace }); await click('打开伙伴记忆库');
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  const manager = container!.querySelector<HTMLElement>('[aria-label="共同记忆管理"]')!;
+  expect(manager.getAttribute('role')).toBe('region'); expect(manager.hasAttribute('aria-modal')).toBe(false);
+  const nav = container!.querySelector<HTMLElement>('[aria-label="伙伴导航"]')!;
+  expect(button('打开伙伴记忆库', nav).getAttribute('aria-pressed')).toBe('true');
+  expect(button('消息', nav).getAttribute('aria-pressed')).toBe('false');
+  await click('学习资料1'); await act(() => vi.advanceTimersByTimeAsync(300));
+  await click('编辑记忆 note-1'); await fill('textarea[aria-label="共同记忆内容"]', '还没有保存的学习笔记。');
+  const editor = manager.querySelector<HTMLTextAreaElement>('textarea[aria-label="共同记忆内容"]')!;
+  await click('联系人', nav); expect(manager.hidden).toBe(true);
+  expect(button('联系人', nav).getAttribute('aria-pressed')).toBe('true');
+  const requests = workspace.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(10_000)); expect(workspace).toHaveBeenCalledTimes(requests);
+  await click('消息', nav); expect(manager.hidden).toBe(true); expect(button('消息', nav).getAttribute('aria-pressed')).toBe('true');
+  await click('打开伙伴记忆库', nav); await act(() => vi.advanceTimersByTimeAsync(300));
+  expect(manager.hidden).toBe(false); expect(container!.querySelector('[aria-label="共同记忆管理"]')).toBe(manager);
+  expect(manager.querySelector('textarea[aria-label="共同记忆内容"]')).toBe(editor);
+  expect(editor.value).toBe('还没有保存的学习笔记。');
+  expect(manager.querySelector('[aria-label="记忆文档目录"] [aria-current="page"]')?.textContent).toContain('学习资料');
+  expect(container!.querySelector('[role="alertdialog"]')).toBeNull();
+});
+
+it('routes the current chat processing entrance into the memory tab and leaves navigation available while preserving that view', async () => {
+  vi.useFakeTimers();
+  const f = fixture(), workspace = memoryWorkspaceFixture(), original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(async input => input.type === 'memory.processing.status' ? { ok: true, memoryProcessing: { companionId: input.companionId,
+    summary: { pending: 0, running: 0, failed: 0, completed: 1, cancelled: 0 }, jobs: [], hasMore: false } } : original(input));
+  await mount({ ...f.api, workspace }); await click('我们之间');
+  await click('查看记忆处理进度', container!.querySelector('[aria-label="伙伴手帐"]')!);
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  const nav = container!.querySelector<HTMLElement>('[aria-label="伙伴导航"]')!;
+  const manager = container!.querySelector<HTMLElement>('[aria-label="共同记忆管理"]')!;
+  expect(button('打开伙伴记忆库', nav).getAttribute('aria-pressed')).toBe('true');
+  expect(manager.querySelector('[role="region"][aria-label="记忆处理进度"]')).not.toBeNull();
+  expect(document.querySelector('.companion-memory-processing-chat-overlay')).toBeNull();
+  expect(manager.querySelector<HTMLSelectElement>('[aria-label="记忆所属伙伴"]')!.value).toBe('deepseek-sister');
+  await click('联系人', nav); expect(manager.hidden).toBe(true);
+  expect(manager.querySelector('[aria-label="记忆处理进度"]')).toBeNull();
+  await click('打开伙伴记忆库', nav);
+  expect(manager.querySelector('[aria-label="记忆处理进度"]')).not.toBeNull();
+  await click('关闭记忆处理进度');
+  await click('消息', nav); await click('打开伙伴记忆库', nav);
+  expect(manager.querySelector('[aria-label="记忆处理进度"]')).toBeNull();
+  expect(manager.querySelector('[aria-label="伙伴记忆库"]')).not.toBeNull();
+  await click('学习来源');
+  expect(manager.querySelector('[role="region"][aria-label="学习来源管理"]')).not.toBeNull();
+  await click('消息', nav);
+  await click('查看记忆处理进度', container!.querySelector('[aria-label="伙伴手帐"]')!);
+  expect(manager.querySelector('[aria-label="学习来源管理"]')).toBeNull();
+  expect(manager.querySelector('[role="region"][aria-label="记忆处理进度"]')).not.toBeNull();
+});
 async function fill(selector: string, value: string) {
   const element = container!.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
   if (!element) throw new Error(`Input missing: ${selector}`);

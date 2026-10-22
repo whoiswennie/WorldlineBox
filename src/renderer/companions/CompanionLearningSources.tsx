@@ -23,8 +23,8 @@ function LearningGrant({ grant, busy, onCommand }: { grant: CompanionLearningGra
   </article>;
 }
 
-export function CompanionLearningSources({ owner, api, onClose }: { owner: Companion; api?: WorldlineBoxCompanionsApi; onClose(): void }) {
-  useDialogFocusTrap(true, '学习来源管理');
+export function CompanionLearningSources({ owner, api, onClose, embedded = false }: { owner: Companion; api?: WorldlineBoxCompanionsApi; onClose(): void; embedded?: boolean }) {
+  useDialogFocusTrap(!embedded, '学习来源管理');
   const [status, setStatus] = useState<CompanionLearningStatus>(), [error, setError] = useState(''), [busy, setBusy] = useState(false), [adding, setAdding] = useState(false);
   const [libraryId, setLibraryId] = useState(''), [folderId, setFolderId] = useState('');
   const alive = useRef(true), serial = useRef(0), lock = useRef(false);
@@ -53,7 +53,7 @@ export function CompanionLearningSources({ owner, api, onClose }: { owner: Compa
     } catch (cause) { if (alive.current) { setError(cause instanceof Error ? cause.message : '学习安排未保存。'); void load(); } return false; }
     finally { lock.current = false; if (alive.current) setBusy(false); }
   };
-  return <section className="companion-learning-sources" role="dialog" aria-modal="true" aria-label="学习来源管理">
+  return <section className="companion-learning-sources" role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-label="学习来源管理">
     <header className="learning-header"><button onClick={onClose} aria-label="返回记忆库"><Icon name="chevron-left" /></button><Avatar companion={owner} /><div><h2>学习来源</h2><p>{owner.name} 的阅读与成长</p></div></header>
     <div className="learning-layout"><main className="learning-main"><div className="learning-intro"><span className="learning-eyebrow">让成长有来处</span><h2>把适合的资料，留给伙伴慢慢读。</h2><p>选择资产库或其中的目录。伙伴会阅读原文，把值得记住的内容整理进自己的资料与日记，在以后的对话和生活中回想起来。</p></div>
       {error && <p className="learning-error" role="alert">{error}<button onClick={() => { setError(''); void load(); }}>重试</button></p>}

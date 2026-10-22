@@ -192,6 +192,8 @@ export async function startLlamaEmbeddingSession(input: {
   files: LlamaEmbeddingFiles;
   mediaBinaries?: LlamaEmbeddingMediaBinaries;
   gpuLayers: number;
+  /** Explicit inventory device for a measured capability test; normal callers keep automatic selection. */
+  device?: string;
   modelName?: string;
   contextSize?: number;
   pooling?: 'mean' | 'last' | 'cls';
@@ -217,8 +219,9 @@ export async function startLlamaEmbeddingSession(input: {
   const videoRuntimeArgs = videoRuntimeDirectory
     ? ["--video-fps", "1", "--video-ffmpeg-dir", videoRuntimeDirectory]
     : [];
+  if (input.device && !/^[A-Za-z]+\d+$/u.test(input.device)) throw new Error('Invalid embedding GPU device.');
   const selectedDevice = input.gpuLayers > 0 && path.basename(path.dirname(input.executable)) === 'runtime-vulkan'
-    ? await vulkanDevice(input.executable) : null;
+    ? input.device ?? await vulkanDevice(input.executable) : null;
   input.signal?.throwIfAborted();
   const child = spawnOwnedEmbeddingRuntime(input.executable, [
     "--model", input.files.corePath,

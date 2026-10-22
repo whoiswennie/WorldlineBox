@@ -62,10 +62,10 @@ test('manages explicit library learning permissions and real reading receipts wi
     });
     const configured = await page.evaluate(input => (window as unknown as Bridge).worldlinebox.llm.setConfig(input), { apiFormat: 'openai_chat' as const, baseUrl: `http://127.0.0.1:${address.port}`, model: 'reading-receipt-only-fixture', apiKey: 'isolated-reading-fixture' }); expect(configured.ok).toBe(true);
     await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '打开伙伴记忆库', exact: true }).click();
-    const manager = page.getByRole('dialog', { name: '共同记忆管理', exact: true });
+    const manager = page.getByRole('region', { name: '共同记忆管理', exact: true, includeHidden: true });
     await manager.getByRole('combobox', { name: '记忆所属伙伴', exact: true }).selectOption(companionId);
     await manager.getByRole('button', { name: '学习来源', exact: true }).click();
-    const learning = page.getByRole('dialog', { name: '学习来源管理', exact: true });
+    const learning = page.getByRole('region', { name: '学习来源管理', exact: true });
     await learning.getByRole('button', { name: '添加来源', exact: true }).click();
     await learning.getByRole('combobox', { name: '学习资料资产库', exact: true }).selectOption(source.libraryId);
     await learning.getByRole('combobox', { name: '学习资料目录', exact: true }).selectOption(source.folderId);

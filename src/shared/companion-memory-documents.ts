@@ -6,10 +6,14 @@ import { companionMemoryTagStatusSchema } from './companion-memory-tags';
 const owner = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const relativePath = z.string().trim().min(1).max(1024);
 const revision = z.string().min(1).max(160);
+export const companionMemoryDocumentSortSchema = z.enum(['updated_desc', 'created_desc', 'created_asc']);
+export const companionMemoryDocumentDateFieldSchema = z.enum(['createdAt', 'updatedAt']);
+export const companionMemoryDocumentDateSchema = z.iso.datetime({ offset: true });
 export const companionMemoryDocumentSchema = z.object({
   path: relativePath, name: z.string(), title: z.string(), directory: z.string(),
   kind: z.enum(['note', 'timeline', 'profile', 'document']),
   category: z.enum(['diary', 'material', 'self', 'world', 'timeline', 'profile', 'other']),
+  createdAt: z.string().optional(), createdAtSource: z.enum(['memory', 'file_birthtime']).optional(), occurredAt: z.string().optional(),
   updatedAt: z.string(), bytes: z.number().int().nonnegative(), revision,
   contentHash: z.string().regex(/^[a-f0-9]{64}$/),
   readOnly: z.boolean(), tags: z.array(companionMemoryTagSchema),
@@ -38,8 +42,10 @@ export const companionMemoryDocumentCommands = [
   z.strictObject({ type: z.literal('memory.documents.tags.retry'), companionId: owner, path: relativePath, expectedRevision: revision }),
   z.strictObject({ type: z.literal('memory.documents.tags.cancel'), companionId: owner, path: relativePath, expectedRevision: revision }),
   z.strictObject({ type: z.literal('memory.documents.list'), companionId: owner,
-    directory: z.string().max(1024).default(''), cursor: z.string().max(1024).optional(),
+    directory: z.string().max(1024).default(''), cursor: z.string().max(4096).optional(),
     query: z.string().trim().max(1000).optional(), tags: z.array(companionMemoryTagSchema).max(20).optional(), mode: z.enum(['keyword', 'semantic']).optional(),
+    sort: companionMemoryDocumentSortSchema.optional(), dateField: companionMemoryDocumentDateFieldSchema.optional(),
+    from: companionMemoryDocumentDateSchema.optional(), to: companionMemoryDocumentDateSchema.optional(),
     limit: z.number().int().min(1).max(256).default(64) }),
   z.strictObject({ type: z.literal('memory.documents.read'), companionId: owner, path: relativePath,
     sourceCursor: z.number().int().nonnegative().optional(), sourceLimit: z.number().int().min(1).max(100).default(30) }),

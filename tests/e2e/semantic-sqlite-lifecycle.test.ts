@@ -116,10 +116,10 @@ test('enables real bundled asset semantics through the UI and reuses SQLite vect
     await expect.poll(() => indexStatus(page, libraryId), { timeout: 15_000 }).toMatchObject({ phase: 'unavailable' });
     await page.getByRole('tab', { name: '全局模型', exact: true }).click();
     const model = page.getByRole('listitem', { name: '内置多模态向量服务', exact: true });
-    await expect(model.getByRole('status')).toHaveText('已就绪');
+    await expect(model.getByRole('status')).toHaveText('文件已就绪');
     await model.getByRole('button', { name: '清理运行缓存', exact: true }).click();
     await expect(model).toHaveAttribute('aria-busy', 'false', { timeout: 30_000 });
-    await expect(model.getByRole('status')).toHaveText('已就绪');
+    await expect(model.getByRole('status')).toHaveText('文件已就绪');
     expect(await persistedVectors(application, libraryPath)).toEqual(before);
     await expect.poll(() => runtimeChildren(application!), { timeout: 15_000 }).toEqual([]);
     const status = await page.evaluate(() => (window as unknown as Bridge).worldlinebox.library.embeddingLocalTextStatus());

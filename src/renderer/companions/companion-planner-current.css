@@ -1,0 +1,9 @@
+.companions-planner > header > div { min-width: 0; }
+.companions-planner > header h3 { margin: 4px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.companions-planner .companions-planner-memory-processing { margin: 14px 0 18px; }
+.companions-relationship-panel > .companions-activity-panel { padding: 0; border: 1px solid var(--ui-border-subtle); }
+.companions-planner .companions-planner-work > header { flex-wrap: wrap; gap: 7px; }
+.companions-planner .companions-planner-work > header h4 { min-width: 0; }
+.companions-planner .companions-planner-work-preview > button { min-width: 0; grid-template-columns: 5px minmax(0,1fr) auto; }
+.companions-planner .companions-planner-work-preview > button > span { min-width: 0; }
+.companions-planner .companions-planner-state-detail { overflow-wrap: anywhere; }

@@ -4,6 +4,8 @@ import type { CompanionRuntimeState } from '../../shared/companion-state';
 import { Avatar } from './CompanionVisuals';
 import { Icon } from '../Icons';
 import { CompanionActivityPanel } from './CompanionActivityPanel';
+import { CompanionMemoryProcessingSummary } from './CompanionMemoryProcessingPanel';
+import './companion-planner-current.css';
 import { localDateKey, scheduleStatus, scheduleTime, useCompanionSchedules, type ScheduleRequest } from './companion-schedules';
 import { routineAgenda, routineClock, useCompanionRoutine } from './companion-routines';
 import { useCompanionWorkOrders, WORK_ORDER_STATUS } from './companion-work-orders';
@@ -12,36 +14,38 @@ const MOODS: Record<CompanionRuntimeState['mood'], string> = { calm: '平静', b
 const EXPRESSIONS: Record<CompanionRuntimeState['expression'], string> = { gentle: '温柔', direct: '直率', playful: '轻快', reserved: '安静' };
 const RELATIONSHIPS: Record<CompanionRuntimeState['familiarity']['stage'], string> = { new: '初次相识', acquainted: '渐渐熟悉', close: '彼此亲近' };
 
-export function CompanionPlanner({ companion, members, conversationId, conversationKind = 'private', actions, request, api, onOwnerChange, onClose, onProfile, onMemory, onTasks, onSchedules, onWork, onWorld }: {
+export function CompanionPlanner({ companion, members, conversationId, conversationKind = 'private', actions, request, api, onOwnerChange, onClose, onProfile, onMemory, onMemoryProcessing, onTasks, onSchedules, onWork, onWorld }: {
   readonly companion: Companion; readonly members: Companion[]; readonly conversationId: string; readonly conversationKind?: 'private' | 'group'; readonly actions: CompanionAction[];
   readonly request: ScheduleRequest; readonly api?: WorldlineBoxCompanionsApi; readonly onOwnerChange: (id: string) => void;
   readonly onClose: () => void; readonly onProfile: () => void; readonly onMemory: () => void; readonly onTasks: (view?: 'active' | 'history', companionId?: string) => void; readonly onSchedules: () => void; readonly onWork: (id?: string) => void;
   readonly onWorld?: () => void;
+  readonly onMemoryProcessing?: () => void;
 }) {
   const { schedules, occurrences, loading, error, refresh } = useCompanionSchedules(companion.id, conversationId, request, api);
   const { routine } = useCompanionRoutine(companion.id, conversationId, request, api);
   const { orders, hasMore: moreWork, error: workError, loading: workLoading, refresh: refreshWork } = useCompanionWorkOrders(companion.id, conversationId, request, api, false, 100);
-  const [runtime, setRuntime] = useState<CompanionRuntimeState>();
+  const [runtimeSnapshot, setRuntime] = useState<CompanionRuntimeState>();
+  const runtime = runtimeSnapshot?.companionId === companion.id ? runtimeSnapshot : undefined;
   const [stateDetails, setStateDetails] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [selectedDay, setSelectedDay] = useState<string>();
   const [weekOffset, setWeekOffset] = useState(0);
   const epoch = useRef(0);
-  const loadState = useCallback(async () => { const current = ++epoch.current; const result = await request({ type: 'state.get', companionId: companion.id, conversationId }); if (current === epoch.current && result?.runtimeState) setRuntime(result.runtimeState); }, [request, companion.id, conversationId]);
+  const loadState = useCallback(async () => { const current = ++epoch.current; const result = await request({ type: 'state.get', companionId: companion.id, conversationId }); if (current === epoch.current && result?.runtimeState?.companionId === companion.id) setRuntime(result.runtimeState); }, [request, companion.id, conversationId]);
   useEffect(() => { const currentEpoch = epoch; void Promise.resolve().then(loadState); const timer = setInterval(() => setNow(Date.now()), 60_000); return () => { clearInterval(timer); currentEpoch.current++; }; }, [loadState]);
   useEffect(() => { let timer: ReturnType<typeof setTimeout> | undefined; const unsubscribe = api?.onChanged(() => { clearTimeout(timer); timer = setTimeout(() => void loadState(), 200); }); return () => { unsubscribe?.(); clearTimeout(timer); }; }, [api, loadState]);
   const today = new Date(now), start = new Date(now); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (start.getDay() + 6) % 7 + weekOffset * 7);
   const days = Array.from({ length: 7 }, (_, index) => { const day = new Date(start); day.setDate(day.getDate() + index); return day; });
   const upcoming = schedules.filter(schedule => schedule.status === 'active' && scheduleStatus(schedule) !== '已完成').sort((a, b) => (a.deferredUntil ?? a.nextRunAt ?? a.runAt).localeCompare(b.deferredUntil ?? b.nextRunAt ?? b.runAt));
   const visible = selectedDay ? upcoming.filter(schedule => localDateKey(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt) === selectedDay) : upcoming;
-  const currentActions = actions.filter(action => action.companionId === companion.id && ['queued', 'running'].includes(action.status));
+  const currentActions = actions.filter(action => action.companionId === companion.id && action.conversationId === conversationId && ['queued', 'running'].includes(action.status));
   const workCounts = { running: orders.filter(order => order.status === 'running').length, waiting: orders.filter(order => order.status === 'accepted' || order.status === 'offered').length, paused: orders.filter(order => order.status === 'paused').length };
   const workPreview = [...orders].sort((a, b) => (a.status === 'running' ? 0 : a.status === 'accepted' ? 1 : 2) - (b.status === 'running' ? 0 : b.status === 'accepted' ? 1 : 2)).slice(0, 2);
   const completed = occurrences.filter(occurrence => occurrence.status === 'done').slice(0, 2);
   const focus = currentActions.length > 1 ? `正在照看 ${currentActions.length} 件事` : currentActions[0]?.title || runtime?.focus;
   const rhythm = routine && conversationKind === 'private' ? routineAgenda(routine, selectedDay ? new Date(selectedDay + 'T12:00:00') : today).filter(item => selectedDay && selectedDay !== localDateKey(now) || item.at >= routineClock(today, routine.config.timeZone).clock).slice(0, 2) : [];
-  return <aside className="companions-relationship-panel companions-planner" aria-label="伙伴手帐">
-    <header><div><span>COMPANION JOURNAL</span><h3>今天的小安排</h3></div><button className="companion-icon-button" aria-label="收起我们之间" onClick={onClose}>×</button></header>
+  return <><aside className="companions-relationship-panel companions-planner" aria-label="伙伴手帐">
+    <header><div><span>伙伴手帐</span><h3>{companion.name}的日常</h3></div><button className="companion-icon-button" aria-label="收起我们之间" onClick={onClose}>×</button></header>
     <div className="companions-planner-identity"><Avatar companion={companion} /><div><strong>{companion.name}</strong>{members.length > 1 ? <select aria-label="待办所属伙伴" value={companion.id} onChange={event => onOwnerChange(event.target.value)}>{members.map(member => <option key={member.id} value={member.id}>{member.name}</option>)}</select> : <span>{runtime ? RELATIONSHIPS[runtime.familiarity.stage] : '读取当前状态…'}</span>}</div><button className="companion-icon-button" aria-label="查看伙伴资料" onClick={onProfile}><Icon name="users" /></button></div>
     <div className="companions-planner-state" data-mood={runtime?.mood ?? 'loading'}>
       <button className="companions-planner-state-chips" aria-label="查看当前伙伴状态详情" aria-expanded={stateDetails} onClick={() => setStateDetails(value => !value)}>{runtime ? <><span>{MOODS[runtime.mood]}</span><span>{EXPRESSIONS[runtime.expression]}</span><span>好感 {Math.round(runtime.relationship.affinity)}</span></> : <span>正在了解当前状态…</span>}<Icon name="chevron" /></button>
@@ -58,6 +62,7 @@ export function CompanionPlanner({ companion, members, conversationId, conversat
       {orders.length > 2 && <button className="companions-planner-work-more" onClick={() => onWork()}>另有 {orders.length - 2}{moreWork ? '+' : ''} 件，展开工作台</button>}
     </section>
     <CompanionActivityPanel companionId={companion.id} conversationId={conversationId} api={api} request={request} />
+    <div className="companions-planner-memory-processing"><CompanionMemoryProcessingSummary companionId={companion.id} companionName={companion.name} api={api} request={request} onOpen={onMemoryProcessing ?? onMemory} /></div>
     <section className="companions-planner-calendar" aria-label="伙伴周历"><div className="companions-planner-date"><span><strong>{today.getDate()}</strong><small>{today.toLocaleDateString('zh-CN', { month: 'long' })}<br />{today.toLocaleDateString('zh-CN', { weekday: 'long' })}</small></span><div><button aria-label="上一周" onClick={() => setWeekOffset(value => value - 1)}><Icon name="chevron-left" /></button><button aria-label="下一周" onClick={() => setWeekOffset(value => value + 1)}><Icon name="chevron-right" /></button></div></div><div className="companions-planner-week">{days.map(day => { const key = localDateKey(day.getTime()), hasPlan = upcoming.some(schedule => localDateKey(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt) === key); return <button key={key} aria-label={'查看 ' + day.toLocaleDateString('zh-CN') + ' 的安排'} aria-pressed={selectedDay === key} className={(key === localDateKey(now) ? 'is-today ' : '') + (selectedDay === key ? 'is-selected' : '')} onClick={() => setSelectedDay(current => current === key ? undefined : key)}><small>{day.toLocaleDateString('zh-CN', { weekday: 'narrow' })}</small><strong>{day.getDate()}</strong><i className={hasPlan ? 'has-plan' : ''} /></button>; })}</div></section>
     <section className="companions-planner-agenda"><div className="companions-planner-section-title"><h4>{selectedDay ? '这一天的便签' : '接下来的便签'}</h4><button aria-label="管理伙伴日程" onClick={onSchedules}><Icon name="plus" /></button></div>
       {!!rhythm.length && <div className="companions-planner-rhythm" aria-label="今日作息"><header>生活的小节奏 <span>{routine!.config.timeZone === 'system' ? '本地时间' : routine!.config.timeZone}</span></header>{rhythm.map(item => <button key={item.id} onClick={onSchedules}><time>{item.at}</time><i /><span>{item.title}</span></button>)}</div>}
@@ -67,5 +72,5 @@ export function CompanionPlanner({ companion, members, conversationId, conversat
       {!!completed.length && <details className="companions-planner-completed"><summary><Icon name="check" />最近完成 · {completed.length}</summary>{completed.map(occurrence => <button key={occurrence.id} onClick={onSchedules}><Icon name="check" /><span>{schedules.find(schedule => schedule.id === occurrence.scheduleId)?.title || '已完成的安排'}</span><small>{scheduleTime(occurrence.finishedAt ?? occurrence.scheduledAt)}</small></button>)}</details>}
     </section>
     <div className="companions-planner-links"><button onClick={onMemory} aria-label="管理共同记忆"><Icon name="archive" /><span>共同记忆<small>查看来处与相处的细节</small></span><Icon name="chevron" /></button><button onClick={() => onTasks('history', companion.id)} aria-label="查看任务历史"><Icon name="activity" /><span>任务记录<small>展开执行过程与成果</small></span><Icon name="chevron" /></button></div>
-  </aside>;
+  </aside></>;
 }

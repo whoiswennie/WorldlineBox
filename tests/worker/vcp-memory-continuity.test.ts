@@ -9,6 +9,7 @@ import { CompanionMemoryService } from '../../src/main/companions/memory-service
 import { CompanionMemoryViewCache } from '../../src/main/companions/memory-view-cache';
 import { VcpMemoryClient, type VcpMemoryTransport } from '../../src/main/vcp-memory/client';
 import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
+import { companionMemoryIdentity } from '../../src/main/companions/memory-identity';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 const cleanups: Array<() => Promise<void>> = [];
@@ -25,7 +26,7 @@ async function fixture() {
     if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-vcp-continuity-')) throw new Error('Unsafe continuity cleanup.');
     await removeOwnedDirectory(root);
   });
-  const controls = { hangTimeline: false, timelineCalls: 0, focusCalls: 0, focusPrompts: [] as string[], disconnected: 0 };
+  const controls = { hangTimeline: false, timelineCalls: 0, timelinePrompts: [] as string[], focusCalls: 0, focusPrompts: [] as string[], disconnected: 0 };
   const pending = new Set<ServerResponse>();
   const server = createServer(async (request, response) => {
     let text = ''; for await (const chunk of request) text += chunk.toString();
@@ -41,6 +42,7 @@ async function fixture() {
         response.end(JSON.stringify({ choices: [{ message: { content } }] })); return;
       }
       controls.timelineCalls++;
+      controls.timelinePrompts.push(JSON.stringify(body.messages));
       if (controls.hangTimeline) {
         pending.add(response);
         response.once('close', () => { pending.delete(response); controls.disconnected++; });
@@ -100,10 +102,22 @@ describe('original monthly VCP continuity behind the main memory service', () =>
       expect(artifacts?.agents[0]?.months[0], first.report.mock.calls.map(([error]) => String(error)).join('\n')).toMatchObject({ month: '2026-10', summary: expect.stringContaining('TIMELINE_ONLY_VALIDATED_MONTH') });
     }, { timeout: 20000, interval: 50 });
     expect(controls.timelineCalls).toBe(2);
+    const artifacts = await cache.loadArtifacts(identity, 'continuity-test');
+    expect(artifacts?.owner).toEqual(companionMemoryIdentity({ id: 'alpha', name: 'Alpha' }));
+    expect(artifacts?.agents[0]?.agentName).toBe('Alpha');
+    expect(artifacts?.agents[0]?.months[0]?.content).toContain('2026-10 Alpha时间线');
+    expect(controls.timelinePrompts[0]).toContain('[2026-10-14] - Alpha');
+    expect(controls.timelinePrompts[0]).toContain('[09:00:00]');
+    expect(controls.timelinePrompts[0]).toContain('宿主核验的记忆归属');
+    expect(controls.timelinePrompts[0]).not.toContain('[2026-10-14] - WorldlineBox');
+    expect(first.service.processingFor('alpha')[0]).toMatchObject({ kind: 'timeline', status: 'completed', conversationId: conversation.id,
+      sourceRevision: artifacts?.sourceRevision, startedAt: expect.any(String), updatedAt: expect.any(String) });
+    expect(first.service.processingFor('another-owner')).toEqual([]);
     expect(first.published).toHaveBeenCalledWith(expect.objectContaining({ scope: { companionId: 'alpha', conversationId: conversation.id }, artifacts: expect.objectContaining({ sourceRevision: expect.any(String) }) }));
     expect(await first.published.mock.calls[0]![0].stillValid()).toBe(true);
     await first.service.close();
     const restarted = createService();
+    expect(restarted.service.processingFor('alpha')).toEqual([]);
     const replayed = await restarted.service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
     expect(replayed.memoryContext?.text).toContain('umbrella');
     expect(replayed.memoryContext?.text).toContain('TIMELINE_ONLY_VALIDATED_MONTH');
@@ -117,22 +131,95 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     expect(controls.timelineCalls).toBe(2);
   });
 
+  it('does not reuse legacy brand-authored artifacts or an old owner name after a resident rename', async () => {
+    const { createService, cacheRoot, controls, conversation, store, note } = await fixture();
+    const identity = `alpha:${conversation.id}`, cache = new CompanionMemoryViewCache(cacheRoot);
+    const revision = store.request({ type: 'memory.snapshot', companionId: 'alpha', conversationId: conversation.id }).memorySnapshot!.revision;
+    await cache.saveArtifacts(identity, 'continuity-test', { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision,
+      agents: [{ agentName: 'WorldlineBox', months: [{ month: '2026-10', sourceDigest: 'a'.repeat(64), content: 'STALE_BRAND_OWNER', summary: 'STALE_BRAND_OWNER' }] }] });
+    const first = createService(), imported = vi.spyOn(first.client, 'importTimelineArtifacts');
+    first.service.schedule(0);
+    await vi.waitFor(() => expect(first.published).toHaveBeenCalled(), { timeout: 20000 });
+    expect(imported).not.toHaveBeenCalled();
+    expect(first.published.mock.calls[0]![0].artifacts.owner).toMatchObject({ companionId: 'alpha', name: 'Alpha', version: 2 });
+    expect(JSON.stringify(first.published.mock.calls)).not.toContain('STALE_BRAND_OWNER');
+    await first.service.close();
+    const owner = store.state().companions.find(role => role.id === 'alpha')!;
+    store.updateCompanion(owner.id, { ...owner, name: '小肥鱼' }, owner.revision);
+    const renamed = createService(); renamed.service.schedule(0);
+    await vi.waitFor(() => expect(renamed.published).toHaveBeenCalled(), { timeout: 20000 });
+    const artifacts = renamed.published.mock.calls[0]![0].artifacts;
+    expect(artifacts.owner).toMatchObject({ companionId: 'alpha', name: '小肥鱼', agentName: '小肥鱼', version: 2 });
+    expect(artifacts.agents[0]?.agentName).toBe('小肥鱼');
+    expect(artifacts.agents[0]?.months[0]?.content).toContain('2026-10 小肥鱼时间线');
+    expect(controls.timelineCalls).toBe(4);
+    const current = store.request({ type: 'memory.read', companionId: 'alpha', conversationId: conversation.id, id: note.id }).memoryRead!.memory;
+    expect(current).toMatchObject({ id: note.id, version: note.version, content: note.content });
+  });
+
   it('serves a foreground query during long generation and immediately cancels and purges on source retraction', async () => {
     const { createService, cacheRoot, controls, conversation, store, note, pending } = await fixture();
     const { service, client, report } = createService();
     controls.hangTimeline = true; service.schedule(0);
     await vi.waitFor(() => expect(pending.size, report.mock.calls.map(([error]) => String(error)).join('\n')).toBe(1), { timeout: 20000 });
+    expect(service.processingFor('alpha')[0]).toMatchObject({ kind: 'timeline', status: 'running', stage: '整理2026-10的月度时间线' });
     const front = await service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
     expect(front.memoryPage?.items[0]?.memory.id).toBe(note.id);
     store.request({ type: 'memory.forget', companionId: 'alpha', conversationId: conversation.id, id: note.id });
     const interrupted = vi.spyOn(client, 'interruptScope'), purged = vi.spyOn(client, 'purgeScope');
     await service.invalidate('alpha', [note.scopeId]);
+    expect(service.processingFor('alpha')[0]?.status).toBe('cancelled');
     expect(interrupted).toHaveBeenCalled(); expect(purged).toHaveBeenCalled();
     await vi.waitFor(() => expect(controls.disconnected).toBeGreaterThan(0));
     expect((await readdir(cacheRoot)).some(file => file.endsWith('.timeline'))).toBe(false);
     const recalled = await service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
     expect(recalled.memoryPage?.items).toEqual([]);
     expect(recalled.memoryContext).toBeUndefined();
+  });
+
+  it('explicitly retries only a failed owner without waiting for the five-minute monthly cooldown', async () => {
+    const { createService, controls, store, note, conversation } = await fixture();
+    const { service, client, published } = createService();
+    vi.spyOn(client, 'timeline').mockRejectedValueOnce(new Error('fixture timeline interruption'));
+    service.schedule(0);
+    await vi.waitFor(() => expect(service.processingFor('alpha')[0]?.status).toBe('failed'), { timeout: 20000 });
+    const first = service.processingFor('alpha')[0]!;
+    expect(Date.parse(first.nextAttemptAt!)).toBeGreaterThan(Date.now());
+    expect(service.retryProcessingFor('unrelated-owner')).toBe(0);
+    expect(service.processingFor('alpha')[0]?.status).toBe('failed');
+    expect(service.retryProcessingFor('alpha')).toBe(1);
+    await vi.waitFor(() => expect(published).toHaveBeenCalled(), { timeout: 20000 });
+    expect(service.processingFor('alpha')[0]).toMatchObject({ id: first.id, status: 'completed', attempts: 2 });
+    expect(controls.timelineCalls).toBe(2);
+    expect(service.retryProcessingFor('alpha')).toBe(0);
+    expect(store.request({ type: 'memory.read', companionId: 'alpha', conversationId: conversation.id, id: note.id }).memoryRead?.memory)
+      .toMatchObject({ id: note.id, version: note.version, content: note.content });
+  });
+
+  it('retires a queued old revision when a newer source revision is actually retried', async () => {
+    const { createService, store, conversation, controls } = await fixture();
+    const { service, client, published } = createService();
+    vi.spyOn(client, 'timeline').mockRejectedValueOnce(new Error('first revision failure')).mockRejectedValueOnce(new Error('new revision failure'));
+    service.schedule(0);
+    await vi.waitFor(() => expect(service.processingFor('alpha')[0]?.status).toBe('failed'), { timeout: 20000 });
+    const first = service.processingFor('alpha')[0]!;
+    const source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: 'The blue umbrella was returned to alpha.', replyDirective: 'none' });
+    store.request({ type: 'memory.record', companionId: 'alpha', conversationId: conversation.id,
+      candidate: { content: source.content, tags: ['umbrella', 'returned'], occurredAt: '2026-10-14T02:00:00Z',
+        sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
+    expect(service.retryProcessingFor('alpha')).toBe(1);
+    await vi.waitFor(() => {
+      const jobs = service.processingFor('alpha');
+      expect(jobs[0]).toMatchObject({ status: 'failed', sourceRevision: expect.any(String) });
+      expect(jobs[0]!.sourceRevision).not.toBe(first.sourceRevision);
+      expect(jobs.find(job => job.id === first.id)?.status).toBe('stale');
+    }, { timeout: 20000 });
+    expect(service.retryProcessingFor('alpha')).toBe(1);
+    await vi.waitFor(() => expect(published).toHaveBeenCalled(), { timeout: 20000 });
+    const jobs = service.processingFor('alpha');
+    expect(jobs[0]?.status).toBe('completed'); expect(jobs.find(job => job.id === first.id)?.status).toBe('stale');
+    expect(jobs.some(job => job.status === 'pending' || job.status === 'running')).toBe(false);
+    expect(controls.timelineCalls).toBe(2);
   });
 
   it('closes while the original timeline model call is pending', async () => {

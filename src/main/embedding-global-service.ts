@@ -35,6 +35,9 @@ export type GlobalEmbeddingServiceOptions = {
   koffiPath?: string;
   /** Test seam; production uses the existing owned llama process implementation. */
   startLocalSession?: typeof startLlamaEmbeddingSession;
+  /** Production device gate; metadata/profile reads never load the encoder. */
+  ensureDeviceCapability?: (signal?: AbortSignal) => Promise<void>;
+  devicePreference?: () => { backend?: 'cpu' | 'gpu'; deviceId?: string };
 };
 
 export class EmbeddingProfileChangedError extends Error {
@@ -128,6 +131,8 @@ export class GlobalEmbeddingService {
   async #localSession(profile: GlobalEmbeddingProfile, signal: AbortSignal): Promise<LlamaEmbeddingSession> {
     if (this.#session?.key === profile.profileKey) return this.#session.session;
     if (this.#session) { await this.#session.session.close(); this.#session = null; }
+    await this.options.ensureDeviceCapability?.(signal);
+    signal.throwIfAborted();
     const layout = resolveLocalTextEmbeddingLayout(this.options.userDataPath, this.options.bundleDirectory);
     if (!layout) throw new Error('The bundled embedding model is unavailable. Repair its local files in settings.');
     if (await fileSha256(layout.corePath) !== LOCAL_TEXT_EMBEDDING_MODEL.sha256) throw new Error('The bundled embedding model failed its checksum. Repair its local files in settings.');
@@ -135,6 +140,7 @@ export class GlobalEmbeddingService {
     const runtimeController = new AbortController();
     this.#runtimeController = runtimeController;
     const startSession = this.options.startLocalSession ?? startLlamaEmbeddingSession;
+    const preference = this.options.devicePreference?.();
     const sessionOptions = {
       executable: layout.runtimePath, files: { corePath: layout.corePath }, modelName: profile.modelName,
       contextSize: profile.contextTokens ?? 4096, signal: runtimeController.signal, koffiPath: this.options.koffiPath,
@@ -145,9 +151,13 @@ export class GlobalEmbeddingService {
     try {
       // Match the asset encoder: a GPU-capable bundled backend may offload automatically.
       // The shipped CPU build has no GPU dependency and continues to execute on the CPU.
-      session = await startSession({ ...sessionOptions, gpuLayers: 99 });
+      session = await startSession({ ...sessionOptions, gpuLayers: preference?.backend === 'cpu' ? 0 : 99,
+        ...(preference?.backend === 'cpu' ? { executable: layout.cpuRuntimePath ?? layout.runtimePath } : {}),
+        ...(preference?.backend === 'gpu' && preference.deviceId ? { device: preference.deviceId } : {}),
+      });
     } catch (error) {
       if (signal.aborted || runtimeController.signal.aborted || error instanceof AggregateError) throw error;
+      if (preference?.backend) throw new Error('已通过检测的向量运行设备未能启动，请在设置的全局模型中重新检测。', { cause: error });
       session = await startSession({ ...sessionOptions, executable: layout.cpuRuntimePath ?? layout.runtimePath, gpuLayers: 0 });
     }
     this.#session = { key: profile.profileKey, session };

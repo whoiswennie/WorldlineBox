@@ -57,7 +57,7 @@ export function LocalTextEmbeddingSettings({ api }: { api?: LocalTextEmbeddingAp
   const working = checking || operation !== null || status?.phase === 'verifying' || status?.phase === 'downloading';
   const state = working ? 'checking' : ready ? 'ready' : 'unavailable';
   const stateLabel = operation === 'clear' ? (zh ? '正在清理' : 'Clearing cache')
-    : working ? (zh ? '正在检查' : 'Checking') : ready ? (zh ? '已就绪' : 'Ready') : (zh ? '资源异常' : 'Needs repair');
+    : working ? (zh ? '正在检查' : 'Checking') : ready ? (zh ? '文件已就绪' : 'Files ready') : (zh ? '资源异常' : 'Needs repair');
   const modelMiB = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(LOCAL_TEXT_EMBEDDING_MODEL.packageBytes / 1024 ** 2);
   const issue = error || (!working && !ready ? (zh ? '内置资源暂不可用，请验证与修复；仍有问题时请修复应用安装。' : 'Bundled files are unavailable. Verify and repair them, or repair the app installation.') : '');
 
@@ -71,7 +71,7 @@ export function LocalTextEmbeddingSettings({ api }: { api?: LocalTextEmbeddingAp
       <span className="local-embedding-settings__status" data-state={state} role="status"><Icon name={working ? 'clock' : ready ? 'check' : 'alert-circle'} size={14} />{stateLabel}</span>
     </div>
     <div className="local-embedding-settings__footer">
-      <span className="local-embedding-settings__facts" title={zh ? '模型文件的磁盘大小，不代表运行内存。随应用提供；按需启动，自动使用可用显卡或 CPU。' : 'Model file size on disk, not runtime memory. Bundled with the app; starts on demand using an available GPU or CPU.'}>
+      <span className="local-embedding-settings__facts" title={zh ? '模型文件的磁盘大小，不代表运行内存。随应用提供；通过设备检测后按需启动。' : 'Model file size on disk, not runtime memory. Bundled with the app; starts on demand after the device check.'}>
         {LOCAL_TEXT_EMBEDDING_MODEL.dimension} {zh ? '维' : 'dimensions'}<span aria-hidden="true">·</span>{zh ? '约 ' : '~'}{modelMiB} MiB<Icon name="info" size={13} />
       </span>
       <div className="local-embedding-settings__actions">

@@ -74,11 +74,20 @@ test('observes real homes, host-driven bedtime and movement, camera controls and
   try {
     const started = await launch(profile); application = started.application; let page = started.page;
     page.on('pageerror', error => errors.push(error.message));
-    const sister = (await request(page, { type: 'state' })).state!.companions.find(companion => companion.id === 'deepseek-sister')!;
-    if (sister.active === false) await request(page, { type: 'companion.set-active', id: sister.id, active: true, expectedRevision: sister.revision });
+    const contacts = (await request(page, { type: 'state' })).state!.companions;
+    // These are the exact homes this fixture later observes. Other built-ins
+    // remain dormant; opening a world in production must never activate them.
+    const observedOwners = ['deepseek-sister', 'gemini', 'kimi'] as const;
+    for (const id of observedOwners) {
+      const companion = contacts.find(item => item.id === id)!;
+      expect(companion, 'The observed fixture resident must exist: ' + id).toBeDefined();
+      if (companion.active === false) await request(page, { type: 'companion.set-active', id, active: true, expectedRevision: companion.revision });
+    }
+    const sister = contacts.find(companion => companion.id === 'deepseek-sister')!;
     const initial = (await request(page, { type: 'world.snapshot' })).world!;
     expect(initial.settings).toMatchObject({ mode: 'realtime', dayDurationMinutes: 20 });
     expect(initial.scenes.some(scene => scene.kind === 'home' && scene.ownerId === sister.id)).toBe(true);
+    for (const id of observedOwners) expect(initial.scenes.some(scene => scene.id === 'home_' + id)).toBe(true);
     // Exercise compressed routines explicitly; the product now defaults to real time.
     await request(page, { type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode: 'compressed', dayDurationMinutes: 20 } });
     let worldPage = await openCompanionWorldWindow(application, page);
@@ -111,15 +120,36 @@ test('observes real homes, host-driven bedtime and movement, camera controls and
     await expect.poll(async () => Number(await scene.locator('canvas').getAttribute('data-world-loaded-actors'))).toBeGreaterThan(0);
     const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
     const renderMetrics = () => scene.locator('canvas').evaluate(element => Object.fromEntries(Object.entries((element as HTMLCanvasElement).dataset).filter(([key]) => ['worldFps', 'worldDrawCalls', 'worldTriangles', 'worldTextures', 'worldGeometries', 'worldFrames'].includes(key)).map(([key, value]) => [key, Number(value)])));
+    const settledHomeMetrics = async () => {
+      await expect(scene).toHaveAttribute('data-world-scene', 'home_' + bedOwner);
+      await expect(scene.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
+      const firstFrame = (await renderMetrics()).worldFrames ?? 0;
+      const sampleStarted = await worldPage.evaluate(() => performance.now());
+      // Scene entry rebuilds the shadow map. Exercise normal camera controls
+      // until a later metric publication, so both sides sample the same home's
+      // ordinary subsequent draws rather than the first scene/shadow pass.
+      // Frame count updates on every draw, but drawCalls/triangles publish only
+      // once per second. Wait a full publication interval, independently of
+      // whether the measured draw-call budget passes.
+      await world.getByRole('button', { name: '向左旋转世界', exact: true }).click();
+      await expect.poll(async () => {
+        const frames = (await renderMetrics()).worldFrames ?? 0;
+        const elapsed = await worldPage.evaluate(started => performance.now() - started, sampleStarted);
+        const published = elapsed >= 1200 && frames > firstFrame + 2;
+        if (!published) await world.getByRole('button', { name: '向右旋转世界', exact: true }).click();
+        return published;
+      }, { timeout: 15_000, intervals: [250, 250, 500] }).toBe(true);
+      return renderMetrics();
+    };
     await expect.poll(async () => (await renderMetrics()).worldFrames ?? 0).toBeGreaterThan(2);
-    const beforeSwitch = await renderMetrics();
+    const beforeSwitch = await settledHomeMetrics();
     for (const destination of ['home_gemini', 'home_kimi', 'home_deepseek-sister', 'park', 'home_deepseek-sister']) {
       await world.getByRole('combobox', { name: '观测地点', exact: true }).selectOption(destination); await expect(scene).toHaveAttribute('data-world-scene', destination);
     }
     await expect.poll(async () => (await renderMetrics()).worldFrames ?? 0, { timeout: 15_000 }).toBeGreaterThan((beforeSwitch.worldFrames ?? 0) + 2);
-    const afterSwitch = await renderMetrics();
+    const afterSwitch = await settledHomeMetrics();
+    await testInfo.attach('world-render-metrics', { body: JSON.stringify({ sampleScene: 'home_' + bedOwner, minimumPublicationWindowMs: 1200, beforeSwitch, afterSwitch }, null, 2), contentType: 'application/json' });
     expect(afterSwitch.worldTextures).toBeLessThanOrEqual(beforeSwitch.worldTextures! + 2); expect(afterSwitch.worldGeometries).toBeLessThanOrEqual(beforeSwitch.worldGeometries! + 2); expect(afterSwitch.worldDrawCalls).toBeLessThanOrEqual(26);
-    await testInfo.attach('world-render-metrics', { body: JSON.stringify({ beforeSwitch, afterSwitch }, null, 2), contentType: 'application/json' });
     await worldPage.screenshot({ path: path.join(artifacts, 'verified-companion-world-home.png') });
     await world.getByRole('button', { name: '在场景中找到大肥鱼', exact: true }).click();
     await worldPage.screenshot({ path: path.join(artifacts, 'verified-companion-world-detail.png') });

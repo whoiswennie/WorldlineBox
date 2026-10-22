@@ -208,7 +208,8 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const read = f.store.request({ type: 'memory.read', companionId: 'sister', conversationId: f.conversation.id, id: note.id }).memoryRead!;
     expect(read.sources.some(message => message.id === source.id && message.content === source.content)).toBe(true);
     expect(read.sources.some(message => message.authorId === 'sister' && message.content === '好，慢慢聊。')).toBe(true);
-    expect(clients.get(f.root)!.remember).toHaveBeenCalledWith(expect.objectContaining({ scopeId: note.scopeId }), expect.objectContaining({ id: note.id, content: note.content, author: 'WorldlineBox' }));
+    expect(clients.get(f.root)!.remember).toHaveBeenCalledWith(expect.objectContaining({ scopeId: note.scopeId }), expect.objectContaining({ id: note.id, content: note.content, author: '大肥鱼',
+      metadata: expect.objectContaining({ hostMemoryOwner: { version: 2, companionId: 'sister', name: '大肥鱼', agentName: '大肥鱼' } }) }));
     expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.turns.every(turn => turn.calls.length === 0)).toBe(true);
     await background(31_000);
     expect(active(f.store, f.conversation.id)).toHaveLength(1);

@@ -87,6 +87,21 @@ it('reuses a completed index across restart and warms an evicted worker without 
   expect(f.client.close).not.toHaveBeenCalled();
 });
 
+it('indexes the actual owner name and rebuilds a renamed owner instead of reusing the application identity', async () => {
+  const f = fixture(); f.store.saveMemory({ ...f.scope, content: '只属于小肥鱼的记录。' });
+  const before = f.store.state().companions.find(owner => owner.id === 'alice')!;
+  f.store.updateCompanion(before.id, { ...before, name: '小肥鱼' });
+  const manager = f.make(); await f.ready(manager);
+  expect(f.client.remember.mock.calls[0]![1]).toMatchObject({ author: '小肥鱼', metadata: { hostMemoryOwner: { companionId: 'alice', name: '小肥鱼' } } });
+  const oldScope = f.client.remember.mock.calls[0]![0].scopeId;
+  const current = f.store.state().companions.find(owner => owner.id === 'alice')!;
+  f.store.updateCompanion(current.id, { ...current, name: '小肥鱼改名' });
+  await f.ready(manager);
+  expect(f.client.purgeScope).toHaveBeenCalledWith(expect.objectContaining({ scopeId: oldScope }));
+  expect(f.client.remember.mock.calls.at(-1)![1]).toMatchObject({ author: '小肥鱼改名', metadata: { hostMemoryOwner: { companionId: 'alice', name: '小肥鱼改名' } } });
+  expect(f.client.remember.mock.calls.every(([, note]) => note.author !== 'WorldlineBox')).toBe(true);
+});
+
 it('rebuilds physical scopes after revision or source retraction and never returns old owner-wide hits', async () => {
   const f = fixture(), initial = f.store.saveMemory({ ...f.scope, content: '旧秘密记录。' }), manager = f.make();
   await f.ready(manager); const old = f.client.remember.mock.calls[0]![0].scopeId;

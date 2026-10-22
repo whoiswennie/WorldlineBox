@@ -8,14 +8,24 @@ import type { CompanionWorldSnapshot } from '../../src/shared/companion-world';
 import { createCompanionWorldPark, createCompanionWorldHome } from '../../src/shared/companion-world-engine';
 import { CompanionWorld } from '../../src/renderer/companions/world/CompanionWorld';
 import { createWorldViewport } from '../../src/renderer/companions/world/world-engine';
+import type { WorldGraphicsCapability } from '../../src/shared/world-graphics-capability';
+import { checkWorldGraphicsCapability } from '../../src/renderer/device-capabilities/world-graphics-probe';
 import { WORLD_OBSERVER_PREFERENCES_KEY, readWorldObserverPreferences, saveWorldObserverPreferences } from '../../src/renderer/companions/world/world-observer-preferences';
 import { interpolateWorldPath, interpolateWorldPosition, worldActorAnimationFrame, worldActorStatus, worldAnimationFrame, worldArtAction, worldAssetUrl, worldClockLabel, worldFacingMirrored, worldInterpolationPath, worldPrecipitationHeight } from '../../src/renderer/companions/world/world-presentation';
 
 const view = vi.hoisted(() => ({ update: vi.fn(), dispose: vi.fn(), setActive: vi.fn(), setVisibleWindowCount: vi.fn(), focus: vi.fn(), reset: vi.fn(), zoom: vi.fn(), rotate: vi.fn(), getView: vi.fn(), restoreView: vi.fn() }));
 vi.mock('../../src/renderer/companions/world/world-engine', () => ({ createWorldViewport: vi.fn(() => view) }));
+const graphics = vi.hoisted(() => ({ report: { status: 'available', checkedAt: '2026-10-22T00:00:00Z', webgl2: true, minimumMemoryGiB: 4 } as WorldGraphicsCapability,
+  listeners: new Set<() => void>() }));
+vi.mock('../../src/renderer/device-capabilities/world-graphics-probe', () => ({
+  getWorldGraphicsCapability: () => graphics.report,
+  subscribeWorldGraphicsCapability: (listener: () => void) => { graphics.listeners.add(listener); return () => graphics.listeners.delete(listener); },
+  checkWorldGraphicsCapability: vi.fn(() => { graphics.report = { status: 'available', checkedAt: '2026-10-22T00:00:01Z', webgl2: true, minimumMemoryGiB: 4 }; graphics.listeners.forEach(listener => listener()); return graphics.report; }),
+  markWorldGraphicsUnavailable: (reasonCode: WorldGraphicsCapability['reasonCode'], reason: string) => { graphics.report = { ...graphics.report, status: 'unavailable', reasonCode, reason }; graphics.listeners.forEach(listener => listener()); return graphics.report; },
+}));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined, container: HTMLDivElement | undefined;
-beforeEach(() => { localStorage.clear(); view.getView.mockReturnValue(undefined); });
+beforeEach(() => { localStorage.clear(); view.getView.mockReturnValue(undefined); graphics.report = { status: 'available', checkedAt: '2026-10-22T00:00:00Z', webgl2: true, minimumMemoryGiB: 4 }; });
 afterEach(async () => { await act(() => root?.unmount()); container?.remove(); root = undefined; container = undefined; vi.useRealTimers(); vi.clearAllMocks(); });
 const at = '2026-10-14T08:00:00.000Z';
 const companions: Companion[] = BUILTIN_COMPANIONS.slice(0, 2).map(item => ({ ...item, builtin: true, createdAt: at }));
@@ -25,6 +35,32 @@ function apiFor(get: () => CompanionWorldSnapshot, config?: (input: CompanionsRe
 async function mount(api: WorldlineBoxCompanionsApi, initialCompanionId: string | null = first.id) { vi.useFakeTimers(); container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); await act(async () => root!.render(<CompanionWorld api={api} companions={companions} initialCompanionId={initialCompanionId ?? undefined} onClose={vi.fn()} />)); }
 function button(label: string) { const found = [...container!.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === label || item.textContent === label); if (!found) throw new Error('No button ' + label); return found; }
 async function click(label: string) { await act(async () => button(label).click()); }
+
+it('gates only the 3D renderer with a specific reason and restores it after a successful manual check', async () => {
+  graphics.report = { ...graphics.report, status: 'unavailable', webgl2: false, reasonCode: 'webgl2_unavailable', reason: '当前无法创建 WebGL 2 画面。' };
+  const api = apiFor(world); await mount(api);
+  expect(createWorldViewport).not.toHaveBeenCalled();
+  expect(container!.querySelector('[aria-label="3D 设备能力"]')!.textContent).toContain('WebGL 2');
+  expect(container!.querySelector('[aria-label="3D 设备能力"]')!.textContent).toContain('聊天、记忆文档与资产管理可以继续使用');
+  expect(container!.querySelector('[aria-label="世界中的伙伴"]')!.textContent).toContain('位置 5.3, 4.0');
+  await act(() => vi.advanceTimersByTimeAsync(1000)); expect(api.request).toHaveBeenCalledTimes(2);
+  await click('重新检测 3D 能力');
+  expect(checkWorldGraphicsCapability).toHaveBeenCalledOnce(); expect(createWorldViewport).toHaveBeenCalledOnce();
+  expect(container!.querySelector('[aria-label="3D 设备能力"]')).toBeNull();
+  expect(view.update).toHaveBeenLastCalledWith(world(), world().scenes[0], companions);
+});
+
+it('disposes a genuinely lost scene and offers recheck without freezing its authoritative 2D life data', async () => {
+  const api = apiFor(world); await mount(api);
+  const camera = { position: { x: 30, y: 40, z: 50 }, target: { x: 28, y: 0, z: 18 }, zoom: .8 };
+  view.getView.mockReturnValue(camera);
+  await act(() => { vi.mocked(createWorldViewport).mock.calls.at(-1)![4]?.(); });
+  expect(view.dispose).toHaveBeenCalledOnce();
+  expect(container!.querySelector('[aria-label="3D 设备能力"]')!.textContent).toContain('上下文已中断');
+  expect(container!.querySelector('[aria-label="世界中的伙伴"]')).not.toBeNull();
+  await click('重新检测 3D 能力'); expect(createWorldViewport).toHaveBeenCalledTimes(2);
+  expect(view.restoreView).toHaveBeenLastCalledWith(camera, undefined);
+});
 
 it('selects independent scenes directly and remembers the park camera without a neighborhood map', async () => {
   const snapshot = world(); snapshot.scenes.push(createCompanionWorldPark());

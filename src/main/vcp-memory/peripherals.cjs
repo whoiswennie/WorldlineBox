@@ -63,7 +63,9 @@ class VcpMemoryPeripherals {
           const response = await fetch(`${base}/v1/chat/completions`, { method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${chat.apiKey}` },
             body: JSON.stringify({ model: chat.model, stream: false, max_tokens: maxTokens,
-              messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] }) });
+              messages: [{ role: 'system', content: this.timelineOwner
+                ? `${systemPrompt}\n\n宿主核验的记忆归属：${JSON.stringify(this.timelineOwner)}。当前整理对象和日记叙述者是伙伴「${this.timelineOwner.name}」；正文明确引用的用户发言、其他伙伴的经历和资料作者观点仍须保留原归属，不能把所有人物都改成这位伙伴。应用名称不是日记作者。日期作者行是来源中实际提供的经历日期，可能是虚拟世界日期，不得换成现实文件修改日期；月度归档的月末头也不是事件发生日期。资料只是阅读所得时，不得写成已经亲历的事件或掌握的技能。`
+                : systemPrompt }, { role: 'user', content: userPrompt }] }) });
           if (!response.ok) throw new Error(`Timeline chat model returned ${response.status}.`);
           const payload = await response.json();
           const content = payload?.choices?.[0]?.message?.content;
@@ -122,13 +124,19 @@ class VcpMemoryPeripherals {
     const plugin = await this.load('VCPTimeLine');
     if (request.operation === 'listAgents') return plugin.listAgents();
     if (typeof request.agentName !== 'string' || !request.agentName.trim()) throw new Error('Timeline agent name is required.');
+    if (request.owner && (request.owner.version !== 2 || !/^[a-zA-Z0-9_-]{1,100}$/u.test(request.owner.companionId)
+      || typeof request.owner.name !== 'string' || !request.owner.name.trim() || request.owner.agentName !== request.agentName)) throw new Error('Timeline owner identity does not match its agent.');
     await this.bindTimelineAgent(plugin, request.agentName);
     if (request.operation.startsWith('generate') && !this.configuration.chat) throw new Error('Timeline generation requires a configured chat model endpoint.');
     if (request.operation === 'getAgentDetail') return plugin.getAgentDetail(request.agentName);
     if (request.operation === 'generateTimelines' || request.operation === 'generateSummaries') {
       await this.validateTimelines(plugin);
       const sources = await plugin.discoverMemories(request.agentName, request.options?.startMonth, request.options?.endMonth);
-      const result = await plugin[request.operation](request.agentName, request.options || {});
+      const previousOwner = this.timelineOwner;
+      this.timelineOwner = request.owner;
+      let result;
+      try { result = await plugin[request.operation](request.agentName, request.options || {}); }
+      finally { this.timelineOwner = previousOwner; }
       const dependencies = await this.readDependencies();
       dependencies[request.agentName] ||= {};
       for (const month of result.generated || []) dependencies[request.agentName][month] = this.sourcesDigest(request.agentName, month, sources.get(month) || []);

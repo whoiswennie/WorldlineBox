@@ -15,7 +15,8 @@ export type CompanionWorldObserverRequest = z.infer<typeof companionWorldObserve
 export const companionWorldWindowControlSchema = z.enum(['get-state', 'minimize', 'maximize-toggle', 'close']);
 export type CompanionWorldWindowControl = z.infer<typeof companionWorldWindowControlSchema>;
 export const companionWorldWindowContextSchema = z.object({ observerKey: z.string().regex(/^companion-world-observer(?:-\d+)?$/),
-  companionId: companionIdSchema.optional(), sceneId: companionIdSchema.optional(), companions: z.array(companionWorldContactSchema), visible: z.boolean(), visibleWindowCount: z.number().int().nonnegative() });
+  companionId: companionIdSchema.optional(), sceneId: companionIdSchema.optional(), companions: z.array(companionWorldContactSchema), visible: z.boolean(), visibleWindowCount: z.number().int().nonnegative(),
+  totalMemoryBytes: z.number().int().positive().optional() });
 export type CompanionWorldWindowContext = z.infer<typeof companionWorldWindowContextSchema>;
 export const companionWorldWindowVisibilitySchema = z.object({ visible: z.boolean(), visibleWindowCount: z.number().int().nonnegative() });
 export const companionWorldWindowCommandSchema = z.discriminatedUnion('type', [

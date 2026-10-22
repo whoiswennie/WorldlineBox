@@ -4,16 +4,19 @@ import type { WorldlineBoxCompanionsApi } from '../../shared/companions';
 import type { ScheduleRequest } from './companion-schedules';
 
 export function useCompanionRoutine(companionId: string, conversationId: string, request: ScheduleRequest, api?: WorldlineBoxCompanionsApi) {
-  const [routine, setRoutine] = useState<CompanionRoutine>();
-  const [error, setError] = useState('');
+  const [snapshot, setRoutine] = useState<{ scope: string; routine: CompanionRoutine }>();
+  const [failure, setError] = useState<{ scope: string; message: string }>();
+  const scope = companionId + '/' + conversationId;
+  const routine = snapshot?.scope === scope && snapshot.routine.companionId === companionId ? snapshot.routine : undefined;
+  const error = failure?.scope === scope ? failure.message : '';
   const epoch = useRef(0);
   const refresh = useCallback(async () => {
     const current = ++epoch.current;
     const response = await request({ type: 'routine.get', companionId, conversationId });
     if (current !== epoch.current) return;
-    if (response?.ok && response.routine) { setRoutine(response.routine); setError(''); }
-    else setError('暂时无法读取作息。');
-  }, [companionId, conversationId, request]);
+    if (response?.ok && response.routine?.companionId === companionId) { setRoutine({ scope, routine: response.routine }); setError(undefined); }
+    else setError({ scope, message: '暂时无法读取作息。' });
+  }, [companionId, conversationId, request, scope]);
   useEffect(() => { const currentEpoch = epoch; void Promise.resolve().then(refresh); return () => { currentEpoch.current++; }; }, [refresh]);
   useEffect(() => { let timer: ReturnType<typeof setTimeout> | undefined; const unsubscribe = api?.onChanged(() => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 200); }); return () => { unsubscribe?.(); clearTimeout(timer); }; }, [api, refresh]);
   return { routine, error, refresh };

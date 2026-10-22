@@ -22,17 +22,19 @@ export function useCompanionSchedules(companionId: string, conversationId: strin
   const [schedules, setSchedules] = useState<CompanionSchedule[]>([]);
   const [occurrences, setOccurrences] = useState<CompanionScheduleOccurrence[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [failure, setError] = useState<{ scope: string; message: string }>();
+  const scope = companionId + '/' + conversationId;
   const epoch = useRef(0);
   const load = useCallback(async () => {
     const current = ++epoch.current;
     const response = await request({ type: 'schedule.list', companionId, conversationId, includeHistory: true, limit: 100 });
     if (current !== epoch.current) return;
     setLoading(false);
-    if (response?.schedules) { setSchedules(response.schedules); setOccurrences(response.scheduleOccurrences ?? []); setError(''); }
-    else setError('安排暂时无法读取，请刷新重试。');
-  }, [request, companionId, conversationId]);
+    if (response?.schedules) { setSchedules(response.schedules); setOccurrences(response.scheduleOccurrences ?? []); setError(undefined); }
+    else setError({ scope, message: '安排暂时无法读取，请刷新重试。' });
+  }, [request, companionId, conversationId, scope]);
   useEffect(() => { const currentEpoch = epoch; void Promise.resolve().then(load); return () => { currentEpoch.current++; }; }, [load]);
   useEffect(() => { let timer: ReturnType<typeof setTimeout> | undefined; const unsubscribe = api?.onChanged(() => { clearTimeout(timer); timer = setTimeout(() => void load(), 200); }); return () => { unsubscribe?.(); clearTimeout(timer); }; }, [api, load]);
-  return { schedules, occurrences, loading, error, refresh: load };
+  return { schedules: schedules.filter(item => item.companionId === companionId && item.conversationId === conversationId),
+    occurrences: occurrences.filter(item => item.companionId === companionId && item.conversationId === conversationId), loading, error: failure?.scope === scope ? failure.message : '', refresh: load };
 }

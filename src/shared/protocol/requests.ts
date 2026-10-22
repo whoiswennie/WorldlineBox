@@ -1395,6 +1395,10 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('embedding.local-text.status.request') }),
   z.strictObject({ type: z.literal('embedding.local-text.install.request'), update: z.boolean().optional() }),
   z.strictObject({ type: z.literal('embedding.local-text.delete.request') }),
+  z.strictObject({ type: z.literal('embedding.device.status.request') }),
+  z.strictObject({ type: z.literal('embedding.device.test.request'), force: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('embedding.device.cancel.request') }),
+  z.strictObject({ type: z.literal('device.hardware.status.request') }),
   z.strictObject({
     type: z.literal('embedding.global.save.request'),
     selectionId: z.string().refine(isEmbeddingSelectionId).nullable(),

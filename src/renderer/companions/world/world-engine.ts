@@ -31,7 +31,7 @@ export interface WorldViewportEngine {
 }
 
 /** Imperative, bounded renderer. React never receives an animation-frame state update. */
-export function createWorldViewport(container: HTMLElement, onFailure: (message: string) => void, onFollowChange?: (id: string | undefined) => void, onViewChange?: () => void): WorldViewportEngine {
+export function createWorldViewport(container: HTMLElement, onFailure: (message: string) => void, onFollowChange?: (id: string | undefined) => void, onViewChange?: () => void, onContextLost?: () => void): WorldViewportEngine {
   const renderer = new WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = PCFSoftShadowMap;
@@ -392,7 +392,7 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
   }
   function start() { if (!disposed && active && !document.hidden) { measureStarted = performance.now(); measuredFrames = 0; invalidate(); } }
   function onVisibility() { if (document.hidden) cancelFrame(); else start(); }
-  function contextLost(event: Event) { event.preventDefault(); cancelFrame(); onFailure('画面暂时中断，请重新打开世界。世界仍会按真实状态继续。'); }
+  function contextLost(event: Event) { event.preventDefault(); cancelFrame(); onFailure('图形上下文已中断，请重新检测 3D 能力。世界生活仍会继续。'); onContextLost?.(); }
   document.addEventListener('visibilitychange', onVisibility); renderer.domElement.addEventListener('webglcontextlost', contextLost); start();
   return { update, getView, restoreView, reset() { onFollowChange?.(undefined); reset(); onViewChange?.(); }, setActive(value) { if (active === value) return; active = value; if (!value) cancelFrame(); else start(); }, setVisibleWindowCount(count) { const next = Number.isFinite(count) ? Math.max(1, count) : 1; if (next !== visibleWindowCount) { visibleWindowCount = next; invalidate(); } }, zoom(amount) { camera.zoom = Math.max(controls.minZoom, Math.min(controls.maxZoom, camera.zoom * amount)); camera.updateProjectionMatrix(); invalidate(); onViewChange?.(); }, rotate(amount) { const offset = camera.position.clone().sub(controls.target); offset.applyAxisAngle(new Vector3(0, 1, 0), amount); camera.position.copy(controls.target).add(offset); controls.update(); invalidate(); onViewChange?.(); }, focus: focusActor, dispose() {
     disposed = true; cancelFrame(); observer.disconnect(); labelObserver.disconnect(); controls.dispose(); document.removeEventListener('visibilitychange', onVisibility); renderer.domElement.removeEventListener('webglcontextlost', contextLost);
